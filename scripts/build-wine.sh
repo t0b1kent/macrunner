@@ -30,8 +30,11 @@ export CC="clang"
 export CXX="clang++"
 
 # Флаги
-export CFLAGS="-O2 -arch arm64 -mmacosx-version-min=14.0"
-export LDFLAGS="-arch arm64 -mmacosx-version-min=14.0"
+export CFLAGS="-O2 -arch arm64 -mmacosx-version-min=14.0 -I/opt/homebrew/include"
+export CPPFLAGS="-I/opt/homebrew/include"
+# Homebrew /opt/homebrew/lib обязательно — иначе configure не находит libvulkan/libMoltenVK
+export LDFLAGS="-arch arm64 -mmacosx-version-min=14.0 -L/opt/homebrew/lib"
+export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 # Проверки зависимостей
 for dep in autoconf automake bison flex pkg-config mingw-w64; do

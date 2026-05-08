@@ -1,0 +1,30 @@
+From: MacRunner <noreply@macrunner.app>
+Subject: [PATCH] build: ensure configure finds libvulkan / libMoltenVK on Apple Silicon
+
+Symptom:
+    configure: libvulkan and libMoltenVK development files not found,
+    Vulkan won't be supported.
+    ...
+    dlls/win32u/vulkan.c: error: use of undeclared identifier 'SONAME_LIBVULKAN'
+
+Root cause:
+    On Apple Silicon, Homebrew installs to /opt/homebrew/{lib,include}.
+    Wine's configure runs basic linker tests with default paths (Apple
+    clang does not auto-add Homebrew paths). Without -L/opt/homebrew/lib
+    and -I/opt/homebrew/include, configure marks libvulkan/libMoltenVK
+    as missing and #undefs the SONAME_* macros that Wine source needs.
+
+Fix:
+    scripts/build-wine.sh exports CFLAGS/CPPFLAGS/LDFLAGS/PKG_CONFIG_PATH
+    pointing at /opt/homebrew before invoking configure.
+
+Runtime note:
+    SONAME_* are passed to dlopen() at runtime. We use absolute paths
+    "/opt/homebrew/lib/libvulkan.1.dylib" and ".../libMoltenVK.dylib"
+    so dyld doesn't need DYLD_FALLBACK_LIBRARY_PATH set. When we ship
+    the engine, these dylibs are bundled and the SONAME is rewritten
+    to @rpath/... — see scripts/bundle-engine.sh (TODO).
+
+This is not a Wine source patch — it is captured here so a future
+fresh build of engine/wine produces a Vulkan-enabled binary without
+manual config.h editing.

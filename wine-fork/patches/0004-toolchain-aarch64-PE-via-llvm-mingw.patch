@@ -1,0 +1,34 @@
+From: MacRunner <noreply@macrunner.app>
+Subject: [PATCH] toolchain: enable aarch64 PE arch for Wine host services
+
+Symptom:
+    After successful build, `wine wineboot` exited 0 silently and never
+    populated drive_c. Investigation showed wineboot.exe was missing
+    from engine/wine/dist. Configure marked programs/{wineboot, services,
+    conhost, rpcss, plugplay, spoolsv, termsv, winemenubuilder, wuauserv}
+    as DISABLED for both i386 and x86_64 archs.
+
+Root cause:
+    Wine 11 with the new WoW64 architecture compiles host system services
+    as PE binaries matching HOST_ARCH. On Apple Silicon HOST_ARCH=aarch64,
+    so without an aarch64 mingw toolchain, configure auto-disables those
+    services. Homebrew `mingw-w64` ships only x86_64 and i386 wrappers.
+
+Fix (no Wine source change — toolchain + configure flags):
+    1. Bundle prebuilt llvm-mingw with aarch64-w64-mingw32-clang under
+       engine/toolchain/llvm-mingw-20260505-ucrt-macos-universal/.
+       Source: https://github.com/mstorsjo/llvm-mingw releases.
+
+    2. scripts/build-wine.sh exports llvm-mingw bin at the END of PATH
+       (so its `clang` does not shadow Apple clang for the host build)
+       and pins CC=/usr/bin/clang, CXX=/usr/bin/clang++.
+
+    3. configure switched from `--enable-archs=x86_64,i386` to
+       `--enable-archs=aarch64,x86_64,i386`. Result:
+           HOST_ARCH = aarch64
+           PE_ARCHS  = aarch64 x86_64 i386
+       wineboot, services, conhost et al. now build for aarch64 PE.
+
+This is the toolchain piece needed for an arm64-native Wine host on
+Apple Silicon. The x86_64/i386 PE remain (Windows .exe runs through
+Rosetta 2 inside Wine).

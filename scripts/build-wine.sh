@@ -21,13 +21,20 @@ echo "📁 Build:  $WINE_BUILD"
 echo "📁 Install: $WINE_INSTALL"
 echo ""
 
-# Гарантия что используем Homebrew toolchain
-# bison и flex в Homebrew keg-only — нужно добавить их явно ПЕРЕД системным PATH
-export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+# Toolchain layout:
+# - host arm64 build: Apple clang (/usr/bin/clang)
+# - aarch64 PE: llvm-mingw aarch64-w64-mingw32-clang
+# - x86_64 / i386 PE: Homebrew mingw-w64
+# llvm-mingw имеет свой `clang` который нацелен на Windows — кладём его bin
+# В КОНЕЦ PATH чтобы не затенял Apple clang. wrappers (aarch64-w64-mingw32-*)
+# всё равно попадают в PATH через эту директорию.
+LLVM_MINGW="$PROJECT_ROOT/engine/toolchain/llvm-mingw-20260505-ucrt-macos-universal/bin"
+export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/usr/local/bin:$PATH:$LLVM_MINGW"
 
-# Wine на macOS требует чтобы CC указывал на правильный clang
-export CC="clang"
-export CXX="clang++"
+# Apple clang явно — иначе configure возьмёт Windows-target clang и не сможет
+# собрать host loader.
+export CC="/usr/bin/clang"
+export CXX="/usr/bin/clang++"
 
 # Флаги
 export CFLAGS="-O2 -arch arm64 -mmacosx-version-min=14.0 -I/opt/homebrew/include"
@@ -50,9 +57,11 @@ cd "$WINE_BUILD"
 
 if [ ! -f "Makefile" ]; then
     echo "⚙️  Запускаю configure..."
+    # aarch64 PE — для host системных сервисов (wineboot, services, conhost, ...)
+    # x86_64 / i386 PE — для Windows-программ (через Rosetta 2 на M-чипе)
     "$WINE_SRC/configure" \
         --prefix="$WINE_INSTALL" \
-        --enable-archs=x86_64,i386 \
+        --enable-archs=aarch64,x86_64,i386 \
         --disable-tests \
         --without-x \
         --without-alsa \

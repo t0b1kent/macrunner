@@ -45,3 +45,4 @@ secrets/
 # Test installers (большие)
 tests/installers/*.exe
 tests/installers/*.msi
+engine/

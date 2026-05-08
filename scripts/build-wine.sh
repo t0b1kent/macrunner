@@ -62,11 +62,26 @@ fi
 
 echo ""
 echo "🔨 Сборка (используется $(sysctl -n hw.ncpu) ядер)..."
+# pipefail чтобы set -e ловил ошибки make сквозь pipe в tee
+set -o pipefail
 make -j$(sysctl -n hw.ncpu) 2>&1 | tee build.log
+make_status=${PIPESTATUS[0]}
+if [ "$make_status" != "0" ]; then
+    echo ""
+    echo "❌ make упал с кодом $make_status"
+    echo "Последние ошибки:"
+    grep -E "error:|Error [0-9]" build.log | tail -10
+    exit "$make_status"
+fi
 
 echo ""
 echo "📦 Установка в $WINE_INSTALL..."
-make install
+make install 2>&1 | tee install.log
+install_status=${PIPESTATUS[0]}
+if [ "$install_status" != "0" ]; then
+    echo "❌ make install упал с кодом $install_status"
+    exit "$install_status"
+fi
 
 echo ""
 echo "✅ Wine собран!"

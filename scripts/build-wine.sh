@@ -22,7 +22,8 @@ echo "📁 Install: $WINE_INSTALL"
 echo ""
 
 # Гарантия что используем Homebrew toolchain
-export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+# bison и flex в Homebrew keg-only — нужно добавить их явно ПЕРЕД системным PATH
+export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
 
 # Wine на macOS требует чтобы CC указывал на правильный clang
 export CC="clang"
@@ -48,7 +49,7 @@ if [ ! -f "Makefile" ]; then
     echo "⚙️  Запускаю configure..."
     "$WINE_SRC/configure" \
         --prefix="$WINE_INSTALL" \
-        --enable-archs=arm64,x86_64 \
+        --enable-archs=x86_64,i386 \
         --disable-tests \
         --without-x \
         --without-alsa \

@@ -57,15 +57,10 @@ brew install --quiet \
     git-lfs \
     || true
 
-# Установка готового Wine для тестов (пока свой не собран)
-echo ""
-echo "🍷 Устанавливаю reference Wine (для сравнения)..."
-brew install --cask --no-quarantine wine-stable || true
-
-# Whisky для изучения (опционально)
-echo ""
-echo "🥃 Устанавливаю Whisky (для reference)..."
-brew install --cask --no-quarantine whisky || true
+# Reference Wine и Whisky — опционально, ставь вручную если нужно для сравнения:
+#   brew install --cask wine-stable
+#   brew install --cask whisky
+# Нам они не нужны для нашей сборки.
 
 echo ""
 echo "✅ Готово! Следующий шаг:"

@@ -48,19 +48,42 @@ fi
 echo "🔏 Подписываю Wine бинари..."
 echo ""
 
-# Все top-level бинари
+# CrossOver source ставит identifier `com.codeweavers.CrossOver.wineloader`
+# в loader/wine_info.plist.in — Apple привязал его к team 27GN9XE9CP.
+# Когда мы подписываем нашим сертификатом, ASP видит mismatch и блокирует.
+# Решение: переопределить identifier на наш собственный через --identifier.
+MR_BIN_ID="app.macrunner.wine"
+MR_LOADER_ID="app.macrunner.wineloader"
+MR_LIB_PREFIX="app.macrunner.lib"
+
 SIGNED=0
-for f in "$DIST/bin/"* "$DIST/lib/wine/aarch64-unix/wine"; do
-    if [ -f "$f" ] && file "$f" | grep -q "Mach-O.*executable"; then
-        codesign --force --sign "$IDENTITY" --entitlements "$ENT" --options runtime "$f" 2>&1 | tail -1
+
+# Top-level bin/* — даём bin-уровневый identifier
+for f in "$DIST/bin/"*; do
+    [ -f "$f" ] || continue
+    if file "$f" | grep -q "Mach-O.*executable"; then
+        name=$(basename "$f")
+        codesign --force --sign "$IDENTITY" \
+            --identifier "$MR_BIN_ID.$name" \
+            --entitlements "$ENT" --options runtime "$f" 2>&1 | tail -1
         SIGNED=$((SIGNED + 1))
     fi
 done
 
+# Secondary loader (lib/wine/aarch64-unix/wine) — наш identifier
+codesign --force --sign "$IDENTITY" \
+    --identifier "$MR_LOADER_ID" \
+    --entitlements "$ENT" --options runtime \
+    "$DIST/lib/wine/aarch64-unix/wine" 2>&1 | tail -1
+SIGNED=$((SIGNED + 1))
+
 # Все .so в aarch64-unix
 for f in "$DIST/lib/wine/aarch64-unix/"*.so; do
     [ -f "$f" ] || continue
-    codesign --force --sign "$IDENTITY" --entitlements "$ENT" --options runtime "$f" 2>/dev/null
+    name=$(basename "$f" .so)
+    codesign --force --sign "$IDENTITY" \
+        --identifier "$MR_LIB_PREFIX.$name" \
+        --entitlements "$ENT" --options runtime "$f" 2>/dev/null
     SIGNED=$((SIGNED + 1))
 done
 

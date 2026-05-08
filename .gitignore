@@ -1,0 +1,47 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.swp
+
+# Swift Package Manager
+.build/
+Packages/
+Package.pins
+Package.resolved
+.swiftpm/
+
+# Wine builds
+wine-fork/build/
+wine-fork/dist/
+*.dylib.dSYM
+
+# Bottles (test prefixes)
+test-bottles/
+*.wine-prefix/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+
+# Secrets
+.env
+.env.local
+secrets/
+
+# Test installers (большие)
+tests/installers/*.exe
+tests/installers/*.msi

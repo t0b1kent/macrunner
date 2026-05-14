@@ -259,3 +259,16 @@ wine_cleanup before=0 after=0 active_after=0 exiting_after=0 term=0 kill=0 winet
 ## Patch portability gate
 $ git archive HEAD | tar -x -C "$TMP" && git -C "$TMP" apply --check patches/control-center-no-more-foundations.patch
 patch apply check PASS in /tmp/macr-patchcheck.V7TtsU
+
+## Git tag truth gate
+$ git tag -d v0.2.0-shippable || true
+Deleted tag 'v0.2.0-shippable' (was 695cc53)
+$ git tag -d v0.3.0-shippable || true
+error: tag 'v0.3.0-shippable' not found.
+$ git tag v0.3.0-shippable
+$ git rev-parse HEAD v0.3.0-shippable
+f9ca0fef9cf0276ebbb2c84047f448d6272e1051
+f9ca0fef9cf0276ebbb2c84047f448d6272e1051
+$ git diff HEAD..v0.3.0-shippable --stat
+$ git archive 9394a84028f94770fdd3758ab0044536fbb22c7e | tar -x -C "$TMP" && git -C "$TMP" apply --check patches/control-center-no-more-foundations.patch
+patch apply check PASS in /tmp/macr-patchcheck-final.pjPoJz against 9394a84028f94770fdd3758ab0044536fbb22c7e

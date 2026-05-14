@@ -2,6 +2,17 @@ import Foundation
 
 struct ActivityDashboardSnapshot: Codable, Equatable {
     struct Program: Codable, Equatable { var id: String; var name: String; var launchCount: Int }
+    struct RecentlyPlayed: Codable, Equatable {
+        var appid: String
+        var name: String
+        var playtimeForever: Int?
+        var recentlyPlayedMinutes: Int?
+        enum CodingKeys: String, CodingKey {
+            case appid, name
+            case playtimeForever = "playtime_forever"
+            case recentlyPlayedMinutes = "recently_played_minutes"
+        }
+    }
     struct Cache: Codable, Equatable {
         var hitRate: Double
         var totalSizeBytes: Int64
@@ -9,6 +20,8 @@ struct ActivityDashboardSnapshot: Codable, Equatable {
     }
     var programs: [Program]
     var installedCount: Int
+    var steamOwnedGames: Int?
+    var recentlyPlayed: [RecentlyPlayed]
     var lastLaunched: String?
     var cache: Cache
     var databasePath: String
@@ -16,6 +29,8 @@ struct ActivityDashboardSnapshot: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case programs
         case installedCount = "installed_count"
+        case steamOwnedGames = "steam_owned_games"
+        case recentlyPlayed = "recently_played"
         case lastLaunched = "last_launched"
         case cache
         case databasePath = "database_path"
@@ -39,7 +54,16 @@ struct ActivityDashboardService {
             programs = apps.prefix(5).map { ActivityDashboardSnapshot.Program(id: $0.id.uuidString, name: $0.name, launchCount: max(1, ($0.lastDurationMs ?? 0) / 1000)) }
         }
         let cache = TranslationCacheService().stats(settings: settings)
-        return ActivityDashboardSnapshot(programs: programs, installedCount: max(apps.count, programs.count), lastLaunched: ISO8601DateFormatter().string(from: Date()), cache: .init(hitRate: cache.hitRate, totalSizeBytes: cache.totalSizeBytes), databasePath: databaseURL().path)
+        let steamStatus = SteamWebStatusStore().load()
+        return ActivityDashboardSnapshot(
+            programs: programs,
+            installedCount: max(apps.count, programs.count),
+            steamOwnedGames: steamStatus?.ownedGames,
+            recentlyPlayed: loadSteamRecentlyPlayed(settings: settings),
+            lastLaunched: ISO8601DateFormatter().string(from: Date()),
+            cache: .init(hitRate: cache.hitRate, totalSizeBytes: cache.totalSizeBytes),
+            databasePath: databaseURL().path
+        )
     }
 
     func ensureSQLiteSeed() throws {
@@ -64,5 +88,17 @@ struct ActivityDashboardService {
               let apps = try? JSONDecoder().decode([AppEntry].self, from: data)
         else { return [] }
         return apps
+    }
+
+    private func loadSteamRecentlyPlayed(settings: AppSettings) -> [ActivityDashboardSnapshot.RecentlyPlayed] {
+        SteamWebStatusStore().loadRecent().compactMap { game in
+            guard let minutes = game.playtimeTwoWeeks, minutes > 0 else { return nil }
+            return ActivityDashboardSnapshot.RecentlyPlayed(
+                appid: String(game.appid),
+                name: game.name ?? String(game.appid),
+                playtimeForever: game.playtimeForever,
+                recentlyPlayedMinutes: minutes
+            )
+        }
     }
 }

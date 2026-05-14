@@ -31,9 +31,57 @@ enum ControlCenterCLI {
         case "--dump-steam-library":
             do {
                 let root = try SteamLibraryService.ensureFixtureIfNeeded()
-                try printJSON(SteamLibraryService(root: root).dump())
+                let service = SteamLibraryService(root: root)
+                if arguments.contains("--enrich") {
+                    try printJSON(awaitValue { try await service.dumpEnriched(settings: loadSettingsForCLI()) })
+                } else {
+                    try printJSON(service.dump())
+                }
                 exit(0)
             } catch { fail("steam library dump failed", error) }
+        case "--fetch-steam-cover":
+            guard arguments.count > 2 else { failMessage("fetch-steam-cover requires an appid") }
+            do {
+                let title = arguments.dropFirst(3).joined(separator: " ")
+                let result = try awaitValue { try await SteamCoverFetcher().fetch(appid: arguments[2], title: title) }
+                if result.placeholderGenerated {
+                    print("fallback placeholder generated for \(result.appid)")
+                } else {
+                    print("fetched steam cover \(result.appid): \(result.path) bytes=\(result.bytes)")
+                }
+                exit(0)
+            } catch { fail("steam cover fetch failed", error) }
+        case "--steam-web-status":
+            do {
+                guard let key = SteamKeyStore().loadAPIKey(), !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    print("no key, web enrichment disabled")
+                    exit(0)
+                }
+                let root = try SteamLibraryService.ensureFixtureIfNeeded()
+                let service = SteamLibraryService(root: root)
+                guard let steamID = service.currentSteamID64(settings: loadSettingsForCLI()) else { throw SteamWebError.missingSteamID64 }
+                let status = try awaitValue { try await SteamWebClient(apiKey: key, steamID64: steamID).syncStatus() }
+                print("key set, last_sync: \(status.lastSync ?? "unknown"), owned_games: \(status.ownedGames ?? 0)")
+                exit(0)
+            } catch { fail("steam web status failed", error) }
+        case "--save-steam-web-key":
+            guard arguments.count > 2 else { failMessage("save-steam-web-key requires <api-key> [steamid64]") }
+            do {
+                try SteamKeyStore().saveAPIKey(arguments[2])
+                if arguments.count > 3 {
+                    var settings = loadSettingsForCLI()
+                    settings.steamID64 = arguments[3]
+                    try saveSettingsForCLI(settings)
+                }
+                print("steam web key saved")
+                exit(0)
+            } catch { fail("steam web key save failed", error) }
+        case "--clear-steam-web-key":
+            do {
+                try SteamKeyStore().deleteAPIKey()
+                print("steam web key cleared")
+                exit(0)
+            } catch { fail("steam web key clear failed", error) }
         case "--epic-status":
             do { try printJSON(EpicLibraryService().status()); exit(0) } catch { fail("epic status failed", error) }
         case "--dump-epic-library":
@@ -102,6 +150,35 @@ enum ControlCenterCLI {
     private static func failMessage(_ message: String) -> Never {
         fputs("\(message)\n", stderr)
         exit(2)
+    }
+
+    private static func awaitValue<T>(_ operation: @escaping () async throws -> T) throws -> T {
+        let semaphore = DispatchSemaphore(value: 0)
+        var output: Result<T, Error>?
+        Task {
+            do { output = .success(try await operation()) }
+            catch { output = .failure(error) }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return try output!.get()
+    }
+
+    private static func settingsURLForCLI() -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("MacRunnerControlCenter/settings.json")
+    }
+
+    private static func loadSettingsForCLI() -> AppSettings {
+        let url = settingsURLForCLI()
+        guard let data = try? Data(contentsOf: url), let settings = try? JSONDecoder().decode(AppSettings.self, from: data) else { return .default }
+        return settings
+    }
+
+    private static func saveSettingsForCLI(_ settings: AppSettings) throws {
+        let url = settingsURLForCLI()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder.pretty.encode(settings).write(to: url)
     }
 
     private static func licenseErrorMessage(_ error: Error) -> String {

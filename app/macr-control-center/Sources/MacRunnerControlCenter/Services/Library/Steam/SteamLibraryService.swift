@@ -7,12 +7,18 @@ struct SteamLibraryGame: Codable, Equatable {
     var installDir: String?
     var lastPlayed: String?
     var coverPath: String?
+    var installState: String?
+    var playtimeForever: Int?
+    var recentlyPlayedMinutes: Int?
 
     enum CodingKeys: String, CodingKey {
         case appid, name, installed
         case installDir = "install_dir"
         case lastPlayed = "last_played"
         case coverPath = "cover_path"
+        case installState = "install_state"
+        case playtimeForever = "playtime_forever"
+        case recentlyPlayedMinutes = "recently_played_minutes"
     }
 }
 
@@ -27,16 +33,56 @@ struct SteamLibraryService {
     func dump() -> [SteamLibraryGame] {
         let games = parser.readInstalledGames()
         return games.map { game in
-            let cover = try? coverCache.localCover(provider: "steam", id: game.appID, title: game.name)
+            let cover = coverCache.cachedCover(provider: "steam", id: game.appID)
             return SteamLibraryGame(
                 appid: game.appID,
                 name: game.name,
                 installed: game.installed,
                 installDir: game.installPath,
                 lastPlayed: game.lastPlayed.map(Self.isoDate),
-                coverPath: cover?.path
+                coverPath: cover?.path,
+                installState: game.installed ? "installed" : "not_installed",
+                playtimeForever: nil,
+                recentlyPlayedMinutes: nil
             )
         }
+    }
+
+    func dumpEnriched(settings: AppSettings = .default) async throws -> [SteamLibraryGame] {
+        guard let key = SteamKeyStore().loadAPIKey(), !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return dump()
+        }
+        guard let steamID = currentSteamID64(settings: settings) else {
+            throw SteamWebError.missingSteamID64
+        }
+        let client = SteamWebClient(apiKey: key, steamID64: steamID)
+        let owned = try await client.ownedGames()
+        let recent = (try? await client.recentlyPlayedGames()) ?? []
+        let installed = Dictionary(uniqueKeysWithValues: parser.readInstalledGames().map { ($0.appID, $0) })
+        let recentByID = Dictionary(uniqueKeysWithValues: recent.map { (String($0.appid), $0.playtimeTwoWeeks ?? 0) })
+        return owned.map { game in
+            let appid = String(game.appid)
+            let local = installed[appid]
+            let cover = coverCache.cachedCover(provider: "steam", id: appid)
+            return SteamLibraryGame(
+                appid: appid,
+                name: game.name ?? local?.name ?? appid,
+                installed: local?.installed ?? false,
+                installDir: local?.installPath,
+                lastPlayed: local?.lastPlayed.map(Self.isoDate) ?? game.lastPlayed.map(Self.isoDate),
+                coverPath: cover?.path,
+                installState: local?.installed == true ? "installed" : "owned_not_installed",
+                playtimeForever: game.playtimeForever,
+                recentlyPlayedMinutes: recentByID[appid]
+            )
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func currentSteamID64(settings: AppSettings = .default) -> String? {
+        if let explicit = settings.steamID64?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
+            return explicit
+        }
+        return parser.readUsers().first?.steamID64
     }
 
     static func fixtureRoot(settings: AppSettings = .default) -> URL {

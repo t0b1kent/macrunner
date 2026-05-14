@@ -33,6 +33,15 @@ struct CoverCache {
         return url
     }
 
+    func cachedCover(provider: String, id: String, preferredExtensions: [String] = ["jpg", "png"]) -> URL? {
+        let directory = root.appendingPathComponent(provider, isDirectory: true)
+        for ext in preferredExtensions {
+            let url = directory.appendingPathComponent("\(safe(id)).\(ext)")
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
     func report() -> CoverCacheReport {
         let entries = scanEntries()
         return CoverCacheReport(root: root.path, totalSizeBytes: entries.reduce(0) { $0 + $1.sizeBytes }, limitBytes: limitBytes, entries: entries)

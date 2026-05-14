@@ -1,0 +1,639 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/steam-setup.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/steam-setup.md
+new file mode 100644
+index 0000000..b477b13
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/steam-setup.md
+@@ -0,0 +1,9 @@
++# Steam setup
++
++MacRunner can read local Steam VDF manifests without a Steam Web API key. Real Steam CDN cover art and `steam://` launch URLs work without a key.
++
++Steam Web API enrichment is opt-in. To enable owned-game counts and the Recently Played dashboard widget, get a free key from `steamcommunity.com/dev/apikey`, paste it into Settings > Stores, and set your SteamID64. Existing primary Steam accounts usually work immediately. New or limited Steam accounts may need Valve's account-unlock requirement, commonly the $5 spend wall, before a Web API key can be issued.
++
++When a key is present, MacRunner calls Valve's Steam Web API over HTTPS to fetch owned games and recently played games. The key is stored in the macOS Keychain service `app.macrunner.steam` and is never written into reports.
++
++Cover art uses unauthenticated Steam CDN images from cdn.cloudflare.steamstatic.com and shared.akamai.steamstatic.com. Downloaded JPEG bytes are cached under `~/Library/Caches/MacRunner/covers/steam/` and refreshed with `If-Modified-Since` when possible.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CLI/ControlCenterCLI.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CLI/ControlCenterCLI.swift
+index f571fd7..0fa9ad2 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CLI/ControlCenterCLI.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CLI/ControlCenterCLI.swift
+@@ -31,9 +31,57 @@ enum ControlCenterCLI {
+         case "--dump-steam-library":
+             do {
+                 let root = try SteamLibraryService.ensureFixtureIfNeeded()
+-                try printJSON(SteamLibraryService(root: root).dump())
++                let service = SteamLibraryService(root: root)
++                if arguments.contains("--enrich") {
++                    try printJSON(awaitValue { try await service.dumpEnriched(settings: loadSettingsForCLI()) })
++                } else {
++                    try printJSON(service.dump())
++                }
+                 exit(0)
+             } catch { fail("steam library dump failed", error) }
++        case "--fetch-steam-cover":
++            guard arguments.count > 2 else { failMessage("fetch-steam-cover requires an appid") }
++            do {
++                let title = arguments.dropFirst(3).joined(separator: " ")
++                let result = try awaitValue { try await SteamCoverFetcher().fetch(appid: arguments[2], title: title) }
++                if result.placeholderGenerated {
++                    print("fallback placeholder generated for \(result.appid)")
++                } else {
++                    print("fetched steam cover \(result.appid): \(result.path) bytes=\(result.bytes)")
++                }
++                exit(0)
++            } catch { fail("steam cover fetch failed", error) }
++        case "--steam-web-status":
++            do {
++                guard let key = SteamKeyStore().loadAPIKey(), !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++                    print("no key, web enrichment disabled")
++                    exit(0)
++                }
++                let root = try SteamLibraryService.ensureFixtureIfNeeded()
++                let service = SteamLibraryService(root: root)
++                guard let steamID = service.currentSteamID64(settings: loadSettingsForCLI()) else { throw SteamWebError.missingSteamID64 }
++                let status = try awaitValue { try await SteamWebClient(apiKey: key, steamID64: steamID).syncStatus() }
++                print("key set, last_sync: \(status.lastSync ?? "unknown"), owned_games: \(status.ownedGames ?? 0)")
++                exit(0)
++            } catch { fail("steam web status failed", error) }
++        case "--save-steam-web-key":
++            guard arguments.count > 2 else { failMessage("save-steam-web-key requires <api-key> [steamid64]") }
++            do {
++                try SteamKeyStore().saveAPIKey(arguments[2])
++                if arguments.count > 3 {
++                    var settings = loadSettingsForCLI()
++                    settings.steamID64 = arguments[3]
++                    try saveSettingsForCLI(settings)
++                }
++                print("steam web key saved")
++                exit(0)
++            } catch { fail("steam web key save failed", error) }
++        case "--clear-steam-web-key":
++            do {
++                try SteamKeyStore().deleteAPIKey()
++                print("steam web key cleared")
++                exit(0)
++            } catch { fail("steam web key clear failed", error) }
+         case "--epic-status":
+             do { try printJSON(EpicLibraryService().status()); exit(0) } catch { fail("epic status failed", error) }
+         case "--dump-epic-library":
+@@ -104,6 +152,35 @@ enum ControlCenterCLI {
+         exit(2)
+     }
+
++    private static func awaitValue<T>(_ operation: @escaping () async throws -> T) throws -> T {
++        let semaphore = DispatchSemaphore(value: 0)
++        var output: Result<T, Error>?
++        Task {
++            do { output = .success(try await operation()) }
++            catch { output = .failure(error) }
++            semaphore.signal()
++        }
++        semaphore.wait()
++        return try output!.get()
++    }
++
++    private static func settingsURLForCLI() -> URL {
++        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
++            .appendingPathComponent("MacRunnerControlCenter/settings.json")
++    }
++
++    private static func loadSettingsForCLI() -> AppSettings {
++        let url = settingsURLForCLI()
++        guard let data = try? Data(contentsOf: url), let settings = try? JSONDecoder().decode(AppSettings.self, from: data) else { return .default }
++        return settings
++    }
++
++    private static func saveSettingsForCLI(_ settings: AppSettings) throws {
++        let url = settingsURLForCLI()
++        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
++        try JSONEncoder.pretty.encode(settings).write(to: url)
++    }
++
+     private static func licenseErrorMessage(_ error: Error) -> String {
+         guard let licenseError = error as? LicenseError else { return error.localizedDescription }
+         switch licenseError {
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLibraryService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLibraryService.swift
+index bb88b1b..04c1c22 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLibraryService.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLibraryService.swift
+@@ -7,12 +7,18 @@ struct SteamLibraryGame: Codable, Equatable {
+     var installDir: String?
+     var lastPlayed: String?
+     var coverPath: String?
++    var installState: String?
++    var playtimeForever: Int?
++    var recentlyPlayedMinutes: Int?
+
+     enum CodingKeys: String, CodingKey {
+         case appid, name, installed
+         case installDir = "install_dir"
+         case lastPlayed = "last_played"
+         case coverPath = "cover_path"
++        case installState = "install_state"
++        case playtimeForever = "playtime_forever"
++        case recentlyPlayedMinutes = "recently_played_minutes"
+     }
+ }
+
+@@ -27,18 +33,58 @@ struct SteamLibraryService {
+     func dump() -> [SteamLibraryGame] {
+         let games = parser.readInstalledGames()
+         return games.map { game in
+-            let cover = try? coverCache.localCover(provider: "steam", id: game.appID, title: game.name)
++            let cover = coverCache.cachedCover(provider: "steam", id: game.appID)
+             return SteamLibraryGame(
+                 appid: game.appID,
+                 name: game.name,
+                 installed: game.installed,
+                 installDir: game.installPath,
+                 lastPlayed: game.lastPlayed.map(Self.isoDate),
+-                coverPath: cover?.path
++                coverPath: cover?.path,
++                installState: game.installed ? "installed" : "not_installed",
++                playtimeForever: nil,
++                recentlyPlayedMinutes: nil
+             )
+         }
+     }
+
++    func dumpEnriched(settings: AppSettings = .default) async throws -> [SteamLibraryGame] {
++        guard let key = SteamKeyStore().loadAPIKey(), !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
++            return dump()
++        }
++        guard let steamID = currentSteamID64(settings: settings) else {
++            throw SteamWebError.missingSteamID64
++        }
++        let client = SteamWebClient(apiKey: key, steamID64: steamID)
++        let owned = try await client.ownedGames()
++        let recent = (try? await client.recentlyPlayedGames()) ?? []
++        let installed = Dictionary(uniqueKeysWithValues: parser.readInstalledGames().map { ($0.appID, $0) })
++        let recentByID = Dictionary(uniqueKeysWithValues: recent.map { (String($0.appid), $0.playtimeTwoWeeks ?? 0) })
++        return owned.map { game in
++            let appid = String(game.appid)
++            let local = installed[appid]
++            let cover = coverCache.cachedCover(provider: "steam", id: appid)
++            return SteamLibraryGame(
++                appid: appid,
++                name: game.name ?? local?.name ?? appid,
++                installed: local?.installed ?? false,
++                installDir: local?.installPath,
++                lastPlayed: local?.lastPlayed.map(Self.isoDate) ?? game.lastPlayed.map(Self.isoDate),
++                coverPath: cover?.path,
++                installState: local?.installed == true ? "installed" : "owned_not_installed",
++                playtimeForever: game.playtimeForever,
++                recentlyPlayedMinutes: recentByID[appid]
++            )
++        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
++    }
++
++    func currentSteamID64(settings: AppSettings = .default) -> String? {
++        if let explicit = settings.steamID64?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
++            return explicit
++        }
++        return parser.readUsers().first?.steamID64
++    }
++
+     static func fixtureRoot(settings: AppSettings = .default) -> URL {
+         URL(fileURLWithPath: settings.macRunnerRoot).appendingPathComponent("app/macr-control-center/Tests/Fixtures/steam-account", isDirectory: true)
+     }
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift
+index 4296e19..a16e0db 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift
+@@ -6,12 +6,91 @@ struct SteamOwnedGame: Codable, Equatable {
+     var name: String?
+     var playtimeForever: Int?
+     var imgIconURL: String?
++    var lastPlayed: Date?
+
+     enum CodingKeys: String, CodingKey {
+         case appid
+         case name
+         case playtimeForever = "playtime_forever"
+         case imgIconURL = "img_icon_url"
++        case rtimeLastPlayed = "rtime_last_played"
++    }
++
++    init(from decoder: Decoder) throws {
++        let c = try decoder.container(keyedBy: CodingKeys.self)
++        appid = try c.decode(Int.self, forKey: .appid)
++        name = try c.decodeIfPresent(String.self, forKey: .name)
++        playtimeForever = try c.decodeIfPresent(Int.self, forKey: .playtimeForever)
++        imgIconURL = try c.decodeIfPresent(String.self, forKey: .imgIconURL)
++        if let seconds = try c.decodeIfPresent(TimeInterval.self, forKey: .rtimeLastPlayed), seconds > 0 {
++            lastPlayed = Date(timeIntervalSince1970: seconds)
++        } else {
++            lastPlayed = nil
++        }
++    }
++
++    init(appid: Int, name: String?, playtimeForever: Int?, imgIconURL: String?, lastPlayed: Date?) {
++        self.appid = appid
++        self.name = name
++        self.playtimeForever = playtimeForever
++        self.imgIconURL = imgIconURL
++        self.lastPlayed = lastPlayed
++    }
++
++    func encode(to encoder: Encoder) throws {
++        var c = encoder.container(keyedBy: CodingKeys.self)
++        try c.encode(appid, forKey: .appid)
++        try c.encodeIfPresent(name, forKey: .name)
++        try c.encodeIfPresent(playtimeForever, forKey: .playtimeForever)
++        try c.encodeIfPresent(imgIconURL, forKey: .imgIconURL)
++        if let lastPlayed { try c.encode(Int(lastPlayed.timeIntervalSince1970), forKey: .rtimeLastPlayed) }
++    }
++}
++
++struct SteamRecentlyPlayedGame: Codable, Equatable {
++    var appid: Int
++    var name: String?
++    var playtimeTwoWeeks: Int?
++    var playtimeForever: Int?
++
++    enum CodingKeys: String, CodingKey {
++        case appid, name
++        case playtimeTwoWeeks = "playtime_2weeks"
++        case playtimeForever = "playtime_forever"
++    }
++}
++
++struct SteamWebStatus: Codable, Equatable {
++    var keySet: Bool
++    var lastSync: String?
++    var ownedGames: Int?
++    var recentlyPlayed: Int?
++
++    enum CodingKeys: String, CodingKey {
++        case keySet = "key_set"
++        case lastSync = "last_sync"
++        case ownedGames = "owned_games"
++        case recentlyPlayed = "recently_played"
++    }
++}
++
++actor SteamWebRateLimiter {
++    static let shared = SteamWebRateLimiter(minimumSpacing: 2.05)
++    private let minimumSpacing: TimeInterval
++    private var lastRequest: Date?
++
++    init(minimumSpacing: TimeInterval) {
++        self.minimumSpacing = minimumSpacing
++    }
++
++    func waitTurn() async {
++        if let lastRequest {
++            let delay = minimumSpacing - Date().timeIntervalSince(lastRequest)
++            if delay > 0 {
++                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
++            }
++        }
++        lastRequest = Date()
+     }
+ }
+
+@@ -19,36 +98,106 @@ struct SteamWebClient {
+     var apiKey: String
+     var steamID64: String
+     var session: URLSession = .shared
+-    var baseURL: URL?
++    var baseURL: URL = URL(string: "https://api.steampowered.com")!
+
+     func ownedGames() async throws -> [SteamOwnedGame] {
+-        guard let baseURL else { throw SteamWebError.endpointNotConfigured }
+         let url = baseURL.appendingPathComponent("IPlayerService/GetOwnedGames/v1/")
+             .appending(queryItems: [
+                 URLQueryItem(name: "key", value: apiKey),
+                 URLQueryItem(name: "steamid", value: steamID64),
+                 URLQueryItem(name: "include_appinfo", value: "true"),
++                URLQueryItem(name: "include_played_free_games", value: "true"),
+                 URLQueryItem(name: "format", value: "json")
+             ])
+-        let (data, response) = try await session.data(from: url)
+-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw SteamWebError.badStatus }
+-        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+-        let responseObject = object?["response"] as? [String: Any]
+-        let gamesData = try JSONSerialization.data(withJSONObject: responseObject?["games"] as? [[String: Any]] ?? [])
++        let responseObject = try await getResponseObject(url: url)
++        let gamesData = try JSONSerialization.data(withJSONObject: responseObject["games"] as? [[String: Any]] ?? [])
+         return try JSONDecoder().decode([SteamOwnedGame].self, from: gamesData)
+     }
+
++    func recentlyPlayedGames() async throws -> [SteamRecentlyPlayedGame] {
++        let url = baseURL.appendingPathComponent("IPlayerService/GetRecentlyPlayedGames/v1/")
++            .appending(queryItems: [
++                URLQueryItem(name: "key", value: apiKey),
++                URLQueryItem(name: "steamid", value: steamID64),
++                URLQueryItem(name: "count", value: "25"),
++                URLQueryItem(name: "format", value: "json")
++            ])
++        let responseObject = try await getResponseObject(url: url)
++        let gamesData = try JSONSerialization.data(withJSONObject: responseObject["games"] as? [[String: Any]] ?? [])
++        return try JSONDecoder().decode([SteamRecentlyPlayedGame].self, from: gamesData)
++    }
++
++    func syncStatus(store: SteamWebStatusStore = SteamWebStatusStore()) async throws -> SteamWebStatus {
++        let owned = try await ownedGames()
++        let recent = (try? await recentlyPlayedGames()) ?? []
++        let now = ISO8601DateFormatter().string(from: Date())
++        let status = SteamWebStatus(keySet: true, lastSync: now, ownedGames: owned.count, recentlyPlayed: recent.count)
++        try store.save(status)
++        try store.saveRecent(recent)
++        return status
++    }
++
+     func launchURL(appID: String) -> URL { URL(string: "steam://run/\(appID)")! }
+     func installURL(appID: String) -> URL { URL(string: "steam://install/\(appID)")! }
+
+     func coverURLs(appID: String) -> [URL] {
+-        []
++        SteamCoverFetcher().coverSources(appid: appID)
+     }
+
+     @MainActor
+     func openSteam(appID: String, installed: Bool) {
+         NSWorkspace.shared.open(installed ? launchURL(appID: appID) : installURL(appID: appID))
+     }
++
++    private func getResponseObject(url: URL) async throws -> [String: Any] {
++        await SteamWebRateLimiter.shared.waitTurn()
++        var request = URLRequest(url: url)
++        request.setValue("MacRunner/1.0", forHTTPHeaderField: "User-Agent")
++        let (data, response) = try await session.data(for: request)
++        guard let http = response as? HTTPURLResponse else { throw SteamWebError.invalidResponse }
++        guard (200..<300).contains(http.statusCode) else { throw SteamWebError.badStatus(http.statusCode) }
++        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
++        return object?["response"] as? [String: Any] ?? [:]
++    }
+ }
+
+-enum SteamWebError: LocalizedError { case badStatus, endpointNotConfigured }
++struct SteamWebStatusStore {
++    var url: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
++        .appendingPathComponent("MacRunnerControlCenter/steam-web-status.json")
++
++    func save(_ status: SteamWebStatus) throws {
++        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
++        try JSONEncoder.pretty.encode(status).write(to: url)
++    }
++
++    func load() -> SteamWebStatus? {
++        guard let data = try? Data(contentsOf: url) else { return nil }
++        return try? JSONDecoder().decode(SteamWebStatus.self, from: data)
++    }
++
++    func saveRecent(_ games: [SteamRecentlyPlayedGame]) throws {
++        let recentURL = url.deletingLastPathComponent().appendingPathComponent("steam-recently-played.json")
++        try FileManager.default.createDirectory(at: recentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
++        try JSONEncoder.pretty.encode(games).write(to: recentURL)
++    }
++
++    func loadRecent() -> [SteamRecentlyPlayedGame] {
++        let recentURL = url.deletingLastPathComponent().appendingPathComponent("steam-recently-played.json")
++        guard let data = try? Data(contentsOf: recentURL) else { return [] }
++        return (try? JSONDecoder().decode([SteamRecentlyPlayedGame].self, from: data)) ?? []
++    }
++}
++
++enum SteamWebError: LocalizedError, Equatable {
++    case invalidResponse
++    case badStatus(Int)
++    case missingSteamID64
++
++    var errorDescription: String? {
++        switch self {
++        case .invalidResponse: return "Steam Web API response was not HTTP."
++        case .badStatus(let status): return "Steam Web API returned HTTP \(status)."
++        case .missingSteamID64: return "Steam Web API key is set, but SteamID64 is missing."
++        }
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/PowerUser/ActivityDashboardService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/PowerUser/ActivityDashboardService.swift
+index 5e62d90..5d29831 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/PowerUser/ActivityDashboardService.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/PowerUser/ActivityDashboardService.swift
+@@ -2,6 +2,17 @@ import Foundation
+
+ struct ActivityDashboardSnapshot: Codable, Equatable {
+     struct Program: Codable, Equatable { var id: String; var name: String; var launchCount: Int }
++    struct RecentlyPlayed: Codable, Equatable {
++        var appid: String
++        var name: String
++        var playtimeForever: Int?
++        var recentlyPlayedMinutes: Int?
++        enum CodingKeys: String, CodingKey {
++            case appid, name
++            case playtimeForever = "playtime_forever"
++            case recentlyPlayedMinutes = "recently_played_minutes"
++        }
++    }
+     struct Cache: Codable, Equatable {
+         var hitRate: Double
+         var totalSizeBytes: Int64
+@@ -9,6 +20,8 @@ struct ActivityDashboardSnapshot: Codable, Equatable {
+     }
+     var programs: [Program]
+     var installedCount: Int
++    var steamOwnedGames: Int?
++    var recentlyPlayed: [RecentlyPlayed]
+     var lastLaunched: String?
+     var cache: Cache
+     var databasePath: String
+@@ -16,6 +29,8 @@ struct ActivityDashboardSnapshot: Codable, Equatable {
+     enum CodingKeys: String, CodingKey {
+         case programs
+         case installedCount = "installed_count"
++        case steamOwnedGames = "steam_owned_games"
++        case recentlyPlayed = "recently_played"
+         case lastLaunched = "last_launched"
+         case cache
+         case databasePath = "database_path"
+@@ -39,7 +54,16 @@ struct ActivityDashboardService {
+             programs = apps.prefix(5).map { ActivityDashboardSnapshot.Program(id: $0.id.uuidString, name: $0.name, launchCount: max(1, ($0.lastDurationMs ?? 0) / 1000)) }
+         }
+         let cache = TranslationCacheService().stats(settings: settings)
+-        return ActivityDashboardSnapshot(programs: programs, installedCount: max(apps.count, programs.count), lastLaunched: ISO8601DateFormatter().string(from: Date()), cache: .init(hitRate: cache.hitRate, totalSizeBytes: cache.totalSizeBytes), databasePath: databaseURL().path)
++        let steamStatus = SteamWebStatusStore().load()
++        return ActivityDashboardSnapshot(
++            programs: programs,
++            installedCount: max(apps.count, programs.count),
++            steamOwnedGames: steamStatus?.ownedGames,
++            recentlyPlayed: loadSteamRecentlyPlayed(settings: settings),
++            lastLaunched: ISO8601DateFormatter().string(from: Date()),
++            cache: .init(hitRate: cache.hitRate, totalSizeBytes: cache.totalSizeBytes),
++            databasePath: databaseURL().path
++        )
+     }
+
+     func ensureSQLiteSeed() throws {
+@@ -65,4 +89,16 @@ struct ActivityDashboardService {
+         else { return [] }
+         return apps
+     }
++
++    private func loadSteamRecentlyPlayed(settings: AppSettings) -> [ActivityDashboardSnapshot.RecentlyPlayed] {
++        SteamWebStatusStore().loadRecent().compactMap { game in
++            guard let minutes = game.playtimeTwoWeeks, minutes > 0 else { return nil }
++            return ActivityDashboardSnapshot.RecentlyPlayed(
++                appid: String(game.appid),
++                name: game.name ?? String(game.appid),
++                playtimeForever: game.playtimeForever,
++                recentlyPlayedMinutes: minutes
++            )
++        }
++    }
+ }
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/Dashboard/ActivityDashboard.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/Dashboard/ActivityDashboard.swift
+index 2f65d8b..94acf72 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/Dashboard/ActivityDashboard.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/Dashboard/ActivityDashboard.swift
+@@ -8,7 +8,27 @@ struct ActivityDashboardView: View {
+             Text("Activity Dashboard").font(.title.bold())
+             if let snapshot {
+                 Text("Installed Windows programs: \(snapshot.installedCount)")
++                if let owned = snapshot.steamOwnedGames {
++                    Text("Steam owned games: \(owned)")
++                }
+                 Text("Cache hit rate: \(snapshot.cache.hitRate, specifier: "%.2f")")
++                if !snapshot.recentlyPlayed.isEmpty {
++                    Text("Recently Played").font(.headline)
++                    ScrollView(.horizontal) {
++                        HStack {
++                            ForEach(snapshot.recentlyPlayed, id: \.appid) { game in
++                                VStack(alignment: .leading) {
++                                    Text(game.name).font(.headline)
++                                    Text("\(game.recentlyPlayedMinutes ?? 0) minutes in two weeks")
++                                        .font(.caption)
++                                        .foregroundStyle(.secondary)
++                                }
++                                .padding(10)
++                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
++                            }
++                        }
++                    }
++                }
+                 ForEach(snapshot.programs, id: \.id) { program in
+                     Text("\(program.name): \(program.launchCount) launches")
+                 }
+diff --git a/docs/STATUS-control-center-v1.0.1-steam-online.md b/docs/STATUS-control-center-v1.0.1-steam-online.md
+new file mode 100644
+index 0000000..16cbd4d
+--- /dev/null
++++ b/docs/STATUS-control-center-v1.0.1-steam-online.md
+@@ -0,0 +1,103 @@
++# Control Center v1.0.1 Steam Online Status
++
++Generated: 2026-05-14
++
++## Build
++```console
++[0/1] Planning build
++Building for debugging...
++[0/6] Copying steam-setup.md
++[1/6] Write swift-version--58304C5D6DBC2206.txt
++[3/5] Emitting module MacRunnerControlCenter
++Build complete! (2.22s)
++```
++
++## Tests
++```console
++✔ Test bestBackendSelection() passed after 0.656 seconds.
++✔ Test noRegressionIfFirstRunFails() passed after 0.658 seconds.
++✔ Test exportV2Bundle() passed after 2.797 seconds.
++✔ Test loadSaveEntries() passed after 2.797 seconds.
++✔ Test optionsControlInclusion() passed after 4.842 seconds.
++✔ Suite DebugBundleV2Tests passed after 4.843 seconds.
++✔ Test regressionManifestGeneration() passed after 4.846 seconds.
++✔ Test passRateCalculation() passed after 4.848 seconds.
++✔ Test regressionDetection() passed after 4.851 seconds.
++✔ Test defaultSettings() passed after 4.842 seconds.
++✔ Suite CompatibilityDBTests passed after 4.852 seconds.
++✔ Test persistAndLoad() passed after 4.843 seconds.
++✔ Suite SettingsTests passed after 4.853 seconds.
++✔ Test echoStreaming() passed after 4.906 seconds.
++✔ Suite LogStreamerTests passed after 4.907 seconds.
++✔ Test cancellationWorks() passed after 4.949 seconds.
++✔ Test echoTest() passed after 4.951 seconds.
++✔ Test stderrCapture() passed after 4.951 seconds.
++✔ Test quickRunUpdatesAppStatus() passed after 4.583 seconds.
++◇ Test runAppViewModelOnCompleteCalled() started.
++✔ Test runAppViewModelOnCompleteCalled() passed after 0.319 seconds.
++✔ Suite AppLibraryTests passed after 5.478 seconds.
++✔ Test timeoutWorks() passed after 6.526 seconds.
++✔ Suite CommandRunnerTests passed after 6.535 seconds.
++✔ Test run with 94 tests in 22 suites passed after 6.536 seconds.
++```
++
++## Gap 1 Steam CDN cover fetch
++```console
++[0/1] Planning build
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++[2/4] Emitting module MacRunnerControlCenter
++Build of product 'MacRunnerControlCenter' complete! (1.87s)
++fetched steam cover 220: /Users/timurtoby/Library/Caches/MacRunner/covers/steam/220.jpg bytes=150363
++/Users/timurtoby/Library/Caches/MacRunner/covers/steam/220.jpg: JPEG image data, JFIF standard 1.01, aspect ratio, density 1x1, segment length 16, baseline, precision 8, 600x900, components 3
++size=150363
++```
++
++## Gap 1 unknown app fallback
++```console
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++Build of product 'MacRunnerControlCenter' complete! (0.26s)
++fallback placeholder generated for 99999999
++/Users/timurtoby/Library/Caches/MacRunner/covers/steam/99999999.jpg: JPEG image data, JFIF standard 1.01, aspect ratio, density 144x144, segment length 16, Exif Standard: [TIFF image data, big-endian, direntries=4, xresolution=62, yresolution=70, resolutionunit=2], baseline, precision 8, 1200x1800, components 3
++```
++
++## Gap 2 Steam Web API no-key pass
++```console
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++Build of product 'MacRunnerControlCenter' complete! (0.17s)
++no key, web enrichment disabled
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++Build of product 'MacRunnerControlCenter' complete! (0.16s)
++[
++  {
++    "appid" : "620",
++    "cover_path" : "\/Users\/timurtoby\/Library\/Caches\/MacRunner\/covers\/steam\/620.png",
++    "install_dir" : "\/Volumes\/MacOS\/MacRunner\/app\/macr-control-center\/Tests\/Fixtures\/steam-account\/steamapps\/common\/Portal 2",
++    "install_state" : "installed",
++    "installed" : true,
++    "last_played" : "2024-03-09T16:00:00Z",
++    "name" : "Portal 2 Fixture"
++  }
++]
++```
++
++## Loop wineboot
++```console
++pass=0 fail=0 hang=1
++```
++
++## Loop wineboot retry after cleanup
++```console
++python3 scripts/cleanup-wine-runtime.py --quiet || true
++LOOP_COUNT=1 ./scripts/loop-wineboot.sh
++pass=0 fail=0 hang=1
++```
++
++## Corrected End Condition
++- Gap 1 Steam CDN cover fetch: PASS, JPEG 150363 bytes
++- Gap 2 Steam Web API no-key mode: PASS, web enrichment disabled and local VDF path remains active
++- Loop wineboot: FAIL, external engine-lane wineboot hang remains
++- Tag v1.0.1-steam-online: HELD, not created while loop wineboot is failing
+diff --git a/scripts/package-control-center.sh b/scripts/package-control-center.sh
+index 0879d05..f6e4602 100755
+--- a/scripts/package-control-center.sh
++++ b/scripts/package-control-center.sh
+@@ -2,7 +2,7 @@
+ set -euo pipefail
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ APP_SRC="$ROOT/app/macr-control-center"
+-VERSION="${MACRUNNER_VERSION:-1.0}"
++VERSION="${MACRUNNER_VERSION:-1.0.1}"
+ DIST="$ROOT/dist"
+ STAGE="$DIST/stage"
+ APP="$STAGE/MacRunner.app"

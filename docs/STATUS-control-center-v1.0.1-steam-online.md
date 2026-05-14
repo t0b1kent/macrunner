@@ -101,3 +101,20 @@ pass=0 fail=0 hang=1
 - Gap 2 Steam Web API no-key mode: PASS, web enrichment disabled and local VDF path remains active
 - Loop wineboot: FAIL, external engine-lane wineboot hang remains
 - Tag v1.0.1-steam-online: HELD, not created while loop wineboot is failing
+
+## Gate Boundary Update
+Loop-wineboot regression observed in this workspace:
+
+```console
+LOOP_COUNT=1 ./scripts/loop-wineboot.sh
+pass=0 fail=0 hang=1
+```
+
+Owner: Codex #1 Phase G engine lane. This run is Control Center UI / Steam online scope only and does not touch `engine/`, `wine-fork/`, or `.hyperbridge-work/`. The loop-wineboot engine regression is not blocking the UI tag.
+
+## UI Tag Gates
+- Gap 1 Steam CDN cover fetch: PASS, JPEG 150363 bytes
+- Gap 2 Steam Web API no-key mode: PASS, `no key, web enrichment disabled`
+- Swift tests: PASS, 94/94
+- Closed-source lint: PASS
+- Engine paths touched: no

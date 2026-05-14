@@ -1,0 +1,93 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift
+index fdcb6f7..ac389da 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift
+@@ -9,16 +9,25 @@ struct AppSettings: Codable, Sendable {
+     var bottlesDirectory: String
+     var enableDebugLogs: Bool
+     var enableMockMode: Bool
++    var anthropicModelOverride: String? = nil
++    var steamID64: String? = nil
++    var languageOverride: String? = nil
++    var updateChannel: String? = nil
++    var hudHotkey: String? = nil
++    var telemetryOptIn: Bool? = nil
++    var communityFixSharingOptIn: Bool? = nil
++
++    static let defaultRoot = "/Volumes/MacOS/MacRunner"
+ 
+     static let `default` = AppSettings(
+-        macRunnerRoot: "/Users/timurtoby/Developer/MacRunner",
++        macRunnerRoot: defaultRoot,
+         defaultTimeout: 45,
+         defaultD3DBackend: "none",
+         keepArtifactsDefault: false,
+         doctorTimeout: 120,
+         integrationTimeout: 300,
+-        artifactsDirectory: "/Users/timurtoby/Developer/MacRunner/artifacts",
+-        bottlesDirectory: "~/Library/Application Support/MacRunner/bottles",
++        artifactsDirectory: "\(defaultRoot)/artifacts",
++        bottlesDirectory: "\(defaultRoot)/bottles",
+         enableDebugLogs: false,
+         enableMockMode: false
+     )
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/en.lproj/Localizable.strings b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/en.lproj/Localizable.strings
+new file mode 100644
+index 0000000..7aec930
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/en.lproj/Localizable.strings
+@@ -0,0 +1,10 @@
++"Best of All Worlds" = "Best of All Worlds";
++"Settings" = "Settings";
++"AI Troubleshoot" = "AI Troubleshoot";
++"Steam API Key" = "Steam API Key";
++"Buy License" = "Buy License";
++"Trial Mode" = "Trial Mode";
++"Performance HUD" = "Performance HUD";
++"Bottle Export" = "Bottle Export";
++"Help" = "Help";
++"Update Channel" = "Update Channel";
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/ru.lproj/Localizable.strings b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/ru.lproj/Localizable.strings
+new file mode 100644
+index 0000000..59e1efa
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/ru.lproj/Localizable.strings
+@@ -0,0 +1,10 @@
++"Best of All Worlds" = "Лучшее из всех миров";
++"Settings" = "Настройки";
++"AI Troubleshoot" = "AI-диагностика";
++"Steam API Key" = "Steam API ключ";
++"Buy License" = "Купить лицензию";
++"Trial Mode" = "Пробный режим";
++"Performance HUD" = "Оверлей производительности";
++"Bottle Export" = "Экспорт bottle";
++"Help" = "Помощь";
++"Update Channel" = "Канал обновлений";
+diff --git a/tools/lint-localization.swift b/tools/lint-localization.swift
+new file mode 100755
+index 0000000..06e7a6c
+--- /dev/null
++++ b/tools/lint-localization.swift
+@@ -0,0 +1,22 @@
++#!/usr/bin/env swift
++import Foundation
++
++let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
++let resources = root.appendingPathComponent("app/macr-control-center/Sources/MacRunnerControlCenter/Resources")
++let langs = ["en", "ru"]
++func keys(for lang: String) -> Set<String> {
++    let url = resources.appendingPathComponent("\(lang).lproj/Localizable.strings")
++    guard let dict = NSDictionary(contentsOf: url) as? [String: String] else { return [] }
++    return Set(dict.keys)
++}
++let all = langs.map { ($0, keys(for: $0)) }
++let baseline = all.first?.1 ?? []
++var ok = true
++for (lang, keys) in all {
++    let missing = baseline.subtracting(keys)
++    if !missing.isEmpty {
++        ok = false
++        print("missing \(lang): \(missing.sorted().joined(separator: ", "))")
++    }
++}
++exit(ok ? 0 : 1)

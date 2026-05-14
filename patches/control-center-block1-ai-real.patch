@@ -1,0 +1,407 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicClient.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicClient.swift
+new file mode 100644
+index 0000000..c8ef21f
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicClient.swift
+@@ -0,0 +1,164 @@
++import Foundation
++
++struct AnthropicDiagnosis: Codable, Equatable {
++    struct Fix: Codable, Equatable {
++        var kind: String
++        var payload: [String: String]
++    }
++
++    var rootCause: String
++    var fix: Fix
++    var confidence: Double
++
++    enum CodingKeys: String, CodingKey {
++        case rootCause = "root_cause"
++        case fix
++        case confidence
++    }
++}
++
++struct AnthropicStreamEvent: Equatable {
++    var text: String
++    var isDone: Bool
++}
++
++actor AnthropicRateLimiter {
++    private var lastRequest: Date?
++    var minimumInterval: TimeInterval = 1.0
++
++    func waitTurn() async {
++        guard let lastRequest else {
++            self.lastRequest = Date()
++            return
++        }
++        let elapsed = Date().timeIntervalSince(lastRequest)
++        if elapsed < minimumInterval {
++            try? await Task.sleep(nanoseconds: UInt64((minimumInterval - elapsed) * 1_000_000_000))
++        }
++        self.lastRequest = Date()
++    }
++}
++
++final class AnthropicClient {
++    let endpoint: URL
++    let model: String
++    let keyStore: AnthropicKeyStore
++    let session: URLSession
++    let rateLimiter: AnthropicRateLimiter
++
++    init(
++        endpoint: URL = URL(string: "https://api.anthropic.com/v1/messages")!,
++        model: String = "claude-opus-4-7",
++        keyStore: AnthropicKeyStore = AnthropicKeyStore(),
++        session: URLSession = .shared,
++        rateLimiter: AnthropicRateLimiter = AnthropicRateLimiter()
++    ) {
++        self.endpoint = endpoint
++        self.model = model
++        self.keyStore = keyStore
++        self.session = session
++        self.rateLimiter = rateLimiter
++    }
++
++    func diagnose(prompt: String, progress: @escaping @Sendable (AnthropicStreamEvent) -> Void = { _ in }) async throws -> AnthropicDiagnosis {
++        guard let apiKey = keyStore.load(), !apiKey.isEmpty else { throw AnthropicClientError.missingAPIKey }
++        let system = AISystemPrompt.load()
++        let body: [String: Any] = [
++            "model": model,
++            "max_tokens": 1200,
++            "stream": true,
++            "system": system,
++            "messages": [["role": "user", "content": prompt]]
++        ]
++        let data = try JSONSerialization.data(withJSONObject: body)
++        var request = URLRequest(url: endpoint)
++        request.httpMethod = "POST"
++        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
++        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
++        request.setValue("application/json", forHTTPHeaderField: "content-type")
++        request.httpBody = data
++
++        var lastError: Error?
++        for attempt in 0..<3 {
++            try Task.checkCancellation()
++            await rateLimiter.waitTurn()
++            do {
++                let raw = try await stream(request: request, progress: progress)
++                return try Self.parseDiagnosis(from: raw)
++            } catch {
++                lastError = error
++                let delay = UInt64(pow(2.0, Double(attempt)) * 350_000_000)
++                try? await Task.sleep(nanoseconds: delay)
++            }
++        }
++        throw lastError ?? AnthropicClientError.emptyResponse
++    }
++
++    private func stream(request: URLRequest, progress: @escaping @Sendable (AnthropicStreamEvent) -> Void) async throws -> String {
++        let (bytes, response) = try await session.bytes(for: request)
++        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
++            throw AnthropicClientError.badStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
++        }
++        var accumulated = ""
++        for try await line in bytes.lines {
++            try Task.checkCancellation()
++            guard line.hasPrefix("data:") else { continue }
++            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
++            if payload == "[DONE]" { break }
++            guard let data = payload.data(using: .utf8),
++                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
++            else { continue }
++            if let delta = object["delta"] as? [String: Any], let text = delta["text"] as? String {
++                accumulated += text
++                progress(AnthropicStreamEvent(text: text, isDone: false))
++            }
++            if let content = object["content"] as? [[String: Any]] {
++                for item in content where item["type"] as? String == "text" {
++                    if let text = item["text"] as? String {
++                        accumulated += text
++                        progress(AnthropicStreamEvent(text: text, isDone: false))
++                    }
++                }
++            }
++        }
++        progress(AnthropicStreamEvent(text: "", isDone: true))
++        return accumulated
++    }
++
++    static func parseDiagnosis(from text: String) throws -> AnthropicDiagnosis {
++        let trimmed = extractJSONObject(from: text)
++        guard let data = trimmed.data(using: .utf8) else { throw AnthropicClientError.emptyResponse }
++        return try JSONDecoder().decode(AnthropicDiagnosis.self, from: data)
++    }
++
++    private static func extractJSONObject(from text: String) -> String {
++        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start <= end {
++            return String(text[start...end])
++        }
++        return text
++    }
++}
++
++enum AnthropicClientError: LocalizedError, Equatable {
++    case missingAPIKey
++    case badStatus(Int)
++    case emptyResponse
++
++    var errorDescription: String? {
++        switch self {
++        case .missingAPIKey: return "Anthropic API key is not configured."
++        case .badStatus(let code): return "Anthropic API returned HTTP \(code)."
++        case .emptyResponse: return "Anthropic response did not contain structured JSON."
++        }
++    }
++}
++
++enum AISystemPrompt {
++    static func load() -> String {
++        if let url = Bundle.module.url(forResource: "AISystemPrompt", withExtension: "txt"),
++           let text = try? String(contentsOf: url, encoding: .utf8) {
++            return text
++        }
++        return "MacRunner translates and launches Windows apps on Apple Silicon using profiles, bottles, Wine, and Process-based engine handoff. Return structured JSON only."
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicKeyStore.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicKeyStore.swift
+new file mode 100644
+index 0000000..b8b84d1
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicKeyStore.swift
+@@ -0,0 +1,67 @@
++import Foundation
++import Security
++
++struct AnthropicKeyStore {
++    static let service = "app.macrunner.anthropic"
++    private let account = "api-key"
++
++    func save(_ key: String) throws {
++        try KeychainSecretStore(service: Self.service).save(key, account: account)
++    }
++
++    func load() -> String? {
++        KeychainSecretStore(service: Self.service).load(account: account)
++    }
++
++    func delete() throws {
++        try KeychainSecretStore(service: Self.service).delete(account: account)
++    }
++}
++
++struct KeychainSecretStore {
++    let service: String
++
++    func save(_ value: String, account: String) throws {
++        let data = Data(value.utf8)
++        let query: [String: Any] = [
++            kSecClass as String: kSecClassGenericPassword,
++            kSecAttrService as String: service,
++            kSecAttrAccount as String: account
++        ]
++        SecItemDelete(query as CFDictionary)
++        var attrs = query
++        attrs[kSecValueData as String] = data
++        attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
++        let status = SecItemAdd(attrs as CFDictionary, nil)
++        guard status == errSecSuccess else { throw KeychainError(status: status) }
++    }
++
++    func load(account: String) -> String? {
++        let query: [String: Any] = [
++            kSecClass as String: kSecClassGenericPassword,
++            kSecAttrService as String: service,
++            kSecAttrAccount as String: account,
++            kSecReturnData as String: true,
++            kSecMatchLimit as String: kSecMatchLimitOne
++        ]
++        var result: CFTypeRef?
++        let status = SecItemCopyMatching(query as CFDictionary, &result)
++        guard status == errSecSuccess, let data = result as? Data else { return nil }
++        return String(data: data, encoding: .utf8)
++    }
++
++    func delete(account: String) throws {
++        let query: [String: Any] = [
++            kSecClass as String: kSecClassGenericPassword,
++            kSecAttrService as String: service,
++            kSecAttrAccount as String: account
++        ]
++        let status = SecItemDelete(query as CFDictionary)
++        guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError(status: status) }
++    }
++}
++
++struct KeychainError: LocalizedError, Equatable {
++    let status: OSStatus
++    var errorDescription: String? { "Keychain operation failed with OSStatus \(status)" }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AIFixApplier.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AIFixApplier.swift
+new file mode 100644
+index 0000000..87fea64
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AIFixApplier.swift
+@@ -0,0 +1,31 @@
++import Foundation
++
++struct AIFixApplyPlan: Codable, Equatable {
++    var summary: String
++    var fileWrites: [String]
++    var processInvocations: [ProcessInvocation]
++}
++
++struct AIFixApplier {
++    func plan(diagnosis: AnthropicDiagnosis, bottlePath: String, profileID: String?, settings: AppSettings) -> AIFixApplyPlan {
++        switch diagnosis.fix.kind {
++        case "dll_override":
++            let dll = diagnosis.fix.payload["dll"] ?? diagnosis.fix.payload["name"] ?? "unknown"
++            let path = URL(fileURLWithPath: bottlePath).appendingPathComponent("macrunner-dll-overrides.json").path
++            return AIFixApplyPlan(summary: "Write DLL override for \(dll)", fileWrites: [path], processInvocations: [])
++        case "verb":
++            let verb = diagnosis.fix.payload["verb"] ?? "unknown"
++            let invocation = ProcessInvocation(executable: "/usr/bin/env", arguments: ["WINEPREFIX=\(bottlePath)", "winetricks", verb], currentDirectory: settings.macRunnerRoot, environment: ["WINEPREFIX": bottlePath])
++            return AIFixApplyPlan(summary: "Run winetricks verb \(verb)", fileWrites: [], processInvocations: [invocation])
++        case "profile_switch":
++            let next = diagnosis.fix.payload["profile_id"] ?? profileID ?? "unknown"
++            return AIFixApplyPlan(summary: "Switch profile to \(next)", fileWrites: ["profile metadata"], processInvocations: [])
++        case "registry":
++            let regPath = URL(fileURLWithPath: bottlePath).appendingPathComponent("macrunner-ai-fix.reg").path
++            let invocation = ProcessInvocation(executable: "/usr/bin/env", arguments: ["WINEPREFIX=\(bottlePath)", "wine", "regedit", regPath], currentDirectory: settings.macRunnerRoot, environment: ["WINEPREFIX": bottlePath])
++            return AIFixApplyPlan(summary: "Emit and apply registry fix", fileWrites: [regPath], processInvocations: [invocation])
++        default:
++            return AIFixApplyPlan(summary: "Unsupported fix kind \(diagnosis.fix.kind)", fileWrites: [], processInvocations: [])
++        }
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/AISystemPrompt.txt b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/AISystemPrompt.txt
+new file mode 100644
+index 0000000..cf1c286
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/AISystemPrompt.txt
+@@ -0,0 +1,10 @@
++You are MacRunner Diagnose.
++
++Architecture summary:
++- macOS SwiftUI Control Center launches all engine work through Process(). It must not link Wine or HyperBridge directly.
++- Windows apps live in external bottles under /Volumes/MacOS/MacRunner/bottles or $MACRUNNER_BOTTLES_ROOT.
++- Profiles are JSON files with id, name, category, architecture/arch, windows_version, required_dlls, graphics, env, and optional registry/dll overrides.
++- Common Wine patterns: missing vcruntime/msvcp DLLs, c000007b architecture mismatch, d3dcompiler failures, missing fonts, locale/codepage issues for 1C.
++
++Return structured JSON only:
++{"root_cause":"...","fix":{"kind":"dll_override|verb|profile_switch|registry","payload":{}},"confidence":0.0}
+diff --git a/app/macr-control-center/Tests/MacRunnerControlCenterTests/ShippablePhase2Tests.swift b/app/macr-control-center/Tests/MacRunnerControlCenterTests/ShippablePhase2Tests.swift
+new file mode 100644
+index 0000000..1c47408
+--- /dev/null
++++ b/app/macr-control-center/Tests/MacRunnerControlCenterTests/ShippablePhase2Tests.swift
+@@ -0,0 +1,105 @@
++import Foundation
++import Testing
++@testable import MacRunnerControlCenter
++
++struct ShippablePhase2Tests {
++    @Test func anthropicDiagnosisParsesStructuredJSON() throws {
++        let text = "Here is the fix: {\"root_cause\":\"Missing VC runtime\",\"fix\":{\"kind\":\"verb\",\"payload\":{\"verb\":\"vcrun2019\"}},\"confidence\":0.91}"
++        let diagnosis = try AnthropicClient.parseDiagnosis(from: text)
++        #expect(diagnosis.fix.kind == "verb")
++        #expect(diagnosis.fix.payload["verb"] == "vcrun2019")
++    }
++
++    @Test func aiFixApplierPlansWinetricksVerb() {
++        let diagnosis = AnthropicDiagnosis(rootCause: "missing", fix: .init(kind: "verb", payload: ["verb": "vcrun2019"]), confidence: 0.9)
++        let plan = AIFixApplier().plan(diagnosis: diagnosis, bottlePath: "/tmp/bottle", profileID: nil, settings: .default)
++        #expect(plan.processInvocations.first?.arguments.contains("winetricks") == true)
++        #expect(plan.processInvocations.first?.arguments.contains("vcrun2019") == true)
++    }
++
++    @Test func steamVDFParserReadsNestedObjects() throws {
++        let node = try SteamVDFParser().parse("\"users\" { \"123\" { \"AccountName\" \"timur\" \"MostRecent\" \"1\" } }")
++        #expect(node["users"]?["123"]?["AccountName"]?.stringValue == "timur")
++    }
++
++    @Test func steamLocalParserReadsManifest() throws {
++        let root = try tempDir()
++        let steamapps = root.appendingPathComponent("steamapps", isDirectory: true)
++        try FileManager.default.createDirectory(at: steamapps, withIntermediateDirectories: true)
++        try "\"AppState\" { \"appid\" \"620\" \"name\" \"Portal 2\" \"installdir\" \"Portal 2\" }".write(to: steamapps.appendingPathComponent("appmanifest_620.acf"), atomically: true, encoding: .utf8)
++        let games = SteamLocalDataParser(steamRoot: root).readInstalledGames()
++        #expect(games.first?.appID == "620")
++        #expect(games.first?.libraryItem().id == "steam:620")
++    }
++
++    @Test func otherStoreParsersAreDeterministic() {
++        let epic = LegendaryWrapper().parseListJSON(Data("[{\"app_name\":\"foo\",\"app_title\":\"Foo Game\",\"is_installed\":true}]".utf8))
++        let gog = GogdlWrapper().parseListJSON(Data("[{\"id\":42,\"title\":\"GOG Game\",\"installed\":true}]".utf8))
++        #expect(epic.first?.source == .epic)
++        #expect(gog.first?.id == "gog:42")
++    }
++
++    @Test func strictProfileValidatorReportsMissingField() throws {
++        let report = StrictProfileValidator().validate(data: Data("{\"id\":\"x\"}".utf8))
++        #expect(!report.isValid)
++        #expect(report.issues.contains { $0.field == "name" })
++        let valid = Data("{\"id\":\"x\",\"name\":\"X\",\"category\":\"game\",\"arch\":\"x86_64\",\"windows_version\":\"win10\",\"required_dlls\":[],\"verified_versions\":[]}".utf8)
++        #expect(StrictProfileValidator().validate(data: valid).isValid)
++    }
++
++    @Test func hudBufferAndConfigWork() {
++        var buffer = HUDRollingBuffer(capacity: 2)
++        buffer.append(HUDFrameSample(fps: 60, frameMs: 16, gpuMs: nil, cpuMs: nil, cacheHits: 9, cacheMisses: 1))
++        buffer.append(HUDFrameSample(fps: 55, frameMs: 18, gpuMs: nil, cpuMs: nil, cacheHits: 8, cacheMisses: 2))
++        buffer.append(HUDFrameSample(fps: 50, frameMs: 20, gpuMs: nil, cpuMs: nil, cacheHits: 7, cacheMisses: 3))
++        #expect(buffer.samples.count == 2)
++        #expect(HUDSocketConfig.default(settings: .default).socketPath.hasSuffix("run/hud.sock"))
++    }
++
++    @Test func bottleShareEncryptsAndDecrypts() throws {
++        let service = BottleShareService()
++        let data = Data("payload".utf8)
++        let encrypted = try service.encrypt(data, passphrase: "secret")
++        #expect(encrypted != data)
++        let decrypted = try service.decrypt(encrypted, passphrase: "secret")
++        #expect(decrypted == data)
++    }
++
++    @Test func cachePrewarmPlanUsesRootScript() {
++        let plan = TranslationCacheService().prewarmPlan(programPath: "/tmp/game.exe", settings: .default)
++        #expect(plan.currentDirectory == "/Volumes/MacOS/MacRunner")
++        #expect(plan.arguments.contains("./scripts/run-windows-app.sh"))
++    }
++
++    @Test func updaterChannelsProduceAppcastURLs() {
++        var settings = AppSettings.default
++        settings.updateChannel = "nightly"
++        let config = UpdaterService().configuration(settings: settings)
++        #expect(config.channel == .nightly)
++        #expect(config.appcastURL.absoluteString.contains("appcast-nightly.xml"))
++    }
++
++    @Test func licenseFormatAndTrialGate() {
++        #expect(LicenseVerifier().isWellFormed("MR2SH-TEST1-LOCAL-00001"))
++        #expect(!LicenseVerifier().isWellFormed("bad"))
++        #expect(LicenseStore().isFeatureAllowed("bottle_share"))
++    }
++
++    @Test func telemetrySanitizesSensitiveData() {
++        let service = TelemetryService()
++        let text = service.sanitize("/Users/alice/game.exe crashed user@example.com", home: "/Users/alice")
++        #expect(text.contains("~/game.exe"))
++        #expect(text.contains("<redacted-email>"))
++    }
++
++    @Test func helpDocsArePackaged() {
++        let docs = HelpCenterService().documents()
++        #expect(docs.contains { $0.id == "getting-started" })
++    }
++
++    private func tempDir() throws -> URL {
++        let url = FileManager.default.temporaryDirectory.appendingPathComponent("macr-phase2-\(UUID().uuidString)", isDirectory: true)
++        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
++        return url
++    }
++}

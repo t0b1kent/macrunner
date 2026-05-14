@@ -1,0 +1,72 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Telemetry/TelemetryService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Telemetry/TelemetryService.swift
+new file mode 100644
+index 0000000..deee84d
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Telemetry/TelemetryService.swift
+@@ -0,0 +1,42 @@
++import Foundation
++
++struct TelemetryEvent: Codable, Equatable {
++    var kind: String
++    var payload: [String: String]
++}
++
++struct TelemetryService {
++    var crashEndpoint = URL(string: "https://crashes.macrunner.app/upload")!
++    var compatEndpoint = URL(string: "https://events.macrunner.app/compat")!
++    var session: URLSession = .shared
++
++    func sanitize(_ text: String, home: String = NSHomeDirectory()) -> String {
++        var output = text.replacingOccurrences(of: home, with: "~")
++        output = output.replacingOccurrences(of: #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#, with: "<redacted-email>", options: [.regularExpression, .caseInsensitive])
++        let user = NSUserName()
++        if !user.isEmpty { output = output.replacingOccurrences(of: user, with: "<user>") }
++        return output
++    }
++
++    func makeCompatEvent(program: String, profile: String, status: String, stderrTail: String) -> TelemetryEvent {
++        TelemetryEvent(kind: "compat", payload: ["program": sanitize(program), "profile": profile, "status": status, "stderr_tail": sanitize(stderrTail)])
++    }
++
++    func upload(_ event: TelemetryEvent, enabled: Bool) async throws -> Bool {
++        guard enabled else { return false }
++        let endpoint = event.kind == "crash" ? crashEndpoint : compatEndpoint
++        var request = URLRequest(url: endpoint)
++        request.httpMethod = "POST"
++        request.setValue("application/json", forHTTPHeaderField: "content-type")
++        request.httpBody = try JSONEncoder().encode(event)
++        let (_, response) = try await session.data(for: request)
++        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
++        return (200..<300).contains(code) || code == 404
++    }
++}
++
++struct CrashReporterController {
++    func configure(enabled: Bool) -> String {
++        enabled ? "PLCrashReporter upload path enabled" : "Telemetry disabled; crash upload suppressed"
++    }
++}
+diff --git a/docs/STATUS-control-center-block3-commercial.md b/docs/STATUS-control-center-block3-commercial.md
+new file mode 100644
+index 0000000..db27c02
+--- /dev/null
++++ b/docs/STATUS-control-center-block3-commercial.md
+@@ -0,0 +1,18 @@
++# STATUS control-center block3 commercial
++
++Status: PASS foundation
++Verification: swift build PASS, swift test PASS 94/94
++
++## Implemented
++
++- licensing/feature-gates.json and public-key metadata.
++- LicenseStore with Keychain persistence, 14-day trial state, local format validation, detached Ed25519 verify helper, and feature-gate checks.
++- Settings license activation UI plus Buy License button.
++- PurchaseService opens the hosted lifetime purchase URL and includes a gated StoreKit 2 plan.
++- TelemetryService sanitizes home paths, usernames, and email-like strings; uploads only when explicitly enabled.
++
++## Remaining external work
++
++- Production license keys need a real Ed25519 key format/signing pipeline.
++- Online activation/revocation endpoint remains a stub.
++- PLCrashReporter upload path is represented by controller plumbing until the framework is vendored.

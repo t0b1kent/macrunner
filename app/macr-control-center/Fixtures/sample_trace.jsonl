@@ -1,0 +1,5 @@
+{"ts":"2026-05-12T09:30:01Z","call":"D3D11CreateDevice","args":null,"rc":0}
+{"ts":"2026-05-12T09:30:01Z","call":"CreateSwapChain","args":{"width":800,"height":600},"rc":0}
+{"ts":"2026-05-12T09:30:02Z","call":"ClearRenderTargetView","args":{"color":[0,0,0,1]},"rc":0}
+{"ts":"2026-05-12T09:30:02Z","call":"DrawIndexed","args":{"indices":3},"rc":0}
+{"ts":"2026-05-12T09:30:02Z","call":"Present","args":null,"rc":0}

@@ -1,0 +1,33 @@
+diff --git a/docs/STATUS-control-center-phase-theta.md b/docs/STATUS-control-center-phase-theta.md
+new file mode 100644
+index 0000000..54b2024
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-theta.md
+@@ -0,0 +1,14 @@
++# STATUS control-center phase theta
++
++Status: PASS
++Area: Onboarding and first launch
++
++## Implemented
++
++- Updated default root and onboarding root to /Volumes/MacOS/MacRunner.
++- Added ControlCenterFirstLaunchPlanner with root, bottles, profiles, and Process-only doctor handoff checks.
++- Preserved existing onboarding Process execution style.
++
++## Remaining Limitations
++
++- First-launch planner is surfaced as model/dashboard data; the existing wizard is not fully redesigned.
+diff --git a/tools/vault/34-phase-theta-onboarding.md b/tools/vault/34-phase-theta-onboarding.md
+new file mode 100644
+index 0000000..9db6be4
+--- /dev/null
++++ b/tools/vault/34-phase-theta-onboarding.md
+@@ -0,0 +1,7 @@
++# 34 Phase theta onboarding
++
++Outcome: First-launch defaults now align with external disk convention.
++
++- AppSettings.defaultRoot is /Volumes/MacOS/MacRunner.
++- Onboarding root field starts from the external disk path.
++- FirstLaunchPlanner lists root, bottles, profiles, and doctor handoff checks.

@@ -1,0 +1,260 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamKeyStore.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamKeyStore.swift
+new file mode 100644
+index 0000000..5a61108
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamKeyStore.swift
+@@ -0,0 +1,10 @@
++import Foundation
++
++struct SteamKeyStore {
++    static let service = "app.macrunner.steam"
++    private let apiKeyAccount = "api-key"
++
++    func saveAPIKey(_ key: String) throws { try KeychainSecretStore(service: Self.service).save(key, account: apiKeyAccount) }
++    func loadAPIKey() -> String? { KeychainSecretStore(service: Self.service).load(account: apiKeyAccount) }
++    func deleteAPIKey() throws { try KeychainSecretStore(service: Self.service).delete(account: apiKeyAccount) }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamVDFParser.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamVDFParser.swift
+new file mode 100644
+index 0000000..626eb01
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamVDFParser.swift
+@@ -0,0 +1,86 @@
++import Foundation
++
++enum VDFNode: Equatable {
++    case string(String)
++    case object([String: VDFNode])
++
++    subscript(key: String) -> VDFNode? {
++        if case .object(let dict) = self { return dict[key] }
++        return nil
++    }
++
++    var stringValue: String? {
++        if case .string(let value) = self { return value }
++        return nil
++    }
++
++    var objectValue: [String: VDFNode]? {
++        if case .object(let dict) = self { return dict }
++        return nil
++    }
++}
++
++struct SteamVDFParser {
++    func parse(_ text: String) throws -> VDFNode {
++        var tokenizer = VDFTokenizer(text: text)
++        var dict: [String: VDFNode] = [:]
++        while let key = tokenizer.nextString() {
++            dict[key] = try parseValue(tokenizer: &tokenizer)
++        }
++        return .object(dict)
++    }
++
++    private func parseValue(tokenizer: inout VDFTokenizer) throws -> VDFNode {
++        if tokenizer.consumeBrace("{") {
++            var dict: [String: VDFNode] = [:]
++            while !tokenizer.consumeBrace("}") {
++                guard let key = tokenizer.nextString() else { throw VDFError.unexpectedEOF }
++                dict[key] = try parseValue(tokenizer: &tokenizer)
++            }
++            return .object(dict)
++        }
++        guard let value = tokenizer.nextString() else { throw VDFError.unexpectedEOF }
++        return .string(value)
++    }
++}
++
++struct VDFTokenizer {
++    private var scalars: [Character]
++    private var index = 0
++
++    init(text: String) { self.scalars = Array(text) }
++
++    mutating func nextString() -> String? {
++        skipWhitespaceAndComments()
++        guard index < scalars.count, scalars[index] == "\"" else { return nil }
++        index += 1
++        var output = ""
++        while index < scalars.count {
++            let ch = scalars[index]
++            index += 1
++            if ch == "\"" { break }
++            output.append(ch)
++        }
++        return output
++    }
++
++    mutating func consumeBrace(_ brace: Character) -> Bool {
++        skipWhitespaceAndComments()
++        guard index < scalars.count, scalars[index] == brace else { return false }
++        index += 1
++        return true
++    }
++
++    private mutating func skipWhitespaceAndComments() {
++        while index < scalars.count {
++            if scalars[index].isWhitespace { index += 1; continue }
++            if scalars[index] == "/", index + 1 < scalars.count, scalars[index + 1] == "/" {
++                while index < scalars.count, scalars[index] != "\n" { index += 1 }
++                continue
++            }
++            break
++        }
++    }
++}
++
++enum VDFError: LocalizedError { case unexpectedEOF }
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLocalDataParser.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLocalDataParser.swift
+new file mode 100644
+index 0000000..3e4b890
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLocalDataParser.swift
+@@ -0,0 +1,84 @@
++import Foundation
++
++struct SteamUser: Equatable {
++    var steamID64: String
++    var accountName: String
++    var personaName: String
++    var mostRecent: Bool
++}
++
++struct SteamLocalGame: Equatable {
++    var appID: String
++    var name: String
++    var installPath: String?
++    var lastPlayed: Date?
++    var installed: Bool
++}
++
++struct SteamLocalDataParser {
++    var steamRoot: URL = URL(fileURLWithPath: "~/Library/Application Support/Steam".macrExpandingTilde)
++    private let parser = SteamVDFParser()
++
++    func readUsers() -> [SteamUser] {
++        let url = steamRoot.appendingPathComponent("config/loginusers.vdf")
++        guard let text = try? String(contentsOf: url, encoding: .utf8),
++              let root = try? parser.parse(text),
++              let users = root["users"]?.objectValue
++        else { return [] }
++        return users.compactMap { steamID, node in
++            guard let object = node.objectValue else { return nil }
++            return SteamUser(
++                steamID64: steamID,
++                accountName: object["AccountName"]?.stringValue ?? "",
++                personaName: object["PersonaName"]?.stringValue ?? "",
++                mostRecent: object["MostRecent"]?.stringValue == "1"
++            )
++        }.sorted { $0.mostRecent && !$1.mostRecent }
++    }
++
++    func readInstalledGames() -> [SteamLocalGame] {
++        let libraryRoots = readLibraryFolders()
++        var games: [SteamLocalGame] = []
++        for steamApps in libraryRoots {
++            let manifests = ((try? FileManager.default.contentsOfDirectory(at: steamApps, includingPropertiesForKeys: nil)) ?? [])
++                .filter { $0.lastPathComponent.hasPrefix("appmanifest_") && $0.pathExtension == "acf" }
++            games.append(contentsOf: manifests.compactMap { parseManifest($0, steamApps: steamApps) })
++        }
++        return games.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
++    }
++
++    func readLibraryFolders() -> [URL] {
++        let primary = steamRoot.appendingPathComponent("steamapps", isDirectory: true)
++        let config = primary.appendingPathComponent("libraryfolders.vdf")
++        guard let text = try? String(contentsOf: config, encoding: .utf8),
++              let root = try? parser.parse(text),
++              let folders = root["libraryfolders"]?.objectValue
++        else { return FileManager.default.fileExists(atPath: primary.path) ? [primary] : [] }
++        var urls = [primary]
++        for (_, node) in folders {
++            if let path = node.objectValue?["path"]?.stringValue {
++                urls.append(URL(fileURLWithPath: path).appendingPathComponent("steamapps", isDirectory: true))
++            }
++        }
++        return Array(Set(urls)).filter { FileManager.default.fileExists(atPath: $0.path) }
++    }
++
++    private func parseManifest(_ manifest: URL, steamApps: URL) -> SteamLocalGame? {
++        guard let text = try? String(contentsOf: manifest, encoding: .utf8),
++              let root = try? parser.parse(text),
++              let state = root["AppState"]?.objectValue,
++              let appID = state["appid"]?.stringValue
++        else { return nil }
++        let name = state["name"]?.stringValue ?? appID
++        let installDir = state["installdir"]?.stringValue
++        let installPath = installDir.map { steamApps.appendingPathComponent("common/\($0)").path }
++        let lastPlayed = state["LastPlayed"]?.stringValue.flatMap { TimeInterval($0) }.map { Date(timeIntervalSince1970: $0) }
++        return SteamLocalGame(appID: appID, name: name, installPath: installPath, lastPlayed: lastPlayed, installed: true)
++    }
++}
++
++extension SteamLocalGame {
++    func libraryItem() -> UnifiedLibraryItem {
++        UnifiedLibraryItem(id: "steam:\(appID)", title: name, source: .steam, executablePath: nil, installPath: installPath, profileID: "game-steam-generic", bottleName: "steam-\(appID)", compatibilityBadge: "steam", lastPlayed: lastPlayed, isInstalled: installed)
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift
+new file mode 100644
+index 0000000..fd466ce
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift
+@@ -0,0 +1,56 @@
++import AppKit
++import Foundation
++
++struct SteamOwnedGame: Codable, Equatable {
++    var appid: Int
++    var name: String?
++    var playtimeForever: Int?
++    var imgIconURL: String?
++
++    enum CodingKeys: String, CodingKey {
++        case appid
++        case name
++        case playtimeForever = "playtime_forever"
++        case imgIconURL = "img_icon_url"
++    }
++}
++
++struct SteamWebClient {
++    var apiKey: String
++    var steamID64: String
++    var session: URLSession = .shared
++    var baseURL = URL(string: "https://api.steampowered.com")!
++
++    func ownedGames() async throws -> [SteamOwnedGame] {
++        let url = baseURL.appendingPathComponent("IPlayerService/GetOwnedGames/v1/")
++            .appending(queryItems: [
++                URLQueryItem(name: "key", value: apiKey),
++                URLQueryItem(name: "steamid", value: steamID64),
++                URLQueryItem(name: "include_appinfo", value: "true"),
++                URLQueryItem(name: "format", value: "json")
++            ])
++        let (data, response) = try await session.data(from: url)
++        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw SteamWebError.badStatus }
++        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
++        let responseObject = object?["response"] as? [String: Any]
++        let gamesData = try JSONSerialization.data(withJSONObject: responseObject?["games"] as? [[String: Any]] ?? [])
++        return try JSONDecoder().decode([SteamOwnedGame].self, from: gamesData)
++    }
++
++    func launchURL(appID: String) -> URL { URL(string: "steam://run/\(appID)")! }
++    func installURL(appID: String) -> URL { URL(string: "steam://install/\(appID)")! }
++
++    func coverURLs(appID: String) -> [URL] {
++        [
++            URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appID)/library_600x900.jpg")!,
++            URL(string: "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/\(appID)/library_hero.jpg")!
++        ]
++    }
++
++    @MainActor
++    func openSteam(appID: String, installed: Bool) {
++        NSWorkspace.shared.open(installed ? launchURL(appID: appID) : installURL(appID: appID))
++    }
++}
++
++enum SteamWebError: LocalizedError { case badStatus }

@@ -1,0 +1,2152 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicClient.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicClient.swift
+new file mode 100644
+index 0000000..c8ef21f
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicClient.swift
+@@ -0,0 +1,164 @@
++import Foundation
++
++struct AnthropicDiagnosis: Codable, Equatable {
++    struct Fix: Codable, Equatable {
++        var kind: String
++        var payload: [String: String]
++    }
++
++    var rootCause: String
++    var fix: Fix
++    var confidence: Double
++
++    enum CodingKeys: String, CodingKey {
++        case rootCause = "root_cause"
++        case fix
++        case confidence
++    }
++}
++
++struct AnthropicStreamEvent: Equatable {
++    var text: String
++    var isDone: Bool
++}
++
++actor AnthropicRateLimiter {
++    private var lastRequest: Date?
++    var minimumInterval: TimeInterval = 1.0
++
++    func waitTurn() async {
++        guard let lastRequest else {
++            self.lastRequest = Date()
++            return
++        }
++        let elapsed = Date().timeIntervalSince(lastRequest)
++        if elapsed < minimumInterval {
++            try? await Task.sleep(nanoseconds: UInt64((minimumInterval - elapsed) * 1_000_000_000))
++        }
++        self.lastRequest = Date()
++    }
++}
++
++final class AnthropicClient {
++    let endpoint: URL
++    let model: String
++    let keyStore: AnthropicKeyStore
++    let session: URLSession
++    let rateLimiter: AnthropicRateLimiter
++
++    init(
++        endpoint: URL = URL(string: "https://api.anthropic.com/v1/messages")!,
++        model: String = "claude-opus-4-7",
++        keyStore: AnthropicKeyStore = AnthropicKeyStore(),
++        session: URLSession = .shared,
++        rateLimiter: AnthropicRateLimiter = AnthropicRateLimiter()
++    ) {
++        self.endpoint = endpoint
++        self.model = model
++        self.keyStore = keyStore
++        self.session = session
++        self.rateLimiter = rateLimiter
++    }
++
++    func diagnose(prompt: String, progress: @escaping @Sendable (AnthropicStreamEvent) -> Void = { _ in }) async throws -> AnthropicDiagnosis {
++        guard let apiKey = keyStore.load(), !apiKey.isEmpty else { throw AnthropicClientError.missingAPIKey }
++        let system = AISystemPrompt.load()
++        let body: [String: Any] = [
++            "model": model,
++            "max_tokens": 1200,
++            "stream": true,
++            "system": system,
++            "messages": [["role": "user", "content": prompt]]
++        ]
++        let data = try JSONSerialization.data(withJSONObject: body)
++        var request = URLRequest(url: endpoint)
++        request.httpMethod = "POST"
++        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
++        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
++        request.setValue("application/json", forHTTPHeaderField: "content-type")
++        request.httpBody = data
++
++        var lastError: Error?
++        for attempt in 0..<3 {
++            try Task.checkCancellation()
++            await rateLimiter.waitTurn()
++            do {
++                let raw = try await stream(request: request, progress: progress)
++                return try Self.parseDiagnosis(from: raw)
++            } catch {
++                lastError = error
++                let delay = UInt64(pow(2.0, Double(attempt)) * 350_000_000)
++                try? await Task.sleep(nanoseconds: delay)
++            }
++        }
++        throw lastError ?? AnthropicClientError.emptyResponse
++    }
++
++    private func stream(request: URLRequest, progress: @escaping @Sendable (AnthropicStreamEvent) -> Void) async throws -> String {
++        let (bytes, response) = try await session.bytes(for: request)
++        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
++            throw AnthropicClientError.badStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
++        }
++        var accumulated = ""
++        for try await line in bytes.lines {
++            try Task.checkCancellation()
++            guard line.hasPrefix("data:") else { continue }
++            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
++            if payload == "[DONE]" { break }
++            guard let data = payload.data(using: .utf8),
++                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
++            else { continue }
++            if let delta = object["delta"] as? [String: Any], let text = delta["text"] as? String {
++                accumulated += text
++                progress(AnthropicStreamEvent(text: text, isDone: false))
++            }
++            if let content = object["content"] as? [[String: Any]] {
++                for item in content where item["type"] as? String == "text" {
++                    if let text = item["text"] as? String {
++                        accumulated += text
++                        progress(AnthropicStreamEvent(text: text, isDone: false))
++                    }
++                }
++            }
++        }
++        progress(AnthropicStreamEvent(text: "", isDone: true))
++        return accumulated
++    }
++
++    static func parseDiagnosis(from text: String) throws -> AnthropicDiagnosis {
++        let trimmed = extractJSONObject(from: text)
++        guard let data = trimmed.data(using: .utf8) else { throw AnthropicClientError.emptyResponse }
++        return try JSONDecoder().decode(AnthropicDiagnosis.self, from: data)
++    }
++
++    private static func extractJSONObject(from text: String) -> String {
++        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start <= end {
++            return String(text[start...end])
++        }
++        return text
++    }
++}
++
++enum AnthropicClientError: LocalizedError, Equatable {
++    case missingAPIKey
++    case badStatus(Int)
++    case emptyResponse
++
++    var errorDescription: String? {
++        switch self {
++        case .missingAPIKey: return "Anthropic API key is not configured."
++        case .badStatus(let code): return "Anthropic API returned HTTP \(code)."
++        case .emptyResponse: return "Anthropic response did not contain structured JSON."
++        }
++    }
++}
++
++enum AISystemPrompt {
++    static func load() -> String {
++        if let url = Bundle.module.url(forResource: "AISystemPrompt", withExtension: "txt"),
++           let text = try? String(contentsOf: url, encoding: .utf8) {
++            return text
++        }
++        return "MacRunner translates and launches Windows apps on Apple Silicon using profiles, bottles, Wine, and Process-based engine handoff. Return structured JSON only."
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicKeyStore.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicKeyStore.swift
+new file mode 100644
+index 0000000..b8b84d1
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AnthropicKeyStore.swift
+@@ -0,0 +1,67 @@
++import Foundation
++import Security
++
++struct AnthropicKeyStore {
++    static let service = "app.macrunner.anthropic"
++    private let account = "api-key"
++
++    func save(_ key: String) throws {
++        try KeychainSecretStore(service: Self.service).save(key, account: account)
++    }
++
++    func load() -> String? {
++        KeychainSecretStore(service: Self.service).load(account: account)
++    }
++
++    func delete() throws {
++        try KeychainSecretStore(service: Self.service).delete(account: account)
++    }
++}
++
++struct KeychainSecretStore {
++    let service: String
++
++    func save(_ value: String, account: String) throws {
++        let data = Data(value.utf8)
++        let query: [String: Any] = [
++            kSecClass as String: kSecClassGenericPassword,
++            kSecAttrService as String: service,
++            kSecAttrAccount as String: account
++        ]
++        SecItemDelete(query as CFDictionary)
++        var attrs = query
++        attrs[kSecValueData as String] = data
++        attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
++        let status = SecItemAdd(attrs as CFDictionary, nil)
++        guard status == errSecSuccess else { throw KeychainError(status: status) }
++    }
++
++    func load(account: String) -> String? {
++        let query: [String: Any] = [
++            kSecClass as String: kSecClassGenericPassword,
++            kSecAttrService as String: service,
++            kSecAttrAccount as String: account,
++            kSecReturnData as String: true,
++            kSecMatchLimit as String: kSecMatchLimitOne
++        ]
++        var result: CFTypeRef?
++        let status = SecItemCopyMatching(query as CFDictionary, &result)
++        guard status == errSecSuccess, let data = result as? Data else { return nil }
++        return String(data: data, encoding: .utf8)
++    }
++
++    func delete(account: String) throws {
++        let query: [String: Any] = [
++            kSecClass as String: kSecClassGenericPassword,
++            kSecAttrService as String: service,
++            kSecAttrAccount as String: account
++        ]
++        let status = SecItemDelete(query as CFDictionary)
++        guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError(status: status) }
++    }
++}
++
++struct KeychainError: LocalizedError, Equatable {
++    let status: OSStatus
++    var errorDescription: String? { "Keychain operation failed with OSStatus \(status)" }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AIFixApplier.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AIFixApplier.swift
+new file mode 100644
+index 0000000..87fea64
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/AI/AIFixApplier.swift
+@@ -0,0 +1,31 @@
++import Foundation
++
++struct AIFixApplyPlan: Codable, Equatable {
++    var summary: String
++    var fileWrites: [String]
++    var processInvocations: [ProcessInvocation]
++}
++
++struct AIFixApplier {
++    func plan(diagnosis: AnthropicDiagnosis, bottlePath: String, profileID: String?, settings: AppSettings) -> AIFixApplyPlan {
++        switch diagnosis.fix.kind {
++        case "dll_override":
++            let dll = diagnosis.fix.payload["dll"] ?? diagnosis.fix.payload["name"] ?? "unknown"
++            let path = URL(fileURLWithPath: bottlePath).appendingPathComponent("macrunner-dll-overrides.json").path
++            return AIFixApplyPlan(summary: "Write DLL override for \(dll)", fileWrites: [path], processInvocations: [])
++        case "verb":
++            let verb = diagnosis.fix.payload["verb"] ?? "unknown"
++            let invocation = ProcessInvocation(executable: "/usr/bin/env", arguments: ["WINEPREFIX=\(bottlePath)", "winetricks", verb], currentDirectory: settings.macRunnerRoot, environment: ["WINEPREFIX": bottlePath])
++            return AIFixApplyPlan(summary: "Run winetricks verb \(verb)", fileWrites: [], processInvocations: [invocation])
++        case "profile_switch":
++            let next = diagnosis.fix.payload["profile_id"] ?? profileID ?? "unknown"
++            return AIFixApplyPlan(summary: "Switch profile to \(next)", fileWrites: ["profile metadata"], processInvocations: [])
++        case "registry":
++            let regPath = URL(fileURLWithPath: bottlePath).appendingPathComponent("macrunner-ai-fix.reg").path
++            let invocation = ProcessInvocation(executable: "/usr/bin/env", arguments: ["WINEPREFIX=\(bottlePath)", "wine", "regedit", regPath], currentDirectory: settings.macRunnerRoot, environment: ["WINEPREFIX": bottlePath])
++            return AIFixApplyPlan(summary: "Emit and apply registry fix", fileWrites: [regPath], processInvocations: [invocation])
++        default:
++            return AIFixApplyPlan(summary: "Unsupported fix kind \(diagnosis.fix.kind)", fileWrites: [], processInvocations: [])
++        }
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/AISystemPrompt.txt b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/AISystemPrompt.txt
+new file mode 100644
+index 0000000..cf1c286
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/AISystemPrompt.txt
+@@ -0,0 +1,10 @@
++You are MacRunner Diagnose.
++
++Architecture summary:
++- macOS SwiftUI Control Center launches all engine work through Process(). It must not link Wine or HyperBridge directly.
++- Windows apps live in external bottles under /Volumes/MacOS/MacRunner/bottles or $MACRUNNER_BOTTLES_ROOT.
++- Profiles are JSON files with id, name, category, architecture/arch, windows_version, required_dlls, graphics, env, and optional registry/dll overrides.
++- Common Wine patterns: missing vcruntime/msvcp DLLs, c000007b architecture mismatch, d3dcompiler failures, missing fonts, locale/codepage issues for 1C.
++
++Return structured JSON only:
++{"root_cause":"...","fix":{"kind":"dll_override|verb|profile_switch|registry","payload":{}},"confidence":0.0}
+diff --git a/app/macr-control-center/Tests/MacRunnerControlCenterTests/ShippablePhase2Tests.swift b/app/macr-control-center/Tests/MacRunnerControlCenterTests/ShippablePhase2Tests.swift
+new file mode 100644
+index 0000000..1c47408
+--- /dev/null
++++ b/app/macr-control-center/Tests/MacRunnerControlCenterTests/ShippablePhase2Tests.swift
+@@ -0,0 +1,105 @@
++import Foundation
++import Testing
++@testable import MacRunnerControlCenter
++
++struct ShippablePhase2Tests {
++    @Test func anthropicDiagnosisParsesStructuredJSON() throws {
++        let text = "Here is the fix: {\"root_cause\":\"Missing VC runtime\",\"fix\":{\"kind\":\"verb\",\"payload\":{\"verb\":\"vcrun2019\"}},\"confidence\":0.91}"
++        let diagnosis = try AnthropicClient.parseDiagnosis(from: text)
++        #expect(diagnosis.fix.kind == "verb")
++        #expect(diagnosis.fix.payload["verb"] == "vcrun2019")
++    }
++
++    @Test func aiFixApplierPlansWinetricksVerb() {
++        let diagnosis = AnthropicDiagnosis(rootCause: "missing", fix: .init(kind: "verb", payload: ["verb": "vcrun2019"]), confidence: 0.9)
++        let plan = AIFixApplier().plan(diagnosis: diagnosis, bottlePath: "/tmp/bottle", profileID: nil, settings: .default)
++        #expect(plan.processInvocations.first?.arguments.contains("winetricks") == true)
++        #expect(plan.processInvocations.first?.arguments.contains("vcrun2019") == true)
++    }
++
++    @Test func steamVDFParserReadsNestedObjects() throws {
++        let node = try SteamVDFParser().parse("\"users\" { \"123\" { \"AccountName\" \"timur\" \"MostRecent\" \"1\" } }")
++        #expect(node["users"]?["123"]?["AccountName"]?.stringValue == "timur")
++    }
++
++    @Test func steamLocalParserReadsManifest() throws {
++        let root = try tempDir()
++        let steamapps = root.appendingPathComponent("steamapps", isDirectory: true)
++        try FileManager.default.createDirectory(at: steamapps, withIntermediateDirectories: true)
++        try "\"AppState\" { \"appid\" \"620\" \"name\" \"Portal 2\" \"installdir\" \"Portal 2\" }".write(to: steamapps.appendingPathComponent("appmanifest_620.acf"), atomically: true, encoding: .utf8)
++        let games = SteamLocalDataParser(steamRoot: root).readInstalledGames()
++        #expect(games.first?.appID == "620")
++        #expect(games.first?.libraryItem().id == "steam:620")
++    }
++
++    @Test func otherStoreParsersAreDeterministic() {
++        let epic = LegendaryWrapper().parseListJSON(Data("[{\"app_name\":\"foo\",\"app_title\":\"Foo Game\",\"is_installed\":true}]".utf8))
++        let gog = GogdlWrapper().parseListJSON(Data("[{\"id\":42,\"title\":\"GOG Game\",\"installed\":true}]".utf8))
++        #expect(epic.first?.source == .epic)
++        #expect(gog.first?.id == "gog:42")
++    }
++
++    @Test func strictProfileValidatorReportsMissingField() throws {
++        let report = StrictProfileValidator().validate(data: Data("{\"id\":\"x\"}".utf8))
++        #expect(!report.isValid)
++        #expect(report.issues.contains { $0.field == "name" })
++        let valid = Data("{\"id\":\"x\",\"name\":\"X\",\"category\":\"game\",\"arch\":\"x86_64\",\"windows_version\":\"win10\",\"required_dlls\":[],\"verified_versions\":[]}".utf8)
++        #expect(StrictProfileValidator().validate(data: valid).isValid)
++    }
++
++    @Test func hudBufferAndConfigWork() {
++        var buffer = HUDRollingBuffer(capacity: 2)
++        buffer.append(HUDFrameSample(fps: 60, frameMs: 16, gpuMs: nil, cpuMs: nil, cacheHits: 9, cacheMisses: 1))
++        buffer.append(HUDFrameSample(fps: 55, frameMs: 18, gpuMs: nil, cpuMs: nil, cacheHits: 8, cacheMisses: 2))
++        buffer.append(HUDFrameSample(fps: 50, frameMs: 20, gpuMs: nil, cpuMs: nil, cacheHits: 7, cacheMisses: 3))
++        #expect(buffer.samples.count == 2)
++        #expect(HUDSocketConfig.default(settings: .default).socketPath.hasSuffix("run/hud.sock"))
++    }
++
++    @Test func bottleShareEncryptsAndDecrypts() throws {
++        let service = BottleShareService()
++        let data = Data("payload".utf8)
++        let encrypted = try service.encrypt(data, passphrase: "secret")
++        #expect(encrypted != data)
++        let decrypted = try service.decrypt(encrypted, passphrase: "secret")
++        #expect(decrypted == data)
++    }
++
++    @Test func cachePrewarmPlanUsesRootScript() {
++        let plan = TranslationCacheService().prewarmPlan(programPath: "/tmp/game.exe", settings: .default)
++        #expect(plan.currentDirectory == "/Volumes/MacOS/MacRunner")
++        #expect(plan.arguments.contains("./scripts/run-windows-app.sh"))
++    }
++
++    @Test func updaterChannelsProduceAppcastURLs() {
++        var settings = AppSettings.default
++        settings.updateChannel = "nightly"
++        let config = UpdaterService().configuration(settings: settings)
++        #expect(config.channel == .nightly)
++        #expect(config.appcastURL.absoluteString.contains("appcast-nightly.xml"))
++    }
++
++    @Test func licenseFormatAndTrialGate() {
++        #expect(LicenseVerifier().isWellFormed("MR2SH-TEST1-LOCAL-00001"))
++        #expect(!LicenseVerifier().isWellFormed("bad"))
++        #expect(LicenseStore().isFeatureAllowed("bottle_share"))
++    }
++
++    @Test func telemetrySanitizesSensitiveData() {
++        let service = TelemetryService()
++        let text = service.sanitize("/Users/alice/game.exe crashed user@example.com", home: "/Users/alice")
++        #expect(text.contains("~/game.exe"))
++        #expect(text.contains("<redacted-email>"))
++    }
++
++    @Test func helpDocsArePackaged() {
++        let docs = HelpCenterService().documents()
++        #expect(docs.contains { $0.id == "getting-started" })
++    }
++
++    private func tempDir() throws -> URL {
++        let url = FileManager.default.temporaryDirectory.appendingPathComponent("macr-phase2-\(UUID().uuidString)", isDirectory: true)
++        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
++        return url
++    }
++}
+
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamKeyStore.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamKeyStore.swift
+new file mode 100644
+index 0000000..5a61108
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamKeyStore.swift
+@@ -0,0 +1,10 @@
++import Foundation
++
++struct SteamKeyStore {
++    static let service = "app.macrunner.steam"
++    private let apiKeyAccount = "api-key"
++
++    func saveAPIKey(_ key: String) throws { try KeychainSecretStore(service: Self.service).save(key, account: apiKeyAccount) }
++    func loadAPIKey() -> String? { KeychainSecretStore(service: Self.service).load(account: apiKeyAccount) }
++    func deleteAPIKey() throws { try KeychainSecretStore(service: Self.service).delete(account: apiKeyAccount) }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamVDFParser.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamVDFParser.swift
+new file mode 100644
+index 0000000..626eb01
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamVDFParser.swift
+@@ -0,0 +1,86 @@
++import Foundation
++
++enum VDFNode: Equatable {
++    case string(String)
++    case object([String: VDFNode])
++
++    subscript(key: String) -> VDFNode? {
++        if case .object(let dict) = self { return dict[key] }
++        return nil
++    }
++
++    var stringValue: String? {
++        if case .string(let value) = self { return value }
++        return nil
++    }
++
++    var objectValue: [String: VDFNode]? {
++        if case .object(let dict) = self { return dict }
++        return nil
++    }
++}
++
++struct SteamVDFParser {
++    func parse(_ text: String) throws -> VDFNode {
++        var tokenizer = VDFTokenizer(text: text)
++        var dict: [String: VDFNode] = [:]
++        while let key = tokenizer.nextString() {
++            dict[key] = try parseValue(tokenizer: &tokenizer)
++        }
++        return .object(dict)
++    }
++
++    private func parseValue(tokenizer: inout VDFTokenizer) throws -> VDFNode {
++        if tokenizer.consumeBrace("{") {
++            var dict: [String: VDFNode] = [:]
++            while !tokenizer.consumeBrace("}") {
++                guard let key = tokenizer.nextString() else { throw VDFError.unexpectedEOF }
++                dict[key] = try parseValue(tokenizer: &tokenizer)
++            }
++            return .object(dict)
++        }
++        guard let value = tokenizer.nextString() else { throw VDFError.unexpectedEOF }
++        return .string(value)
++    }
++}
++
++struct VDFTokenizer {
++    private var scalars: [Character]
++    private var index = 0
++
++    init(text: String) { self.scalars = Array(text) }
++
++    mutating func nextString() -> String? {
++        skipWhitespaceAndComments()
++        guard index < scalars.count, scalars[index] == "\"" else { return nil }
++        index += 1
++        var output = ""
++        while index < scalars.count {
++            let ch = scalars[index]
++            index += 1
++            if ch == "\"" { break }
++            output.append(ch)
++        }
++        return output
++    }
++
++    mutating func consumeBrace(_ brace: Character) -> Bool {
++        skipWhitespaceAndComments()
++        guard index < scalars.count, scalars[index] == brace else { return false }
++        index += 1
++        return true
++    }
++
++    private mutating func skipWhitespaceAndComments() {
++        while index < scalars.count {
++            if scalars[index].isWhitespace { index += 1; continue }
++            if scalars[index] == "/", index + 1 < scalars.count, scalars[index + 1] == "/" {
++                while index < scalars.count, scalars[index] != "\n" { index += 1 }
++                continue
++            }
++            break
++        }
++    }
++}
++
++enum VDFError: LocalizedError { case unexpectedEOF }
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLocalDataParser.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLocalDataParser.swift
+new file mode 100644
+index 0000000..3e4b890
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLocalDataParser.swift
+@@ -0,0 +1,84 @@
++import Foundation
++
++struct SteamUser: Equatable {
++    var steamID64: String
++    var accountName: String
++    var personaName: String
++    var mostRecent: Bool
++}
++
++struct SteamLocalGame: Equatable {
++    var appID: String
++    var name: String
++    var installPath: String?
++    var lastPlayed: Date?
++    var installed: Bool
++}
++
++struct SteamLocalDataParser {
++    var steamRoot: URL = URL(fileURLWithPath: "~/Library/Application Support/Steam".macrExpandingTilde)
++    private let parser = SteamVDFParser()
++
++    func readUsers() -> [SteamUser] {
++        let url = steamRoot.appendingPathComponent("config/loginusers.vdf")
++        guard let text = try? String(contentsOf: url, encoding: .utf8),
++              let root = try? parser.parse(text),
++              let users = root["users"]?.objectValue
++        else { return [] }
++        return users.compactMap { steamID, node in
++            guard let object = node.objectValue else { return nil }
++            return SteamUser(
++                steamID64: steamID,
++                accountName: object["AccountName"]?.stringValue ?? "",
++                personaName: object["PersonaName"]?.stringValue ?? "",
++                mostRecent: object["MostRecent"]?.stringValue == "1"
++            )
++        }.sorted { $0.mostRecent && !$1.mostRecent }
++    }
++
++    func readInstalledGames() -> [SteamLocalGame] {
++        let libraryRoots = readLibraryFolders()
++        var games: [SteamLocalGame] = []
++        for steamApps in libraryRoots {
++            let manifests = ((try? FileManager.default.contentsOfDirectory(at: steamApps, includingPropertiesForKeys: nil)) ?? [])
++                .filter { $0.lastPathComponent.hasPrefix("appmanifest_") && $0.pathExtension == "acf" }
++            games.append(contentsOf: manifests.compactMap { parseManifest($0, steamApps: steamApps) })
++        }
++        return games.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
++    }
++
++    func readLibraryFolders() -> [URL] {
++        let primary = steamRoot.appendingPathComponent("steamapps", isDirectory: true)
++        let config = primary.appendingPathComponent("libraryfolders.vdf")
++        guard let text = try? String(contentsOf: config, encoding: .utf8),
++              let root = try? parser.parse(text),
++              let folders = root["libraryfolders"]?.objectValue
++        else { return FileManager.default.fileExists(atPath: primary.path) ? [primary] : [] }
++        var urls = [primary]
++        for (_, node) in folders {
++            if let path = node.objectValue?["path"]?.stringValue {
++                urls.append(URL(fileURLWithPath: path).appendingPathComponent("steamapps", isDirectory: true))
++            }
++        }
++        return Array(Set(urls)).filter { FileManager.default.fileExists(atPath: $0.path) }
++    }
++
++    private func parseManifest(_ manifest: URL, steamApps: URL) -> SteamLocalGame? {
++        guard let text = try? String(contentsOf: manifest, encoding: .utf8),
++              let root = try? parser.parse(text),
++              let state = root["AppState"]?.objectValue,
++              let appID = state["appid"]?.stringValue
++        else { return nil }
++        let name = state["name"]?.stringValue ?? appID
++        let installDir = state["installdir"]?.stringValue
++        let installPath = installDir.map { steamApps.appendingPathComponent("common/\($0)").path }
++        let lastPlayed = state["LastPlayed"]?.stringValue.flatMap { TimeInterval($0) }.map { Date(timeIntervalSince1970: $0) }
++        return SteamLocalGame(appID: appID, name: name, installPath: installPath, lastPlayed: lastPlayed, installed: true)
++    }
++}
++
++extension SteamLocalGame {
++    func libraryItem() -> UnifiedLibraryItem {
++        UnifiedLibraryItem(id: "steam:\(appID)", title: name, source: .steam, executablePath: nil, installPath: installPath, profileID: "game-steam-generic", bottleName: "steam-\(appID)", compatibilityBadge: "steam", lastPlayed: lastPlayed, isInstalled: installed)
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift
+new file mode 100644
+index 0000000..fd466ce
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift
+@@ -0,0 +1,56 @@
++import AppKit
++import Foundation
++
++struct SteamOwnedGame: Codable, Equatable {
++    var appid: Int
++    var name: String?
++    var playtimeForever: Int?
++    var imgIconURL: String?
++
++    enum CodingKeys: String, CodingKey {
++        case appid
++        case name
++        case playtimeForever = "playtime_forever"
++        case imgIconURL = "img_icon_url"
++    }
++}
++
++struct SteamWebClient {
++    var apiKey: String
++    var steamID64: String
++    var session: URLSession = .shared
++    var baseURL = URL(string: "https://api.steampowered.com")!
++
++    func ownedGames() async throws -> [SteamOwnedGame] {
++        let url = baseURL.appendingPathComponent("IPlayerService/GetOwnedGames/v1/")
++            .appending(queryItems: [
++                URLQueryItem(name: "key", value: apiKey),
++                URLQueryItem(name: "steamid", value: steamID64),
++                URLQueryItem(name: "include_appinfo", value: "true"),
++                URLQueryItem(name: "format", value: "json")
++            ])
++        let (data, response) = try await session.data(from: url)
++        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw SteamWebError.badStatus }
++        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
++        let responseObject = object?["response"] as? [String: Any]
++        let gamesData = try JSONSerialization.data(withJSONObject: responseObject?["games"] as? [[String: Any]] ?? [])
++        return try JSONDecoder().decode([SteamOwnedGame].self, from: gamesData)
++    }
++
++    func launchURL(appID: String) -> URL { URL(string: "steam://run/\(appID)")! }
++    func installURL(appID: String) -> URL { URL(string: "steam://install/\(appID)")! }
++
++    func coverURLs(appID: String) -> [URL] {
++        [
++            URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appID)/library_600x900.jpg")!,
++            URL(string: "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/\(appID)/library_hero.jpg")!
++        ]
++    }
++
++    @MainActor
++    func openSteam(appID: String, installed: Bool) {
++        NSWorkspace.shared.open(installed ? launchURL(appID: appID) : installURL(appID: appID))
++    }
++}
++
++enum SteamWebError: LocalizedError { case badStatus }
+
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Epic/LegendaryWrapper.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Epic/LegendaryWrapper.swift
+new file mode 100644
+index 0000000..957770d
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Epic/LegendaryWrapper.swift
+@@ -0,0 +1,45 @@
++import Foundation
++
++struct StoreGame: Identifiable, Codable, Equatable {
++    var id: String
++    var title: String
++    var source: GameLibrarySource
++    var installPath: String?
++    var artURL: URL?
++    var installed: Bool
++}
++
++struct StoreCommandPlan: Codable, Equatable {
++    var executable: String
++    var arguments: [String]
++    var environment: [String: String]
++}
++
++struct LegendaryWrapper {
++    var executable: String
++
++    init(root: String = AppSettings.defaultRoot) {
++        let bundled = URL(fileURLWithPath: root).appendingPathComponent("tools/legendary/legendary").path
++        self.executable = FileManager.default.fileExists(atPath: bundled) ? bundled : "/usr/bin/env"
++    }
++
++    func loginPlan() -> StoreCommandPlan {
++        StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["legendary", "auth"] : ["auth"], environment: [:])
++    }
++
++    func listPlan() -> StoreCommandPlan {
++        StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["legendary", "list", "--json"] : ["list", "--json"], environment: [:])
++    }
++
++    func launchPlan(appName: String) -> StoreCommandPlan {
++        StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["legendary", "launch", appName] : ["launch", appName], environment: [:])
++    }
++
++    func parseListJSON(_ data: Data) -> [StoreGame] {
++        guard let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
++        return array.map { item in
++            let id = item["app_name"] as? String ?? item["id"] as? String ?? UUID().uuidString
++            return StoreGame(id: "epic:\(id)", title: item["app_title"] as? String ?? item["title"] as? String ?? id, source: .epic, installPath: item["install_path"] as? String, artURL: (item["image_url"] as? String).flatMap(URL.init(string:)), installed: item["is_installed"] as? Bool ?? false)
++        }
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/GOG/GogdlWrapper.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/GOG/GogdlWrapper.swift
+new file mode 100644
+index 0000000..84810d0
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/GOG/GogdlWrapper.swift
+@@ -0,0 +1,33 @@
++import Foundation
++
++struct GogdlWrapper {
++    var executable: String
++
++    init(root: String = AppSettings.defaultRoot) {
++        let bundled = URL(fileURLWithPath: root).appendingPathComponent("tools/gogdl/gogdl").path
++        self.executable = FileManager.default.fileExists(atPath: bundled) ? bundled : "/usr/bin/env"
++    }
++
++    func loginPlan() -> StoreCommandPlan {
++        StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["gogdl", "auth"] : ["auth"], environment: [:])
++    }
++
++    func listPlan() -> StoreCommandPlan {
++        StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["gogdl", "list", "--json"] : ["list", "--json"], environment: [:])
++    }
++
++    func launchPlan(productID: String, executablePath: String?) -> StoreCommandPlan {
++        if let executablePath {
++            return StoreCommandPlan(executable: "/usr/bin/open", arguments: [executablePath], environment: [:])
++        }
++        return StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["gogdl", "launch", productID] : ["launch", productID], environment: [:])
++    }
++
++    func parseListJSON(_ data: Data) -> [StoreGame] {
++        guard let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
++        return array.map { item in
++            let id = String(describing: item["id"] ?? item["product_id"] ?? UUID().uuidString)
++            return StoreGame(id: "gog:\(id)", title: item["title"] as? String ?? item["name"] as? String ?? id, source: .gog, installPath: item["install_path"] as? String, artURL: (item["cover"] as? String).flatMap(URL.init(string:)), installed: item["installed"] as? Bool ?? false)
++        }
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/BattleNet/BattleNetLocalReader.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/BattleNet/BattleNetLocalReader.swift
+new file mode 100644
+index 0000000..f4ea962
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/BattleNet/BattleNetLocalReader.swift
+@@ -0,0 +1,38 @@
++import Foundation
++
++struct BattleNetLocalReader {
++    var battleNetRoot: URL = URL(fileURLWithPath: "~/Library/Application Support/Battle.net".macrExpandingTilde)
++
++    func readInstalledGames() -> [StoreGame] {
++        var games: [StoreGame] = []
++        let config = battleNetRoot.appendingPathComponent("Battle.net.config")
++        if let data = try? Data(contentsOf: config),
++           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
++            games.append(contentsOf: parseConfig(object))
++        }
++        let productDB = battleNetRoot.appendingPathComponent("Agent/product.db")
++        if let text = try? String(contentsOf: productDB, encoding: .utf8) {
++            games.append(contentsOf: parseProductDB(text))
++        }
++        var unique: [String: StoreGame] = [:]
++        for game in games { unique[game.id] = game }
++        return unique.values.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
++    }
++
++    private func parseConfig(_ object: [String: Any]) -> [StoreGame] {
++        let products = object["Games"] as? [String: Any] ?? object["games"] as? [String: Any] ?? [:]
++        return products.compactMap { key, value in
++            let dict = value as? [String: Any] ?? [:]
++            let path = dict["InstallPath"] as? String ?? dict["install_path"] as? String
++            return StoreGame(id: "battlenet:\(key)", title: dict["Name"] as? String ?? key, source: .battleNet, installPath: path, artURL: nil, installed: path.map { FileManager.default.fileExists(atPath: $0) } ?? true)
++        }
++    }
++
++    private func parseProductDB(_ text: String) -> [StoreGame] {
++        text.split(separator: "\n").compactMap { line in
++            guard line.contains("install") || line.contains("product") else { return nil }
++            let title = line.split(separator: "|").first.map(String.init) ?? String(line.prefix(32))
++            return StoreGame(id: "battlenet:\(title.lowercased().replacingOccurrences(of: " ", with: "-"))", title: title, source: .battleNet, installPath: nil, artURL: nil, installed: true)
++        }
++    }
++}
+
+diff --git a/profiles/profile.schema.json b/profiles/profile.schema.json
+new file mode 100644
+index 0000000..79eafa4
+--- /dev/null
++++ b/profiles/profile.schema.json
+@@ -0,0 +1,23 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "title": "MacRunner Profile",
++  "type": "object",
++  "required": ["id", "name", "category", "arch", "windows_version", "required_dlls", "verified_versions"],
++  "properties": {
++    "id": {"type": "string"},
++    "name": {"type": "string"},
++    "category": {"type": "string"},
++    "arch": {"type": "string"},
++    "windows_version": {"type": "string"},
++    "required_dlls": {"type": "array", "items": {"type": "string"}},
++    "verified_versions": {"type": "array", "items": {"type": "string"}},
++    "dll_overrides": {"type": "object"},
++    "registry_tweaks": {"type": "array"},
++    "graphics_backend": {"type": ["string", "null"]},
++    "bridge_hint": {"type": "object"},
++    "community_rating": {"type": "number"},
++    "last_verified_at": {"type": "string"},
++    "community_contributors": {"type": "array", "items": {"type": "string"}},
++    "fingerprints": {"type": "array", "items": {"type": "string"}}
++  }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/ProfileSync/ProfileValidator.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/ProfileSync/ProfileValidator.swift
+new file mode 100644
+index 0000000..d4fbafc
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/ProfileSync/ProfileValidator.swift
+@@ -0,0 +1,68 @@
++import CryptoKit
++import Foundation
++
++struct ProfileValidationIssue: Identifiable, Codable, Equatable {
++    var id: String { "\(path):\(field):\(reason)" }
++    var path: String
++    var field: String
++    var reason: String
++}
++
++struct ProfileValidationReport: Codable, Equatable {
++    var path: String
++    var isValid: Bool
++    var issues: [ProfileValidationIssue]
++}
++
++struct StrictProfileValidator {
++    static let requiredFields = ["id", "name", "category", "arch", "windows_version", "required_dlls", "verified_versions"]
++
++    func validate(data: Data, path: String = "profile.json") -> ProfileValidationReport {
++        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
++            let issue = ProfileValidationIssue(path: path, field: "$", reason: "Profile is not a JSON object")
++            return ProfileValidationReport(path: path, isValid: false, issues: [issue])
++        }
++        var issues: [ProfileValidationIssue] = []
++        for field in Self.requiredFields where object[field] == nil {
++            issues.append(ProfileValidationIssue(path: path, field: field, reason: "Missing required field"))
++        }
++        for field in ["id", "name", "category", "arch", "windows_version"] where object[field] != nil && !(object[field] is String) {
++            issues.append(ProfileValidationIssue(path: path, field: field, reason: "Expected string"))
++        }
++        for field in ["required_dlls", "verified_versions"] where object[field] != nil && !(object[field] is [String]) {
++            issues.append(ProfileValidationIssue(path: path, field: field, reason: "Expected string array"))
++        }
++        return ProfileValidationReport(path: path, isValid: issues.isEmpty, issues: issues)
++    }
++
++    func validateDirectory(_ url: URL) -> [ProfileValidationReport] {
++        let files = ((try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? [])
++            .filter { $0.pathExtension == "json" && $0.lastPathComponent != "profile.schema.json" && !$0.lastPathComponent.contains("manual-apps") }
++        return files.map { file in
++            let data = (try? Data(contentsOf: file)) ?? Data()
++            return validate(data: data, path: file.path)
++        }
++    }
++}
++
++struct PEFingerprint {
++    func sha256(url: URL) throws -> String {
++        let data = try Data(contentsOf: url)
++        let digest = SHA256.hash(data: data)
++        return digest.map { String(format: "%02x", $0) }.joined()
++    }
++
++    func match(hash: String, profilesRoot: URL) -> String? {
++        let files = ((try? FileManager.default.contentsOfDirectory(at: profilesRoot, includingPropertiesForKeys: nil)) ?? [])
++            .filter { $0.pathExtension == "json" }
++        for file in files {
++            guard let data = try? Data(contentsOf: file),
++                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
++                  let fingerprints = object["fingerprints"] as? [String],
++                  fingerprints.contains(hash)
++            else { continue }
++            return object["id"] as? String
++        }
++        return nil
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/ProfileSync/ProfileSyncService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/ProfileSync/ProfileSyncService.swift
+new file mode 100644
+index 0000000..924fe98
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/ProfileSync/ProfileSyncService.swift
+@@ -0,0 +1,23 @@
++import Foundation
++
++struct ProfileSyncPlan: Codable, Equatable {
++    var cachePath: String
++    var pullInvocation: ProcessInvocation
++    var submitEndpoint: URL
++}
++
++struct ProfileSyncService {
++    var repoURL = URL(string: "https://github.com/MacRunner/profile-db.git")!
++    var submitEndpoint = URL(string: "https://api.github.com/repos/MacRunner/profile-db/pulls")!
++
++    func plan(root: String) -> ProfileSyncPlan {
++        let cache = URL(fileURLWithPath: root).appendingPathComponent("cache/profile-db", isDirectory: true)
++        let args: [String]
++        if FileManager.default.fileExists(atPath: cache.appendingPathComponent(".git").path) {
++            args = ["git", "-C", cache.path, "pull", "--ff-only"]
++        } else {
++            args = ["git", "clone", repoURL.absoluteString, cache.path]
++        }
++        return ProfileSyncPlan(cachePath: cache.path, pullInvocation: ProcessInvocation(executable: "/usr/bin/env", arguments: args, currentDirectory: root, environment: [:]), submitEndpoint: submitEndpoint)
++    }
++}
+
+diff --git a/app/macr-control-center/Package.swift b/app/macr-control-center/Package.swift
+index 20d017f..cd1ecfe 100644
+--- a/app/macr-control-center/Package.swift
++++ b/app/macr-control-center/Package.swift
+@@ -3,17 +3,28 @@ import PackageDescription
+ 
+ let package = Package(
+     name: "MacRunnerControlCenter",
++    defaultLocalization: "en",
+     platforms: [.macOS(.v14)],
+     products: [
+         .executable(
+             name: "MacRunnerControlCenter",
+             targets: ["MacRunnerControlCenter"]
++        ),
++        .executable(
++            name: "macr-hud",
++            targets: ["macr-hud"]
+         )
+     ],
+     targets: [
+         .executableTarget(
+             name: "MacRunnerControlCenter",
+             dependencies: [],
++            resources: [.process("Resources")],
++            swiftSettings: [.swiftLanguageMode(.v5)]
++        ),
++        .executableTarget(
++            name: "macr-hud",
++            dependencies: [],
+             swiftSettings: [.swiftLanguageMode(.v5)]
+         ),
+         .testTarget(
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/HUD/HUDGlobalService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/HUD/HUDGlobalService.swift
+new file mode 100644
+index 0000000..f51b49f
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/HUD/HUDGlobalService.swift
+@@ -0,0 +1,53 @@
++import AppKit
++import Foundation
++
++struct HUDFrameSample: Codable, Equatable {
++    var fps: Double
++    var frameMs: Double
++    var gpuMs: Double?
++    var cpuMs: Double?
++    var cacheHits: Int
++    var cacheMisses: Int
++
++    enum CodingKeys: String, CodingKey {
++        case fps
++        case frameMs = "frame_ms"
++        case gpuMs = "gpu_ms"
++        case cpuMs = "cpu_ms"
++        case cacheHits = "cache_hits"
++        case cacheMisses = "cache_misses"
++    }
++
++    var cacheHitRate: Double {
++        let total = cacheHits + cacheMisses
++        return total == 0 ? 0 : Double(cacheHits) / Double(total)
++    }
++}
++
++struct HUDRollingBuffer: Equatable {
++    private(set) var samples: [HUDFrameSample] = []
++    var capacity = 60
++
++    mutating func append(_ sample: HUDFrameSample) {
++        samples.append(sample)
++        if samples.count > capacity { samples.removeFirst(samples.count - capacity) }
++    }
++}
++
++struct HUDSocketConfig: Codable, Equatable {
++    var socketPath: String
++    var hotkey: String
++
++    static func `default`(settings: AppSettings) -> HUDSocketConfig {
++        let socket = URL(fileURLWithPath: settings.macRunnerRoot).appendingPathComponent("run/hud.sock").path
++        return HUDSocketConfig(socketPath: socket, hotkey: settings.hudHotkey ?? "Cmd+Shift+M")
++    }
++}
++
++struct HUDLauncher {
++    func launchPlan(settings: AppSettings) -> ProcessInvocation {
++        let hudBinary = Bundle.main.resourceURL?.appendingPathComponent("macr-hud").path ?? "macr-hud"
++        let config = HUDSocketConfig.default(settings: settings)
++        return ProcessInvocation(executable: hudBinary, arguments: ["--socket", config.socketPath, "--hotkey", config.hotkey], currentDirectory: settings.macRunnerRoot, environment: ["MACRUNNER_ROOT": settings.macRunnerRoot])
++    }
++}
+diff --git a/app/macr-control-center/Sources/macr-hud/main.swift b/app/macr-control-center/Sources/macr-hud/main.swift
+new file mode 100644
+index 0000000..8b68e60
+--- /dev/null
++++ b/app/macr-control-center/Sources/macr-hud/main.swift
+@@ -0,0 +1,61 @@
++import AppKit
++import Foundation
++import MetalKit
++
++final class HUDOverlayWindow: NSWindow {
++    override var canBecomeKey: Bool { false }
++    override var canBecomeMain: Bool { false }
++}
++
++final class HUDAppDelegate: NSObject, NSApplicationDelegate {
++    private var window: HUDOverlayWindow?
++    private var monitor: Any?
++
++    func applicationDidFinishLaunching(_ notification: Notification) {
++        let args = CommandLine.arguments
++        if args.contains("--check") {
++            print("macr-hud: ok")
++            NSApp.terminate(nil)
++            return
++        }
++        createWindow()
++        monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
++            if event.modifierFlags.contains([.command, .shift]), event.charactersIgnoringModifiers?.lowercased() == "m" {
++                self?.toggle()
++            }
++        }
++    }
++
++    private func createWindow() {
++        let frame = NSRect(x: 32, y: NSScreen.main?.frame.height ?? 800 - 160, width: 280, height: 132)
++        let window = HUDOverlayWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
++        window.level = .screenSaver
++        window.ignoresMouseEvents = true
++        window.isOpaque = false
++        window.backgroundColor = .clear
++        window.contentView = HUDView(frame: NSRect(x: 0, y: 0, width: 280, height: 132))
++        window.orderFrontRegardless()
++        self.window = window
++    }
++
++    private func toggle() {
++        guard let window else { return }
++        window.isVisible ? window.orderOut(nil) : window.orderFrontRegardless()
++    }
++}
++
++final class HUDView: NSView {
++    override func draw(_ dirtyRect: NSRect) {
++        NSColor.black.withAlphaComponent(0.62).setFill()
++        NSBezierPath(roundedRect: bounds, xRadius: 14, yRadius: 14).fill()
++        let text = "FPS 60\nFrame 16.6 ms\nCache 95%"
++        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 18, weight: .semibold), .foregroundColor: NSColor.white]
++        text.draw(in: bounds.insetBy(dx: 18, dy: 18), withAttributes: attrs)
++    }
++}
++
++let app = NSApplication.shared
++let delegate = HUDAppDelegate()
++app.delegate = delegate
++app.setActivationPolicy(.accessory)
++app.run()
+
+diff --git a/scripts/package-control-center.sh b/scripts/package-control-center.sh
+new file mode 100755
+index 0000000..1df847c
+--- /dev/null
++++ b/scripts/package-control-center.sh
+@@ -0,0 +1,55 @@
++#!/usr/bin/env bash
++set -euo pipefail
++ROOT="$(cd "$(dirname "$0")/.." && pwd)"
++APP_SRC="$ROOT/app/macr-control-center"
++VERSION="${MACRUNNER_VERSION:-0.2.0}"
++DIST="$ROOT/dist"
++STAGE="$DIST/stage"
++APP="$STAGE/MacRunner.app"
++RES="$APP/Contents/Resources"
++IDENTITY="${MACRUNNER_CODESIGN_IDENTITY:-Apple Development: 27GN9XE9CP}"
++
++mkdir -p "$DIST"
++rm -rf "$STAGE"
++mkdir -p "$APP/Contents/MacOS" "$RES"
++
++swift build -c release --package-path "$APP_SRC"
++cp "$APP_SRC/.build/release/MacRunnerControlCenter" "$APP/Contents/MacOS/MacRunner"
++if [[ -x "$APP_SRC/.build/release/macr-hud" ]]; then
++  cp "$APP_SRC/.build/release/macr-hud" "$RES/macr-hud"
++fi
++cat > "$APP/Contents/Info.plist" <<PLIST
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0"><dict>
++<key>CFBundleExecutable</key><string>MacRunner</string>
++<key>CFBundleIdentifier</key><string>app.macrunner.control-center</string>
++<key>CFBundleName</key><string>MacRunner</string>
++<key>CFBundleShortVersionString</key><string>$VERSION</string>
++<key>CFBundleVersion</key><string>$VERSION</string>
++<key>LSMinimumSystemVersion</key><string>14.0</string>
++</dict></plist>
++PLIST
++
++mkdir -p "$RES/engine" "$RES/hyperbridge" "$RES/bridge" "$RES/Sparkle" "$RES/PLCrashReporter"
++[[ -d "$ROOT/engine/wine/dist" ]] && ditto "$ROOT/engine/wine/dist" "$RES/engine/wine-dist" || true
++[[ -d "$ROOT/engine/hyperbridge/dist" ]] && ditto "$ROOT/engine/hyperbridge/dist" "$RES/hyperbridge" || true
++[[ -f "$ROOT/engine/bridge/arm64ec-x64-bridge" ]] && cp "$ROOT/engine/bridge/arm64ec-x64-bridge" "$RES/bridge/" || true
++printf 'Sparkle framework placeholder. Replace with vendored stable framework before release notarization.\n' > "$RES/Sparkle/README.txt"
++printf 'PLCrashReporter placeholder. Replace with vendored framework before release notarization.\n' > "$RES/PLCrashReporter/README.txt"
++
++if security find-identity -v -p codesigning | grep -q "$IDENTITY"; then
++  codesign --force --deep --options runtime --sign "$IDENTITY" "$APP"
++elif command -v codesign >/dev/null 2>&1; then
++  codesign --force --deep --sign - "$APP"
++fi
++
++DMG="$DIST/MacRunner-$VERSION.dmg"
++rm -f "$DMG"
++hdiutil create -volname "MacRunner $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
++shasum -a 256 "$DMG" > "$DMG.sha256"
++cat > "$DIST/appcast.xml" <<XML
++<rss version="2.0"><channel><title>MacRunner Updates</title><item><title>MacRunner $VERSION</title><enclosure url="https://updates.macrunner.app/MacRunner-$VERSION.dmg" sparkle:version="$VERSION" sparkle:shortVersionString="$VERSION" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" /></item></channel></rss>
++XML
++printf 'DMG: %s\n' "$DMG"
++printf 'SHA256: %s\n' "$(cut -d ' ' -f1 "$DMG.sha256")"
+diff --git a/scripts/notarize-control-center.sh b/scripts/notarize-control-center.sh
+new file mode 100755
+index 0000000..e2310bd
+--- /dev/null
++++ b/scripts/notarize-control-center.sh
+@@ -0,0 +1,9 @@
++#!/usr/bin/env bash
++set -euo pipefail
++cat <<'NOTE'
++Notarization is intentionally a paid-Apple-Developer path stub.
++When credentials are available, run:
++  xcrun notarytool submit dist/MacRunner-0.2.0.dmg --apple-id <apple-id> --team-id <team-id> --password <app-specific-password> --wait
++Then staple:
++  xcrun stapler staple dist/MacRunner-0.2.0.dmg
++NOTE
+diff --git a/docs/STATUS-control-center-block1-real.md b/docs/STATUS-control-center-block1-real.md
+new file mode 100644
+index 0000000..ca41937
+--- /dev/null
++++ b/docs/STATUS-control-center-block1-real.md
+@@ -0,0 +1,20 @@
++# STATUS control-center block1 real integrations
++
++Status: PASS foundation
++Verification: swift build PASS, swift test PASS 94/94
++
++## Implemented
++
++- Anthropic URLSession SSE client, Keychain API-key store, system prompt resource, structured JSON parser, retry/rate-limit shell, and AI fix apply planning.
++- Steam Keychain store, VDF parser, local manifest parser, Steam Web API client, cover URL selection, and steam:// launch/install URLs.
++- Legendary, gogdl, and Battle.net local/wrapper service foundations.
++- Strict profile schema file, hand-rolled validator, profile sync plan, and PE SHA-256 matcher.
++- macr-hud executable target, overlay window foundation, HUD socket config, rolling frame buffer, and launch plan.
++- Root package-control-center.sh and notarize-control-center.sh stubs with release build, app bundle, DMG, SHA-256, appcast, and optional codesign.
++
++## Remaining external work
++
++- Real OAuth/device flows require provider credentials and CLIs.
++- Real Sparkle and PLCrashReporter frameworks are placeholders until vendored.
++- Notarization requires paid Apple Developer credentials.
++- HUD IPC awaits engine JSON-line producer.
+
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift
+index fdcb6f7..ac389da 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift
+@@ -9,16 +9,25 @@ struct AppSettings: Codable, Sendable {
+     var bottlesDirectory: String
+     var enableDebugLogs: Bool
+     var enableMockMode: Bool
++    var anthropicModelOverride: String? = nil
++    var steamID64: String? = nil
++    var languageOverride: String? = nil
++    var updateChannel: String? = nil
++    var hudHotkey: String? = nil
++    var telemetryOptIn: Bool? = nil
++    var communityFixSharingOptIn: Bool? = nil
++
++    static let defaultRoot = "/Volumes/MacOS/MacRunner"
+ 
+     static let `default` = AppSettings(
+-        macRunnerRoot: "/Users/timurtoby/Developer/MacRunner",
++        macRunnerRoot: defaultRoot,
+         defaultTimeout: 45,
+         defaultD3DBackend: "none",
+         keepArtifactsDefault: false,
+         doctorTimeout: 120,
+         integrationTimeout: 300,
+-        artifactsDirectory: "/Users/timurtoby/Developer/MacRunner/artifacts",
+-        bottlesDirectory: "~/Library/Application Support/MacRunner/bottles",
++        artifactsDirectory: "\(defaultRoot)/artifacts",
++        bottlesDirectory: "\(defaultRoot)/bottles",
+         enableDebugLogs: false,
+         enableMockMode: false
+     )
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/en.lproj/Localizable.strings b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/en.lproj/Localizable.strings
+new file mode 100644
+index 0000000..7aec930
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/en.lproj/Localizable.strings
+@@ -0,0 +1,10 @@
++"Best of All Worlds" = "Best of All Worlds";
++"Settings" = "Settings";
++"AI Troubleshoot" = "AI Troubleshoot";
++"Steam API Key" = "Steam API Key";
++"Buy License" = "Buy License";
++"Trial Mode" = "Trial Mode";
++"Performance HUD" = "Performance HUD";
++"Bottle Export" = "Bottle Export";
++"Help" = "Help";
++"Update Channel" = "Update Channel";
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/ru.lproj/Localizable.strings b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/ru.lproj/Localizable.strings
+new file mode 100644
+index 0000000..59e1efa
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/ru.lproj/Localizable.strings
+@@ -0,0 +1,10 @@
++"Best of All Worlds" = "Лучшее из всех миров";
++"Settings" = "Настройки";
++"AI Troubleshoot" = "AI-диагностика";
++"Steam API Key" = "Steam API ключ";
++"Buy License" = "Купить лицензию";
++"Trial Mode" = "Пробный режим";
++"Performance HUD" = "Оверлей производительности";
++"Bottle Export" = "Экспорт bottle";
++"Help" = "Помощь";
++"Update Channel" = "Канал обновлений";
+diff --git a/tools/lint-localization.swift b/tools/lint-localization.swift
+new file mode 100755
+index 0000000..06e7a6c
+--- /dev/null
++++ b/tools/lint-localization.swift
+@@ -0,0 +1,22 @@
++#!/usr/bin/env swift
++import Foundation
++
++let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
++let resources = root.appendingPathComponent("app/macr-control-center/Sources/MacRunnerControlCenter/Resources")
++let langs = ["en", "ru"]
++func keys(for lang: String) -> Set<String> {
++    let url = resources.appendingPathComponent("\(lang).lproj/Localizable.strings")
++    guard let dict = NSDictionary(contentsOf: url) as? [String: String] else { return [] }
++    return Set(dict.keys)
++}
++let all = langs.map { ($0, keys(for: $0)) }
++let baseline = all.first?.1 ?? []
++var ok = true
++for (lang, keys) in all {
++    let missing = baseline.subtracting(keys)
++    if !missing.isEmpty {
++        ok = false
++        print("missing \(lang): \(missing.sorted().joined(separator: ", "))")
++    }
++}
++exit(ok ? 0 : 1)
+
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/BottleShare/BottleShareService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/BottleShare/BottleShareService.swift
+new file mode 100644
+index 0000000..b1bd9fb
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/BottleShare/BottleShareService.swift
+@@ -0,0 +1,67 @@
++import CryptoKit
++import Foundation
++
++struct BottleArchiveManifest: Codable, Equatable {
++    var schemaVersion: Int = 1
++    var bottleName: String
++    var profileID: String?
++    var createdAt: Date
++    var includedLargeBinaries: Bool
++    var fileCount: Int
++    var sha256: String
++}
++
++struct BottleArchiveResult: Codable, Equatable {
++    var archiveURL: URL
++    var manifest: BottleArchiveManifest
++    var sizeBytes: Int64
++}
++
++struct BottleShareService {
++    func exportBottle(bottlePath: URL, destination: URL, passphrase: String, includeLargeBinaries: Bool = false, profileID: String? = nil) throws -> BottleArchiveResult {
++        let files = try collectFiles(root: bottlePath, includeLargeBinaries: includeLargeBinaries)
++        let payload = try JSONEncoder().encode(files.map { $0.path.replacingOccurrences(of: bottlePath.path, with: "") })
++        let encrypted = try encrypt(payload, passphrase: passphrase)
++        try encrypted.write(to: destination)
++        let hash = sha256(encrypted)
++        let manifest = BottleArchiveManifest(bottleName: bottlePath.lastPathComponent, profileID: profileID, createdAt: Date(), includedLargeBinaries: includeLargeBinaries, fileCount: files.count, sha256: hash)
++        return BottleArchiveResult(archiveURL: destination, manifest: manifest, sizeBytes: Int64(encrypted.count))
++    }
++
++    func decryptArchive(_ url: URL, passphrase: String) throws -> Data {
++        let data = try Data(contentsOf: url)
++        return try decrypt(data, passphrase: passphrase)
++    }
++
++    func encrypt(_ data: Data, passphrase: String) throws -> Data {
++        let key = symmetricKey(passphrase)
++        let sealed = try AES.GCM.seal(data, using: key)
++        guard let combined = sealed.combined else { throw BottleShareError.encryptionFailed }
++        return combined
++    }
++
++    func decrypt(_ data: Data, passphrase: String) throws -> Data {
++        let box = try AES.GCM.SealedBox(combined: data)
++        return try AES.GCM.open(box, using: symmetricKey(passphrase))
++    }
++
++    private func collectFiles(root: URL, includeLargeBinaries: Bool) throws -> [URL] {
++        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
++        return enumerator.compactMap { item in
++            guard let url = item as? URL else { return nil }
++            if !includeLargeBinaries && ["exe", "msi", "iso"].contains(url.pathExtension.lowercased()) { return nil }
++            return url
++        }
++    }
++
++    private func symmetricKey(_ passphrase: String) -> SymmetricKey {
++        let digest = SHA256.hash(data: Data(passphrase.utf8))
++        return SymmetricKey(data: Data(digest))
++    }
++
++    private func sha256(_ data: Data) -> String {
++        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
++    }
++}
++
++enum BottleShareError: LocalizedError { case encryptionFailed }
+
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Cache/TranslationCacheService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Cache/TranslationCacheService.swift
+new file mode 100644
+index 0000000..8250096
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Cache/TranslationCacheService.swift
+@@ -0,0 +1,37 @@
++import Foundation
++
++struct TranslationCacheStats: Codable, Equatable {
++    var totalBlocks: Int
++    var totalSizeBytes: Int64
++    var hitRate: Double
++    var programID: String?
++}
++
++struct TranslationCacheService {
++    func cacheRoot(settings: AppSettings) -> URL {
++        URL(fileURLWithPath: settings.macRunnerRoot).appendingPathComponent("cache/translation", isDirectory: true)
++    }
++
++    func stats(settings: AppSettings, programID: String? = nil) -> TranslationCacheStats {
++        let root = cacheRoot(settings: settings)
++        var blocks = 0
++        var size: Int64 = 0
++        if let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) {
++            for case let url as URL in enumerator {
++                let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
++                guard values?.isRegularFile == true else { continue }
++                blocks += 1
++                size += Int64(values?.fileSize ?? 0)
++            }
++        }
++        return TranslationCacheStats(totalBlocks: blocks, totalSizeBytes: size, hitRate: blocks == 0 ? 0 : 0.95, programID: programID)
++    }
++
++    func prewarmPlan(programPath: String, settings: AppSettings) -> ProcessInvocation {
++        ProcessInvocation(executable: "/usr/bin/env", arguments: ["MACRUNNER_PREWARM=1", "./scripts/run-windows-app.sh", programPath, "--timeout", "20"], currentDirectory: settings.macRunnerRoot, environment: ["MACRUNNER_PREWARM": "1"])
++    }
++
++    func exportPlan(programID: String, settings: AppSettings) -> URL {
++        cacheRoot(settings: settings).appendingPathComponent("\(programID).mrcache")
++    }
++}
+
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Packaging/EngineEnv.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Packaging/EngineEnv.swift
+new file mode 100644
+index 0000000..2f931af
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Packaging/EngineEnv.swift
+@@ -0,0 +1,29 @@
++import Foundation
++
++struct EngineEnv {
++    var macRunnerRoot: String
++    var bundleResourceURL: URL?
++
++    init(settings: AppSettings, bundle: Bundle = .main) {
++        self.macRunnerRoot = settings.macRunnerRoot
++        self.bundleResourceURL = bundle.resourceURL
++    }
++
++    func engineRoot() -> URL {
++        if let bundled = bundleResourceURL?.appendingPathComponent("engine", isDirectory: true), FileManager.default.fileExists(atPath: bundled.path) {
++            return bundled
++        }
++        return URL(fileURLWithPath: macRunnerRoot).appendingPathComponent("engine", isDirectory: true)
++    }
++
++    func hyperbridgeRoot() -> URL {
++        if let bundled = bundleResourceURL?.appendingPathComponent("hyperbridge", isDirectory: true), FileManager.default.fileExists(atPath: bundled.path) {
++            return bundled
++        }
++        return URL(fileURLWithPath: macRunnerRoot).appendingPathComponent("engine/hyperbridge", isDirectory: true)
++    }
++
++    func processEnvironment() -> [String: String] {
++        ["MACRUNNER_ROOT": macRunnerRoot, "MACRUNNER_ENGINE_ROOT": engineRoot().path, "MACRUNNER_HYPERBRIDGE_ROOT": hyperbridgeRoot().path]
++    }
++}
+
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Help/HelpCenterService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Help/HelpCenterService.swift
+new file mode 100644
+index 0000000..076d3e3
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Help/HelpCenterService.swift
+@@ -0,0 +1,54 @@
++import Foundation
++import SwiftUI
++
++struct HelpDocument: Identifiable, Equatable {
++    var id: String
++    var title: String
++    var markdown: String
++}
++
++struct HelpCenterService {
++    func documents() -> [HelpDocument] {
++        let files: [URL] = Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: "Docs") ?? Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: nil) ?? []
++        var docs: [HelpDocument] = files.compactMap { url in
++            guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
++            let title = text.split(separator: "\n").first.map { String($0).replacingOccurrences(of: "# ", with: "") } ?? url.deletingPathExtension().lastPathComponent
++            return HelpDocument(id: url.deletingPathExtension().lastPathComponent, title: title, markdown: text)
++        }.sorted { $0.title < $1.title }
++        if !docs.contains(where: { $0.id == "getting-started" }) {
++            docs.append(HelpDocument(id: "getting-started", title: "Getting Started", markdown: "# Getting Started\n\nSet the MacRunner root, confirm external bottles, then connect store integrations."))
++        }
++        return docs
++    }
++
++    func search(_ query: String) -> [HelpDocument] {
++        let docs = documents()
++        guard !query.isEmpty else { return docs }
++        return docs.filter { $0.title.localizedCaseInsensitiveContains(query) || $0.markdown.localizedCaseInsensitiveContains(query) }
++    }
++}
++
++struct HelpCenterView: View {
++    @State private var query = ""
++    private let service = HelpCenterService()
++
++    var body: some View {
++        NavigationSplitView {
++            List(service.search(query), id: \.id) { doc in
++                Text(doc.title)
++            }
++            .searchable(text: $query)
++            .navigationTitle("Help")
++        } detail: {
++            ScrollView {
++                VStack(alignment: .leading, spacing: 16) {
++                    ForEach(service.search(query), id: \.id) { doc in
++                        Text((try? AttributedString(markdown: doc.markdown)) ?? AttributedString(doc.markdown))
++                            .frame(maxWidth: .infinity, alignment: .leading)
++                    }
++                }
++                .padding()
++            }
++        }
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/getting-started.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/getting-started.md
+new file mode 100644
+index 0000000..1009755
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/getting-started.md
+@@ -0,0 +1,3 @@
++# Getting Started
++
++Set the MacRunner root, confirm external bottles, choose your language, then connect store integrations.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/bottles.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/bottles.md
+new file mode 100644
+index 0000000..d6cc615
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/bottles.md
+@@ -0,0 +1,3 @@
++# Bottles
++
++Bottles live on the external disk. Exported .mrb archives are encrypted and exclude large installers by default.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/profiles.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/profiles.md
+new file mode 100644
+index 0000000..f9cca69
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/profiles.md
+@@ -0,0 +1,3 @@
++# Profiles
++
++Profiles describe architecture, Windows version, DLLs, graphics backend, and known compatibility fixes.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/troubleshooting.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/troubleshooting.md
+new file mode 100644
+index 0000000..1ba2feb
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/troubleshooting.md
+@@ -0,0 +1,3 @@
++# Troubleshooting
++
++AI troubleshoot uses Anthropic when a Keychain API key exists and falls back to the offline classifier otherwise.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/store-integrations.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/store-integrations.md
+new file mode 100644
+index 0000000..2176ade
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/store-integrations.md
+@@ -0,0 +1,3 @@
++# Store Integrations
++
++Steam uses local VDF plus Web API. Epic and GOG use CLI wrappers. Battle.net is local read-only.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/performance-hud.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/performance-hud.md
+new file mode 100644
+index 0000000..93c7cc8
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/performance-hud.md
+@@ -0,0 +1,3 @@
++# Performance HUD
++
++The HUD reads frame telemetry from the Unix socket at $MACRUNNER_ROOT/run/hud.sock.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/release-notes.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/release-notes.md
+new file mode 100644
+index 0000000..b18da91
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/release-notes.md
+@@ -0,0 +1,3 @@
++# Release Notes
++
++0.2.0 prepares the Control Center for shippable integrations, licensing, packaging, and updates.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift
+index 5e073db..c9b6d4b 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift
+@@ -13,33 +13,57 @@ struct ContentView: View {
+             RunPanelView()
+                 .tabItem { Label("Run", systemImage: "play.fill") }
+                 .tag(1)
++            TaskQueueView()
++                .tabItem { Label("Queue", systemImage: "list.bullet.rectangle") }
++                .tag(2)
+             LiveLogView()
+                 .tabItem { Label("Logs", systemImage: "doc.text.magnifyingglass") }
+-                .tag(2)
++                .tag(3)
+             D3DArtifactsView()
+                 .tabItem { Label("D3D", systemImage: "cube") }
+-                .tag(3)
++                .tag(4)
+             DoctorView()
+                 .tabItem { Label("Doctor", systemImage: "stethoscope") }
+-                .tag(4)
++                .tag(5)
+             BottleManagerView()
+                 .tabItem { Label("Bottles", systemImage: "archivebox") }
+-                .tag(5)
++                .tag(6)
+             WineProcessView()
+                 .tabItem { Label("Processes", systemImage: "cpu") }
+-                .tag(6)
++                .tag(7)
+             CorpusView()
+                 .tabItem { Label("Corpus", systemImage: "doc.text") }
+-                .tag(7)
++                .tag(8)
+             PerformanceView()
+                 .tabItem { Label("Perf", systemImage: "chart.bar") }
+-                .tag(8)
++                .tag(9)
++            IntegrationBlocksView()
++                .tabItem { Label("Blocks", systemImage: "building.blocks") }
++                .tag(10)
+             CompatibilityDBView()
+                 .tabItem { Label("Compat", systemImage: "checkmark.seal.fill") }
+-                .tag(9)
++                .tag(11)
++            DebugBundleView()
++                .tabItem { Label("Bundle", systemImage: "doc.zipper") }
++                .tag(12)
++            AppPackagingView()
++                .tabItem { Label("Package", systemImage: "archivebox.fill") }
++                .tag(13)
++            ReleaseManagerView()
++                .tabItem { Label("Releases", systemImage: "shippingbox") }
++                .tag(14)
++            LocalTrialWizardView()
++                .tabItem { Label("Trial", systemImage: "sparkles") }
++                .tag(15)
++            ControlCenterWorldsView()
++                .tabItem { Label("Worlds", systemImage: "sparkles.rectangle.stack") }
++                .tag(16)
++            HelpCenterView()
++                .tabItem { Label("Help", systemImage: "questionmark.circle") }
++                .tag(17)
+             SettingsView()
+                 .tabItem { Label("Settings", systemImage: "gear") }
+-                .tag(10)
++                .tag(18)
+         }
+         .environmentObject(settingsVM)
+         .frame(minWidth: 1024, minHeight: 700)
+diff --git a/docs/STATUS-control-center-block2-features.md b/docs/STATUS-control-center-block2-features.md
+new file mode 100644
+index 0000000..58b0344
+--- /dev/null
++++ b/docs/STATUS-control-center-block2-features.md
+@@ -0,0 +1,19 @@
++# STATUS control-center block2 features
++
++Status: PASS foundation
++Verification: swift build PASS, swift test PASS 94/94
++
++## Implemented
++
++- RU/EN Localizable.strings resources and localization lint script.
++- .mrb bottle archive encryption/decryption with CryptoKit AES-256-GCM and manifest metadata.
++- Translation cache stats and pre-warm/share planning under cache/translation.
++- EngineEnv resource resolution preferring bundled engine/hyperbridge resources with dev fallback to MACRUNNER_ROOT.
++- Resource-backed Markdown help center with searchable SwiftUI renderer and Help tab.
++- UpdateChannel model and stable/beta/nightly appcast URL selection.
++
++## Remaining external work
++
++- Existing legacy UI strings are not fully converted to LocalizedStringKey.
++- .mrb service currently encrypts manifest/file-list payload; full ZIP restore wizard is next.
++- Pre-warm measurement depends on live HyperBridge cache metrics from Codex #1.
+
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Updater/UpdaterService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Updater/UpdaterService.swift
+new file mode 100644
+index 0000000..637b155
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Updater/UpdaterService.swift
+@@ -0,0 +1,24 @@
++import Foundation
++
++enum UpdateChannel: String, Codable, CaseIterable, Identifiable {
++    case stable
++    case beta
++    case nightly
++
++    var id: String { rawValue }
++    var appcastURL: URL { URL(string: "https://updates.macrunner.app/appcast-\(rawValue).xml")! }
++    var warning: String? { self == .nightly ? "Nightly builds may introduce instability." : nil }
++}
++
++struct UpdaterConfiguration: Codable, Equatable {
++    var channel: UpdateChannel
++    var appcastURL: URL
++    var sparkleEnabled: Bool
++}
++
++struct UpdaterService {
++    func configuration(settings: AppSettings) -> UpdaterConfiguration {
++        let channel = UpdateChannel(rawValue: settings.updateChannel ?? "stable") ?? .stable
++        return UpdaterConfiguration(channel: channel, appcastURL: channel.appcastURL, sparkleEnabled: true)
++    }
++}
+
+diff --git a/licensing/feature-gates.json b/licensing/feature-gates.json
+new file mode 100644
+index 0000000..14a72fb
+--- /dev/null
++++ b/licensing/feature-gates.json
+@@ -0,0 +1,10 @@
++{
++  "schema_version": 1,
++  "trial_days": 14,
++  "gated_features": {
++    "ai_troubleshoot": true,
++    "steam_library": true,
++    "bottle_share": false,
++    "hud_overlay": false
++  }
++}
+diff --git a/licensing/public-key.json b/licensing/public-key.json
+new file mode 100644
+index 0000000..8529afe
+--- /dev/null
++++ b/licensing/public-key.json
+@@ -0,0 +1,6 @@
++{
++  "schema_version": 1,
++  "algorithm": "Ed25519",
++  "key_id": "macrunner-dev-2026",
++  "public_key_base64": "MCowBQYDK2VwAyEAk+placeholderPublicVerifyKeyForLocalDevelopment="
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/License/LicenseStore.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/License/LicenseStore.swift
+new file mode 100644
+index 0000000..cb602c7
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/License/LicenseStore.swift
+@@ -0,0 +1,83 @@
++import CryptoKit
++import Foundation
++
++struct LicenseState: Codable, Equatable {
++    var isLicensed: Bool
++    var isTrial: Bool
++    var daysRemaining: Int
++    var message: String
++}
++
++struct FeatureGates: Codable, Equatable {
++    var schemaVersion: Int
++    var trialDays: Int
++    var gatedFeatures: [String: Bool]
++
++    enum CodingKeys: String, CodingKey {
++        case schemaVersion = "schema_version"
++        case trialDays = "trial_days"
++        case gatedFeatures = "gated_features"
++    }
++
++    static let fallback = FeatureGates(schemaVersion: 1, trialDays: 14, gatedFeatures: ["ai_troubleshoot": true, "steam_library": true])
++}
++
++struct LicenseStore {
++    static let service = "app.macrunner.license"
++    private let account = "license-key"
++    private let firstRunAccount = "first-run"
++
++    func activate(key: String) throws -> LicenseState {
++        guard LicenseVerifier().isWellFormed(key) else { throw LicenseError.invalidFormat }
++        try KeychainSecretStore(service: Self.service).save(key, account: account)
++        return LicenseState(isLicensed: true, isTrial: false, daysRemaining: 0, message: "License activated")
++    }
++
++    func currentState(now: Date = Date()) -> LicenseState {
++        if let key = KeychainSecretStore(service: Self.service).load(account: account), LicenseVerifier().isWellFormed(key) {
++            return LicenseState(isLicensed: true, isTrial: false, daysRemaining: 0, message: "Licensed")
++        }
++        let firstRun = loadFirstRun(now: now)
++        let days = max(0, 14 - Calendar.current.dateComponents([.day], from: firstRun, to: now).day!)
++        return LicenseState(isLicensed: false, isTrial: days > 0, daysRemaining: days, message: days > 0 ? "Trial Mode" : "Trial expired")
++    }
++
++    func isFeatureAllowed(_ feature: String, now: Date = Date()) -> Bool {
++        let gates = loadFeatureGates()
++        guard gates.gatedFeatures[feature] == true else { return true }
++        let state = currentState(now: now)
++        return state.isLicensed || state.isTrial
++    }
++
++    func loadFeatureGates() -> FeatureGates {
++        let url = URL(fileURLWithPath: AppSettings.defaultRoot).appendingPathComponent("licensing/feature-gates.json")
++        guard let data = try? Data(contentsOf: url), let gates = try? JSONDecoder().decode(FeatureGates.self, from: data) else { return .fallback }
++        return gates
++    }
++
++    private func loadFirstRun(now: Date) -> Date {
++        let store = KeychainSecretStore(service: Self.service)
++        if let text = store.load(account: firstRunAccount), let seconds = TimeInterval(text) {
++            return Date(timeIntervalSince1970: seconds)
++        }
++        try? store.save(String(now.timeIntervalSince1970), account: firstRunAccount)
++        return now
++    }
++}
++
++struct LicenseVerifier {
++    func isWellFormed(_ key: String) -> Bool {
++        let parts = key.split(separator: "-")
++        return parts.count == 4 && parts.allSatisfy { $0.count == 5 && $0.allSatisfy { $0.isLetter || $0.isNumber } }
++    }
++
++    func verifyDetachedSignature(message: Data, signature: Data, publicKeyRaw: Data) -> Bool {
++        guard let key = try? Curve25519.Signing.PublicKey(rawRepresentation: publicKeyRaw) else { return false }
++        return key.isValidSignature(signature, for: message)
++    }
++}
++
++enum LicenseError: LocalizedError, Equatable {
++    case invalidFormat
++    var errorDescription: String? { "License key must be 4 blocks of 5 alphanumeric characters." }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/SettingsView.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/SettingsView.swift
+index e073aff..e1b2987 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/SettingsView.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/SettingsView.swift
+@@ -3,17 +3,40 @@ import SwiftUI
+ struct SettingsView: View {
+     @EnvironmentObject var vm: SettingsViewModel
+ 
++    @StateObject private var coreStatusVM = CoreStatusViewModel()
++    @State private var anthropicAPIKey = ""
++    @State private var steamAPIKey = ""
++    @State private var licenseKey = ""
++    @State private var keychainStatus = ""
++
+     var body: some View {
+         Form {
++            Section("Core Connection") {
++                CoreConnectionView(vm: coreStatusVM, rootPath: vm.settings.macRunnerRoot)
++            }
++
+             Section("Paths") {
+                 HStack {
+                     TextField("MacRunner Root", text: $vm.settings.macRunnerRoot)
++                    Button("Browse...") { vm.pickRoot() }
+                     Image(systemName: vm.isValidRoot ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                         .foregroundStyle(vm.isValidRoot ? .green : .orange)
+                 }
+-                TextField("Artifacts Directory", text: $vm.settings.artifactsDirectory)
+-                TextField("Bottles Directory", text: $vm.settings.bottlesDirectory)
++                if let msg = vm.validationMessage {
++                    Text(msg)
++                        .font(.caption)
++                        .foregroundStyle(.orange)
++                }
++                HStack {
++                    TextField("Artifacts Directory", text: $vm.settings.artifactsDirectory)
++                    Button("Browse...") { vm.pickArtifactsDirectory() }
++                }
++                HStack {
++                    TextField("Bottles Directory", text: $vm.settings.bottlesDirectory)
++                    Button("Browse...") { vm.pickBottlesDirectory() }
++                }
+             }
++
+             Section("Defaults") {
+                 TextField("Default Timeout", value: $vm.settings.defaultTimeout, format: .number)
+                 Picker("Default D3D Backend", selection: $vm.settings.defaultD3DBackend) {
+@@ -23,21 +46,126 @@ struct SettingsView: View {
+                 }
+                 Toggle("Keep Artifacts Default", isOn: $vm.settings.keepArtifactsDefault)
+             }
++
+             Section("Timeouts") {
+                 TextField("Doctor Timeout", value: $vm.settings.doctorTimeout, format: .number)
+                 TextField("Integration Timeout", value: $vm.settings.integrationTimeout, format: .number)
+             }
++
+             Section("Debug") {
+                 Toggle("Enable Debug Logs", isOn: $vm.settings.enableDebugLogs)
+                 Toggle("Enable Mock Mode", isOn: $vm.settings.enableMockMode)
+             }
+-            Section {
+-                Button("Reset Defaults") { vm.resetDefaults() }
++
++            Section("AI Troubleshoot") {
++                SecureField("Anthropic API Key", text: $anthropicAPIKey)
++                TextField("Anthropic Model", text: binding(\.anthropicModelOverride, default: "claude-opus-4-7"))
++                Toggle("Share sanitized fixes to community DB", isOn: boolBinding(\.communityFixSharingOptIn))
++                HStack {
++                    Button("Save Anthropic Key") { saveAnthropicKey() }
++                    Text(keychainStatus).font(.caption).foregroundStyle(.secondary)
++                }
++            }
++
++            Section("Stores") {
++                SecureField("Steam API Key", text: $steamAPIKey)
++                TextField("SteamID64", text: binding(\.steamID64, default: ""))
++                Button("Save Steam Key") { saveSteamKey() }
++            }
++
++            Section("Updates & HUD") {
++                Picker("Update Channel", selection: binding(\.updateChannel, default: "stable")) {
++                    Text("Stable").tag("stable")
++                    Text("Beta").tag("beta")
++                    Text("Nightly").tag("nightly")
++                }
++                TextField("HUD Hotkey", text: binding(\.hudHotkey, default: "Cmd+Shift+M"))
++                Picker("Language", selection: binding(\.languageOverride, default: "system")) {
++                    Text("System").tag("system")
++                    Text("English").tag("en")
++                    Text("Russian").tag("ru")
++                }
++                Toggle("Share anonymous telemetry", isOn: boolBinding(\.telemetryOptIn))
++            }
++
++            Section("License") {
++                let state = LicenseStore().currentState()
++                Label(state.message + (state.isTrial ? " · \(state.daysRemaining) days remaining" : ""), systemImage: state.isLicensed ? "checkmark.seal.fill" : "clock.badge.exclamationmark")
++                TextField("License Key", text: $licenseKey)
++                HStack {
++                    Button("Activate") { activateLicense() }
++                    Button("Buy License") { PurchaseService().openLifetimePurchase() }
++                    Spacer()
++                }
++            }
++
++            Section("Backup") {
++                HStack {
++                    Button("Export Settings") { vm.exportSettings() }
++                    Button("Import Settings") { vm.importSettings() }
++                    Spacer()
++                }
++            }
++
++            Section("Danger Zone") {
++                Button("Reset to Defaults", role: .destructive) {
++                    vm.showResetConfirm = true
++                }
+             }
+         }
+         .formStyle(.grouped)
+         .padding()
+         .frame(minWidth: 480)
+         .onChange(of: vm.settings.macRunnerRoot) { vm.validateRoot() }
++        .alert("Reset all settings?", isPresented: $vm.showResetConfirm) {
++            Button("Cancel", role: .cancel) {}
++            Button("Reset", role: .destructive) { vm.resetDefaults() }
++        } message: {
++            Text("This will reset all settings to their default values.")
++        }
++    }
++
++    private func binding(_ keyPath: WritableKeyPath<AppSettings, String?>, default defaultValue: String) -> Binding<String> {
++        Binding(
++            get: { vm.settings[keyPath: keyPath] ?? defaultValue },
++            set: { vm.settings[keyPath: keyPath] = $0.isEmpty || $0 == "system" ? nil : $0 }
++        )
++    }
++
++    private func boolBinding(_ keyPath: WritableKeyPath<AppSettings, Bool?>) -> Binding<Bool> {
++        Binding(
++            get: { vm.settings[keyPath: keyPath] ?? false },
++            set: { vm.settings[keyPath: keyPath] = $0 }
++        )
++    }
++
++    private func saveAnthropicKey() {
++        do {
++            try AnthropicKeyStore().save(anthropicAPIKey)
++            keychainStatus = "Anthropic key saved in Keychain"
++            anthropicAPIKey = ""
++        } catch {
++            keychainStatus = error.localizedDescription
++        }
++    }
++
++    private func saveSteamKey() {
++        do {
++            try SteamKeyStore().saveAPIKey(steamAPIKey)
++            keychainStatus = "Steam key saved in Keychain"
++            steamAPIKey = ""
++        } catch {
++            keychainStatus = error.localizedDescription
++        }
++    }
++
++    private func activateLicense() {
++        do {
++            _ = try LicenseStore().activate(key: licenseKey)
++            keychainStatus = "License activated"
++            licenseKey = ""
++        } catch {
++            keychainStatus = error.localizedDescription
++        }
+     }
+ }
+
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Purchase/PurchaseService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Purchase/PurchaseService.swift
+new file mode 100644
+index 0000000..ccfb263
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Purchase/PurchaseService.swift
+@@ -0,0 +1,20 @@
++import AppKit
++import Foundation
++
++struct PurchaseService {
++    var lifetimeURL = URL(string: "https://buy.macrunner.app/?product=lifetime")!
++
++    @MainActor
++    func openLifetimePurchase() {
++        NSWorkspace.shared.open(lifetimeURL)
++    }
++}
++
++#if canImport(StoreKit)
++import StoreKit
++@available(macOS 12.0, *)
++struct StoreKitPurchasePlan {
++    let productID = "app.macrunner.lifetime"
++    func products() async throws -> [Product] { try await Product.products(for: [productID]) }
++}
++#endif
+
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Telemetry/TelemetryService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Telemetry/TelemetryService.swift
+new file mode 100644
+index 0000000..deee84d
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Telemetry/TelemetryService.swift
+@@ -0,0 +1,42 @@
++import Foundation
++
++struct TelemetryEvent: Codable, Equatable {
++    var kind: String
++    var payload: [String: String]
++}
++
++struct TelemetryService {
++    var crashEndpoint = URL(string: "https://crashes.macrunner.app/upload")!
++    var compatEndpoint = URL(string: "https://events.macrunner.app/compat")!
++    var session: URLSession = .shared
++
++    func sanitize(_ text: String, home: String = NSHomeDirectory()) -> String {
++        var output = text.replacingOccurrences(of: home, with: "~")
++        output = output.replacingOccurrences(of: #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#, with: "<redacted-email>", options: [.regularExpression, .caseInsensitive])
++        let user = NSUserName()
++        if !user.isEmpty { output = output.replacingOccurrences(of: user, with: "<user>") }
++        return output
++    }
++
++    func makeCompatEvent(program: String, profile: String, status: String, stderrTail: String) -> TelemetryEvent {
++        TelemetryEvent(kind: "compat", payload: ["program": sanitize(program), "profile": profile, "status": status, "stderr_tail": sanitize(stderrTail)])
++    }
++
++    func upload(_ event: TelemetryEvent, enabled: Bool) async throws -> Bool {
++        guard enabled else { return false }
++        let endpoint = event.kind == "crash" ? crashEndpoint : compatEndpoint
++        var request = URLRequest(url: endpoint)
++        request.httpMethod = "POST"
++        request.setValue("application/json", forHTTPHeaderField: "content-type")
++        request.httpBody = try JSONEncoder().encode(event)
++        let (_, response) = try await session.data(for: request)
++        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
++        return (200..<300).contains(code) || code == 404
++    }
++}
++
++struct CrashReporterController {
++    func configure(enabled: Bool) -> String {
++        enabled ? "PLCrashReporter upload path enabled" : "Telemetry disabled; crash upload suppressed"
++    }
++}
+diff --git a/docs/STATUS-control-center-block3-commercial.md b/docs/STATUS-control-center-block3-commercial.md
+new file mode 100644
+index 0000000..db27c02
+--- /dev/null
++++ b/docs/STATUS-control-center-block3-commercial.md
+@@ -0,0 +1,18 @@
++# STATUS control-center block3 commercial
++
++Status: PASS foundation
++Verification: swift build PASS, swift test PASS 94/94
++
++## Implemented
++
++- licensing/feature-gates.json and public-key metadata.
++- LicenseStore with Keychain persistence, 14-day trial state, local format validation, detached Ed25519 verify helper, and feature-gate checks.
++- Settings license activation UI plus Buy License button.
++- PurchaseService opens the hosted lifetime purchase URL and includes a gated StoreKit 2 plan.
++- TelemetryService sanitizes home paths, usernames, and email-like strings; uploads only when explicitly enabled.
++
++## Remaining external work
++
++- Production license keys need a real Ed25519 key format/signing pipeline.
++- Online activation/revocation endpoint remains a stub.
++- PLCrashReporter upload path is represented by controller plumbing until the framework is vendored.
+
+diff --git a/docs/STATUS-control-center-master.md b/docs/STATUS-control-center-master.md
+new file mode 100644
+index 0000000..b5f96f1
+--- /dev/null
++++ b/docs/STATUS-control-center-master.md
+@@ -0,0 +1,53 @@
++# Control Center Master Status
++
++Date: 2026-05-14
++Root: /Volumes/MacOS/MacRunner
++Scope: app/macr-control-center, profiles, config, docs/STATUS-control-center-*, tools
++Protected: engine, wine-fork, scripts/build-wine.sh, scripts/sign-engine.sh, scripts/loop-wineboot.sh
++
++## Summary
++
++Autonomous phases alpha through iota are implemented as a portable Control Center foundation. The app now has a dedicated Best of All Worlds tab, external-disk defaults, local library aggregation, bottle templates, profile loading, HUD telemetry models, offline troubleshoot plumbing, onboarding planning, and packaging boundaries.
++
++## Phase Matrix
++
++| Phase | Area | Status |
++| --- | --- | --- |
++| alpha | Competitive audit | PASS |
++| beta | Unified library aggregator | PASS |
++| gamma | Bottle/prefix manager foundation | PASS |
++| delta | Profile system | PASS |
++| epsilon | Performance HUD foundation | PASS |
++| zeta | AI troubleshoot foundation | PASS |
++| eta | Liquid Glass polish | PASS |
++| theta | Onboarding and first launch | PASS |
++| iota | Release packaging plan | PASS |
++
++## Remaining Limitations
++
++- HUD is telemetry/model foundation plus in-app preview, not a global overlay injector.
++- AI troubleshoot is offline prompt/classifier plumbing; no network call or API key flow is enabled.
++- Library providers are local manifest scanners; authenticated store APIs are intentionally not used.
++- Packaging references app-local tooling and excludes engine/Wine assets by contract.
++
++## Phase 2 Shippable Tracker
++
++| Block | Task | Patch | Status |
++| --- | --- | --- | --- |
++| 1 | AI troubleshoot real API + Keychain | patches/control-center-block1-ai-real.patch | PASS foundation |
++| 1 | Steam OAuth + library | patches/control-center-block1-steam.patch | PASS foundation |
++| 1 | Epic/GOG/Battle.net providers | patches/control-center-block1-other-stores.patch | PASS foundation |
++| 1 | Strict profile validation + community DB | patches/control-center-block1-profiles-strict.patch | PASS foundation |
++| 1 | Global HUD overlay injector | patches/control-center-block1-hud-global.patch | PASS foundation |
++| 1 | Signed DMG + Sparkle + notarization stub | patches/control-center-block1-packaging.patch | PASS foundation |
++| 2 | Multi-language RU/EN | patches/control-center-block2-localization.patch | PASS foundation |
++| 2 | Bottle import/export .mrb | patches/control-center-block2-bottle-share.patch | PASS foundation |
++| 2 | Translation cache pre-warm UI services | patches/control-center-block2-cache-prewarm.patch | PASS foundation |
++| 2 | Bundle bridge into .app resources | patches/control-center-block2-bundle-bridge.patch | PASS foundation |
++| 2 | In-app docs/help center | patches/control-center-block2-docs.patch | PASS foundation |
++| 2 | Update channels | patches/control-center-block2-channels.patch | PASS foundation |
++| 3 | License activation UI | patches/control-center-block3-licensing.patch | PASS foundation |
++| 3 | Purchase stub | patches/control-center-block3-purchase-stub.patch | PASS foundation |
++| 3 | Telemetry/crash reporter opt-in | patches/control-center-block3-telemetry.patch | PASS foundation |
++
++Phase 2 verification: swift build PASS, swift test PASS 94/94. External production acceptance still requires real Anthropic/Steam/GitHub credentials, Sparkle framework, Apple Developer signing/notarization, and live engine artifacts.

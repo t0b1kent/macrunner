@@ -1,0 +1,33 @@
+diff --git a/docs/STATUS-control-center-phase-eta.md b/docs/STATUS-control-center-phase-eta.md
+new file mode 100644
+index 0000000..dde9705
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-eta.md
+@@ -0,0 +1,14 @@
++# STATUS control-center phase eta
++
++Status: PASS
++Area: Liquid Glass polish
++
++## Implemented
++
++- Added a dedicated Best of All Worlds dashboard using material cards, gradient backdrop, rounded phase grid, and compact metrics.
++- Integrated the tab into ContentView without replacing existing tools.
++
++## Remaining Limitations
++
++- Visual polish is scoped to the new tab.
++- Existing tabs keep their current design language.
+diff --git a/tools/vault/33-phase-eta-polish.md b/tools/vault/33-phase-eta-polish.md
+new file mode 100644
+index 0000000..1221d83
+--- /dev/null
++++ b/tools/vault/33-phase-eta-polish.md
+@@ -0,0 +1,7 @@
++# 33 Phase eta polish
++
++Outcome: Best of All Worlds tab adds a polished Control Center dashboard.
++
++- Material cards and gradient background.
++- Phase grid from alpha through iota.
++- Compact operating metrics for library, profiles, bottles, HUD, troubleshoot, and packaging.

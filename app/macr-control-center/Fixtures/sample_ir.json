@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "shaders": [
+    {
+      "name": "vs_main",
+      "stage": "vertex",
+      "inputs": [{"name": "POSITION", "semantic": "POSITION", "format": "float4"}],
+      "outputs": [{"name": "SV_POSITION", "semantic": "SV_POSITION", "format": "float4"}]
+    },
+    {
+      "name": "ps_main",
+      "stage": "pixel",
+      "inputs": [{"name": "SV_POSITION", "semantic": "SV_POSITION", "format": "float4"}],
+      "outputs": [{"name": "SV_TARGET", "semantic": "SV_TARGET", "format": "float4"}]
+    }
+  ],
+  "pipeline": {
+    "primitive_topology": "triangle_list",
+    "rasterizer_state": {"cull_mode": "none", "fill_mode": "solid"},
+    "blend_state": {"enabled": false}
+  },
+  "resources": {
+    "constant_buffers": [{"name": "cb0", "size": 64, "binding": 0}],
+    "textures": [],
+    "samplers": []
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": "hello_arm64",
+      "name": "Hello ARM64",
+      "exePathHash": "abc123",
+      "arch": "arm64",
+      "lastStatus": "PASS",
+      "bestD3DBackend": "none",
+      "lastSuccessfulVersion": "v0.1",
+      "failuresCount": 0,
+      "notes": "Basic console app. Works out of the box.",
+      "tags": ["console", "fixture"],
+      "lastRunDate": "2026-05-12T09:00:00Z"
+    },
+    {
+      "id": "d3d11_triangle_x64",
+      "name": "D3D11 Triangle x64",
+      "exePathHash": "def456",
+      "arch": "x64",
+      "lastStatus": "PASS",
+      "bestD3DBackend": "mock",
+      "lastSuccessfulVersion": "v0.1",
+      "failuresCount": 1,
+      "notes": "Requires D3D trace replay. Metal backend slower.",
+      "tags": ["D3D11", "fixture", "graphics"],
+      "lastRunDate": "2026-05-12T09:30:00Z"
+    },
+    {
+      "id": "crash_arm64",
+      "name": "Crash ARM64",
+      "exePathHash": "ghi789",
+      "arch": "arm64",
+      "lastStatus": "CRASH",
+      "bestD3DBackend": "none",
+      "lastSuccessfulVersion": null,
+      "failuresCount": 5,
+      "notes": "Intentional null dereference. Useful for triage testing.",
+      "tags": ["crash", "fixture"],
+      "lastRunDate": "2026-05-12T08:15:00Z"
+    }
+  ]
+}

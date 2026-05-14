@@ -1,0 +1,26 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Purchase/PurchaseService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Purchase/PurchaseService.swift
+new file mode 100644
+index 0000000..ccfb263
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Purchase/PurchaseService.swift
+@@ -0,0 +1,20 @@
++import AppKit
++import Foundation
++
++struct PurchaseService {
++    var lifetimeURL = URL(string: "https://buy.macrunner.app/?product=lifetime")!
++
++    @MainActor
++    func openLifetimePurchase() {
++        NSWorkspace.shared.open(lifetimeURL)
++    }
++}
++
++#if canImport(StoreKit)
++import StoreKit
++@available(macOS 12.0, *)
++struct StoreKitPurchasePlan {
++    let productID = "app.macrunner.lifetime"
++    func products() async throws -> [Product] { try await Product.products(for: [productID]) }
++}
++#endif

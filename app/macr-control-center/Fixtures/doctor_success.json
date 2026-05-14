@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "host": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "macos": "26.4"
+  },
+  "tools": {
+    "clang": true,
+    "python": "3.12.4"
+  },
+  "lanes": {
+    "arm64": {
+      "path": "/Users/timurtoby/Developer/MacRunner/engine/wine/dist/bin/wine",
+      "exists": true,
+      "executable": true
+    },
+    "x64": {
+      "path": "/Users/timurtoby/Developer/MacRunner/engine/wine-x86_64/bin/wine",
+      "exists": true,
+      "executable": true
+    }
+  },
+  "graphics": {
+    "render_core": true,
+    "metal_probe_pass": true,
+    "metal_probe_stdout": "device=yes name=Apple M1"
+  },
+  "scripts": {
+    "run_windows_app": {
+      "path": "/Users/timurtoby/Developer/MacRunner/scripts/run-windows-app.sh",
+      "exists": true,
+      "executable": true
+    },
+    "d3d_smoke": {
+      "path": "/Users/timurtoby/Developer/MacRunner/scripts/run-d3d-end-to-end-smoke.sh",
+      "exists": true,
+      "executable": true
+    }
+  }
+}

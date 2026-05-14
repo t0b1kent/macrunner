@@ -1,0 +1,35 @@
+diff --git a/docs/STATUS-control-center-phase-epsilon.md b/docs/STATUS-control-center-phase-epsilon.md
+new file mode 100644
+index 0000000..63c4529
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-epsilon.md
+@@ -0,0 +1,15 @@
++# STATUS control-center phase epsilon
++
++Status: PASS
++Area: Performance HUD foundation
++
++## Implemented
++
++- Added ControlCenterHUDSample, ControlCenterHUDSummary, and ControlCenterHUDTelemetryService.
++- Added JSON-line decoding and summary aggregation.
++- Added in-app dashboard preview metrics.
++
++## Remaining Limitations
++
++- This is not a global overlay injector.
++- Runtime sampling hooks are model-ready but not wired into engine internals.
+diff --git a/tools/vault/31-phase-epsilon-hud.md b/tools/vault/31-phase-epsilon-hud.md
+new file mode 100644
+index 0000000..6e9a367
+--- /dev/null
++++ b/tools/vault/31-phase-epsilon-hud.md
+@@ -0,0 +1,8 @@
++# 31 Phase epsilon HUD
++
++Outcome: HUD telemetry foundation is implemented.
++
++- Added JSON-line sample decoder.
++- Added summary aggregation for FPS, frame time, and peak memory.
++- Dashboard shows in-app preview metrics.
++- Global overlay injection is intentionally not part of this patch.

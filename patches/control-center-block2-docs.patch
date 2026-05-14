@@ -1,0 +1,219 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Help/HelpCenterService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Help/HelpCenterService.swift
+new file mode 100644
+index 0000000..076d3e3
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Help/HelpCenterService.swift
+@@ -0,0 +1,54 @@
++import Foundation
++import SwiftUI
++
++struct HelpDocument: Identifiable, Equatable {
++    var id: String
++    var title: String
++    var markdown: String
++}
++
++struct HelpCenterService {
++    func documents() -> [HelpDocument] {
++        let files: [URL] = Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: "Docs") ?? Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: nil) ?? []
++        var docs: [HelpDocument] = files.compactMap { url in
++            guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
++            let title = text.split(separator: "\n").first.map { String($0).replacingOccurrences(of: "# ", with: "") } ?? url.deletingPathExtension().lastPathComponent
++            return HelpDocument(id: url.deletingPathExtension().lastPathComponent, title: title, markdown: text)
++        }.sorted { $0.title < $1.title }
++        if !docs.contains(where: { $0.id == "getting-started" }) {
++            docs.append(HelpDocument(id: "getting-started", title: "Getting Started", markdown: "# Getting Started\n\nSet the MacRunner root, confirm external bottles, then connect store integrations."))
++        }
++        return docs
++    }
++
++    func search(_ query: String) -> [HelpDocument] {
++        let docs = documents()
++        guard !query.isEmpty else { return docs }
++        return docs.filter { $0.title.localizedCaseInsensitiveContains(query) || $0.markdown.localizedCaseInsensitiveContains(query) }
++    }
++}
++
++struct HelpCenterView: View {
++    @State private var query = ""
++    private let service = HelpCenterService()
++
++    var body: some View {
++        NavigationSplitView {
++            List(service.search(query), id: \.id) { doc in
++                Text(doc.title)
++            }
++            .searchable(text: $query)
++            .navigationTitle("Help")
++        } detail: {
++            ScrollView {
++                VStack(alignment: .leading, spacing: 16) {
++                    ForEach(service.search(query), id: \.id) { doc in
++                        Text((try? AttributedString(markdown: doc.markdown)) ?? AttributedString(doc.markdown))
++                            .frame(maxWidth: .infinity, alignment: .leading)
++                    }
++                }
++                .padding()
++            }
++        }
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/getting-started.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/getting-started.md
+new file mode 100644
+index 0000000..1009755
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/getting-started.md
+@@ -0,0 +1,3 @@
++# Getting Started
++
++Set the MacRunner root, confirm external bottles, choose your language, then connect store integrations.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/bottles.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/bottles.md
+new file mode 100644
+index 0000000..d6cc615
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/bottles.md
+@@ -0,0 +1,3 @@
++# Bottles
++
++Bottles live on the external disk. Exported .mrb archives are encrypted and exclude large installers by default.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/profiles.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/profiles.md
+new file mode 100644
+index 0000000..f9cca69
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/profiles.md
+@@ -0,0 +1,3 @@
++# Profiles
++
++Profiles describe architecture, Windows version, DLLs, graphics backend, and known compatibility fixes.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/troubleshooting.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/troubleshooting.md
+new file mode 100644
+index 0000000..1ba2feb
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/troubleshooting.md
+@@ -0,0 +1,3 @@
++# Troubleshooting
++
++AI troubleshoot uses Anthropic when a Keychain API key exists and falls back to the offline classifier otherwise.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/store-integrations.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/store-integrations.md
+new file mode 100644
+index 0000000..2176ade
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/store-integrations.md
+@@ -0,0 +1,3 @@
++# Store Integrations
++
++Steam uses local VDF plus Web API. Epic and GOG use CLI wrappers. Battle.net is local read-only.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/performance-hud.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/performance-hud.md
+new file mode 100644
+index 0000000..93c7cc8
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/performance-hud.md
+@@ -0,0 +1,3 @@
++# Performance HUD
++
++The HUD reads frame telemetry from the Unix socket at $MACRUNNER_ROOT/run/hud.sock.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/release-notes.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/release-notes.md
+new file mode 100644
+index 0000000..b18da91
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/release-notes.md
+@@ -0,0 +1,3 @@
++# Release Notes
++
++0.2.0 prepares the Control Center for shippable integrations, licensing, packaging, and updates.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift
+index 5e073db..c9b6d4b 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift
+@@ -13,33 +13,57 @@ struct ContentView: View {
+             RunPanelView()
+                 .tabItem { Label("Run", systemImage: "play.fill") }
+                 .tag(1)
++            TaskQueueView()
++                .tabItem { Label("Queue", systemImage: "list.bullet.rectangle") }
++                .tag(2)
+             LiveLogView()
+                 .tabItem { Label("Logs", systemImage: "doc.text.magnifyingglass") }
+-                .tag(2)
++                .tag(3)
+             D3DArtifactsView()
+                 .tabItem { Label("D3D", systemImage: "cube") }
+-                .tag(3)
++                .tag(4)
+             DoctorView()
+                 .tabItem { Label("Doctor", systemImage: "stethoscope") }
+-                .tag(4)
++                .tag(5)
+             BottleManagerView()
+                 .tabItem { Label("Bottles", systemImage: "archivebox") }
+-                .tag(5)
++                .tag(6)
+             WineProcessView()
+                 .tabItem { Label("Processes", systemImage: "cpu") }
+-                .tag(6)
++                .tag(7)
+             CorpusView()
+                 .tabItem { Label("Corpus", systemImage: "doc.text") }
+-                .tag(7)
++                .tag(8)
+             PerformanceView()
+                 .tabItem { Label("Perf", systemImage: "chart.bar") }
+-                .tag(8)
++                .tag(9)
++            IntegrationBlocksView()
++                .tabItem { Label("Blocks", systemImage: "building.blocks") }
++                .tag(10)
+             CompatibilityDBView()
+                 .tabItem { Label("Compat", systemImage: "checkmark.seal.fill") }
+-                .tag(9)
++                .tag(11)
++            DebugBundleView()
++                .tabItem { Label("Bundle", systemImage: "doc.zipper") }
++                .tag(12)
++            AppPackagingView()
++                .tabItem { Label("Package", systemImage: "archivebox.fill") }
++                .tag(13)
++            ReleaseManagerView()
++                .tabItem { Label("Releases", systemImage: "shippingbox") }
++                .tag(14)
++            LocalTrialWizardView()
++                .tabItem { Label("Trial", systemImage: "sparkles") }
++                .tag(15)
++            ControlCenterWorldsView()
++                .tabItem { Label("Worlds", systemImage: "sparkles.rectangle.stack") }
++                .tag(16)
++            HelpCenterView()
++                .tabItem { Label("Help", systemImage: "questionmark.circle") }
++                .tag(17)
+             SettingsView()
+                 .tabItem { Label("Settings", systemImage: "gear") }
+-                .tag(10)
++                .tag(18)
+         }
+         .environmentObject(settingsVM)
+         .frame(minWidth: 1024, minHeight: 700)
+diff --git a/docs/STATUS-control-center-block2-features.md b/docs/STATUS-control-center-block2-features.md
+new file mode 100644
+index 0000000..58b0344
+--- /dev/null
++++ b/docs/STATUS-control-center-block2-features.md
+@@ -0,0 +1,19 @@
++# STATUS control-center block2 features
++
++Status: PASS foundation
++Verification: swift build PASS, swift test PASS 94/94
++
++## Implemented
++
++- RU/EN Localizable.strings resources and localization lint script.
++- .mrb bottle archive encryption/decryption with CryptoKit AES-256-GCM and manifest metadata.
++- Translation cache stats and pre-warm/share planning under cache/translation.
++- EngineEnv resource resolution preferring bundled engine/hyperbridge resources with dev fallback to MACRUNNER_ROOT.
++- Resource-backed Markdown help center with searchable SwiftUI renderer and Help tab.
++- UpdateChannel model and stable/beta/nightly appcast URL selection.
++
++## Remaining external work
++
++- Existing legacy UI strings are not fully converted to LocalizedStringKey.
++- .mrb service currently encrypts manifest/file-list payload; full ZIP restore wizard is next.
++- Pre-warm measurement depends on live HyperBridge cache metrics from Codex #1.

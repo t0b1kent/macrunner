@@ -1,0 +1,33 @@
+diff --git a/docs/STATUS-control-center-phase-gamma.md b/docs/STATUS-control-center-phase-gamma.md
+new file mode 100644
+index 0000000..70c953e
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-gamma.md
+@@ -0,0 +1,14 @@
++# STATUS control-center phase gamma
++
++Status: PASS
++Area: Bottle and prefix manager foundation
++
++## Implemented
++
++- Added ControlCenterBottlePlanner and reusable bottle templates for games, 1C, AutoCAD, and office apps.
++- Bottle paths are derived from /Volumes/MacOS/MacRunner/bottles through AppSettings defaults.
++- Wine actions are represented as Process invocations, not linked engine calls.
++
++## Remaining Limitations
++
++- Planner creates safe invocations; it does not execute wineboot automatically in tests.
+diff --git a/tools/vault/29-phase-gamma-bottles.md b/tools/vault/29-phase-gamma-bottles.md
+new file mode 100644
+index 0000000..7fcb3d3
+--- /dev/null
++++ b/tools/vault/29-phase-gamma-bottles.md
+@@ -0,0 +1,7 @@
++# 29 Phase gamma bottles
++
++Outcome: Bottle planning is external-disk-first and Process-only.
++
++- Default bottles root: /Volumes/MacOS/MacRunner/bottles.
++- Templates: Game DX11, 1C Enterprise, AutoCAD, Office.
++- Execution boundary: generated /usr/bin/env wine wineboot invocations, no direct engine linkage.

@@ -1,0 +1,35 @@
+diff --git a/docs/STATUS-control-center-phase-alpha.md b/docs/STATUS-control-center-phase-alpha.md
+new file mode 100644
+index 0000000..7ea00b5
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-alpha.md
+@@ -0,0 +1,15 @@
++# STATUS control-center phase alpha
++
++Status: PASS
++Area: Competitive audit and product guardrails
++
++## Implemented
++
++- Added built-in CompetitiveAuditService with reviewed product categories, steal list, avoid list, and MacRunner positioning.
++- Wired audit guardrails into the Best of All Worlds Control Center tab.
++- Captured vault note 27 under tools/vault.
++
++## Boundaries
++
++- No web scraping or store authentication was added.
++- No engine, Wine fork, or root script paths were touched.
+diff --git a/tools/vault/27-control-center-phase-alpha-audit.md b/tools/vault/27-control-center-phase-alpha-audit.md
+new file mode 100644
+index 0000000..79b58b7
+--- /dev/null
++++ b/tools/vault/27-control-center-phase-alpha-audit.md
+@@ -0,0 +1,8 @@
++# 27 Control Center phase alpha audit
++
++Outcome: Competitive audit is captured as code and status docs.
++
++- Reviewed product set: CrossOver, Whisky, Heroic, Steam, Lutris, Bottles, Porting Kit, PlayOnMac, GPT UI wrappers.
++- Steal: unified library, explicit bottles, profile-driven defaults, first-launch checks, debug bundles.
++- Avoid: hidden downloads, home-directory bottle roots, direct engine linkage, opaque badges, blocking UI.
++- MacRunner stance: transparent power-user Control Center with external-disk-first state.

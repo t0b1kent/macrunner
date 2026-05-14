@@ -1,0 +1,159 @@
+diff --git a/app/macr-control-center/Package.swift b/app/macr-control-center/Package.swift
+index 20d017f..cd1ecfe 100644
+--- a/app/macr-control-center/Package.swift
++++ b/app/macr-control-center/Package.swift
+@@ -3,17 +3,28 @@ import PackageDescription
+ 
+ let package = Package(
+     name: "MacRunnerControlCenter",
++    defaultLocalization: "en",
+     platforms: [.macOS(.v14)],
+     products: [
+         .executable(
+             name: "MacRunnerControlCenter",
+             targets: ["MacRunnerControlCenter"]
++        ),
++        .executable(
++            name: "macr-hud",
++            targets: ["macr-hud"]
+         )
+     ],
+     targets: [
+         .executableTarget(
+             name: "MacRunnerControlCenter",
+             dependencies: [],
++            resources: [.process("Resources")],
++            swiftSettings: [.swiftLanguageMode(.v5)]
++        ),
++        .executableTarget(
++            name: "macr-hud",
++            dependencies: [],
+             swiftSettings: [.swiftLanguageMode(.v5)]
+         ),
+         .testTarget(
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/HUD/HUDGlobalService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/HUD/HUDGlobalService.swift
+new file mode 100644
+index 0000000..f51b49f
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/HUD/HUDGlobalService.swift
+@@ -0,0 +1,53 @@
++import AppKit
++import Foundation
++
++struct HUDFrameSample: Codable, Equatable {
++    var fps: Double
++    var frameMs: Double
++    var gpuMs: Double?
++    var cpuMs: Double?
++    var cacheHits: Int
++    var cacheMisses: Int
++
++    enum CodingKeys: String, CodingKey {
++        case fps
++        case frameMs = "frame_ms"
++        case gpuMs = "gpu_ms"
++        case cpuMs = "cpu_ms"
++        case cacheHits = "cache_hits"
++        case cacheMisses = "cache_misses"
++    }
++
++    var cacheHitRate: Double {
++        let total = cacheHits + cacheMisses
++        return total == 0 ? 0 : Double(cacheHits) / Double(total)
++    }
++}
++
++struct HUDRollingBuffer: Equatable {
++    private(set) var samples: [HUDFrameSample] = []
++    var capacity = 60
++
++    mutating func append(_ sample: HUDFrameSample) {
++        samples.append(sample)
++        if samples.count > capacity { samples.removeFirst(samples.count - capacity) }
++    }
++}
++
++struct HUDSocketConfig: Codable, Equatable {
++    var socketPath: String
++    var hotkey: String
++
++    static func `default`(settings: AppSettings) -> HUDSocketConfig {
++        let socket = URL(fileURLWithPath: settings.macRunnerRoot).appendingPathComponent("run/hud.sock").path
++        return HUDSocketConfig(socketPath: socket, hotkey: settings.hudHotkey ?? "Cmd+Shift+M")
++    }
++}
++
++struct HUDLauncher {
++    func launchPlan(settings: AppSettings) -> ProcessInvocation {
++        let hudBinary = Bundle.main.resourceURL?.appendingPathComponent("macr-hud").path ?? "macr-hud"
++        let config = HUDSocketConfig.default(settings: settings)
++        return ProcessInvocation(executable: hudBinary, arguments: ["--socket", config.socketPath, "--hotkey", config.hotkey], currentDirectory: settings.macRunnerRoot, environment: ["MACRUNNER_ROOT": settings.macRunnerRoot])
++    }
++}
+diff --git a/app/macr-control-center/Sources/macr-hud/main.swift b/app/macr-control-center/Sources/macr-hud/main.swift
+new file mode 100644
+index 0000000..8b68e60
+--- /dev/null
++++ b/app/macr-control-center/Sources/macr-hud/main.swift
+@@ -0,0 +1,61 @@
++import AppKit
++import Foundation
++import MetalKit
++
++final class HUDOverlayWindow: NSWindow {
++    override var canBecomeKey: Bool { false }
++    override var canBecomeMain: Bool { false }
++}
++
++final class HUDAppDelegate: NSObject, NSApplicationDelegate {
++    private var window: HUDOverlayWindow?
++    private var monitor: Any?
++
++    func applicationDidFinishLaunching(_ notification: Notification) {
++        let args = CommandLine.arguments
++        if args.contains("--check") {
++            print("macr-hud: ok")
++            NSApp.terminate(nil)
++            return
++        }
++        createWindow()
++        monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
++            if event.modifierFlags.contains([.command, .shift]), event.charactersIgnoringModifiers?.lowercased() == "m" {
++                self?.toggle()
++            }
++        }
++    }
++
++    private func createWindow() {
++        let frame = NSRect(x: 32, y: NSScreen.main?.frame.height ?? 800 - 160, width: 280, height: 132)
++        let window = HUDOverlayWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
++        window.level = .screenSaver
++        window.ignoresMouseEvents = true
++        window.isOpaque = false
++        window.backgroundColor = .clear
++        window.contentView = HUDView(frame: NSRect(x: 0, y: 0, width: 280, height: 132))
++        window.orderFrontRegardless()
++        self.window = window
++    }
++
++    private func toggle() {
++        guard let window else { return }
++        window.isVisible ? window.orderOut(nil) : window.orderFrontRegardless()
++    }
++}
++
++final class HUDView: NSView {
++    override func draw(_ dirtyRect: NSRect) {
++        NSColor.black.withAlphaComponent(0.62).setFill()
++        NSBezierPath(roundedRect: bounds, xRadius: 14, yRadius: 14).fill()
++        let text = "FPS 60\nFrame 16.6 ms\nCache 95%"
++        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 18, weight: .semibold), .foregroundColor: NSColor.white]
++        text.draw(in: bounds.insetBy(dx: 18, dy: 18), withAttributes: attrs)
++    }
++}
++
++let app = NSApplication.shared
++let delegate = HUDAppDelegate()
++app.delegate = delegate
++app.setActivationPolicy(.accessory)
++app.run()

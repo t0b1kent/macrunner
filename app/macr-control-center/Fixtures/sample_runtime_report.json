@@ -1,0 +1,12 @@
+{
+  "status": "PASS",
+  "backend": "mock",
+  "frames": 1,
+  "draw_calls": 1,
+  "unsupported_calls": 0,
+  "validation_errors": [],
+  "checksum": "2c588898cdcf6d4fe2a4e83fe47dc11bcba7f1ef86c0153f10e29ed5d457b0e5",
+  "non_background_pixels": 1152,
+  "render_time_ms": 12.3,
+  "build_time_ms": 45.6
+}

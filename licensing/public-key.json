@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "algorithm": "Ed25519",
+  "key_id": "macrunner-dev-2026",
+  "public_key_base64": "MCowBQYDK2VwAyEAk+placeholderPublicVerifyKeyForLocalDevelopment="
+}

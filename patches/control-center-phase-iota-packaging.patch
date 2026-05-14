@@ -1,0 +1,53 @@
+diff --git a/docs/STATUS-control-center-phase-iota.md b/docs/STATUS-control-center-phase-iota.md
+new file mode 100644
+index 0000000..fbb1bc7
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-iota.md
+@@ -0,0 +1,14 @@
++# STATUS control-center phase iota
++
++Status: PASS
++Area: Release packaging plan
++
++## Implemented
++
++- Added ControlCenterPackagingPlanner with app-local package script invocation.
++- Explicitly excludes engine, wine-fork, and protected root scripts.
++- Added config/control-center.json documenting process-only integration and external disk roots.
++
++## Remaining Limitations
++
++- Signing, notarization, and DMG release automation remain outside this patch.
+diff --git a/tools/vault/35-phase-iota-packaging.md b/tools/vault/35-phase-iota-packaging.md
+new file mode 100644
+index 0000000..9ddf44b
+--- /dev/null
++++ b/tools/vault/35-phase-iota-packaging.md
+@@ -0,0 +1,7 @@
++# 35 Phase iota packaging
++
++Outcome: Packaging plan is explicit about boundaries.
++
++- Invokes app/macr-control-center/scripts/package-control-center.sh through ProcessInvocation.
++- Includes Control Center, profiles, and config metadata.
++- Excludes engine, wine-fork, and protected root scripts.
+diff --git a/config/control-center.json b/config/control-center.json
+new file mode 100644
+index 0000000..ac96533
+--- /dev/null
++++ b/config/control-center.json
+@@ -0,0 +1,14 @@
++{
++  "schema_version": 1,
++  "macrunner_root": "/Volumes/MacOS/MacRunner",
++  "bottles_root": "/Volumes/MacOS/MacRunner/bottles",
++  "profiles_root": "/Volumes/MacOS/MacRunner/profiles",
++  "engine_integration": "process-only",
++  "protected_paths": [
++    "engine/",
++    "wine-fork/",
++    "scripts/build-wine.sh",
++    "scripts/sign-engine.sh",
++    "scripts/loop-wineboot.sh"
++  ]
++}

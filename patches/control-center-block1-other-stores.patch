@@ -1,0 +1,134 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Epic/LegendaryWrapper.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Epic/LegendaryWrapper.swift
+new file mode 100644
+index 0000000..957770d
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Epic/LegendaryWrapper.swift
+@@ -0,0 +1,45 @@
++import Foundation
++
++struct StoreGame: Identifiable, Codable, Equatable {
++    var id: String
++    var title: String
++    var source: GameLibrarySource
++    var installPath: String?
++    var artURL: URL?
++    var installed: Bool
++}
++
++struct StoreCommandPlan: Codable, Equatable {
++    var executable: String
++    var arguments: [String]
++    var environment: [String: String]
++}
++
++struct LegendaryWrapper {
++    var executable: String
++
++    init(root: String = AppSettings.defaultRoot) {
++        let bundled = URL(fileURLWithPath: root).appendingPathComponent("tools/legendary/legendary").path
++        self.executable = FileManager.default.fileExists(atPath: bundled) ? bundled : "/usr/bin/env"
++    }
++
++    func loginPlan() -> StoreCommandPlan {
++        StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["legendary", "auth"] : ["auth"], environment: [:])
++    }
++
++    func listPlan() -> StoreCommandPlan {
++        StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["legendary", "list", "--json"] : ["list", "--json"], environment: [:])
++    }
++
++    func launchPlan(appName: String) -> StoreCommandPlan {
++        StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["legendary", "launch", appName] : ["launch", appName], environment: [:])
++    }
++
++    func parseListJSON(_ data: Data) -> [StoreGame] {
++        guard let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
++        return array.map { item in
++            let id = item["app_name"] as? String ?? item["id"] as? String ?? UUID().uuidString
++            return StoreGame(id: "epic:\(id)", title: item["app_title"] as? String ?? item["title"] as? String ?? id, source: .epic, installPath: item["install_path"] as? String, artURL: (item["image_url"] as? String).flatMap(URL.init(string:)), installed: item["is_installed"] as? Bool ?? false)
++        }
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/GOG/GogdlWrapper.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/GOG/GogdlWrapper.swift
+new file mode 100644
+index 0000000..84810d0
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/GOG/GogdlWrapper.swift
+@@ -0,0 +1,33 @@
++import Foundation
++
++struct GogdlWrapper {
++    var executable: String
++
++    init(root: String = AppSettings.defaultRoot) {
++        let bundled = URL(fileURLWithPath: root).appendingPathComponent("tools/gogdl/gogdl").path
++        self.executable = FileManager.default.fileExists(atPath: bundled) ? bundled : "/usr/bin/env"
++    }
++
++    func loginPlan() -> StoreCommandPlan {
++        StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["gogdl", "auth"] : ["auth"], environment: [:])
++    }
++
++    func listPlan() -> StoreCommandPlan {
++        StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["gogdl", "list", "--json"] : ["list", "--json"], environment: [:])
++    }
++
++    func launchPlan(productID: String, executablePath: String?) -> StoreCommandPlan {
++        if let executablePath {
++            return StoreCommandPlan(executable: "/usr/bin/open", arguments: [executablePath], environment: [:])
++        }
++        return StoreCommandPlan(executable: executable, arguments: executable == "/usr/bin/env" ? ["gogdl", "launch", productID] : ["launch", productID], environment: [:])
++    }
++
++    func parseListJSON(_ data: Data) -> [StoreGame] {
++        guard let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
++        return array.map { item in
++            let id = String(describing: item["id"] ?? item["product_id"] ?? UUID().uuidString)
++            return StoreGame(id: "gog:\(id)", title: item["title"] as? String ?? item["name"] as? String ?? id, source: .gog, installPath: item["install_path"] as? String, artURL: (item["cover"] as? String).flatMap(URL.init(string:)), installed: item["installed"] as? Bool ?? false)
++        }
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/BattleNet/BattleNetLocalReader.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/BattleNet/BattleNetLocalReader.swift
+new file mode 100644
+index 0000000..f4ea962
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/BattleNet/BattleNetLocalReader.swift
+@@ -0,0 +1,38 @@
++import Foundation
++
++struct BattleNetLocalReader {
++    var battleNetRoot: URL = URL(fileURLWithPath: "~/Library/Application Support/Battle.net".macrExpandingTilde)
++
++    func readInstalledGames() -> [StoreGame] {
++        var games: [StoreGame] = []
++        let config = battleNetRoot.appendingPathComponent("Battle.net.config")
++        if let data = try? Data(contentsOf: config),
++           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
++            games.append(contentsOf: parseConfig(object))
++        }
++        let productDB = battleNetRoot.appendingPathComponent("Agent/product.db")
++        if let text = try? String(contentsOf: productDB, encoding: .utf8) {
++            games.append(contentsOf: parseProductDB(text))
++        }
++        var unique: [String: StoreGame] = [:]
++        for game in games { unique[game.id] = game }
++        return unique.values.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
++    }
++
++    private func parseConfig(_ object: [String: Any]) -> [StoreGame] {
++        let products = object["Games"] as? [String: Any] ?? object["games"] as? [String: Any] ?? [:]
++        return products.compactMap { key, value in
++            let dict = value as? [String: Any] ?? [:]
++            let path = dict["InstallPath"] as? String ?? dict["install_path"] as? String
++            return StoreGame(id: "battlenet:\(key)", title: dict["Name"] as? String ?? key, source: .battleNet, installPath: path, artURL: nil, installed: path.map { FileManager.default.fileExists(atPath: $0) } ?? true)
++        }
++    }
++
++    private func parseProductDB(_ text: String) -> [StoreGame] {
++        text.split(separator: "\n").compactMap { line in
++            guard line.contains("install") || line.contains("product") else { return nil }
++            let title = line.split(separator: "|").first.map(String.init) ?? String(line.prefix(32))
++            return StoreGame(id: "battlenet:\(title.lowercased().replacingOccurrences(of: " ", with: "-"))", title: title, source: .battleNet, installPath: nil, artURL: nil, installed: true)
++        }
++    }
++}

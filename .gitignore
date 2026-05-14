@@ -46,3 +46,4 @@ secrets/
 tests/installers/*.exe
 tests/installers/*.msi
 engine/
+licensing/signing.key

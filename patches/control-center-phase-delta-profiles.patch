@@ -1,0 +1,97 @@
+diff --git a/docs/STATUS-control-center-phase-delta.md b/docs/STATUS-control-center-phase-delta.md
+new file mode 100644
+index 0000000..2a31b5b
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-delta.md
+@@ -0,0 +1,15 @@
++# STATUS control-center phase delta
++
++Status: PASS
++Area: Profile system
++
++## Implemented
++
++- Added ControlCenterProfileStore that loads existing schema variants without rewriting them.
++- Added business-autocad-2025 and business-office-generic profile foundations.
++- Profile metrics are surfaced in the Best of All Worlds tab.
++
++## Remaining Limitations
++
++- Profile validation is lightweight and accepts current mixed schema variants.
++- Full JSON schema enforcement remains future work.
+diff --git a/tools/vault/30-phase-delta-profiles.md b/tools/vault/30-phase-delta-profiles.md
+new file mode 100644
+index 0000000..ac3f538
+--- /dev/null
++++ b/tools/vault/30-phase-delta-profiles.md
+@@ -0,0 +1,8 @@
++# 30 Phase delta profiles
++
++Outcome: Existing mixed profile schemas load into a common summary model.
++
++- Added ControlCenterProfileStore.
++- Added business-autocad-2025.json.
++- Added business-office-generic.json.
++- Validation remains permissive to avoid breaking current profiles.
+diff --git a/profiles/business-autocad-2025.json b/profiles/business-autocad-2025.json
+new file mode 100644
+index 0000000..0b97d04
+--- /dev/null
++++ b/profiles/business-autocad-2025.json
+@@ -0,0 +1,27 @@
++{
++  "schema_version": 2,
++  "id": "business-autocad-2025",
++  "name": "AutoCAD 2025",
++  "category": "business-cad",
++  "status": "foundation",
++  "architecture": "x86_64",
++  "default_lane": "rosetta-wine64",
++  "bottle_policy": {
++    "isolation": "dedicated",
++    "default_bottle_id": "autocad-2025"
++  },
++  "windows_version": "win10",
++  "required_dlls": ["vcrun2019", "corefonts", "gdiplus"],
++  "graphics": {
++    "api": "dx11",
++    "shader_cache": true
++  },
++  "env": {
++    "WINEDEBUG": "-all"
++  },
++  "known_issues": [
++    "Licensing flows and hardware acceleration need app-specific validation.",
++    "No engine linkage from Control Center; launch must go through existing Process-based runner."
++  ],
++  "notes": "Control Center profile foundation for CAD-class business applications."
++}
+diff --git a/profiles/business-office-generic.json b/profiles/business-office-generic.json
+new file mode 100644
+index 0000000..9058e7f
+--- /dev/null
++++ b/profiles/business-office-generic.json
+@@ -0,0 +1,23 @@
++{
++  "schema_version": 2,
++  "id": "business-office-generic",
++  "name": "Generic Office Application",
++  "category": "business-office",
++  "status": "foundation",
++  "architecture": "x86_64",
++  "default_lane": "rosetta-wine64",
++  "bottle_policy": {
++    "isolation": "shared",
++    "default_bottle_id": "office-generic"
++  },
++  "windows_version": "win10",
++  "required_dlls": ["corefonts", "riched20"],
++  "graphics": {
++    "api": null,
++    "shader_cache": false
++  },
++  "env": {
++    "WINEDEBUG": "-all"
++  },
++  "notes": "Reusable office/productivity baseline for Control Center bottle templates."
++}

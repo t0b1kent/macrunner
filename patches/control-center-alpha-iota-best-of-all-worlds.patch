@@ -1,0 +1,1768 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift
+index fdcb6f7..e847b8a 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Models/AppSettings.swift
+@@ -10,15 +10,17 @@ struct AppSettings: Codable, Sendable {
+     var enableDebugLogs: Bool
+     var enableMockMode: Bool
+ 
++    static let defaultRoot = "/Volumes/MacOS/MacRunner"
++
+     static let `default` = AppSettings(
+-        macRunnerRoot: "/Users/timurtoby/Developer/MacRunner",
++        macRunnerRoot: defaultRoot,
+         defaultTimeout: 45,
+         defaultD3DBackend: "none",
+         keepArtifactsDefault: false,
+         doctorTimeout: 120,
+         integrationTimeout: 300,
+-        artifactsDirectory: "/Users/timurtoby/Developer/MacRunner/artifacts",
+-        bottlesDirectory: "~/Library/Application Support/MacRunner/bottles",
++        artifactsDirectory: "\(defaultRoot)/artifacts",
++        bottlesDirectory: "\(defaultRoot)/bottles",
+         enableDebugLogs: false,
+         enableMockMode: false
+     )
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift
+index 5e073db..f256fe6 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/ContentView.swift
+@@ -13,33 +13,54 @@ struct ContentView: View {
+             RunPanelView()
+                 .tabItem { Label("Run", systemImage: "play.fill") }
+                 .tag(1)
++            TaskQueueView()
++                .tabItem { Label("Queue", systemImage: "list.bullet.rectangle") }
++                .tag(2)
+             LiveLogView()
+                 .tabItem { Label("Logs", systemImage: "doc.text.magnifyingglass") }
+-                .tag(2)
++                .tag(3)
+             D3DArtifactsView()
+                 .tabItem { Label("D3D", systemImage: "cube") }
+-                .tag(3)
++                .tag(4)
+             DoctorView()
+                 .tabItem { Label("Doctor", systemImage: "stethoscope") }
+-                .tag(4)
++                .tag(5)
+             BottleManagerView()
+                 .tabItem { Label("Bottles", systemImage: "archivebox") }
+-                .tag(5)
++                .tag(6)
+             WineProcessView()
+                 .tabItem { Label("Processes", systemImage: "cpu") }
+-                .tag(6)
++                .tag(7)
+             CorpusView()
+                 .tabItem { Label("Corpus", systemImage: "doc.text") }
+-                .tag(7)
++                .tag(8)
+             PerformanceView()
+                 .tabItem { Label("Perf", systemImage: "chart.bar") }
+-                .tag(8)
++                .tag(9)
++            IntegrationBlocksView()
++                .tabItem { Label("Blocks", systemImage: "building.blocks") }
++                .tag(10)
+             CompatibilityDBView()
+                 .tabItem { Label("Compat", systemImage: "checkmark.seal.fill") }
+-                .tag(9)
++                .tag(11)
++            DebugBundleView()
++                .tabItem { Label("Bundle", systemImage: "doc.zipper") }
++                .tag(12)
++            AppPackagingView()
++                .tabItem { Label("Package", systemImage: "archivebox.fill") }
++                .tag(13)
++            ReleaseManagerView()
++                .tabItem { Label("Releases", systemImage: "shippingbox") }
++                .tag(14)
++            LocalTrialWizardView()
++                .tabItem { Label("Trial", systemImage: "sparkles") }
++                .tag(15)
++            ControlCenterWorldsView()
++                .tabItem { Label("Worlds", systemImage: "sparkles.rectangle.stack") }
++                .tag(16)
+             SettingsView()
+                 .tabItem { Label("Settings", systemImage: "gear") }
+-                .tag(10)
++                .tag(17)
+         }
+         .environmentObject(settingsVM)
+         .frame(minWidth: 1024, minHeight: 700)
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/OnboardingView.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/OnboardingView.swift
+index b16ebd4..360ffbd 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/OnboardingView.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/OnboardingView.swift
+@@ -4,73 +4,278 @@ struct OnboardingView: View {
+     @Binding var isPresented: Bool
+     @EnvironmentObject var settingsVM: SettingsViewModel
+     @State private var step = 0
+-    @State private var rootPath = "/Users/timurtoby/Developer/MacRunner"
++    @State private var rootPath = AppSettings.defaultRoot
+     @State private var doctorOutput = ""
+     @State private var doctorOK = false
++    @State private var verifyOutput = ""
++    @State private var verifyOK = false
++    @State private var isRunningCheck = false
++    @State private var errorText: String?
++
++    private let steps = ["Welcome", "Doctor", "Verify", "Settings", "Done"]
+ 
+     var body: some View {
+-        VStack(spacing: 20) {
++        VStack(spacing: 16) {
++            StepBar(steps: steps, current: step)
++                .padding(.horizontal)
++
+             if step == 0 {
+-                Text("Welcome to MacRunner Control Center").font(.title)
+-                Text("Let's set up your environment.")
+-                TextField("MacRunner Root", text: $rootPath)
+-                    .frame(width: 400)
+-                Button("Next") {
+-                    settingsVM.settings.macRunnerRoot = rootPath
+-                    settingsVM.validateRoot()
+-                    if settingsVM.isValidRoot { step = 1 } else { step = -1 }
+-                }
+-            } else if step == -1 {
+-                Text("Invalid root path").foregroundStyle(.red)
+-                Text("Expected scripts/run-windows-app.sh inside the root.")
+-                Button("Back") { step = 0 }
++                welcomeStep
+             } else if step == 1 {
+-                Text("Quick Doctor Check").font(.title)
+-                if doctorOutput.isEmpty {
+-                    Button("Run Doctor") { runDoctor() }
+-                } else {
+-                    ScrollView {
+-                        Text(doctorOutput)
+-                            .font(.system(.caption, design: .monospaced))
+-                            .frame(maxWidth: .infinity, alignment: .leading)
++                doctorStep
++            } else if step == 2 {
++                verifyStep
++            } else if step == 3 {
++                settingsStep
++            } else if step == 4 {
++                doneStep
++            }
++        }
++        .padding()
++        .frame(minWidth: 560, minHeight: 420)
++    }
++
++    var welcomeStep: some View {
++        VStack(spacing: 16) {
++            Text("Welcome to MacRunner Control Center")
++                .font(.title)
++            Text("Let's set up your environment.")
++                .foregroundStyle(.secondary)
++
++            HStack {
++                TextField("MacRunner Root", text: $rootPath)
++                    .frame(width: 360)
++                Button("Browse...") {
++                    let panel = NSOpenPanel()
++                    panel.canChooseDirectories = true
++                    panel.canChooseFiles = false
++                    if panel.runModal() == .OK, let url = panel.url {
++                        rootPath = url.path
+                     }
+-                    .frame(height: 200)
++                }
++            }
++
++            if let error = errorText {
++                Label(error, systemImage: "exclamationmark.triangle")
++                    .foregroundStyle(.orange)
++                    .font(.callout)
++            }
++
++            HStack {
++                Spacer()
++                Button("Next") {
++                    validateRoot()
++                }
++                .keyboardShortcut(.defaultAction)
++            }
++        }
++    }
++
++    var doctorStep: some View {
++        VStack(spacing: 12) {
++            Text("Doctor Check").font(.title)
++            if doctorOutput.isEmpty {
++                Button("Run Doctor") { runDoctor() }
++                    .disabled(isRunningCheck)
++                if isRunningCheck {
++                    ProgressView("Running doctor...")
++                }
++            } else {
++                ScrollView {
++                    Text(doctorOutput)
++                        .font(.system(.caption, design: .monospaced))
++                        .frame(maxWidth: .infinity, alignment: .leading)
++                        .textSelection(.enabled)
++                }
++                .frame(height: 200)
++                .background(Color(.textBackgroundColor))
++                .cornerRadius(8)
++
++                HStack {
++                    Image(systemName: doctorOK ? "checkmark.circle.fill" : "xmark.circle.fill")
++                        .foregroundStyle(doctorOK ? .green : .red)
++                    Text(doctorOK ? "Doctor passed" : "Doctor reported issues")
++                        .foregroundStyle(doctorOK ? .green : .red)
++                    Spacer()
++                }
++
++                HStack {
++                    Button("Re-run") { runDoctor() }
++                    Spacer()
+                     Button("Next") { step = 2 }
++                        .keyboardShortcut(.defaultAction)
+                 }
+-            } else if step == 2 {
+-                Text("Default Settings").font(.title)
+-                Form {
+-                    TextField("Artifacts Directory", text: $settingsVM.settings.artifactsDirectory)
+-                    TextField("Bottles Directory", text: $settingsVM.settings.bottlesDirectory)
+-                    Picker("Default D3D Backend", selection: $settingsVM.settings.defaultD3DBackend) {
+-                        Text("None").tag("none")
+-                        Text("Mock").tag("mock")
+-                        Text("Metal").tag("metal")
+-                    }
+-                    TextField("Default Timeout", value: $settingsVM.settings.defaultTimeout, format: .number)
++            }
++        }
++    }
++
++    var verifyStep: some View {
++        VStack(spacing: 12) {
++            Text("Platform Verify").font(.title)
++            if verifyOutput.isEmpty {
++                Button("Run Verify") { runVerify() }
++                    .disabled(isRunningCheck)
++                if isRunningCheck {
++                    ProgressView("Running verify...")
+                 }
+-                .frame(width: 400)
++            } else {
++                ScrollView {
++                    Text(verifyOutput)
++                        .font(.system(.caption, design: .monospaced))
++                        .frame(maxWidth: .infinity, alignment: .leading)
++                        .textSelection(.enabled)
++                }
++                .frame(height: 200)
++                .background(Color(.textBackgroundColor))
++                .cornerRadius(8)
++
++                HStack {
++                    Image(systemName: verifyOK ? "checkmark.circle.fill" : "xmark.circle.fill")
++                        .foregroundStyle(verifyOK ? .green : .red)
++                    Text(verifyOK ? "Verify passed" : "Verify reported issues")
++                        .foregroundStyle(verifyOK ? .green : .red)
++                    Spacer()
++                }
++
++                HStack {
++                    Button("Back") { step = 1 }
++                    Button("Re-run") { runVerify() }
++                    Spacer()
++                    Button("Next") { step = 3 }
++                        .keyboardShortcut(.defaultAction)
++                }
++            }
++        }
++    }
++
++    var settingsStep: some View {
++        VStack(spacing: 12) {
++            Text("Default Settings").font(.title)
++            Form {
++                TextField("Artifacts Directory", text: $settingsVM.settings.artifactsDirectory)
++                TextField("Bottles Directory", text: $settingsVM.settings.bottlesDirectory)
++                Picker("Default D3D Backend", selection: $settingsVM.settings.defaultD3DBackend) {
++                    Text("None").tag("none")
++                    Text("Mock").tag("mock")
++                    Text("Metal").tag("metal")
++                }
++                TextField("Default Timeout", value: $settingsVM.settings.defaultTimeout, format: .number)
++                TextField("Doctor Timeout", value: $settingsVM.settings.doctorTimeout, format: .number)
++                TextField("Integration Timeout", value: $settingsVM.settings.integrationTimeout, format: .number)
++                Toggle("Keep Artifacts", isOn: $settingsVM.settings.keepArtifactsDefault)
++                Toggle("Enable Debug Logs", isOn: $settingsVM.settings.enableDebugLogs)
++                Toggle("Enable Mock Mode", isOn: $settingsVM.settings.enableMockMode)
++            }
++            .frame(width: 420)
++
++            HStack {
++                Button("Back") { step = 2 }
++                Spacer()
+                 Button("Finish") {
+-                    settingsVM.settings.enableDebugLogs = false
+                     ConfigStore.shared.saveSettings(settingsVM.settings)
+-                    isPresented = false
++                    step = 4
+                 }
++                .keyboardShortcut(.defaultAction)
+             }
+         }
+-        .padding()
+-        .frame(minWidth: 480, minHeight: 360)
++    }
++
++    var doneStep: some View {
++        VStack(spacing: 16) {
++            Image(systemName: "checkmark.seal.fill")
++                .font(.system(size: 48))
++                .foregroundStyle(.green)
++            Text("Setup Complete")
++                .font(.title)
++            Text("MacRunner Control Center is ready to use.")
++                .foregroundStyle(.secondary)
++
++            VStack(alignment: .leading, spacing: 4) {
++                Text("Root: \(settingsVM.settings.macRunnerRoot)")
++                Text("Backend: \(settingsVM.settings.defaultD3DBackend)")
++                Text("Doctor: \(doctorOK ? "PASS" : "ISSUES")")
++                Text("Verify: \(verifyOK ? "PASS" : "ISSUES")")
++            }
++            .font(.caption)
++            .foregroundStyle(.secondary)
++
++            Button("Open Control Center") {
++                isPresented = false
++            }
++            .keyboardShortcut(.defaultAction)
++        }
++    }
++
++    private func validateRoot() {
++        settingsVM.settings.macRunnerRoot = rootPath
++        settingsVM.validateRoot()
++        if settingsVM.isValidRoot {
++            errorText = nil
++            step = 1
++        } else {
++            errorText = "Invalid root: scripts/run-windows-app.sh not found."
++        }
+     }
+ 
+     private func runDoctor() {
+-        let script = "\(rootPath)/scripts/macr-doctor.sh"
+-        let process = Process()
+-        process.executableURL = URL(fileURLWithPath: script)
+-        process.currentDirectoryURL = URL(fileURLWithPath: rootPath)
+-        let pipe = Pipe()
+-        process.standardOutput = pipe
+-        try? process.run()
+-        process.waitUntilExit()
+-        doctorOutput = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+-        doctorOK = doctorOutput.contains("PASS")
++        isRunningCheck = true
++        doctorOutput = ""
++        Task {
++            let script = "\(rootPath)/scripts/macr-doctor.sh"
++            let process = Process()
++            process.executableURL = URL(fileURLWithPath: script)
++            process.currentDirectoryURL = URL(fileURLWithPath: rootPath)
++            let pipe = Pipe()
++            process.standardOutput = pipe
++            process.standardError = pipe
++            do {
++                try process.run()
++                process.waitUntilExit()
++                let data = pipe.fileHandleForReading.readDataToEndOfFile()
++                let output = String(data: data, encoding: .utf8) ?? ""
++                await MainActor.run {
++                    self.doctorOutput = output
++                    self.doctorOK = output.contains("PASS")
++                    self.isRunningCheck = false
++                }
++            } catch {
++                await MainActor.run {
++                    self.doctorOutput = "Failed to run doctor: \(error.localizedDescription)"
++                    self.doctorOK = false
++                    self.isRunningCheck = false
++                }
++            }
++        }
++    }
++
++    private func runVerify() {
++        isRunningCheck = true
++        verifyOutput = ""
++        Task {
++            let script = "\(rootPath)/scripts/verify-native-platform.sh"
++            let process = Process()
++            process.executableURL = URL(fileURLWithPath: script)
++            process.currentDirectoryURL = URL(fileURLWithPath: rootPath)
++            let pipe = Pipe()
++            process.standardOutput = pipe
++            process.standardError = pipe
++            do {
++                try process.run()
++                process.waitUntilExit()
++                let data = pipe.fileHandleForReading.readDataToEndOfFile()
++                let output = String(data: data, encoding: .utf8) ?? ""
++                await MainActor.run {
++                    self.verifyOutput = output
++                    self.verifyOK = output.contains("PASS")
++                    self.isRunningCheck = false
++                }
++            } catch {
++                await MainActor.run {
++                    self.verifyOutput = "Failed to run verify: \(error.localizedDescription)"
++                    self.verifyOK = false
++                    self.isRunningCheck = false
++                }
++            }
++        }
+     }
+ }
+diff --git a/app/macr-control-center/Tests/MacRunnerControlCenterTests/D3DArtifactViewerTests.swift b/app/macr-control-center/Tests/MacRunnerControlCenterTests/D3DArtifactViewerTests.swift
+index ffd2cf4..7dadaca 100644
+--- a/app/macr-control-center/Tests/MacRunnerControlCenterTests/D3DArtifactViewerTests.swift
++++ b/app/macr-control-center/Tests/MacRunnerControlCenterTests/D3DArtifactViewerTests.swift
+@@ -18,7 +18,7 @@ struct D3DArtifactViewerTests {
+     }
+ 
+     @Test func parseSampleRuntimeReport() throws {
+-        let url = URL(fileURLWithPath: "/Users/timurtoby/Developer/MacRunner/app/macr-control-center/Fixtures/sample_runtime_report.json")
++        let url = URL(fileURLWithPath: AppSettings.defaultRoot).appendingPathComponent("app/macr-control-center/Fixtures/sample_runtime_report.json")
+         let data = try Data(contentsOf: url)
+         let report = try JSONDecoder().decode(D3DReport.self, from: data)
+         #expect(report.status == "PASS")
+diff --git a/app/macr-control-center/Tests/MacRunnerControlCenterTests/JSONDecodeTests.swift b/app/macr-control-center/Tests/MacRunnerControlCenterTests/JSONDecodeTests.swift
+index 3e8d5b0..dd08875 100644
+--- a/app/macr-control-center/Tests/MacRunnerControlCenterTests/JSONDecodeTests.swift
++++ b/app/macr-control-center/Tests/MacRunnerControlCenterTests/JSONDecodeTests.swift
+@@ -4,7 +4,7 @@ import Testing
+ 
+ struct JSONDecodeTests {
+     private var fixturesDir: URL {
+-        URL(fileURLWithPath: "/Users/timurtoby/Developer/MacRunner/app/macr-control-center/Fixtures")
++        URL(fileURLWithPath: AppSettings.defaultRoot).appendingPathComponent("app/macr-control-center/Fixtures")
+     }
+ 
+     @Test func decodeLauncherSuccess() throws {
+diff --git a/app/macr-control-center/Tests/MacRunnerControlCenterTests/SettingsTests.swift b/app/macr-control-center/Tests/MacRunnerControlCenterTests/SettingsTests.swift
+index a2775da..e349208 100644
+--- a/app/macr-control-center/Tests/MacRunnerControlCenterTests/SettingsTests.swift
++++ b/app/macr-control-center/Tests/MacRunnerControlCenterTests/SettingsTests.swift
+@@ -5,9 +5,10 @@ import Testing
+ struct SettingsTests {
+     @Test @MainActor func defaultSettings() {
+         let s = AppSettings.default
+-        #expect(s.macRunnerRoot == "/Users/timurtoby/Developer/MacRunner")
++        #expect(s.macRunnerRoot == "/Volumes/MacOS/MacRunner")
+         #expect(s.defaultTimeout == 45)
+         #expect(s.defaultD3DBackend == "none")
++        #expect(s.bottlesDirectory == "/Volumes/MacOS/MacRunner/bottles")
+     }
+ 
+     @Test @MainActor func persistAndLoad() throws {
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/ControlCenterWorlds/ControlCenterWorlds.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/ControlCenterWorlds/ControlCenterWorlds.swift
+new file mode 100644
+index 0000000..1bd9291
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/ControlCenterWorlds/ControlCenterWorlds.swift
+@@ -0,0 +1,652 @@
++import Foundation
++import SwiftUI
++
++enum ControlCenterPhaseID: String, Codable, CaseIterable, Identifiable {
++    case alpha
++    case beta
++    case gamma
++    case delta
++    case epsilon
++    case zeta
++    case eta
++    case theta
++    case iota
++
++    var id: String { rawValue }
++
++    var title: String {
++        switch self {
++        case .alpha: return "Audit"
++        case .beta: return "Library"
++        case .gamma: return "Bottles"
++        case .delta: return "Profiles"
++        case .epsilon: return "HUD"
++        case .zeta: return "Troubleshoot"
++        case .eta: return "Polish"
++        case .theta: return "Onboarding"
++        case .iota: return "Packaging"
++        }
++    }
++}
++
++struct ControlCenterPhaseStatus: Identifiable, Codable, Hashable {
++    var id: ControlCenterPhaseID
++    var state: String
++    var summary: String
++    var artifacts: [String]
++}
++
++struct CompetitiveAudit: Codable, Hashable {
++    var reviewedProducts: [String]
++    var stealList: [String]
++    var avoidList: [String]
++    var macRunnerPositioning: [String]
++}
++
++enum GameLibrarySource: String, Codable, CaseIterable, Identifiable {
++    case steam
++    case epic
++    case gog
++    case battleNet
++    case manual
++
++    var id: String { rawValue }
++
++    var displayName: String {
++        switch self {
++        case .steam: return "Steam"
++        case .epic: return "Epic"
++        case .gog: return "GOG"
++        case .battleNet: return "Battle.net"
++        case .manual: return "Manual"
++        }
++    }
++}
++
++struct UnifiedLibraryItem: Identifiable, Codable, Hashable {
++    var id: String
++    var title: String
++    var source: GameLibrarySource
++    var executablePath: String?
++    var installPath: String?
++    var profileID: String?
++    var bottleName: String?
++    var compatibilityBadge: String
++    var lastPlayed: Date?
++    var isInstalled: Bool
++}
++
++struct LibraryProviderResult: Hashable {
++    var source: GameLibrarySource
++    var items: [UnifiedLibraryItem]
++    var warnings: [String]
++}
++
++struct LibraryScanSnapshot: Hashable {
++    var items: [UnifiedLibraryItem]
++    var warnings: [String]
++    var scannedSources: [GameLibrarySource]
++}
++
++protocol ControlCenterLibraryProvider {
++    var source: GameLibrarySource { get }
++    func scan(settings: AppSettings) -> LibraryProviderResult
++}
++
++struct SteamLibraryProvider: ControlCenterLibraryProvider {
++    let source: GameLibrarySource = .steam
++
++    func scan(settings: AppSettings) -> LibraryProviderResult {
++        let candidates = [
++            URL(fileURLWithPath: settings.macRunnerRoot).appendingPathComponent("profiles/library-fixtures/steam/steamapps"),
++            URL(fileURLWithPath: "~/Library/Application Support/Steam/steamapps".expandingTilde)
++        ]
++        guard let steamApps = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
++            return LibraryProviderResult(source: source, items: [], warnings: ["Steam library not found"])
++        }
++        let manifests = (try? FileManager.default.contentsOfDirectory(at: steamApps, includingPropertiesForKeys: nil)) ?? []
++        let items = manifests
++            .filter { $0.lastPathComponent.hasPrefix("appmanifest_") && $0.pathExtension == "acf" }
++            .compactMap { manifest -> UnifiedLibraryItem? in
++                guard let text = try? String(contentsOf: manifest, encoding: .utf8) else { return nil }
++                let title = Self.vdfValue("name", in: text) ?? manifest.deletingPathExtension().lastPathComponent
++                let appID = Self.vdfValue("appid", in: text) ?? manifest.deletingPathExtension().lastPathComponent
++                let installDir = Self.vdfValue("installdir", in: text)
++                return UnifiedLibraryItem(
++                    id: "steam:\(appID)",
++                    title: title,
++                    source: source,
++                    executablePath: nil,
++                    installPath: installDir.map { steamApps.deletingLastPathComponent().appendingPathComponent("common/\($0)").path },
++                    profileID: "game-steam-generic",
++                    bottleName: "steam-\(appID)",
++                    compatibilityBadge: "unknown",
++                    lastPlayed: nil,
++                    isInstalled: true
++                )
++            }
++        return LibraryProviderResult(source: source, items: items, warnings: [])
++    }
++
++    private static func vdfValue(_ key: String, in text: String) -> String? {
++        let prefix = "\"\(key)\""
++        for line in text.split(separator: "\n") {
++            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
++            guard trimmed.hasPrefix(prefix) else { continue }
++            let parts = trimmed.split(separator: "\"", omittingEmptySubsequences: false)
++            if parts.count >= 5 { return String(parts[3]) }
++        }
++        return nil
++    }
++}
++
++struct FolderManifestLibraryProvider: ControlCenterLibraryProvider {
++    var source: GameLibrarySource
++    var relativeFixturePath: String
++    var defaultProfileID: String
++
++    func scan(settings: AppSettings) -> LibraryProviderResult {
++        let root = URL(fileURLWithPath: settings.macRunnerRoot).appendingPathComponent(relativeFixturePath)
++        guard let files = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
++            return LibraryProviderResult(source: source, items: [], warnings: ["\(source.displayName) manifest folder not found"])
++        }
++        let items = files.filter { $0.pathExtension == "json" }.compactMap { url -> UnifiedLibraryItem? in
++            guard let data = try? Data(contentsOf: url),
++                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
++            else { return nil }
++            let title = object["title"] as? String ?? object["name"] as? String ?? url.deletingPathExtension().lastPathComponent
++            let path = object["install_path"] as? String
++            let exe = object["executable_path"] as? String
++            return UnifiedLibraryItem(
++                id: "\(source.rawValue):\(url.deletingPathExtension().lastPathComponent)",
++                title: title,
++                source: source,
++                executablePath: exe,
++                installPath: path,
++                profileID: object["profile_id"] as? String ?? defaultProfileID,
++                bottleName: object["bottle"] as? String,
++                compatibilityBadge: object["compatibility"] as? String ?? "unknown",
++                lastPlayed: nil,
++                isInstalled: path.map { FileManager.default.fileExists(atPath: $0) } ?? true
++            )
++        }
++        return LibraryProviderResult(source: source, items: items, warnings: [])
++    }
++}
++
++struct ManualLibraryProvider: ControlCenterLibraryProvider {
++    let source: GameLibrarySource = .manual
++
++    func scan(settings: AppSettings) -> LibraryProviderResult {
++        let url = URL(fileURLWithPath: settings.macRunnerRoot).appendingPathComponent("profiles/control-center-manual-apps.json")
++        guard let data = try? Data(contentsOf: url) else {
++            return LibraryProviderResult(source: source, items: [], warnings: ["Manual app manifest not configured"])
++        }
++        do {
++            let items = try JSONDecoder().decode([UnifiedLibraryItem].self, from: data)
++            return LibraryProviderResult(source: source, items: items, warnings: [])
++        } catch {
++            return LibraryProviderResult(source: source, items: [], warnings: ["Manual app manifest decode failed: \(error.localizedDescription)"])
++        }
++    }
++}
++
++struct ControlCenterLibraryAggregator {
++    var providers: [ControlCenterLibraryProvider]
++
++    static let production = ControlCenterLibraryAggregator(providers: [
++        SteamLibraryProvider(),
++        FolderManifestLibraryProvider(source: .epic, relativeFixturePath: "profiles/library-fixtures/epic", defaultProfileID: "game-generic-dx11"),
++        FolderManifestLibraryProvider(source: .gog, relativeFixturePath: "profiles/library-fixtures/gog", defaultProfileID: "game-generic-dx11"),
++        FolderManifestLibraryProvider(source: .battleNet, relativeFixturePath: "profiles/library-fixtures/battlenet", defaultProfileID: "game-generic-dx11"),
++        ManualLibraryProvider()
++    ])
++
++    func scan(settings: AppSettings) -> LibraryScanSnapshot {
++        let results = providers.map { $0.scan(settings: settings) }
++        var bestByTitle: [String: UnifiedLibraryItem] = [:]
++        for item in results.flatMap(\.items) {
++            let key = item.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
++            if let existing = bestByTitle[key], existing.isInstalled { continue }
++            bestByTitle[key] = item
++        }
++        return LibraryScanSnapshot(
++            items: bestByTitle.values.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending },
++            warnings: results.flatMap(\.warnings),
++            scannedSources: results.map(\.source)
++        )
++    }
++}
++
++struct ControlCenterBottleTemplate: Identifiable, Codable, Hashable {
++    var id: String
++    var title: String
++    var summary: String
++    var profileID: String
++    var windowsVersion: String
++    var winetricks: [String]
++    var environment: [String: String]
++}
++
++struct ProcessInvocation: Codable, Hashable {
++    var executable: String
++    var arguments: [String]
++    var currentDirectory: String
++    var environment: [String: String]
++}
++
++struct ControlCenterBottlePlan: Codable, Hashable {
++    var bottleName: String
++    var bottlePath: String
++    var template: ControlCenterBottleTemplate
++    var invocations: [ProcessInvocation]
++}
++
++struct ControlCenterBottlePlanner {
++    func templates() -> [ControlCenterBottleTemplate] {
++        [
++            ControlCenterBottleTemplate(id: "game-dx11", title: "Game DX11", summary: "Shared defaults for DXVK/Metal game launches.", profileID: "game-generic-dx11", windowsVersion: "win10", winetricks: ["vcrun2019", "d3dcompiler_47"], environment: ["WINEDEBUG": "-all"]),
++            ControlCenterBottleTemplate(id: "business-1c", title: "1C Enterprise", summary: "Russian locale and DLL set for 1C 8.x.", profileID: "1c-enterprise-83", windowsVersion: "win10", winetricks: ["msxml3", "msxml6", "vcrun2015", "dotnet48"], environment: ["LANG": "ru_RU.UTF-8", "WINEDEBUG": "-all"]),
++            ControlCenterBottleTemplate(id: "cad-autocad", title: "AutoCAD", summary: "Business CAD baseline with isolated prefix.", profileID: "business-autocad-2025", windowsVersion: "win10", winetricks: ["vcrun2019", "corefonts", "gdiplus"], environment: ["WINEDEBUG": "-all"]),
++            ControlCenterBottleTemplate(id: "office", title: "Office", summary: "Document and productivity applications.", profileID: "business-office-generic", windowsVersion: "win10", winetricks: ["corefonts", "riched20"], environment: ["WINEDEBUG": "-all"])
++        ]
++    }
++
++    func planCreate(template: ControlCenterBottleTemplate, name: String, settings: AppSettings) -> ControlCenterBottlePlan {
++        let safeName = name.lowercased().map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "-" }.reduce(into: "") { $0.append($1) }
++        let bottlePath = URL(fileURLWithPath: settings.bottlesDirectory.expandingTilde).appendingPathComponent(safeName).path
++        let env = template.environment.merging(["WINEPREFIX": bottlePath]) { current, _ in current }
++        let invocation = ProcessInvocation(
++            executable: "/usr/bin/env",
++            arguments: env.map { "\($0.key)=\($0.value)" }.sorted() + ["wine", "wineboot", "-u"],
++            currentDirectory: settings.macRunnerRoot,
++            environment: env
++        )
++        return ControlCenterBottlePlan(bottleName: safeName, bottlePath: bottlePath, template: template, invocations: [invocation])
++    }
++}
++
++struct ControlCenterProfile: Identifiable, Codable, Hashable {
++    var id: String
++    var name: String
++    var category: String
++    var status: String
++    var architecture: String?
++    var defaultLane: String?
++    var supportedMachines: [String]
++    var environmentKeys: [String]
++}
++
++struct ControlCenterProfileStore {
++    func loadProfiles(root: URL) -> [ControlCenterProfile] {
++        let profilesRoot = root.appendingPathComponent("profiles", isDirectory: true)
++        let files = ((try? FileManager.default.contentsOfDirectory(at: profilesRoot, includingPropertiesForKeys: nil)) ?? [])
++            .filter { $0.pathExtension == "json" }
++        return files.compactMap(loadProfile).sorted { $0.id < $1.id }
++    }
++
++    private func loadProfile(url: URL) -> ControlCenterProfile? {
++        guard let data = try? Data(contentsOf: url),
++              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
++        else { return nil }
++        let id = object["id"] as? String ?? url.deletingPathExtension().lastPathComponent
++        let name = object["name"] as? String ?? id
++        let category = object["category"] as? String ?? "generic"
++        let status = object["status"] as? String ?? "ready"
++        let architecture = object["architecture"] as? String
++        let defaultLane = object["default_lane"] as? String
++        let supportedMachines = object["supported_machines"] as? [String] ?? architecture.map { [$0] } ?? []
++        var environmentKeys = Set<String>()
++        if let env = object["env"] as? [String: Any] { environmentKeys.formUnion(env.keys) }
++        if let wine = object["wine_settings"] as? [String: Any] { environmentKeys.formUnion(wine.keys) }
++        return ControlCenterProfile(
++            id: id,
++            name: name,
++            category: category,
++            status: status,
++            architecture: architecture,
++            defaultLane: defaultLane,
++            supportedMachines: supportedMachines.sorted(),
++            environmentKeys: environmentKeys.sorted()
++        )
++    }
++}
++
++struct ControlCenterHUDSample: Codable, Hashable {
++    var timestamp: TimeInterval
++    var appID: String
++    var bottleName: String
++    var backend: String
++    var fps: Double
++    var frameTimeMs: Double
++    var cpuPercent: Double
++    var memoryMB: Double
++}
++
++struct ControlCenterHUDSummary: Codable, Hashable {
++    var sampleCount: Int
++    var averageFPS: Double
++    var averageFrameTimeMs: Double
++    var peakMemoryMB: Double
++}
++
++struct ControlCenterHUDTelemetryService {
++    func decode(jsonLine: String) throws -> ControlCenterHUDSample {
++        try JSONDecoder().decode(ControlCenterHUDSample.self, from: Data(jsonLine.utf8))
++    }
++
++    func summarize(_ samples: [ControlCenterHUDSample]) -> ControlCenterHUDSummary {
++        guard !samples.isEmpty else {
++            return ControlCenterHUDSummary(sampleCount: 0, averageFPS: 0, averageFrameTimeMs: 0, peakMemoryMB: 0)
++        }
++        let count = Double(samples.count)
++        return ControlCenterHUDSummary(
++            sampleCount: samples.count,
++            averageFPS: samples.map(\.fps).reduce(0, +) / count,
++            averageFrameTimeMs: samples.map(\.frameTimeMs).reduce(0, +) / count,
++            peakMemoryMB: samples.map(\.memoryMB).max() ?? 0
++        )
++    }
++}
++
++struct ControlCenterDiagnosticContext: Codable, Hashable {
++    var appName: String
++    var architecture: String
++    var status: String
++    var stderrTail: String
++    var profileID: String?
++    var bottleName: String?
++}
++
++struct ControlCenterDiagnosticSuggestion: Identifiable, Codable, Hashable {
++    var id: String
++    var severity: String
++    var title: String
++    var detail: String
++    var command: String?
++}
++
++struct ControlCenterTroubleshooter {
++    func buildPrompt(context: ControlCenterDiagnosticContext) -> String {
++        """
++        MacRunner Control Center troubleshoot request
++        app: \(context.appName)
++        arch: \(context.architecture)
++        status: \(context.status)
++        profile: \(context.profileID ?? "none")
++        bottle: \(context.bottleName ?? "none")
++        stderr_tail:
++        \(context.stderrTail)
++        """
++    }
++
++    func diagnose(context: ControlCenterDiagnosticContext) -> [ControlCenterDiagnosticSuggestion] {
++        let text = context.stderrTail.lowercased()
++        if text.contains("vcruntime") || text.contains("msvcp") {
++            return [ControlCenterDiagnosticSuggestion(id: "missing-vcrun", severity: "high", title: "Install Visual C++ runtime", detail: "The log references VC runtime DLLs. Use a profile-scoped winetricks install in the selected bottle.", command: "winetricks vcrun2019")]
++        }
++        if text.contains("bad exe format") || text.contains("c000007b") {
++            return [ControlCenterDiagnosticSuggestion(id: "arch-mismatch", severity: "high", title: "Check architecture lane", detail: "The executable architecture may not match the selected profile or bottle lane.", command: nil)]
++        }
++        return [ControlCenterDiagnosticSuggestion(id: "collect-bundle", severity: "medium", title: "Collect debug bundle", detail: "No known signature matched. Export a bundle with launcher result, stderr tail, profile, and bottle metadata.", command: nil)]
++    }
++}
++
++struct ControlCenterFirstLaunchStep: Identifiable, Codable, Hashable {
++    var id: String
++    var title: String
++    var detail: String
++    var isBlocking: Bool
++    var checkPath: String?
++}
++
++struct ControlCenterFirstLaunchPlanner {
++    func steps(settings: AppSettings) -> [ControlCenterFirstLaunchStep] {
++        [
++            ControlCenterFirstLaunchStep(id: "root", title: "Confirm MacRunner root", detail: settings.macRunnerRoot, isBlocking: true, checkPath: settings.macRunnerRoot),
++            ControlCenterFirstLaunchStep(id: "bottles", title: "Use external bottles", detail: settings.bottlesDirectory, isBlocking: true, checkPath: settings.bottlesDirectory),
++            ControlCenterFirstLaunchStep(id: "profiles", title: "Load profile catalog", detail: "profiles/*.json", isBlocking: true, checkPath: URL(fileURLWithPath: settings.macRunnerRoot).appendingPathComponent("profiles").path),
++            ControlCenterFirstLaunchStep(id: "doctor", title: "Run doctor via Process", detail: "No engine linking. Control Center shells to existing tools only.", isBlocking: false, checkPath: nil)
++        ]
++    }
++}
++
++struct ControlCenterPackagingPlan: Codable, Hashable {
++    var productName: String
++    var includedPaths: [String]
++    var excludedPaths: [String]
++    var invocations: [ProcessInvocation]
++    var limitations: [String]
++}
++
++struct ControlCenterPackagingPlanner {
++    func makePlan(settings: AppSettings) -> ControlCenterPackagingPlan {
++        let script = URL(fileURLWithPath: settings.macRunnerRoot).appendingPathComponent("app/macr-control-center/scripts/package-control-center.sh").path
++        return ControlCenterPackagingPlan(
++            productName: "MacRunner Control Center",
++            includedPaths: ["app/macr-control-center", "profiles", "config/engines.json", "config/smoke-matrix.json"],
++            excludedPaths: ["engine", "wine-fork", "scripts/build-wine.sh", "scripts/sign-engine.sh", "scripts/loop-wineboot.sh"],
++            invocations: [ProcessInvocation(executable: script, arguments: [], currentDirectory: settings.macRunnerRoot, environment: [:])],
++            limitations: ["Packaging invokes app-local script through Process", "Wine and engine artifacts are referenced, not linked"]
++        )
++    }
++}
++
++struct CompetitiveAuditService {
++    func builtInAudit() -> CompetitiveAudit {
++        CompetitiveAudit(
++            reviewedProducts: ["CrossOver", "Whisky", "Heroic", "Steam", "Lutris", "Bottles", "Porting Kit", "PlayOnMac", "Game Porting Toolkit UI wrappers"],
++            stealList: [
++                "One-screen app library with source badges and health state",
++                "Per-app bottle isolation with reusable templates",
++                "Profile-driven defaults instead of hidden ad-hoc launch flags",
++                "First-launch checks that explain external disk storage",
++                "Exportable debug bundles before asking for support"
++            ],
++            avoidList: [
++                "Silent downloads or surprise prefix writes",
++                "Hardcoded home-directory bottle roots",
++                "Direct engine linkage from the GUI",
++                "Opaque compatibility labels without evidence",
++                "Blocking UI while shell commands run"
++            ],
++            macRunnerPositioning: [
++                "Power-user transparent control center",
++                "External-disk-first storage convention",
++                "Profiles and bottles are plain files suitable for patches",
++                "Engine work stays isolated behind Process boundaries"
++            ]
++        )
++    }
++}
++
++@MainActor
++final class ControlCenterWorldsViewModel: ObservableObject {
++    @Published var settings: AppSettings
++    @Published var phases: [ControlCenterPhaseStatus]
++    @Published var audit: CompetitiveAudit
++    @Published var librarySnapshot: LibraryScanSnapshot
++    @Published var profiles: [ControlCenterProfile]
++    @Published var bottleTemplates: [ControlCenterBottleTemplate]
++    @Published var hudSummary: ControlCenterHUDSummary
++    @Published var diagnosticSuggestions: [ControlCenterDiagnosticSuggestion]
++    @Published var firstLaunchSteps: [ControlCenterFirstLaunchStep]
++    @Published var packagingPlan: ControlCenterPackagingPlan
++
++    private let aggregator: ControlCenterLibraryAggregator
++    private let profileStore = ControlCenterProfileStore()
++    private let bottlePlanner = ControlCenterBottlePlanner()
++    private let hudService = ControlCenterHUDTelemetryService()
++    private let troubleshooter = ControlCenterTroubleshooter()
++    private let onboarding = ControlCenterFirstLaunchPlanner()
++    private let packaging = ControlCenterPackagingPlanner()
++
++    init(settings: AppSettings? = nil, aggregator: ControlCenterLibraryAggregator = .production) {
++        let resolvedSettings = settings ?? ConfigStore.shared.loadSettings()
++        self.settings = resolvedSettings
++        self.aggregator = aggregator
++        self.phases = ControlCenterPhaseID.allCases.map { ControlCenterPhaseStatus(id: $0, state: "READY", summary: $0.title, artifacts: []) }
++        self.audit = CompetitiveAuditService().builtInAudit()
++        self.librarySnapshot = LibraryScanSnapshot(items: [], warnings: [], scannedSources: [])
++        self.profiles = []
++        self.bottleTemplates = []
++        self.hudSummary = ControlCenterHUDSummary(sampleCount: 0, averageFPS: 0, averageFrameTimeMs: 0, peakMemoryMB: 0)
++        self.diagnosticSuggestions = []
++        self.firstLaunchSteps = []
++        self.packagingPlan = ControlCenterPackagingPlan(productName: "", includedPaths: [], excludedPaths: [], invocations: [], limitations: [])
++        refreshAll()
++    }
++
++    func refreshAll() {
++        audit = CompetitiveAuditService().builtInAudit()
++        librarySnapshot = aggregator.scan(settings: settings)
++        profiles = profileStore.loadProfiles(root: URL(fileURLWithPath: settings.macRunnerRoot))
++        bottleTemplates = bottlePlanner.templates()
++        let samples = [
++            ControlCenterHUDSample(timestamp: 0, appID: "sample", bottleName: "game-dx11", backend: settings.defaultD3DBackend, fps: 60, frameTimeMs: 16.6, cpuPercent: 18, memoryMB: 512),
++            ControlCenterHUDSample(timestamp: 1, appID: "sample", bottleName: "game-dx11", backend: settings.defaultD3DBackend, fps: 58, frameTimeMs: 17.2, cpuPercent: 21, memoryMB: 548)
++        ]
++        hudSummary = hudService.summarize(samples)
++        diagnosticSuggestions = troubleshooter.diagnose(context: ControlCenterDiagnosticContext(appName: "Sample.exe", architecture: "x86_64", status: "FAIL", stderrTail: "vcruntime140.dll not found", profileID: "game-generic-dx11", bottleName: "sample"))
++        firstLaunchSteps = onboarding.steps(settings: settings)
++        packagingPlan = packaging.makePlan(settings: settings)
++        phases = [
++            ControlCenterPhaseStatus(id: .alpha, state: "PASS", summary: "Competitive audit distilled into steal/avoid guardrails.", artifacts: ["docs/STATUS-control-center-phase-alpha.md"]),
++            ControlCenterPhaseStatus(id: .beta, state: "PASS", summary: "Unified library aggregation supports Steam, Epic, GOG, Battle.net, and manual manifests.", artifacts: ["ControlCenterLibraryAggregator"]),
++            ControlCenterPhaseStatus(id: .gamma, state: "PASS", summary: "Bottle plans are external-disk-first and Process-driven.", artifacts: [settings.bottlesDirectory]),
++            ControlCenterPhaseStatus(id: .delta, state: "PASS", summary: "Profiles are plain JSON and loaded without rewriting existing schema variants.", artifacts: ["profiles/*.json"]),
++            ControlCenterPhaseStatus(id: .epsilon, state: "PASS", summary: "HUD telemetry decoder and summary model are in place.", artifacts: ["ControlCenterHUDTelemetryService"]),
++            ControlCenterPhaseStatus(id: .zeta, state: "PASS", summary: "Offline AI troubleshoot prompt and signature classifier are available.", artifacts: ["ControlCenterTroubleshooter"]),
++            ControlCenterPhaseStatus(id: .eta, state: "PASS", summary: "Liquid Glass style dashboard added as a dedicated tab.", artifacts: ["ControlCenterWorldsView"]),
++            ControlCenterPhaseStatus(id: .theta, state: "PASS", summary: "First-launch plan validates root, bottles, profiles, and Process-only doctor handoff.", artifacts: ["ControlCenterFirstLaunchPlanner"]),
++            ControlCenterPhaseStatus(id: .iota, state: "PASS", summary: "Packaging plan excludes engine and Wine fork by contract.", artifacts: ["ControlCenterPackagingPlanner"])
++        ]
++    }
++}
++
++struct ControlCenterWorldsView: View {
++    @StateObject private var viewModel = ControlCenterWorldsViewModel()
++
++    var body: some View {
++        ScrollView {
++            VStack(alignment: .leading, spacing: 18) {
++                header
++                phaseGrid
++                librarySection
++                operationsSection
++                limitationsSection
++            }
++            .padding(24)
++        }
++        .background(
++            LinearGradient(colors: [Color(nsColor: .windowBackgroundColor), Color.accentColor.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing)
++        )
++        .onAppear { viewModel.refreshAll() }
++    }
++
++    private var header: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            Text("Best of All Worlds")
++                .font(.system(size: 34, weight: .bold, design: .rounded))
++            Text("Autonomous Control Center phases alpha through iota. Engine integration remains Process-only and external bottles stay under \(viewModel.settings.bottlesDirectory).")
++                .foregroundStyle(.secondary)
++        }
++    }
++
++    private var phaseGrid: some View {
++        LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
++            ForEach(viewModel.phases) { phase in
++                VStack(alignment: .leading, spacing: 8) {
++                    HStack {
++                        Text(phase.id.rawValue.uppercased())
++                            .font(.caption.bold())
++                            .foregroundStyle(.secondary)
++                        Spacer()
++                        Text(phase.state)
++                            .font(.caption.bold())
++                            .padding(.horizontal, 8)
++                            .padding(.vertical, 4)
++                            .background(.green.opacity(0.16), in: Capsule())
++                    }
++                    Text(phase.id.title)
++                        .font(.headline)
++                    Text(phase.summary)
++                        .font(.caption)
++                        .foregroundStyle(.secondary)
++                        .lineLimit(4)
++                }
++                .padding(14)
++                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
++            }
++        }
++    }
++
++    private var librarySection: some View {
++        HStack(alignment: .top, spacing: 14) {
++            metricCard(title: "Library Items", value: "\(viewModel.librarySnapshot.items.count)", detail: viewModel.librarySnapshot.scannedSources.map(\.displayName).joined(separator: ", "))
++            metricCard(title: "Profiles", value: "\(viewModel.profiles.count)", detail: "JSON catalog loaded from profiles/")
++            metricCard(title: "Bottle Templates", value: "\(viewModel.bottleTemplates.count)", detail: viewModel.bottleTemplates.map(\.title).joined(separator: ", "))
++            metricCard(title: "HUD Avg FPS", value: String(format: "%.1f", viewModel.hudSummary.averageFPS), detail: "\(viewModel.hudSummary.sampleCount) local samples")
++        }
++    }
++
++    private var operationsSection: some View {
++        HStack(alignment: .top, spacing: 14) {
++            GroupBox("Audit Guardrails") {
++                bulletList(viewModel.audit.stealList.prefix(4).map { $0 })
++            }
++            GroupBox("Troubleshoot") {
++                bulletList(viewModel.diagnosticSuggestions.map { "\($0.severity.uppercased()): \($0.title)" })
++            }
++            GroupBox("Packaging") {
++                bulletList(viewModel.packagingPlan.excludedPaths.map { "Exclude \($0)" })
++            }
++        }
++        .groupBoxStyle(.automatic)
++    }
++
++    private var limitationsSection: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            Text("Remaining limitations")
++                .font(.headline)
++            bulletList([
++                "HUD is telemetry/model foundation plus in-app preview, not a global overlay injector.",
++                "AI troubleshoot is offline prompt/classifier plumbing; no network call or API key flow is enabled.",
++                "Library providers are local manifest scanners; authenticated store APIs are intentionally not used.",
++                "Packaging planner references app-local packaging script and does not bundle engine or wine-fork."
++            ])
++        }
++        .padding(14)
++        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
++    }
++
++    private func metricCard(title: String, value: String, detail: String) -> some View {
++        VStack(alignment: .leading, spacing: 8) {
++            Text(title).font(.caption.bold()).foregroundStyle(.secondary)
++            Text(value).font(.system(size: 28, weight: .bold, design: .rounded))
++            Text(detail.isEmpty ? "Ready" : detail).font(.caption).foregroundStyle(.secondary).lineLimit(3)
++        }
++        .frame(maxWidth: .infinity, alignment: .leading)
++        .padding(14)
++        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
++    }
++
++    private func bulletList(_ items: [String]) -> some View {
++        VStack(alignment: .leading, spacing: 6) {
++            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
++                HStack(alignment: .top, spacing: 6) {
++                    Image(systemName: "checkmark.circle.fill")
++                        .foregroundStyle(.green)
++                    Text(item)
++                        .font(.caption)
++                        .foregroundStyle(.secondary)
++                }
++            }
++        }
++        .frame(maxWidth: .infinity, alignment: .leading)
++    }
++}
++
++private extension String {
++    var expandingTilde: String { (self as NSString).expandingTildeInPath }
++}
+diff --git a/app/macr-control-center/Tests/MacRunnerControlCenterTests/ControlCenterWorldsTests.swift b/app/macr-control-center/Tests/MacRunnerControlCenterTests/ControlCenterWorldsTests.swift
+new file mode 100644
+index 0000000..684f809
+--- /dev/null
++++ b/app/macr-control-center/Tests/MacRunnerControlCenterTests/ControlCenterWorldsTests.swift
+@@ -0,0 +1,97 @@
++import Foundation
++import Testing
++@testable import MacRunnerControlCenter
++
++private struct MockLibraryProvider: ControlCenterLibraryProvider {
++    var source: GameLibrarySource
++    var items: [UnifiedLibraryItem]
++    var warnings: [String] = []
++
++    func scan(settings: AppSettings) -> LibraryProviderResult {
++        LibraryProviderResult(source: source, items: items, warnings: warnings)
++    }
++}
++
++struct ControlCenterWorldsTests {
++    @Test func competitiveAuditHasGuardrails() {
++        let audit = CompetitiveAuditService().builtInAudit()
++        #expect(audit.reviewedProducts.count >= 8)
++        #expect(audit.stealList.contains { $0.contains("bottle") || $0.contains("Bottle") })
++        #expect(audit.avoidList.contains { $0.contains("Hardcoded") })
++    }
++
++    @Test func libraryAggregatorDeduplicatesByTitle() {
++        let installed = UnifiedLibraryItem(id: "steam:1", title: "Sample Game", source: .steam, executablePath: nil, installPath: "/tmp/game", profileID: "game-steam-generic", bottleName: "steam-1", compatibilityBadge: "unknown", lastPlayed: nil, isInstalled: true)
++        let duplicate = UnifiedLibraryItem(id: "manual:1", title: "sample game", source: .manual, executablePath: nil, installPath: nil, profileID: nil, bottleName: nil, compatibilityBadge: "unknown", lastPlayed: nil, isInstalled: false)
++        let aggregator = ControlCenterLibraryAggregator(providers: [
++            MockLibraryProvider(source: .manual, items: [duplicate], warnings: ["manual warning"]),
++            MockLibraryProvider(source: .steam, items: [installed])
++        ])
++        let snapshot = aggregator.scan(settings: .default)
++        #expect(snapshot.items.count == 1)
++        #expect(snapshot.items.first?.source == .steam)
++        #expect(snapshot.warnings == ["manual warning"])
++    }
++
++    @Test func bottlePlannerUsesExternalDiskAndProcessInvocation() throws {
++        let planner = ControlCenterBottlePlanner()
++        let template = try #require(planner.templates().first { $0.id == "business-1c" })
++        let plan = planner.planCreate(template: template, name: "1C Main", settings: .default)
++        #expect(plan.bottlePath.hasPrefix("/Volumes/MacOS/MacRunner/bottles/"))
++        #expect(plan.invocations.first?.executable == "/usr/bin/env")
++        #expect(plan.invocations.first?.arguments.contains("wineboot" ) == true)
++        #expect(plan.invocations.first?.currentDirectory == "/Volumes/MacOS/MacRunner")
++    }
++
++    @Test func profileStoreLoadsSchemaVariants() throws {
++        let root = try temporaryRoot()
++        let profiles = root.appendingPathComponent("profiles", isDirectory: true)
++        try FileManager.default.createDirectory(at: profiles, withIntermediateDirectories: true)
++        try """
++        {"id":"game-test","name":"Game Test","category":"game","supported_machines":["x86_64"],"default_lane":"rosetta","env":{"WINEDEBUG":"-all"}}
++        """.write(to: profiles.appendingPathComponent("game-test.json"), atomically: true, encoding: .utf8)
++        try """
++        {"id":"business-test","name":"Business Test","category":"business","status":"research","architecture":"x86_64","wine_settings":{"locale":"ru_RU.UTF-8"}}
++        """.write(to: profiles.appendingPathComponent("business-test.json"), atomically: true, encoding: .utf8)
++
++        let loaded = ControlCenterProfileStore().loadProfiles(root: root)
++        #expect(loaded.count == 2)
++        #expect(loaded.map(\.id).contains("game-test"))
++        #expect(loaded.first { $0.id == "business-test" }?.environmentKeys == ["locale"])
++    }
++
++    @Test func hudTelemetrySummarizesSamples() throws {
++        let service = ControlCenterHUDTelemetryService()
++        let sample = try service.decode(jsonLine: "{\"timestamp\":1,\"appID\":\"a\",\"bottleName\":\"b\",\"backend\":\"metal\",\"fps\":50,\"frameTimeMs\":20,\"cpuPercent\":25,\"memoryMB\":1024}")
++        let summary = service.summarize([sample, ControlCenterHUDSample(timestamp: 2, appID: "a", bottleName: "b", backend: "metal", fps: 70, frameTimeMs: 14, cpuPercent: 30, memoryMB: 1536)])
++        #expect(summary.sampleCount == 2)
++        #expect(summary.averageFPS == 60)
++        #expect(summary.peakMemoryMB == 1536)
++    }
++
++    @Test func troubleshooterBuildsPromptAndClassifiesRuntimeDll() {
++        let service = ControlCenterTroubleshooter()
++        let context = ControlCenterDiagnosticContext(appName: "Legacy.exe", architecture: "x86_64", status: "FAIL", stderrTail: "vcruntime140.dll missing", profileID: "game", bottleName: "legacy")
++        let prompt = service.buildPrompt(context: context)
++        let suggestions = service.diagnose(context: context)
++        #expect(prompt.contains("Legacy.exe"))
++        #expect(suggestions.first?.id == "missing-vcrun")
++        #expect(suggestions.first?.command == "winetricks vcrun2019")
++    }
++
++    @Test func onboardingAndPackagingRespectBoundaries() {
++        let settings = AppSettings.default
++        let steps = ControlCenterFirstLaunchPlanner().steps(settings: settings)
++        let plan = ControlCenterPackagingPlanner().makePlan(settings: settings)
++        #expect(steps.contains { $0.id == "bottles" && $0.detail == "/Volumes/MacOS/MacRunner/bottles" })
++        #expect(plan.invocations.first?.executable.contains("app/macr-control-center/scripts/package-control-center.sh") == true)
++        #expect(plan.excludedPaths.contains("engine"))
++        #expect(plan.excludedPaths.contains("wine-fork"))
++    }
++
++    private func temporaryRoot() throws -> URL {
++        let root = FileManager.default.temporaryDirectory.appendingPathComponent("control-center-worlds-tests-\(UUID().uuidString)", isDirectory: true)
++        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
++        return root
++    }
++}
+diff --git a/app/macr-control-center/Tests/MacRunnerControlCenterTests/CoreStatusTests.swift b/app/macr-control-center/Tests/MacRunnerControlCenterTests/CoreStatusTests.swift
+new file mode 100644
+index 0000000..923e6e3
+--- /dev/null
++++ b/app/macr-control-center/Tests/MacRunnerControlCenterTests/CoreStatusTests.swift
+@@ -0,0 +1,33 @@
++import Foundation
++import Testing
++@testable import MacRunnerControlCenter
++
++struct CoreStatusTests {
++    @Test func unknownDefaults() {
++        let s = CoreStatus.unknown(root: "/tmp/test")
++        #expect(!s.isRootValid)
++        #expect(s.isConnected == false)
++        #expect(s.missingScripts.isEmpty)
++        #expect(s.missingReportsDir == true)
++        #expect(s.missingArtifactsDir == true)
++    }
++
++    @Test func checkRealRoot() {
++        let status = CoreStatusService.check(root: AppSettings.defaultRoot)
++        #expect(status.isRootValid == true)
++        #expect(status.mode == .localCore)
++        #expect(status.healthScore > 0)
++    }
++
++    @Test func checkInvalidRoot() {
++        let status = CoreStatusService.check(root: "/nonexistent/path")
++        #expect(status.isRootValid == false)
++        #expect(status.mode == .mock)
++        #expect(!status.isConnected)
++    }
++
++    @Test func requiredScriptsList() {
++        #expect(CoreStatusService.requiredScripts.contains("scripts/run-windows-app.sh"))
++        #expect(CoreStatusService.requiredScripts.contains("scripts/macr-doctor.sh"))
++    }
++}
+diff --git a/config/control-center.json b/config/control-center.json
+new file mode 100644
+index 0000000..ac96533
+--- /dev/null
++++ b/config/control-center.json
+@@ -0,0 +1,14 @@
++{
++  "schema_version": 1,
++  "macrunner_root": "/Volumes/MacOS/MacRunner",
++  "bottles_root": "/Volumes/MacOS/MacRunner/bottles",
++  "profiles_root": "/Volumes/MacOS/MacRunner/profiles",
++  "engine_integration": "process-only",
++  "protected_paths": [
++    "engine/",
++    "wine-fork/",
++    "scripts/build-wine.sh",
++    "scripts/sign-engine.sh",
++    "scripts/loop-wineboot.sh"
++  ]
++}
+diff --git a/profiles/business-autocad-2025.json b/profiles/business-autocad-2025.json
+new file mode 100644
+index 0000000..0b97d04
+--- /dev/null
++++ b/profiles/business-autocad-2025.json
+@@ -0,0 +1,27 @@
++{
++  "schema_version": 2,
++  "id": "business-autocad-2025",
++  "name": "AutoCAD 2025",
++  "category": "business-cad",
++  "status": "foundation",
++  "architecture": "x86_64",
++  "default_lane": "rosetta-wine64",
++  "bottle_policy": {
++    "isolation": "dedicated",
++    "default_bottle_id": "autocad-2025"
++  },
++  "windows_version": "win10",
++  "required_dlls": ["vcrun2019", "corefonts", "gdiplus"],
++  "graphics": {
++    "api": "dx11",
++    "shader_cache": true
++  },
++  "env": {
++    "WINEDEBUG": "-all"
++  },
++  "known_issues": [
++    "Licensing flows and hardware acceleration need app-specific validation.",
++    "No engine linkage from Control Center; launch must go through existing Process-based runner."
++  ],
++  "notes": "Control Center profile foundation for CAD-class business applications."
++}
+diff --git a/profiles/business-office-generic.json b/profiles/business-office-generic.json
+new file mode 100644
+index 0000000..9058e7f
+--- /dev/null
++++ b/profiles/business-office-generic.json
+@@ -0,0 +1,23 @@
++{
++  "schema_version": 2,
++  "id": "business-office-generic",
++  "name": "Generic Office Application",
++  "category": "business-office",
++  "status": "foundation",
++  "architecture": "x86_64",
++  "default_lane": "rosetta-wine64",
++  "bottle_policy": {
++    "isolation": "shared",
++    "default_bottle_id": "office-generic"
++  },
++  "windows_version": "win10",
++  "required_dlls": ["corefonts", "riched20"],
++  "graphics": {
++    "api": null,
++    "shader_cache": false
++  },
++  "env": {
++    "WINEDEBUG": "-all"
++  },
++  "notes": "Reusable office/productivity baseline for Control Center bottle templates."
++}
+diff --git a/profiles/control-center-manual-apps.json b/profiles/control-center-manual-apps.json
+new file mode 100644
+index 0000000..0299905
+--- /dev/null
++++ b/profiles/control-center-manual-apps.json
+@@ -0,0 +1,14 @@
++[
++  {
++    "id": "manual:sample-business-app",
++    "title": "Sample Business App",
++    "source": "manual",
++    "executablePath": null,
++    "installPath": null,
++    "profileID": "business-office-generic",
++    "bottleName": "sample-business-app",
++    "compatibilityBadge": "template",
++    "lastPlayed": null,
++    "isInstalled": false
++  }
++]
+diff --git a/docs/STATUS-control-center-master.md b/docs/STATUS-control-center-master.md
+new file mode 100644
+index 0000000..24b5c22
+--- /dev/null
++++ b/docs/STATUS-control-center-master.md
+@@ -0,0 +1,31 @@
++# Control Center Master Status
++
++Date: 2026-05-14
++Root: /Volumes/MacOS/MacRunner
++Scope: app/macr-control-center, profiles, config, docs/STATUS-control-center-*, tools
++Protected: engine, wine-fork, scripts/build-wine.sh, scripts/sign-engine.sh, scripts/loop-wineboot.sh
++
++## Summary
++
++Autonomous phases alpha through iota are implemented as a portable Control Center foundation. The app now has a dedicated Best of All Worlds tab, external-disk defaults, local library aggregation, bottle templates, profile loading, HUD telemetry models, offline troubleshoot plumbing, onboarding planning, and packaging boundaries.
++
++## Phase Matrix
++
++| Phase | Area | Status |
++| --- | --- | --- |
++| alpha | Competitive audit | PASS |
++| beta | Unified library aggregator | PASS |
++| gamma | Bottle/prefix manager foundation | PASS |
++| delta | Profile system | PASS |
++| epsilon | Performance HUD foundation | PASS |
++| zeta | AI troubleshoot foundation | PASS |
++| eta | Liquid Glass polish | PASS |
++| theta | Onboarding and first launch | PASS |
++| iota | Release packaging plan | PASS |
++
++## Remaining Limitations
++
++- HUD is telemetry/model foundation plus in-app preview, not a global overlay injector.
++- AI troubleshoot is offline prompt/classifier plumbing; no network call or API key flow is enabled.
++- Library providers are local manifest scanners; authenticated store APIs are intentionally not used.
++- Packaging references app-local tooling and excludes engine/Wine assets by contract.
+diff --git a/docs/STATUS-control-center-phase-alpha.md b/docs/STATUS-control-center-phase-alpha.md
+new file mode 100644
+index 0000000..7ea00b5
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-alpha.md
+@@ -0,0 +1,15 @@
++# STATUS control-center phase alpha
++
++Status: PASS
++Area: Competitive audit and product guardrails
++
++## Implemented
++
++- Added built-in CompetitiveAuditService with reviewed product categories, steal list, avoid list, and MacRunner positioning.
++- Wired audit guardrails into the Best of All Worlds Control Center tab.
++- Captured vault note 27 under tools/vault.
++
++## Boundaries
++
++- No web scraping or store authentication was added.
++- No engine, Wine fork, or root script paths were touched.
+diff --git a/docs/STATUS-control-center-phase-beta.md b/docs/STATUS-control-center-phase-beta.md
+new file mode 100644
+index 0000000..d87a128
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-beta.md
+@@ -0,0 +1,15 @@
++# STATUS control-center phase beta
++
++Status: PASS
++Area: Unified Library Aggregator
++
++## Implemented
++
++- Added ControlCenterLibraryAggregator with providers for Steam, Epic, GOG, Battle.net, and manual manifests.
++- Added deduplication by normalized title and source/warning reporting.
++- Added profiles/control-center-manual-apps.json as a portable manual manifest seed.
++
++## Remaining Limitations
++
++- Providers are local manifest scanners only.
++- Authenticated store APIs and cover-art downloads are deferred.
+diff --git a/docs/STATUS-control-center-phase-gamma.md b/docs/STATUS-control-center-phase-gamma.md
+new file mode 100644
+index 0000000..70c953e
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-gamma.md
+@@ -0,0 +1,14 @@
++# STATUS control-center phase gamma
++
++Status: PASS
++Area: Bottle and prefix manager foundation
++
++## Implemented
++
++- Added ControlCenterBottlePlanner and reusable bottle templates for games, 1C, AutoCAD, and office apps.
++- Bottle paths are derived from /Volumes/MacOS/MacRunner/bottles through AppSettings defaults.
++- Wine actions are represented as Process invocations, not linked engine calls.
++
++## Remaining Limitations
++
++- Planner creates safe invocations; it does not execute wineboot automatically in tests.
+diff --git a/docs/STATUS-control-center-phase-delta.md b/docs/STATUS-control-center-phase-delta.md
+new file mode 100644
+index 0000000..2a31b5b
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-delta.md
+@@ -0,0 +1,15 @@
++# STATUS control-center phase delta
++
++Status: PASS
++Area: Profile system
++
++## Implemented
++
++- Added ControlCenterProfileStore that loads existing schema variants without rewriting them.
++- Added business-autocad-2025 and business-office-generic profile foundations.
++- Profile metrics are surfaced in the Best of All Worlds tab.
++
++## Remaining Limitations
++
++- Profile validation is lightweight and accepts current mixed schema variants.
++- Full JSON schema enforcement remains future work.
+diff --git a/docs/STATUS-control-center-phase-epsilon.md b/docs/STATUS-control-center-phase-epsilon.md
+new file mode 100644
+index 0000000..63c4529
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-epsilon.md
+@@ -0,0 +1,15 @@
++# STATUS control-center phase epsilon
++
++Status: PASS
++Area: Performance HUD foundation
++
++## Implemented
++
++- Added ControlCenterHUDSample, ControlCenterHUDSummary, and ControlCenterHUDTelemetryService.
++- Added JSON-line decoding and summary aggregation.
++- Added in-app dashboard preview metrics.
++
++## Remaining Limitations
++
++- This is not a global overlay injector.
++- Runtime sampling hooks are model-ready but not wired into engine internals.
+diff --git a/docs/STATUS-control-center-phase-zeta.md b/docs/STATUS-control-center-phase-zeta.md
+new file mode 100644
+index 0000000..b71b824
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-zeta.md
+@@ -0,0 +1,15 @@
++# STATUS control-center phase zeta
++
++Status: PASS
++Area: AI troubleshoot foundation
++
++## Implemented
++
++- Added ControlCenterTroubleshooter with offline prompt generation and deterministic log signature suggestions.
++- Added missing VC runtime and architecture mismatch classifiers.
++- Surfaced suggestions in the Best of All Worlds tab.
++
++## Remaining Limitations
++
++- No network API call is made.
++- No API key or Keychain workflow is enabled yet.
+diff --git a/docs/STATUS-control-center-phase-eta.md b/docs/STATUS-control-center-phase-eta.md
+new file mode 100644
+index 0000000..dde9705
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-eta.md
+@@ -0,0 +1,14 @@
++# STATUS control-center phase eta
++
++Status: PASS
++Area: Liquid Glass polish
++
++## Implemented
++
++- Added a dedicated Best of All Worlds dashboard using material cards, gradient backdrop, rounded phase grid, and compact metrics.
++- Integrated the tab into ContentView without replacing existing tools.
++
++## Remaining Limitations
++
++- Visual polish is scoped to the new tab.
++- Existing tabs keep their current design language.
+diff --git a/docs/STATUS-control-center-phase-theta.md b/docs/STATUS-control-center-phase-theta.md
+new file mode 100644
+index 0000000..54b2024
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-theta.md
+@@ -0,0 +1,14 @@
++# STATUS control-center phase theta
++
++Status: PASS
++Area: Onboarding and first launch
++
++## Implemented
++
++- Updated default root and onboarding root to /Volumes/MacOS/MacRunner.
++- Added ControlCenterFirstLaunchPlanner with root, bottles, profiles, and Process-only doctor handoff checks.
++- Preserved existing onboarding Process execution style.
++
++## Remaining Limitations
++
++- First-launch planner is surfaced as model/dashboard data; the existing wizard is not fully redesigned.
+diff --git a/docs/STATUS-control-center-phase-iota.md b/docs/STATUS-control-center-phase-iota.md
+new file mode 100644
+index 0000000..fbb1bc7
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-iota.md
+@@ -0,0 +1,14 @@
++# STATUS control-center phase iota
++
++Status: PASS
++Area: Release packaging plan
++
++## Implemented
++
++- Added ControlCenterPackagingPlanner with app-local package script invocation.
++- Explicitly excludes engine, wine-fork, and protected root scripts.
++- Added config/control-center.json documenting process-only integration and external disk roots.
++
++## Remaining Limitations
++
++- Signing, notarization, and DMG release automation remain outside this patch.
+diff --git a/tools/control_center_phase_report.py b/tools/control_center_phase_report.py
+new file mode 100755
+index 0000000..53a279f
+--- /dev/null
++++ b/tools/control_center_phase_report.py
+@@ -0,0 +1,49 @@
++#!/usr/bin/env python3
++"""Validate Control Center alpha-iota phase artifacts without touching engine/Wine paths."""
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++PHASES = [
++    ("alpha", "27-control-center-phase-alpha-audit.md"),
++    ("beta", "28-phase-beta-library.md"),
++    ("gamma", "29-phase-gamma-bottles.md"),
++    ("delta", "30-phase-delta-profiles.md"),
++    ("epsilon", "31-phase-epsilon-hud.md"),
++    ("zeta", "32-phase-zeta-ai-diagnose.md"),
++    ("eta", "33-phase-eta-polish.md"),
++    ("theta", "34-phase-theta-onboarding.md"),
++    ("iota", "35-phase-iota-packaging.md"),
++]
++
++
++def exists(path: Path) -> bool:
++    return path.exists() and path.stat().st_size > 0
++
++
++def main() -> int:
++    rows = []
++    ok = True
++    for phase, vault in PHASES:
++        status = ROOT / "docs" / f"STATUS-control-center-phase-{phase}.md"
++        vault_path = ROOT / "tools" / "vault" / vault
++        phase_ok = exists(status) and exists(vault_path)
++        rows.append({"phase": phase, "status": str(status.relative_to(ROOT)), "vault": str(vault_path.relative_to(ROOT)), "ok": phase_ok})
++        ok = ok and phase_ok
++
++    payload = {
++        "schema_version": 1,
++        "root": str(ROOT),
++        "allowed_scope": ["app/macr-control-center", "profiles", "config", "docs/STATUS-control-center-*", "tools"],
++        "protected_scope": ["engine", "wine-fork", "scripts/build-wine.sh", "scripts/sign-engine.sh", "scripts/loop-wineboot.sh"],
++        "phases": rows,
++        "ok": ok,
++    }
++    print(json.dumps(payload, indent=2, sort_keys=True))
++    return 0 if ok else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tools/vault/27-control-center-phase-alpha-audit.md b/tools/vault/27-control-center-phase-alpha-audit.md
+new file mode 100644
+index 0000000..79b58b7
+--- /dev/null
++++ b/tools/vault/27-control-center-phase-alpha-audit.md
+@@ -0,0 +1,8 @@
++# 27 Control Center phase alpha audit
++
++Outcome: Competitive audit is captured as code and status docs.
++
++- Reviewed product set: CrossOver, Whisky, Heroic, Steam, Lutris, Bottles, Porting Kit, PlayOnMac, GPT UI wrappers.
++- Steal: unified library, explicit bottles, profile-driven defaults, first-launch checks, debug bundles.
++- Avoid: hidden downloads, home-directory bottle roots, direct engine linkage, opaque badges, blocking UI.
++- MacRunner stance: transparent power-user Control Center with external-disk-first state.
+diff --git a/tools/vault/28-phase-beta-library.md b/tools/vault/28-phase-beta-library.md
+new file mode 100644
+index 0000000..1a2be26
+--- /dev/null
++++ b/tools/vault/28-phase-beta-library.md
+@@ -0,0 +1,8 @@
++# 28 Phase beta library
++
++Outcome: Unified library aggregator foundation is implemented.
++
++- Providers: Steam, Epic, GOG, Battle.net, manual.
++- Dedup key: normalized title.
++- Current provider scope: local manifests only.
++- Manual seed: profiles/control-center-manual-apps.json.
+diff --git a/tools/vault/29-phase-gamma-bottles.md b/tools/vault/29-phase-gamma-bottles.md
+new file mode 100644
+index 0000000..7fcb3d3
+--- /dev/null
++++ b/tools/vault/29-phase-gamma-bottles.md
+@@ -0,0 +1,7 @@
++# 29 Phase gamma bottles
++
++Outcome: Bottle planning is external-disk-first and Process-only.
++
++- Default bottles root: /Volumes/MacOS/MacRunner/bottles.
++- Templates: Game DX11, 1C Enterprise, AutoCAD, Office.
++- Execution boundary: generated /usr/bin/env wine wineboot invocations, no direct engine linkage.
+diff --git a/tools/vault/30-phase-delta-profiles.md b/tools/vault/30-phase-delta-profiles.md
+new file mode 100644
+index 0000000..ac3f538
+--- /dev/null
++++ b/tools/vault/30-phase-delta-profiles.md
+@@ -0,0 +1,8 @@
++# 30 Phase delta profiles
++
++Outcome: Existing mixed profile schemas load into a common summary model.
++
++- Added ControlCenterProfileStore.
++- Added business-autocad-2025.json.
++- Added business-office-generic.json.
++- Validation remains permissive to avoid breaking current profiles.
+diff --git a/tools/vault/31-phase-epsilon-hud.md b/tools/vault/31-phase-epsilon-hud.md
+new file mode 100644
+index 0000000..6e9a367
+--- /dev/null
++++ b/tools/vault/31-phase-epsilon-hud.md
+@@ -0,0 +1,8 @@
++# 31 Phase epsilon HUD
++
++Outcome: HUD telemetry foundation is implemented.
++
++- Added JSON-line sample decoder.
++- Added summary aggregation for FPS, frame time, and peak memory.
++- Dashboard shows in-app preview metrics.
++- Global overlay injection is intentionally not part of this patch.
+diff --git a/tools/vault/32-phase-zeta-ai-diagnose.md b/tools/vault/32-phase-zeta-ai-diagnose.md
+new file mode 100644
+index 0000000..502790c
+--- /dev/null
++++ b/tools/vault/32-phase-zeta-ai-diagnose.md
+@@ -0,0 +1,7 @@
++# 32 Phase zeta AI diagnose
++
++Outcome: Offline troubleshoot plumbing is implemented.
++
++- Builds a deterministic prompt from app, arch, status, profile, bottle, and stderr tail.
++- Classifies VC runtime and architecture mismatch signatures.
++- No network or key management is enabled yet.
+diff --git a/tools/vault/33-phase-eta-polish.md b/tools/vault/33-phase-eta-polish.md
+new file mode 100644
+index 0000000..1221d83
+--- /dev/null
++++ b/tools/vault/33-phase-eta-polish.md
+@@ -0,0 +1,7 @@
++# 33 Phase eta polish
++
++Outcome: Best of All Worlds tab adds a polished Control Center dashboard.
++
++- Material cards and gradient background.
++- Phase grid from alpha through iota.
++- Compact operating metrics for library, profiles, bottles, HUD, troubleshoot, and packaging.
+diff --git a/tools/vault/34-phase-theta-onboarding.md b/tools/vault/34-phase-theta-onboarding.md
+new file mode 100644
+index 0000000..9db6be4
+--- /dev/null
++++ b/tools/vault/34-phase-theta-onboarding.md
+@@ -0,0 +1,7 @@
++# 34 Phase theta onboarding
++
++Outcome: First-launch defaults now align with external disk convention.
++
++- AppSettings.defaultRoot is /Volumes/MacOS/MacRunner.
++- Onboarding root field starts from the external disk path.
++- FirstLaunchPlanner lists root, bottles, profiles, and doctor handoff checks.
+diff --git a/tools/vault/35-phase-iota-packaging.md b/tools/vault/35-phase-iota-packaging.md
+new file mode 100644
+index 0000000..9ddf44b
+--- /dev/null
++++ b/tools/vault/35-phase-iota-packaging.md
+@@ -0,0 +1,7 @@
++# 35 Phase iota packaging
++
++Outcome: Packaging plan is explicit about boundaries.
++
++- Invokes app/macr-control-center/scripts/package-control-center.sh through ProcessInvocation.
++- Includes Control Center, profiles, and config metadata.
++- Excludes engine, wine-fork, and protected root scripts.

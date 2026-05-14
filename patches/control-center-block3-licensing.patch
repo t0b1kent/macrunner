@@ -1,0 +1,293 @@
+diff --git a/licensing/feature-gates.json b/licensing/feature-gates.json
+new file mode 100644
+index 0000000..14a72fb
+--- /dev/null
++++ b/licensing/feature-gates.json
+@@ -0,0 +1,10 @@
++{
++  "schema_version": 1,
++  "trial_days": 14,
++  "gated_features": {
++    "ai_troubleshoot": true,
++    "steam_library": true,
++    "bottle_share": false,
++    "hud_overlay": false
++  }
++}
+diff --git a/licensing/public-key.json b/licensing/public-key.json
+new file mode 100644
+index 0000000..8529afe
+--- /dev/null
++++ b/licensing/public-key.json
+@@ -0,0 +1,6 @@
++{
++  "schema_version": 1,
++  "algorithm": "Ed25519",
++  "key_id": "macrunner-dev-2026",
++  "public_key_base64": "MCowBQYDK2VwAyEAk+placeholderPublicVerifyKeyForLocalDevelopment="
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/License/LicenseStore.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/License/LicenseStore.swift
+new file mode 100644
+index 0000000..cb602c7
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/License/LicenseStore.swift
+@@ -0,0 +1,83 @@
++import CryptoKit
++import Foundation
++
++struct LicenseState: Codable, Equatable {
++    var isLicensed: Bool
++    var isTrial: Bool
++    var daysRemaining: Int
++    var message: String
++}
++
++struct FeatureGates: Codable, Equatable {
++    var schemaVersion: Int
++    var trialDays: Int
++    var gatedFeatures: [String: Bool]
++
++    enum CodingKeys: String, CodingKey {
++        case schemaVersion = "schema_version"
++        case trialDays = "trial_days"
++        case gatedFeatures = "gated_features"
++    }
++
++    static let fallback = FeatureGates(schemaVersion: 1, trialDays: 14, gatedFeatures: ["ai_troubleshoot": true, "steam_library": true])
++}
++
++struct LicenseStore {
++    static let service = "app.macrunner.license"
++    private let account = "license-key"
++    private let firstRunAccount = "first-run"
++
++    func activate(key: String) throws -> LicenseState {
++        guard LicenseVerifier().isWellFormed(key) else { throw LicenseError.invalidFormat }
++        try KeychainSecretStore(service: Self.service).save(key, account: account)
++        return LicenseState(isLicensed: true, isTrial: false, daysRemaining: 0, message: "License activated")
++    }
++
++    func currentState(now: Date = Date()) -> LicenseState {
++        if let key = KeychainSecretStore(service: Self.service).load(account: account), LicenseVerifier().isWellFormed(key) {
++            return LicenseState(isLicensed: true, isTrial: false, daysRemaining: 0, message: "Licensed")
++        }
++        let firstRun = loadFirstRun(now: now)
++        let days = max(0, 14 - Calendar.current.dateComponents([.day], from: firstRun, to: now).day!)
++        return LicenseState(isLicensed: false, isTrial: days > 0, daysRemaining: days, message: days > 0 ? "Trial Mode" : "Trial expired")
++    }
++
++    func isFeatureAllowed(_ feature: String, now: Date = Date()) -> Bool {
++        let gates = loadFeatureGates()
++        guard gates.gatedFeatures[feature] == true else { return true }
++        let state = currentState(now: now)
++        return state.isLicensed || state.isTrial
++    }
++
++    func loadFeatureGates() -> FeatureGates {
++        let url = URL(fileURLWithPath: AppSettings.defaultRoot).appendingPathComponent("licensing/feature-gates.json")
++        guard let data = try? Data(contentsOf: url), let gates = try? JSONDecoder().decode(FeatureGates.self, from: data) else { return .fallback }
++        return gates
++    }
++
++    private func loadFirstRun(now: Date) -> Date {
++        let store = KeychainSecretStore(service: Self.service)
++        if let text = store.load(account: firstRunAccount), let seconds = TimeInterval(text) {
++            return Date(timeIntervalSince1970: seconds)
++        }
++        try? store.save(String(now.timeIntervalSince1970), account: firstRunAccount)
++        return now
++    }
++}
++
++struct LicenseVerifier {
++    func isWellFormed(_ key: String) -> Bool {
++        let parts = key.split(separator: "-")
++        return parts.count == 4 && parts.allSatisfy { $0.count == 5 && $0.allSatisfy { $0.isLetter || $0.isNumber } }
++    }
++
++    func verifyDetachedSignature(message: Data, signature: Data, publicKeyRaw: Data) -> Bool {
++        guard let key = try? Curve25519.Signing.PublicKey(rawRepresentation: publicKeyRaw) else { return false }
++        return key.isValidSignature(signature, for: message)
++    }
++}
++
++enum LicenseError: LocalizedError, Equatable {
++    case invalidFormat
++    var errorDescription: String? { "License key must be 4 blocks of 5 alphanumeric characters." }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/SettingsView.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/SettingsView.swift
+index e073aff..e1b2987 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/SettingsView.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/SettingsView.swift
+@@ -3,17 +3,40 @@ import SwiftUI
+ struct SettingsView: View {
+     @EnvironmentObject var vm: SettingsViewModel
+ 
++    @StateObject private var coreStatusVM = CoreStatusViewModel()
++    @State private var anthropicAPIKey = ""
++    @State private var steamAPIKey = ""
++    @State private var licenseKey = ""
++    @State private var keychainStatus = ""
++
+     var body: some View {
+         Form {
++            Section("Core Connection") {
++                CoreConnectionView(vm: coreStatusVM, rootPath: vm.settings.macRunnerRoot)
++            }
++
+             Section("Paths") {
+                 HStack {
+                     TextField("MacRunner Root", text: $vm.settings.macRunnerRoot)
++                    Button("Browse...") { vm.pickRoot() }
+                     Image(systemName: vm.isValidRoot ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                         .foregroundStyle(vm.isValidRoot ? .green : .orange)
+                 }
+-                TextField("Artifacts Directory", text: $vm.settings.artifactsDirectory)
+-                TextField("Bottles Directory", text: $vm.settings.bottlesDirectory)
++                if let msg = vm.validationMessage {
++                    Text(msg)
++                        .font(.caption)
++                        .foregroundStyle(.orange)
++                }
++                HStack {
++                    TextField("Artifacts Directory", text: $vm.settings.artifactsDirectory)
++                    Button("Browse...") { vm.pickArtifactsDirectory() }
++                }
++                HStack {
++                    TextField("Bottles Directory", text: $vm.settings.bottlesDirectory)
++                    Button("Browse...") { vm.pickBottlesDirectory() }
++                }
+             }
++
+             Section("Defaults") {
+                 TextField("Default Timeout", value: $vm.settings.defaultTimeout, format: .number)
+                 Picker("Default D3D Backend", selection: $vm.settings.defaultD3DBackend) {
+@@ -23,21 +46,126 @@ struct SettingsView: View {
+                 }
+                 Toggle("Keep Artifacts Default", isOn: $vm.settings.keepArtifactsDefault)
+             }
++
+             Section("Timeouts") {
+                 TextField("Doctor Timeout", value: $vm.settings.doctorTimeout, format: .number)
+                 TextField("Integration Timeout", value: $vm.settings.integrationTimeout, format: .number)
+             }
++
+             Section("Debug") {
+                 Toggle("Enable Debug Logs", isOn: $vm.settings.enableDebugLogs)
+                 Toggle("Enable Mock Mode", isOn: $vm.settings.enableMockMode)
+             }
+-            Section {
+-                Button("Reset Defaults") { vm.resetDefaults() }
++
++            Section("AI Troubleshoot") {
++                SecureField("Anthropic API Key", text: $anthropicAPIKey)
++                TextField("Anthropic Model", text: binding(\.anthropicModelOverride, default: "claude-opus-4-7"))
++                Toggle("Share sanitized fixes to community DB", isOn: boolBinding(\.communityFixSharingOptIn))
++                HStack {
++                    Button("Save Anthropic Key") { saveAnthropicKey() }
++                    Text(keychainStatus).font(.caption).foregroundStyle(.secondary)
++                }
++            }
++
++            Section("Stores") {
++                SecureField("Steam API Key", text: $steamAPIKey)
++                TextField("SteamID64", text: binding(\.steamID64, default: ""))
++                Button("Save Steam Key") { saveSteamKey() }
++            }
++
++            Section("Updates & HUD") {
++                Picker("Update Channel", selection: binding(\.updateChannel, default: "stable")) {
++                    Text("Stable").tag("stable")
++                    Text("Beta").tag("beta")
++                    Text("Nightly").tag("nightly")
++                }
++                TextField("HUD Hotkey", text: binding(\.hudHotkey, default: "Cmd+Shift+M"))
++                Picker("Language", selection: binding(\.languageOverride, default: "system")) {
++                    Text("System").tag("system")
++                    Text("English").tag("en")
++                    Text("Russian").tag("ru")
++                }
++                Toggle("Share anonymous telemetry", isOn: boolBinding(\.telemetryOptIn))
++            }
++
++            Section("License") {
++                let state = LicenseStore().currentState()
++                Label(state.message + (state.isTrial ? " · \(state.daysRemaining) days remaining" : ""), systemImage: state.isLicensed ? "checkmark.seal.fill" : "clock.badge.exclamationmark")
++                TextField("License Key", text: $licenseKey)
++                HStack {
++                    Button("Activate") { activateLicense() }
++                    Button("Buy License") { PurchaseService().openLifetimePurchase() }
++                    Spacer()
++                }
++            }
++
++            Section("Backup") {
++                HStack {
++                    Button("Export Settings") { vm.exportSettings() }
++                    Button("Import Settings") { vm.importSettings() }
++                    Spacer()
++                }
++            }
++
++            Section("Danger Zone") {
++                Button("Reset to Defaults", role: .destructive) {
++                    vm.showResetConfirm = true
++                }
+             }
+         }
+         .formStyle(.grouped)
+         .padding()
+         .frame(minWidth: 480)
+         .onChange(of: vm.settings.macRunnerRoot) { vm.validateRoot() }
++        .alert("Reset all settings?", isPresented: $vm.showResetConfirm) {
++            Button("Cancel", role: .cancel) {}
++            Button("Reset", role: .destructive) { vm.resetDefaults() }
++        } message: {
++            Text("This will reset all settings to their default values.")
++        }
++    }
++
++    private func binding(_ keyPath: WritableKeyPath<AppSettings, String?>, default defaultValue: String) -> Binding<String> {
++        Binding(
++            get: { vm.settings[keyPath: keyPath] ?? defaultValue },
++            set: { vm.settings[keyPath: keyPath] = $0.isEmpty || $0 == "system" ? nil : $0 }
++        )
++    }
++
++    private func boolBinding(_ keyPath: WritableKeyPath<AppSettings, Bool?>) -> Binding<Bool> {
++        Binding(
++            get: { vm.settings[keyPath: keyPath] ?? false },
++            set: { vm.settings[keyPath: keyPath] = $0 }
++        )
++    }
++
++    private func saveAnthropicKey() {
++        do {
++            try AnthropicKeyStore().save(anthropicAPIKey)
++            keychainStatus = "Anthropic key saved in Keychain"
++            anthropicAPIKey = ""
++        } catch {
++            keychainStatus = error.localizedDescription
++        }
++    }
++
++    private func saveSteamKey() {
++        do {
++            try SteamKeyStore().saveAPIKey(steamAPIKey)
++            keychainStatus = "Steam key saved in Keychain"
++            steamAPIKey = ""
++        } catch {
++            keychainStatus = error.localizedDescription
++        }
++    }
++
++    private func activateLicense() {
++        do {
++            _ = try LicenseStore().activate(key: licenseKey)
++            keychainStatus = "License activated"
++            licenseKey = ""
++        } catch {
++            keychainStatus = error.localizedDescription
++        }
+     }
+ }

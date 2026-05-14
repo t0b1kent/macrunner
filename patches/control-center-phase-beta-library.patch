@@ -1,0 +1,55 @@
+diff --git a/docs/STATUS-control-center-phase-beta.md b/docs/STATUS-control-center-phase-beta.md
+new file mode 100644
+index 0000000..d87a128
+--- /dev/null
++++ b/docs/STATUS-control-center-phase-beta.md
+@@ -0,0 +1,15 @@
++# STATUS control-center phase beta
++
++Status: PASS
++Area: Unified Library Aggregator
++
++## Implemented
++
++- Added ControlCenterLibraryAggregator with providers for Steam, Epic, GOG, Battle.net, and manual manifests.
++- Added deduplication by normalized title and source/warning reporting.
++- Added profiles/control-center-manual-apps.json as a portable manual manifest seed.
++
++## Remaining Limitations
++
++- Providers are local manifest scanners only.
++- Authenticated store APIs and cover-art downloads are deferred.
+diff --git a/tools/vault/28-phase-beta-library.md b/tools/vault/28-phase-beta-library.md
+new file mode 100644
+index 0000000..1a2be26
+--- /dev/null
++++ b/tools/vault/28-phase-beta-library.md
+@@ -0,0 +1,8 @@
++# 28 Phase beta library
++
++Outcome: Unified library aggregator foundation is implemented.
++
++- Providers: Steam, Epic, GOG, Battle.net, manual.
++- Dedup key: normalized title.
++- Current provider scope: local manifests only.
++- Manual seed: profiles/control-center-manual-apps.json.
+diff --git a/profiles/control-center-manual-apps.json b/profiles/control-center-manual-apps.json
+new file mode 100644
+index 0000000..0299905
+--- /dev/null
++++ b/profiles/control-center-manual-apps.json
+@@ -0,0 +1,14 @@
++[
++  {
++    "id": "manual:sample-business-app",
++    "title": "Sample Business App",
++    "source": "manual",
++    "executablePath": null,
++    "installPath": null,
++    "profileID": "business-office-generic",
++    "bottleName": "sample-business-app",
++    "compatibilityBadge": "template",
++    "lastPlayed": null,
++    "isInstalled": false
++  }
++]

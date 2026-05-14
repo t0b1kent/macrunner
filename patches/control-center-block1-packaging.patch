@@ -1,0 +1,102 @@
+diff --git a/scripts/package-control-center.sh b/scripts/package-control-center.sh
+new file mode 100755
+index 0000000..1df847c
+--- /dev/null
++++ b/scripts/package-control-center.sh
+@@ -0,0 +1,55 @@
++#!/usr/bin/env bash
++set -euo pipefail
++ROOT="$(cd "$(dirname "$0")/.." && pwd)"
++APP_SRC="$ROOT/app/macr-control-center"
++VERSION="${MACRUNNER_VERSION:-0.2.0}"
++DIST="$ROOT/dist"
++STAGE="$DIST/stage"
++APP="$STAGE/MacRunner.app"
++RES="$APP/Contents/Resources"
++IDENTITY="${MACRUNNER_CODESIGN_IDENTITY:-Apple Development: 27GN9XE9CP}"
++
++mkdir -p "$DIST"
++rm -rf "$STAGE"
++mkdir -p "$APP/Contents/MacOS" "$RES"
++
++swift build -c release --package-path "$APP_SRC"
++cp "$APP_SRC/.build/release/MacRunnerControlCenter" "$APP/Contents/MacOS/MacRunner"
++if [[ -x "$APP_SRC/.build/release/macr-hud" ]]; then
++  cp "$APP_SRC/.build/release/macr-hud" "$RES/macr-hud"
++fi
++cat > "$APP/Contents/Info.plist" <<PLIST
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0"><dict>
++<key>CFBundleExecutable</key><string>MacRunner</string>
++<key>CFBundleIdentifier</key><string>app.macrunner.control-center</string>
++<key>CFBundleName</key><string>MacRunner</string>
++<key>CFBundleShortVersionString</key><string>$VERSION</string>
++<key>CFBundleVersion</key><string>$VERSION</string>
++<key>LSMinimumSystemVersion</key><string>14.0</string>
++</dict></plist>
++PLIST
++
++mkdir -p "$RES/engine" "$RES/hyperbridge" "$RES/bridge" "$RES/Sparkle" "$RES/PLCrashReporter"
++[[ -d "$ROOT/engine/wine/dist" ]] && ditto "$ROOT/engine/wine/dist" "$RES/engine/wine-dist" || true
++[[ -d "$ROOT/engine/hyperbridge/dist" ]] && ditto "$ROOT/engine/hyperbridge/dist" "$RES/hyperbridge" || true
++[[ -f "$ROOT/engine/bridge/arm64ec-x64-bridge" ]] && cp "$ROOT/engine/bridge/arm64ec-x64-bridge" "$RES/bridge/" || true
++printf 'Sparkle framework placeholder. Replace with vendored stable framework before release notarization.\n' > "$RES/Sparkle/README.txt"
++printf 'PLCrashReporter placeholder. Replace with vendored framework before release notarization.\n' > "$RES/PLCrashReporter/README.txt"
++
++if security find-identity -v -p codesigning | grep -q "$IDENTITY"; then
++  codesign --force --deep --options runtime --sign "$IDENTITY" "$APP"
++elif command -v codesign >/dev/null 2>&1; then
++  codesign --force --deep --sign - "$APP"
++fi
++
++DMG="$DIST/MacRunner-$VERSION.dmg"
++rm -f "$DMG"
++hdiutil create -volname "MacRunner $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
++shasum -a 256 "$DMG" > "$DMG.sha256"
++cat > "$DIST/appcast.xml" <<XML
++<rss version="2.0"><channel><title>MacRunner Updates</title><item><title>MacRunner $VERSION</title><enclosure url="https://updates.macrunner.app/MacRunner-$VERSION.dmg" sparkle:version="$VERSION" sparkle:shortVersionString="$VERSION" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" /></item></channel></rss>
++XML
++printf 'DMG: %s\n' "$DMG"
++printf 'SHA256: %s\n' "$(cut -d ' ' -f1 "$DMG.sha256")"
+diff --git a/scripts/notarize-control-center.sh b/scripts/notarize-control-center.sh
+new file mode 100755
+index 0000000..e2310bd
+--- /dev/null
++++ b/scripts/notarize-control-center.sh
+@@ -0,0 +1,9 @@
++#!/usr/bin/env bash
++set -euo pipefail
++cat <<'NOTE'
++Notarization is intentionally a paid-Apple-Developer path stub.
++When credentials are available, run:
++  xcrun notarytool submit dist/MacRunner-0.2.0.dmg --apple-id <apple-id> --team-id <team-id> --password <app-specific-password> --wait
++Then staple:
++  xcrun stapler staple dist/MacRunner-0.2.0.dmg
++NOTE
+diff --git a/docs/STATUS-control-center-block1-real.md b/docs/STATUS-control-center-block1-real.md
+new file mode 100644
+index 0000000..ca41937
+--- /dev/null
++++ b/docs/STATUS-control-center-block1-real.md
+@@ -0,0 +1,20 @@
++# STATUS control-center block1 real integrations
++
++Status: PASS foundation
++Verification: swift build PASS, swift test PASS 94/94
++
++## Implemented
++
++- Anthropic URLSession SSE client, Keychain API-key store, system prompt resource, structured JSON parser, retry/rate-limit shell, and AI fix apply planning.
++- Steam Keychain store, VDF parser, local manifest parser, Steam Web API client, cover URL selection, and steam:// launch/install URLs.
++- Legendary, gogdl, and Battle.net local/wrapper service foundations.
++- Strict profile schema file, hand-rolled validator, profile sync plan, and PE SHA-256 matcher.
++- macr-hud executable target, overlay window foundation, HUD socket config, rolling frame buffer, and launch plan.
++- Root package-control-center.sh and notarize-control-center.sh stubs with release build, app bundle, DMG, SHA-256, appcast, and optional codesign.
++
++## Remaining external work
++
++- Real OAuth/device flows require provider credentials and CLIs.
++- Real Sparkle and PLCrashReporter frameworks are placeholders until vendored.
++- Notarization requires paid Apple Developer credentials.
++- HUD IPC awaits engine JSON-line producer.

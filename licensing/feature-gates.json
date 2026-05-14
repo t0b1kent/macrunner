@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "trial_days": 14,
+  "gated_features": {
+    "ai_troubleshoot": true,
+    "steam_library": true,
+    "bottle_share": false,
+    "hud_overlay": false
+  }
+}

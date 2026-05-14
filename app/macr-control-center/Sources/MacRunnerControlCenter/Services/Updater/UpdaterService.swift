@@ -6,7 +6,10 @@ enum UpdateChannel: String, Codable, CaseIterable, Identifiable {
     case nightly
 
     var id: String { rawValue }
-    var appcastURL: URL { URL(string: "https://updates.macrunner.app/appcast-\(rawValue).xml")! }
+    var appcastURL: URL {
+        URL(fileURLWithPath: AppSettings.defaultRoot)
+            .appendingPathComponent("dist/appcast-\(rawValue).xml")
+    }
     var warning: String? { self == .nightly ? "Nightly builds may introduce instability." : nil }
 }
 

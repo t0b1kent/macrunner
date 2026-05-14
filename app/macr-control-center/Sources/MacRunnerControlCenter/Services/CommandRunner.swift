@@ -38,145 +38,110 @@ final class CommandRunner: ObservableObject {
         }
     }
 
-    private func execute(
+    private nonisolated func execute(
         command: String,
         arguments: [String],
         workingDirectory: String?,
         environment: [String: String]?,
         timeout: TimeInterval
     ) async -> CommandResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: command)
-        process.arguments = arguments
-        if let wd = workingDirectory {
-            process.currentDirectoryURL = URL(fileURLWithPath: wd)
-        }
-        if let env = environment {
-            var merged = ProcessInfo.processInfo.environment
-            for (k, v) in env { merged[k] = v }
-            process.environment = merged
-        }
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-
-        self.process = process
-
-        return await withCheckedContinuation { continuation in
-            var resumed = false
-            func resumeOnce(_ result: CommandResult) {
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(returning: result)
-            }
-
-            let start = Date()
-            var stdoutData = Data()
-            var stderrData = Data()
-
-            let stdoutHandle = outPipe.fileHandleForReading
-            let stderrHandle = errPipe.fileHandleForReading
-
-            stdoutHandle.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty {
-                    handle.readabilityHandler = nil
-                } else {
-                    stdoutData.append(data)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let start = Date()
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: command)
+                process.arguments = arguments
+                if let wd = workingDirectory {
+                    process.currentDirectoryURL = URL(fileURLWithPath: wd)
                 }
-            }
-
-            stderrHandle.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty {
-                    handle.readabilityHandler = nil
-                } else {
-                    stderrData.append(data)
+                if let env = environment {
+                    var merged = ProcessInfo.processInfo.environment
+                    for (k, v) in env { merged[k] = v }
+                    process.environment = merged
                 }
-            }
 
-            process.terminationHandler = { [weak self] _ in
-                // Allow readability handlers to drain remaining data
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    stdoutHandle.readabilityHandler = nil
-                    stderrHandle.readabilityHandler = nil
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                process.standardOutput = outPipe
+                process.standardError = errPipe
 
+                Task { @MainActor in
+                    self.process = process
+                }
+
+                do {
+                    try process.run()
+                } catch {
                     let duration = Int(Date().timeIntervalSince(start) * 1000)
-                    let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-                    let stderr = String(data: stderrData, encoding: .utf8) ?? ""
-
-                    Task { @MainActor in
-                        self?.stdoutBuffer = stdout
-                        self?.stderrBuffer = stderr
-                    }
-
-                    let status: CommandStatus
-                    if process.terminationStatus == 15 || process.terminationStatus == 9 {
-                        status = .timeout
-                    } else if process.terminationStatus == 0 {
-                        status = .success
-                    } else {
-                        status = .failed
-                    }
-
-                    resumeOnce(CommandResult(
-                        status: status,
-                        exitCode: Int(process.terminationStatus),
-                        stdout: stdout,
-                        stderr: stderr,
+                    continuation.resume(returning: CommandResult(
+                        status: .failed,
+                        exitCode: -1,
+                        stdout: "",
+                        stderr: error.localizedDescription,
                         durationMs: duration,
                         command: "\(command) \(arguments.joined(separator: " "))"
                     ))
+                    return
                 }
-            }
 
-            do {
-                try process.run()
-            } catch {
-                resumeOnce(CommandResult(
-                    status: .failed,
-                    exitCode: -1,
-                    stdout: "",
-                    stderr: error.localizedDescription,
-                    durationMs: 0,
-                    command: "\(command) \(arguments.joined(separator: " "))"
-                ))
-                return
-            }
+                let stdoutGroup = DispatchGroup()
+                var stdoutData = Data()
+                var stderrData = Data()
 
-            // macOS may not throw or fire terminationHandler for missing executables
-            if process.processIdentifier == 0 {
-                stdoutHandle.readabilityHandler = nil
-                stderrHandle.readabilityHandler = nil
+                stdoutGroup.enter()
+                DispatchQueue.global(qos: .utility).async {
+                    stdoutData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    stdoutGroup.leave()
+                }
+
+                stdoutGroup.enter()
+                DispatchQueue.global(qos: .utility).async {
+                    stderrData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    stdoutGroup.leave()
+                }
+
+                let timeoutDeadline = Date().addingTimeInterval(timeout)
+                var timedOut = false
+                while process.isRunning {
+                    if Date() >= timeoutDeadline {
+                        timedOut = true
+                        process.terminate()
+                        Thread.sleep(forTimeInterval: 0.5)
+                        if process.isRunning {
+                            kill(process.processIdentifier, SIGKILL)
+                        }
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 0.02)
+                }
+                process.waitUntilExit()
+                _ = stdoutGroup.wait(timeout: .now() + 2)
+
                 let duration = Int(Date().timeIntervalSince(start) * 1000)
-                let stderr = "Failed to launch process: executable not found or not executable"
+                let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+                let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+                let status: CommandStatus
+                if timedOut || process.terminationStatus == 15 || process.terminationStatus == 9 {
+                    status = .timeout
+                } else if process.terminationStatus == 0 {
+                    status = .success
+                } else {
+                    status = .failed
+                }
+
                 Task { @MainActor in
-                    self.stdoutBuffer = ""
+                    self.stdoutBuffer = stdout
                     self.stderrBuffer = stderr
                 }
-                resumeOnce(CommandResult(
-                    status: .failed,
-                    exitCode: -1,
-                    stdout: "",
+
+                continuation.resume(returning: CommandResult(
+                    status: status,
+                    exitCode: Int(process.terminationStatus),
+                    stdout: stdout,
                     stderr: stderr,
                     durationMs: duration,
                     command: "\(command) \(arguments.joined(separator: " "))"
                 ))
-                return
-            }
-
-            // Timeout on main queue
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-                if process.isRunning {
-                    process.terminate()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        if process.isRunning {
-                            kill(process.processIdentifier, SIGKILL)
-                        }
-                    }
-                }
             }
         }
     }

@@ -6,8 +6,8 @@ struct TelemetryEvent: Codable, Equatable {
 }
 
 struct TelemetryService {
-    var crashEndpoint = URL(string: "https://crashes.macrunner.app/upload")!
-    var compatEndpoint = URL(string: "https://events.macrunner.app/compat")!
+    var crashEndpoint: URL? = ProcessInfo.processInfo.environment["MACRUNNER_CRASH_ENDPOINT"].flatMap(URL.init(string:))
+    var compatEndpoint: URL? = ProcessInfo.processInfo.environment["MACRUNNER_COMPAT_ENDPOINT"].flatMap(URL.init(string:))
     var session: URLSession = .shared
 
     func sanitize(_ text: String, home: String = NSHomeDirectory()) -> String {
@@ -24,7 +24,7 @@ struct TelemetryService {
 
     func upload(_ event: TelemetryEvent, enabled: Bool) async throws -> Bool {
         guard enabled else { return false }
-        let endpoint = event.kind == "crash" ? crashEndpoint : compatEndpoint
+        guard let endpoint = event.kind == "crash" ? crashEndpoint : compatEndpoint else { return false }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")

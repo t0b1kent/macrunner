@@ -1,0 +1,5 @@
+[
+  {"id":"notepad-fixture","name":"Notepad++ Fixture","command":["/bin/echo","notepad fixture launched"],"expected_window_title":"Notepad++","max_startup_time":5},
+  {"id":"calc-fixture","name":"Calculator Fixture","command":["/bin/echo","calc fixture launched"],"expected_window_title":"Calculator","max_startup_time":5},
+  {"id":"7zip-fixture","name":"7-Zip Fixture","command":["/bin/echo","7zip fixture launched"],"expected_window_title":"7-Zip","max_startup_time":5}
+]

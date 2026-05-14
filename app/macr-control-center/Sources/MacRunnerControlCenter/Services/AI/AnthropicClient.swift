@@ -47,13 +47,13 @@ final class AnthropicClient {
     let rateLimiter: AnthropicRateLimiter
 
     init(
-        endpoint: URL = URL(string: "https://api.anthropic.com/v1/messages")!,
+        endpoint: URL? = ProcessInfo.processInfo.environment["MACRUNNER_ANTHROPIC_ENDPOINT"].flatMap(URL.init(string:)),
         model: String = "claude-opus-4-7",
         keyStore: AnthropicKeyStore = AnthropicKeyStore(),
         session: URLSession = .shared,
         rateLimiter: AnthropicRateLimiter = AnthropicRateLimiter()
     ) {
-        self.endpoint = endpoint
+        self.endpoint = endpoint ?? URL(fileURLWithPath: "/dev/null")
         self.model = model
         self.keyStore = keyStore
         self.session = session

@@ -19,9 +19,10 @@ struct SteamWebClient {
     var apiKey: String
     var steamID64: String
     var session: URLSession = .shared
-    var baseURL = URL(string: "https://api.steampowered.com")!
+    var baseURL: URL?
 
     func ownedGames() async throws -> [SteamOwnedGame] {
+        guard let baseURL else { throw SteamWebError.endpointNotConfigured }
         let url = baseURL.appendingPathComponent("IPlayerService/GetOwnedGames/v1/")
             .appending(queryItems: [
                 URLQueryItem(name: "key", value: apiKey),
@@ -41,10 +42,7 @@ struct SteamWebClient {
     func installURL(appID: String) -> URL { URL(string: "steam://install/\(appID)")! }
 
     func coverURLs(appID: String) -> [URL] {
-        [
-            URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appID)/library_600x900.jpg")!,
-            URL(string: "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/\(appID)/library_hero.jpg")!
-        ]
+        []
     }
 
     @MainActor
@@ -53,4 +51,4 @@ struct SteamWebClient {
     }
 }
 
-enum SteamWebError: LocalizedError { case badStatus }
+enum SteamWebError: LocalizedError { case badStatus, endpointNotConfigured }

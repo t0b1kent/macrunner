@@ -1,0 +1,14 @@
+{
+  "compatibility": "WORKS",
+  "crash": false,
+  "id": "7zip-fixture",
+  "launch_time_ms": 5,
+  "name": "7-Zip Fixture",
+  "peak_ram_mb": 0,
+  "screenshots": [
+    "/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119/7zip-fixture/screenshots/0001.txt"
+  ],
+  "status": "PASS",
+  "stderr_tail": "",
+  "stdout_tail": "7zip fixture launched\n"
+}

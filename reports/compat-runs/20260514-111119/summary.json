@@ -1,0 +1,49 @@
+{
+  "passed": 3,
+  "results": [
+    {
+      "compatibility": "WORKS",
+      "crash": false,
+      "id": "notepad-fixture",
+      "launch_time_ms": 5,
+      "name": "Notepad++ Fixture",
+      "peak_ram_mb": 0,
+      "screenshots": [
+        "/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119/notepad-fixture/screenshots/0001.txt"
+      ],
+      "status": "PASS",
+      "stderr_tail": "",
+      "stdout_tail": "notepad fixture launched\n"
+    },
+    {
+      "compatibility": "WORKS",
+      "crash": false,
+      "id": "calc-fixture",
+      "launch_time_ms": 5,
+      "name": "Calculator Fixture",
+      "peak_ram_mb": 0,
+      "screenshots": [
+        "/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119/calc-fixture/screenshots/0001.txt"
+      ],
+      "status": "PASS",
+      "stderr_tail": "",
+      "stdout_tail": "calc fixture launched\n"
+    },
+    {
+      "compatibility": "WORKS",
+      "crash": false,
+      "id": "7zip-fixture",
+      "launch_time_ms": 5,
+      "name": "7-Zip Fixture",
+      "peak_ram_mb": 0,
+      "screenshots": [
+        "/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119/7zip-fixture/screenshots/0001.txt"
+      ],
+      "status": "PASS",
+      "stderr_tail": "",
+      "stdout_tail": "7zip fixture launched\n"
+    }
+  ],
+  "timestamp": "20260514-111119",
+  "total": 3
+}

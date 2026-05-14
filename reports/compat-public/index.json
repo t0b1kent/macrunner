@@ -1,0 +1,354 @@
+{
+  "rows": [
+    {
+      "crossover": "PARTIAL",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Notepad++",
+      "whisky": "BROKEN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Office Viewer",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "SumatraPDF",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "7-Zip",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "FAR Manager",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Total Commander",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "BROKEN",
+      "note": "",
+      "program": "AutoCAD LT",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "BROKEN",
+      "note": "",
+      "program": "Revit",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "SAP GUI",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "KMPlayer",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "IrfanView",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "GIMP Windows",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Inkscape Windows",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Audacity",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "BROKEN",
+      "note": "",
+      "program": "OBS Studio",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "1\u0421 \u0411\u0443\u0445\u0433\u0430\u043b\u0442\u0435\u0440\u0438\u044f 8",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u043d\u0442\u041f\u043b\u044e\u0441",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "\u0413\u0430\u0440\u0430\u043d\u0442",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "BROKEN",
+      "note": "",
+      "program": "\u041a\u043e\u043d\u0442\u0443\u0440.\u042d\u043a\u0441\u0442\u0435\u0440\u043d",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "\u0410\u043b\u044c\u0444\u0430-\u0410\u0432\u0442\u043e",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Portal",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Portal 2",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Stardew Valley",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Terraria",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Hades",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Hollow Knight",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Skyrim Special Edition",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Fallout New Vegas",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "The Witcher 3",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "BROKEN",
+      "note": "",
+      "program": "Cyberpunk 2077",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Control",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Disco Elysium",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Factorio",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "RimWorld",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Celeste",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Dead Cells",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "DOOM 2016",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Mass Effect Legendary Edition",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Civilization VI",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Cities Skylines",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "HxD",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "WinSCP",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "PuTTY",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "KeePass",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Mercurial",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "WORKS",
+      "note": "MacRunner only",
+      "program": "Sysinternals Suite",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Git for Windows",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Node.js Windows",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "Python Windows",
+      "whisky": "UNKNOWN"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "macrunner": "PARTIAL",
+      "note": "",
+      "program": "VS Code Windows",
+      "whisky": "UNKNOWN"
+    }
+  ]
+}

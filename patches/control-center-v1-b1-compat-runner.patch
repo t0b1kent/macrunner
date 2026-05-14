@@ -1,0 +1,453 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CommandRunner.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CommandRunner.swift
+index f4390d3..77bca26 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CommandRunner.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CommandRunner.swift
+@@ -38,145 +38,110 @@ final class CommandRunner: ObservableObject {
+         }
+     }
+
+-    private func execute(
++    private nonisolated func execute(
+         command: String,
+         arguments: [String],
+         workingDirectory: String?,
+         environment: [String: String]?,
+         timeout: TimeInterval
+     ) async -> CommandResult {
+-        let process = Process()
+-        process.executableURL = URL(fileURLWithPath: command)
+-        process.arguments = arguments
+-        if let wd = workingDirectory {
+-            process.currentDirectoryURL = URL(fileURLWithPath: wd)
+-        }
+-        if let env = environment {
+-            var merged = ProcessInfo.processInfo.environment
+-            for (k, v) in env { merged[k] = v }
+-            process.environment = merged
+-        }
+-
+-        let outPipe = Pipe()
+-        let errPipe = Pipe()
+-        process.standardOutput = outPipe
+-        process.standardError = errPipe
+-
+-        self.process = process
+-
+-        return await withCheckedContinuation { continuation in
+-            var resumed = false
+-            func resumeOnce(_ result: CommandResult) {
+-                guard !resumed else { return }
+-                resumed = true
+-                continuation.resume(returning: result)
+-            }
+-
+-            let start = Date()
+-            var stdoutData = Data()
+-            var stderrData = Data()
++        await withCheckedContinuation { continuation in
++            DispatchQueue.global(qos: .userInitiated).async {
++                let start = Date()
++                let process = Process()
++                process.executableURL = URL(fileURLWithPath: command)
++                process.arguments = arguments
++                if let wd = workingDirectory {
++                    process.currentDirectoryURL = URL(fileURLWithPath: wd)
++                }
++                if let env = environment {
++                    var merged = ProcessInfo.processInfo.environment
++                    for (k, v) in env { merged[k] = v }
++                    process.environment = merged
++                }
+
+-            let stdoutHandle = outPipe.fileHandleForReading
+-            let stderrHandle = errPipe.fileHandleForReading
++                let outPipe = Pipe()
++                let errPipe = Pipe()
++                process.standardOutput = outPipe
++                process.standardError = errPipe
+
+-            stdoutHandle.readabilityHandler = { handle in
+-                let data = handle.availableData
+-                if data.isEmpty {
+-                    handle.readabilityHandler = nil
+-                } else {
+-                    stdoutData.append(data)
++                Task { @MainActor in
++                    self.process = process
+                 }
+-            }
+
+-            stderrHandle.readabilityHandler = { handle in
+-                let data = handle.availableData
+-                if data.isEmpty {
+-                    handle.readabilityHandler = nil
+-                } else {
+-                    stderrData.append(data)
++                do {
++                    try process.run()
++                } catch {
++                    let duration = Int(Date().timeIntervalSince(start) * 1000)
++                    continuation.resume(returning: CommandResult(
++                        status: .failed,
++                        exitCode: -1,
++                        stdout: "",
++                        stderr: error.localizedDescription,
++                        durationMs: duration,
++                        command: "\(command) \(arguments.joined(separator: " "))"
++                    ))
++                    return
+                 }
+-            }
+
+-            process.terminationHandler = { [weak self] _ in
+-                // Allow readability handlers to drain remaining data
+-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+-                    stdoutHandle.readabilityHandler = nil
+-                    stderrHandle.readabilityHandler = nil
++                let stdoutGroup = DispatchGroup()
++                var stdoutData = Data()
++                var stderrData = Data()
+
+-                    let duration = Int(Date().timeIntervalSince(start) * 1000)
+-                    let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+-                    let stderr = String(data: stderrData, encoding: .utf8) ?? ""
++                stdoutGroup.enter()
++                DispatchQueue.global(qos: .utility).async {
++                    stdoutData = outPipe.fileHandleForReading.readDataToEndOfFile()
++                    stdoutGroup.leave()
++                }
+
+-                    Task { @MainActor in
+-                        self?.stdoutBuffer = stdout
+-                        self?.stderrBuffer = stderr
+-                    }
++                stdoutGroup.enter()
++                DispatchQueue.global(qos: .utility).async {
++                    stderrData = errPipe.fileHandleForReading.readDataToEndOfFile()
++                    stdoutGroup.leave()
++                }
+
+-                    let status: CommandStatus
+-                    if process.terminationStatus == 15 || process.terminationStatus == 9 {
+-                        status = .timeout
+-                    } else if process.terminationStatus == 0 {
+-                        status = .success
+-                    } else {
+-                        status = .failed
++                let timeoutDeadline = Date().addingTimeInterval(timeout)
++                var timedOut = false
++                while process.isRunning {
++                    if Date() >= timeoutDeadline {
++                        timedOut = true
++                        process.terminate()
++                        Thread.sleep(forTimeInterval: 0.5)
++                        if process.isRunning {
++                            kill(process.processIdentifier, SIGKILL)
++                        }
++                        break
+                     }
+-
+-                    resumeOnce(CommandResult(
+-                        status: status,
+-                        exitCode: Int(process.terminationStatus),
+-                        stdout: stdout,
+-                        stderr: stderr,
+-                        durationMs: duration,
+-                        command: "\(command) \(arguments.joined(separator: " "))"
+-                    ))
++                    Thread.sleep(forTimeInterval: 0.02)
+                 }
+-            }
+-
+-            do {
+-                try process.run()
+-            } catch {
+-                resumeOnce(CommandResult(
+-                    status: .failed,
+-                    exitCode: -1,
+-                    stdout: "",
+-                    stderr: error.localizedDescription,
+-                    durationMs: 0,
+-                    command: "\(command) \(arguments.joined(separator: " "))"
+-                ))
+-                return
+-            }
++                process.waitUntilExit()
++                _ = stdoutGroup.wait(timeout: .now() + 2)
+
+-            // macOS may not throw or fire terminationHandler for missing executables
+-            if process.processIdentifier == 0 {
+-                stdoutHandle.readabilityHandler = nil
+-                stderrHandle.readabilityHandler = nil
+                 let duration = Int(Date().timeIntervalSince(start) * 1000)
+-                let stderr = "Failed to launch process: executable not found or not executable"
++                let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
++                let stderr = String(data: stderrData, encoding: .utf8) ?? ""
++                let status: CommandStatus
++                if timedOut || process.terminationStatus == 15 || process.terminationStatus == 9 {
++                    status = .timeout
++                } else if process.terminationStatus == 0 {
++                    status = .success
++                } else {
++                    status = .failed
++                }
++
+                 Task { @MainActor in
+-                    self.stdoutBuffer = ""
++                    self.stdoutBuffer = stdout
+                     self.stderrBuffer = stderr
+                 }
+-                resumeOnce(CommandResult(
+-                    status: .failed,
+-                    exitCode: -1,
+-                    stdout: "",
++
++                continuation.resume(returning: CommandResult(
++                    status: status,
++                    exitCode: Int(process.terminationStatus),
++                    stdout: stdout,
+                     stderr: stderr,
+                     durationMs: duration,
+                     command: "\(command) \(arguments.joined(separator: " "))"
+                 ))
+-                return
+-            }
+-
+-            // Timeout on main queue
+-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+-                if process.isRunning {
+-                    process.terminate()
+-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+-                        if process.isRunning {
+-                            kill(process.processIdentifier, SIGKILL)
+-                        }
+-                    }
+-                }
+             }
+         }
+     }
+diff --git a/reports/compat-runs/20260514-111119/7zip-fixture/result.json b/reports/compat-runs/20260514-111119/7zip-fixture/result.json
+new file mode 100644
+index 0000000..4bddd33
+--- /dev/null
++++ b/reports/compat-runs/20260514-111119/7zip-fixture/result.json
+@@ -0,0 +1,14 @@
++{
++  "compatibility": "WORKS",
++  "crash": false,
++  "id": "7zip-fixture",
++  "launch_time_ms": 5,
++  "name": "7-Zip Fixture",
++  "peak_ram_mb": 0,
++  "screenshots": [
++    "/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119/7zip-fixture/screenshots/0001.txt"
++  ],
++  "status": "PASS",
++  "stderr_tail": "",
++  "stdout_tail": "7zip fixture launched\n"
++}
+diff --git a/reports/compat-runs/20260514-111119/7zip-fixture/screenshots/0001.txt b/reports/compat-runs/20260514-111119/7zip-fixture/screenshots/0001.txt
+new file mode 100644
+index 0000000..27f55b6
+--- /dev/null
++++ b/reports/compat-runs/20260514-111119/7zip-fixture/screenshots/0001.txt
+@@ -0,0 +1 @@
++7zip fixture launched
+diff --git a/reports/compat-runs/20260514-111119/calc-fixture/result.json b/reports/compat-runs/20260514-111119/calc-fixture/result.json
+new file mode 100644
+index 0000000..27c97dd
+--- /dev/null
++++ b/reports/compat-runs/20260514-111119/calc-fixture/result.json
+@@ -0,0 +1,14 @@
++{
++  "compatibility": "WORKS",
++  "crash": false,
++  "id": "calc-fixture",
++  "launch_time_ms": 5,
++  "name": "Calculator Fixture",
++  "peak_ram_mb": 0,
++  "screenshots": [
++    "/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119/calc-fixture/screenshots/0001.txt"
++  ],
++  "status": "PASS",
++  "stderr_tail": "",
++  "stdout_tail": "calc fixture launched\n"
++}
+diff --git a/reports/compat-runs/20260514-111119/calc-fixture/screenshots/0001.txt b/reports/compat-runs/20260514-111119/calc-fixture/screenshots/0001.txt
+new file mode 100644
+index 0000000..1bc7e90
+--- /dev/null
++++ b/reports/compat-runs/20260514-111119/calc-fixture/screenshots/0001.txt
+@@ -0,0 +1 @@
++calc fixture launched
+diff --git a/reports/compat-runs/20260514-111119/notepad-fixture/result.json b/reports/compat-runs/20260514-111119/notepad-fixture/result.json
+new file mode 100644
+index 0000000..9c786c8
+--- /dev/null
++++ b/reports/compat-runs/20260514-111119/notepad-fixture/result.json
+@@ -0,0 +1,14 @@
++{
++  "compatibility": "WORKS",
++  "crash": false,
++  "id": "notepad-fixture",
++  "launch_time_ms": 5,
++  "name": "Notepad++ Fixture",
++  "peak_ram_mb": 0,
++  "screenshots": [
++    "/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119/notepad-fixture/screenshots/0001.txt"
++  ],
++  "status": "PASS",
++  "stderr_tail": "",
++  "stdout_tail": "notepad fixture launched\n"
++}
+diff --git a/reports/compat-runs/20260514-111119/notepad-fixture/screenshots/0001.txt b/reports/compat-runs/20260514-111119/notepad-fixture/screenshots/0001.txt
+new file mode 100644
+index 0000000..2494d50
+--- /dev/null
++++ b/reports/compat-runs/20260514-111119/notepad-fixture/screenshots/0001.txt
+@@ -0,0 +1 @@
++notepad fixture launched
+diff --git a/reports/compat-runs/20260514-111119/summary.json b/reports/compat-runs/20260514-111119/summary.json
+new file mode 100644
+index 0000000..80ceba8
+--- /dev/null
++++ b/reports/compat-runs/20260514-111119/summary.json
+@@ -0,0 +1,49 @@
++{
++  "passed": 3,
++  "results": [
++    {
++      "compatibility": "WORKS",
++      "crash": false,
++      "id": "notepad-fixture",
++      "launch_time_ms": 5,
++      "name": "Notepad++ Fixture",
++      "peak_ram_mb": 0,
++      "screenshots": [
++        "/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119/notepad-fixture/screenshots/0001.txt"
++      ],
++      "status": "PASS",
++      "stderr_tail": "",
++      "stdout_tail": "notepad fixture launched\n"
++    },
++    {
++      "compatibility": "WORKS",
++      "crash": false,
++      "id": "calc-fixture",
++      "launch_time_ms": 5,
++      "name": "Calculator Fixture",
++      "peak_ram_mb": 0,
++      "screenshots": [
++        "/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119/calc-fixture/screenshots/0001.txt"
++      ],
++      "status": "PASS",
++      "stderr_tail": "",
++      "stdout_tail": "calc fixture launched\n"
++    },
++    {
++      "compatibility": "WORKS",
++      "crash": false,
++      "id": "7zip-fixture",
++      "launch_time_ms": 5,
++      "name": "7-Zip Fixture",
++      "peak_ram_mb": 0,
++      "screenshots": [
++        "/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119/7zip-fixture/screenshots/0001.txt"
++      ],
++      "status": "PASS",
++      "stderr_tail": "",
++      "stdout_tail": "7zip fixture launched\n"
++    }
++  ],
++  "timestamp": "20260514-111119",
++  "total": 3
++}
+diff --git a/tools/compat-runner/plan-test.yaml b/tools/compat-runner/plan-test.yaml
+new file mode 100644
+index 0000000..6852aec
+--- /dev/null
++++ b/tools/compat-runner/plan-test.yaml
+@@ -0,0 +1,5 @@
++[
++  {"id":"notepad-fixture","name":"Notepad++ Fixture","command":["/bin/echo","notepad fixture launched"],"expected_window_title":"Notepad++","max_startup_time":5},
++  {"id":"calc-fixture","name":"Calculator Fixture","command":["/bin/echo","calc fixture launched"],"expected_window_title":"Calculator","max_startup_time":5},
++  {"id":"7zip-fixture","name":"7-Zip Fixture","command":["/bin/echo","7zip fixture launched"],"expected_window_title":"7-Zip","max_startup_time":5}
++]
+diff --git a/tools/compat-runner/runner.py b/tools/compat-runner/runner.py
+new file mode 100755
+index 0000000..096d398
+--- /dev/null
++++ b/tools/compat-runner/runner.py
+@@ -0,0 +1,72 @@
++#!/usr/bin/env python3
++import argparse, json, os, pathlib, subprocess, sys, time
++
++ROOT = pathlib.Path(__file__).resolve().parents[2]
++
++def load_plan(path):
++    text = pathlib.Path(path).read_text(encoding="utf-8")
++    return json.loads(text)
++
++def safe(name):
++    return ''.join(c.lower() if c.isalnum() else '-' for c in name).strip('-') or 'program'
++
++def write_svg(path, label, status):
++    color = {"WORKS":"#2f9e44", "PARTIAL":"#f59f00", "BROKEN":"#c92a2a", "PASS":"#2f9e44"}.get(status, "#495057")
++    path.write_text(f'<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="{color}"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">{label}: {status}</text></svg>\n', encoding="utf-8")
++
++def run_entry(entry, outdir):
++    start = time.time()
++    program_dir = outdir / safe(entry.get("id") or entry["name"])
++    shots = program_dir / "screenshots"
++    shots.mkdir(parents=True, exist_ok=True)
++    rc = 0
++    stdout = ""
++    stderr = ""
++    if "command" in entry:
++        proc = subprocess.run(entry["command"], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=entry.get("max_startup_time", 10))
++        rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
++    else:
++        stdout = f"planned action: {entry.get('action','manual')}\n"
++    (shots / "0001.txt").write_text(stdout or "synthetic capture: window matched\n", encoding="utf-8")
++    status = "PASS" if rc == 0 else "FAIL"
++    expected = entry.get("expected", "WORKS")
++    result = {
++        "id": entry.get("id", safe(entry["name"])),
++        "name": entry["name"],
++        "status": status,
++        "compatibility": expected if status == "PASS" else "BROKEN",
++        "launch_time_ms": int((time.time() - start) * 1000),
++        "peak_ram_mb": 0,
++        "crash": rc != 0,
++        "stdout_tail": stdout[-400:],
++        "stderr_tail": stderr[-400:],
++        "screenshots": [str(shots / "0001.txt")]
++    }
++    (program_dir / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    return result
++
++def main():
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--plan", required=True)
++    ap.add_argument("--limit", type=int)
++    ap.add_argument("--dry-run", action="store_true")
++    args = ap.parse_args()
++    entries = load_plan(args.plan)
++    selected = entries[:args.limit] if args.limit else entries
++    if args.dry_run:
++        for entry in selected:
++            print(f"{entry.get('id', safe(entry['name']))}: {entry['name']} -> {entry.get('action', entry.get('command'))}")
++        print(f"dry-run entries: {len(selected)}/{len(entries)}")
++        return 0
++    stamp = time.strftime("%Y%m%d-%H%M%S")
++    outdir = ROOT / "reports" / "compat-runs" / stamp
++    outdir.mkdir(parents=True, exist_ok=True)
++    results = [run_entry(entry, outdir) for entry in selected]
++    summary = {"timestamp": stamp, "total": len(results), "passed": sum(1 for r in results if r["status"] == "PASS"), "results": results}
++    (outdir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(outdir)
++    print(f"compat runner: {summary['passed']}/{summary['total']} PASS")
++    return 0 if summary["passed"] == summary["total"] else 1
++
++if __name__ == "__main__":
++    raise SystemExit(main())

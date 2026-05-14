@@ -9,7 +9,12 @@ struct HelpDocument: Identifiable, Equatable {
 
 struct HelpCenterService {
     func documents() -> [HelpDocument] {
-        let files: [URL] = Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: "Docs") ?? Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: nil) ?? []
+        var files: [URL] = Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: "Docs") ?? Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: nil) ?? []
+        if files.isEmpty {
+            let devDocs = URL(fileURLWithPath: AppSettings.defaultRoot)
+                .appendingPathComponent("app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs", isDirectory: true)
+            files = (try? FileManager.default.contentsOfDirectory(at: devDocs, includingPropertiesForKeys: nil))?.filter { $0.pathExtension == "md" } ?? []
+        }
         var docs: [HelpDocument] = files.compactMap { url in
             guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
             let title = text.split(separator: "\n").first.map { String($0).replacingOccurrences(of: "# ", with: "") } ?? url.deletingPathExtension().lastPathComponent

@@ -610,8 +610,8 @@ struct ControlCenterWorldsView: View {
             Text("Remaining limitations")
                 .font(.headline)
             bulletList([
-                "HUD is telemetry/model foundation plus in-app preview, not a global overlay injector.",
-                "AI troubleshoot is offline prompt/classifier plumbing; no network call or API key flow is enabled.",
+                "HUD reads local socket samples and renders an in-app dashboard; global overlay injection remains deferred.",
+                "AI troubleshoot remains deferred to v0.4; local classifier and prompt artifacts stay offline-only.",
                 "Library providers are local manifest scanners; authenticated store APIs are intentionally not used.",
                 "Packaging planner references app-local packaging script and does not bundle engine or wine-fork."
             ])

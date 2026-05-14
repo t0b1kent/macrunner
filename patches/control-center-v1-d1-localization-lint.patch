@@ -1,0 +1,38 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/LocalizationLintService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/LocalizationLintService.swift
+new file mode 100644
+index 0000000..6bad6a3
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/LocalizationLintService.swift
+@@ -0,0 +1,32 @@
++import Foundation
++
++struct LocalizationLintResult: Codable, Equatable {
++    var locales: [String]
++    var missing: [String: [String]]
++    var status: String
++}
++
++struct LocalizationLintService {
++    func lint(resourceRoot: URL? = nil) throws -> LocalizationLintResult {
++        let root = resourceRoot ?? URL(fileURLWithPath: AppSettings.defaultRoot).appendingPathComponent("app/macr-control-center/Sources/MacRunnerControlCenter/Resources", isDirectory: true)
++        let en = try keys(in: root.appendingPathComponent("en.lproj/Localizable.strings"))
++        let ru = try keys(in: root.appendingPathComponent("ru.lproj/Localizable.strings"))
++        let missingRU = Array(en.subtracting(ru)).sorted()
++        let missingEN = Array(ru.subtracting(en)).sorted()
++        var missing: [String: [String]] = [:]
++        if !missingEN.isEmpty { missing["en"] = missingEN }
++        if !missingRU.isEmpty { missing["ru"] = missingRU }
++        return LocalizationLintResult(locales: ["en", "ru"], missing: missing, status: missing.isEmpty ? "PASS" : "FAIL")
++    }
++
++    private func keys(in url: URL) throws -> Set<String> {
++        let text = try String(contentsOf: url, encoding: .utf8)
++        var keys = Set<String>()
++        let regex = try NSRegularExpression(pattern: #"^\s*\"([^\"]+)\"\s*="#, options: [.anchorsMatchLines])
++        let range = NSRange(text.startIndex..<text.endIndex, in: text)
++        for match in regex.matches(in: text, range: range) {
++            if let keyRange = Range(match.range(at: 1), in: text) { keys.insert(String(text[keyRange])) }
++        }
++        return keys
++    }
++}

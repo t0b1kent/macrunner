@@ -2,10 +2,11 @@ import AppKit
 import Foundation
 
 struct PurchaseService {
-    var lifetimeURL = URL(string: "https://buy.macrunner.app/?product=lifetime")!
+    var lifetimeURL = ProcessInfo.processInfo.environment["MACRUNNER_PURCHASE_URL"].flatMap(URL.init(string:))
 
     @MainActor
     func openLifetimePurchase() {
+        guard let lifetimeURL else { return }
         NSWorkspace.shared.open(lifetimeURL)
     }
 }

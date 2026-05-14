@@ -1,0 +1,38 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/one-c-guide.md b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/one-c-guide.md
+new file mode 100644
+index 0000000..afc2cf0
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs/one-c-guide.md
+@@ -0,0 +1,5 @@
++# 1С guide
++
++MacRunner keeps 1С-style business workloads local and private. Use a dedicated bottle, enable the business profile, keep logs sanitised, and export bug reports as local zip files only.
++
++Keywords: 1С, 1C, business, bottle, registry, fonts.
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Help/HelpCenterService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Help/HelpCenterService.swift
+index 076d3e3..769d1a0 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Help/HelpCenterService.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Help/HelpCenterService.swift
+@@ -9,7 +9,12 @@ struct HelpDocument: Identifiable, Equatable {
+
+ struct HelpCenterService {
+     func documents() -> [HelpDocument] {
+-        let files: [URL] = Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: "Docs") ?? Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: nil) ?? []
++        var files: [URL] = Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: "Docs") ?? Bundle.module.urls(forResourcesWithExtension: "md", subdirectory: nil) ?? []
++        if files.isEmpty {
++            let devDocs = URL(fileURLWithPath: AppSettings.defaultRoot)
++                .appendingPathComponent("app/macr-control-center/Sources/MacRunnerControlCenter/Resources/Docs", isDirectory: true)
++            files = (try? FileManager.default.contentsOfDirectory(at: devDocs, includingPropertiesForKeys: nil))?.filter { $0.pathExtension == "md" } ?? []
++        }
+         var docs: [HelpDocument] = files.compactMap { url in
+             guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+             let title = text.split(separator: "\n").first.map { String($0).replacingOccurrences(of: "# ", with: "") } ?? url.deletingPathExtension().lastPathComponent
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Views/Help/HelpCenter.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/Help/HelpCenter.swift
+new file mode 100644
+index 0000000..0d8bceb
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Views/Help/HelpCenter.swift
+@@ -0,0 +1,3 @@
++import SwiftUI
++
++typealias ProductHelpCenterView = HelpCenterView

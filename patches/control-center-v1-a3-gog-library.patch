@@ -1,0 +1,26 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/GOG/GOGLibraryService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/GOG/GOGLibraryService.swift
+new file mode 100644
+index 0000000..2341681
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/GOG/GOGLibraryService.swift
+@@ -0,0 +1,20 @@
++import Foundation
++
++struct GOGLibraryService {
++    var wrapper = GogdlWrapper()
++    var supportRoot: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
++        .appendingPathComponent("gogdl", isDirectory: true)
++
++    func status() -> StoreLoginStatus {
++        let authFiles = ["auth.json", "tokens.json", "galaxy.json"].map { supportRoot.appendingPathComponent($0) }
++        let auth = authFiles.first { FileManager.default.fileExists(atPath: $0.path) }
++        let date = auth.flatMap { (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate }
++        return StoreLoginStatus(provider: "gog", loggedIn: auth != nil, lastAuth: date.map { ISO8601DateFormatter().string(from: $0) }, toolPath: wrapper.executable)
++    }
++
++    func dumpLibrary() -> [StoreGame] {
++        let fixture = URL(fileURLWithPath: AppSettings.defaultRoot).appendingPathComponent("app/macr-control-center/Tests/Fixtures/gog-library.json")
++        if let data = try? Data(contentsOf: fixture) { return wrapper.parseListJSON(data) }
++        return []
++    }
++}

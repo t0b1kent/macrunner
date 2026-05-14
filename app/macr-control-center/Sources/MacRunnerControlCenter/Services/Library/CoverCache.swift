@@ -1,0 +1,91 @@
+import AppKit
+import CryptoKit
+import Foundation
+
+struct CoverCacheEntry: Codable, Equatable {
+    var provider: String
+    var id: String
+    var path: String
+    var sizeBytes: Int64
+    var updatedAt: Date
+}
+
+struct CoverCacheReport: Codable, Equatable {
+    var root: String
+    var totalSizeBytes: Int64
+    var limitBytes: Int64
+    var entries: [CoverCacheEntry]
+}
+
+struct CoverCache {
+    var root: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        .appendingPathComponent("MacRunner/covers", isDirectory: true)
+    var limitBytes: Int64 = 500 * 1024 * 1024
+
+    func localCover(provider: String, id: String, title: String) throws -> URL {
+        let directory = root.appendingPathComponent(provider, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("\(safe(id)).png")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try generatedCoverPNG(title: title).write(to: url)
+        }
+        try evictIfNeeded()
+        return url
+    }
+
+    func report() -> CoverCacheReport {
+        let entries = scanEntries()
+        return CoverCacheReport(root: root.path, totalSizeBytes: entries.reduce(0) { $0 + $1.sizeBytes }, limitBytes: limitBytes, entries: entries)
+    }
+
+    func evictIfNeeded() throws {
+        var entries = scanEntries()
+        var total = entries.reduce(0) { $0 + $1.sizeBytes }
+        guard total > limitBytes else { return }
+        entries.sort { $0.updatedAt < $1.updatedAt }
+        for entry in entries where total > limitBytes {
+            try? FileManager.default.removeItem(atPath: entry.path)
+            total -= entry.sizeBytes
+        }
+    }
+
+    private func scanEntries() -> [CoverCacheEntry] {
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]) else { return [] }
+        return enumerator.compactMap { item in
+            guard let url = item as? URL else { return nil }
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey])
+            guard values?.isRegularFile == true else { return nil }
+            let provider = url.deletingLastPathComponent().lastPathComponent
+            return CoverCacheEntry(provider: provider, id: url.deletingPathExtension().lastPathComponent, path: url.path, sizeBytes: Int64(values?.fileSize ?? 0), updatedAt: values?.contentModificationDate ?? .distantPast)
+        }
+    }
+
+    private func generatedCoverPNG(title: String) throws -> Data {
+        let image = NSImage(size: NSSize(width: 300, height: 450))
+        image.lockFocus()
+        NSColor(calibratedRed: 0.12, green: 0.15, blue: 0.18, alpha: 1).setFill()
+        NSRect(x: 0, y: 0, width: 300, height: 450).fill()
+        let digest = SHA256.hash(data: Data(title.utf8))
+        let firstByte = Array(digest).first ?? 128
+        let accent = CGFloat(firstByte) / 255.0
+        NSColor(calibratedHue: accent, saturation: 0.62, brightness: 0.88, alpha: 1).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 28, y: 38, width: 244, height: 374), xRadius: 28, yRadius: 28).fill()
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 24),
+            .foregroundColor: NSColor.white
+        ]
+        let text = title.isEmpty ? "MacRunner" : title
+        let rect = NSRect(x: 42, y: 190, width: 216, height: 90)
+        text.draw(in: rect, withAttributes: attrs)
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:])
+        else { throw CocoaError(.fileWriteUnknown) }
+        return png
+    }
+
+    private func safe(_ text: String) -> String {
+        text.map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? String($0) : "-" }.joined()
+    }
+}

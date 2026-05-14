@@ -1,0 +1,40 @@
+## Block B verifiers
+$ python3 tools/compat-runner/runner.py --plan tools/compat-runner/plan-test.yaml
+/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-105439
+compat runner: 3/3 PASS
+$ find reports/compat-runs -name result.json | tail -3
+reports/compat-runs/20260514-105439/notepad-fixture/result.json
+reports/compat-runs/20260514-105439/calc-fixture/result.json
+reports/compat-runs/20260514-105439/7zip-fixture/result.json
+$ python3 tools/compat-runner/runner.py --plan tools/compat-runner/plan.yaml --limit 5 --dry-run
+notepad-plus-plus: Notepad++ -> portable-fixture
+libreoffice-viewer: Office Viewer -> manual-media-required
+sumatra-pdf: SumatraPDF -> portable-fixture
+7zip: 7-Zip -> portable-fixture
+far-manager: FAR Manager -> portable-fixture
+dry-run entries: 5/50
+$ python3 - <<PY count plan entries
+50
+$ python3 tools/compat-runner/report.py
+/Volumes/MacOS/MacRunner/reports/compat-public
+rows=3
+$ ls reports/compat-public/
+badges
+index.json
+index.md
+$ file reports/compat-public/badges/notepad-fixture.svg reports/compat-public/badges/notepad-plus-plus.svg 2>/dev/null || true
+reports/compat-public/badges/notepad-fixture.svg:   SVG Scalable Vector Graphics image
+reports/compat-public/badges/notepad-plus-plus.svg: cannot open `reports/compat-public/badges/notepad-plus-plus.svg' (No such file or directory)
+$ grep -c "MacRunner only" reports/compat-public/index.md
+3
+
+## Block B report rerun after 50-plan overlay
+$ python3 tools/compat-runner/report.py
+/Volumes/MacOS/MacRunner/reports/compat-public
+rows=50
+$ python3 - <<PY len reports/compat-public/index.json
+50
+$ file reports/compat-public/badges/notepad-plus-plus.svg
+reports/compat-public/badges/notepad-plus-plus.svg: SVG Scalable Vector Graphics image
+$ grep -c "MacRunner only" reports/compat-public/index.md
+21

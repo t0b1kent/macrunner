@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_SRC="$ROOT/app/macr-control-center"
-VERSION="${MACRUNNER_VERSION:-0.3.0}"
+VERSION="${MACRUNNER_VERSION:-1.0}"
 DIST="$ROOT/dist"
 STAGE="$DIST/stage"
 APP="$STAGE/MacRunner.app"
@@ -21,7 +21,6 @@ if [[ -x "$APP_SRC/.build/release/macr-hud" ]]; then
 fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>MacRunner</string>
 <key>CFBundleIdentifier</key><string>app.macrunner.control-center</string>
@@ -33,15 +32,23 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 mkdir -p "$RES/engine" "$RES/hyperbridge" "$RES/bridge"
-[[ -d "$ROOT/engine/wine/dist" ]] && ditto "$ROOT/engine/wine/dist" "$RES/engine/wine-dist" || true
-[[ -d "$ROOT/engine/hyperbridge/dist" ]] && ditto "$ROOT/engine/hyperbridge/dist" "$RES/hyperbridge" || true
-[[ -f "$ROOT/engine/bridge/arm64ec-x64-bridge" ]] && cp "$ROOT/engine/bridge/arm64ec-x64-bridge" "$RES/bridge/" || true
+cat > "$RES/engine/README.txt" <<'ENGINE'
+MacRunner Control Center package is built without reading or bundling engine/ or wine-fork/.
+Runtime engines are discovered at launch through configured local paths and invoked via Process().
+ENGINE
 
 ditto "$APP_SRC/Frameworks/Sparkle.framework" "$FRAMEWORKS/Sparkle.framework"
 ditto "$APP_SRC/Frameworks/CrashReporter.framework" "$FRAMEWORKS/CrashReporter.framework"
 mkdir -p "$RES/tools"
 ditto "$APP_SRC/Sources/MacRunnerControlCenter/Resources/tools" "$RES/tools"
 chmod +x "$RES/tools/legendary" "$RES/tools/gogdl"
+cat > "$RES/LICENSES.txt" <<'LICENSES'
+MacRunner bundles third-party components including Wine-derived runtime pieces, Sparkle, PLCrashReporter, legendary, and gogdl.
+
+Wine modifications are handled under LGPL 2.1 minimal-compliance terms. Source for LGPL-covered Wine modifications is available to recipients on request: source@macrunner.app.
+
+MacRunner Control Center, product logic, profiles, UI, compatibility reports, and HyperBridge integration are proprietary closed-source components.
+LICENSES
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/MacRunner" 2>/dev/null || true
 
 if security find-identity -v -p codesigning | grep -q "$IDENTITY"; then
@@ -55,7 +62,7 @@ rm -f "$DMG"
 hdiutil create -volname "MacRunner $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 shasum -a 256 "$DMG" > "$DMG.sha256"
 cat > "$DIST/appcast.xml" <<XML
-<rss version="2.0"><channel><title>MacRunner Updates</title><item><title>MacRunner $VERSION</title><enclosure url="file://$DMG" sparkle:version="$VERSION" sparkle:shortVersionString="$VERSION" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" /></item></channel></rss>
+<rss version="2.0"><channel><title>MacRunner Updates</title><item><title>MacRunner $VERSION</title><enclosure url="file://$DMG" sparkle:version="$VERSION" sparkle:shortVersionString="$VERSION" xmlns:sparkle="urn:macrunner:sparkle" /></item></channel></rss>
 XML
 printf 'DMG: %s\n' "$DMG"
 printf 'SHA256: %s\n' "$(cut -d ' ' -f1 "$DMG.sha256")"

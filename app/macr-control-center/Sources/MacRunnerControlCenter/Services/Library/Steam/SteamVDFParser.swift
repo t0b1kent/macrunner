@@ -2,6 +2,7 @@ import Foundation
 
 enum VDFNode: Equatable {
     case string(String)
+    case number(Double)
     case object([String: VDFNode])
 
     subscript(key: String) -> VDFNode? {
@@ -11,6 +12,9 @@ enum VDFNode: Equatable {
 
     var stringValue: String? {
         if case .string(let value) = self { return value }
+        if case .number(let value) = self {
+            return value.rounded() == value ? String(Int64(value)) : String(value)
+        }
         return nil
     }
 
@@ -24,7 +28,7 @@ struct SteamVDFParser {
     func parse(_ text: String) throws -> VDFNode {
         var tokenizer = VDFTokenizer(text: text)
         var dict: [String: VDFNode] = [:]
-        while let key = tokenizer.nextString() {
+        while let key = tokenizer.nextToken() {
             dict[key] = try parseValue(tokenizer: &tokenizer)
         }
         return .object(dict)
@@ -34,12 +38,15 @@ struct SteamVDFParser {
         if tokenizer.consumeBrace("{") {
             var dict: [String: VDFNode] = [:]
             while !tokenizer.consumeBrace("}") {
-                guard let key = tokenizer.nextString() else { throw VDFError.unexpectedEOF }
+                guard let key = tokenizer.nextToken() else { throw VDFError.unexpectedEOF }
                 dict[key] = try parseValue(tokenizer: &tokenizer)
             }
             return .object(dict)
         }
-        guard let value = tokenizer.nextString() else { throw VDFError.unexpectedEOF }
+        guard let value = tokenizer.nextToken() else { throw VDFError.unexpectedEOF }
+        if let number = Double(value), value.rangeOfCharacter(from: .letters) == nil {
+            return .number(number)
+        }
         return .string(value)
     }
 }
@@ -50,15 +57,35 @@ struct VDFTokenizer {
 
     init(text: String) { self.scalars = Array(text) }
 
-    mutating func nextString() -> String? {
+    mutating func nextToken() -> String? {
         skipWhitespaceAndComments()
-        guard index < scalars.count, scalars[index] == "\"" else { return nil }
+        guard index < scalars.count else { return nil }
+        if scalars[index] != "\"" {
+            var output = ""
+            while index < scalars.count, !scalars[index].isWhitespace, scalars[index] != "{", scalars[index] != "}" {
+                output.append(scalars[index])
+                index += 1
+            }
+            return output.isEmpty ? nil : output
+        }
         index += 1
         var output = ""
         while index < scalars.count {
             let ch = scalars[index]
             index += 1
             if ch == "\"" { break }
+            if ch == "\\", index < scalars.count {
+                let escaped = scalars[index]
+                index += 1
+                switch escaped {
+                case "n": output.append("\n")
+                case "t": output.append("\t")
+                case "\"": output.append("\"")
+                case "\\": output.append("\\")
+                default: output.append(escaped)
+                }
+                continue
+            }
             output.append(ch)
         }
         return output

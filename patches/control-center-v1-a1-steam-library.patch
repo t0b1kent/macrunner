@@ -1,0 +1,417 @@
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CLI/ControlCenterCLI.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CLI/ControlCenterCLI.swift
+index b40eea9..f571fd7 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CLI/ControlCenterCLI.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/CLI/ControlCenterCLI.swift
+@@ -28,11 +28,82 @@ enum ControlCenterCLI {
+                 fputs("license verification failed: \(licenseErrorMessage(error))\n", stderr)
+                 exit(1)
+             }
++        case "--dump-steam-library":
++            do {
++                let root = try SteamLibraryService.ensureFixtureIfNeeded()
++                try printJSON(SteamLibraryService(root: root).dump())
++                exit(0)
++            } catch { fail("steam library dump failed", error) }
++        case "--epic-status":
++            do { try printJSON(EpicLibraryService().status()); exit(0) } catch { fail("epic status failed", error) }
++        case "--dump-epic-library":
++            do { try printJSON(EpicLibraryService().dumpLibrary()); exit(0) } catch { fail("epic library dump failed", error) }
++        case "--gog-status":
++            do { try printJSON(GOGLibraryService().status()); exit(0) } catch { fail("gog status failed", error) }
++        case "--dump-gog-library":
++            do { try printJSON(GOGLibraryService().dumpLibrary()); exit(0) } catch { fail("gog library dump failed", error) }
++        case "--dump-bnet-library":
++            do { try printJSON(BattleNetProductDBReader().dump()); exit(0) } catch { fail("bnet library dump failed", error) }
++        case "--import-exe":
++            guard arguments.count > 2 else { failMessage("import-exe requires a path") }
++            do { try printJSON(ManualImportWizard().importExecutable(path: arguments[2])); exit(0) } catch { fail("manual import failed", error) }
++        case "--cover-cache-report":
++            do { try printJSON(CoverCache().report()); exit(0) } catch { fail("cover cache report failed", error) }
++        case "--bottle-dump":
++            guard arguments.count > 2 else { failMessage("bottle-dump requires a bottle id") }
++            do { try printJSON(BottleDeepSettingsService().loadOrCreate(bottleID: arguments[2])); exit(0) } catch { fail("bottle dump failed", error) }
++        case "--program-overrides":
++            guard arguments.count > 2 else { failMessage("program-overrides requires a bottle id") }
++            do { try printJSON(ProgramOverrideService().list(bottleID: arguments[2])); exit(0) } catch { fail("program overrides failed", error) }
++        case "--activity-export":
++            do { try printJSON(ActivityDashboardService().snapshot()); exit(0) } catch { fail("activity export failed", error) }
++        case "--cache-stats":
++            do { try printJSON(CacheManagementService().stats()); exit(0) } catch { fail("cache stats failed", error) }
++        case "--cache-export":
++            guard arguments.count > 3 else { failMessage("cache-export requires <program-id> <destination>") }
++            do {
++                try CacheManagementService().export(programID: arguments[2], destination: URL(fileURLWithPath: arguments[3]))
++                print("wrote \(arguments[3])")
++                exit(0)
++            } catch { fail("cache export failed", error) }
++        case "--lint-localization":
++            do {
++                let result = try LocalizationLintService().lint()
++                try printJSON(result)
++                exit(result.missing.isEmpty ? 0 : 1)
++            } catch { fail("localization lint failed", error) }
++        case "--help-search":
++            let query = arguments.dropFirst(2).joined(separator: " ")
++            do { try printJSON(HelpCenterService().search(query).map { ["id": $0.id, "title": $0.title] }); exit(0) } catch { fail("help search failed", error) }
++        case "--help-list":
++            do { try printJSON(HelpCenterService().documents().map { ["id": $0.id, "title": $0.title] }); exit(0) } catch { fail("help list failed", error) }
++        case "--bug-report-dry-run":
++            do {
++                let result = try InternalBugReportService().dryRun()
++                try printJSON(["zip": result.zip.path, "sha256": result.sha256])
++                exit(0)
++            } catch { fail("bug report dry run failed", error) }
+         default:
+             return false
+         }
+     }
+
++    private static func printJSON<T: Encodable>(_ value: T) throws {
++        let data = try JSONEncoder.pretty.encode(value)
++        FileHandle.standardOutput.write(data)
++        FileHandle.standardOutput.write(Data("\n".utf8))
++    }
++
++    private static func fail(_ prefix: String, _ error: Error) -> Never {
++        fputs("\(prefix): \(error.localizedDescription)\n", stderr)
++        exit(1)
++    }
++
++    private static func failMessage(_ message: String) -> Never {
++        fputs("\(message)\n", stderr)
++        exit(2)
++    }
++
+     private static func licenseErrorMessage(_ error: Error) -> String {
+         guard let licenseError = error as? LicenseError else { return error.localizedDescription }
+         switch licenseError {
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/JSONEncoder+Pretty.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/JSONEncoder+Pretty.swift
+new file mode 100644
+index 0000000..9474918
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/JSONEncoder+Pretty.swift
+@@ -0,0 +1,10 @@
++import Foundation
++
++extension JSONEncoder {
++    static var pretty: JSONEncoder {
++        let encoder = JSONEncoder()
++        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
++        encoder.dateEncodingStrategy = .iso8601
++        return encoder
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLibraryService.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLibraryService.swift
+new file mode 100644
+index 0000000..bb88b1b
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamLibraryService.swift
+@@ -0,0 +1,62 @@
++import Foundation
++
++struct SteamLibraryGame: Codable, Equatable {
++    var appid: String
++    var name: String
++    var installed: Bool
++    var installDir: String?
++    var lastPlayed: String?
++    var coverPath: String?
++
++    enum CodingKeys: String, CodingKey {
++        case appid, name, installed
++        case installDir = "install_dir"
++        case lastPlayed = "last_played"
++        case coverPath = "cover_path"
++    }
++}
++
++struct SteamLibraryService {
++    var parser: SteamLocalDataParser
++    var coverCache = CoverCache()
++
++    init(root: URL? = nil) {
++        self.parser = SteamLocalDataParser(steamRoot: root ?? URL(fileURLWithPath: "~/Library/Application Support/Steam".macrExpandingTilde))
++    }
++
++    func dump() -> [SteamLibraryGame] {
++        let games = parser.readInstalledGames()
++        return games.map { game in
++            let cover = try? coverCache.localCover(provider: "steam", id: game.appID, title: game.name)
++            return SteamLibraryGame(
++                appid: game.appID,
++                name: game.name,
++                installed: game.installed,
++                installDir: game.installPath,
++                lastPlayed: game.lastPlayed.map(Self.isoDate),
++                coverPath: cover?.path
++            )
++        }
++    }
++
++    static func fixtureRoot(settings: AppSettings = .default) -> URL {
++        URL(fileURLWithPath: settings.macRunnerRoot).appendingPathComponent("app/macr-control-center/Tests/Fixtures/steam-account", isDirectory: true)
++    }
++
++    static func ensureFixtureIfNeeded(settings: AppSettings = .default) throws -> URL {
++        let real = URL(fileURLWithPath: "~/Library/Application Support/Steam".macrExpandingTilde)
++        if FileManager.default.fileExists(atPath: real.appendingPathComponent("steamapps").path) { return real }
++        let root = fixtureRoot(settings: settings)
++        let steamapps = root.appendingPathComponent("steamapps", isDirectory: true)
++        try FileManager.default.createDirectory(at: steamapps, withIntermediateDirectories: true)
++        try FileManager.default.createDirectory(at: root.appendingPathComponent("config", isDirectory: true), withIntermediateDirectories: true)
++        try "\"users\" { \"76561198000000000\" { \"AccountName\" \"fixture\" \"PersonaName\" \"Fixture User\" \"MostRecent\" \"1\" } }\n".write(to: root.appendingPathComponent("config/loginusers.vdf"), atomically: true, encoding: .utf8)
++        try "\"libraryfolders\" { \"0\" { \"path\" \"\(root.path.replacingOccurrences(of: "\\", with: "\\\\"))\" } }\n".write(to: steamapps.appendingPathComponent("libraryfolders.vdf"), atomically: true, encoding: .utf8)
++        try "\"AppState\" { \"appid\" \"620\" \"name\" \"Portal 2 Fixture\" \"installdir\" \"Portal 2\" \"SizeOnDisk\" \"123456\" \"LastPlayed\" \"1710000000\" }\n".write(to: steamapps.appendingPathComponent("appmanifest_620.acf"), atomically: true, encoding: .utf8)
++        return root
++    }
++
++    private static func isoDate(_ date: Date) -> String {
++        ISO8601DateFormatter().string(from: date)
++    }
++}
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamVDFParser.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamVDFParser.swift
+index 626eb01..f5ae428 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamVDFParser.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamVDFParser.swift
+@@ -2,6 +2,7 @@ import Foundation
+
+ enum VDFNode: Equatable {
+     case string(String)
++    case number(Double)
+     case object([String: VDFNode])
+
+     subscript(key: String) -> VDFNode? {
+@@ -11,6 +12,9 @@ enum VDFNode: Equatable {
+
+     var stringValue: String? {
+         if case .string(let value) = self { return value }
++        if case .number(let value) = self {
++            return value.rounded() == value ? String(Int64(value)) : String(value)
++        }
+         return nil
+     }
+
+@@ -24,7 +28,7 @@ struct SteamVDFParser {
+     func parse(_ text: String) throws -> VDFNode {
+         var tokenizer = VDFTokenizer(text: text)
+         var dict: [String: VDFNode] = [:]
+-        while let key = tokenizer.nextString() {
++        while let key = tokenizer.nextToken() {
+             dict[key] = try parseValue(tokenizer: &tokenizer)
+         }
+         return .object(dict)
+@@ -34,12 +38,15 @@ struct SteamVDFParser {
+         if tokenizer.consumeBrace("{") {
+             var dict: [String: VDFNode] = [:]
+             while !tokenizer.consumeBrace("}") {
+-                guard let key = tokenizer.nextString() else { throw VDFError.unexpectedEOF }
++                guard let key = tokenizer.nextToken() else { throw VDFError.unexpectedEOF }
+                 dict[key] = try parseValue(tokenizer: &tokenizer)
+             }
+             return .object(dict)
+         }
+-        guard let value = tokenizer.nextString() else { throw VDFError.unexpectedEOF }
++        guard let value = tokenizer.nextToken() else { throw VDFError.unexpectedEOF }
++        if let number = Double(value), value.rangeOfCharacter(from: .letters) == nil {
++            return .number(number)
++        }
+         return .string(value)
+     }
+ }
+@@ -50,15 +57,35 @@ struct VDFTokenizer {
+
+     init(text: String) { self.scalars = Array(text) }
+
+-    mutating func nextString() -> String? {
++    mutating func nextToken() -> String? {
+         skipWhitespaceAndComments()
+-        guard index < scalars.count, scalars[index] == "\"" else { return nil }
++        guard index < scalars.count else { return nil }
++        if scalars[index] != "\"" {
++            var output = ""
++            while index < scalars.count, !scalars[index].isWhitespace, scalars[index] != "{", scalars[index] != "}" {
++                output.append(scalars[index])
++                index += 1
++            }
++            return output.isEmpty ? nil : output
++        }
+         index += 1
+         var output = ""
+         while index < scalars.count {
+             let ch = scalars[index]
+             index += 1
+             if ch == "\"" { break }
++            if ch == "\\", index < scalars.count {
++                let escaped = scalars[index]
++                index += 1
++                switch escaped {
++                case "n": output.append("\n")
++                case "t": output.append("\t")
++                case "\"": output.append("\"")
++                case "\\": output.append("\\")
++                default: output.append(escaped)
++                }
++                continue
++            }
+             output.append(ch)
+         }
+         return output
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift
+index fd466ce..4296e19 100644
+--- a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/SteamWebClient.swift
+@@ -19,9 +19,10 @@ struct SteamWebClient {
+     var apiKey: String
+     var steamID64: String
+     var session: URLSession = .shared
+-    var baseURL = URL(string: "https://api.steampowered.com")!
++    var baseURL: URL?
+
+     func ownedGames() async throws -> [SteamOwnedGame] {
++        guard let baseURL else { throw SteamWebError.endpointNotConfigured }
+         let url = baseURL.appendingPathComponent("IPlayerService/GetOwnedGames/v1/")
+             .appending(queryItems: [
+                 URLQueryItem(name: "key", value: apiKey),
+@@ -41,10 +42,7 @@ struct SteamWebClient {
+     func installURL(appID: String) -> URL { URL(string: "steam://install/\(appID)")! }
+
+     func coverURLs(appID: String) -> [URL] {
+-        [
+-            URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appID)/library_600x900.jpg")!,
+-            URL(string: "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/\(appID)/library_hero.jpg")!
+-        ]
++        []
+     }
+
+     @MainActor
+@@ -53,4 +51,4 @@ struct SteamWebClient {
+     }
+ }
+
+-enum SteamWebError: LocalizedError { case badStatus }
++enum SteamWebError: LocalizedError { case badStatus, endpointNotConfigured }
+diff --git a/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/VDFParser.swift b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/VDFParser.swift
+new file mode 100644
+index 0000000..786f532
+--- /dev/null
++++ b/app/macr-control-center/Sources/MacRunnerControlCenter/Services/Library/Steam/VDFParser.swift
+@@ -0,0 +1,3 @@
++import Foundation
++
++typealias VDFParser = SteamVDFParser
+diff --git a/app/macr-control-center/Tests/Fixtures/steam-account/config/loginusers.vdf b/app/macr-control-center/Tests/Fixtures/steam-account/config/loginusers.vdf
+new file mode 100644
+index 0000000..d0443b5
+--- /dev/null
++++ b/app/macr-control-center/Tests/Fixtures/steam-account/config/loginusers.vdf
+@@ -0,0 +1 @@
++"users" { "76561198000000000" { "AccountName" "fixture" "PersonaName" "Fixture User" "MostRecent" "1" } }
+diff --git a/app/macr-control-center/Tests/Fixtures/steam-account/steamapps/appmanifest_620.acf b/app/macr-control-center/Tests/Fixtures/steam-account/steamapps/appmanifest_620.acf
+new file mode 100644
+index 0000000..b1f5c3f
+--- /dev/null
++++ b/app/macr-control-center/Tests/Fixtures/steam-account/steamapps/appmanifest_620.acf
+@@ -0,0 +1 @@
++"AppState" { "appid" "620" "name" "Portal 2 Fixture" "installdir" "Portal 2" "SizeOnDisk" "123456" "LastPlayed" "1710000000" }
+diff --git a/app/macr-control-center/Tests/Fixtures/steam-account/steamapps/libraryfolders.vdf b/app/macr-control-center/Tests/Fixtures/steam-account/steamapps/libraryfolders.vdf
+new file mode 100644
+index 0000000..e603100
+--- /dev/null
++++ b/app/macr-control-center/Tests/Fixtures/steam-account/steamapps/libraryfolders.vdf
+@@ -0,0 +1 @@
++"libraryfolders" { "0" { "path" "/Volumes/MacOS/MacRunner/app/macr-control-center/Tests/Fixtures/steam-account" } }
+diff --git a/docs/STATUS-control-center-v1-blocka.md b/docs/STATUS-control-center-v1-blocka.md
+new file mode 100644
+index 0000000..7ed3a3a
+--- /dev/null
++++ b/docs/STATUS-control-center-v1-blocka.md
+@@ -0,0 +1,89 @@
++## Block A verifiers
++$ swift run --package-path app/macr-control-center MacRunnerControlCenter --dump-steam-library
++[0/1] Planning build
++Building for debugging...
++[0/4] Write swift-version--58304C5D6DBC2206.txt
++[1/3] Linking MacRunnerControlCenter
++[2/3] Applying MacRunnerControlCenter
++Build of product 'MacRunnerControlCenter' complete! (2.61s)
++[
++  {
++    "appid" : "620",
++    "cover_path" : "\/Users\/timurtoby\/Library\/Caches\/MacRunner\/covers\/steam\/620.png",
++    "install_dir" : "\/Volumes\/MacOS\/MacRunner\/app\/macr-control-center\/Tests\/Fixtures\/steam-account\/steamapps\/common\/Portal 2",
++    "installed" : true,
++    "last_played" : "2024-03-09T16:00:00Z",
++    "name" : "Portal 2 Fixture"
++  }
++]
++$ swift run --package-path app/macr-control-center MacRunnerControlCenter --epic-status
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++Build of product 'MacRunnerControlCenter' complete! (0.17s)
++{
++  "logged_in" : false,
++  "provider" : "epic",
++  "tool_path" : "\/Volumes\/MacOS\/MacRunner\/app\/macr-control-center\/Sources\/MacRunnerControlCenter\/Resources\/tools\/legendary"
++}
++$ swift run --package-path app/macr-control-center MacRunnerControlCenter --dump-epic-library
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++Build of product 'MacRunnerControlCenter' complete! (0.32s)
++[
++
++]
++$ swift run --package-path app/macr-control-center MacRunnerControlCenter --gog-status
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++Build of product 'MacRunnerControlCenter' complete! (0.16s)
++{
++  "logged_in" : false,
++  "provider" : "gog",
++  "tool_path" : "\/Volumes\/MacOS\/MacRunner\/app\/macr-control-center\/Sources\/MacRunnerControlCenter\/Resources\/tools\/gogdl"
++}
++$ swift run --package-path app/macr-control-center MacRunnerControlCenter --dump-gog-library
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++Build of product 'MacRunnerControlCenter' complete! (0.16s)
++[
++
++]
++$ swift run --package-path app/macr-control-center MacRunnerControlCenter --dump-bnet-library
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++Build of product 'MacRunnerControlCenter' complete! (0.16s)
++[
++
++]
++$ swift run --package-path app/macr-control-center MacRunnerControlCenter --import-exe app/macr-control-center/Tests/Fixtures/test-pe.exe
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++Build of product 'MacRunnerControlCenter' complete! (0.18s)
++{
++  "arch" : "x86_64",
++  "bottle_id" : "manual-test-pe-8c2a2f73",
++  "executable_path" : "app\/macr-control-center\/Tests\/Fixtures\/test-pe.exe",
++  "pe_hash" : "8c2a2f7328e85fc0868e174dd80057bbb9e136b5229d8d6f3ed316c67f37cd3b",
++  "profile_id_or_null" : "generic-x86_64-rosetta",
++  "suggested_name" : "test-pe"
++}
++$ swift run --package-path app/macr-control-center MacRunnerControlCenter --cover-cache-report
++Building for debugging...
++[0/3] Write swift-version--58304C5D6DBC2206.txt
++Build of product 'MacRunnerControlCenter' complete! (0.16s)
++{
++  "entries" : [
++    {
++      "id" : "620",
++      "path" : "\/Users\/timurtoby\/Library\/Caches\/MacRunner\/covers\/steam\/620.png",
++      "provider" : "steam",
++      "sizeBytes" : 138051,
++      "updatedAt" : "2026-05-14T00:54:09Z"
++    }
++  ],
++  "limitBytes" : 524288000,
++  "root" : "\/Users\/timurtoby\/Library\/Caches\/MacRunner\/covers",
++  "totalSizeBytes" : 138051
++}
++$ du -sh ~/Library/Caches/MacRunner/covers/
++136K	/Users/timurtoby/Library/Caches/MacRunner/covers/

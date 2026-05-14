@@ -1,0 +1,850 @@
+diff --git a/reports/compat-public/badges/1c-buh.svg b/reports/compat-public/badges/1c-buh.svg
+new file mode 100644
+index 0000000..bc431b4
+--- /dev/null
++++ b/reports/compat-public/badges/1c-buh.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">1С Бухгалтерия 8: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/7zip-fixture.svg b/reports/compat-public/badges/7zip-fixture.svg
+new file mode 100644
+index 0000000..7a5a309
+--- /dev/null
++++ b/reports/compat-public/badges/7zip-fixture.svg
+@@ -0,0 +1 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">7-Zip Fixture: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/7zip.svg b/reports/compat-public/badges/7zip.svg
+new file mode 100644
+index 0000000..ce60610
+--- /dev/null
++++ b/reports/compat-public/badges/7zip.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">7-Zip: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/alfa-auto.svg b/reports/compat-public/badges/alfa-auto.svg
+new file mode 100644
+index 0000000..0330f42
+--- /dev/null
++++ b/reports/compat-public/badges/alfa-auto.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Альфа-Авто: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/audacity.svg b/reports/compat-public/badges/audacity.svg
+new file mode 100644
+index 0000000..2f0ceb8
+--- /dev/null
++++ b/reports/compat-public/badges/audacity.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Audacity: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/autocad-lt.svg b/reports/compat-public/badges/autocad-lt.svg
+new file mode 100644
+index 0000000..a0ffa34
+--- /dev/null
++++ b/reports/compat-public/badges/autocad-lt.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">AutoCAD LT: BROKEN</text></svg>
+diff --git a/reports/compat-public/badges/calc-fixture.svg b/reports/compat-public/badges/calc-fixture.svg
+new file mode 100644
+index 0000000..fd2aa37
+--- /dev/null
++++ b/reports/compat-public/badges/calc-fixture.svg
+@@ -0,0 +1 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Calculator Fixture: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/celeste.svg b/reports/compat-public/badges/celeste.svg
+new file mode 100644
+index 0000000..cbb1983
+--- /dev/null
++++ b/reports/compat-public/badges/celeste.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Celeste: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/cities-skylines.svg b/reports/compat-public/badges/cities-skylines.svg
+new file mode 100644
+index 0000000..102effc
+--- /dev/null
++++ b/reports/compat-public/badges/cities-skylines.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Cities Skylines: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/civilization-vi.svg b/reports/compat-public/badges/civilization-vi.svg
+new file mode 100644
+index 0000000..6461ed2
+--- /dev/null
++++ b/reports/compat-public/badges/civilization-vi.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Civilization VI: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/consultant-plus.svg b/reports/compat-public/badges/consultant-plus.svg
+new file mode 100644
+index 0000000..d0bee00
+--- /dev/null
++++ b/reports/compat-public/badges/consultant-plus.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">КонсультантПлюс: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/control.svg b/reports/compat-public/badges/control.svg
+new file mode 100644
+index 0000000..f38845e
+--- /dev/null
++++ b/reports/compat-public/badges/control.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Control: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/cyberpunk-2077.svg b/reports/compat-public/badges/cyberpunk-2077.svg
+new file mode 100644
+index 0000000..c2ad458
+--- /dev/null
++++ b/reports/compat-public/badges/cyberpunk-2077.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Cyberpunk 2077: BROKEN</text></svg>
+diff --git a/reports/compat-public/badges/dead-cells.svg b/reports/compat-public/badges/dead-cells.svg
+new file mode 100644
+index 0000000..3eea5e1
+--- /dev/null
++++ b/reports/compat-public/badges/dead-cells.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Dead Cells: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/disco-elysium.svg b/reports/compat-public/badges/disco-elysium.svg
+new file mode 100644
+index 0000000..c537d13
+--- /dev/null
++++ b/reports/compat-public/badges/disco-elysium.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Disco Elysium: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/doom-2016.svg b/reports/compat-public/badges/doom-2016.svg
+new file mode 100644
+index 0000000..5d5b24b
+--- /dev/null
++++ b/reports/compat-public/badges/doom-2016.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">DOOM 2016: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/factorio.svg b/reports/compat-public/badges/factorio.svg
+new file mode 100644
+index 0000000..5d94372
+--- /dev/null
++++ b/reports/compat-public/badges/factorio.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Factorio: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/fallout-new-vegas.svg b/reports/compat-public/badges/fallout-new-vegas.svg
+new file mode 100644
+index 0000000..48b7505
+--- /dev/null
++++ b/reports/compat-public/badges/fallout-new-vegas.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Fallout New Vegas: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/far-manager.svg b/reports/compat-public/badges/far-manager.svg
+new file mode 100644
+index 0000000..34c02d9
+--- /dev/null
++++ b/reports/compat-public/badges/far-manager.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">FAR Manager: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/garant.svg b/reports/compat-public/badges/garant.svg
+new file mode 100644
+index 0000000..4aa1969
+--- /dev/null
++++ b/reports/compat-public/badges/garant.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Гарант: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/gimp-win.svg b/reports/compat-public/badges/gimp-win.svg
+new file mode 100644
+index 0000000..c776c94
+--- /dev/null
++++ b/reports/compat-public/badges/gimp-win.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">GIMP Windows: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/git-for-windows.svg b/reports/compat-public/badges/git-for-windows.svg
+new file mode 100644
+index 0000000..c3fc37f
+--- /dev/null
++++ b/reports/compat-public/badges/git-for-windows.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Git for Windows: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/hades.svg b/reports/compat-public/badges/hades.svg
+new file mode 100644
+index 0000000..d2c5965
+--- /dev/null
++++ b/reports/compat-public/badges/hades.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Hades: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/hollow-knight.svg b/reports/compat-public/badges/hollow-knight.svg
+new file mode 100644
+index 0000000..738df02
+--- /dev/null
++++ b/reports/compat-public/badges/hollow-knight.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Hollow Knight: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/hxd.svg b/reports/compat-public/badges/hxd.svg
+new file mode 100644
+index 0000000..3cfb38a
+--- /dev/null
++++ b/reports/compat-public/badges/hxd.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">HxD: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/inkscape-win.svg b/reports/compat-public/badges/inkscape-win.svg
+new file mode 100644
+index 0000000..9568cde
+--- /dev/null
++++ b/reports/compat-public/badges/inkscape-win.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Inkscape Windows: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/irfanview.svg b/reports/compat-public/badges/irfanview.svg
+new file mode 100644
+index 0000000..862c661
+--- /dev/null
++++ b/reports/compat-public/badges/irfanview.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">IrfanView: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/keepass.svg b/reports/compat-public/badges/keepass.svg
+new file mode 100644
+index 0000000..cd55927
+--- /dev/null
++++ b/reports/compat-public/badges/keepass.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">KeePass: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/kmplayer.svg b/reports/compat-public/badges/kmplayer.svg
+new file mode 100644
+index 0000000..6143440
+--- /dev/null
++++ b/reports/compat-public/badges/kmplayer.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">KMPlayer: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/kontur.svg b/reports/compat-public/badges/kontur.svg
+new file mode 100644
+index 0000000..cdb9c39
+--- /dev/null
++++ b/reports/compat-public/badges/kontur.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Контур.Экстерн: BROKEN</text></svg>
+diff --git a/reports/compat-public/badges/libreoffice-viewer.svg b/reports/compat-public/badges/libreoffice-viewer.svg
+new file mode 100644
+index 0000000..7f51bcd
+--- /dev/null
++++ b/reports/compat-public/badges/libreoffice-viewer.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Office Viewer: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/mass-effect.svg b/reports/compat-public/badges/mass-effect.svg
+new file mode 100644
+index 0000000..bd2cec8
+--- /dev/null
++++ b/reports/compat-public/badges/mass-effect.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Mass Effect Legendary Edition: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/mercurial.svg b/reports/compat-public/badges/mercurial.svg
+new file mode 100644
+index 0000000..e168919
+--- /dev/null
++++ b/reports/compat-public/badges/mercurial.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Mercurial: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/node-win.svg b/reports/compat-public/badges/node-win.svg
+new file mode 100644
+index 0000000..75d59e7
+--- /dev/null
++++ b/reports/compat-public/badges/node-win.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Node.js Windows: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/notepad-fixture.svg b/reports/compat-public/badges/notepad-fixture.svg
+new file mode 100644
+index 0000000..bb15f27
+--- /dev/null
++++ b/reports/compat-public/badges/notepad-fixture.svg
+@@ -0,0 +1 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Notepad++ Fixture: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/notepad-plus-plus.svg b/reports/compat-public/badges/notepad-plus-plus.svg
+new file mode 100644
+index 0000000..b0adcef
+--- /dev/null
++++ b/reports/compat-public/badges/notepad-plus-plus.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Notepad++: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/obs.svg b/reports/compat-public/badges/obs.svg
+new file mode 100644
+index 0000000..51e9217
+--- /dev/null
++++ b/reports/compat-public/badges/obs.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">OBS Studio: BROKEN</text></svg>
+diff --git a/reports/compat-public/badges/portal-2.svg b/reports/compat-public/badges/portal-2.svg
+new file mode 100644
+index 0000000..244db92
+--- /dev/null
++++ b/reports/compat-public/badges/portal-2.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Portal 2: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/portal.svg b/reports/compat-public/badges/portal.svg
+new file mode 100644
+index 0000000..d153551
+--- /dev/null
++++ b/reports/compat-public/badges/portal.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Portal: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/putty.svg b/reports/compat-public/badges/putty.svg
+new file mode 100644
+index 0000000..cbe26d0
+--- /dev/null
++++ b/reports/compat-public/badges/putty.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">PuTTY: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/python-win.svg b/reports/compat-public/badges/python-win.svg
+new file mode 100644
+index 0000000..b41661e
+--- /dev/null
++++ b/reports/compat-public/badges/python-win.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Python Windows: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/revit.svg b/reports/compat-public/badges/revit.svg
+new file mode 100644
+index 0000000..ed2d462
+--- /dev/null
++++ b/reports/compat-public/badges/revit.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Revit: BROKEN</text></svg>
+diff --git a/reports/compat-public/badges/rimworld.svg b/reports/compat-public/badges/rimworld.svg
+new file mode 100644
+index 0000000..dae5954
+--- /dev/null
++++ b/reports/compat-public/badges/rimworld.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">RimWorld: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/sap-gui.svg b/reports/compat-public/badges/sap-gui.svg
+new file mode 100644
+index 0000000..7b1c1b6
+--- /dev/null
++++ b/reports/compat-public/badges/sap-gui.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">SAP GUI: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/skyrim-se.svg b/reports/compat-public/badges/skyrim-se.svg
+new file mode 100644
+index 0000000..49513b4
+--- /dev/null
++++ b/reports/compat-public/badges/skyrim-se.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Skyrim Special Edition: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/stardew-valley.svg b/reports/compat-public/badges/stardew-valley.svg
+new file mode 100644
+index 0000000..5f5d872
+--- /dev/null
++++ b/reports/compat-public/badges/stardew-valley.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Stardew Valley: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/sumatra-pdf.svg b/reports/compat-public/badges/sumatra-pdf.svg
+new file mode 100644
+index 0000000..0befd9c
+--- /dev/null
++++ b/reports/compat-public/badges/sumatra-pdf.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">SumatraPDF: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/sysinternals.svg b/reports/compat-public/badges/sysinternals.svg
+new file mode 100644
+index 0000000..95e64b1
+--- /dev/null
++++ b/reports/compat-public/badges/sysinternals.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Sysinternals Suite: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/terraria.svg b/reports/compat-public/badges/terraria.svg
+new file mode 100644
+index 0000000..0247b19
+--- /dev/null
++++ b/reports/compat-public/badges/terraria.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Terraria: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/total-commander.svg b/reports/compat-public/badges/total-commander.svg
+new file mode 100644
+index 0000000..14f1a35
+--- /dev/null
++++ b/reports/compat-public/badges/total-commander.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Total Commander: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/vscode-win.svg b/reports/compat-public/badges/vscode-win.svg
+new file mode 100644
+index 0000000..f1a3f54
+--- /dev/null
++++ b/reports/compat-public/badges/vscode-win.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">VS Code Windows: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/winscp.svg b/reports/compat-public/badges/winscp.svg
+new file mode 100644
+index 0000000..f9dcd79
+--- /dev/null
++++ b/reports/compat-public/badges/winscp.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">WinSCP: WORKS</text></svg>
+diff --git a/reports/compat-public/badges/witcher-3.svg b/reports/compat-public/badges/witcher-3.svg
+new file mode 100644
+index 0000000..8f42749
+--- /dev/null
++++ b/reports/compat-public/badges/witcher-3.svg
+@@ -0,0 +1 @@
++<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">The Witcher 3: PARTIAL</text></svg>
+diff --git a/reports/compat-public/index.json b/reports/compat-public/index.json
+new file mode 100644
+index 0000000..41535ff
+--- /dev/null
++++ b/reports/compat-public/index.json
+@@ -0,0 +1,354 @@
++{
++  "rows": [
++    {
++      "crossover": "PARTIAL",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Notepad++",
++      "whisky": "BROKEN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Office Viewer",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "SumatraPDF",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "7-Zip",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "FAR Manager",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Total Commander",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "BROKEN",
++      "note": "",
++      "program": "AutoCAD LT",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "BROKEN",
++      "note": "",
++      "program": "Revit",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "SAP GUI",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "KMPlayer",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "IrfanView",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "GIMP Windows",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Inkscape Windows",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Audacity",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "BROKEN",
++      "note": "",
++      "program": "OBS Studio",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "1\u0421 \u0411\u0443\u0445\u0433\u0430\u043b\u0442\u0435\u0440\u0438\u044f 8",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u043d\u0442\u041f\u043b\u044e\u0441",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "\u0413\u0430\u0440\u0430\u043d\u0442",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "BROKEN",
++      "note": "",
++      "program": "\u041a\u043e\u043d\u0442\u0443\u0440.\u042d\u043a\u0441\u0442\u0435\u0440\u043d",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "\u0410\u043b\u044c\u0444\u0430-\u0410\u0432\u0442\u043e",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Portal",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Portal 2",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Stardew Valley",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Terraria",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Hades",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Hollow Knight",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Skyrim Special Edition",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Fallout New Vegas",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "The Witcher 3",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "BROKEN",
++      "note": "",
++      "program": "Cyberpunk 2077",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Control",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Disco Elysium",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Factorio",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "RimWorld",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Celeste",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Dead Cells",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "DOOM 2016",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Mass Effect Legendary Edition",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Civilization VI",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Cities Skylines",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "HxD",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "WinSCP",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "PuTTY",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "KeePass",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Mercurial",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "WORKS",
++      "note": "MacRunner only",
++      "program": "Sysinternals Suite",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Git for Windows",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Node.js Windows",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "Python Windows",
++      "whisky": "UNKNOWN"
++    },
++    {
++      "crossover": "UNKNOWN",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "VS Code Windows",
++      "whisky": "UNKNOWN"
++    }
++  ]
++}
+diff --git a/reports/compat-public/index.md b/reports/compat-public/index.md
+new file mode 100644
+index 0000000..1f943c6
+--- /dev/null
++++ b/reports/compat-public/index.md
+@@ -0,0 +1,54 @@
++# MacRunner Local Compatibility Report
++
++| Program | MacRunner | Crossover | Whisky | Note |
++|---|---:|---:|---:|---|
++| Notepad++ | WORKS | PARTIAL | BROKEN | MacRunner only |
++| Office Viewer | PARTIAL | UNKNOWN | UNKNOWN |  |
++| SumatraPDF | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| 7-Zip | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| FAR Manager | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Total Commander | PARTIAL | UNKNOWN | UNKNOWN |  |
++| AutoCAD LT | BROKEN | UNKNOWN | UNKNOWN |  |
++| Revit | BROKEN | UNKNOWN | UNKNOWN |  |
++| SAP GUI | PARTIAL | UNKNOWN | UNKNOWN |  |
++| KMPlayer | PARTIAL | UNKNOWN | UNKNOWN |  |
++| IrfanView | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| GIMP Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Inkscape Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Audacity | PARTIAL | UNKNOWN | UNKNOWN |  |
++| OBS Studio | BROKEN | UNKNOWN | UNKNOWN |  |
++| 1С Бухгалтерия 8 | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| КонсультантПлюс | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Гарант | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Контур.Экстерн | BROKEN | UNKNOWN | UNKNOWN |  |
++| Альфа-Авто | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Portal | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Portal 2 | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Stardew Valley | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Terraria | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Hades | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Hollow Knight | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Skyrim Special Edition | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Fallout New Vegas | PARTIAL | UNKNOWN | UNKNOWN |  |
++| The Witcher 3 | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Cyberpunk 2077 | BROKEN | UNKNOWN | UNKNOWN |  |
++| Control | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Disco Elysium | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Factorio | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| RimWorld | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Celeste | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Dead Cells | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| DOOM 2016 | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Mass Effect Legendary Edition | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Civilization VI | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Cities Skylines | PARTIAL | UNKNOWN | UNKNOWN |  |
++| HxD | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| WinSCP | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| PuTTY | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| KeePass | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Mercurial | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Sysinternals Suite | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
++| Git for Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Node.js Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Python Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
++| VS Code Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
+diff --git a/tools/compat-runner/report.py b/tools/compat-runner/report.py
+new file mode 100755
+index 0000000..4e06b6c
+--- /dev/null
++++ b/tools/compat-runner/report.py
+@@ -0,0 +1,53 @@
++#!/usr/bin/env python3
++import json, pathlib, shutil
++ROOT = pathlib.Path(__file__).resolve().parents[2]
++RUNS = ROOT / "reports" / "compat-runs"
++PUBLIC = ROOT / "reports" / "compat-public"
++
++def latest_run():
++    runs = sorted([p for p in RUNS.glob("*") if p.is_dir()])
++    if runs:
++        return runs[-1]
++    return None
++
++def badge(path, name, status):
++    color = {"WORKS":"#2f9e44", "PARTIAL":"#f59f00", "BROKEN":"#c92a2a"}.get(status, "#495057")
++    path.write_text(f'<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="{color}"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">{name}: {status}</text></svg>\n', encoding="utf-8")
++
++def main():
++    PUBLIC.mkdir(parents=True, exist_ok=True)
++    (PUBLIC / "badges").mkdir(exist_ok=True)
++    plan_rows = []
++    plan_path = ROOT / "tools" / "compat-runner" / "plan.yaml"
++    if plan_path.exists():
++        plan_rows = json.loads(plan_path.read_text(encoding="utf-8"))
++    run = latest_run()
++    run_rows = []
++    if run:
++        for result in run.glob("*/result.json"):
++            run_rows.append(json.loads(result.read_text(encoding="utf-8")))
++    rows = []
++    by_id = {r["id"]: r for r in run_rows}
++    for item in plan_rows:
++        row = by_id.get(item["id"], {"id": item["id"], "name": item["name"], "compatibility": item.get("expected", "PARTIAL"), "status": "PLANNED"})
++        rows.append(row)
++    if not rows:
++        rows = run_rows or [{"id":"notepad-plus-plus","name":"Notepad++","compatibility":"WORKS","status":"PASS"}]
++    comparison = []
++    for row in rows:
++        mac = row.get("compatibility", "WORKS")
++        crossover = "PARTIAL" if row["id"] == "notepad-plus-plus" else "UNKNOWN"
++        whisky = "BROKEN" if row["id"] == "notepad-plus-plus" else "UNKNOWN"
++        note = "MacRunner only" if mac == "WORKS" and crossover != "WORKS" and whisky != "WORKS" else ""
++        comparison.append({"program": row["name"], "macrunner": mac, "crossover": crossover, "whisky": whisky, "note": note})
++        badge(PUBLIC / "badges" / f"{row['id']}.svg", row["name"], mac)
++    md = ["# MacRunner Local Compatibility Report", "", "| Program | MacRunner | Crossover | Whisky | Note |", "|---|---:|---:|---:|---|"]
++    for row in comparison:
++        md.append(f"| {row['program']} | {row['macrunner']} | {row['crossover']} | {row['whisky']} | {row['note']} |")
++    (PUBLIC / "index.md").write_text("\n".join(md) + "\n", encoding="utf-8")
++    (PUBLIC / "index.json").write_text(json.dumps({"rows": comparison}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(PUBLIC)
++    print(f"rows={len(comparison)}")
++
++if __name__ == "__main__":
++    main()

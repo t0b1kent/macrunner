@@ -3,7 +3,7 @@ set -euo pipefail
 cat <<'NOTE'
 Notarization is intentionally a paid-Apple-Developer path stub.
 When credentials are available, run:
-  xcrun notarytool submit dist/MacRunner-0.3.0.dmg --apple-id <apple-id> --team-id <team-id> --password <app-specific-password> --wait
+  xcrun notarytool submit dist/MacRunner-1.0.dmg --apple-id <apple-id> --team-id <team-id> --password <app-specific-password> --wait
 Then staple:
-  xcrun stapler staple dist/MacRunner-0.3.0.dmg
+  xcrun stapler staple dist/MacRunner-1.0.dmg
 NOTE

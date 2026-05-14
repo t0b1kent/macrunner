@@ -1,0 +1,38 @@
+import Foundation
+
+struct StoreLoginStatus: Codable, Equatable {
+    var provider: String
+    var loggedIn: Bool
+    var lastAuth: String?
+    var toolPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case loggedIn = "logged_in"
+        case lastAuth = "last_auth"
+        case toolPath = "tool_path"
+    }
+}
+
+struct EpicLibraryService {
+    var wrapper = LegendaryWrapper()
+    var supportRoot: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        .appendingPathComponent("legendary", isDirectory: true)
+
+    func status() -> StoreLoginStatus {
+        let authFiles = ["user.json", "credentials.json", "auth.json"].map { supportRoot.appendingPathComponent($0) }
+        let auth = authFiles.first { FileManager.default.fileExists(atPath: $0.path) }
+        let date = auth.flatMap { (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate }
+        return StoreLoginStatus(provider: "epic", loggedIn: auth != nil, lastAuth: date.map { ISO8601DateFormatter().string(from: $0) }, toolPath: wrapper.executable)
+    }
+
+    func dumpLibrary() -> [StoreGame] {
+        let fixture = URL(fileURLWithPath: AppSettings.defaultRoot).appendingPathComponent("app/macr-control-center/Tests/Fixtures/epic-library.json")
+        if let data = try? Data(contentsOf: fixture) { return wrapper.parseListJSON(data) }
+        return []
+    }
+
+    func deviceCodePlan() -> StoreCommandPlan {
+        StoreCommandPlan(executable: wrapper.executable, arguments: ["auth", "--code"], environment: [:])
+    }
+}

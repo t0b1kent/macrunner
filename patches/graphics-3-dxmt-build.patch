@@ -1,0 +1,225 @@
+diff --git a/docs/STATUS-graphics-phase-3.md b/docs/STATUS-graphics-phase-3.md
+new file mode 100644
+index 0000000..49af790
+--- /dev/null
++++ b/docs/STATUS-graphics-phase-3.md
+@@ -0,0 +1,39 @@
++# STATUS graphics phase 3 - DXMT
++
++Date: 2026-05-14T05:48:49Z
++Scope: DXMT Metal-backed D3D10/D3D11/DXGI build.
++
++## Gate
++
++Command:
++
++```text
++./scripts/build-dxmt.sh
++```
++
++Output:
++
++```text
++MacRunner graphics: DXMT Metal backend build
++source: /Volumes/MacOS/MacRunner/engine/dxmt
++llvm: 15.0.7
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/d3d10core.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/d3d11.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/dxgi.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/winemetal.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxmt/aarch64-unix/winemetal.so: Mach-O 64-bit dynamically linked shared library arm64
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxmt/x86_64-windows/d3d10core.dll: PE32+ executable (DLL) (GUI) x86-64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxmt/x86_64-windows/d3d11.dll: PE32+ executable (DLL) (GUI) x86-64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxmt/x86_64-windows/dxgi.dll: PE32+ executable (DLL) (GUI) x86-64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxmt/x86_64-windows/winemetal.dll: PE32+ executable (DLL) (GUI) x86-64, for MS Windows
++DXMT d3d11 Metal strings: 71
++DXMT PASS: /Volumes/MacOS/MacRunner/engine/graphics/dist/dxmt
++```
++
++## Result
++
++PASS. DXMT is the selected v0.1 backend.
++
++## Limitation
++
++x86_64 PE DLLs build; x86_64 Unix-side `winemetal.so` install is skipped until Phase G provides matching x86_64 Wine Unix libraries.
+diff --git a/engine/graphics/dist/manifest/dxmt.json b/engine/graphics/dist/manifest/dxmt.json
+new file mode 100644
+index 0000000..8c9b110
+--- /dev/null
++++ b/engine/graphics/dist/manifest/dxmt.json
+@@ -0,0 +1,6 @@
++{
++  "component": "dxmt",
++  "details": "built DXMT arm64 Windows DLLs + winemetal.so and x86_64 PE DLLs; x86_64 unix link waits for Phase G Wine unix libs",
++  "generated_at": "2026-05-14T06:03:21.855731+00:00",
++  "status": "PASS"
++}
+diff --git a/engine/graphics/vendor-patches/dxmt/0001-macr-apple-silicon-llvm15-link.patch b/engine/graphics/vendor-patches/dxmt/0001-macr-apple-silicon-llvm15-link.patch
+new file mode 100644
+index 0000000..d81173e
+--- /dev/null
++++ b/engine/graphics/vendor-patches/dxmt/0001-macr-apple-silicon-llvm15-link.patch
+@@ -0,0 +1,16 @@
++diff --git a/src/airconv/darwin/meson.build b/src/airconv/darwin/meson.build
++index f3e39ec..b886b5f 100644
++--- a/src/airconv/darwin/meson.build
+++++ b/src/airconv/darwin/meson.build
++@@ -19,6 +19,11 @@ if native_llvm_path.startswith('/usr/local/opt')
++     llvm_ld_flags_darwin,
++     '/usr/local/opt/zstd/lib/libzstd.a', '/usr/local/opt/llvm@15/lib/libunwind.a'
++   ]
+++elif native_llvm_path.startswith('/opt/homebrew/opt')
+++  llvm_ld_flags_darwin = [
+++    llvm_ld_flags_darwin,
+++    '/opt/homebrew/opt/zstd/lib/libzstd.a', '/opt/homebrew/opt/llvm@15/lib/libunwind.a'
+++  ]
++ endif
++
++ airconv_lib_darwin = static_library('airconv', airconv_src,
+diff --git a/scripts/build-dxmt.sh b/scripts/build-dxmt.sh
+index 43228b9..e1acab9 100755
+--- a/scripts/build-dxmt.sh
++++ b/scripts/build-dxmt.sh
+@@ -1,57 +1,92 @@
+-#!/bin/bash
+-# MacRunner — сборка DXMT (DirectX 10/11 → Metal)
+-# DXMT — open source аналог Apple D3DMetal
+-set -e
++#!/usr/bin/env bash
++set -euo pipefail
+ 
+ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++source "$PROJECT_ROOT/engine/graphics/build-support/common.sh"
++
+ DXMT_SRC="$PROJECT_ROOT/engine/dxmt"
++WINE_DIST="$PROJECT_ROOT/engine/wine/dist"
++LLVM15="${LLVM15_ROOT:-/opt/homebrew/opt/llvm@15}"
++require_file "$DXMT_SRC/meson.build"
++require_file "$WINE_DIST"
++require_file "$LLVM15/bin/llvm-config"
++ensure_build_tools
++ensure_llvm_mingw
++require_cmd xcrun
++xcrun -sdk macosx --find metal >/dev/null
+ 
+-if [ ! -d "$DXMT_SRC" ]; then
+-    echo "❌ DXMT source не найден: $DXMT_SRC"
+-    echo "   Запусти ./scripts/clone-sources.sh"
+-    exit 1
+-fi
++mkdir -p "$GRAPHICS_BUILD/cross" "$GRAPHICS_DIST/dxmt" "$GRAPHICS_DIST/manifest"
+ 
+-# DXMT использует Meson + mingw-w64 + LLVM 15+
+-for tool in meson ninja x86_64-w64-mingw32-gcc; do
+-    if ! command -v "$tool" &> /dev/null; then
+-        echo "❌ Не установлен: $tool"
+-        echo "   brew install meson ninja mingw-w64"
+-        exit 1
+-    fi
+-done
+-
+-# LLVM проверка (DXMT нужен LLVM 15+ для airconv shader translator)
+-if ! command -v llvm-config &> /dev/null; then
+-    echo "⚠️  llvm-config не найден. Устанавливаю LLVM..."
+-    brew install llvm@15 2>&1 | tail -3
+-    export PATH="/opt/homebrew/opt/llvm@15/bin:$PATH"
+-fi
++echo "MacRunner graphics: DXMT Metal backend build"
++echo "source: $DXMT_SRC"
++echo "llvm: $($LLVM15/bin/llvm-config --version)"
++
++ensure_dxmt_homebrew_patch() {
++  local patch="$GRAPHICS_ROOT/vendor-patches/dxmt/0001-macr-apple-silicon-llvm15-link.patch"
++  require_file "$patch"
++  if ! grep -q "/opt/homebrew/opt/zstd/lib/libzstd.a" "$DXMT_SRC/src/airconv/darwin/meson.build"; then
++    git -C "$DXMT_SRC" apply "$patch"
++  fi
++}
++
++git -C "$DXMT_SRC" submodule update --init --recursive
++ensure_dxmt_homebrew_patch
++
++build_arm64_full() {
++  local arch="aarch64"
++  local cross="$GRAPHICS_BUILD/cross/$arch-windows-clang.meson"
++  local build="$GRAPHICS_BUILD/dxmt-$arch"
++  local install="$GRAPHICS_BUILD/dxmt-install-$arch"
++  write_windows_cross_file "$arch" "$cross" no
++  rm -rf "$build" "$install"
++  "${MESON[@]}" setup "$build" "$DXMT_SRC" \
++    --cross-file "$cross" \
++    --buildtype release \
++    -Dnative_llvm_path="$LLVM15" \
++    -Dwine_install_path="$WINE_DIST" \
++    --prefix "$install" --bindir . --libdir .
++  ninja -C "$build" -j"$JOBS" install
++  copy_dlls "$install/aarch64-windows" "$GRAPHICS_DIST/dxmt/aarch64-windows" \
++    d3d10core.dll d3d11.dll dxgi.dll winemetal.dll
++  mkdir -p "$GRAPHICS_DIST/dxmt/aarch64-unix"
++  require_file "$install/aarch64-unix/winemetal.so"
++  cp -f "$install/aarch64-unix/winemetal.so" "$GRAPHICS_DIST/dxmt/aarch64-unix/winemetal.so"
++  file "$GRAPHICS_DIST/dxmt/aarch64-unix/winemetal.so"
++}
++
++build_x86_64_pe_only() {
++  local arch="x86_64"
++  local cross="$GRAPHICS_BUILD/cross/$arch-windows-clang.meson"
++  local build="$GRAPHICS_BUILD/dxmt-$arch"
++  write_windows_cross_file "$arch" "$cross" no
++  rm -rf "$build"
++  "${MESON[@]}" setup "$build" "$DXMT_SRC" \
++    --cross-file "$cross" \
++    --buildtype release \
++    -Dnative_llvm_path="$LLVM15" \
++    -Dwine_install_path="$WINE_DIST" \
++    --prefix "$GRAPHICS_BUILD/dxmt-install-$arch" --bindir . --libdir .
++  ninja -C "$build" -j"$JOBS" \
++    src/d3d10/d3d10core.dll \
++    src/d3d11/d3d11.dll \
++    src/dxgi/dxgi.dll \
++    src/winemetal/winemetal.dll
++  mkdir -p "$GRAPHICS_DIST/dxmt/x86_64-windows"
++  cp -f "$build/src/d3d10/d3d10core.dll" "$GRAPHICS_DIST/dxmt/x86_64-windows/d3d10core.dll"
++  cp -f "$build/src/d3d11/d3d11.dll" "$GRAPHICS_DIST/dxmt/x86_64-windows/d3d11.dll"
++  cp -f "$build/src/dxgi/dxgi.dll" "$GRAPHICS_DIST/dxmt/x86_64-windows/dxgi.dll"
++  cp -f "$build/src/winemetal/winemetal.dll" "$GRAPHICS_DIST/dxmt/x86_64-windows/winemetal.dll"
++  file "$GRAPHICS_DIST/dxmt/x86_64-windows/"*.dll
++}
+ 
+-echo "🔧 MacRunner: сборка DXMT"
+-echo "📁 Source: $DXMT_SRC"
+-echo "📦 LLVM: $(llvm-config --version 2>/dev/null || echo 'not found')"
+-echo ""
+-
+-cd "$DXMT_SRC"
+-
+-# Способ 1: package-release.sh (если есть)
+-if [ -f "package-release.sh" ]; then
+-    echo "🔨 DXMT package-release.sh..."
+-    ./package-release.sh master /tmp/dxmt-build --no-package 2>&1 | tail -20
+-# Способ 2: meson напрямую
+-elif [ -f "build-win64.txt" ] || [ -f "build.win64.cross.txt" ]; then
+-    CROSSFILE=$(ls build*.txt | head -1)
+-    BUILD_DIR="$DXMT_SRC/build-win64"
+-    rm -rf "$BUILD_DIR"
+-    meson setup "$BUILD_DIR" --cross-file "$CROSSFILE" --buildtype release 2>&1 | tail -10
+-    ninja -C "$BUILD_DIR" 2>&1 | tail -10
+-else
+-    echo "ℹ️  Доступные файлы:"
+-    ls
+-    echo "❌ Нужно изучить структуру DXMT и адаптировать скрипт"
+-    exit 1
++build_arm64_full
++build_x86_64_pe_only
++metal_count="$(strings "$GRAPHICS_DIST/dxmt/aarch64-windows/d3d11.dll" | grep -c Metal || true)"
++echo "DXMT d3d11 Metal strings: $metal_count"
++if [[ "$metal_count" -lt 5 ]]; then
++  echo "DXMT d3d11.dll does not look like a Metal-backed artifact" >&2
++  exit 1
+ fi
++write_manifest "$GRAPHICS_DIST/manifest/dxmt.json" dxmt PASS "built DXMT arm64 Windows DLLs + winemetal.so and x86_64 PE DLLs; x86_64 unix link waits for Phase G Wine unix libs"
+ 
+-echo ""
+-echo "✅ DXMT собран"
++echo "DXMT PASS: $GRAPHICS_DIST/dxmt"

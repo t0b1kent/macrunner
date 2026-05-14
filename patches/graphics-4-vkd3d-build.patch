@@ -1,0 +1,98 @@
+diff --git a/docs/STATUS-graphics-phase-4.md b/docs/STATUS-graphics-phase-4.md
+new file mode 100644
+index 0000000..0f1a186
+--- /dev/null
++++ b/docs/STATUS-graphics-phase-4.md
+@@ -0,0 +1,28 @@
++# STATUS graphics phase 4 - vkd3d
++
++Date: 2026-05-14T05:48:49Z
++Scope: vkd3d-proton D3D12 DLL build.
++
++## Gate
++
++Command:
++
++```text
++./scripts/build-vkd3d.sh
++```
++
++Output:
++
++```text
++MacRunner graphics: vkd3d-proton D3D12 build
++source: /Volumes/MacOS/MacRunner/engine/vkd3d-proton
++/Volumes/MacOS/MacRunner/engine/graphics/dist/vkd3d/aarch64-windows/d3d12.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/vkd3d/aarch64-windows/d3d12core.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/vkd3d/x86_64-windows/d3d12.dll: PE32+ executable (DLL) (GUI) x86-64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/vkd3d/x86_64-windows/d3d12core.dll: PE32+ executable (DLL) (GUI) x86-64, for MS Windows
++vkd3d PASS: /Volumes/MacOS/MacRunner/engine/graphics/dist/vkd3d
++```
++
++## Result
++
++PASS. D3D12 physical DLLs exist for arm64 and x86_64.
+diff --git a/engine/graphics/dist/manifest/vkd3d.json b/engine/graphics/dist/manifest/vkd3d.json
+new file mode 100644
+index 0000000..d4ed6c3
+--- /dev/null
++++ b/engine/graphics/dist/manifest/vkd3d.json
+@@ -0,0 +1,6 @@
++{
++  "component": "vkd3d",
++  "details": "built vkd3d-proton d3d12/d3d12core for aarch64-windows and x86_64-windows",
++  "generated_at": "2026-05-14T06:05:28.808508+00:00",
++  "status": "PASS"
++}
+diff --git a/scripts/build-vkd3d.sh b/scripts/build-vkd3d.sh
+new file mode 100755
+index 0000000..db56e94
+--- /dev/null
++++ b/scripts/build-vkd3d.sh
+@@ -0,0 +1,46 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++source "$PROJECT_ROOT/engine/graphics/build-support/common.sh"
++
++if [[ -d "$PROJECT_ROOT/engine/vkd3d-proton" ]]; then
++  VKD3D_SRC="$PROJECT_ROOT/engine/vkd3d-proton"
++else
++  VKD3D_SRC="$PROJECT_ROOT/engine/vkd3d"
++fi
++
++require_file "$VKD3D_SRC/meson.build"
++ensure_build_tools
++ensure_llvm_mingw
++
++mkdir -p "$GRAPHICS_BUILD/cross" "$GRAPHICS_DIST/vkd3d" "$GRAPHICS_DIST/manifest"
++
++echo "MacRunner graphics: vkd3d-proton D3D12 build"
++echo "source: $VKD3D_SRC"
++
++git -C "$VKD3D_SRC" submodule update --init --recursive
++
++build_arch() {
++  local arch="$1"
++  local cross="$GRAPHICS_BUILD/cross/$arch-vkd3d.meson"
++  local build="$GRAPHICS_BUILD/vkd3d-$arch"
++  local install="$GRAPHICS_BUILD/vkd3d-install-$arch"
++  local out="$GRAPHICS_DIST/vkd3d/$arch-windows"
++  write_windows_cross_file "$arch" "$cross" yes
++  rm -rf "$build" "$install"
++  "${MESON[@]}" setup "$build" "$VKD3D_SRC" \
++    --cross-file "$cross" \
++    --buildtype release \
++    -Denable_tests=false \
++    -Denable_extras=false \
++    --prefix "$install" --bindir . --libdir .
++  ninja -C "$build" -j"$JOBS" install
++  copy_dlls "$install" "$out" d3d12.dll d3d12core.dll
++}
++
++build_arch aarch64
++build_arch x86_64
++write_manifest "$GRAPHICS_DIST/manifest/vkd3d.json" vkd3d PASS "built vkd3d-proton d3d12/d3d12core for aarch64-windows and x86_64-windows"
++
++echo "vkd3d PASS: $GRAPHICS_DIST/vkd3d"

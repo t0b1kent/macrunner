@@ -1,0 +1,6 @@
+{
+  "component": "moltenvk",
+  "details": "copied native arm64 dylib from /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib",
+  "generated_at": "2026-05-14T05:58:30.955772+00:00",
+  "status": "PASS"
+}

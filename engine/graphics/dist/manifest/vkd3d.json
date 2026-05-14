@@ -1,0 +1,6 @@
+{
+  "component": "vkd3d",
+  "details": "built vkd3d-proton d3d12/d3d12core for aarch64-windows and x86_64-windows",
+  "generated_at": "2026-05-14T06:05:28.808508+00:00",
+  "status": "PASS"
+}

@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MacRunner Graphics <graphics@macrunner.local>
+Date: Thu, 14 May 2026 00:00:00 +0000
+Subject: [PATCH] dxvk: allow llvm-mingw aarch64 Windows builds
+
+Add an aarch64 import-lib path and avoid unconditional x86 SIMD
+intrinsics when DXVK is compiled as Windows ARM64. D3D10 remains disabled
+in the MacRunner build script because current llvm-mingw headers collide
+with DXVK v1.10.3 D3D10 GUID declarations.
+---
+ meson.build                         |  2 ++
+ src/d3d9/d3d9_include.h             |  2 +-
+ src/util/sync/sync_spinlock.h       |  4 ++++
+ src/util/util_bit.h                 | 30 +++++++++++++++++++++---------
+ src/util/util_vector.h              | 10 +++++++++-
+ 5 files changed, 37 insertions(+), 11 deletions(-)
+
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -58,6 +58,8 @@ dxvk_include_path = include_directories('./include')
+
+ if (cpu_family == 'x86_64')
+   dxvk_library_path = meson.source_root() + '/lib'
++elif (cpu_family == 'aarch64')
++  dxvk_library_path = meson.source_root() + '/lib-arm64'
+ else
+   dxvk_library_path = meson.source_root() + '/lib32'
+ endif
+diff --git a/src/d3d9/d3d9_include.h b/src/d3d9/d3d9_include.h
+--- a/src/d3d9/d3d9_include.h
++++ b/src/d3d9/d3d9_include.h
+@@ -78,7 +78,7 @@
+ #endif
+
+ // MinGW headers are broken. Who'dve guessed?
+-#if !defined(_MSC_VER)
++#if !defined(_MSC_VER) && !defined(__MINGW64_VERSION_MAJOR)
+ typedef struct _D3DDEVINFO_RESOURCEMANAGER
+ {
+   char dummy;
+diff --git a/src/util/sync/sync_spinlock.h b/src/util/sync/sync_spinlock.h
+--- a/src/util/sync/sync_spinlock.h
++++ b/src/util/sync/sync_spinlock.h
+@@ -20,7 +20,11 @@ namespace dxvk::sync {
+     while (unlikely(!fn())) {
+       for (uint32_t i = 1; i < spinCount; i++) {
++        #if defined(DXVK_ARCH_X86)
+         _mm_pause();
++        #elif defined(__aarch64__) || defined(_M_ARM64)
++        __asm__ __volatile__("yield");
++        #endif
+         if (fn())
+           return;
+       }
+diff --git a/src/util/util_bit.h b/src/util/util_bit.h
+--- a/src/util/util_bit.h
++++ b/src/util/util_bit.h
+@@ -1,10 +1,18 @@
+ #pragma once
+
+-#if !defined(_MSC_VER)
++#if (defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86))
++#define DXVK_ARCH_X86 1
++#endif
++
++#if defined(DXVK_ARCH_X86) && !defined(_MSC_VER)
+ #include <x86intrin.h>
+-#else
++#elif defined(DXVK_ARCH_X86)
+ #include <intrin.h>
+ #endif
+@@ -46,7 +54,7 @@ namespace dxvk::bit {
+     #if defined(_MSC_VER) && !defined(__clang__)
+     return _tzcnt_u32(n);
+     #elif defined(__BMI__)
+     return __tzcnt_u32(n);
+-    #elif defined(__GNUC__) || defined(__clang__)
++    #elif defined(DXVK_ARCH_X86) && (defined(__GNUC__) || defined(__clang__))
+     uint32_t res;
+     uint32_t tmp;
+     asm (
+@@ -136,6 +144,7 @@ namespace dxvk::bit {
+   template<typename T>
+   bool bcmpeq(const T* a, const T* b) {
+     static_assert(alignof(T) >= 16);
++    #if defined(DXVK_ARCH_X86) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
+     auto ai = reinterpret_cast<const __m128i*>(a);
+     auto bi = reinterpret_cast<const __m128i*>(b);
+@@ -169,6 +178,9 @@ namespace dxvk::bit {
+     }
+
+     return true;
++    #else
++    return !std::memcmp(a, b, sizeof(T));
++    #endif
+   }
+diff --git a/src/util/util_vector.h b/src/util/util_vector.h
+--- a/src/util/util_vector.h
++++ b/src/util/util_vector.h
+@@ -1,5 +1,6 @@
+ #pragma once
+
++#include <cmath>
+ #include <iostream>
+@@ -145,11 +146,18 @@ namespace dxvk {
+
+   inline Vector4 replaceNaN(Vector4 a) {
+     Vector4 result;
++    #if defined(DXVK_ARCH_X86)
+     __m128 value = _mm_load_ps(a.data);
+     __m128 mask  = _mm_cmpeq_ps(value, value);
+            value = _mm_and_ps(value, mask);
+     _mm_store_ps(result.data, value);
++    #else
++    for (uint32_t i = 0; i < 4; i++)
++      result[i] = std::isnan(a[i]) ? 0.0f : a[i];
++    #endif
+     return result;
+   }
+
+ }

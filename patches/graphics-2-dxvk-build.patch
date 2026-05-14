@@ -1,0 +1,295 @@
+diff --git a/docs/STATUS-graphics-phase-2.md b/docs/STATUS-graphics-phase-2.md
+new file mode 100644
+index 0000000..55a433d
+--- /dev/null
++++ b/docs/STATUS-graphics-phase-2.md
+@@ -0,0 +1,34 @@
++# STATUS graphics phase 2 - DXVK
++
++Date: 2026-05-14T05:48:49Z
++Scope: DXVK Windows DLL build for arm64 and x86_64.
++
++## Gate
++
++Command:
++
++```text
++./scripts/build-dxvk.sh
++```
++
++Output:
++
++```text
++MacRunner graphics: DXVK Windows DLL build
++source: /Volumes/MacOS/MacRunner/engine/dxvk
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxvk/aarch64-windows/d3d9.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxvk/aarch64-windows/d3d11.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxvk/aarch64-windows/dxgi.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxvk/x86_64-windows/d3d9.dll: PE32+ executable (DLL) (GUI) x86-64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxvk/x86_64-windows/d3d11.dll: PE32+ executable (DLL) (GUI) x86-64, for MS Windows
++/Volumes/MacOS/MacRunner/engine/graphics/dist/dxvk/x86_64-windows/dxgi.dll: PE32+ executable (DLL) (GUI) x86-64, for MS Windows
++DXVK PASS: /Volumes/MacOS/MacRunner/engine/graphics/dist/dxvk
++```
++
++## Result
++
++PASS. DXVK D3D9/D3D11/DXGI DLLs built for both target architectures.
++
++## Limitation
++
++D3D10 is deferred for DXVK because DXVK v1.10.3 D3D10 sources conflict with current llvm-mingw GUID/header declarations. DXMT supplies D3D10 core for the selected v0.1 backend.
+diff --git a/engine/graphics/dist/manifest/dxvk.json b/engine/graphics/dist/manifest/dxvk.json
+new file mode 100644
+index 0000000..1a9f428
+--- /dev/null
++++ b/engine/graphics/dist/manifest/dxvk.json
+@@ -0,0 +1,6 @@
++{
++  "component": "dxvk",
++  "details": "built DXVK d3d9/d3d11/dxgi for aarch64-windows and x86_64-windows; d3d10 deferred",
++  "generated_at": "2026-05-14T06:00:53.214961+00:00",
++  "status": "PASS"
++}
+diff --git a/engine/graphics/vendor-patches/dxvk/0001-macr-arm64-windows-portability.patch b/engine/graphics/vendor-patches/dxvk/0001-macr-arm64-windows-portability.patch
+new file mode 100644
+index 0000000..cf762ce
+--- /dev/null
++++ b/engine/graphics/vendor-patches/dxvk/0001-macr-arm64-windows-portability.patch
+@@ -0,0 +1,122 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: MacRunner Graphics <graphics@macrunner.local>
++Date: Thu, 14 May 2026 00:00:00 +0000
++Subject: [PATCH] dxvk: allow llvm-mingw aarch64 Windows builds
++
++Add an aarch64 import-lib path and avoid unconditional x86 SIMD
++intrinsics when DXVK is compiled as Windows ARM64. D3D10 remains disabled
++in the MacRunner build script because current llvm-mingw headers collide
++with DXVK v1.10.3 D3D10 GUID declarations.
++---
++ meson.build                         |  2 ++
++ src/d3d9/d3d9_include.h             |  2 +-
++ src/util/sync/sync_spinlock.h       |  4 ++++
++ src/util/util_bit.h                 | 30 +++++++++++++++++++++---------
++ src/util/util_vector.h              | 10 +++++++++-
++ 5 files changed, 37 insertions(+), 11 deletions(-)
++
++diff --git a/meson.build b/meson.build
++--- a/meson.build
+++++ b/meson.build
++@@ -58,6 +58,8 @@ dxvk_include_path = include_directories('./include')
++
++ if (cpu_family == 'x86_64')
++   dxvk_library_path = meson.source_root() + '/lib'
+++elif (cpu_family == 'aarch64')
+++  dxvk_library_path = meson.source_root() + '/lib-arm64'
++ else
++   dxvk_library_path = meson.source_root() + '/lib32'
++ endif
++diff --git a/src/d3d9/d3d9_include.h b/src/d3d9/d3d9_include.h
++--- a/src/d3d9/d3d9_include.h
+++++ b/src/d3d9/d3d9_include.h
++@@ -78,7 +78,7 @@
++ #endif
++
++ // MinGW headers are broken. Who'dve guessed?
++-#if !defined(_MSC_VER)
+++#if !defined(_MSC_VER) && !defined(__MINGW64_VERSION_MAJOR)
++ typedef struct _D3DDEVINFO_RESOURCEMANAGER
++ {
++   char dummy;
++diff --git a/src/util/sync/sync_spinlock.h b/src/util/sync/sync_spinlock.h
++--- a/src/util/sync/sync_spinlock.h
+++++ b/src/util/sync/sync_spinlock.h
++@@ -20,7 +20,11 @@ namespace dxvk::sync {
++     while (unlikely(!fn())) {
++       for (uint32_t i = 1; i < spinCount; i++) {
+++        #if defined(DXVK_ARCH_X86)
++         _mm_pause();
+++        #elif defined(__aarch64__) || defined(_M_ARM64)
+++        __asm__ __volatile__("yield");
+++        #endif
++         if (fn())
++           return;
++       }
++diff --git a/src/util/util_bit.h b/src/util/util_bit.h
++--- a/src/util/util_bit.h
+++++ b/src/util/util_bit.h
++@@ -1,10 +1,18 @@
++ #pragma once
++
++-#if !defined(_MSC_VER)
+++#if (defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86))
+++#define DXVK_ARCH_X86 1
+++#endif
+++
+++#if defined(DXVK_ARCH_X86) && !defined(_MSC_VER)
++ #include <x86intrin.h>
++-#else
+++#elif defined(DXVK_ARCH_X86)
++ #include <intrin.h>
++ #endif
++@@ -46,7 +54,7 @@ namespace dxvk::bit {
++     #if defined(_MSC_VER) && !defined(__clang__)
++     return _tzcnt_u32(n);
++     #elif defined(__BMI__)
++     return __tzcnt_u32(n);
++-    #elif defined(__GNUC__) || defined(__clang__)
+++    #elif defined(DXVK_ARCH_X86) && (defined(__GNUC__) || defined(__clang__))
++     uint32_t res;
++     uint32_t tmp;
++     asm (
++@@ -136,6 +144,7 @@ namespace dxvk::bit {
++   template<typename T>
++   bool bcmpeq(const T* a, const T* b) {
++     static_assert(alignof(T) >= 16);
+++    #if defined(DXVK_ARCH_X86) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
++     auto ai = reinterpret_cast<const __m128i*>(a);
++     auto bi = reinterpret_cast<const __m128i*>(b);
++@@ -169,6 +178,9 @@ namespace dxvk::bit {
++     }
++
++     return true;
+++    #else
+++    return !std::memcmp(a, b, sizeof(T));
+++    #endif
++   }
++diff --git a/src/util/util_vector.h b/src/util/util_vector.h
++--- a/src/util/util_vector.h
+++++ b/src/util/util_vector.h
++@@ -1,5 +1,6 @@
++ #pragma once
++
+++#include <cmath>
++ #include <iostream>
++@@ -145,11 +146,18 @@ namespace dxvk {
++
++   inline Vector4 replaceNaN(Vector4 a) {
++     Vector4 result;
+++    #if defined(DXVK_ARCH_X86)
++     __m128 value = _mm_load_ps(a.data);
++     __m128 mask  = _mm_cmpeq_ps(value, value);
++            value = _mm_and_ps(value, mask);
++     _mm_store_ps(result.data, value);
+++    #else
+++    for (uint32_t i = 0; i < 4; i++)
+++      result[i] = std::isnan(a[i]) ? 0.0f : a[i];
+++    #endif
++     return result;
++   }
++
++ }
+diff --git a/scripts/build-dxvk.sh b/scripts/build-dxvk.sh
+index 2c1aa3c..f5e5fb7 100755
+--- a/scripts/build-dxvk.sh
++++ b/scripts/build-dxvk.sh
+@@ -1,46 +1,68 @@
+-#!/bin/bash
+-# MacRunner — сборка DXVK (DirectX 9/10/11 → Vulkan)
+-# Использует Meson + mingw-w64 cross-compile
+-set -e
++#!/usr/bin/env bash
++set -euo pipefail
+ 
+ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++source "$PROJECT_ROOT/engine/graphics/build-support/common.sh"
++
+ DXVK_SRC="$PROJECT_ROOT/engine/dxvk"
++require_file "$DXVK_SRC/meson.build"
++ensure_build_tools
++ensure_llvm_mingw
++require_cmd glslangValidator
++
++mkdir -p "$GRAPHICS_BUILD/cross" "$GRAPHICS_DIST/dxvk" "$GRAPHICS_DIST/manifest"
++
++echo "MacRunner graphics: DXVK Windows DLL build"
++echo "source: $DXVK_SRC"
++
++ensure_dxvk_arm64_patch() {
++  local patch="$GRAPHICS_ROOT/vendor-patches/dxvk/0001-macr-arm64-windows-portability.patch"
++  require_file "$patch"
++  if ! grep -q "lib-arm64" "$DXVK_SRC/meson.build"; then
++    git -C "$DXVK_SRC" apply "$patch"
++  fi
++}
++
++prepare_arm64_import_libs() {
++  local dst="$DXVK_SRC/lib-arm64"
++  mkdir -p "$dst"
++  if [[ -f "$DXVK_SRC/lib/d3dcompiler_43.lib" ]]; then
++    cp -f "$DXVK_SRC/lib/d3dcompiler_43.lib" "$dst/d3dcompiler_43.lib"
++  fi
++  if [[ -f "$DXVK_SRC/lib/libd3dcompiler_43.def" ]]; then
++    cp -f "$DXVK_SRC/lib/libd3dcompiler_43.def" "$dst/libd3dcompiler_43.def"
++  fi
++  cat > "$dst/vulkan-1.def" <<'DEF'
++LIBRARY vulkan-1.dll
++EXPORTS
++vkGetInstanceProcAddr
++DEF
++  "$TOOLCHAIN_BIN/aarch64-w64-mingw32-dlltool" -d "$dst/vulkan-1.def" -l "$dst/vulkan-1.lib" -D vulkan-1.dll
++}
++
++build_arch() {
++  local arch="$1"
++  local cross="$GRAPHICS_BUILD/cross/$arch-windows-clang.meson"
++  local build="$GRAPHICS_BUILD/dxvk-$arch"
++  local install="$GRAPHICS_BUILD/dxvk-install-$arch"
++  local out="$GRAPHICS_DIST/dxvk/$arch-windows"
++
++  write_windows_cross_file "$arch" "$cross" no
++  rm -rf "$build" "$install"
++  "${MESON[@]}" setup "$build" "$DXVK_SRC" \
++    --cross-file "$cross" \
++    --buildtype release \
++    -Denable_tests=false \
++    -Denable_d3d10=false \
++    --prefix "$install" --bindir . --libdir .
++  ninja -C "$build" -j"$JOBS" install
++  copy_dlls "$install" "$out" d3d9.dll d3d11.dll dxgi.dll
++}
++
++ensure_dxvk_arm64_patch
++prepare_arm64_import_libs
++build_arch aarch64
++build_arch x86_64
++write_manifest "$GRAPHICS_DIST/manifest/dxvk.json" dxvk PASS "built DXVK d3d9/d3d11/dxgi for aarch64-windows and x86_64-windows; d3d10 deferred"
+ 
+-if [ ! -d "$DXVK_SRC" ]; then
+-    echo "❌ DXVK source не найден: $DXVK_SRC"
+-    exit 1
+-fi
+-
+-# DXVK требует meson + ninja + mingw-w64
+-for tool in meson ninja x86_64-w64-mingw32-gcc; do
+-    if ! command -v "$tool" &> /dev/null; then
+-        echo "❌ Не установлен: $tool"
+-        echo "   Запусти: brew install meson ninja mingw-w64"
+-        exit 1
+-    fi
+-done
+-
+-echo "🔧 MacRunner: сборка DXVK"
+-echo "📁 Source: $DXVK_SRC"
+-echo ""
+-
+-cd "$DXVK_SRC"
+-
+-# Сборка для x86_64 (под Windows-target внутри Wine)
+-if [ -f "package-release.sh" ]; then
+-    echo "🔨 Использую DXVK package-release.sh..."
+-    ./package-release.sh master /tmp/dxvk-build --no-package 2>&1 | tail -20
+-elif [ -f "build-win64.txt" ]; then
+-    BUILD_DIR="$DXVK_SRC/build-win64"
+-    rm -rf "$BUILD_DIR"
+-    meson setup "$BUILD_DIR" --cross-file build-win64.txt --buildtype release 2>&1 | tail -10
+-    cd "$BUILD_DIR"
+-    ninja 2>&1 | tail -10
+-else
+-    echo "❌ Не нашёл build instruction в DXVK"
+-    ls
+-    exit 1
+-fi
+-
+-echo ""
+-echo "✅ DXVK собран"
++echo "DXVK PASS: $GRAPHICS_DIST/dxvk"

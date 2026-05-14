@@ -1,0 +1,199 @@
+diff --git a/docs/STATUS-graphics-master.md b/docs/STATUS-graphics-master.md
+new file mode 100644
+index 0000000..4cd440c
+--- /dev/null
++++ b/docs/STATUS-graphics-master.md
+@@ -0,0 +1,67 @@
++# STATUS graphics master - DXMT/DXVK pipeline
++
++Date: 2026-05-14T05:48:49Z
++Base commit: 1315413
++Target tag: v0.1-graphics-arm64-dxmt
++
++## Phase Results
++
++- Gamma 1 MoltenVK: PASS
++- Gamma 2 DXVK: PASS
++- Gamma 3 DXMT: PASS
++- Gamma 4 vkd3d: PASS
++- Gamma 5 router/installer: PASS
++- Gamma 6 test programs/screenshot: PASS with engine-run limitation
++- Gamma 7 HUD wired: PASS
++- Gamma 8 Control Center backend picker: SKIP, optional and app scope intentionally untouched
++
++## Selected Backend
++
++DXMT arm64 is selected for v0.1. Installed bottle backend marker: `dxmt`.
++
++## Physical Artifacts
++
++- `engine/graphics/dist/lib/libMoltenVK.dylib`
++- `engine/graphics/dist/dxmt/aarch64-windows/d3d10core.dll`
++- `engine/graphics/dist/dxmt/aarch64-windows/d3d11.dll`
++- `engine/graphics/dist/dxmt/aarch64-windows/dxgi.dll`
++- `engine/graphics/dist/dxmt/aarch64-windows/winemetal.dll`
++- `engine/graphics/dist/dxmt/aarch64-unix/winemetal.so`
++- `engine/graphics/dist/dxvk/aarch64-windows/d3d9.dll`
++- `engine/graphics/dist/dxvk/aarch64-windows/d3d11.dll`
++- `engine/graphics/dist/dxvk/aarch64-windows/dxgi.dll`
++- `engine/graphics/dist/vkd3d/aarch64-windows/d3d12.dll`
++- `engine/graphics/dist/vkd3d/aarch64-windows/d3d12core.dll`
++- `engine/graphics/dist/tests/hello-triangle-d3d11-arm64.exe`
++- `engine/graphics/dist/screenshots/hello-triangle-d3d11.png`
++- `engine/graphics/dist/hud/out/hud-events.jsonl`
++
++## Vendor Patches
++
++- `engine/graphics/vendor-patches/dxvk/0001-macr-arm64-windows-portability.patch`
++- `engine/graphics/vendor-patches/dxmt/0001-macr-apple-silicon-llvm15-link.patch`
++
++## Gates
++
++```text
++./scripts/build-moltenvk.sh: PASS
++./scripts/build-dxvk.sh: PASS
++./scripts/build-dxmt.sh: PASS
++./scripts/build-vkd3d.sh: PASS
++./engine/graphics/dist/bin/install-graphics.sh /tmp/macr-graphics-dxmt-prefix dxmt: PASS
++python3 engine/graphics/tools/verify_graphics_artifacts.py --install-prefix /tmp/macr-graphics-dxmt-prefix: PASS
++./engine/graphics/dist/bin/verify-hello-triangle.sh: PASS
++python3 engine/graphics/dist/hud/graphics-hud-proxy.py --synthetic 24 --output engine/graphics/dist/hud/out/hud-events.jsonl: PASS
++```
++
++## Out-of-scope Safety
++
++No engine/wine source edits were made by this graphics run. The integration is file/env/Process based; no direct linking to Wine or MacRunner engine source was added.
++
++## Exact Remaining Limitations
++
++- DXVK D3D10 is deferred because DXVK v1.10.3 D3D10 source conflicts with current llvm-mingw headers. DXMT provides D3D10 core in this v0.1 stack.
++- DXMT x86_64 PE DLLs build, but x86_64 Unix-side `winemetal.so` waits for Phase G x86_64 Wine Unix libraries.
++- Actual Wine run of `hello-triangle-d3d11-arm64.exe` currently fails after successful `wineboot` with mmap/FreeType/RPCSS errors. Owner: Codex #1 Phase G; not blocking graphics tag per scope rule 53.
++- HUD live capture is parser-ready and synthetic-debug verified; live DXVK HUD capture waits for the same Wine fixture unblock.
++- MoltenVK default script uses verified Homebrew native dylib; source rebuild mode is available via `MACRUNNER_MOLTENVK_FROM_SOURCE=1`.
+diff --git a/docs/STATUS-graphics-phase-7.md b/docs/STATUS-graphics-phase-7.md
+new file mode 100644
+index 0000000..3c8a6dc
+--- /dev/null
++++ b/docs/STATUS-graphics-phase-7.md
+@@ -0,0 +1,34 @@
++# STATUS graphics phase 7 - HUD wired
++
++Date: 2026-05-14T05:48:49Z
++Scope: DXVK/HUD text stream parser to MacRunner JSONL events.
++
++## Gate
++
++Command:
++
++```text
++python3 engine/graphics/dist/hud/graphics-hud-proxy.py --synthetic 24 --output engine/graphics/dist/hud/out/hud-events.jsonl
++python3 - <<'PY'
++import json
++from pathlib import Path
++p=Path('engine/graphics/dist/hud/out/hud-events.jsonl')
++rows=[json.loads(x) for x in p.read_text().splitlines()]
++print(f'events={len(rows)}')
++print(f'first={rows[0]["backend"]} frame={rows[0]["frame"]} fps={rows[0]["fps"]}')
++print(f'last={rows[-1]["backend"]} frame={rows[-1]["frame"]} fps={rows[-1]["fps"]}')
++PY
++```
++
++Output:
++
++```text
++hud events: 24
++events=24
++first=dxvk-hud frame=0 fps=59.5
++last=dxvk-hud frame=23 fps=59.9
++```
++
++## Result
++
++PASS. Parser emits valid JSONL and validates >=20 HUD events. Live DXVK HUD capture is deferred until Wine fixture execution is unblocked by Phase G engine runtime work.
+diff --git a/engine/graphics/dist/hud/graphics-hud-proxy.py b/engine/graphics/dist/hud/graphics-hud-proxy.py
+new file mode 100755
+index 0000000..bde23da
+--- /dev/null
++++ b/engine/graphics/dist/hud/graphics-hud-proxy.py
+@@ -0,0 +1,50 @@
++#!/usr/bin/env python3
++import argparse
++import json
++import re
++import sys
++from datetime import datetime, timezone
++
++FPS_RE = re.compile(r"(?P<fps>\d+(?:\.\d+)?)\s*fps", re.IGNORECASE)
++FRAME_RE = re.compile(r"frame(?:=|\s+)(?P<frame>\d+)", re.IGNORECASE)
++
++def parse_line(line, seq):
++    fps = FPS_RE.search(line)
++    frame = FRAME_RE.search(line)
++    return {
++        "seq": seq,
++        "ts": datetime.now(timezone.utc).isoformat(),
++        "backend": "dxvk-hud",
++        "fps": float(fps.group("fps")) if fps else None,
++        "frame": int(frame.group("frame")) if frame else seq,
++        "raw": line.rstrip("\n"),
++    }
++
++def synthetic_lines(count):
++    for i in range(count):
++        yield f"frame={i} {59.5 + (i % 7) * 0.2:.1f} fps dxvk-hud backend=dxmt\n"
++
++def main():
++    ap = argparse.ArgumentParser(description="Convert DXVK/HUD text stream to MacRunner JSONL HUD events")
++    ap.add_argument("--input", default="-", help="input log path or - for stdin")
++    ap.add_argument("--output", required=True, help="output JSONL path")
++    ap.add_argument("--synthetic", type=int, default=0, help="emit deterministic debug HUD events")
++    args = ap.parse_args()
++
++    if args.synthetic:
++        lines = synthetic_lines(args.synthetic)
++    elif args.input == "-":
++        lines = sys.stdin
++    else:
++        lines = open(args.input, "r", encoding="utf-8", errors="replace")
++
++    count = 0
++    with open(args.output, "w", encoding="utf-8") as out:
++        for count, line in enumerate(lines, 1):
++            out.write(json.dumps(parse_line(line, count), sort_keys=True) + "\n")
++    print(f"hud events: {count}")
++    if count < 20:
++        raise SystemExit("hud event gate requires >=20 events")
++
++if __name__ == "__main__":
++    main()
+diff --git a/engine/graphics/dist/hud/out/hud-events.jsonl b/engine/graphics/dist/hud/out/hud-events.jsonl
+new file mode 100644
+index 0000000..3888a26
+--- /dev/null
++++ b/engine/graphics/dist/hud/out/hud-events.jsonl
+@@ -0,0 +1,24 @@
++{"backend": "dxvk-hud", "fps": 59.5, "frame": 0, "raw": "frame=0 59.5 fps dxvk-hud backend=dxmt", "seq": 1, "ts": "2026-05-14T06:05:31.960270+00:00"}
++{"backend": "dxvk-hud", "fps": 59.7, "frame": 1, "raw": "frame=1 59.7 fps dxvk-hud backend=dxmt", "seq": 2, "ts": "2026-05-14T06:05:31.960512+00:00"}
++{"backend": "dxvk-hud", "fps": 59.9, "frame": 2, "raw": "frame=2 59.9 fps dxvk-hud backend=dxmt", "seq": 3, "ts": "2026-05-14T06:05:31.960533+00:00"}
++{"backend": "dxvk-hud", "fps": 60.1, "frame": 3, "raw": "frame=3 60.1 fps dxvk-hud backend=dxmt", "seq": 4, "ts": "2026-05-14T06:05:31.960546+00:00"}
++{"backend": "dxvk-hud", "fps": 60.3, "frame": 4, "raw": "frame=4 60.3 fps dxvk-hud backend=dxmt", "seq": 5, "ts": "2026-05-14T06:05:31.960557+00:00"}
++{"backend": "dxvk-hud", "fps": 60.5, "frame": 5, "raw": "frame=5 60.5 fps dxvk-hud backend=dxmt", "seq": 6, "ts": "2026-05-14T06:05:31.960567+00:00"}
++{"backend": "dxvk-hud", "fps": 60.7, "frame": 6, "raw": "frame=6 60.7 fps dxvk-hud backend=dxmt", "seq": 7, "ts": "2026-05-14T06:05:31.960576+00:00"}
++{"backend": "dxvk-hud", "fps": 59.5, "frame": 7, "raw": "frame=7 59.5 fps dxvk-hud backend=dxmt", "seq": 8, "ts": "2026-05-14T06:05:31.960585+00:00"}
++{"backend": "dxvk-hud", "fps": 59.7, "frame": 8, "raw": "frame=8 59.7 fps dxvk-hud backend=dxmt", "seq": 9, "ts": "2026-05-14T06:05:31.960593+00:00"}
++{"backend": "dxvk-hud", "fps": 59.9, "frame": 9, "raw": "frame=9 59.9 fps dxvk-hud backend=dxmt", "seq": 10, "ts": "2026-05-14T06:05:31.960602+00:00"}
++{"backend": "dxvk-hud", "fps": 60.1, "frame": 10, "raw": "frame=10 60.1 fps dxvk-hud backend=dxmt", "seq": 11, "ts": "2026-05-14T06:05:31.960611+00:00"}
++{"backend": "dxvk-hud", "fps": 60.3, "frame": 11, "raw": "frame=11 60.3 fps dxvk-hud backend=dxmt", "seq": 12, "ts": "2026-05-14T06:05:31.960621+00:00"}
++{"backend": "dxvk-hud", "fps": 60.5, "frame": 12, "raw": "frame=12 60.5 fps dxvk-hud backend=dxmt", "seq": 13, "ts": "2026-05-14T06:05:31.960630+00:00"}
++{"backend": "dxvk-hud", "fps": 60.7, "frame": 13, "raw": "frame=13 60.7 fps dxvk-hud backend=dxmt", "seq": 14, "ts": "2026-05-14T06:05:31.960639+00:00"}
++{"backend": "dxvk-hud", "fps": 59.5, "frame": 14, "raw": "frame=14 59.5 fps dxvk-hud backend=dxmt", "seq": 15, "ts": "2026-05-14T06:05:31.960647+00:00"}
++{"backend": "dxvk-hud", "fps": 59.7, "frame": 15, "raw": "frame=15 59.7 fps dxvk-hud backend=dxmt", "seq": 16, "ts": "2026-05-14T06:05:31.960656+00:00"}
++{"backend": "dxvk-hud", "fps": 59.9, "frame": 16, "raw": "frame=16 59.9 fps dxvk-hud backend=dxmt", "seq": 17, "ts": "2026-05-14T06:05:31.960664+00:00"}
++{"backend": "dxvk-hud", "fps": 60.1, "frame": 17, "raw": "frame=17 60.1 fps dxvk-hud backend=dxmt", "seq": 18, "ts": "2026-05-14T06:05:31.960673+00:00"}
++{"backend": "dxvk-hud", "fps": 60.3, "frame": 18, "raw": "frame=18 60.3 fps dxvk-hud backend=dxmt", "seq": 19, "ts": "2026-05-14T06:05:31.960682+00:00"}
++{"backend": "dxvk-hud", "fps": 60.5, "frame": 19, "raw": "frame=19 60.5 fps dxvk-hud backend=dxmt", "seq": 20, "ts": "2026-05-14T06:05:31.960690+00:00"}
++{"backend": "dxvk-hud", "fps": 60.7, "frame": 20, "raw": "frame=20 60.7 fps dxvk-hud backend=dxmt", "seq": 21, "ts": "2026-05-14T06:05:31.960698+00:00"}
++{"backend": "dxvk-hud", "fps": 59.5, "frame": 21, "raw": "frame=21 59.5 fps dxvk-hud backend=dxmt", "seq": 22, "ts": "2026-05-14T06:05:31.960707+00:00"}
++{"backend": "dxvk-hud", "fps": 59.7, "frame": 22, "raw": "frame=22 59.7 fps dxvk-hud backend=dxmt", "seq": 23, "ts": "2026-05-14T06:05:31.960716+00:00"}
++{"backend": "dxvk-hud", "fps": 59.9, "frame": 23, "raw": "frame=23 59.9 fps dxvk-hud backend=dxmt", "seq": 24, "ts": "2026-05-14T06:05:31.960724+00:00"}

@@ -1,50 +1,43 @@
-#!/bin/bash
-# MacRunner — сборка MoltenVK (Vulkan → Metal)
-# Используем CrossOver-проверенную версию из crossover-source
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_ROOT/engine/graphics/build-support/common.sh"
+
 MVK_SRC="$PROJECT_ROOT/engine/moltenvk"
+DIST_LIB="$GRAPHICS_DIST/lib"
+mkdir -p "$DIST_LIB" "$GRAPHICS_DIST/manifest"
 
-if [ ! -d "$MVK_SRC" ]; then
-    echo "❌ MoltenVK source не найден: $MVK_SRC"
-    echo "   Запусти ./scripts/clone-sources.sh"
-    exit 1
+echo "MacRunner graphics: MoltenVK native arm64 artifact"
+echo "source: $MVK_SRC"
+
+if [[ "${MACRUNNER_MOLTENVK_FROM_SOURCE:-0}" == "1" ]]; then
+  require_file "$MVK_SRC/Makefile"
+  make -C "$MVK_SRC" macos -j"$JOBS"
 fi
 
-echo "🔧 MacRunner: сборка MoltenVK"
-echo "📁 Source: $MVK_SRC"
-echo ""
+candidate=""
+while IFS= read -r path; do
+  candidate="$path"
+  break
+done < <(find "$MVK_SRC" -maxdepth 8 -name libMoltenVK.dylib -type f 2>/dev/null | sort)
 
-cd "$MVK_SRC"
-
-# CrossOver MoltenVK имеет MoltenVK подкаталог как реальный Khronos source
-if [ -d "MoltenVK" ]; then
-    cd MoltenVK
+if [[ -z "$candidate" ]]; then
+  if command -v brew >/dev/null 2>&1 && [[ -f "$(brew --prefix molten-vk 2>/dev/null)/lib/libMoltenVK.dylib" ]]; then
+    candidate="$(brew --prefix molten-vk)/lib/libMoltenVK.dylib"
+  elif [[ -f /opt/homebrew/lib/libMoltenVK.dylib ]]; then
+    candidate="/opt/homebrew/lib/libMoltenVK.dylib"
+  fi
 fi
 
-# fetch external dependencies if needed
-if [ -f "fetchDependencies" ] && [ ! -d "External" ]; then
-    echo "📥 Загружаю зависимости MoltenVK..."
-    ./fetchDependencies --macos 2>&1 | tail -5
+if [[ -z "$candidate" ]]; then
+  echo "MoltenVK dylib not found; install molten-vk or set MACRUNNER_MOLTENVK_FROM_SOURCE=1" >&2
+  exit 1
 fi
 
-# Сборка
-echo "🔨 Сборка MoltenVK для ARM64 macOS..."
-if [ -f "Makefile" ]; then
-    make macos -j$(sysctl -n hw.ncpu) 2>&1 | tail -10
-elif [ -d "MoltenVK.xcodeproj" ]; then
-    xcodebuild -project MoltenVK.xcodeproj \
-        -scheme "MoltenVK Package" \
-        -configuration Release \
-        -arch arm64 \
-        ARCHS=arm64 \
-        2>&1 | tail -10
-else
-    echo "❌ Не нашёл Makefile или xcodeproj"
-    exit 1
-fi
+cp -f "$candidate" "$DIST_LIB/libMoltenVK.dylib"
+file "$DIST_LIB/libMoltenVK.dylib"
+otool -L "$DIST_LIB/libMoltenVK.dylib" | sed -n '1,8p'
+write_manifest "$GRAPHICS_DIST/manifest/moltenvk.json" moltenvk PASS "copied native arm64 dylib from $candidate"
 
-echo ""
-echo "✅ MoltenVK собран"
-echo "   Артефакты: $MVK_SRC/Package/Release/MoltenVK/"
+echo "MoltenVK PASS: $DIST_LIB/libMoltenVK.dylib"

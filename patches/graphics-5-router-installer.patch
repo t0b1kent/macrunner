@@ -1,0 +1,157 @@
+diff --git a/docs/STATUS-graphics-phase-5.md b/docs/STATUS-graphics-phase-5.md
+new file mode 100644
+index 0000000..02e24bd
+--- /dev/null
++++ b/docs/STATUS-graphics-phase-5.md
+@@ -0,0 +1,30 @@
++# STATUS graphics phase 5 - Router and bottle installer
++
++Date: 2026-05-14T05:48:49Z
++Scope: backend installer/router using per-bottle DLL copy plus env marker.
++
++## Gate
++
++Command:
++
++```text
++rm -rf /tmp/macr-graphics-dxmt-prefix && mkdir -p /tmp/macr-graphics-dxmt-prefix
++./engine/graphics/dist/bin/install-graphics.sh /tmp/macr-graphics-dxmt-prefix dxmt
++python3 engine/graphics/tools/verify_graphics_artifacts.py --install-prefix /tmp/macr-graphics-dxmt-prefix
++```
++
++Output:
++
++```text
++/tmp/macr-graphics-dxmt-prefix/drive_c/windows/system32/d3d10core.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/tmp/macr-graphics-dxmt-prefix/drive_c/windows/system32/d3d11.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/tmp/macr-graphics-dxmt-prefix/drive_c/windows/system32/dxgi.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++/tmp/macr-graphics-dxmt-prefix/drive_c/windows/system32/winemetal.dll: PE32+ executable (DLL) (GUI) Aarch64, for MS Windows
++graphics backend installed: dxmt
++dxmt Metal strings: 71
++installed backend: dxmt
++```
++
++## Result
++
++PASS. `macr-graphics.env` and `macr-graphics-backend` are written in the bottle. No direct engine linking is introduced; launcher integration remains Process/env based.
+diff --git a/engine/graphics/dist/bin/install-graphics.sh b/engine/graphics/dist/bin/install-graphics.sh
+new file mode 100755
+index 0000000..d8afb98
+--- /dev/null
++++ b/engine/graphics/dist/bin/install-graphics.sh
+@@ -0,0 +1,63 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++if [[ $# -lt 2 ]]; then
++  echo "usage: install-graphics.sh <wine-prefix> <dxmt|dxvk|vkd3d|auto|wined3d>" >&2
++  exit 2
++fi
++
++PREFIX="$1"
++BACKEND="$2"
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++DIST_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
++SYSTEM32="$PREFIX/drive_c/windows/system32"
++SYSWOW64="$PREFIX/drive_c/windows/syswow64"
++mkdir -p "$SYSTEM32" "$SYSWOW64"
++
++write_env() {
++  local backend="$1"
++  local overrides="$2"
++  cat > "$PREFIX/macr-graphics.env" <<ENV
++MACRUNNER_GRAPHICS_BACKEND=$backend
++WINEDLLOVERRIDES=$overrides
++ENV
++  printf '%s\n' "$backend" > "$PREFIX/macr-graphics-backend"
++}
++
++copy_backend() {
++  local src="$1"
++  shift
++  local dll
++  for dll in "$@"; do
++    if [[ ! -f "$src/$dll" ]]; then
++      echo "missing backend dll: $src/$dll" >&2
++      exit 1
++    fi
++    cp -f "$src/$dll" "$SYSTEM32/$dll"
++    file "$SYSTEM32/$dll"
++  done
++}
++
++case "$BACKEND" in
++  auto|dxmt)
++    copy_backend "$DIST_ROOT/dxmt/aarch64-windows" d3d10core.dll d3d11.dll dxgi.dll winemetal.dll
++    write_env dxmt "d3d10core,d3d11,dxgi,winemetal=n,b"
++    ;;
++  dxvk)
++    copy_backend "$DIST_ROOT/dxvk/aarch64-windows" d3d9.dll d3d11.dll dxgi.dll
++    write_env dxvk "d3d9,d3d11,dxgi=n,b"
++    ;;
++  vkd3d)
++    copy_backend "$DIST_ROOT/vkd3d/aarch64-windows" d3d12.dll d3d12core.dll
++    write_env vkd3d "d3d12,d3d12core=n,b"
++    ;;
++  wined3d)
++    write_env wined3d ""
++    ;;
++  *)
++    echo "unknown backend: $BACKEND" >&2
++    exit 2
++    ;;
++esac
++
++echo "graphics backend installed: $(cat "$PREFIX/macr-graphics-backend")"
+diff --git a/engine/graphics/tools/verify_graphics_artifacts.py b/engine/graphics/tools/verify_graphics_artifacts.py
+new file mode 100755
+index 0000000..f8e14be
+--- /dev/null
++++ b/engine/graphics/tools/verify_graphics_artifacts.py
+@@ -0,0 +1,46 @@
++#!/usr/bin/env python3
++from __future__ import annotations
++import argparse
++import os
++import subprocess
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[3]
++DIST = ROOT / "engine" / "graphics" / "dist"
++
++REQUIRED = [
++    DIST / "lib" / "libMoltenVK.dylib",
++    DIST / "dxvk" / "aarch64-windows" / "d3d11.dll",
++    DIST / "dxmt" / "aarch64-windows" / "d3d11.dll",
++    DIST / "dxmt" / "aarch64-unix" / "winemetal.so",
++    DIST / "vkd3d" / "aarch64-windows" / "d3d12.dll",
++]
++
++def file_text(path: Path) -> str:
++    return subprocess.check_output(["file", str(path)], text=True)
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--install-prefix")
++    args = ap.parse_args()
++    missing = [str(p) for p in REQUIRED if not p.exists()]
++    if missing:
++        print("missing artifacts:")
++        print("\n".join(missing))
++        return 1
++    for path in REQUIRED:
++        print(file_text(path).strip())
++    dxmt_strings = subprocess.check_output(["strings", str(DIST / "dxmt" / "aarch64-windows" / "d3d11.dll")], text=True, errors="ignore")
++    print(f"dxmt Metal strings: {dxmt_strings.count('Metal')}")
++    if "Metal" not in dxmt_strings:
++        return 1
++    if args.install_prefix:
++        marker = Path(args.install_prefix) / "macr-graphics-backend"
++        if not marker.exists():
++            print(f"missing install marker: {marker}")
++            return 1
++        print(f"installed backend: {marker.read_text().strip()}")
++    return 0
++
++if __name__ == "__main__":
++    raise SystemExit(main())

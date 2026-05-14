@@ -1,0 +1,6 @@
+{
+  "component": "dxvk",
+  "details": "built DXVK d3d9/d3d11/dxgi for aarch64-windows and x86_64-windows; d3d10 deferred",
+  "generated_at": "2026-05-14T06:00:53.214961+00:00",
+  "status": "PASS"
+}

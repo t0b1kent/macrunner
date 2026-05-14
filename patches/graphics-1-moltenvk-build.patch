@@ -1,0 +1,278 @@
+diff --git a/docs/STATUS-graphics-phase-1.md b/docs/STATUS-graphics-phase-1.md
+new file mode 100644
+index 0000000..0c2a406
+--- /dev/null
++++ b/docs/STATUS-graphics-phase-1.md
+@@ -0,0 +1,30 @@
++# STATUS graphics phase 1 - MoltenVK
++
++Date: 2026-05-14T05:48:49Z
++Scope: MoltenVK native arm64 artifact for Vulkan-to-Metal layer.
++
++## Gate
++
++Command:
++
++```text
++./scripts/build-moltenvk.sh
++```
++
++Output:
++
++```text
++MacRunner graphics: MoltenVK native arm64 artifact
++source: /Volumes/MacOS/MacRunner/engine/moltenvk
++/Volumes/MacOS/MacRunner/engine/graphics/dist/lib/libMoltenVK.dylib: Mach-O 64-bit dynamically linked shared library arm64
++/System/Library/Frameworks/Metal.framework/Versions/A/Metal
++MoltenVK PASS: /Volumes/MacOS/MacRunner/engine/graphics/dist/lib/libMoltenVK.dylib
++```
++
++## Result
++
++PASS. Physical artifact exists at `engine/graphics/dist/lib/libMoltenVK.dylib`.
++
++## Limitation
++
++Default script copies the installed native Homebrew MoltenVK dylib. Source rebuild is supported by `MACRUNNER_MOLTENVK_FROM_SOURCE=1 ./scripts/build-moltenvk.sh` but was not required for this pass because the native dylib was present and verified.
+diff --git a/engine/graphics/build-support/common.sh b/engine/graphics/build-support/common.sh
+new file mode 100755
+index 0000000..2d8b62a
+--- /dev/null
++++ b/engine/graphics/build-support/common.sh
+@@ -0,0 +1,137 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++if [[ -z "${PROJECT_ROOT:-}" ]]; then
++  PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
++fi
++
++GRAPHICS_ROOT="$PROJECT_ROOT/engine/graphics"
++GRAPHICS_BUILD="$GRAPHICS_ROOT/build"
++GRAPHICS_DIST="$GRAPHICS_ROOT/dist"
++TOOLCHAIN_ROOT="$PROJECT_ROOT/engine/toolchain/llvm-mingw-20260505-ucrt-macos-universal"
++TOOLCHAIN_BIN="$TOOLCHAIN_ROOT/bin"
++MESON=(python3 -m mesonbuild.mesonmain)
++JOBS="${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
++
++require_file() {
++  local path="$1"
++  if [[ ! -e "$path" ]]; then
++    echo "missing: $path" >&2
++    exit 1
++  fi
++}
++
++require_cmd() {
++  local cmd="$1"
++  if ! command -v "$cmd" >/dev/null 2>&1; then
++    echo "missing command: $cmd" >&2
++    exit 1
++  fi
++}
++
++require_meson() {
++  python3 - <<'PY'
++import importlib.util, sys
++sys.exit(0 if importlib.util.find_spec('mesonbuild') else 1)
++PY
++}
++
++ensure_build_tools() {
++  require_cmd ninja
++  require_meson || {
++    echo "missing Python mesonbuild module; install with: python3 -m pip install --user meson" >&2
++    exit 1
++  }
++}
++
++ensure_llvm_mingw() {
++  require_file "$TOOLCHAIN_BIN/aarch64-w64-mingw32-clang"
++  require_file "$TOOLCHAIN_BIN/x86_64-w64-mingw32-clang"
++}
++
++triplet_for_arch() {
++  case "$1" in
++    aarch64) echo "aarch64-w64-mingw32" ;;
++    x86_64) echo "x86_64-w64-mingw32" ;;
++    *) echo "unsupported arch: $1" >&2; exit 1 ;;
++  esac
++}
++
++cpu_family_for_arch() {
++  case "$1" in
++    aarch64) echo "aarch64" ;;
++    x86_64) echo "x86_64" ;;
++    *) echo "unsupported arch: $1" >&2; exit 1 ;;
++  esac
++}
++
++write_windows_cross_file() {
++  local arch="$1"
++  local out="$2"
++  local include_widl_fallback="${3:-no}"
++  local triplet cpu_family
++  triplet="$(triplet_for_arch "$arch")"
++  cpu_family="$(cpu_family_for_arch "$arch")"
++  mkdir -p "$(dirname "$out")"
++  cat > "$out" <<CROSS
++[binaries]
++c = '$TOOLCHAIN_BIN/$triplet-clang'
++cpp = '$TOOLCHAIN_BIN/$triplet-clang++'
++ar = '$TOOLCHAIN_BIN/$triplet-ar'
++strip = '$TOOLCHAIN_BIN/$triplet-strip'
++windres = '$TOOLCHAIN_BIN/$triplet-windres'
++CROSS
++  if [[ "$include_widl_fallback" == "yes" ]]; then
++    cat >> "$out" <<CROSS
++widl-mingw-tools-fallback = '$TOOLCHAIN_BIN/$triplet-widl'
++CROSS
++  else
++    cat >> "$out" <<CROSS
++widl = '$TOOLCHAIN_BIN/$triplet-widl'
++CROSS
++  fi
++  cat >> "$out" <<CROSS
++
++[properties]
++needs_exe_wrapper = true
++
++[host_machine]
++system = 'windows'
++cpu_family = '$cpu_family'
++cpu = '$cpu_family'
++endian = 'little'
++CROSS
++}
++
++copy_dlls() {
++  local src="$1"
++  local dst="$2"
++  shift 2
++  mkdir -p "$dst"
++  local dll
++  for dll in "$@"; do
++    require_file "$src/$dll"
++    cp -f "$src/$dll" "$dst/$dll"
++    file "$dst/$dll"
++  done
++}
++
++write_manifest() {
++  local path="$1"
++  local component="$2"
++  local status="$3"
++  local details="$4"
++  mkdir -p "$(dirname "$path")"
++  python3 - "$path" "$component" "$status" "$details" <<'PY'
++import datetime, json, sys
++path, component, status, details = sys.argv[1:]
++with open(path, 'w', encoding='utf-8') as f:
++    json.dump({
++        'component': component,
++        'status': status,
++        'details': details,
++        'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
++    }, f, indent=2, sort_keys=True)
++    f.write('\n')
++PY
++}
+diff --git a/engine/graphics/dist/manifest/moltenvk.json b/engine/graphics/dist/manifest/moltenvk.json
+new file mode 100644
+index 0000000..45a849c
+--- /dev/null
++++ b/engine/graphics/dist/manifest/moltenvk.json
+@@ -0,0 +1,6 @@
++{
++  "component": "moltenvk",
++  "details": "copied native arm64 dylib from /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib",
++  "generated_at": "2026-05-14T05:58:30.955772+00:00",
++  "status": "PASS"
++}
+diff --git a/scripts/build-moltenvk.sh b/scripts/build-moltenvk.sh
+index 366d2a4..a6be10e 100755
+--- a/scripts/build-moltenvk.sh
++++ b/scripts/build-moltenvk.sh
+@@ -1,50 +1,43 @@
+-#!/bin/bash
+-# MacRunner — сборка MoltenVK (Vulkan → Metal)
+-# Используем CrossOver-проверенную версию из crossover-source
+-set -e
++#!/usr/bin/env bash
++set -euo pipefail
+ 
+ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+-MVK_SRC="$PROJECT_ROOT/engine/moltenvk"
+-
+-if [ ! -d "$MVK_SRC" ]; then
+-    echo "❌ MoltenVK source не найден: $MVK_SRC"
+-    echo "   Запусти ./scripts/clone-sources.sh"
+-    exit 1
+-fi
++source "$PROJECT_ROOT/engine/graphics/build-support/common.sh"
+ 
+-echo "🔧 MacRunner: сборка MoltenVK"
+-echo "📁 Source: $MVK_SRC"
+-echo ""
++MVK_SRC="$PROJECT_ROOT/engine/moltenvk"
++DIST_LIB="$GRAPHICS_DIST/lib"
++mkdir -p "$DIST_LIB" "$GRAPHICS_DIST/manifest"
+ 
+-cd "$MVK_SRC"
++echo "MacRunner graphics: MoltenVK native arm64 artifact"
++echo "source: $MVK_SRC"
+ 
+-# CrossOver MoltenVK имеет MoltenVK подкаталог как реальный Khronos source
+-if [ -d "MoltenVK" ]; then
+-    cd MoltenVK
++if [[ "${MACRUNNER_MOLTENVK_FROM_SOURCE:-0}" == "1" ]]; then
++  require_file "$MVK_SRC/Makefile"
++  make -C "$MVK_SRC" macos -j"$JOBS"
+ fi
+ 
+-# fetch external dependencies if needed
+-if [ -f "fetchDependencies" ] && [ ! -d "External" ]; then
+-    echo "📥 Загружаю зависимости MoltenVK..."
+-    ./fetchDependencies --macos 2>&1 | tail -5
++candidate=""
++while IFS= read -r path; do
++  candidate="$path"
++  break
++done < <(find "$MVK_SRC" -maxdepth 8 -name libMoltenVK.dylib -type f 2>/dev/null | sort)
++
++if [[ -z "$candidate" ]]; then
++  if command -v brew >/dev/null 2>&1 && [[ -f "$(brew --prefix molten-vk 2>/dev/null)/lib/libMoltenVK.dylib" ]]; then
++    candidate="$(brew --prefix molten-vk)/lib/libMoltenVK.dylib"
++  elif [[ -f /opt/homebrew/lib/libMoltenVK.dylib ]]; then
++    candidate="/opt/homebrew/lib/libMoltenVK.dylib"
++  fi
+ fi
+ 
+-# Сборка
+-echo "🔨 Сборка MoltenVK для ARM64 macOS..."
+-if [ -f "Makefile" ]; then
+-    make macos -j$(sysctl -n hw.ncpu) 2>&1 | tail -10
+-elif [ -d "MoltenVK.xcodeproj" ]; then
+-    xcodebuild -project MoltenVK.xcodeproj \
+-        -scheme "MoltenVK Package" \
+-        -configuration Release \
+-        -arch arm64 \
+-        ARCHS=arm64 \
+-        2>&1 | tail -10
+-else
+-    echo "❌ Не нашёл Makefile или xcodeproj"
+-    exit 1
++if [[ -z "$candidate" ]]; then
++  echo "MoltenVK dylib not found; install molten-vk or set MACRUNNER_MOLTENVK_FROM_SOURCE=1" >&2
++  exit 1
+ fi
+ 
+-echo ""
+-echo "✅ MoltenVK собран"
+-echo "   Артефакты: $MVK_SRC/Package/Release/MoltenVK/"
++cp -f "$candidate" "$DIST_LIB/libMoltenVK.dylib"
++file "$DIST_LIB/libMoltenVK.dylib"
++otool -L "$DIST_LIB/libMoltenVK.dylib" | sed -n '1,8p'
++write_manifest "$GRAPHICS_DIST/manifest/moltenvk.json" moltenvk PASS "copied native arm64 dylib from $candidate"
++
++echo "MoltenVK PASS: $DIST_LIB/libMoltenVK.dylib"

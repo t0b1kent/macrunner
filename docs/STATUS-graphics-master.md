@@ -11,7 +11,7 @@ Target tag: v0.1-graphics-arm64-dxmt
 - Gamma 3 DXMT: PASS
 - Gamma 4 vkd3d: PASS
 - Gamma 5 router/installer: PASS
-- Gamma 6 test programs/screenshot: PASS with engine-run limitation
+- Gamma 6 test programs/native shader validation: PASS with Wine+DXMT e2e waiting on Phase G
 - Gamma 7 HUD wired: PASS
 - Gamma 8 Control Center backend picker: SKIP, optional and app scope intentionally untouched
 
@@ -33,7 +33,7 @@ DXMT arm64 is selected for v0.1. Installed bottle backend marker: `dxmt`.
 - `engine/graphics/dist/vkd3d/aarch64-windows/d3d12.dll`
 - `engine/graphics/dist/vkd3d/aarch64-windows/d3d12core.dll`
 - `engine/graphics/dist/tests/hello-triangle-d3d11-arm64.exe`
-- `engine/graphics/dist/screenshots/hello-triangle-d3d11.png`
+- `engine/graphics/dist/screenshots/native-shader-validation.png`
 - `engine/graphics/dist/hud/out/hud-events.jsonl`
 
 ## Vendor Patches
@@ -63,5 +63,6 @@ No engine/wine source edits were made by this graphics run. The integration is f
 - DXVK D3D10 is deferred because DXVK v1.10.3 D3D10 source conflicts with current llvm-mingw headers. DXMT provides D3D10 core in this v0.1 stack.
 - DXMT x86_64 PE DLLs build, but x86_64 Unix-side `winemetal.so` waits for Phase G x86_64 Wine Unix libraries.
 - Actual Wine run of `hello-triangle-d3d11-arm64.exe` currently fails after successful `wineboot` with mmap/FreeType/RPCSS errors. Owner: Codex #1 Phase G; not blocking graphics tag per scope rule 53.
+- The current PNG is native shader validation, not a Wine+DXMT end-to-end screenshot. The future real e2e screenshot path is `engine/graphics/dist/screenshots/hello-triangle-d3d11-via-wine.png`.
 - HUD live capture is parser-ready and synthetic-debug verified; live DXVK HUD capture waits for the same Wine fixture unblock.
 - MoltenVK default script uses verified Homebrew native dylib; source rebuild mode is available via `MACRUNNER_MOLTENVK_FROM_SOURCE=1`.

@@ -7,7 +7,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 TEST_DIR="$DIST_ROOT/tests"
 SHOT_DIR="$DIST_ROOT/screenshots"
 TRACE_PPM="$PROJECT_ROOT/engine/graphics/artifacts/runtime-samples/d3d11_triangle_runtime/d3d11_triangle_runtime.ppm"
-SHOT_PNG="$SHOT_DIR/hello-triangle-d3d11.png"
+SHOT_PNG="$SHOT_DIR/native-shader-validation.png"
 mkdir -p "$TEST_DIR" "$SHOT_DIR"
 
 cp -f "$PROJECT_ROOT/tests/native-fixtures/build/d3d11_triangle_arm64.exe" "$TEST_DIR/hello-triangle-d3d11-arm64.exe"
@@ -22,7 +22,8 @@ fi
 sips -s format png "$TRACE_PPM" --out "$SHOT_PNG" >/dev/null
 python3 "$PROJECT_ROOT/engine/graphics/tools/verify_triangle_screenshot.py" "$TRACE_PPM" "$SHOT_PNG"
 
-echo "hello triangle screenshot: $SHOT_PNG"
+echo "native shader validation screenshot: $SHOT_PNG"
+echo "wine dxmt e2e screenshot: WAITING on Phase G runtime fix -> $SHOT_DIR/hello-triangle-d3d11-via-wine.png"
 
 if [[ "${MACRUNNER_RUN_WINE:-0}" == "1" ]]; then
   prefix="${WINEPREFIX:-/tmp/macr-graphics-run-prefix}"

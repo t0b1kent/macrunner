@@ -1,7 +1,7 @@
-# STATUS graphics phase 6 - Test programs and screenshot
+# STATUS graphics phase 6 - Test programs and native shader validation
 
 Date: 2026-05-14T05:48:49Z
-Scope: D3D test fixtures and Hello Triangle screenshot artifact.
+Scope: D3D test fixtures and native shader validation artifact.
 
 ## Gate
 
@@ -20,9 +20,10 @@ Output:
 ppm: /Volumes/MacOS/MacRunner/engine/graphics/artifacts/runtime-samples/d3d11_triangle_runtime/d3d11_triangle_runtime.ppm
 size: 64x64
 unique_pixels: 1153
-png: /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/hello-triangle-d3d11.png
+png: /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/native-shader-validation.png
 png_bytes: 1294
-hello triangle screenshot: /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/hello-triangle-d3d11.png
+native shader validation screenshot: /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/native-shader-validation.png
+wine dxmt e2e screenshot: WAITING on Phase G runtime fix -> /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/hello-triangle-d3d11-via-wine.png
 ```
 
 ## Actual Wine fixture attempt
@@ -48,4 +49,4 @@ wine: Unhandled exception 0x00000000 in thread 24
 
 ## Result
 
-PASS for fixture artifacts and screenshot artifact. Actual Wine execution is blocked by current engine runtime regression/dependency, owner: Codex #1 Phase G, not blocking graphics tag per scope rule 53.
+PASS for fixture artifacts and native shader validation. This screenshot is not a Wine+DXMT end-to-end capture. Actual Wine execution is blocked by current engine runtime regression/dependency, owner: Codex #1 Phase G, not blocking graphics tag per scope rule 53. The future Wine+DXMT screenshot path is `engine/graphics/dist/screenshots/hello-triangle-d3d11-via-wine.png`.

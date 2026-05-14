@@ -1,13 +1,13 @@
 diff --git a/docs/STATUS-graphics-phase-6.md b/docs/STATUS-graphics-phase-6.md
 new file mode 100644
-index 0000000..88ae1ca
+index 0000000..56ea93e
 --- /dev/null
 +++ b/docs/STATUS-graphics-phase-6.md
-@@ -0,0 +1,51 @@
-+# STATUS graphics phase 6 - Test programs and screenshot
+@@ -0,0 +1,52 @@
++# STATUS graphics phase 6 - Test programs and native shader validation
 +
 +Date: 2026-05-14T05:48:49Z
-+Scope: D3D test fixtures and Hello Triangle screenshot artifact.
++Scope: D3D test fixtures and native shader validation artifact.
 +
 +## Gate
 +
@@ -26,9 +26,10 @@ index 0000000..88ae1ca
 +ppm: /Volumes/MacOS/MacRunner/engine/graphics/artifacts/runtime-samples/d3d11_triangle_runtime/d3d11_triangle_runtime.ppm
 +size: 64x64
 +unique_pixels: 1153
-+png: /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/hello-triangle-d3d11.png
++png: /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/native-shader-validation.png
 +png_bytes: 1294
-+hello triangle screenshot: /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/hello-triangle-d3d11.png
++native shader validation screenshot: /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/native-shader-validation.png
++wine dxmt e2e screenshot: WAITING on Phase G runtime fix -> /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/hello-triangle-d3d11-via-wine.png
 +```
 +
 +## Actual Wine fixture attempt
@@ -54,13 +55,39 @@ index 0000000..88ae1ca
 +
 +## Result
 +
-+PASS for fixture artifacts and screenshot artifact. Actual Wine execution is blocked by current engine runtime regression/dependency, owner: Codex #1 Phase G, not blocking graphics tag per scope rule 53.
++PASS for fixture artifacts and native shader validation. This screenshot is not a Wine+DXMT end-to-end capture. Actual Wine execution is blocked by current engine runtime regression/dependency, owner: Codex #1 Phase G, not blocking graphics tag per scope rule 53. The future Wine+DXMT screenshot path is `engine/graphics/dist/screenshots/hello-triangle-d3d11-via-wine.png`.
+diff --git a/docs/STATUS-graphics-phase-g6-honest.md b/docs/STATUS-graphics-phase-g6-honest.md
+new file mode 100644
+index 0000000..5ad41a1
+--- /dev/null
++++ b/docs/STATUS-graphics-phase-g6-honest.md
+@@ -0,0 +1,20 @@
++# STATUS graphics phase G6 - Honest validation boundary
++
++Date: 2026-05-14
++Scope: Clarify the graphics Gamma 6 screenshot artifact boundary.
++
++## Result
++
++Native renderer validation = PASS. The artifact at `engine/graphics/dist/screenshots/native-shader-validation.png` is generated from the native Metal validation path and proves the DXMT shader translation / Metal-side validation pipeline is alive.
++
++Wine+DXMT end-to-end = WAITING on Phase G runtime fix. The real PE loader path through Wine + DXMT DLLs is not represented by this PNG yet.
++
++When Phase G is fixed, the real `.exe` screenshot must be captured as:
++
++```text
++engine/graphics/dist/screenshots/hello-triangle-d3d11-via-wine.png
++```
++
++## Current blocker
++
++The attempted Wine fixture run initializes `wineboot` but fails in the engine runtime with mmap/FreeType/RPCSS errors. Owner: Codex #1 Phase G. This is not blocking the `v0.1-graphics-arm64-dxmt` infrastructure tag.
 diff --git a/engine/graphics/dist/bin/verify-hello-triangle.sh b/engine/graphics/dist/bin/verify-hello-triangle.sh
 new file mode 100755
-index 0000000..feb777f
+index 0000000..f75e276
 --- /dev/null
 +++ b/engine/graphics/dist/bin/verify-hello-triangle.sh
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,36 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -70,7 +97,7 @@ index 0000000..feb777f
 +TEST_DIR="$DIST_ROOT/tests"
 +SHOT_DIR="$DIST_ROOT/screenshots"
 +TRACE_PPM="$PROJECT_ROOT/engine/graphics/artifacts/runtime-samples/d3d11_triangle_runtime/d3d11_triangle_runtime.ppm"
-+SHOT_PNG="$SHOT_DIR/hello-triangle-d3d11.png"
++SHOT_PNG="$SHOT_DIR/native-shader-validation.png"
 +mkdir -p "$TEST_DIR" "$SHOT_DIR"
 +
 +cp -f "$PROJECT_ROOT/tests/native-fixtures/build/d3d11_triangle_arm64.exe" "$TEST_DIR/hello-triangle-d3d11-arm64.exe"
@@ -85,7 +112,8 @@ index 0000000..feb777f
 +sips -s format png "$TRACE_PPM" --out "$SHOT_PNG" >/dev/null
 +python3 "$PROJECT_ROOT/engine/graphics/tools/verify_triangle_screenshot.py" "$TRACE_PPM" "$SHOT_PNG"
 +
-+echo "hello triangle screenshot: $SHOT_PNG"
++echo "native shader validation screenshot: $SHOT_PNG"
++echo "wine dxmt e2e screenshot: WAITING on Phase G runtime fix -> $SHOT_DIR/hello-triangle-d3d11-via-wine.png"
 +
 +if [[ "${MACRUNNER_RUN_WINE:-0}" == "1" ]]; then
 +  prefix="${WINEPREFIX:-/tmp/macr-graphics-run-prefix}"
@@ -96,7 +124,7 @@ index 0000000..feb777f
 +  WINEPREFIX="$prefix" WINEDLLOVERRIDES='d3d10core,d3d11,dxgi,winemetal=n,b' \
 +    "$PROJECT_ROOT/engine/wine/dist/bin/wine" "$TEST_DIR/hello-triangle-d3d11-arm64.exe"
 +fi
-diff --git a/engine/graphics/dist/screenshots/hello-triangle-d3d11.png b/engine/graphics/dist/screenshots/hello-triangle-d3d11.png
+diff --git a/engine/graphics/dist/screenshots/native-shader-validation.png b/engine/graphics/dist/screenshots/native-shader-validation.png
 new file mode 100644
 index 0000000000000000000000000000000000000000..82eb10586f91760755d975cce336e5c0134f6d2f
 GIT binary patch

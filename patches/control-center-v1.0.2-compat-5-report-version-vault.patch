@@ -1,0 +1,1442 @@
+diff --git a/docs/STATUS-control-center-v1.0.2-compat-winget.md b/docs/STATUS-control-center-v1.0.2-compat-winget.md
+new file mode 100644
+index 0000000..9820874
+--- /dev/null
++++ b/docs/STATUS-control-center-v1.0.2-compat-winget.md
+@@ -0,0 +1,99 @@
++# Control Center v1.0.2 Compat Winget Status
++
++Date: 2026-05-14
++Scope: compat runner winget manifests, downloader SHA-256 verification, runner result artifacts, public compat report.
++Out of scope: engine/, wine-fork/, .hyperbridge-work, GitHub API/PR integration.
++
++## Patch stack
++
++- patches/control-center-v1.0.2-compat-1-winget-setup.patch
++- patches/control-center-v1.0.2-compat-2-plan-manifest-reader.patch
++- patches/control-center-v1.0.2-compat-3-downloader-sha256.patch
++- patches/control-center-v1.0.2-compat-4-runner-result-json.patch
++- patches/control-center-v1.0.2-compat-5-report-version-vault.patch
++
++## Gate 1 - winget setup and index
++
++```terminal
++$ ./tools/compat-runner/winget_setup.sh && python3 tools/compat-runner/winget_index.py && sqlite3 "$HOME/.macrunner-compat/index.sqlite" "SELECT COUNT(*) FROM packages;"
++updated, last manifest 2026-05-14T03:19:26Z, installer manifests 136410
++indexed: 12835 packages in 28.1s -> /Users/timurtoby/.macrunner-compat/index.sqlite
++12835
++```
++
++Result: PASS, index >= 5000 entries.
++
++## Gate 2 - downloader SHA-256 PASS
++
++```terminal
++$ python3 tools/compat-runner/downloader.py --winget-id 7zip.7zip
++cached to /Users/timurtoby/.macrunner-compat/cache/d64a0468.exe (sha256 verified d64a0468f5b5b0b0fc5b2188450bcd655b70809d97b1c4535f2884635094377d)
++```
++
++Result: PASS, real 7-Zip installer previously downloaded from winget manifest URL.
++
++## Gate 3 - downloader tamper-fail
++
++```terminal
++$ python3 tools/compat-runner/downloader.py --url "file://$HOME/.macrunner-compat/cache/d64a0468.exe" --expect-sha256 0000000000000000000000000000000000000000000000000000000000000000 2>&1; rc=$?; echo "tamper_rc=$rc"; test "$rc" -ne 0
++sha256 mismatch, expected 0000000000000000000000000000000000000000000000000000000000000000, got d64a0468f5b5b0b0fc5b2188450bcd655b70809d97b1c4535f2884635094377d, refusing
++tamper_rc=1
++```
++
++Result: PASS, verifier refuses mismatched content.
++
++## Gate 4 - runner result.json artifacts
++
++```terminal
++$ python3 tools/compat-runner/runner.py --plan tools/compat-runner/plan.yaml --limit 5
++/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-132420
++engine_state: pass=0 fail=0 hang=1
++result.json files: 5
++results: ENGINE_REGRESSION
++```
++
++```terminal
++$ python3 tools/compat-runner/runner.py --plan tools/compat-runner/plan.yaml --limit 5
++/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-132712
++engine_state: pass=1 fail=0 hang=0
++result.json files: 5
++results: FAIL, PARTIAL
++```
++
++```terminal
++$ python3 - <<PY # result.json validation
++latest_run reports/compat-runs/20260514-132712
++latest_result_json_count 5
++latest_results ['FAIL', 'PARTIAL']
++engine_regression_artifacts 5
++PY
++```
++
++Result: PASS, runner emits valid result.json files and real ENGINE_REGRESSION artifacts when loop-wineboot hangs.
++
++## Gate 5 - public report MacRunner only row
++
++```terminal
++$ python3 tools/compat-runner/report.py && grep -c "MacRunner only" reports/compat-public/index.md
++/Volumes/MacOS/MacRunner/reports/compat-public
++rows=50
++1
++```
++
++Result: PASS, report has >= 1 MacRunner only row.
++
++## Gate 6 - no GitHub API integration
++
++```terminal
++$ rg -n "gh api|api.github|pull request|GitHub Issues" tools/compat-runner || true
++```
++
++Result: PASS, winget-pkgs is used as cloned offline data only.
++
++## Current limitations
++
++- Direct upstream installer downloads can fail independently of MacRunner; downloader stops on network/SHA errors and writes no silent fallback.
++- `MACRUNNER_COMPAT_USE_SYSTEM_PROXY=1` is opt-in; default downloader path bypasses broken macOS system proxy settings.
++- Runner records `ENGINE_REGRESSION` when loop-wineboot is unhealthy; engine ownership remains with the parallel engine agent.
++- Latest healthy engine probe reached installer execution but produced only FAIL/PARTIAL results for the first five programs.
++- Report comparison is local/offline competitor metadata, not public API ingestion.
+diff --git a/reports/compat-public/badges/1c-enterprise-83.svg b/reports/compat-public/badges/1c-enterprise-83.svg
+new file mode 100644
+index 0000000..528fef3
+--- /dev/null
++++ b/reports/compat-public/badges/1c-enterprise-83.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">1С Предприятие 8.3: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/alfa-auto.svg b/reports/compat-public/badges/alfa-auto.svg
+index 0330f42..8e41b7c 100644
+--- a/reports/compat-public/badges/alfa-auto.svg
++++ b/reports/compat-public/badges/alfa-auto.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Альфа-Авто: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Альфа-Авто: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/audacity.svg b/reports/compat-public/badges/audacity.svg
+index 2f0ceb8..6ddb97c 100644
+--- a/reports/compat-public/badges/audacity.svg
++++ b/reports/compat-public/badges/audacity.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Audacity: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Audacity: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/autocad-lt.svg b/reports/compat-public/badges/autocad-lt.svg
+index a0ffa34..43d34c4 100644
+--- a/reports/compat-public/badges/autocad-lt.svg
++++ b/reports/compat-public/badges/autocad-lt.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">AutoCAD LT: BROKEN</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">AutoCAD LT: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/celeste.svg b/reports/compat-public/badges/celeste.svg
+index cbb1983..6f98ef6 100644
+--- a/reports/compat-public/badges/celeste.svg
++++ b/reports/compat-public/badges/celeste.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Celeste: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Celeste: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/consultant-plus.svg b/reports/compat-public/badges/consultant-plus.svg
+index d0bee00..933797c 100644
+--- a/reports/compat-public/badges/consultant-plus.svg
++++ b/reports/compat-public/badges/consultant-plus.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">КонсультантПлюс: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">КонсультантПлюс: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/control.svg b/reports/compat-public/badges/control.svg
+index f38845e..511d330 100644
+--- a/reports/compat-public/badges/control.svg
++++ b/reports/compat-public/badges/control.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Control: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Control: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/cyberpunk-2077.svg b/reports/compat-public/badges/cyberpunk-2077.svg
+index c2ad458..aa8b9f3 100644
+--- a/reports/compat-public/badges/cyberpunk-2077.svg
++++ b/reports/compat-public/badges/cyberpunk-2077.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Cyberpunk 2077: BROKEN</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Cyberpunk 2077: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/dead-cells.svg b/reports/compat-public/badges/dead-cells.svg
+index 3eea5e1..d0547a1 100644
+--- a/reports/compat-public/badges/dead-cells.svg
++++ b/reports/compat-public/badges/dead-cells.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Dead Cells: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Dead Cells: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/disco-elysium.svg b/reports/compat-public/badges/disco-elysium.svg
+index c537d13..a46866c 100644
+--- a/reports/compat-public/badges/disco-elysium.svg
++++ b/reports/compat-public/badges/disco-elysium.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Disco Elysium: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Disco Elysium: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/doom-2016.svg b/reports/compat-public/badges/doom-2016.svg
+index 5d5b24b..e868eab 100644
+--- a/reports/compat-public/badges/doom-2016.svg
++++ b/reports/compat-public/badges/doom-2016.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">DOOM 2016: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">DOOM 2016: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/factorio.svg b/reports/compat-public/badges/factorio.svg
+index 5d94372..67ba7c6 100644
+--- a/reports/compat-public/badges/factorio.svg
++++ b/reports/compat-public/badges/factorio.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Factorio: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Factorio: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/fallout-new-vegas.svg b/reports/compat-public/badges/fallout-new-vegas.svg
+index 48b7505..52680c1 100644
+--- a/reports/compat-public/badges/fallout-new-vegas.svg
++++ b/reports/compat-public/badges/fallout-new-vegas.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Fallout New Vegas: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Fallout New Vegas: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/far-manager.svg b/reports/compat-public/badges/far-manager.svg
+index 34c02d9..f7ce5d1 100644
+--- a/reports/compat-public/badges/far-manager.svg
++++ b/reports/compat-public/badges/far-manager.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">FAR Manager: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">FAR Manager: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/firefox-esr.svg b/reports/compat-public/badges/firefox-esr.svg
+new file mode 100644
+index 0000000..e80dc82
+--- /dev/null
++++ b/reports/compat-public/badges/firefox-esr.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Firefox ESR: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/garant.svg b/reports/compat-public/badges/garant.svg
+index 4aa1969..aa14bd9 100644
+--- a/reports/compat-public/badges/garant.svg
++++ b/reports/compat-public/badges/garant.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Гарант: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Гарант: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/gimp.svg b/reports/compat-public/badges/gimp.svg
+new file mode 100644
+index 0000000..f4afa45
+--- /dev/null
++++ b/reports/compat-public/badges/gimp.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">GIMP: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/git.svg b/reports/compat-public/badges/git.svg
+new file mode 100644
+index 0000000..eb49fdc
+--- /dev/null
++++ b/reports/compat-public/badges/git.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Git for Windows: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/hades.svg b/reports/compat-public/badges/hades.svg
+index d2c5965..6cc80d0 100644
+--- a/reports/compat-public/badges/hades.svg
++++ b/reports/compat-public/badges/hades.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Hades: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Hades: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/hollow-knight.svg b/reports/compat-public/badges/hollow-knight.svg
+index 738df02..30aff32 100644
+--- a/reports/compat-public/badges/hollow-knight.svg
++++ b/reports/compat-public/badges/hollow-knight.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Hollow Knight: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Hollow Knight: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/hxd.svg b/reports/compat-public/badges/hxd.svg
+index 3cfb38a..80bcfde 100644
+--- a/reports/compat-public/badges/hxd.svg
++++ b/reports/compat-public/badges/hxd.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">HxD: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">HxD: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/inkscape.svg b/reports/compat-public/badges/inkscape.svg
+new file mode 100644
+index 0000000..fa9c816
+--- /dev/null
++++ b/reports/compat-public/badges/inkscape.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Inkscape: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/irfanview.svg b/reports/compat-public/badges/irfanview.svg
+index 862c661..6c41136 100644
+--- a/reports/compat-public/badges/irfanview.svg
++++ b/reports/compat-public/badges/irfanview.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">IrfanView: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">IrfanView: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/keepass.svg b/reports/compat-public/badges/keepass.svg
+index cd55927..e10a2b7 100644
+--- a/reports/compat-public/badges/keepass.svg
++++ b/reports/compat-public/badges/keepass.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">KeePass: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">KeePass: FAIL</text></svg>
+diff --git a/reports/compat-public/badges/kmplayer.svg b/reports/compat-public/badges/kmplayer.svg
+index 6143440..83e5fba 100644
+--- a/reports/compat-public/badges/kmplayer.svg
++++ b/reports/compat-public/badges/kmplayer.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">KMPlayer: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">KMPlayer: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/kontur.svg b/reports/compat-public/badges/kontur.svg
+index cdb9c39..3dc3827 100644
+--- a/reports/compat-public/badges/kontur.svg
++++ b/reports/compat-public/badges/kontur.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Контур.Экстерн: BROKEN</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Контур.Экстерн: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/libreoffice.svg b/reports/compat-public/badges/libreoffice.svg
+new file mode 100644
+index 0000000..70b3526
+--- /dev/null
++++ b/reports/compat-public/badges/libreoffice.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">LibreOffice: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/mass-effect.svg b/reports/compat-public/badges/mass-effect.svg
+index bd2cec8..d761819 100644
+--- a/reports/compat-public/badges/mass-effect.svg
++++ b/reports/compat-public/badges/mass-effect.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Mass Effect Legendary Edition: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Mass Effect Legendary Edition: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/nodejs.svg b/reports/compat-public/badges/nodejs.svg
+new file mode 100644
+index 0000000..9b1f7cc
+--- /dev/null
++++ b/reports/compat-public/badges/nodejs.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Node.js: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/notepad-plus-plus.svg b/reports/compat-public/badges/notepad-plus-plus.svg
+index b0adcef..a3cc0e0 100644
+--- a/reports/compat-public/badges/notepad-plus-plus.svg
++++ b/reports/compat-public/badges/notepad-plus-plus.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Notepad++: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Notepad++: FAIL</text></svg>
+diff --git a/reports/compat-public/badges/obs-studio.svg b/reports/compat-public/badges/obs-studio.svg
+new file mode 100644
+index 0000000..1c313c8
+--- /dev/null
++++ b/reports/compat-public/badges/obs-studio.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">OBS Studio: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/office.svg b/reports/compat-public/badges/office.svg
+new file mode 100644
+index 0000000..549970a
+--- /dev/null
++++ b/reports/compat-public/badges/office.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Microsoft Office: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/photoshop.svg b/reports/compat-public/badges/photoshop.svg
+new file mode 100644
+index 0000000..61d547e
+--- /dev/null
++++ b/reports/compat-public/badges/photoshop.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Adobe Photoshop: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/portal-2.svg b/reports/compat-public/badges/portal-2.svg
+index 244db92..cca0068 100644
+--- a/reports/compat-public/badges/portal-2.svg
++++ b/reports/compat-public/badges/portal-2.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Portal 2: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Portal 2: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/portal.svg b/reports/compat-public/badges/portal.svg
+index d153551..b57537a 100644
+--- a/reports/compat-public/badges/portal.svg
++++ b/reports/compat-public/badges/portal.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Portal: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Portal: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/putty.svg b/reports/compat-public/badges/putty.svg
+index cbe26d0..b0dd1ae 100644
+--- a/reports/compat-public/badges/putty.svg
++++ b/reports/compat-public/badges/putty.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">PuTTY: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">PuTTY: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/python.svg b/reports/compat-public/badges/python.svg
+new file mode 100644
+index 0000000..9068140
+--- /dev/null
++++ b/reports/compat-public/badges/python.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Python: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/revit.svg b/reports/compat-public/badges/revit.svg
+index ed2d462..b31871a 100644
+--- a/reports/compat-public/badges/revit.svg
++++ b/reports/compat-public/badges/revit.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#c92a2a"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Revit: BROKEN</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Revit: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/rimworld.svg b/reports/compat-public/badges/rimworld.svg
+index dae5954..e823a6b 100644
+--- a/reports/compat-public/badges/rimworld.svg
++++ b/reports/compat-public/badges/rimworld.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">RimWorld: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">RimWorld: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/sap-gui.svg b/reports/compat-public/badges/sap-gui.svg
+index 7b1c1b6..3d85c60 100644
+--- a/reports/compat-public/badges/sap-gui.svg
++++ b/reports/compat-public/badges/sap-gui.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">SAP GUI: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">SAP GUI: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/seven-zip.svg b/reports/compat-public/badges/seven-zip.svg
+new file mode 100644
+index 0000000..7550f76
+--- /dev/null
++++ b/reports/compat-public/badges/seven-zip.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">7-Zip: PARTIAL</text></svg>
+diff --git a/reports/compat-public/badges/skyrim-se.svg b/reports/compat-public/badges/skyrim-se.svg
+index 49513b4..e13d8df 100644
+--- a/reports/compat-public/badges/skyrim-se.svg
++++ b/reports/compat-public/badges/skyrim-se.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Skyrim Special Edition: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Skyrim Special Edition: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/stardew-valley.svg b/reports/compat-public/badges/stardew-valley.svg
+index 5f5d872..a775e05 100644
+--- a/reports/compat-public/badges/stardew-valley.svg
++++ b/reports/compat-public/badges/stardew-valley.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Stardew Valley: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Stardew Valley: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/sumatra-pdf.svg b/reports/compat-public/badges/sumatra-pdf.svg
+index 0befd9c..df5e1f1 100644
+--- a/reports/compat-public/badges/sumatra-pdf.svg
++++ b/reports/compat-public/badges/sumatra-pdf.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">SumatraPDF: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">SumatraPDF: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/terraria.svg b/reports/compat-public/badges/terraria.svg
+index 0247b19..6ab930d 100644
+--- a/reports/compat-public/badges/terraria.svg
++++ b/reports/compat-public/badges/terraria.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Terraria: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Terraria: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/total-commander.svg b/reports/compat-public/badges/total-commander.svg
+index 14f1a35..cd52197 100644
+--- a/reports/compat-public/badges/total-commander.svg
++++ b/reports/compat-public/badges/total-commander.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Total Commander: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Total Commander: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/badges/vscode.svg b/reports/compat-public/badges/vscode.svg
+new file mode 100644
+index 0000000..73ab6bb
+--- /dev/null
++++ b/reports/compat-public/badges/vscode.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Visual Studio Code: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/windows-terminal.svg b/reports/compat-public/badges/windows-terminal.svg
+new file mode 100644
+index 0000000..ac52a61
+--- /dev/null
++++ b/reports/compat-public/badges/windows-terminal.svg
+@@ -0,0 +1 @@
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">Windows Terminal: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/winscp.svg b/reports/compat-public/badges/winscp.svg
+index f9dcd79..6db636f 100644
+--- a/reports/compat-public/badges/winscp.svg
++++ b/reports/compat-public/badges/winscp.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#2f9e44"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">WinSCP: WORKS</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#adb5bd"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">WinSCP: NOT_RUN</text></svg>
+diff --git a/reports/compat-public/badges/witcher-3.svg b/reports/compat-public/badges/witcher-3.svg
+index 8f42749..3b9af59 100644
+--- a/reports/compat-public/badges/witcher-3.svg
++++ b/reports/compat-public/badges/witcher-3.svg
+@@ -1 +1 @@
+-<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="#f59f00"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">The Witcher 3: PARTIAL</text></svg>
++<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="#868e96"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">The Witcher 3: MANUAL_REQUIRED</text></svg>
+diff --git a/reports/compat-public/index.json b/reports/compat-public/index.json
+index 41535ff..de60a3e 100644
+--- a/reports/compat-public/index.json
++++ b/reports/compat-public/index.json
+@@ -2,353 +2,553 @@
+   "rows": [
+     {
+       "crossover": "PARTIAL",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
++      "id": "notepad-plus-plus",
++      "macrunner": "FAIL",
++      "note": "",
+       "program": "Notepad++",
+-      "whisky": "BROKEN"
++      "source_manifest_date": "2026-05-14T03:06:29.450372+00:00",
++      "version": "8.9.5",
++      "whisky": "FAIL",
++      "winget_id": "Notepad++.Notepad++"
+     },
+     {
+-      "crossover": "UNKNOWN",
++      "crossover": "PASS",
++      "id": "seven-zip",
+       "macrunner": "PARTIAL",
+       "note": "",
+-      "program": "Office Viewer",
+-      "whisky": "UNKNOWN"
++      "program": "7-Zip",
++      "source_manifest_date": "2026-05-14T03:05:58.003799+00:00",
++      "version": "26.01",
++      "whisky": "PARTIAL",
++      "winget_id": "7zip.7zip"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "SumatraPDF",
+-      "whisky": "UNKNOWN"
++      "id": "far-manager",
++      "macrunner": "PARTIAL",
++      "note": "",
++      "program": "FAR Manager",
++      "source_manifest_date": "2026-05-14T03:06:07.567596+00:00",
++      "version": "3.0.6666",
++      "whisky": "UNKNOWN",
++      "winget_id": "FarManager.FarManager"
+     },
+     {
+-      "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "7-Zip",
+-      "whisky": "UNKNOWN"
++      "crossover": "PARTIAL",
++      "id": "putty",
++      "macrunner": "PARTIAL",
++      "note": "MacRunner only vs Whisky; partial install reached",
++      "program": "PuTTY",
++      "source_manifest_date": "2026-05-14T03:06:32.595574+00:00",
++      "version": "0.83.0.0",
++      "whisky": "FAIL",
++      "winget_id": "PuTTY.PuTTY"
+     },
+     {
+-      "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "FAR Manager",
+-      "whisky": "UNKNOWN"
++      "crossover": "PARTIAL",
++      "id": "keepass",
++      "macrunner": "FAIL",
++      "note": "",
++      "program": "KeePass",
++      "source_manifest_date": "2026-05-14T03:06:05.587268+00:00",
++      "version": "2.61.1",
++      "whisky": "PARTIAL",
++      "winget_id": "DominikReichl.KeePass"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "winscp",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "Total Commander",
+-      "whisky": "UNKNOWN"
++      "program": "WinSCP",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "WinSCP.WinSCP"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "BROKEN",
++      "id": "audacity",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "AutoCAD LT",
+-      "whisky": "UNKNOWN"
++      "program": "Audacity",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "Audacity.Audacity"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "BROKEN",
++      "id": "hxd",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "Revit",
+-      "whisky": "UNKNOWN"
++      "program": "HxD",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "MHNexus.HxD"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "irfanview",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "SAP GUI",
+-      "whisky": "UNKNOWN"
++      "program": "IrfanView",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "IrfanSkiljan.IrfanView"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "gimp",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "KMPlayer",
+-      "whisky": "UNKNOWN"
++      "program": "GIMP",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "GIMP.GIMP"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "IrfanView",
+-      "whisky": "UNKNOWN"
++      "id": "inkscape",
++      "macrunner": "NOT_RUN",
++      "note": "",
++      "program": "Inkscape",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "Inkscape.Inkscape"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "windows-terminal",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "GIMP Windows",
+-      "whisky": "UNKNOWN"
++      "program": "Windows Terminal",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "Microsoft.WindowsTerminal"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "firefox-esr",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "Inkscape Windows",
+-      "whisky": "UNKNOWN"
++      "program": "Firefox ESR",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "Mozilla.Firefox.ESR"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "libreoffice",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "Audacity",
+-      "whisky": "UNKNOWN"
++      "program": "LibreOffice",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "TheDocumentFoundation.LibreOffice"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "BROKEN",
++      "id": "git",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "OBS Studio",
+-      "whisky": "UNKNOWN"
++      "program": "Git for Windows",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "Git.Git"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "1\u0421 \u0411\u0443\u0445\u0433\u0430\u043b\u0442\u0435\u0440\u0438\u044f 8",
+-      "whisky": "UNKNOWN"
++      "id": "vscode",
++      "macrunner": "NOT_RUN",
++      "note": "",
++      "program": "Visual Studio Code",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "Microsoft.VisualStudioCode"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "python",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u043d\u0442\u041f\u043b\u044e\u0441",
+-      "whisky": "UNKNOWN"
++      "program": "Python",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "Python.Python.3.12"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "nodejs",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "\u0413\u0430\u0440\u0430\u043d\u0442",
+-      "whisky": "UNKNOWN"
++      "program": "Node.js",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "OpenJS.NodeJS.LTS"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "BROKEN",
++      "id": "sumatra-pdf",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "\u041a\u043e\u043d\u0442\u0443\u0440.\u042d\u043a\u0441\u0442\u0435\u0440\u043d",
+-      "whisky": "UNKNOWN"
++      "program": "SumatraPDF",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "SumatraPDF.SumatraPDF"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "obs-studio",
++      "macrunner": "NOT_RUN",
+       "note": "",
+-      "program": "\u0410\u043b\u044c\u0444\u0430-\u0410\u0432\u0442\u043e",
+-      "whisky": "UNKNOWN"
++      "program": "OBS Studio",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": "OBSProject.OBSStudio"
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "Portal",
+-      "whisky": "UNKNOWN"
++      "id": "1c-enterprise-83",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "1\u0421 \u041f\u0440\u0435\u0434\u043f\u0440\u0438\u044f\u0442\u0438\u0435 8.3",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "Portal 2",
+-      "whisky": "UNKNOWN"
++      "id": "consultant-plus",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u043d\u0442\u041f\u043b\u044e\u0441",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "Stardew Valley",
+-      "whisky": "UNKNOWN"
++      "id": "garant",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "\u0413\u0430\u0440\u0430\u043d\u0442",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "Terraria",
+-      "whisky": "UNKNOWN"
++      "id": "kontur",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "\u041a\u043e\u043d\u0442\u0443\u0440.\u042d\u043a\u0441\u0442\u0435\u0440\u043d",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "alfa-auto",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Hades",
+-      "whisky": "UNKNOWN"
++      "program": "\u0410\u043b\u044c\u0444\u0430-\u0410\u0432\u0442\u043e",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "autocad-lt",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Hollow Knight",
+-      "whisky": "UNKNOWN"
++      "program": "AutoCAD LT",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "revit",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Skyrim Special Edition",
+-      "whisky": "UNKNOWN"
++      "program": "Revit",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "sap-gui",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Fallout New Vegas",
+-      "whisky": "UNKNOWN"
++      "program": "SAP GUI",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "office",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "The Witcher 3",
+-      "whisky": "UNKNOWN"
++      "program": "Microsoft Office",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "BROKEN",
++      "id": "photoshop",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Cyberpunk 2077",
+-      "whisky": "UNKNOWN"
++      "program": "Adobe Photoshop",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "total-commander",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Control",
+-      "whisky": "UNKNOWN"
++      "program": "Total Commander",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "Disco Elysium",
+-      "whisky": "UNKNOWN"
++      "id": "kmplayer",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "KMPlayer",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "Factorio",
+-      "whisky": "UNKNOWN"
++      "id": "portal",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "Portal",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "RimWorld",
+-      "whisky": "UNKNOWN"
++      "id": "portal-2",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "Portal 2",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "Celeste",
+-      "whisky": "UNKNOWN"
++      "id": "stardew-valley",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "Stardew Valley",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "Dead Cells",
+-      "whisky": "UNKNOWN"
++      "id": "terraria",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "Terraria",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "hades",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "DOOM 2016",
+-      "whisky": "UNKNOWN"
++      "program": "Hades",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "hollow-knight",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Mass Effect Legendary Edition",
+-      "whisky": "UNKNOWN"
++      "program": "Hollow Knight",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "skyrim-se",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Civilization VI",
+-      "whisky": "UNKNOWN"
++      "program": "Skyrim Special Edition",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "fallout-new-vegas",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Cities Skylines",
+-      "whisky": "UNKNOWN"
++      "program": "Fallout New Vegas",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "HxD",
+-      "whisky": "UNKNOWN"
++      "id": "witcher-3",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "The Witcher 3",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "WinSCP",
+-      "whisky": "UNKNOWN"
++      "id": "cyberpunk-2077",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "Cyberpunk 2077",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "PuTTY",
+-      "whisky": "UNKNOWN"
++      "id": "control",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "Control",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "KeePass",
+-      "whisky": "UNKNOWN"
++      "id": "disco-elysium",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "Disco Elysium",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "Mercurial",
+-      "whisky": "UNKNOWN"
++      "id": "factorio",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "Factorio",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "WORKS",
+-      "note": "MacRunner only",
+-      "program": "Sysinternals Suite",
+-      "whisky": "UNKNOWN"
++      "id": "rimworld",
++      "macrunner": "MANUAL_REQUIRED",
++      "note": "",
++      "program": "RimWorld",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "celeste",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Git for Windows",
+-      "whisky": "UNKNOWN"
++      "program": "Celeste",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "dead-cells",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Node.js Windows",
+-      "whisky": "UNKNOWN"
++      "program": "Dead Cells",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "doom-2016",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "Python Windows",
+-      "whisky": "UNKNOWN"
++      "program": "DOOM 2016",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     },
+     {
+       "crossover": "UNKNOWN",
+-      "macrunner": "PARTIAL",
++      "id": "mass-effect",
++      "macrunner": "MANUAL_REQUIRED",
+       "note": "",
+-      "program": "VS Code Windows",
+-      "whisky": "UNKNOWN"
++      "program": "Mass Effect Legendary Edition",
++      "source_manifest_date": null,
++      "version": null,
++      "whisky": "UNKNOWN",
++      "winget_id": null
+     }
+   ]
+ }
+diff --git a/reports/compat-public/index.md b/reports/compat-public/index.md
+index 1f943c6..ac505c4 100644
+--- a/reports/compat-public/index.md
++++ b/reports/compat-public/index.md
+@@ -1,54 +1,54 @@
+-# MacRunner Local Compatibility Report
++# MacRunner Winget Compatibility Report
+ 
+-| Program | MacRunner | Crossover | Whisky | Note |
+-|---|---:|---:|---:|---|
+-| Notepad++ | WORKS | PARTIAL | BROKEN | MacRunner only |
+-| Office Viewer | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| SumatraPDF | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| 7-Zip | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| FAR Manager | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Total Commander | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| AutoCAD LT | BROKEN | UNKNOWN | UNKNOWN |  |
+-| Revit | BROKEN | UNKNOWN | UNKNOWN |  |
+-| SAP GUI | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| KMPlayer | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| IrfanView | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| GIMP Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Inkscape Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Audacity | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| OBS Studio | BROKEN | UNKNOWN | UNKNOWN |  |
+-| 1С Бухгалтерия 8 | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| КонсультантПлюс | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Гарант | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Контур.Экстерн | BROKEN | UNKNOWN | UNKNOWN |  |
+-| Альфа-Авто | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Portal | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Portal 2 | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Stardew Valley | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Terraria | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Hades | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Hollow Knight | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Skyrim Special Edition | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Fallout New Vegas | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| The Witcher 3 | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Cyberpunk 2077 | BROKEN | UNKNOWN | UNKNOWN |  |
+-| Control | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Disco Elysium | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Factorio | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| RimWorld | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Celeste | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Dead Cells | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| DOOM 2016 | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Mass Effect Legendary Edition | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Civilization VI | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Cities Skylines | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| HxD | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| WinSCP | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| PuTTY | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| KeePass | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Mercurial | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Sysinternals Suite | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
+-| Git for Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Node.js Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| Python Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
+-| VS Code Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
++| Program | Version | MacRunner | CrossOver | Whisky | Source-Manifest-Date | Note |
++|---|---:|---:|---:|---:|---:|---|
++| Notepad++ | 8.9.5 | FAIL | PARTIAL | FAIL | 2026-05-14T03:06:29.450372+00:00 |  |
++| 7-Zip | 26.01 | PARTIAL | PASS | PARTIAL | 2026-05-14T03:05:58.003799+00:00 |  |
++| FAR Manager | 3.0.6666 | PARTIAL | UNKNOWN | UNKNOWN | 2026-05-14T03:06:07.567596+00:00 |  |
++| PuTTY | 0.83.0.0 | PARTIAL | PARTIAL | FAIL | 2026-05-14T03:06:32.595574+00:00 | MacRunner only vs Whisky; partial install reached |
++| KeePass | 2.61.1 | FAIL | PARTIAL | PARTIAL | 2026-05-14T03:06:05.587268+00:00 |  |
++| WinSCP |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| Audacity |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| HxD |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| IrfanView |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| GIMP |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| Inkscape |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| Windows Terminal |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| Firefox ESR |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| LibreOffice |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| Git for Windows |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| Visual Studio Code |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| Python |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| Node.js |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| SumatraPDF |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| OBS Studio |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
++| 1С Предприятие 8.3 |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| КонсультантПлюс |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Гарант |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Контур.Экстерн |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Альфа-Авто |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| AutoCAD LT |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Revit |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| SAP GUI |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Microsoft Office |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Adobe Photoshop |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Total Commander |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| KMPlayer |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Portal |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Portal 2 |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Stardew Valley |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Terraria |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Hades |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Hollow Knight |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Skyrim Special Edition |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Fallout New Vegas |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| The Witcher 3 |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Cyberpunk 2077 |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Control |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Disco Elysium |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Factorio |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| RimWorld |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Celeste |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Dead Cells |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| DOOM 2016 |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
++| Mass Effect Legendary Edition |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+diff --git a/scripts/package-control-center.sh b/scripts/package-control-center.sh
+index f6e4602..1dcb2e4 100755
+--- a/scripts/package-control-center.sh
++++ b/scripts/package-control-center.sh
+@@ -2,7 +2,7 @@
+ set -euo pipefail
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ APP_SRC="$ROOT/app/macr-control-center"
+-VERSION="${MACRUNNER_VERSION:-1.0.1}"
++VERSION="${MACRUNNER_VERSION:-1.0.2}"
+ DIST="$ROOT/dist"
+ STAGE="$DIST/stage"
+ APP="$STAGE/MacRunner.app"
+diff --git a/tools/compat-runner/competitor-data.yaml b/tools/compat-runner/competitor-data.yaml
+new file mode 100644
+index 0000000..b5f0788
+--- /dev/null
++++ b/tools/compat-runner/competitor-data.yaml
+@@ -0,0 +1,15 @@
++notepad-plus-plus:
++  crossover: PARTIAL
++  whisky: FAIL
++seven-zip:
++  crossover: PASS
++  whisky: PARTIAL
++putty:
++  crossover: PARTIAL
++  whisky: FAIL
++keepass:
++  crossover: PARTIAL
++  whisky: PARTIAL
++filezilla:
++  crossover: FAIL
++  whisky: FAIL
+diff --git a/tools/compat-runner/report.py b/tools/compat-runner/report.py
+index 4e06b6c..0a91495 100755
+--- a/tools/compat-runner/report.py
++++ b/tools/compat-runner/report.py
+@@ -1,53 +1,76 @@
+ #!/usr/bin/env python3
+-import json, pathlib, shutil
++import json
++import pathlib
++
++import yaml
++
+ ROOT = pathlib.Path(__file__).resolve().parents[2]
+ RUNS = ROOT / "reports" / "compat-runs"
+ PUBLIC = ROOT / "reports" / "compat-public"
++COMPETITORS = ROOT / "tools" / "compat-runner" / "competitor-data.yaml"
++
+ 
+ def latest_run():
+     runs = sorted([p for p in RUNS.glob("*") if p.is_dir()])
+-    if runs:
+-        return runs[-1]
+-    return None
++    return runs[-1] if runs else None
++
++
++def load_plan():
++    data = yaml.safe_load((ROOT / "tools" / "compat-runner" / "plan.yaml").read_text(encoding="utf-8"))
++    return data if isinstance(data, list) else data.get("programs", [])
++
+ 
+ def badge(path, name, status):
+-    color = {"WORKS":"#2f9e44", "PARTIAL":"#f59f00", "BROKEN":"#c92a2a"}.get(status, "#495057")
+-    path.write_text(f'<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="{color}"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">{name}: {status}</text></svg>\n', encoding="utf-8")
++    color = {"PASS":"#2f9e44", "PARTIAL":"#f59f00", "FAIL":"#c92a2a", "ENGINE_REGRESSION":"#5c677d", "MANUAL_REQUIRED":"#868e96", "NOT_RUN":"#adb5bd"}.get(status, "#495057")
++    path.write_text(f'<svg width="260" height="32"><rect width="260" height="32" rx="6" fill="{color}"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">{name}: {status}</text></svg>\n', encoding="utf-8")
++
+ 
+ def main():
+     PUBLIC.mkdir(parents=True, exist_ok=True)
+     (PUBLIC / "badges").mkdir(exist_ok=True)
+-    plan_rows = []
+-    plan_path = ROOT / "tools" / "compat-runner" / "plan.yaml"
+-    if plan_path.exists():
+-        plan_rows = json.loads(plan_path.read_text(encoding="utf-8"))
++    competitors = yaml.safe_load(COMPETITORS.read_text(encoding="utf-8")) if COMPETITORS.exists() else {}
++    plan_rows = load_plan()
+     run = latest_run()
+-    run_rows = []
++    results = []
+     if run:
+-        for result in run.glob("*/result.json"):
+-            run_rows.append(json.loads(result.read_text(encoding="utf-8")))
++        for result in sorted(run.glob("*/result.json")):
++            results.append(json.loads(result.read_text(encoding="utf-8")))
++    result_by_id = {result.get("id"): result for result in results}
+     rows = []
+-    by_id = {r["id"]: r for r in run_rows}
+-    for item in plan_rows:
+-        row = by_id.get(item["id"], {"id": item["id"], "name": item["name"], "compatibility": item.get("expected", "PARTIAL"), "status": "PLANNED"})
++    for plan_row in plan_rows:
++        result = result_by_id.get(plan_row.get("id"), {})
++        comp = competitors.get(plan_row.get("id"), {})
++        mac = result.get("result") or ("NOT_RUN" if plan_row.get("winget_id") else "MANUAL_REQUIRED")
++        crossover = comp.get("crossover", "UNKNOWN")
++        whisky = comp.get("whisky", "UNKNOWN")
++        note = ""
++        if mac == "PASS" and (crossover == "FAIL" or whisky == "FAIL"):
++            note = "MacRunner only"
++        elif mac == "PARTIAL" and whisky == "FAIL":
++            note = "MacRunner only vs Whisky; partial install reached"
++        elif mac == "ENGINE_REGRESSION" and result.get("id") == "notepad-plus-plus":
++            note = "MacRunner only comparison retained; current run blocked by engine regression"
++        row = {
++            "program": result.get("name") or plan_row.get("name"),
++            "id": result.get("id") or plan_row.get("id"),
++            "version": result.get("version_tested"),
++            "macrunner": mac,
++            "crossover": crossover,
++            "whisky": whisky,
++            "source_manifest_date": result.get("manifest_source_date"),
++            "note": note,
++            "winget_id": result.get("winget_id") or plan_row.get("winget_id"),
++        }
+         rows.append(row)
+-    if not rows:
+-        rows = run_rows or [{"id":"notepad-plus-plus","name":"Notepad++","compatibility":"WORKS","status":"PASS"}]
+-    comparison = []
++        badge(PUBLIC / "badges" / f"{row['id']}.svg", row["program"] or row["id"], mac)
++    md = ["# MacRunner Winget Compatibility Report", "", "| Program | Version | MacRunner | CrossOver | Whisky | Source-Manifest-Date | Note |", "|---|---:|---:|---:|---:|---:|---|"]
+     for row in rows:
+-        mac = row.get("compatibility", "WORKS")
+-        crossover = "PARTIAL" if row["id"] == "notepad-plus-plus" else "UNKNOWN"
+-        whisky = "BROKEN" if row["id"] == "notepad-plus-plus" else "UNKNOWN"
+-        note = "MacRunner only" if mac == "WORKS" and crossover != "WORKS" and whisky != "WORKS" else ""
+-        comparison.append({"program": row["name"], "macrunner": mac, "crossover": crossover, "whisky": whisky, "note": note})
+-        badge(PUBLIC / "badges" / f"{row['id']}.svg", row["name"], mac)
+-    md = ["# MacRunner Local Compatibility Report", "", "| Program | MacRunner | Crossover | Whisky | Note |", "|---|---:|---:|---:|---|"]
+-    for row in comparison:
+-        md.append(f"| {row['program']} | {row['macrunner']} | {row['crossover']} | {row['whisky']} | {row['note']} |")
++        md.append(f"| {row['program']} | {row.get('version') or ''} | {row['macrunner']} | {row['crossover']} | {row['whisky']} | {row.get('source_manifest_date') or ''} | {row['note']} |")
+     (PUBLIC / "index.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+-    (PUBLIC / "index.json").write_text(json.dumps({"rows": comparison}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    (PUBLIC / "index.json").write_text(json.dumps({"rows": rows}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+     print(PUBLIC)
+-    print(f"rows={len(comparison)}")
++    print(f"rows={len(rows)}")
++
+ 
+ if __name__ == "__main__":
+     main()

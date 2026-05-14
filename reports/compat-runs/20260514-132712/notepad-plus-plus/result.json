@@ -1,0 +1,17 @@
+{
+  "downloaded": false,
+  "downloaded_sha256_match": null,
+  "elapsed_s": 8.221,
+  "engine_state": "pass=1 fail=0 hang=0",
+  "error": "network error for https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.5/npp.8.9.5.Installer.x64.exe: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1000)",
+  "id": "notepad-plus-plus",
+  "install_exit_code": null,
+  "install_started": false,
+  "manifest_source_date": "2026-05-14T03:06:29.450372+00:00",
+  "name": "Notepad++",
+  "result": "FAIL",
+  "screenshots": [],
+  "version_tested": "8.9.5",
+  "window_title_matched": false,
+  "winget_id": "Notepad++.Notepad++"
+}

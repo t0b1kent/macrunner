@@ -1,0 +1,17 @@
+{
+  "downloaded": false,
+  "downloaded_sha256_match": null,
+  "elapsed_s": 13.664,
+  "engine_state": "pass=1 fail=0 hang=0",
+  "error": "network error for https://sourceforge.net/projects/keepass/files/KeePass%202.x/2.61.1/KeePass-2.61.1-Setup.exe/download: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1000)",
+  "id": "keepass",
+  "install_exit_code": null,
+  "install_started": false,
+  "manifest_source_date": "2026-05-14T03:06:05.587268+00:00",
+  "name": "KeePass",
+  "result": "FAIL",
+  "screenshots": [],
+  "version_tested": "2.61.1",
+  "window_title_matched": false,
+  "winget_id": "DominikReichl.KeePass"
+}

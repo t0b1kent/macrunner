@@ -1,0 +1,15 @@
+notepad-plus-plus:
+  crossover: PARTIAL
+  whisky: FAIL
+seven-zip:
+  crossover: PASS
+  whisky: PARTIAL
+putty:
+  crossover: PARTIAL
+  whisky: FAIL
+keepass:
+  crossover: PARTIAL
+  whisky: PARTIAL
+filezilla:
+  crossover: FAIL
+  whisky: FAIL

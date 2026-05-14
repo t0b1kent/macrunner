@@ -1,0 +1,543 @@
+diff --git a/tools/compat-runner/manifest_reader.py b/tools/compat-runner/manifest_reader.py
+new file mode 100755
+index 0000000..26606c7
+--- /dev/null
++++ b/tools/compat-runner/manifest_reader.py
+@@ -0,0 +1,178 @@
++#!/usr/bin/env python3
++import argparse
++import datetime as dt
++import json
++import os
++import pathlib
++import sqlite3
++import sys
++from typing import Any
++
++import yaml
++
++COMPAT_HOME = pathlib.Path(os.environ.get("MACRUNNER_COMPAT_HOME", pathlib.Path.home() / ".macrunner-compat"))
++REPO = COMPAT_HOME / "winget-pkgs"
++INDEX = COMPAT_HOME / "index.sqlite"
++
++
++def yaml_load(path: pathlib.Path) -> Any:
++    with path.open("r", encoding="utf-8") as f:
++        return yaml.safe_load(f) or {}
++
++
++def package_path(winget_id: str) -> pathlib.Path:
++    parts = winget_id.split(".")
++    if len(parts) < 2:
++        raise ValueError(f"invalid winget id: {winget_id}")
++    vendor = parts[0].lower()
++    rest = [p.lower() for p in parts[1:]]
++    return REPO / "manifests" / vendor[0] / vendor / pathlib.Path(*rest)
++
++
++def version_key(value: str):
++    out = []
++    for part in value.replace("-", ".").replace("_", ".").split("."):
++        try:
++            out.append((0, int(part)))
++        except ValueError:
++            out.append((1, part.lower()))
++    return out
++
++
++def latest_version_dir(pkg: pathlib.Path) -> pathlib.Path:
++    versions = [p for p in pkg.iterdir() if p.is_dir()]
++    if not versions:
++        raise FileNotFoundError(f"no versions under {pkg}")
++    return sorted(versions, key=lambda p: version_key(p.name))[-1]
++
++
++def manifest_candidates(winget_id: str) -> list[pathlib.Path]:
++    manifests = REPO / "manifests"
++    if not manifests.exists():
++        return []
++    return list(manifests.rglob(f"{winget_id}.installer.yaml"))
++
++
++def pick_installer(installers: list[dict[str, Any]]) -> dict[str, Any] | None:
++    candidates = []
++    for inst in installers:
++        arch = str(inst.get("Architecture", "")).lower()
++        url = str(inst.get("InstallerUrl", ""))
++        sha = str(inst.get("InstallerSha256", ""))
++        if not url or len(sha) != 64:
++            continue
++        score = 0
++        if arch in {"x64", "neutral"}:
++            score += 10
++        if url.lower().endswith((".exe", ".msi")):
++            score += 5
++        if str(inst.get("Scope", "")).lower() == "user":
++            score += 1
++        candidates.append((score, inst))
++    if not candidates:
++        return None
++    return sorted(candidates, key=lambda x: x[0], reverse=True)[0][1]
++
++
++def with_manifest_defaults(data: dict[str, Any], installer: dict[str, Any]) -> dict[str, Any]:
++    merged = dict(installer)
++    for key in ("InstallerType", "Scope", "InstallerSwitches"):
++        if key not in merged and data.get(key) is not None:
++            merged[key] = data.get(key)
++    return merged
++
++
++def default_silent_args(installer_type: str) -> str:
++    kind = installer_type.lower()
++    if kind in {"nullsoft", "nsis"}:
++        return "/S"
++    if kind in {"inno", "inno setup"}:
++        return "/VERYSILENT /NORESTART"
++    if kind in {"msi", "wix", "burn"}:
++        return "/quiet /norestart"
++    return ""
++
++
++def from_files(winget_id: str, version: str | None = None) -> dict[str, Any]:
++    manifests = manifest_candidates(winget_id)
++    if version:
++        manifests = [m for m in manifests if m.parent.name == version]
++    if not manifests:
++        # Keep the old deterministic path as a final fallback for hand-written IDs.
++        pkg = package_path(winget_id)
++        version_dir = pkg / version if version else latest_version_dir(pkg)
++        manifests = sorted(version_dir.glob("*.installer.yaml"))
++    if not manifests:
++        raise FileNotFoundError(f"no installer manifest for {winget_id}")
++    manifest = sorted(manifests, key=lambda p: version_key(p.parent.name))[-1]
++    data = yaml_load(manifest)
++    installer = pick_installer(data.get("Installers", []))
++    if not installer:
++        raise ValueError(f"no supported installer for {winget_id} {manifest.parent.name}")
++    resolved_id = str(data.get("PackageIdentifier") or winget_id)
++    resolved_version = str(data.get("PackageVersion") or manifest.parent.name)
++    return normalize(resolved_id, resolved_version, with_manifest_defaults(data, installer), manifest)
++
++
++def from_index(winget_id: str) -> dict[str, Any] | None:
++    if not INDEX.exists():
++        return None
++    con = sqlite3.connect(INDEX)
++    con.row_factory = sqlite3.Row
++    row = con.execute("SELECT * FROM packages WHERE winget_id=? LIMIT 1", (winget_id,)).fetchone()
++    con.close()
++    if not row:
++        return None
++    return {k: row[k] for k in row.keys()}
++
++
++def normalize(winget_id: str, version: str, installer: dict[str, Any], source: pathlib.Path) -> dict[str, Any]:
++    switches = installer.get("InstallerSwitches") or {}
++    installer_type = str(installer.get("InstallerType") or "unknown")
++    silent = switches.get("Silent") or switches.get("SilentWithProgress") or default_silent_args(installer_type)
++    source_date = dt.datetime.fromtimestamp(source.stat().st_mtime, dt.timezone.utc).isoformat()
++    return {
++        "winget_id": winget_id,
++        "latest_version": version,
++        "version": version,
++        "installer_url": installer.get("InstallerUrl"),
++        "url": installer.get("InstallerUrl"),
++        "installer_sha256": str(installer.get("InstallerSha256", "")).lower(),
++        "sha256": str(installer.get("InstallerSha256", "")).lower(),
++        "silent_args": silent or "",
++        "args": silent or "",
++        "scope": installer.get("Scope") or "unknown",
++        "architecture": installer.get("Architecture") or "unknown",
++        "installer_type": installer_type,
++        "manifest_path": str(source),
++        "manifest_source_date": source_date,
++    }
++
++
++def resolve(winget_id: str, version: str | None = None) -> dict[str, Any]:
++    if version is None:
++        indexed = from_index(winget_id)
++        if indexed:
++            indexed["version"] = indexed.get("latest_version")
++            indexed["url"] = indexed.get("installer_url")
++            indexed["sha256"] = indexed.get("installer_sha256")
++            indexed["args"] = indexed.get("silent_args")
++            return indexed
++    return from_files(winget_id, version)
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("winget_id")
++    ap.add_argument("--version")
++    args = ap.parse_args()
++    try:
++        print(json.dumps(resolve(args.winget_id, args.version), indent=2, sort_keys=True))
++        return 0
++    except Exception as exc:
++        print(f"manifest_reader error: {exc}", file=sys.stderr)
++        return 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tools/compat-runner/plan.yaml b/tools/compat-runner/plan.yaml
+index 68600ec..20cf20c 100644
+--- a/tools/compat-runner/plan.yaml
++++ b/tools/compat-runner/plan.yaml
+@@ -1,52 +1,302 @@
+-[
+-  {"id":"notepad-plus-plus","name":"Notepad++","category":"business","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"libreoffice-viewer","name":"Office Viewer","category":"business","action":"manual-media-required","expected":"PARTIAL"},
+-  {"id":"sumatra-pdf","name":"SumatraPDF","category":"business","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"7zip","name":"7-Zip","category":"business","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"far-manager","name":"FAR Manager","category":"business","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"total-commander","name":"Total Commander","category":"business","action":"manual-media-required","expected":"PARTIAL"},
+-  {"id":"autocad-lt","name":"AutoCAD LT","category":"business","action":"manual-license-required","expected":"BROKEN"},
+-  {"id":"revit","name":"Revit","category":"business","action":"manual-license-required","expected":"BROKEN"},
+-  {"id":"sap-gui","name":"SAP GUI","category":"business","action":"manual-media-required","expected":"PARTIAL"},
+-  {"id":"kmplayer","name":"KMPlayer","category":"business","action":"portable-fixture","expected":"PARTIAL"},
+-  {"id":"irfanview","name":"IrfanView","category":"business","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"gimp-win","name":"GIMP Windows","category":"business","action":"manual-media-required","expected":"PARTIAL"},
+-  {"id":"inkscape-win","name":"Inkscape Windows","category":"business","action":"manual-media-required","expected":"PARTIAL"},
+-  {"id":"audacity","name":"Audacity","category":"business","action":"manual-media-required","expected":"PARTIAL"},
+-  {"id":"obs","name":"OBS Studio","category":"business","action":"manual-media-required","expected":"BROKEN"},
+-  {"id":"1c-buh","name":"1С Бухгалтерия 8","category":"cis","action":"manual-license-required","expected":"WORKS"},
+-  {"id":"consultant-plus","name":"КонсультантПлюс","category":"cis","action":"manual-license-required","expected":"PARTIAL"},
+-  {"id":"garant","name":"Гарант","category":"cis","action":"manual-license-required","expected":"PARTIAL"},
+-  {"id":"kontur","name":"Контур.Экстерн","category":"cis","action":"manual-license-required","expected":"BROKEN"},
+-  {"id":"alfa-auto","name":"Альфа-Авто","category":"cis","action":"manual-license-required","expected":"PARTIAL"},
+-  {"id":"portal","name":"Portal","category":"games","action":"steam-library-required","expected":"WORKS"},
+-  {"id":"portal-2","name":"Portal 2","category":"games","action":"steam-library-required","expected":"WORKS"},
+-  {"id":"stardew-valley","name":"Stardew Valley","category":"games","action":"steam-library-required","expected":"WORKS"},
+-  {"id":"terraria","name":"Terraria","category":"games","action":"steam-library-required","expected":"WORKS"},
+-  {"id":"hades","name":"Hades","category":"games","action":"steam-library-required","expected":"PARTIAL"},
+-  {"id":"hollow-knight","name":"Hollow Knight","category":"games","action":"steam-library-required","expected":"PARTIAL"},
+-  {"id":"skyrim-se","name":"Skyrim Special Edition","category":"games","action":"steam-library-required","expected":"PARTIAL"},
+-  {"id":"fallout-new-vegas","name":"Fallout New Vegas","category":"games","action":"steam-library-required","expected":"PARTIAL"},
+-  {"id":"witcher-3","name":"The Witcher 3","category":"games","action":"steam-library-required","expected":"PARTIAL"},
+-  {"id":"cyberpunk-2077","name":"Cyberpunk 2077","category":"games","action":"steam-library-required","expected":"BROKEN"},
+-  {"id":"control","name":"Control","category":"games","action":"steam-library-required","expected":"PARTIAL"},
+-  {"id":"disco-elysium","name":"Disco Elysium","category":"games","action":"steam-library-required","expected":"WORKS"},
+-  {"id":"factorio","name":"Factorio","category":"games","action":"steam-library-required","expected":"WORKS"},
+-  {"id":"rimworld","name":"RimWorld","category":"games","action":"steam-library-required","expected":"WORKS"},
+-  {"id":"celeste","name":"Celeste","category":"games","action":"steam-library-required","expected":"WORKS"},
+-  {"id":"dead-cells","name":"Dead Cells","category":"games","action":"steam-library-required","expected":"WORKS"},
+-  {"id":"doom-2016","name":"DOOM 2016","category":"games","action":"steam-library-required","expected":"PARTIAL"},
+-  {"id":"mass-effect","name":"Mass Effect Legendary Edition","category":"games","action":"steam-library-required","expected":"PARTIAL"},
+-  {"id":"civilization-vi","name":"Civilization VI","category":"games","action":"steam-library-required","expected":"PARTIAL"},
+-  {"id":"cities-skylines","name":"Cities Skylines","category":"games","action":"steam-library-required","expected":"PARTIAL"},
+-  {"id":"hxd","name":"HxD","category":"dev","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"winscp","name":"WinSCP","category":"dev","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"putty","name":"PuTTY","category":"dev","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"keepass","name":"KeePass","category":"dev","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"mercurial","name":"Mercurial","category":"dev","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"sysinternals","name":"Sysinternals Suite","category":"dev","action":"portable-fixture","expected":"WORKS"},
+-  {"id":"git-for-windows","name":"Git for Windows","category":"dev","action":"manual-media-required","expected":"PARTIAL"},
+-  {"id":"node-win","name":"Node.js Windows","category":"dev","action":"manual-media-required","expected":"PARTIAL"},
+-  {"id":"python-win","name":"Python Windows","category":"dev","action":"manual-media-required","expected":"PARTIAL"},
+-  {"id":"vscode-win","name":"VS Code Windows","category":"dev","action":"manual-media-required","expected":"PARTIAL"}
+-]
++plan_version: 1
++programs:
++  - id: notepad-plus-plus
++    name: Notepad++
++    winget_id: Notepad++.Notepad++
++    category: dev
++    expected_window_title: Notepad++
++    timeout_s: 30
++  - id: seven-zip
++    name: 7-Zip
++    winget_id: 7zip.7zip
++    category: utility
++    expected_window_title: 7-Zip
++    timeout_s: 20
++  - id: far-manager
++    name: FAR Manager
++    winget_id: FarManager.FarManager
++    category: utility
++    expected_window_title: Far Manager
++    timeout_s: 30
++  - id: putty
++    name: PuTTY
++    winget_id: PuTTY.PuTTY
++    category: dev
++    expected_window_title: PuTTY
++    timeout_s: 20
++  - id: keepass
++    name: KeePass
++    winget_id: DominikReichl.KeePass
++    category: utility
++    expected_window_title: KeePass
++    timeout_s: 30
++  - id: winscp
++    name: WinSCP
++    winget_id: WinSCP.WinSCP
++    category: network
++    expected_window_title: WinSCP
++    timeout_s: 45
++  - id: audacity
++    name: Audacity
++    winget_id: Audacity.Audacity
++    category: media
++    expected_window_title: Audacity
++    timeout_s: 45
++  - id: hxd
++    name: HxD
++    winget_id: MHNexus.HxD
++    category: dev
++    expected_window_title: HxD
++    timeout_s: 30
++  - id: irfanview
++    name: IrfanView
++    winget_id: IrfanSkiljan.IrfanView
++    category: media
++    expected_window_title: IrfanView
++    timeout_s: 30
++  - id: gimp
++    name: GIMP
++    winget_id: GIMP.GIMP
++    category: creative
++    expected_window_title: GIMP
++    timeout_s: 60
++  - id: inkscape
++    name: Inkscape
++    winget_id: Inkscape.Inkscape
++    category: creative
++    expected_window_title: Inkscape
++    timeout_s: 60
++  - id: windows-terminal
++    name: Windows Terminal
++    winget_id: Microsoft.WindowsTerminal
++    category: dev
++    expected_window_title: Terminal
++    timeout_s: 30
++  - id: firefox-esr
++    name: Firefox ESR
++    winget_id: Mozilla.Firefox.ESR
++    category: browser
++    expected_window_title: Firefox
++    timeout_s: 45
++  - id: libreoffice
++    name: LibreOffice
++    winget_id: TheDocumentFoundation.LibreOffice
++    category: office
++    expected_window_title: LibreOffice
++    timeout_s: 60
++  - id: git
++    name: Git for Windows
++    winget_id: Git.Git
++    category: dev
++    expected_window_title: Git
++    timeout_s: 30
++  - id: vscode
++    name: Visual Studio Code
++    winget_id: Microsoft.VisualStudioCode
++    category: dev
++    expected_window_title: Visual Studio Code
++    timeout_s: 45
++  - id: python
++    name: Python
++    winget_id: Python.Python.3.12
++    category: dev
++    expected_window_title: Python
++    timeout_s: 30
++  - id: nodejs
++    name: Node.js
++    winget_id: OpenJS.NodeJS.LTS
++    category: dev
++    expected_window_title: Node.js
++    timeout_s: 30
++  - id: sumatra-pdf
++    name: SumatraPDF
++    winget_id: SumatraPDF.SumatraPDF
++    category: office
++    expected_window_title: SumatraPDF
++    timeout_s: 20
++  - id: obs-studio
++    name: OBS Studio
++    winget_id: OBSProject.OBSStudio
++    category: media
++    expected_window_title: OBS
++    timeout_s: 60
++  - id: 1c-enterprise-83
++    name: 1С Предприятие 8.3
++    media: manual-required
++    category: cis
++    expected_window_title: 1С:Предприятие
++    timeout_s: 60
++  - id: consultant-plus
++    name: КонсультантПлюс
++    media: manual-required
++    category: cis
++    expected_window_title: КонсультантПлюс
++    timeout_s: 60
++  - id: garant
++    name: Гарант
++    media: manual-required
++    category: cis
++    expected_window_title: Гарант
++    timeout_s: 60
++  - id: kontur
++    name: Контур.Экстерн
++    media: manual-required
++    category: cis
++    expected_window_title: Контур
++    timeout_s: 60
++  - id: alfa-auto
++    name: Альфа-Авто
++    media: manual-required
++    category: cis
++    expected_window_title: Альфа-Авто
++    timeout_s: 60
++  - id: autocad-lt
++    name: AutoCAD LT
++    media: manual-required
++    category: commercial
++    expected_window_title: AutoCAD
++    timeout_s: 90
++  - id: revit
++    name: Revit
++    media: manual-required
++    category: commercial
++    expected_window_title: Revit
++    timeout_s: 90
++  - id: sap-gui
++    name: SAP GUI
++    media: manual-required
++    category: commercial
++    expected_window_title: SAP
++    timeout_s: 60
++  - id: office
++    name: Microsoft Office
++    media: manual-required
++    category: commercial
++    expected_window_title: Word
++    timeout_s: 90
++  - id: photoshop
++    name: Adobe Photoshop
++    media: manual-required
++    category: commercial
++    expected_window_title: Photoshop
++    timeout_s: 90
++  - id: total-commander
++    name: Total Commander
++    media: manual-required
++    category: utility
++    expected_window_title: Total Commander
++    timeout_s: 30
++  - id: kmplayer
++    name: KMPlayer
++    media: manual-required
++    category: media
++    expected_window_title: KMPlayer
++    timeout_s: 45
++  - id: portal
++    name: Portal
++    media: steam-library-required
++    category: games
++    expected_window_title: Portal
++    timeout_s: 45
++  - id: portal-2
++    name: Portal 2
++    media: steam-library-required
++    category: games
++    expected_window_title: Portal 2
++    timeout_s: 45
++  - id: stardew-valley
++    name: Stardew Valley
++    media: steam-library-required
++    category: games
++    expected_window_title: Stardew Valley
++    timeout_s: 45
++  - id: terraria
++    name: Terraria
++    media: steam-library-required
++    category: games
++    expected_window_title: Terraria
++    timeout_s: 45
++  - id: hades
++    name: Hades
++    media: steam-library-required
++    category: games
++    expected_window_title: Hades
++    timeout_s: 45
++  - id: hollow-knight
++    name: Hollow Knight
++    media: steam-library-required
++    category: games
++    expected_window_title: Hollow Knight
++    timeout_s: 45
++  - id: skyrim-se
++    name: Skyrim Special Edition
++    media: steam-library-required
++    category: games
++    expected_window_title: Skyrim
++    timeout_s: 60
++  - id: fallout-new-vegas
++    name: Fallout New Vegas
++    media: steam-library-required
++    category: games
++    expected_window_title: Fallout
++    timeout_s: 60
++  - id: witcher-3
++    name: The Witcher 3
++    media: steam-library-required
++    category: games
++    expected_window_title: Witcher
++    timeout_s: 60
++  - id: cyberpunk-2077
++    name: Cyberpunk 2077
++    media: steam-library-required
++    category: games
++    expected_window_title: Cyberpunk
++    timeout_s: 60
++  - id: control
++    name: Control
++    media: steam-library-required
++    category: games
++    expected_window_title: Control
++    timeout_s: 60
++  - id: disco-elysium
++    name: Disco Elysium
++    media: steam-library-required
++    category: games
++    expected_window_title: Disco
++    timeout_s: 45
++  - id: factorio
++    name: Factorio
++    media: steam-library-required
++    category: games
++    expected_window_title: Factorio
++    timeout_s: 45
++  - id: rimworld
++    name: RimWorld
++    media: steam-library-required
++    category: games
++    expected_window_title: RimWorld
++    timeout_s: 45
++  - id: celeste
++    name: Celeste
++    media: steam-library-required
++    category: games
++    expected_window_title: Celeste
++    timeout_s: 45
++  - id: dead-cells
++    name: Dead Cells
++    media: steam-library-required
++    category: games
++    expected_window_title: Dead Cells
++    timeout_s: 45
++  - id: doom-2016
++    name: DOOM 2016
++    media: steam-library-required
++    category: games
++    expected_window_title: DOOM
++    timeout_s: 60
++  - id: mass-effect
++    name: Mass Effect Legendary Edition
++    media: steam-library-required
++    category: games
++    expected_window_title: Mass Effect
++    timeout_s: 60

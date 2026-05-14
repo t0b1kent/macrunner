@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_SRC="$ROOT/app/macr-control-center"
-VERSION="${MACRUNNER_VERSION:-1.0.1}"
+VERSION="${MACRUNNER_VERSION:-1.0.2}"
 DIST="$ROOT/dist"
 STAGE="$DIST/stage"
 APP="$STAGE/MacRunner.app"

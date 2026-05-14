@@ -1,0 +1,16 @@
+{
+  "downloaded": false,
+  "downloaded_sha256_match": null,
+  "elapsed_s": 0.004,
+  "engine_state": "pass=0 fail=0 hang=1",
+  "id": "notepad-plus-plus",
+  "install_exit_code": null,
+  "install_started": false,
+  "manifest_source_date": "1778727989450371908",
+  "name": "Notepad++",
+  "result": "ENGINE_REGRESSION",
+  "screenshots": [],
+  "version_tested": "8.9.5",
+  "window_title_matched": false,
+  "winget_id": "Notepad++.Notepad++"
+}

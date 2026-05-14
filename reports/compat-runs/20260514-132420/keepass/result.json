@@ -1,0 +1,16 @@
+{
+  "downloaded": false,
+  "downloaded_sha256_match": null,
+  "elapsed_s": 0.0,
+  "engine_state": "pass=0 fail=0 hang=1",
+  "id": "keepass",
+  "install_exit_code": null,
+  "install_started": false,
+  "manifest_source_date": "1778727965587268057",
+  "name": "KeePass",
+  "result": "ENGINE_REGRESSION",
+  "screenshots": [],
+  "version_tested": "2.61.1",
+  "window_title_matched": false,
+  "winget_id": "DominikReichl.KeePass"
+}

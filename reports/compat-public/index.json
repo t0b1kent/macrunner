@@ -2,353 +2,553 @@
   "rows": [
     {
       "crossover": "PARTIAL",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
+      "id": "notepad-plus-plus",
+      "macrunner": "FAIL",
+      "note": "",
       "program": "Notepad++",
-      "whisky": "BROKEN"
+      "source_manifest_date": "2026-05-14T03:06:29.450372+00:00",
+      "version": "8.9.5",
+      "whisky": "FAIL",
+      "winget_id": "Notepad++.Notepad++"
     },
     {
-      "crossover": "UNKNOWN",
+      "crossover": "PASS",
+      "id": "seven-zip",
       "macrunner": "PARTIAL",
       "note": "",
-      "program": "Office Viewer",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "SumatraPDF",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
       "program": "7-Zip",
-      "whisky": "UNKNOWN"
+      "source_manifest_date": "2026-05-14T03:05:58.003799+00:00",
+      "version": "26.01",
+      "whisky": "PARTIAL",
+      "winget_id": "7zip.7zip"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
+      "id": "far-manager",
+      "macrunner": "PARTIAL",
+      "note": "",
       "program": "FAR Manager",
-      "whisky": "UNKNOWN"
+      "source_manifest_date": "2026-05-14T03:06:07.567596+00:00",
+      "version": "3.0.6666",
+      "whisky": "UNKNOWN",
+      "winget_id": "FarManager.FarManager"
     },
     {
-      "crossover": "UNKNOWN",
+      "crossover": "PARTIAL",
+      "id": "putty",
       "macrunner": "PARTIAL",
+      "note": "MacRunner only vs Whisky; partial install reached",
+      "program": "PuTTY",
+      "source_manifest_date": "2026-05-14T03:06:32.595574+00:00",
+      "version": "0.83.0.0",
+      "whisky": "FAIL",
+      "winget_id": "PuTTY.PuTTY"
+    },
+    {
+      "crossover": "PARTIAL",
+      "id": "keepass",
+      "macrunner": "FAIL",
       "note": "",
-      "program": "Total Commander",
-      "whisky": "UNKNOWN"
+      "program": "KeePass",
+      "source_manifest_date": "2026-05-14T03:06:05.587268+00:00",
+      "version": "2.61.1",
+      "whisky": "PARTIAL",
+      "winget_id": "DominikReichl.KeePass"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "BROKEN",
+      "id": "winscp",
+      "macrunner": "NOT_RUN",
       "note": "",
-      "program": "AutoCAD LT",
-      "whisky": "UNKNOWN"
+      "program": "WinSCP",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "WinSCP.WinSCP"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "BROKEN",
-      "note": "",
-      "program": "Revit",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "SAP GUI",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "KMPlayer",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "IrfanView",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "GIMP Windows",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "Inkscape Windows",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
+      "id": "audacity",
+      "macrunner": "NOT_RUN",
       "note": "",
       "program": "Audacity",
-      "whisky": "UNKNOWN"
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "Audacity.Audacity"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "BROKEN",
+      "id": "hxd",
+      "macrunner": "NOT_RUN",
       "note": "",
-      "program": "OBS Studio",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "1\u0421 \u0411\u0443\u0445\u0433\u0430\u043b\u0442\u0435\u0440\u0438\u044f 8",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u043d\u0442\u041f\u043b\u044e\u0441",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "\u0413\u0430\u0440\u0430\u043d\u0442",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "BROKEN",
-      "note": "",
-      "program": "\u041a\u043e\u043d\u0442\u0443\u0440.\u042d\u043a\u0441\u0442\u0435\u0440\u043d",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "\u0410\u043b\u044c\u0444\u0430-\u0410\u0432\u0442\u043e",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "Portal",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "Portal 2",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "Stardew Valley",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "Terraria",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "Hades",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "Hollow Knight",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "Skyrim Special Edition",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "Fallout New Vegas",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "The Witcher 3",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "BROKEN",
-      "note": "",
-      "program": "Cyberpunk 2077",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "Control",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "Disco Elysium",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "Factorio",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "RimWorld",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "Celeste",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "Dead Cells",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "DOOM 2016",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "Mass Effect Legendary Edition",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "Civilization VI",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
-      "note": "",
-      "program": "Cities Skylines",
-      "whisky": "UNKNOWN"
-    },
-    {
-      "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
       "program": "HxD",
-      "whisky": "UNKNOWN"
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "MHNexus.HxD"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "WinSCP",
-      "whisky": "UNKNOWN"
+      "id": "irfanview",
+      "macrunner": "NOT_RUN",
+      "note": "",
+      "program": "IrfanView",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "IrfanSkiljan.IrfanView"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "PuTTY",
-      "whisky": "UNKNOWN"
+      "id": "gimp",
+      "macrunner": "NOT_RUN",
+      "note": "",
+      "program": "GIMP",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "GIMP.GIMP"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "KeePass",
-      "whisky": "UNKNOWN"
+      "id": "inkscape",
+      "macrunner": "NOT_RUN",
+      "note": "",
+      "program": "Inkscape",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "Inkscape.Inkscape"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "Mercurial",
-      "whisky": "UNKNOWN"
+      "id": "windows-terminal",
+      "macrunner": "NOT_RUN",
+      "note": "",
+      "program": "Windows Terminal",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "Microsoft.WindowsTerminal"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "WORKS",
-      "note": "MacRunner only",
-      "program": "Sysinternals Suite",
-      "whisky": "UNKNOWN"
+      "id": "firefox-esr",
+      "macrunner": "NOT_RUN",
+      "note": "",
+      "program": "Firefox ESR",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "Mozilla.Firefox.ESR"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
+      "id": "libreoffice",
+      "macrunner": "NOT_RUN",
+      "note": "",
+      "program": "LibreOffice",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "TheDocumentFoundation.LibreOffice"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "git",
+      "macrunner": "NOT_RUN",
       "note": "",
       "program": "Git for Windows",
-      "whisky": "UNKNOWN"
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "Git.Git"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
+      "id": "vscode",
+      "macrunner": "NOT_RUN",
       "note": "",
-      "program": "Node.js Windows",
-      "whisky": "UNKNOWN"
+      "program": "Visual Studio Code",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "Microsoft.VisualStudioCode"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
+      "id": "python",
+      "macrunner": "NOT_RUN",
       "note": "",
-      "program": "Python Windows",
-      "whisky": "UNKNOWN"
+      "program": "Python",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "Python.Python.3.12"
     },
     {
       "crossover": "UNKNOWN",
-      "macrunner": "PARTIAL",
+      "id": "nodejs",
+      "macrunner": "NOT_RUN",
       "note": "",
-      "program": "VS Code Windows",
-      "whisky": "UNKNOWN"
+      "program": "Node.js",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "OpenJS.NodeJS.LTS"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "sumatra-pdf",
+      "macrunner": "NOT_RUN",
+      "note": "",
+      "program": "SumatraPDF",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "SumatraPDF.SumatraPDF"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "obs-studio",
+      "macrunner": "NOT_RUN",
+      "note": "",
+      "program": "OBS Studio",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": "OBSProject.OBSStudio"
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "1c-enterprise-83",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "1\u0421 \u041f\u0440\u0435\u0434\u043f\u0440\u0438\u044f\u0442\u0438\u0435 8.3",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "consultant-plus",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u043d\u0442\u041f\u043b\u044e\u0441",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "garant",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "\u0413\u0430\u0440\u0430\u043d\u0442",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "kontur",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "\u041a\u043e\u043d\u0442\u0443\u0440.\u042d\u043a\u0441\u0442\u0435\u0440\u043d",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "alfa-auto",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "\u0410\u043b\u044c\u0444\u0430-\u0410\u0432\u0442\u043e",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "autocad-lt",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "AutoCAD LT",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "revit",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Revit",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "sap-gui",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "SAP GUI",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "office",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Microsoft Office",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "photoshop",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Adobe Photoshop",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "total-commander",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Total Commander",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "kmplayer",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "KMPlayer",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "portal",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Portal",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "portal-2",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Portal 2",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "stardew-valley",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Stardew Valley",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "terraria",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Terraria",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "hades",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Hades",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "hollow-knight",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Hollow Knight",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "skyrim-se",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Skyrim Special Edition",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "fallout-new-vegas",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Fallout New Vegas",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "witcher-3",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "The Witcher 3",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "cyberpunk-2077",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Cyberpunk 2077",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "control",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Control",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "disco-elysium",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Disco Elysium",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "factorio",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Factorio",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "rimworld",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "RimWorld",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "celeste",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Celeste",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "dead-cells",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Dead Cells",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "doom-2016",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "DOOM 2016",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
+    },
+    {
+      "crossover": "UNKNOWN",
+      "id": "mass-effect",
+      "macrunner": "MANUAL_REQUIRED",
+      "note": "",
+      "program": "Mass Effect Legendary Edition",
+      "source_manifest_date": null,
+      "version": null,
+      "whisky": "UNKNOWN",
+      "winget_id": null
     }
   ]
 }

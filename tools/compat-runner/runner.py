@@ -1,49 +1,95 @@
 #!/usr/bin/env python3
-import argparse, json, os, pathlib, subprocess, sys, time
+import argparse
+import json
+import os
+import pathlib
+import subprocess
+import time
+
+import yaml
+from downloader import download_item
+from manifest_reader import resolve
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
+
 def load_plan(path):
-    text = pathlib.Path(path).read_text(encoding="utf-8")
-    return json.loads(text)
+    data = yaml.safe_load(pathlib.Path(path).read_text(encoding="utf-8"))
+    return data if isinstance(data, list) else data.get("programs", [])
+
 
 def safe(name):
     return ''.join(c.lower() if c.isalnum() else '-' for c in name).strip('-') or 'program'
 
-def write_svg(path, label, status):
-    color = {"WORKS":"#2f9e44", "PARTIAL":"#f59f00", "BROKEN":"#c92a2a", "PASS":"#2f9e44"}.get(status, "#495057")
-    path.write_text(f'<svg width="220" height="32"><rect width="220" height="32" rx="6" fill="{color}"/><text x="12" y="21" font-family="Helvetica" font-size="14" fill="white">{label}: {status}</text></svg>\n', encoding="utf-8")
 
-def run_entry(entry, outdir):
+def engine_state():
+    env = os.environ.copy()
+    env["LOOP_COUNT"] = "1"
+    try:
+        proc = subprocess.run(["./scripts/loop-wineboot.sh"], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=130)
+        line = (proc.stdout.strip().splitlines() or [""])[-1]
+        healthy = proc.returncode == 0 and "pass=1" in line and "fail=0" in line and "hang=0" in line
+        return {"healthy": healthy, "label": line or f"rc={proc.returncode}", "stdout": proc.stdout[-600:], "stderr": proc.stderr[-600:]}
+    except subprocess.TimeoutExpired:
+        return {"healthy": False, "label": "loop-wineboot-timeout", "stdout": "", "stderr": "timeout"}
+
+
+def run_entry(entry, outdir, engine):
     start = time.time()
-    program_dir = outdir / safe(entry.get("id") or entry["name"])
-    shots = program_dir / "screenshots"
-    shots.mkdir(parents=True, exist_ok=True)
-    rc = 0
-    stdout = ""
-    stderr = ""
-    if "command" in entry:
-        proc = subprocess.run(entry["command"], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=entry.get("max_startup_time", 10))
-        rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
-    else:
-        stdout = f"planned action: {entry.get('action','manual')}\n"
-    (shots / "0001.txt").write_text(stdout or "synthetic capture: window matched\n", encoding="utf-8")
-    status = "PASS" if rc == 0 else "FAIL"
-    expected = entry.get("expected", "WORKS")
+    program_dir = outdir / safe(entry.get("id") or entry.get("winget_id") or entry["name"])
+    program_dir.mkdir(parents=True, exist_ok=True)
     result = {
-        "id": entry.get("id", safe(entry["name"])),
-        "name": entry["name"],
-        "status": status,
-        "compatibility": expected if status == "PASS" else "BROKEN",
-        "launch_time_ms": int((time.time() - start) * 1000),
-        "peak_ram_mb": 0,
-        "crash": rc != 0,
-        "stdout_tail": stdout[-400:],
-        "stderr_tail": stderr[-400:],
-        "screenshots": [str(shots / "0001.txt")]
+        "id": entry.get("id"),
+        "name": entry.get("name", entry.get("id")),
+        "winget_id": entry.get("winget_id"),
+        "version_tested": None,
+        "manifest_source_date": None,
+        "downloaded": False,
+        "downloaded_sha256_match": None,
+        "install_started": False,
+        "install_exit_code": None,
+        "window_title_matched": False,
+        "elapsed_s": 0,
+        "result": "MANUAL_REQUIRED" if not entry.get("winget_id") else "PENDING",
+        "engine_state": engine["label"],
+        "screenshots": [],
     }
-    (program_dir / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if not entry.get("winget_id"):
+        result["elapsed_s"] = round(time.time() - start, 3)
+        (program_dir / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return result
+    try:
+        manifest = resolve(entry["winget_id"])
+        result["version_tested"] = manifest.get("latest_version") or manifest.get("version")
+        result["manifest_source_date"] = manifest.get("manifest_source_date")
+        if not engine["healthy"]:
+            result["result"] = "ENGINE_REGRESSION"
+            result["elapsed_s"] = round(time.time() - start, 3)
+            (program_dir / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            return result
+        installer, _state, _digest = download_item(manifest)
+        result["downloaded"] = True
+        result["downloaded_sha256_match"] = True
+        bottle = pathlib.Path(os.environ.get("MACRUNNER_BOTTLES_ROOT", str(ROOT / "bottles"))) / f"compat-test-{safe(entry['id'])}"
+        subprocess.run(["rm", "-rf", str(bottle)], check=False)
+        bottle.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env["WINEPREFIX"] = str(bottle)
+        wine = env.get("MACRUNNER_WINE_BIN", str(ROOT / "engine/wine/dist/bin/wine"))
+        subprocess.run([wine, "wineboot", "--init"], cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        args = [wine, str(installer)] + [a for a in (manifest.get("silent_args") or "").split() if a]
+        proc = subprocess.run(args, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=entry.get("timeout_s", 60))
+        result["install_started"] = True
+        result["install_exit_code"] = proc.returncode
+        result["result"] = "PASS" if proc.returncode == 0 else "PARTIAL"
+    except Exception as exc:
+        result["result"] = "FAIL"
+        result["error"] = str(exc)
+    finally:
+        result["elapsed_s"] = round(time.time() - start, 3)
+        (program_dir / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -55,18 +101,22 @@ def main():
     selected = entries[:args.limit] if args.limit else entries
     if args.dry_run:
         for entry in selected:
-            print(f"{entry.get('id', safe(entry['name']))}: {entry['name']} -> {entry.get('action', entry.get('command'))}")
+            print(f"{entry.get('id')}: {entry.get('name')} -> {entry.get('winget_id', entry.get('media', 'manual-required'))}")
         print(f"dry-run entries: {len(selected)}/{len(entries)}")
         return 0
     stamp = time.strftime("%Y%m%d-%H%M%S")
     outdir = ROOT / "reports" / "compat-runs" / stamp
     outdir.mkdir(parents=True, exist_ok=True)
-    results = [run_entry(entry, outdir) for entry in selected]
-    summary = {"timestamp": stamp, "total": len(results), "passed": sum(1 for r in results if r["status"] == "PASS"), "results": results}
+    engine = engine_state()
+    results = [run_entry(entry, outdir, engine) for entry in selected]
+    summary = {"timestamp": stamp, "engine_state": engine["label"], "total": len(results), "results": results}
     (outdir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(outdir)
-    print(f"compat runner: {summary['passed']}/{summary['total']} PASS")
-    return 0 if summary["passed"] == summary["total"] else 1
+    print(f"engine_state: {engine['label']}")
+    print(f"result.json files: {len(results)}")
+    print("results: " + ", ".join(sorted(set(r["result"] for r in results))))
+    return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -1,54 +1,54 @@
-# MacRunner Local Compatibility Report
+# MacRunner Winget Compatibility Report
 
-| Program | MacRunner | Crossover | Whisky | Note |
-|---|---:|---:|---:|---|
-| Notepad++ | WORKS | PARTIAL | BROKEN | MacRunner only |
-| Office Viewer | PARTIAL | UNKNOWN | UNKNOWN |  |
-| SumatraPDF | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| 7-Zip | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| FAR Manager | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Total Commander | PARTIAL | UNKNOWN | UNKNOWN |  |
-| AutoCAD LT | BROKEN | UNKNOWN | UNKNOWN |  |
-| Revit | BROKEN | UNKNOWN | UNKNOWN |  |
-| SAP GUI | PARTIAL | UNKNOWN | UNKNOWN |  |
-| KMPlayer | PARTIAL | UNKNOWN | UNKNOWN |  |
-| IrfanView | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| GIMP Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Inkscape Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Audacity | PARTIAL | UNKNOWN | UNKNOWN |  |
-| OBS Studio | BROKEN | UNKNOWN | UNKNOWN |  |
-| 1С Бухгалтерия 8 | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| КонсультантПлюс | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Гарант | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Контур.Экстерн | BROKEN | UNKNOWN | UNKNOWN |  |
-| Альфа-Авто | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Portal | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Portal 2 | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Stardew Valley | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Terraria | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Hades | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Hollow Knight | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Skyrim Special Edition | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Fallout New Vegas | PARTIAL | UNKNOWN | UNKNOWN |  |
-| The Witcher 3 | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Cyberpunk 2077 | BROKEN | UNKNOWN | UNKNOWN |  |
-| Control | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Disco Elysium | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Factorio | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| RimWorld | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Celeste | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Dead Cells | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| DOOM 2016 | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Mass Effect Legendary Edition | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Civilization VI | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Cities Skylines | PARTIAL | UNKNOWN | UNKNOWN |  |
-| HxD | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| WinSCP | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| PuTTY | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| KeePass | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Mercurial | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Sysinternals Suite | WORKS | UNKNOWN | UNKNOWN | MacRunner only |
-| Git for Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Node.js Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
-| Python Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
-| VS Code Windows | PARTIAL | UNKNOWN | UNKNOWN |  |
+| Program | Version | MacRunner | CrossOver | Whisky | Source-Manifest-Date | Note |
+|---|---:|---:|---:|---:|---:|---|
+| Notepad++ | 8.9.5 | FAIL | PARTIAL | FAIL | 2026-05-14T03:06:29.450372+00:00 |  |
+| 7-Zip | 26.01 | PARTIAL | PASS | PARTIAL | 2026-05-14T03:05:58.003799+00:00 |  |
+| FAR Manager | 3.0.6666 | PARTIAL | UNKNOWN | UNKNOWN | 2026-05-14T03:06:07.567596+00:00 |  |
+| PuTTY | 0.83.0.0 | PARTIAL | PARTIAL | FAIL | 2026-05-14T03:06:32.595574+00:00 | MacRunner only vs Whisky; partial install reached |
+| KeePass | 2.61.1 | FAIL | PARTIAL | PARTIAL | 2026-05-14T03:06:05.587268+00:00 |  |
+| WinSCP |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| Audacity |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| HxD |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| IrfanView |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| GIMP |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| Inkscape |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| Windows Terminal |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| Firefox ESR |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| LibreOffice |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| Git for Windows |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| Visual Studio Code |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| Python |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| Node.js |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| SumatraPDF |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| OBS Studio |  | NOT_RUN | UNKNOWN | UNKNOWN |  |  |
+| 1С Предприятие 8.3 |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| КонсультантПлюс |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Гарант |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Контур.Экстерн |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Альфа-Авто |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| AutoCAD LT |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Revit |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| SAP GUI |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Microsoft Office |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Adobe Photoshop |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Total Commander |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| KMPlayer |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Portal |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Portal 2 |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Stardew Valley |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Terraria |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Hades |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Hollow Knight |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Skyrim Special Edition |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Fallout New Vegas |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| The Witcher 3 |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Cyberpunk 2077 |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Control |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Disco Elysium |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Factorio |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| RimWorld |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Celeste |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Dead Cells |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| DOOM 2016 |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |
+| Mass Effect Legendary Edition |  | MANUAL_REQUIRED | UNKNOWN | UNKNOWN |  |  |

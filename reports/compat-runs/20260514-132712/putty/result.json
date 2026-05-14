@@ -1,0 +1,16 @@
+{
+  "downloaded": true,
+  "downloaded_sha256_match": true,
+  "elapsed_s": 38.494,
+  "engine_state": "pass=1 fail=0 hang=0",
+  "id": "putty",
+  "install_exit_code": 67,
+  "install_started": true,
+  "manifest_source_date": "2026-05-14T03:06:32.595574+00:00",
+  "name": "PuTTY",
+  "result": "PARTIAL",
+  "screenshots": [],
+  "version_tested": "0.83.0.0",
+  "window_title_matched": false,
+  "winget_id": "PuTTY.PuTTY"
+}

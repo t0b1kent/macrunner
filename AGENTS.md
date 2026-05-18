@@ -286,6 +286,15 @@ ps -axo comm= | awk '/^(wine-preloader|wine64-preloader|winedbg|wineserver)$/{c+
   Порядок важен: boot → wait for user.reg → wineserver -w → repair → launch.
 - **Background процесс с `&` и parent shell exit = SIGHUP**. Если запускаешь Wine в background
   и shell завершается до 20s sleep, процесс умирает silently. Держи shell живым или используй `nohup`.
+- **`./scripts/run-notepad-x64.sh --hold &` в diagnostic script = SIGHUP**. `--hold` ждёт Ctrl-C,
+  но если родительский shell не tty и завершается, Wine умирает. Правило: `--hold` только для
+  **foreground interactive** проб (ты сидишь у терминала, ждёшь окно). Для diagnostic loops
+  используй **default bounded mode** (без `--hold`) — wrapper сам ждёт 18s, печатает key-lines,
+  убирает хвосты.
+- **Wrapper не принимает `--run-dir`** (по состоянию на текущий момент). Любые unknown args
+  попадают в `EXTRA_ARGS` и передаются в notepad++.exe как command-line args, что может
+  silently сломать поведение. Если нужно фиксированное RUN-dir — extend wrapper, не передавай
+  через unknown flag.
 
 ## Architectural bugs reference
 

@@ -4,6 +4,129 @@
 Любой агент, который потерял контекст (compaction, session restart, новая сессия),
 должен прочитать его прежде чем запускать команды.
 
+## 🛑 MANDATORY PROTOCOL: Opcode/API family audit (read first)
+
+**Когда ты собираешься добавить поддержку нового x86_64 opcode, IR op, WinAPI thunk,
+или decoder/lifter/interpreter/JIT case — этот блок обязателен. Без него фикс не считается законченным.**
+
+### Шаг 1 — Identify the family BEFORE writing the fix
+
+Любой opcode/API живёт в семействе. Семейство = группа инструкций, объединённых
+одним из критериев:
+
+- Same opcode group с разными ModRM /reg (e.g. `C0 /0..7` — ROL/ROR/RCL/RCR/SHL/SHR/SAL/SAR)
+- Same opcode, разные operand sizes (e.g. `C0` byte vs `C1` word/dword vs `D1`/`D3` shift-by-1/CL)
+- Same semantic class (e.g. all prefetch hints: `0F 0D`, `0F 18`, `0F 1F`)
+- Same prefix variants (e.g. `0F 6E` / `66 0F 6E` / `REX.W 0F 6E`)
+- Same SSE↔GPR transfer family (e.g. `0F 6E`, `0F 7E`, `66 0F D6`, `F3 0F 7E`)
+
+**Не нашёл семейство за 2 минуты — спроси Intel SDM Vol 2 (table by opcode).
+Никогда не "это одиночный opcode, family нет" без проверки.**
+
+### Шаг 2 — Pre-fix checklist (вставлять в commit message)
+
+Перед коммитом opcode fix обязательно заполни:
+
+```
+Family: <name, e.g. "C0/C1/D0-D3 byte vs word shift">
+Members: <list all opcodes in family>
+Trigger: <byte sequence that caused the blocker, e.g. "C0 E0 02 from notepad++.exe">
+Coverage in this fix:
+  [x] <opcode A> — added decode + interp + JIT + test
+  [x] <opcode B> — added decode + interp + JIT + test
+  [ ] <opcode C> — NOT applicable because <reason>
+Regression tests:
+  - <test name 1> — covers <opcode>
+  - <test name 2> — covers sibling
+Audit completed: yes/no
+```
+
+**"Audit completed: no" блокирует коммит.** Если есть причина не покрывать всё семейство
+(другой layer, требует JIT поддержки которой нет, и т.д.) — пиши "NOT applicable because ..."
+явно для каждого пропущенного sibling.
+
+### Шаг 3 — Regression covers ≥2 siblings, не только trigger
+
+Тест только на конкретный байт, который упал — НЕ ДОСТАТОЧНО. Тест должен покрывать
+как минимум:
+1. Trigger byte (тот что упал в реальном app)
+2. Один соседний sibling в family (чтобы поймать regression если family заденется)
+3. Edge case (например, если family имеет imm8 form — проверь 0 и max value)
+
+### Worked example (как должно выглядеть)
+
+Codex поймал `C0 E0 02` (shl al, 2) — UNSUPPORTED.
+
+**❌ Wrong reaction:** add C0 /4, test that one byte, commit, move on.
+
+**✅ Right reaction:**
+1. Identify family: byte-shift group = `C0 /0..7` (8 sub-opcodes by /reg field)
+2. Note siblings: `D0 /0..7` (shift-by-1 byte), `D2 /0..7` (shift-by-CL byte)
+3. Add ALL of `C0`, `D0`, `D2` decode + interp + JIT in one fix
+4. Tests: `shl al, 2` (trigger), `shr byte [mem], 1` (D0), `rol bl, cl` (D2)
+5. Commit:
+```
+Add C0/D0/D2 byte-shift family
+
+Family: byte-shift group (8/16-bit GPR or memory by imm8/1/CL)
+Members: C0/D0/D2 (byte) — counterparts to existing C1/D1/D3 (word+)
+Trigger: C0 E0 02 (shl al, 2) from notepad++.exe MSVC prologue
+Coverage:
+  [x] C0 /0..7 — all 8 shift ops, byte operand, imm8 count
+  [x] D0 /0..7 — all 8 shift ops, byte operand, count=1
+  [x] D2 /0..7 — all 8 shift ops, byte operand, count=CL
+Tests: interp_x64_shl_al_imm8, interp_x64_shr_mem8_by_1, interp_x64_rol_bl_cl
+Audit completed: yes
+```
+
+### Known families (use this as the audit baseline)
+
+**Shift/rotate**:
+- `C0 /0..7`, `C1 /0..7` — by imm8 (byte / word+)
+- `D0 /0..7`, `D1 /0..7` — by 1 (byte / word+)
+- `D2 /0..7`, `D3 /0..7` — by CL (byte / word+)
+
+**Prefetch / NOP hints (all should be NOPs in interp)**:
+- `0F 0D /0..7` — PREFETCH/PREFETCHW (3DNow)
+- `0F 18 /0..7` — PREFETCHNTA/T0/T1/T2 + reserved
+- `0F 19..0F 1F` — multi-byte NOPs (MSVC uses heavily for alignment)
+
+**SSE↔GPR transfer (REX.W matters!)**:
+- `66 0F 6E` — MOVD xmm←r/m32 (REX.W→MOVQ qword)
+- `66 0F 7E` — MOVD r/m32←xmm (REX.W→MOVQ qword) ← *bug #4*
+- `66 0F D6` — MOVQ m64←xmm
+- `F3 0F 7E` — MOVQ xmm←xmm/m64
+- `F2 0F D6` — MOVDQ2Q mm←xmm
+
+**Sign/zero extend**:
+- `0F B6`/`0F B7` — MOVZX (byte/word → larger)
+- `0F BE`/`0F BF` — MOVSX (byte/word → larger)
+- `63` — MOVSXD (dword → qword, REX.W mandatory)
+
+**Bit manipulation** (BMI1/BMI2 — modern x64 apps use heavily):
+- `0F BC` — BSF, `0F BD` — BSR
+- `F3 0F BC` — TZCNT, `F3 0F BD` — LZCNT
+- VEX/BMI: ANDN, BEXTR, BLSI, BLSMSK, BLSR (VEX-prefixed, separate work item)
+
+**ACCESS_MASK / WinAPI**:
+- Любой WinAPI с `dwDesiredAccess` — все используют то же generic-mask expansion
+- Если bug в одном (CreateFileW) → check others: OpenProcess, RegOpenKeyEx, CreateMutex, etc.
+
+### Когда audit можно legitimately skip
+
+- VEX-prefixed family — отдельный large work item (AVX/BMI), не audit'и без plan'а
+- Privileged opcodes (IN/OUT, MSR access) — никогда не должны достигать interpreter
+- Family > 30 members (rare) — split на разумные batches, документируй split в commit
+
+### Если audit нашёл ещё bugs
+
+Не комбинируй с trigger fix в один коммит. **Один family = один коммит**, но
+**audit'и все family члены до того как fix-ишь.** Если в процессе audit обнаружил, что
+3 sibling opcodes тоже missing — это OK, добавь все 3 в этот же коммит, это и есть
+правильный family fix.
+
+---
+
 ## Первое действие в каждой сессии
 
 ```bash

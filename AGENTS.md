@@ -4,6 +4,89 @@
 Любой агент, который потерял контекст (compaction, session restart, новая сессия),
 должен прочитать его прежде чем запускать команды.
 
+## 🎯 ZEROTH PRINCIPLE — Native, root-cause, seamless
+
+**MacRunner существует чтобы Windows-приложения работали на Mac как нативные.
+Не "запустить и пусть как-то крутится". Не "почти работает с workaround'ами".
+А seamless, native, профессиональный продукт.**
+
+Это означает для каждого решения:
+
+### 1. Solve at the root, never at the symptom
+
+- Когда находишь bug — fix его в правильном архитектурном слое, не там где удобнее
+- Workaround acceptable **только** как temporary scaffolding пока ищется real fix,
+  и **только** если явно помечен `TODO: workaround for #N, real fix pending`
+- Если есть выбор между "быстрый patch который скрывает symptom" и
+  "правильный fix который требует больше работы" — **всегда выбирай правильный**
+- "Запустить сначала, исправить потом" — **запрещено**. "Потом" не наступает.
+
+### 2. Native by default, не emulation-style
+
+- Используй macOS APIs напрямую (AVAudioEngine, Metal, CoreText) а не Linux shims
+- Используй Apple Silicon strengths (unified memory, AMX, GPU) когда применимо
+- Не порти Linux подход слепо — Mac имеет свои idioms, lean into them
+- Performance equal или better чем native Mac app — наш baseline, не stretch goal
+
+### 3. Architectural completeness over feature breadth
+
+- 5 fully-correct apps лучше чем 50 partially-broken
+- Каждый class bug закрывается **полностью** через family audit, не narrow patch
+- Cross-arch boundaries explicit и safe, не "обычно работает"
+- Memory model, signal model, threading model — все coherent и documented
+
+### 4. Decision rubric для типичных dilemmas
+
+| Choice | Default answer | Override only if |
+|---|---|---|
+| Quick workaround vs proper fix | **Proper fix** | Production blocker AND проперно помечен TODO |
+| Native API vs ported Linux API | **Native** | Native API не существует / incomplete |
+| Bug at root layer vs at symptom layer | **Root layer** | Root layer изменения требуют scope больше чем доступно (rare) |
+| Family fix vs single opcode | **Family** | Family > 30 members AND split явно документирован |
+| Implement now vs defer | **Now if scope allows** | Defer only with explicit "Phase X.Y subtask" tag |
+| New abstraction vs use existing | **Use existing** | Existing genuinely doesn't fit (justified in commit) |
+
+### 5. "Why this matters" — стратегический контекст
+
+Цель MacRunner — **продаваемый продукт** для Mac users которые хотят запускать
+Windows apps без Rosetta. Конкуренты:
+
+- **Mythic / Whisky** — построены на GPTK (Apple) + DXVK + Rosetta. Когда Apple
+  выключит Rosetta (2027-2028) — они умрут. Мы — нет, у нас собственный HyperBridge.
+- **CrossOver** — commercial, но general-purpose. Мы — focused на productivity,
+  AI-driven configuration, premium UX.
+
+Чтобы выжить и **обогнать** конкурентов:
+
+- Архитектурный долг **убийствен** — нельзя оставлять "недоделанные пятна". Каждое
+  "потом исправим" становится yet another competitive disadvantage.
+- **Performance matters**: пользователь сравнивает MacRunner с native Mac app, не
+  с "Wine на Linux". Любая лагающая часть = плохое первое впечатление = no sale.
+- **Reliability matters**: enterprise users (AutoCAD, 1С, Navisworks) не терпят
+  random crashes. Bug сейчас = lost customer навсегда.
+
+Поэтому **никогда не откладывай качественный fix ради скорости**. Время вложенное
+в root-cause solution окупается с лихвой когда тот же класс bug перестаёт
+проявляться в следующих 10 apps.
+
+### 6. Применение в практике
+
+Когда обнаруживаешь проблему:
+
+1. **Stop**. Не пиши код пока не понял root cause.
+2. **Probe**. Evidence-driven, не догадки (см. patch-by-evidence rule ниже).
+3. **Identify family**. Узкая ли это проблема или class? (см. family audit ниже)
+4. **Design fix**. Architectural separation, native APIs, complete coverage.
+5. **Implement**. С regression tests на класс, не только trigger.
+6. **Commit**. Family checklist в commit message обязателен.
+7. **Document**. Если fundamental class — entry в Obsidian
+   [90-architectural-discoveries-fundamental-bugs.md](file:///Users/timurtoby/Documents/MacRunner/90-architectural-discoveries-fundamental-bugs.md)
+
+Если ты ловишь себя на мысли "просто пусть пока работает, потом починим" —
+**это antipattern**. Остановись. Сделай правильно сейчас.
+
+---
+
 ## 🛑 MANDATORY PROTOCOL: Opcode/API family audit (read first)
 
 **Когда ты собираешься добавить поддержку нового x86_64 opcode, IR op, WinAPI thunk,

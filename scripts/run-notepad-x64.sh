@@ -55,8 +55,13 @@ export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/lib:/usr/local/lib:/usr/lib${DY
 export WINEDEBUG="${WINEDEBUG:--all}"
 
 # --- Optional traces ---
-IFS=',' read -ra TRACE_LIST <<< "$TRACES"
-for t in "${TRACE_LIST[@]}"; do
+# Guard against empty array under set -u: only iterate if TRACES is non-empty.
+if [[ -n "$TRACES" ]]; then
+    IFS=',' read -ra TRACE_LIST <<< "$TRACES"
+else
+    TRACE_LIST=()
+fi
+for t in ${TRACE_LIST[@]+"${TRACE_LIST[@]}"}; do
     case "$t" in
         fileinfo)    export MACRUNNER_TRACE_FILEINFO=1 ;;
         abi)         export MACRUNNER_HB_TRACE_ABI=1; export MACRUNNER_HB_TRACE_ABI_BUDGET="${MACRUNNER_HB_TRACE_ABI_BUDGET:-500}" ;;

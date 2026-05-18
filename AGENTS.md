@@ -378,6 +378,22 @@ ps -axo comm= | awk '/^(wine-preloader|wine64-preloader|winedbg|wineserver)$/{c+
   попадают в `EXTRA_ARGS` и передаются в notepad++.exe как command-line args, что может
   silently сломать поведение. Если нужно фиксированное RUN-dir — extend wrapper, не передавай
   через unknown flag.
+- **Stale `libhyperbridge.a` после source change**. Если меняешь
+  `engine/hyperbridge/src/*.c`, **make ntdll.so может НЕ пересобрать** статическую библиотеку
+  автоматически — она остаётся stale. Symptom: source изменён, runtime behavior без изменений.
+  Mandatory steps when changing HyperBridge source:
+  ```bash
+  cd engine/hyperbridge
+  rm -f src/{changed_file}.o libhyperbridge.a
+  make -j4 libhyperbridge.a
+  cd ../wine/build-pure-arm64
+  rm -f dlls/ntdll/ntdll.so
+  make -j4 dlls/ntdll/ntdll.so install
+  codesign --force --sign - dist-pure-arm64/lib/wine/aarch64-unix/ntdll.so
+  ```
+  **Verify timestamps**: `libhyperbridge.a` должен быть свежее изменённого source.
+  Эта trap нашли через debugging Heisenbug — source changed for hours, behavior unchanged,
+  because static archive was stale.
 
 ## Architectural bugs reference
 

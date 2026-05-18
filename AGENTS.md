@@ -127,6 +127,79 @@ Audit completed: yes
 
 ---
 
+## 🛑 MANDATORY: Patch-by-evidence, никогда не patch-by-suspicion
+
+**Если предыдущий fix не сработал (симптом повторился) — НЕ расширять scope патча "по аналогии".
+Делать probe пока не появится evidence для конкретной причины, потом fix ровно туда.**
+
+### Анти-паттерн (запрещён)
+
+```
+fix #1 не сработал → симптом тот же
+↓
+"может это ещё и SETcc, и LOAD, и STORE, и CMOVcc по аналогии"
+↓
+big patch по 5 классам в одном коммите без evidence
+```
+
+**Почему это плохо**:
+- Маскирует настоящий bug — что-то "починится" но не узнаешь что именно
+- Регресс risk растёт квадратично с количеством классов в одном коммите
+- Нарушает Family-audit protocol — `Coverage` checklist не может честно подтвердить каждый class
+- Если симптом не уйдёт — потерял способность изолировать причину
+- Если уйдёт — не знаешь какой из 5 классов был реальный, не сможешь объяснить retroactively
+
+### Правильный паттерн
+
+```
+fix #1 не сработал → симптом повторился
+↓
+ВОПРОС: почему fix не сработал?
+  - Активен ли этот code path? (interp vs JIT, лог branch instrumentation)
+  - Probe state в точке incident (RFLAGS, registers, memory)
+  - Сравни fix expectation vs реальное поведение
+↓
+EVIDENCE: один конкретный класс/инструкция/branch
+↓
+fix именно туда, один class = один коммит
+```
+
+### Когда расширять scope — это OK
+
+- **Family audit** для нового opcode (Family Protocol выше) — это **proactive**, на основе Intel SDM table, не "по аналогии с похожим"
+- **Sibling found во время probe** — если probe показал что не только NEG, но и DEC тоже корраптит state — это evidence, не аналогия
+- **Класс-level mechanism** (lazy flags, partial-register helper) — если evidence показывает что **mechanism** broken, и mechanism shared между N opcodes, то fix mechanism закрывает все N. Но evidence для самого mechanism обязателен.
+
+### Diagnostic before fix — checklist
+
+Перед любым patch когда предыдущий не сработал, отвечай в commit message:
+
+```
+Previous fix: <hash> <class>
+Why it didn't work: <probe output / evidence>
+This fix targets: <specific class with evidence>
+Why this class: <which probe line proves it>
+Not extending to: <list classes deliberately NOT touched, why>
+```
+
+Если "Why it didn't work" пустое — **не делай fix**. Сначала probe.
+
+### Worked example
+
+Bug #4 (MOVQ) — partial-register write fix landed.
+Notepad++ run → fastfail повторился с тем же RCX=5.
+
+**❌ Wrong**: "может это ещё SETcc, LOAD, STORE, addr32 — fix всё разом по аналогии с MOVQ"
+
+**✅ Right**:
+1. Probe: добавь instrumentation "block at PC X was executed via JIT or interpreter?"
+2. Запусти, посмотри: блок с `neg al; sbb` идёт через interpreter, не JIT
+3. Evidence: JIT fix не активирован для этого path
+4. Conclusion: настоящий bug в **interpreter** semantics, не JIT
+5. Fix: один class — interpreter NEG flag computation, с evidence в commit
+
+---
+
 ## Первое действие в каждой сессии
 
 ```bash

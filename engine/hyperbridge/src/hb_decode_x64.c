@@ -1136,17 +1136,33 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             if (out->op2.is_mem) out->op2.size = 8;
             return HB_OK;
         }
-        if (prefix_f2 && (op2 == 0x58 || op2 == 0x5C)) {
-            /* ADDSD/SUBSD xmm, xmm/m64 */
+        if (op2 == 0x58 || op2 == 0x5C) {
+            /* Floating ADD/SUB family:
+             *   0F 58/5C       ADDPS/SUBPS xmm, xmm/m128
+             *   66 0F 58/5C    ADDPD/SUBPD xmm, xmm/m128
+             *   F3 0F 58/5C    ADDSS/SUBSS xmm, xmm/m32
+             *   F2 0F 58/5C    ADDSD/SUBSD xmm, xmm/m64
+             */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
-            out->opcode = (op2 == 0x58) ? HB_INS_ADDSD : HB_INS_SUBSD;
+            size_t mem_size = 16;
+            if (prefix_f2) {
+                out->opcode = (op2 == 0x58) ? HB_INS_ADDSD : HB_INS_SUBSD;
+                mem_size = 8;
+            } else if (prefix_f3) {
+                out->opcode = (op2 == 0x58) ? HB_INS_ADDSS : HB_INS_SUBSS;
+                mem_size = 4;
+            } else if (operand16) {
+                out->opcode = (op2 == 0x58) ? HB_INS_ADDPD : HB_INS_SUBPD;
+            } else {
+                out->opcode = (op2 == 0x58) ? HB_INS_ADDPS : HB_INS_SUBPS;
+            }
             out->writes_flags = false;
-            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 8, out, 1, 2, false);
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, mem_size, out, 1, 2, false);
             if (r != HB_OK) return r;
             mark_xmm_operand(out, 1);
             mark_xmm_operand(out, 2);
-            if (out->op2.is_mem) out->op2.size = 8;
+            if (out->op2.is_mem) out->op2.size = mem_size;
             return HB_OK;
         }
         if (prefix_f2 && op2 == 0x59) {
@@ -1989,7 +2005,13 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_CVTSD2SS: return "CVTSD2SS";
         case HB_INS_CVTSI2SD: return "CVTSI2SD";
         case HB_INS_CVTSI2SS: return "CVTSI2SS";
+        case HB_INS_ADDPS: return "ADDPS";
+        case HB_INS_ADDPD: return "ADDPD";
+        case HB_INS_ADDSS: return "ADDSS";
         case HB_INS_ADDSD: return "ADDSD";
+        case HB_INS_SUBPS: return "SUBPS";
+        case HB_INS_SUBPD: return "SUBPD";
+        case HB_INS_SUBSS: return "SUBSS";
         case HB_INS_SUBSD: return "SUBSD";
         case HB_INS_DIVSD: return "DIVSD";
         case HB_INS_MULSD: return "MULSD";

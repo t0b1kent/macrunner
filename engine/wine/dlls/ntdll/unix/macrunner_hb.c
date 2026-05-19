@@ -229,9 +229,10 @@ static uint64_t macrunner_hb_get_block_limit( const char *label )
     }
 
     /* Thread entries may run GUI message loops for the life of the process.
-     * Keep finite caps for DLL/callback probes, but don't kill real app
-     * threads just because they stayed alive. */
+     * x64 callbacks are still bounded by the step limit; a separate block
+     * cap penalizes apps that run many tiny basic blocks before returning. */
     if (label && !strcmp( label, "thread" )) return 0;
+    if (label && !strcmp( label, "x64-signal-callback" )) return 0;
     return 200000;
 }
 

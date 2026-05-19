@@ -661,19 +661,36 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, i, dec);
             return HB_OK;
         }
+        case HB_INS_ADDPS:
+        case HB_INS_ADDPD:
+        case HB_INS_ADDSS:
+        case HB_INS_ADDSD:
+        case HB_INS_SUBPS:
+        case HB_INS_SUBPD:
+        case HB_INS_SUBSS:
+        case HB_INS_SUBSD: {
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            bool is_sub = (dec->opcode == HB_INS_SUBPS || dec->opcode == HB_INS_SUBPD ||
+                           dec->opcode == HB_INS_SUBSS || dec->opcode == HB_INS_SUBSD);
+            hb_ir_instr_t *i = hb_ir_emit(b, is_sub ? HB_IR_FSUB : HB_IR_FADD);
+            if (i) {
+                unsigned lane = (dec->opcode == HB_INS_ADDPD || dec->opcode == HB_INS_SUBPD ||
+                                 dec->opcode == HB_INS_ADDSD || dec->opcode == HB_INS_SUBSD) ? 8 : 4;
+                bool scalar = (dec->opcode == HB_INS_ADDSS || dec->opcode == HB_INS_SUBSS ||
+                               dec->opcode == HB_INS_ADDSD || dec->opcode == HB_INS_SUBSD);
+                i->dst = dst;
+                i->src1 = dst;
+                i->src2 = src;
+                i->target = lane | (scalar ? 0x100 : 0);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_DIVSD: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_DIVSD);
-            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
-            emit(b, i, dec);
-            return HB_OK;
-        }
-        case HB_INS_ADDSD:
-        case HB_INS_SUBSD: {
-            hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src = operand_from_dec(dec, 2);
-            hb_ir_instr_t *i = hb_ir_emit(b, dec->opcode == HB_INS_ADDSD ? HB_IR_ADDSD : HB_IR_SUBSD);
             if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;

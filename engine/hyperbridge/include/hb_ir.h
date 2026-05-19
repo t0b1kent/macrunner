@@ -153,6 +153,8 @@ typedef enum {
     HB_IR_CVTSD2SS,
     HB_IR_CVTSI2SD,
     HB_IR_CVTSI2SS,
+    HB_IR_FADD,
+    HB_IR_FSUB,
     HB_IR_ADDSD,
     HB_IR_SUBSD,
     HB_IR_DIVSD,

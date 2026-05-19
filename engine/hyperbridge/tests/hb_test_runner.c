@@ -4150,6 +4150,166 @@ TEST(interp_x64_scalar_sse_move_store_width_notepadpp_paint) {
     tests_passed++;
 }
 
+TEST(interp_x64_addpd_subpd_notepadpp_callback_block) {
+    uint8_t code[] = {
+        0xf2, 0x0f, 0x10, 0x53, 0x10, /* movsd 0x10(%rbx), %xmm2 */
+        0x0f, 0x10, 0x07,             /* movups (%rdi), %xmm0 */
+        0x0f, 0x10, 0x4f, 0x10,       /* movups 0x10(%rdi), %xmm1 */
+        0x66, 0x0f, 0x14, 0xd2,       /* unpcklpd %xmm2, %xmm2 */
+        0x66, 0x0f, 0x58, 0xc2,       /* addpd %xmm2, %xmm0 */
+        0x66, 0x0f, 0x5c, 0xca,       /* subpd %xmm2, %xmm1 */
+        0x0f, 0x11, 0x47, 0x20,       /* movups %xmm0, 0x20(%rdi) */
+        0x0f, 0x11, 0x4f, 0x30        /* movups %xmm1, 0x30(%rdi) */
+    };
+    struct {
+        uint8_t vectors[80];
+        uint8_t scale[32];
+    } mem;
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    memset(&mem, 0xaa, sizeof(mem));
+    uint64_t scalar = test_double_bits(2.0);
+    uint64_t v0[2] = {test_double_bits(10.0), test_double_bits(20.0)};
+    uint64_t v1[2] = {test_double_bits(30.0), test_double_bits(40.0)};
+    memset(mem.scale, 0, sizeof(mem.scale));
+    memcpy(mem.scale + 0x10, &scalar, sizeof(scalar));
+    memcpy(mem.vectors, v0, sizeof(v0));
+    memcpy(mem.vectors + 0x10, v1, sizeof(v1));
+
+    hb_decoded_t d;
+    ASSERT(hb_decode_x64(code + 16, 4, base + 16, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_ADDPD);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_XMM0 && d.op1.size == 16);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM2 && d.op2.size == 16);
+    ASSERT(hb_decode_x64(code + 20, 4, base + 20, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SUBPD);
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&mem, sizeof(mem),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rdi = (uint64_t)(uintptr_t)mem.vectors;
+    ctx->regs.x64.rbx = (uint64_t)(uintptr_t)mem.scale;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+
+    uint64_t got[2];
+    memcpy(got, mem.vectors + 0x20, sizeof(got));
+    ASSERT(got[0] == test_double_bits(12.0));
+    ASSERT(got[1] == test_double_bits(22.0));
+    memcpy(got, mem.vectors + 0x30, sizeof(got));
+    ASSERT(got[0] == test_double_bits(28.0));
+    ASSERT(got[1] == test_double_bits(38.0));
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(interp_x64_addps_subps_addss_subss_family) {
+    uint8_t code[] = {
+        0x0f, 0x58, 0xc1,             /* addps %xmm1, %xmm0 */
+        0x0f, 0x5c, 0xd3,             /* subps %xmm3, %xmm2 */
+        0xf3, 0x0f, 0x58, 0xe5,       /* addss %xmm5, %xmm4 */
+        0xf3, 0x0f, 0x5c, 0xf7        /* subss %xmm7, %xmm6 */
+    };
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    hb_decoded_t d;
+    ASSERT(hb_decode_x64(code, 3, base, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_ADDPS);
+    ASSERT(hb_decode_x64(code + 3, 3, base + 3, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SUBPS);
+    ASSERT(hb_decode_x64(code + 6, 4, base + 6, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_ADDSS);
+    ASSERT(hb_decode_x64(code + 10, 4, base + 10, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SUBSS);
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ctx->pc = base;
+
+    uint32_t xmm0[4] = {test_float_bits(1.0f), test_float_bits(2.0f),
+                        test_float_bits(3.0f), test_float_bits(4.0f)};
+    uint32_t xmm1[4] = {test_float_bits(10.0f), test_float_bits(20.0f),
+                        test_float_bits(30.0f), test_float_bits(40.0f)};
+    uint32_t xmm2[4] = {test_float_bits(50.0f), test_float_bits(60.0f),
+                        test_float_bits(70.0f), test_float_bits(80.0f)};
+    uint32_t xmm3[4] = {test_float_bits(5.0f), test_float_bits(6.0f),
+                        test_float_bits(7.0f), test_float_bits(8.0f)};
+    uint32_t xmm4[4] = {test_float_bits(9.0f), test_float_bits(100.0f),
+                        test_float_bits(200.0f), test_float_bits(300.0f)};
+    uint32_t xmm5[4] = {test_float_bits(3.0f), test_float_bits(400.0f),
+                        test_float_bits(500.0f), test_float_bits(600.0f)};
+    uint32_t xmm6[4] = {test_float_bits(9.0f), test_float_bits(700.0f),
+                        test_float_bits(800.0f), test_float_bits(900.0f)};
+    uint32_t xmm7[4] = {test_float_bits(4.0f), test_float_bits(1000.0f),
+                        test_float_bits(1100.0f), test_float_bits(1200.0f)};
+    memcpy(ctx->regs.x64.xmm[0], xmm0, sizeof(xmm0));
+    memcpy(ctx->regs.x64.xmm[1], xmm1, sizeof(xmm1));
+    memcpy(ctx->regs.x64.xmm[2], xmm2, sizeof(xmm2));
+    memcpy(ctx->regs.x64.xmm[3], xmm3, sizeof(xmm3));
+    memcpy(ctx->regs.x64.xmm[4], xmm4, sizeof(xmm4));
+    memcpy(ctx->regs.x64.xmm[5], xmm5, sizeof(xmm5));
+    memcpy(ctx->regs.x64.xmm[6], xmm6, sizeof(xmm6));
+    memcpy(ctx->regs.x64.xmm[7], xmm7, sizeof(xmm7));
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+
+    uint32_t got[4];
+    memcpy(got, ctx->regs.x64.xmm[0], sizeof(got));
+    ASSERT(got[0] == test_float_bits(11.0f));
+    ASSERT(got[1] == test_float_bits(22.0f));
+    ASSERT(got[2] == test_float_bits(33.0f));
+    ASSERT(got[3] == test_float_bits(44.0f));
+    memcpy(got, ctx->regs.x64.xmm[2], sizeof(got));
+    ASSERT(got[0] == test_float_bits(45.0f));
+    ASSERT(got[1] == test_float_bits(54.0f));
+    ASSERT(got[2] == test_float_bits(63.0f));
+    ASSERT(got[3] == test_float_bits(72.0f));
+    memcpy(got, ctx->regs.x64.xmm[4], sizeof(got));
+    ASSERT(got[0] == test_float_bits(12.0f));
+    ASSERT(got[1] == test_float_bits(100.0f));
+    ASSERT(got[2] == test_float_bits(200.0f));
+    ASSERT(got[3] == test_float_bits(300.0f));
+    memcpy(got, ctx->regs.x64.xmm[6], sizeof(got));
+    ASSERT(got[0] == test_float_bits(5.0f));
+    ASSERT(got[1] == test_float_bits(700.0f));
+    ASSERT(got[2] == test_float_bits(800.0f));
+    ASSERT(got[3] == test_float_bits(900.0f));
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(interp_x64_mov_imm32_rip_relative_store_calc_crt_state) {
     struct {
         uint8_t code[16];
@@ -5183,6 +5343,8 @@ int main(void) {
     test_interp_x64_addsd_subsd_scalar_double();
     test_interp_x64_movdqa_xmm_store_calc();
     test_interp_x64_scalar_sse_move_store_width_notepadpp_paint();
+    test_interp_x64_addpd_subpd_notepadpp_callback_block();
+    test_interp_x64_addps_subps_addss_subss_family();
     test_interp_x64_mov_imm32_rip_relative_store_calc_crt_state();
     test_decode_x64_rip_relative_trailing_immediate_family();
     test_interp_x64_xorps_zero_startup_block();

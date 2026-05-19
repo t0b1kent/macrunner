@@ -633,6 +633,8 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_CVTSD2SS: return "CVTSD2SS";
         case HB_IR_CVTSI2SD: return "CVTSI2SD";
         case HB_IR_CVTSI2SS: return "CVTSI2SS";
+        case HB_IR_FADD: return "FADD";
+        case HB_IR_FSUB: return "FSUB";
         case HB_IR_ADDSD: return "ADDSD";
         case HB_IR_SUBSD: return "SUBSD";
         case HB_IR_DIVSD: return "DIVSD";
@@ -2262,6 +2264,43 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             r = read_scalar_float(ctx, &instr->src2, &rhs);
             if (r != HB_OK) return r;
             return write_scalar_float(ctx, &instr->dst, lhs / rhs);
+        }
+
+        case HB_IR_FADD:
+        case HB_IR_FSUB: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            bool is_sub = instr->op == HB_IR_FSUB;
+            bool scalar = (instr->target & 0x100) != 0;
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            uint8_t lhs[16], rhs[16], out_bytes[16];
+            uint64_t out[2];
+            if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, scalar ? lane : 16);
+            if (r != HB_OK) return r;
+            memcpy(out_bytes, lhs, sizeof(out_bytes));
+            for (unsigned i = 0; i < (scalar ? 1U : 16U / lane); i++) {
+                if (lane == 4) {
+                    uint32_t abits, bbits, cbits;
+                    memcpy(&abits, lhs + i * 4, sizeof(abits));
+                    memcpy(&bbits, rhs + i * 4, sizeof(bbits));
+                    float aval = hb_bits_to_float(abits);
+                    float bval = hb_bits_to_float(bbits);
+                    cbits = hb_float_to_bits(is_sub ? (aval - bval) : (aval + bval));
+                    memcpy(out_bytes + i * 4, &cbits, sizeof(cbits));
+                } else {
+                    uint64_t abits, bbits, cbits;
+                    memcpy(&abits, lhs + i * 8, sizeof(abits));
+                    memcpy(&bbits, rhs + i * 8, sizeof(bbits));
+                    double aval = hb_bits_to_double(abits);
+                    double bval = hb_bits_to_double(bbits);
+                    cbits = hb_double_to_bits(is_sub ? (aval - bval) : (aval + bval));
+                    memcpy(out_bytes + i * 8, &cbits, sizeof(cbits));
+                }
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_FMIN:

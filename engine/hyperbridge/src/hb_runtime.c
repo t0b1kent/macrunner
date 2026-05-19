@@ -1,0 +1,252 @@
+#include "hb_runtime.h"
+#include "hb_codegen.h"
+#include <stdlib.h>
+#include <string.h>
+
+/* --- In-memory block cache helpers --- */
+static size_t block_cache_hash(uint64_t addr) {
+    return (size_t)((addr ^ (addr >> 32)) & (HB_BLOCK_CACHE_SIZE - 1));
+}
+
+static hb_block_cache_t* block_cache_create(void) {
+    return calloc(1, sizeof(hb_block_cache_t));
+}
+
+static void block_cache_destroy(hb_block_cache_t* cache) {
+    free(cache);
+}
+
+static hb_block_cache_entry_t* block_cache_find(hb_block_cache_t* cache, uint64_t addr) {
+    if (!cache) return NULL;
+    size_t idx = block_cache_hash(addr);
+    for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++) {
+        size_t probe = (idx + i) & (HB_BLOCK_CACHE_SIZE - 1);
+        if (!cache->entries[probe].valid) return NULL;
+        if (cache->entries[probe].guest_addr == addr) return &cache->entries[probe];
+    }
+    return NULL;
+}
+
+static void block_cache_put(hb_block_cache_t* cache, uint64_t addr, uint8_t* code, size_t size, uint32_t steps) {
+    if (!cache) return;
+    size_t idx = block_cache_hash(addr);
+    for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++) {
+        size_t probe = (idx + i) & (HB_BLOCK_CACHE_SIZE - 1);
+        if (!cache->entries[probe].valid) {
+            cache->entries[probe].guest_addr = addr;
+            cache->entries[probe].native_code = code;
+            cache->entries[probe].native_size = size;
+            cache->entries[probe].steps = steps;
+            cache->entries[probe].valid = true;
+            return;
+        }
+        if (cache->entries[probe].guest_addr == addr) {
+            /* Update existing entry */
+            cache->entries[probe].native_code = code;
+            cache->entries[probe].native_size = size;
+            cache->entries[probe].steps = steps;
+            return;
+        }
+    }
+}
+
+hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
+    hb_jit_runtime_t* rt = calloc(1, sizeof(hb_jit_runtime_t));
+    if (!rt) return NULL;
+    rt->ctx = ctx;
+    rt->jit_mem = hb_jit_buffer_create(65536);
+    if (!rt->jit_mem) { free(rt); return NULL; }
+    rt->block_cache = block_cache_create();
+    if (!rt->block_cache) {
+        hb_jit_buffer_destroy(rt->jit_mem);
+        free(rt);
+        return NULL;
+    }
+    return rt;
+}
+
+void hb_jit_runtime_destroy(hb_jit_runtime_t* rt) {
+    if (!rt) return;
+    hb_jit_buffer_destroy(rt->jit_mem);
+    block_cache_destroy(rt->block_cache);
+    free(rt);
+}
+
+/* Find block by guest address */
+static hb_ir_block_t* find_block(const hb_ir_cfg_t* cfg, uint64_t addr) {
+    for (size_t i = 0; i < cfg->block_count; i++) {
+        if (cfg->blocks[i]->guest_addr == addr) return cfg->blocks[i];
+    }
+    return NULL;
+}
+
+hb_result_t hb_jit_runtime_compile(hb_jit_runtime_t* rt, const hb_ir_func_t* func) {
+    (void)rt; (void)func;
+    /* Compilation is done on-demand per-block in hb_jit_runtime_run for MVP */
+    return HB_OK;
+}
+
+hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out) {
+    if (!rt || !func || !func->cfg || !out) return HB_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(hb_exec_result_t));
+
+    hb_context_t* ctx = rt->ctx;
+    uint64_t steps = 0;
+    uint64_t blocks_executed = 0;
+
+    while (1) {
+        if (ctx->step_limit > 0 && steps >= ctx->step_limit) {
+            out->result = HB_ERR_STEP_LIMIT;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK;
+        }
+        if (ctx->block_limit > 0 && blocks_executed >= ctx->block_limit) {
+            out->result = HB_ERR_BLOCK_LIMIT;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK;
+        }
+
+        hb_ir_block_t* block = find_block(func->cfg, ctx->pc);
+        if (!block) {
+            out->result = HB_OK;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK; /* No block for PC — function exit or external call */
+        }
+
+        blocks_executed++;
+
+        /* Check in-memory block cache */
+        hb_block_cache_entry_t* cached = block_cache_find(rt->block_cache, ctx->pc);
+        if (cached) {
+            typedef void (*jit_block_t)(hb_context_t*);
+            jit_block_t exec = (jit_block_t)(void*)cached->native_code;
+            exec(ctx);
+            steps += cached->steps;
+        } else {
+            /* Compile block into codegen buffer */
+            hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(4096);
+            if (!code_buf) return HB_ERR_OUT_OF_MEMORY;
+
+            hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+            if (!cg) { hb_codegen_buffer_destroy(code_buf); return HB_ERR_OUT_OF_MEMORY; }
+
+            hb_result_t r = hb_arm64_codegen_block(cg, block, code_buf);
+            hb_arm64_codegen_destroy(cg);
+            if (r != HB_OK) {
+                hb_codegen_buffer_destroy(code_buf);
+                out->result = r;
+                out->steps_executed = steps;
+                out->blocks_executed = blocks_executed;
+                out->faulted = true;
+                out->fault_reason = "JIT codegen failed";
+                return HB_OK;
+            }
+
+            /* Append to JIT buffer (bump allocator) */
+            r = hb_jit_buffer_make_writable(rt->jit_mem);
+            if (r != HB_OK) { hb_codegen_buffer_destroy(code_buf); return r; }
+
+            size_t needed = code_buf->size;
+            if (rt->jit_mem->used + needed > rt->jit_mem->size) {
+                hb_codegen_buffer_destroy(code_buf);
+                out->result = HB_ERR_OUT_OF_MEMORY;
+                out->steps_executed = steps;
+                out->blocks_executed = blocks_executed;
+                out->fault_reason = "JIT buffer exhausted";
+                return HB_OK;
+            }
+
+            size_t emitted_size = code_buf->size;
+            uint8_t* dest = rt->jit_mem->writable + rt->jit_mem->used;
+            memcpy(dest, code_buf->code, emitted_size);
+            rt->jit_mem->used += emitted_size;
+            /* Align to 16-byte boundary for next block */
+            rt->jit_mem->used = (rt->jit_mem->used + 15) & ~15;
+            hb_codegen_buffer_destroy(code_buf);
+
+            r = hb_jit_buffer_commit(rt->jit_mem);
+            if (r != HB_OK) return r;
+
+            /* Store in block cache */
+            block_cache_put(rt->block_cache, ctx->pc, dest, emitted_size, (uint32_t)block->instr_count);
+
+            /* Execute */
+            typedef void (*jit_block_t)(hb_context_t*);
+            jit_block_t exec = (jit_block_t)(void*)dest;
+            exec(ctx);
+            steps += block->instr_count;
+        }
+
+        /* Determine if we should continue or stop */
+        if (block->instr_count == 0) {
+            out->result = HB_OK;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK;
+        }
+
+        hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
+        if (last->op == HB_IR_RET) {
+            out->result = HB_OK;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK;
+        }
+
+        /* For CALL/JMP/Jcc, PC was updated by JIT code; find next block */
+        hb_ir_block_t* next = find_block(func->cfg, ctx->pc);
+        if (!next) {
+            if (last->op == HB_IR_CALL || last->op == HB_IR_RET) {
+                out->result = HB_OK;
+                out->steps_executed = steps;
+                out->blocks_executed = blocks_executed;
+                return HB_OK; /* External call or return */
+            }
+            out->result = HB_ERR_NOT_FOUND;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            out->faulted = true;
+            out->fault_reason = "branch target block not found";
+            return HB_OK;
+        }
+        if (last->op == HB_IR_JMP || last->op == HB_IR_Jcc || last->op == HB_IR_CALL) {
+            /* Continue with the target block */
+            continue;
+        }
+
+        /* Sequential block end — stop */
+        ctx->pc = last->guest_addr + last->guest_len;
+        if (ctx->arch == HB_ARCH_X64) ctx->regs.x64.rip = ctx->pc;
+        else if (ctx->arch == HB_ARCH_X86) ctx->regs.x86.eip = (uint32_t)ctx->pc;
+        out->result = HB_OK;
+        out->steps_executed = steps;
+        out->blocks_executed = blocks_executed;
+        return HB_OK;
+    }
+}
+
+hb_result_t hb_runtime_run(hb_context_t* ctx, const hb_ir_func_t* func, hb_backend_t backend, hb_exec_result_t* out) {
+    if (!ctx || !func || !out) return HB_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(hb_exec_result_t));
+    switch (backend) {
+        case HB_BACKEND_INTERP: {
+            hb_interpreter_t* i = hb_interpreter_create(ctx);
+            if (!i) return HB_ERR_OUT_OF_MEMORY;
+            hb_result_t r = hb_interpreter_run(i, func, out);
+            hb_interpreter_destroy(i);
+            return r;
+        }
+        case HB_BACKEND_JIT:
+        case HB_BACKEND_AOT: {
+            hb_jit_runtime_t* rt = hb_jit_runtime_create(ctx);
+            if (!rt) return HB_ERR_OUT_OF_MEMORY;
+            hb_result_t r = hb_jit_runtime_run(rt, func, out);
+            hb_jit_runtime_destroy(rt);
+            return r;
+        }
+    }
+    return HB_ERR_INVALID_ARG;
+}

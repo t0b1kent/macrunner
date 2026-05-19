@@ -61,17 +61,25 @@ if [[ -n "$TRACES" ]]; then
 else
     TRACE_LIST=()
 fi
-for t in ${TRACE_LIST[@]+"${TRACE_LIST[@]}"}; do
-    case "$t" in
-        fileinfo)    export MACRUNNER_TRACE_FILEINFO=1 ;;
-        abi)         export MACRUNNER_HB_TRACE_ABI=1; export MACRUNNER_HB_TRACE_ABI_BUDGET="${MACRUNNER_HB_TRACE_ABI_BUDGET:-500}" ;;
-        file_api)    export MACRUNNER_HB_TRACE_FILE_API=1; export MACRUNNER_HB_TRACE_FILE_API_BUDGET="${MACRUNNER_HB_TRACE_FILE_API_BUDGET:-500}" ;;
-        geometry)    export MACRUNNER_HB_TRACE_GEOMETRY=1 ;;
-        faults)      export MACRUNNER_HB_TRACE_FAULTS=1 ;;
-        '')          ;;
-        *)           echo "WARN: unknown trace '$t' (known: fileinfo,abi,file_api,geometry,faults)" >&2 ;;
-    esac
-done
+
+apply_app_traces() {
+    for t in ${TRACE_LIST[@]+"${TRACE_LIST[@]}"}; do
+        case "$t" in
+            fileinfo)    export MACRUNNER_TRACE_FILEINFO=1 ;;
+            abi)         export MACRUNNER_HB_TRACE_ABI=1; export MACRUNNER_HB_TRACE_ABI_BUDGET="${MACRUNNER_HB_TRACE_ABI_BUDGET:-500}" ;;
+            file_api)    export MACRUNNER_HB_TRACE_FILE_API=1; export MACRUNNER_HB_TRACE_FILE_API_BUDGET="${MACRUNNER_HB_TRACE_FILE_API_BUDGET:-500}" ;;
+            geometry)    export MACRUNNER_HB_TRACE_GEOMETRY=1 ;;
+            faults)      export MACRUNNER_HB_TRACE_FAULTS=1 ;;
+            '')          ;;
+            *)           echo "WARN: unknown trace '$t' (known: fileinfo,abi,file_api,geometry,faults)" >&2 ;;
+        esac
+    done
+}
+
+# Tracing wineboot can perturb bootstrap timing; keep default traces app-only.
+if [[ "${MACRUNNER_TRACE_WINEBOOT:-0}" != "0" ]]; then
+    apply_app_traces
+fi
 
 # --- Prepare prefix (wineboot + window-metrics repair) ---
 RUN_DIR="$ROOT/reports/phase-h/npp-x64-$(date +%Y%m%d-%H%M%S)"
@@ -87,8 +95,10 @@ echo "APP=$APP"
 [[ -x "$REPAIR_SCRIPT" ]] && "$REPAIR_SCRIPT" --prefix "$PREFIX" --fix >"$RUN_DIR/metrics-repair.log" 2>&1 || true
 
 # --- Launch (cwd MUST be APPDIR — notepad++ looks for langs.xml etc. in cwd) ---
+apply_app_traces
 cd "$APPDIR"
 (
+    set +e
     if ((${#EXTRA_ARGS[@]})); then
         "$WINE" ./notepad++.exe -noPlugin -nosession "${EXTRA_ARGS[@]}" \
             >"$RUN_DIR/stdout.log" 2>"$RUN_DIR/stderr.log"

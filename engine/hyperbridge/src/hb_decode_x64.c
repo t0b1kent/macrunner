@@ -1421,18 +1421,25 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         }
         if (op2 == 0x10 || op2 == 0x11 || op2 == 0x28 || op2 == 0x29 ||
             op2 == 0x6F || op2 == 0x7F) {
-            /* MOVUPS/MOVAPS/MOVDQA/MOVDQU xmm, xmm/m128 and xmm/m128, xmm.
-             * Scalar F2/F3 variants are normalized to a 128-bit move for the
-             * first app-code bridge pass; the XMM register file is preserved
-             * as opaque bytes until real SSE arithmetic is implemented. */
+            /* MOVUPS/MOVAPS/MOVDQA/MOVDQU are 128-bit moves.  Legacy scalar
+             * MOVSS/MOVSD (F3/F2 0F 10/11) only transfers the low 4/8 bytes;
+             * the interpreter preserves the rest of the destination XMM reg. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
+            bool scalar_move = (op2 == 0x10 || op2 == 0x11) && (prefix_f2 || prefix_f3);
+            uint8_t move_size = scalar_move ? (prefix_f3 ? 4 : 8) : 16;
             out->opcode = HB_INS_SSE_MOV;
             out->writes_flags = false;
-            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2,
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, move_size, out, 1, 2,
                                         (op2 == 0x11 || op2 == 0x29 || op2 == 0x7F));
             if (r != HB_OK) return r;
             mark_xmm_operands(out);
+            if (scalar_move) {
+                if (out->op1.is_reg) out->op1.size = move_size;
+                if (out->op2.is_reg) out->op2.size = move_size;
+                if (out->op1.is_mem) out->op1.size = move_size;
+                if (out->op2.is_mem) out->op2.size = move_size;
+            }
             return HB_OK;
         }
         if (op2 == 0xC0 || op2 == 0xC1) {

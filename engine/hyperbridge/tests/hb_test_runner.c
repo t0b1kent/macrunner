@@ -4080,6 +4080,76 @@ TEST(interp_x64_movdqa_xmm_store_calc) {
     tests_passed++;
 }
 
+TEST(interp_x64_scalar_sse_move_store_width_notepadpp_paint) {
+    uint8_t code[] = {
+        0xf2, 0x0f, 0x11, 0x47, 0x08, /* movsd %xmm0, 0x08(%rdi) */
+        0xf3, 0x0f, 0x11, 0x4f, 0x18, /* movss %xmm1, 0x18(%rdi) */
+        0x0f, 0x11, 0x57, 0x30        /* movups %xmm2, 0x30(%rdi) */
+    };
+    uint8_t dst[80];
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    hb_decoded_t d;
+    ASSERT(hb_decode_x64(code, 5, base, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_mem && d.op1.size == 8);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM0 && d.op2.size == 8);
+    ASSERT(hb_decode_x64(code + 5, 5, base + 5, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_mem && d.op1.size == 4);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM1 && d.op2.size == 4);
+    ASSERT(hb_decode_x64(code + 10, 4, base + 10, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_mem && d.op1.size == 16);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM2 && d.op2.size == 16);
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)dst, sizeof(dst),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    memset(dst, 0xaa, sizeof(dst));
+    ctx->pc = base;
+    ctx->regs.x64.rdi = (uint64_t)(uintptr_t)dst;
+    ctx->regs.x64.xmm[0][0] = 0x0123456789abcdefULL;
+    ctx->regs.x64.xmm[0][1] = 0x1111111111111111ULL;
+    ctx->regs.x64.xmm[1][0] = 0x22222222deadbeefULL;
+    ctx->regs.x64.xmm[1][1] = 0x3333333333333333ULL;
+    ctx->regs.x64.xmm[2][0] = 0x4444444455555555ULL;
+    ctx->regs.x64.xmm[2][1] = 0x6666666677777777ULL;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+
+    uint64_t got64 = 0;
+    uint32_t got32 = 0;
+    memcpy(&got64, dst + 0x08, sizeof(got64));
+    memcpy(&got32, dst + 0x18, sizeof(got32));
+    ASSERT(got64 == 0x0123456789abcdefULL);
+    ASSERT(got32 == 0xdeadbeefU);
+    for (size_t i = 0x10; i < 0x18; i++) ASSERT(dst[i] == 0xaa);
+    for (size_t i = 0x1c; i < 0x20; i++) ASSERT(dst[i] == 0xaa);
+    memcpy(&got64, dst + 0x30, sizeof(got64));
+    ASSERT(got64 == 0x4444444455555555ULL);
+    memcpy(&got64, dst + 0x38, sizeof(got64));
+    ASSERT(got64 == 0x6666666677777777ULL);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(interp_x64_mov_imm32_rip_relative_store_calc_crt_state) {
     struct {
         uint8_t code[16];
@@ -5112,6 +5182,7 @@ int main(void) {
     test_interp_x64_calc_sse2_divsd_mulsd_cluster();
     test_interp_x64_addsd_subsd_scalar_double();
     test_interp_x64_movdqa_xmm_store_calc();
+    test_interp_x64_scalar_sse_move_store_width_notepadpp_paint();
     test_interp_x64_mov_imm32_rip_relative_store_calc_crt_state();
     test_decode_x64_rip_relative_trailing_immediate_family();
     test_interp_x64_xorps_zero_startup_block();

@@ -146,6 +146,17 @@ static hb_result_t write_xmm_reg(hb_context_t* ctx, int idx, const uint64_t in[2
     return HB_OK;
 }
 
+static size_t bytes_for_size(hb_size_t size) {
+    switch (size) {
+        case HB_SIZE_8: return 1;
+        case HB_SIZE_16: return 2;
+        case HB_SIZE_32: return 4;
+        case HB_SIZE_64: return 8;
+        case HB_SIZE_128: return 16;
+        default: return 0;
+    }
+}
+
 static uint64_t resolve_addr(hb_context_t* ctx, const hb_ir_operand_t* op);
 static hb_result_t mem_read(hb_context_t* ctx, uint64_t addr, uint64_t* out, hb_size_t sz);
 
@@ -957,88 +968,6 @@ static void trace_branch_event(hb_context_t* ctx, const hb_ir_instr_t* instr,
             (unsigned long long)ctx->regs.x64.r15);
 }
 
-static void trace_npp_arg_probe(hb_context_t* ctx, const hb_ir_instr_t* instr,
-                                uint64_t target, uint64_t rsp_before) {
-    const char* enabled = getenv("MACRUNNER_HB_TRACE_NPP_ARG_PROBE");
-    static unsigned int budget = 80;
-    uint64_t slots[10] = {0};
-
-    if (!enabled || !enabled[0] || enabled[0] == '0') return;
-    if (!ctx || !instr || ctx->mode != HB_MODE_64BIT || !ctx->memory) return;
-    if (instr->guest_addr != 0x1402c4790ULL &&
-        instr->guest_addr != 0x1402c47f0ULL &&
-        instr->guest_addr != 0x1402c57a9ULL &&
-        instr->guest_addr != 0x1402a889bULL)
-        return;
-    if (!budget--) return;
-
-    for (unsigned int i = 0; i < 10; i++)
-        (void)hb_memory_read_u64(ctx->memory, (hb_gva_t)rsp_before + 0x20 + i * 8, &slots[i]);
-
-    fprintf(stderr,
-            "macrunner-hb-npp-arg-probe: call=0x%llx target=0x%llx "
-            "rsp=0x%llx stack20=0x%llx stack28=0x%llx stack30=0x%llx "
-            "stack38=0x%llx stack40=0x%llx stack48=0x%llx stack50=0x%llx "
-            "stack58=0x%llx stack60=0x%llx stack68=0x%llx "
-            "rax=0x%llx rcx=0x%llx rdx=0x%llx r8=0x%llx r9=0x%llx "
-            "rsi=0x%llx rdi=0x%llx rbp=0x%llx r12=0x%llx r13=0x%llx "
-            "r14=0x%llx r15=0x%llx\n",
-            (unsigned long long)instr->guest_addr,
-            (unsigned long long)target,
-            (unsigned long long)rsp_before,
-            (unsigned long long)slots[0],
-            (unsigned long long)slots[1],
-            (unsigned long long)slots[2],
-            (unsigned long long)slots[3],
-            (unsigned long long)slots[4],
-            (unsigned long long)slots[5],
-            (unsigned long long)slots[6],
-            (unsigned long long)slots[7],
-            (unsigned long long)slots[8],
-            (unsigned long long)slots[9],
-            (unsigned long long)ctx->regs.x64.rax,
-            (unsigned long long)ctx->regs.x64.rcx,
-            (unsigned long long)ctx->regs.x64.rdx,
-            (unsigned long long)ctx->regs.x64.r8,
-            (unsigned long long)ctx->regs.x64.r9,
-            (unsigned long long)ctx->regs.x64.rsi,
-            (unsigned long long)ctx->regs.x64.rdi,
-            (unsigned long long)ctx->regs.x64.rbp,
-            (unsigned long long)ctx->regs.x64.r12,
-            (unsigned long long)ctx->regs.x64.r13,
-            (unsigned long long)ctx->regs.x64.r14,
-            (unsigned long long)ctx->regs.x64.r15);
-}
-
-static void trace_npp_pop_probe(hb_context_t* ctx, const hb_ir_instr_t* instr,
-                                uint64_t rsp_before, uint64_t value) {
-    const char* enabled = getenv("MACRUNNER_HB_TRACE_NPP_ARG_PROBE");
-    uint64_t around[4] = {0};
-
-    if (!enabled || !enabled[0] || enabled[0] == '0') return;
-    if (!ctx || !instr || ctx->mode != HB_MODE_64BIT || !ctx->memory) return;
-    if (instr->guest_addr != 0x1402a88abULL) return;
-
-    for (unsigned int i = 0; i < 4; i++)
-        (void)hb_memory_read_u64(ctx->memory, (hb_gva_t)rsp_before + i * 8, &around[i]);
-
-    fprintf(stderr,
-            "macrunner-hb-npp-pop-probe: pop=0x%llx rsp=0x%llx value=0x%llx "
-            "mem0=0x%llx mem8=0x%llx mem10=0x%llx mem18=0x%llx "
-            "rdi_after=0x%llx rsi=0x%llx rbx=0x%llx rbp=0x%llx\n",
-            (unsigned long long)instr->guest_addr,
-            (unsigned long long)rsp_before,
-            (unsigned long long)value,
-            (unsigned long long)around[0],
-            (unsigned long long)around[1],
-            (unsigned long long)around[2],
-            (unsigned long long)around[3],
-            (unsigned long long)ctx->regs.x64.rdi,
-            (unsigned long long)ctx->regs.x64.rsi,
-            (unsigned long long)ctx->regs.x64.rbx,
-            (unsigned long long)ctx->regs.x64.rbp);
-}
-
 static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     hb_result_t r;
     switch (instr->op) {
@@ -1048,10 +977,17 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_MOV: {
             if (instr->dst.type == HB_OP_REG && instr->src1.type == HB_OP_REG &&
                 is_xmm_reg(instr->dst.reg) && is_xmm_reg(instr->src1.reg)) {
-                uint64_t xmm[2];
-                r = read_xmm_reg(ctx, instr->src1.reg, xmm);
+                uint64_t src[2];
+                uint64_t dst[2];
+                size_t bytes = bytes_for_size(instr->dst.size);
+                if (bytes == 0) bytes = 16;
+                r = read_xmm_reg(ctx, instr->src1.reg, src);
                 if (r != HB_OK) return r;
-                return write_xmm_reg(ctx, instr->dst.reg, xmm);
+                if (bytes >= 16) return write_xmm_reg(ctx, instr->dst.reg, src);
+                r = read_xmm_reg(ctx, instr->dst.reg, dst);
+                if (r != HB_OK) return r;
+                memcpy(dst, src, bytes);
+                return write_xmm_reg(ctx, instr->dst.reg, dst);
             }
             uint64_t val = 0;
             if (instr->src1.type == HB_OP_REG)
@@ -1423,10 +1359,15 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_LOAD: {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             uint64_t addr = resolve_addr(ctx, &instr->src1);
-            if (instr->dst.type == HB_OP_REG && is_xmm_reg(instr->dst.reg) &&
-                instr->dst.size == HB_SIZE_128) {
+            if (instr->dst.type == HB_OP_REG && is_xmm_reg(instr->dst.reg)) {
                 uint64_t xmm[2] = {0, 0};
-                r = hb_memory_read(ctx->memory, addr, xmm, sizeof(xmm));
+                size_t bytes = bytes_for_size(instr->src1.size);
+                if (bytes == 0) bytes = 16;
+                if (bytes < 16) {
+                    r = read_xmm_reg(ctx, instr->dst.reg, xmm);
+                    if (r != HB_OK) return r;
+                }
+                r = hb_memory_read(ctx->memory, addr, xmm, bytes);
                 if (r != HB_OK) return r;
                 return write_xmm_reg(ctx, instr->dst.reg, xmm);
             }
@@ -1441,14 +1382,16 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_STORE: {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             uint64_t addr = resolve_addr(ctx, &instr->src1);
-            if (instr->src2.type == HB_OP_REG && is_xmm_reg(instr->src2.reg) &&
-                instr->src2.size == HB_SIZE_128) {
+            if (instr->src2.type == HB_OP_REG && is_xmm_reg(instr->src2.reg)) {
                 uint64_t xmm[2];
+                size_t bytes = bytes_for_size(instr->src1.size);
+                if (bytes == 0) bytes = bytes_for_size(instr->src2.size);
+                if (bytes == 0) bytes = 16;
                 r = read_xmm_reg(ctx, instr->src2.reg, xmm);
                 if (r != HB_OK) return r;
-                trace_guest_native_write(ctx, "interp_xmm_store", addr, xmm[0], HB_SIZE_128);
-                r = hb_memory_write(ctx->memory, addr, xmm, sizeof(xmm));
-                if (r != HB_OK) trace_stack_write_fault(ctx, addr, xmm[0], HB_SIZE_128, r);
+                trace_guest_native_write(ctx, "interp_xmm_store", addr, xmm[0], (hb_size_t)bytes);
+                r = hb_memory_write(ctx->memory, addr, xmm, bytes);
+                if (r != HB_OK) trace_stack_write_fault(ctx, addr, xmm[0], (hb_size_t)bytes, r);
                 return r;
             }
             uint64_t val = 0;
@@ -1493,7 +1436,6 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             }
             if (instr->dst.type == HB_OP_REG) write_reg(ctx, instr->dst.reg, val);
             else return HB_ERR_INTERNAL;
-            trace_npp_pop_probe(ctx, instr, rsp_before, val);
             if (ctx->mode == HB_MODE_64BIT)
                 trace_branch_event(ctx, instr, "pop", rsp_before, val, val);
             return HB_OK;
@@ -1517,7 +1459,6 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                         instr->src1.size);
                 return HB_ERR_EXEC_FAULT;
             }
-            trace_npp_arg_probe(ctx, instr, target, rsp_before);
             if (ctx->mode == HB_MODE_32BIT) {
                 ctx->regs.x86.esp -= 4;
                 r = hb_memory_write_u32(ctx->memory, ctx->regs.x86.esp, (uint32_t)ret_addr);

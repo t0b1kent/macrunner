@@ -283,6 +283,35 @@ Notepad++ run → fastfail повторился с тем же RCX=5.
 
 ---
 
+## 🛑 MANDATORY: Root-cause known → apply it. НЕ перебирай band-aids
+
+Если audit/probe **уже дал root cause** (file:line + механизм) — применяй **именно
+его**. Запрещено перебирать speculative варианты ("попробую placeholder, нет —
+попробую invert, нет — попробую fallback").
+
+### Anti-thrashing (реальный случай — стоил 2.5 часа + регресс)
+
+Notepad++ icons: Кими audit дал точный root — StretchDIBits 4bpp/8bpp→32bpp fails
+на ARM64 (cursoricon.c:879). Вместо применения, агент попробовал 12 догадок:
+mono-icon, mono-icon-invert, transparent-placeholder, copyimage-fallback, uxtheme...
+→ **регрессировал работавшие toolbar иконки** + потерял 2.5 часа.
+
+Правильно было: применить StretchDIBits conversion fix ОДИН раз.
+
+### Правило
+
+- Root cause известен (из audit/probe) → fix именно туда. Один proper fix.
+- Speculative band-aid (placeholder/invert/fallback/hack) — **запрещён** если root известен.
+- Если fix регрессировал working code → **немедленно revert**, не накапливай hacks поверх.
+- Каждый "попробую другой подход" без нового evidence = thrashing. Stop, вернись к root cause.
+- Band-aid допустим ТОЛЬКО как explicit temporary с `TODO: workaround, real fix = <root>`,
+  и только если proper fix реально блокирован (rare).
+
+Это усиление Zeroth Principle + patch-by-evidence: **известный root → proper fix,
+не 12 догадок**.
+
+---
+
 ## 🛑 MANDATORY: Batch diagnostics — один проход, не 1000 итераций
 
 **Запрещено** чинить по одному symptom → rebuild → run → next → repeat. Это

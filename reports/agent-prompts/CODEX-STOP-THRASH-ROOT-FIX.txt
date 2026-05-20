@@ -1,0 +1,31 @@
+СТОП. Ты сделал 12+ speculative fix attempts за 2.5 часа (mono-icon-invert, transparent-placeholder, copyimage-fallback, uxtheme...) и РЕГРЕССИРОВАЛ работавшие toolbar иконки — они снова серые. Это нарушение AGENTS.md: patch-by-suspicion + Zeroth Principle (band-aids вместо root-cause fix).
+
+У тебя УЖЕ есть точный root cause от Кими (swarm/inbox-for-codex/ENGINE-AUDIT-RENDER-shell-icons.md):
+
+ROOT: user32/cursoricon.c:879 — StretchDIBits конвертит 4bpp/8bpp indexed ICO → 32bpp DDB, но на macOS ARM64 silently fails → all-black/zero pixels. Return value НЕ проверяется. Это ОДИН root для ВСЕХ icon bugs: folder icons (My Computer/Documents) И toolbar icons (colorful_pixels=0) идут через ЭТОТ path.
+
+Действия по порядку:
+
+1. REVERT все speculative band-aids которые регрессировали toolbar:
+   - transparent-placeholder, mono-icon-invert, copyimage-fallback изменения
+   - git diff покажет что ты менял в comctl32/imagelist.c, user32/cursoricon.c — откати hacks
+   - Верни toolbar к состоянию когда иконки были цветные
+
+2. Примени НАСТОЯЩИЙ fix (не band-aid):
+   - user32/cursoricon.c:879 — fix StretchDIBits 4bpp/8bpp→32bpp conversion на ARM64
+   - Проверь return value StretchDIBits
+   - Root: indexed DIB (4bpp/8bpp с палитрой) → 32bpp RGB conversion. На ARM64 DIB engine эта конверсия даёт zero. Нужен корректный palette expansion (indexed→RGB через color table) ИЛИ fix DIB engine indexed path.
+   - Это native fix, не placeholder/invert hack
+
+3. Verify: ОДИН rebuild → screenshot Save As. Folder icons (My Computer/Documents/диски) И toolbar icons должны появиться ОБА (shared root).
+
+4. Потом остальные 3 из Кими audits (по одному root each, НЕ band-aid):
+   - Marlett (marlett.md): font.c:3864 glyph lookup — diagnostic trace marlett.ttf загрузка
+   - Tab (tab.md): TRANSPARENT mask fills bitmap black — fix mask draw
+   - Scrollbar (scrollbar.md): DIB pattern_rects_32 buffer overread — fix bounds
+
+ПРАВИЛО: у тебя есть root cause от audit — применяй ЕГО, не пробуй 12 догадок. Per AGENTS.md patch-by-evidence: "если есть root cause от audit — fix именно туда, не band-aid". Каждый speculative attempt который ломает working code = откат + потеря времени.
+
+Если StretchDIBits conversion сложная — добавь ОДИН diagnostic (StretchDIBits return + pixel sample после conversion) чтобы подтвердить, потом fix. Но НЕ перебирай placeholder/invert/fallback варианты.
+
+Source config/env.sh для ccache. После icon root fix verify оба (folder + toolbar) green → continue master brief.

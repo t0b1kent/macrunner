@@ -1,0 +1,28 @@
+Rendering audit (4 docs) завершён — отлично, Codex применяет. Теперь present-useful pre-audit для следующего app пока Codex добивает Notepad++.
+
+ВАЖНО: следующий доступный x86 app = Calc Win7 (artifacts/phase-h/win7-calc-rebased2/calc.exe), готов. KeePass на диске = 2.x (.NET/CLR, harder, отложим). Calc Win7 = естественный immediate next (x86, known по прежней Calc journey 85-calc-journey-17-layers).
+
+Задача — Calc Win7 x86 pre-audit (static analysis, НЕ запускай Wine, read-only):
+
+1. x86 DECODER COVERAGE:
+   - Disasm artifacts/phase-h/win7-calc-rebased2/calc.exe (x86_64-w64-mingw32-objdump или llvm-objdump --triple=i686 для 32-bit)
+   - Build opcode histogram (какие x86 opcodes использует)
+   - Сравни vs engine/hyperbridge/src/hb_decode_x86.c (861 строк, существует)
+   - Найди missing x86 opcodes / families → list с priority (по частоте в histogram)
+   - Note 32-bit specifics: stdcall/cdecl, fs segment, MMX, 16-bit prefix usage
+
+2. SUBSYSTEMS Calc нужны (audit Wine paths, как Calc их exercise):
+   - GDI+ (gdiplus): custom button drawing — где Calc рисует кнопки
+   - MUI dialog templates: RT_DIALOG Win7 fallback
+   - WIC: PNG decode (button images)
+   - shell32 AnimateWindowSize: Calc quirk
+   - Reuse Notepad++ findings (StretchDIBits ICO, GetSysColor, Marlett) — applicable к Calc?
+
+Output → swarm/inbox-for-codex/calc-win7-{x86-decoder,gdiplus,mui,wic}.md
+Format: symptom potential, root cause hypothesis, file:line, fix scope, confidence.
+
+Это discovery (как combase/rendering audits) — Codex consume'ит когда дойдёт до Calc. Pre-positions реальный next app.
+
+После Calc pre-audit → опционально engine audit dim 05 (JIT vs interpreter consistency, hb_arm64_codegen.c vs hb_interpreter.c — divergent ops? bug #6 был JIT-only). High value, read-only, no binary.
+
+Per AGENTS.md: patch-by-evidence (confidence levels), reuse GUI bug catalog, disjoint outputs. Source config/env.sh. НЕ запускай Wine concurrently. cloud backend возобновишь позже.

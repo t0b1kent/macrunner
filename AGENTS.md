@@ -310,6 +310,27 @@ mono-icon, mono-icon-invert, transparent-placeholder, copyimage-fallback, uxthem
 Это усиление Zeroth Principle + patch-by-evidence: **известный root → proper fix,
 не 12 догадок**.
 
+### Revert тоже patch-by-evidence — не откатывай соседнюю семью (реальный случай)
+
+Откат band-aids — это правка, а не «уборка». Тот же риск: revert может зацепить
+**соседнюю** семью, у которой свой корень.
+
+Случай (icons, 2026-05-21): агент откатывал icon band-aids и заодно удалил из
+`comctl32/imagelist.c` фоллбэк `add_with_alpha` (zero/opaque-alpha + mono-mask →
+классический image+mask путь). Этот guard был **ROOT-FIX для семьи иконок тулбара**
+(32bpp BMP с нулевым alpha), а не band-aid. Реверт → иконки тулбара снова чёрные.
+Корень тулбара (comctl32 BMP) ≠ корень папок (cursoricon ICO 4/8bpp) — две разные
+дорожки спутали в одну.
+
+Правило перед revert:
+- Для каждого удаляемого guard спроси: **какую семью он защищает?** Если его
+  комментарий дословно описывает реальный симптом — это, скорее всего, ROOT-FIX,
+  ошибочно принятый за band-aid. НЕ удаляй вслепую.
+- Один аудит = один корень для ОДНОЙ семьи. Не распространяй его revert/fix на
+  другую семью без отдельного evidence (см. family audit).
+- Сначала `git diff engine/<file>` — увидь что именно удаляешь, прочитай комментарии
+  удаляемого кода. Если сомнение — замер (trace) до revert, не после.
+
 ---
 
 ## 🛑 MANDATORY: Batch diagnostics — один проход, не 1000 итераций
@@ -438,7 +459,8 @@ relevant за один trace pass (не открывай каждый отдел
 |---|---|---|
 | Window min/max/close = пустые квадраты | **Marlett font** не загружен | win32u NC paint + font load; Windows рисует эти glyphs шрифтом Marlett (chars 0/1/2/r) |
 | Чёрные кнопки/bands/контролы, текст invisible | **GetSysColor** возвращает black (0) | win32u/sysparams system color table init |
-| Серые/blank toolbar icons | ImageList / icon resource load | comctl32 ImageList_Draw, GDI+ alpha, BMP/PNG decode |
+| Серые/blank/чёрные **toolbar** icons | comctl32 BMP imagelist (32bpp zero-alpha + mono-mask) — **ОТДЕЛЬНАЯ дорожка от dialog/folder ICO** | comctl32/imagelist.c `add_with_alpha` (zero/opaque-alpha+mask → image+mask путь), ImageList_Draw |
+| Чёрные/blank **folder/dialog** icons | user32 ICO 4/8bpp indexed → 32bpp conversion | user32/cursoricon.c SetDIBits palette expansion (НЕ путать с toolbar BMP путём) |
 | Чёрные квадраты на tabs | comctl32 tab owner-draw / close-icon imagelist | comctl32/tab.c paint |
 | Blank folder/drive icons в dialogs | shell32 system image list | shell32 SHGetFileInfo / SHGetImageList / iconcache |
 | Scrollbar артефакты | comctl32 scrollbar / COLOR_SCROLLBAR | comctl32 scrollbar paint + GetSysColor |

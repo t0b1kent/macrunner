@@ -1,0 +1,27 @@
+Кими завершил rendering audit — 4 точных root cause доки в swarm/inbox-for-codex/ (и docs/ENGINE-AUDIT-RENDER-*.md). Прочитай все 4 и примени fixes. Иконки папок и window buttons ВСЁ ЕЩЁ broken на экране — это они.
+
+Применяй за один batch (все 4 family сразу, не по одному):
+
+1. FOLDER ICONS пустые в Save As (My Computer/Documents/диски) — shell-icons.md:
+   Root: user32/cursoricon.c:879 StretchDIBits 4bpp/8bpp ICO→32bpp DDB silently fails на ARM64 → black/zero pixels, return value не проверяется.
+   Fix: проверь StretchDIBits return + почему 4bpp/8bpp→32bpp conversion даёт zero на ARM64 (DIB engine indexed→RGB path). Возможно нужен explicit palette expansion. Add return check + correct conversion.
+
+2. WINDOW BUTTONS пустые квадраты (min/max/close) — marlett.md:
+   Root: get_glyph_bitmap ERROR_NOT_FOUND для Marlett glyphs (font.c:3864). Либо marlett.ttf не загружен либо glyph index=0.
+   Fix: сначала diagnostic trace font.c:540/freetype.c:1103 — marlett.ttf открывается? get_glyph_index для "Marlett" возвращает non-zero? Потом fix font load/substitution.
+
+3. TAB чёрные квадраты — tab.md:
+   Root: TRANSPARENT mask draw fills temp bitmap с black.
+   Fix per audit file:line.
+
+4. SCROLLBAR артефакты — scrollbar.md:
+   Root: DIB engine pattern_rects_32 buffer overread.
+   Fix per audit file:line.
+
+МЕТОД: прочитай все 4 audit доки → batch-fix (StretchDIBits ICO conversion, Marlett font, tab mask, scrollbar DIB) → один rebuild → verify через Visual Regression Lab + screenshot Save As (folder icons должны появиться) + window buttons (glyphs должны появиться).
+
+Note: StretchDIBits 4bpp/8bpp→32bpp может быть shared root для нескольких icon bugs (folder + toolbar). Проверь если toolbar colorful_pixels=0 тоже от этого — тогда один fix закроет оба.
+
+После этих 4 → продолжай master brief (fonts baseline, 30-min stability) автономно. Per AGENTS.md: family audit, patch-by-evidence. Source config/env.sh для ccache.
+
+Move consumed audits → swarm/reports/done/.

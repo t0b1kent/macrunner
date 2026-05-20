@@ -1,0 +1,127 @@
+{
+  "schema_version": "v1",
+  "app_name": "Notepad++",
+  "app_version": "8.7.5",
+  "arch": "x64",
+  "description": "Expected visual regions and thresholds for Notepad++ window analysis.",
+  "expected_regions": {
+    "menu_bar": {
+      "name": "menu/top area",
+      "relative_top": 0,
+      "relative_bottom_pct": 0.04,
+      "expected_content": "File Edit Search View Encoding Language Settings Macro Run Plugins Window ?",
+      "expected_colorful": false,
+      "expected_mostly_chrome": true
+    },
+    "toolbar_band": {
+      "name": "toolbar band",
+      "relative_top_pct": 0.04,
+      "relative_bottom_pct": 0.13,
+      "expected_content": "icons + dropdowns",
+      "expected_colorful": true,
+      "expected_mostly_chrome": true
+    },
+    "tabbar_band": {
+      "name": "tabbar band",
+      "relative_top_pct": 0.13,
+      "relative_bottom_pct": 0.16,
+      "expected_content": "new 1 - Notepad++ [Administrator]",
+      "expected_colorful": false,
+      "expected_mostly_chrome": true
+    },
+    "editor_area": {
+      "name": "editor area",
+      "relative_top_pct": 0.16,
+      "relative_bottom_pct": 0.96,
+      "expected_content": "white/light background with text",
+      "expected_colorful": false,
+      "expected_mostly_content": true
+    },
+    "statusbar": {
+      "name": "statusbar/bottom band",
+      "relative_top_pct": 0.96,
+      "relative_bottom_pct": 1.0,
+      "expected_content": "line count, encoding, file type, caret position",
+      "expected_colorful": false,
+      "expected_mostly_chrome": true
+    },
+    "right_scrollbar_area": {
+      "name": "right scrollbar area",
+      "relative_left_pct": 0.97,
+      "relative_right_pct": 1.0,
+      "expected_content": "scrollbar thumb and track",
+      "expected_colorful": false,
+      "expected_mostly_chrome": true
+    },
+    "file_dialog_icon_zones": {
+      "name": "file dialog icon zones",
+      "note": "Only present when dialog is open. Analyzed separately from main window.",
+      "expected_content": "yellow folder icons, file type icons",
+      "expected_colorful": true
+    }
+  },
+  "thresholds": {
+    "bottom_black_band_max_px": 8,
+    "right_black_band_max_px": 8,
+    "toolbar_colorful_floor": 900,
+    "black_ratio_max": 0.15,
+    "statusbar_black_ratio_max": 0.30,
+    "scrollbar_black_ratio_max": 0.40,
+    "band_contiguous_min_px": 4,
+    "toolbar_region_top_pct": 0.20,
+    "statusbar_region_bottom_px": 30,
+    "scrollbar_region_right_px": 24,
+    "editor_region_inset_px": 4,
+    "menu_height_max_px": 40,
+    "toolbar_height_max_px": 80,
+    "tabbar_height_max_px": 35,
+    "statusbar_height_max_px": 30,
+    "editor_min_width_pct": 0.85,
+    "editor_min_height_pct": 0.75
+  },
+  "windows_baseline": {
+    "baseline_available": false,
+    "note": "No Windows baseline artifact yet. UI metrics checks must stay yellow until baseline is captured."
+  },
+  "known_visual_defects": [
+    {
+      "class_id": "ART-05",
+      "name": "TOOLBAR_BLACK_OR_LOW_COLOR",
+      "status": "PARTIAL",
+      "note": "CG capture shows colored icons in some runs but helper capture shows black/gray. Needs CG ground truth validation."
+    },
+    {
+      "class_id": "ART-06",
+      "name": "STATUSBAR_BAD_BACKGROUND",
+      "status": "OPEN",
+      "note": "Codex is actively fixing statusbar / bottom black band. Do not interfere."
+    },
+    {
+      "class_id": "ART-03",
+      "name": "SCROLLBAR_BLACK_ARTIFACT",
+      "status": "OPEN",
+      "note": "Scrollbar thumb may render black. Needs zoomed CG capture evidence."
+    },
+    {
+      "class_id": "ART-04",
+      "name": "FILE_DIALOG_FOLDER_ICONS_BLACK",
+      "status": "OPEN",
+      "note": "Open/Save dialog folder icons may render black. Needs dialog CG capture."
+    },
+    {
+      "class_id": "ART-08",
+      "name": "MENU_TOO_TALL",
+      "status": "UNVERIFIED",
+      "note": "No Windows baseline yet. Cannot determine if menu is too tall."
+    }
+  ],
+  "forbidden_actions": [
+    "Do NOT instrument comctl32/toolbar.c directly (causes c000007b regressions)",
+    "Do NOT patch engine/hyperbridge for visual defects",
+    "Do NOT patch scripts/run-notepad-x64*.sh",
+    "Do NOT patch npp_ui_smoke_helper.c",
+    "Do NOT build Wine",
+    "Do NOT launch Wine runs for visual lab work",
+    "Do NOT mark visual checks green without Windows baseline or CG ground truth"
+  ]
+}

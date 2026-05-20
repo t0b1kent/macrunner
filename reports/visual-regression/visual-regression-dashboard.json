@@ -1,0 +1,70 @@
+{
+  "dashboard_version": "v1",
+  "last_updated": "2026-05-20",
+  "latest_app": {
+    "app_name": "Notepad++",
+    "app_version": "8.7.5",
+    "arch": "x64"
+  },
+  "latest_captures": [
+    {
+      "type": "toolbar_cg",
+      "path": "reports/phase-h/npp-x64-20260520-182340/toolbar-cg-capture.bmp",
+      "status": "FAIL",
+      "note": "colorful_pixels=316 below floor=900"
+    },
+    {
+      "type": "full_window_cg",
+      "path": "reports/phase-h/npp-x64-20260520-183237/full-window-cg.bmp",
+      "status": "analyzed"
+    },
+    {
+      "type": "window_png",
+      "path": "reports/phase-h/npp-x64-20260520-183517/window.png",
+      "status": "analyzed"
+    }
+  ],
+  "visual_pass_fail": {
+    "bottom_band": {"status": "FAIL", "confidence": "HIGH", "note": "44-76 px detected"},
+    "right_band": {"status": "PASS", "confidence": "HIGH", "note": "≤3 px within border tolerance"},
+    "scrollbar": {"status": "UNVERIFIED", "confidence": "LOW", "note": "no zoomed capture"},
+    "toolbar": {"status": "FAIL", "confidence": "HIGH", "note": "colorful_pixels below floor"},
+    "statusbar": {"status": "FAIL", "confidence": "HIGH", "note": "black_ratio > max"},
+    "folder_icons": {"status": "UNVERIFIED", "confidence": "LOW", "note": "no dialog capture"}
+  },
+  "black_band_metrics": [
+    {"run": "npp-x64-20260520-182340", "bottom_band_px": 44, "right_band_px": 2, "black_ratio": 0.0373},
+    {"run": "npp-x64-20260520-175547", "bottom_band_px": 30, "right_band_px": 2, "black_ratio": 0.04},
+    {"run": "npp-x64-20260520-133836", "bottom_band_px": 76, "right_band_px": 3, "black_ratio": 0.0627}
+  ],
+  "toolbar_color_metrics": [
+    {"run": "npp-x64-20260520-182340", "colorful_pixels": 316, "floor": 900, "pass": false},
+    {"run": "npp-x64-20260520-175547", "colorful_pixels": 1524, "floor": 900, "pass": true},
+    {"run": "npp-x64-20260520-133836", "colorful_pixels": 0, "floor": 900, "pass": false}
+  ],
+  "statusbar_metrics": [
+    {"run": "npp-x64-20260520-182340", "black_pixels": 25104, "total": 53520, "black_ratio": 0.469, "bad_background": true},
+    {"run": "npp-x64-20260520-133836", "black_pixels": 45231, "total": 53520, "black_ratio": 0.845, "bad_background": true}
+  ],
+  "codex_recommended_action": {
+    "statusbar_bottom_band": "Codex actively fixing. Do not interfere.",
+    "toolbar": "Use CG as ground truth. If CG >= floor but helper shows black -> fix helper readback.",
+    "scrollbar": "Capture zoomed CG and run analyze_capture.py on scrollbar region.",
+    "folder_icons": "Open dialog, capture CG, analyze icon zones."
+  },
+  "issue_classification": [
+    {"issue": "bottom_black_band", "layer": "WINE", "is_runtime": true, "is_harness": false},
+    {"issue": "toolbar_low_color", "layer": "WINE_COMCTL32 / HELPER", "is_runtime": true, "is_harness": true},
+    {"issue": "scrollbar_black", "layer": "WINE_UXTHEME", "is_runtime": true, "is_harness": false},
+    {"issue": "folder_icons_black", "layer": "WINE_COMCTL32", "is_runtime": true, "is_harness": false},
+    {"issue": "helper_false_negative", "layer": "HELPER", "is_runtime": false, "is_harness": true},
+    {"issue": "capture_missing", "layer": "INFRA / HELPER", "is_runtime": false, "is_harness": true}
+  ],
+  "next_steps": [
+    "Add Windows baseline artifact for all metrics",
+    "Capture zoomed scrollbar region CG",
+    "Capture Open/Save dialog CG with folder icons",
+    "Improve helper bitmap readback or replace with CG validation",
+    "Do NOT touch engine/wine/hyperbridge for visual lab work"
+  ]
+}

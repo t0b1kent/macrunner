@@ -1,0 +1,25 @@
+{
+  "image_path": "/tmp/test_bottom_band_zero.bmp",
+  "width": 1784,
+  "height": 1178,
+  "total_pixels": 2101552,
+  "black_pixels": 12000,
+  "white_pixels": 1950000,
+  "gray_pixels": 123456,
+  "colorful_pixels": 17000,
+  "black_ratio": 0.0057,
+  "colorful_ratio": 0.0081,
+  "thresholds": {
+    "bottom_black_band_max_px": 8,
+    "right_black_band_max_px": 8,
+    "toolbar_colorful_floor": 900,
+    "black_ratio_max": 0.15,
+    "statusbar_black_ratio_max": 0.30,
+    "scrollbar_black_ratio_max": 0.40
+  },
+  "bottom_band": {"band_height": 0, "band_detected": false},
+  "right_band": {"band_width": 3, "band_detected": false},
+  "toolbar": {"colorful_pixels": 1200, "total_pixels": 417728, "colorful_ratio": 0.00287, "colorful_floor": 900, "pass": true},
+  "statusbar": {"black_pixels": 1000, "total_pixels": 53520, "black_ratio": 0.0187, "bad_background": false},
+  "scrollbar": {"black_pixels": 80, "total_pixels": 28272, "black_ratio": 0.0028, "black_artifact": false}
+}

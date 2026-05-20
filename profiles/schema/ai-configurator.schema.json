@@ -1,0 +1,130 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MacRunner AI Configurator Result",
+  "description": "Unified orchestrator output that routes app profiles, artifacts, classifiers, and probes to the next Codex task.",
+  "type": "object",
+  "required": [
+    "app_profile_path",
+    "selected_run_dir",
+    "current_stage",
+    "current_blocker",
+    "blocker_category",
+    "confidence",
+    "safe_to_touch_runtime",
+    "generated_at"
+  ],
+  "properties": {
+    "app_profile_path": {
+      "type": "string",
+      "description": "Path to the app profile JSON used for this run."
+    },
+    "artifact_sources": {
+      "type": "object",
+      "properties": {
+        "latest_run_dir": { "type": "string" },
+        "compat_learning_db": { "type": "string" },
+        "visual_profile": { "type": "string" },
+        "probes_registry": { "type": "string" }
+      }
+    },
+    "enabled_classifiers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of classifiers that contributed to this result."
+    },
+    "probe_plan": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Ordered list of probes that have been or will be run."
+    },
+    "current_stage": {
+      "type": "string",
+      "description": "Where the app is in the smoke ladder."
+    },
+    "current_blocker": {
+      "type": "string",
+      "description": "Human-readable description of the current blocker."
+    },
+    "blocker_category": {
+      "type": "string",
+      "enum": [
+        "PRODUCT_GREEN",
+        "STALE_BUILD",
+        "WINE_LIFECYCLE",
+        "UNSUPPORTED_OPCODE",
+        "MEMORY_FAULT",
+        "ABI_OR_RETURN_PATH",
+        "UI_METRICS",
+        "VISUAL_BLACK_ARTIFACT",
+        "HELPER_CAPTURE_FALSE_NEGATIVE",
+        "COMCTL32_IMAGELIST",
+        "GETICONINFO_COLOR_LOSS",
+        "GDI_PRESENT",
+        "UNKNOWN_NEEDS_PROBE"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["HIGH", "MEDIUM", "LOW"]
+    },
+    "next_probe": {
+      "type": "string",
+      "description": "ID of the next probe to run, or null if none."
+    },
+    "next_codex_fixpack": {
+      "type": "string",
+      "description": "Path to the generated Codex fixpack markdown, or null."
+    },
+    "safe_to_touch_runtime": {
+      "type": "boolean",
+      "description": "Whether it is safe to edit engine/wine/helper/runtime code."
+    },
+    "safety_rules": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Rules that must be followed for this category."
+    },
+    "evidence_paths": {
+      "type": "object",
+      "description": "Paths to all evidence files used in this classification.",
+      "properties": {
+        "compat_classification_json": { "type": "string" },
+        "compat_classification_md": { "type": "string" },
+        "visual_classification_json": { "type": "string" },
+        "visual_classification_md": { "type": "string" },
+        "visual_analysis_json": { "type": "string" },
+        "visual_analysis_md": { "type": "string" },
+        "codex_fixpack_md": { "type": "string" },
+        "codex_next_task_md": { "type": "string" }
+      }
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "compatibility": {
+      "type": "object",
+      "description": "Compatibility classifier sub-result."
+    },
+    "visual": {
+      "type": "object",
+      "description": "Visual classifier sub-result."
+    },
+    "recommended_codex_action": {
+      "type": "string",
+      "description": "One-line summary of what Codex should do next."
+    },
+    "forbidden_actions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "rollback_rules": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

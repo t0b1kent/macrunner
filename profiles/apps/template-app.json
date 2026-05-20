@@ -1,0 +1,77 @@
+{
+  "app_name": "TEMPLATE_APP",
+  "app_version": "1.0.0",
+  "arch": "x64",
+  "exe_path": "C:\\Program Files\\TemplateApp\\app.exe",
+  "launch_args": [],
+  "working_directory": "C:\\Program Files\\TemplateApp",
+  "prefix_policy": "prefix_drive_c",
+  "required_permissions": [
+    "screen capture",
+    "AF_UNIX bind",
+    "read reports",
+    "execute smoke script"
+  ],
+  "smoke_ladder": [
+    {
+      "step": 0,
+      "name": "inspect_pe",
+      "probe_ids": ["build_freshness"],
+      "pass_criteria": "PE is x64 and imports are resolvable",
+      "skip_conditions": "none"
+    },
+    {
+      "step": 1,
+      "name": "launch_process",
+      "probe_ids": ["af_unix_bind", "wine_lifecycle"],
+      "pass_criteria": "process exists with expected PID",
+      "skip_conditions": "INFRA_WINESERVER_BIND fail"
+    },
+    {
+      "step": 2,
+      "name": "main_window_visible",
+      "probe_ids": ["main_window_cg_capture"],
+      "pass_criteria": "CG capture shows titled window",
+      "skip_conditions": "none"
+    },
+    {
+      "step": 3,
+      "name": "product_smoke",
+      "probe_ids": ["win32_helper_capture"],
+      "pass_criteria": "App-specific helper reports PASS",
+      "skip_conditions": "none"
+    },
+    {
+      "step": 4,
+      "name": "ui_metrics",
+      "probe_ids": ["ui_metrics"],
+      "pass_criteria": "Metrics match baseline or are within tolerance",
+      "skip_conditions": "No baseline artifact yet"
+    },
+    {
+      "step": 5,
+      "name": "clean_exit",
+      "probe_ids": ["clean_exit_probe"],
+      "pass_criteria": "Bounded exit with status 0 within timeout",
+      "skip_conditions": "none"
+    }
+  ],
+  "known_good_checks": [],
+  "known_yellow_checks": [],
+  "known_fixed_symptoms": [],
+  "probes_to_run": [
+    "build_freshness",
+    "af_unix_bind",
+    "wine_lifecycle",
+    "main_window_cg_capture",
+    "win32_helper_capture",
+    "ui_metrics",
+    "clean_exit_probe"
+  ],
+  "forbidden_app_specific_hacks": [
+    "Do NOT instrument Wine DLL source directly unless regression is proven safe",
+    "Do NOT use AppleScript/Accessibility for internal Win32 controls",
+    "Do NOT mark UI metrics green without Windows baseline artifact"
+  ],
+  "codex_next_actions": []
+}

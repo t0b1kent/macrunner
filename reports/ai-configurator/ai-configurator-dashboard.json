@@ -1,0 +1,45 @@
+{
+  "schema_version": "v0.1",
+  "current_app": {
+    "name": "Notepad++",
+    "version": "8.7.5",
+    "arch": "x64",
+    "profile_path": "profiles/apps/notepadpp.json"
+  },
+  "status_summary": {
+    "blocker_category": "see latest-configurator-result.json",
+    "confidence": "see latest-configurator-result.json",
+    "safe_to_touch_runtime": "see latest-configurator-result.json",
+    "current_stage": "see latest-configurator-result.json"
+  },
+  "recommended_codex_task_path": "reports/ai-configurator/CODEX-NEXT-TASK.md",
+  "last_classifications": {
+    "compat_md": "reports/compat-learning/LATEST-CLASSIFICATION.md",
+    "compat_json": "reports/compat-learning/latest-classification.json",
+    "visual_md": "reports/visual-regression/LATEST-VISUAL-CLASSIFICATION.md",
+    "visual_json": "reports/visual-regression/latest-visual-classification.json"
+  },
+  "known_limitations": [
+    "Helper capture readback may diverge from CG ground truth",
+    "Font/UI metrics require Windows baseline artifact before green",
+    "Menu cross-process enumeration not reliable under Wine (resource fallback used)",
+    "Clean exit timeout alignment pending"
+  ],
+  "next_app_readiness": {
+    "step_1": "Copy profiles/apps/template-app.json",
+    "step_2": "Fill exe_path, launch_args, working_directory",
+    "step_3": "Run macrunner_configurator.py",
+    "step_4": "Review LATEST-CONFIGURATOR-RESULT.md",
+    "step_5": "Run generate_codex_task.py",
+    "step_6": "Give CODEX-NEXT-TASK.md to Codex"
+  },
+  "tool_paths": {
+    "orchestrator": "tools/ai_configurator/macrunner_configurator.py",
+    "codex_generator": "tools/ai_configurator/generate_codex_task.py",
+    "verify_script": "tools/ai_configurator/verify_ai_configurator.sh",
+    "schema": "profiles/schema/ai-configurator.schema.json",
+    "template_app": "profiles/apps/template-app.json",
+    "next_app_flow": "docs/AI-CONFIGURATOR-NEXT-APP-FLOW.md"
+  },
+  "updated_at": "2026-05-20T20:55:00Z"
+}

@@ -1,0 +1,15 @@
+Read docs/CODEX-CONTEXT-RESTORE.md first, then AGENTS.md, then docs/CODEX-MEGA-DIRECTIVE-v2-batch-method.md.
+
+Mission: Notepad++ x64 FULL FUNCTIONAL closure. NOT closed yet — text input works, save dialog opens, file saves, но: чёрные кнопки в диалогах, серые иконки toolbar, чёрные bands, font metrics off.
+
+CRITICAL METHOD: BATCH-trace всё за ОДИН comprehensive run, не по одному symptom. Включи сразу ВСЕ trace категории (GetSysColor, GDI fills, ImageList, font metrics, opcode faults). Block limit = 10000000. Один long run (60-120s) → собери ВСЕ failures → классифицируй в families → batch-fix → один rebuild → verify. НЕ итерируй по одному и не переделывай 1000 раз.
+
+Сильная гипотеза: GetSysColor() возвращает black (0) для COLOR_BTNFACE/BTNTEXT/3DFACE/WINDOW → чёрные кнопки + bands + scroll. Verify trace, потом ОДИН fix закроет много. Иконки отдельно (ImageList).
+
+Source config/env.sh для ccache (сейчас 0% hits). Используй Kimi Visual Regression Lab (commit 9dc63c7) для automated artifact detection. Прочитай reports/ai-configurator/CODEX-NEXT-TASK.md — Kimi туда routed задачи.
+
+После visual class → close Kimi HB fault families из telemetry (int 29h, prefetch, byte-shift, INC/DEC, SSE-to-GPR) одним family pass.
+
+NO KeePass до всех 80 closure criteria green. Quality > speed. Per AGENTS.md: family audit, patch-by-evidence, native fix.
+
+Первое действие: ОДИН comprehensive trace run все категории + limit 10M. Покажи классификацию всех failures по families, потом batch-fix.

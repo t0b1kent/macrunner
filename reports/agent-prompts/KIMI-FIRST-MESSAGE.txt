@@ -1,0 +1,11 @@
+Read docs/KIMI-CONTEXT-RESTORE.md first, then AGENTS.md, then docs/KIMI-MEGA-DIRECTIVE-v2-cloud-backend-pipeline.md.
+
+Current primary: Cloud Backend + Unified Pipeline (Networking Δ.6 expanded). Rust+axum+Postgres server что унифицирует твои Configurator MVP, Visual Regression Lab, AOT cache, telemetry, Networking client в shippable backend — the commercial moat.
+
+Для Rust builds: export RUSTC_WRAPPER=sccache (installed 0.15.0). Source config/env.sh для paths + ccache.
+
+Phase Κ.0 first: architecture design + 3 ADRs (stack/storage/privacy). NO server code до design done.
+
+Standby (waits Codex Notepad++ functional): Audio E2E, AOT P3, Graphics e2e — flash-close когда Codex unblocks. Opportunistic background: engine audit dim 05 (JIT/interp consistency).
+
+Per AGENTS.md: Zeroth Principle, design-first ADRs, patch-by-evidence, decision autonomy. Honest reporting.

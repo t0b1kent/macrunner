@@ -36,6 +36,20 @@ Codex владеет engine (HyperBridge, Wine ntdll/kernelbase/win32u).
 | `engine/hyperbridge/src/` | Codex territory (READ for audit only) |
 | `engine/wine/dlls/ntdll/unix/` | Codex territory (READ for audit only) |
 
+## CURRENT PRIMARY (2026-05-20)
+
+**Cloud Backend + Unified Pipeline** — `docs/KIMI-MEGA-DIRECTIVE-v2-cloud-backend-pipeline.md`
+
+This unifies your built subsystems (Configurator MVP, Visual Regression Lab,
+AOT cache, telemetry, Networking client) into shippable cloud backend.
+Это твоя Networking Δ.6 phase expanded. Rust+axum+Postgres server.
+
+Already built (huge): Audio (done), AOT (Phase 1+2), Networking (Δ.0-Δ.5),
+AI Configurator (A.0-A.8 + Visual Regression Lab v1 + MVP orchestrator that
+auto-generates CODEX-NEXT-TASK.md), engine audits (dim 02/06/07/08/09).
+
+Use sccache for Rust: `export RUSTC_WRAPPER=sccache` (installed 0.15.0).
+
 ## Current state snapshot (update on each Phase closure)
 
 ### Codex stream

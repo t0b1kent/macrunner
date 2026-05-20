@@ -26,6 +26,7 @@ typedef enum {
     HB_ERR_TIMEOUT = -16,
     HB_ERR_CACHE_CORRUPT = -17,
     HB_ERR_NOT_FOUND = -18,
+    HB_ERR_TRANSLATION_TRUNCATED = -19,
     HB_ERR_INTERNAL = -99
 } hb_result_t;
 
@@ -50,6 +51,7 @@ static inline const char* hb_result_string(hb_result_t r) {
         case HB_ERR_TIMEOUT: return "TIMEOUT";
         case HB_ERR_CACHE_CORRUPT: return "CACHE_CORRUPT";
         case HB_ERR_NOT_FOUND: return "NOT_FOUND";
+        case HB_ERR_TRANSLATION_TRUNCATED: return "TRANSLATION_TRUNCATED";
         case HB_ERR_INTERNAL: return "INTERNAL";
         default: return "UNKNOWN";
     }

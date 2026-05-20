@@ -5,6 +5,18 @@
 #include "hb_thunk.h"
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+
+static uint64_t read_x64_block_limit_env(void) {
+    const char* value = getenv("MACRUNNER_HB_X64_BLOCK_LIMIT");
+    if (!value || !*value) return 0;
+
+    errno = 0;
+    char* end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 0);
+    if (errno != 0 || end == value) return 0;
+    return (uint64_t)parsed;
+}
 
 hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend) {
     hb_context_t* ctx = calloc(1, sizeof(hb_context_t));
@@ -15,7 +27,7 @@ hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend) {
     ctx->config.arch = arch;
     ctx->config.backend = backend;
     ctx->step_limit = 1000000;
-    ctx->block_limit = 10000;
+    ctx->block_limit = (arch == HB_ARCH_X64) ? read_x64_block_limit_env() : 0;
     ctx->exit_code = 0;
     ctx->last_result = HB_OK;
     return ctx;

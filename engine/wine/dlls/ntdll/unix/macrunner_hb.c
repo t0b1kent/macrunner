@@ -56,6 +56,7 @@ struct macrunner_hb_special
 #define MACRUNNER_HB_IMPORT_MAX 4096
 #define MACRUNNER_HB_IMPORT_BASE 0x00006f0000000000ULL
 #define MACRUNNER_HB_IMPORT_STRIDE 0x10ULL
+#define MACRUNNER_HB_IMPORT_ARG_MAX 20
 #define MACRUNNER_HB_SEH_STACK_SLACK 0x10000ULL
 
 struct macrunner_hb_import_thunk
@@ -426,7 +427,7 @@ static BOOL macrunner_hb_trace_image_api_interesting( const struct macrunner_hb_
 
 static void macrunner_hb_trace_image_api( hb_context_t *ctx, const char *phase,
                                           const struct macrunner_hb_import_thunk *thunk,
-                                          uint64_t ret_addr, uint64_t rc, const uint64_t args[12] )
+                                          uint64_t ret_addr, uint64_t rc, const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
 {
     if (!macrunner_hb_trace_image_api_enabled() ||
         !macrunner_hb_trace_image_api_interesting( thunk ) ||
@@ -480,7 +481,7 @@ static BOOL macrunner_hb_trace_geometry_interesting( const struct macrunner_hb_i
 
 static void macrunner_hb_trace_geometry_api( const char *phase,
                                              const struct macrunner_hb_import_thunk *thunk,
-                                             uint64_t ret_addr, uint64_t rc, const uint64_t args[12] )
+                                             uint64_t ret_addr, uint64_t rc, const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
 {
     if (!macrunner_hb_trace_geometry_enabled() ||
         !macrunner_hb_trace_geometry_interesting( thunk ) ||
@@ -1425,7 +1426,7 @@ __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call12,
                    "stp d12, d13, [x29, #0x80]\n\t"
                    "stp d14, d15, [x29, #0x90]\n\t"
                    "mov x20, x0\n\t"         /* target */
-                   "mov x21, x1\n\t"         /* args[12] */
+                   "mov x21, x1\n\t"         /* args[MACRUNNER_HB_IMPORT_ARG_MAX] */
                    "mov x22, x2\n\t"         /* PE-compatible scratch stack */
                    "mov x19, x3\n\t"         /* TEB */
                    "mov x18, x19\n\t"        /* Windows ARM64 TEB */
@@ -1446,14 +1447,18 @@ __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call12,
                    "add x8, x29, #0xd0\n\t"
                    "stp x7, x8, [x4, #0x110]\n\t" /* frame->prev_frame, syscall_cfa */
                    "mov sp, x22\n\t"
-                   "ldr x12, [x21, #64]\n\t"
-                   "str x12, [sp, #0]\n\t"
-                   "ldr x12, [x21, #72]\n\t"
-                   "str x12, [sp, #8]\n\t"
-                   "ldr x12, [x21, #80]\n\t"
-                   "str x12, [sp, #16]\n\t"
-                   "ldr x12, [x21, #88]\n\t"
-                   "str x12, [sp, #24]\n\t"
+                   "ldp x12, x13, [x21, #64]\n\t"
+                   "stp x12, x13, [sp, #0]\n\t"
+                   "ldp x12, x13, [x21, #80]\n\t"
+                   "stp x12, x13, [sp, #16]\n\t"
+                   "ldp x12, x13, [x21, #96]\n\t"
+                   "stp x12, x13, [sp, #32]\n\t"
+                   "ldp x12, x13, [x21, #112]\n\t"
+                   "stp x12, x13, [sp, #48]\n\t"
+                   "ldp x12, x13, [x21, #128]\n\t"
+                   "stp x12, x13, [sp, #64]\n\t"
+                   "ldp x12, x13, [x21, #144]\n\t"
+                   "stp x12, x13, [sp, #80]\n\t"
                    "ldr x0, [x21, #0]\n\t"
                    "ldr x1, [x21, #8]\n\t"
                    "ldr x2, [x21, #16]\n\t"
@@ -1487,7 +1492,7 @@ __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call12,
 #endif
 
 static uint64_t macrunner_hb_call_arm64_pe_import12( const struct macrunner_hb_import_thunk *thunk,
-                                                     const uint64_t args[12] )
+                                                     const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
 {
 #ifdef __aarch64__
     TEB *teb = NtCurrentTeb();
@@ -1507,14 +1512,18 @@ static uint64_t macrunner_hb_call_arm64_pe_import12( const struct macrunner_hb_i
     if (!teb || !macrunner_hb_bridge_stack_base || !macrunner_hb_bridge_stack_limit ||
         macrunner_hb_bridge_stack_size < 0x2000)
     {
-        typedef uint64_t (*macrunner_hb_native_fn12)( uint64_t, uint64_t, uint64_t, uint64_t,
+        typedef uint64_t (*macrunner_hb_native_fn20)( uint64_t, uint64_t, uint64_t, uint64_t,
+                                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                                      uint64_t, uint64_t, uint64_t, uint64_t,
                                                       uint64_t, uint64_t, uint64_t, uint64_t,
                                                       uint64_t, uint64_t, uint64_t, uint64_t );
 
         macrunner_hb_prepare_arm64_pe_call();
-        return ((macrunner_hb_native_fn12)target)( args[0], args[1], args[2], args[3],
+        return ((macrunner_hb_native_fn20)target)( args[0], args[1], args[2], args[3],
                                                    args[4], args[5], args[6], args[7],
-                                                   args[8], args[9], args[10], args[11] );
+                                                   args[8], args[9], args[10], args[11],
+                                                   args[12], args[13], args[14], args[15],
+                                                   args[16], args[17], args[18], args[19] );
     }
 
     restore_base = teb->Tib.StackBase;
@@ -1623,17 +1632,17 @@ static uint64_t macrunner_hb_call_arm64_pe_import12( const struct macrunner_hb_i
 
 static void macrunner_hb_trace_abi_stack( hb_context_t *ctx, const char *phase,
                                           const struct macrunner_hb_import_thunk *thunk,
-                                          uint64_t ret_addr, const uint64_t args[12] );
+                                          uint64_t ret_addr, const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] );
 static void macrunner_hb_trace_abi_return( hb_context_t *ctx,
                                            const struct macrunner_hb_import_thunk *thunk,
                                            uint64_t ret_addr, uint64_t value,
-                                           const uint64_t args[12] );
+                                           const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] );
 static void macrunner_hb_normalize_import_args( const struct macrunner_hb_import_thunk *thunk,
-                                                uint64_t args[12] );
+                                                uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] );
 
 static uint64_t macrunner_hb_call_arm64_pe_import12_for_ctx( hb_context_t *ctx,
                                                              const struct macrunner_hb_import_thunk *thunk,
-                                                             const uint64_t args[12] )
+                                                             const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
 {
     uintptr_t old_guest_rsp = macrunner_hb_native_call_guest_rsp;
     uint64_t ret;
@@ -1655,7 +1664,7 @@ struct macrunner_hb_timeb64
 
 static BOOL macrunner_hb_try_msvcrt_time_semantic( hb_context_t *ctx,
                                                    const struct macrunner_hb_import_thunk *thunk,
-                                                   const uint64_t args[12],
+                                                   const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
                                                    uint64_t *ret )
 {
     struct timeval tv;
@@ -1706,7 +1715,7 @@ static BOOL macrunner_hb_try_msvcrt_time_semantic( hb_context_t *ctx,
 
 static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
                                                    const struct macrunner_hb_import_thunk *thunk,
-                                                   const uint64_t args[12],
+                                                   const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
                                                    uint64_t *ret )
 {
     if (!ctx || !thunk || !args || !ret) return FALSE;
@@ -1741,12 +1750,28 @@ static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
     return FALSE;
 }
 
+static unsigned int macrunner_hb_import_arg_count( const struct macrunner_hb_import_thunk *thunk )
+{
+    if (!thunk) return 12;
+
+    if (macrunner_hb_strieq( thunk->dll_name, "win32u.dll" ))
+    {
+        if (macrunner_hb_strieq( thunk->import_name, "NtUserCreateWindowEx" )) return 17;
+        if (macrunner_hb_strieq( thunk->import_name, "NtGdiSetDIBitsToDeviceInternal" )) return 16;
+        if (macrunner_hb_strieq( thunk->import_name, "NtGdiStretchDIBitsInternal" )) return 16;
+        if (macrunner_hb_strieq( thunk->import_name, "NtGdiMaskBlt" )) return 13;
+    }
+
+    return 12;
+}
+
 static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
                                                    const struct macrunner_hb_import_thunk *thunk )
 {
     uint64_t ret_addr = 0;
-    uint64_t args[12] = { 0 };
+    uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] = { 0 };
     uint64_t rc;
+    unsigned int arg_count;
     unsigned int i;
 
     if (!ctx || !ctx->memory || !thunk || !thunk->target) return HB_ERR_INVALID_ARG;
@@ -1758,8 +1783,28 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     args[1] = ctx->regs.x64.rdx;
     args[2] = ctx->regs.x64.r8;
     args[3] = ctx->regs.x64.r9;
-    for (i = 4; i < 12; i++)
-        hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 8 + 32 + (i - 4) * 8, &args[i] );
+    arg_count = macrunner_hb_import_arg_count( thunk );
+    if (arg_count > MACRUNNER_HB_IMPORT_ARG_MAX) return HB_ERR_UNSUPPORTED_FEATURE;
+    for (i = 4; i < arg_count; i++)
+    {
+        hb_result_t read = hb_memory_read_u64( ctx->memory,
+                                               (hb_gva_t)ctx->regs.x64.rsp + 8 + 32 + (i - 4) * 8,
+                                               &args[i] );
+        if (read != HB_OK && arg_count > 12) return HB_ERR_MEMORY_FAULT;
+    }
+    if (macrunner_hb_trace_direct_native_enabled() &&
+        macrunner_hb_strieq( thunk->dll_name, "win32u.dll" ) &&
+        (macrunner_hb_strieq( thunk->import_name, "NtGdiStretchDIBitsInternal" ) ||
+         macrunner_hb_strieq( thunk->import_name, "NtGdiSetDIBitsToDeviceInternal" ) ||
+         macrunner_hb_strieq( thunk->import_name, "NtUserCreateWindowEx" )))
+        fprintf( stderr, "macrunner-hb-high-arity: import=%s!%s argc=%u "
+                 "a8=%p a9=%p a10=%p a11=%p a12=%p a13=%p a14=%p a15=%p a16=%p\n",
+                 thunk->dll_name, thunk->import_name, arg_count,
+                 (void *)(uintptr_t)args[8], (void *)(uintptr_t)args[9],
+                 (void *)(uintptr_t)args[10], (void *)(uintptr_t)args[11],
+                 (void *)(uintptr_t)args[12], (void *)(uintptr_t)args[13],
+                 (void *)(uintptr_t)args[14], (void *)(uintptr_t)args[15],
+                 (void *)(uintptr_t)args[16] );
     macrunner_hb_normalize_import_args( thunk, args );
     if (macrunner_hb_trace_file_api_enabled() &&
         (macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
@@ -1842,6 +1887,15 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
                        thunk->dll_name, proc_name, (void *)(uintptr_t)rc,
                        (void *)(uintptr_t)guest_target );
                 rc = guest_target;
+            }
+            else
+            {
+                ERR( "MacRunner HyperBridge failed to register dynamic proc %s!%s native=%p; "
+                     "not returning raw native pointer to x64 guest\n",
+                     thunk->dll_name, proc_name, (void *)(uintptr_t)rc );
+                RtlSetLastWin32Error( ERROR_NOT_ENOUGH_MEMORY );
+                NtCurrentTeb()->LastStatusValue = STATUS_NO_MEMORY;
+                rc = 0;
             }
         }
     }
@@ -1965,7 +2019,7 @@ static uint64_t macrunner_hb_i32_arg( uint64_t value )
 }
 
 static void macrunner_hb_normalize_import_args( const struct macrunner_hb_import_thunk *thunk,
-                                                uint64_t args[12] )
+                                                uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
 {
     if (!thunk || !args) return;
 
@@ -2147,7 +2201,7 @@ static void macrunner_hb_trace_guest_monitorinfo( hb_context_t *ctx, const char 
 
 static void macrunner_hb_trace_geometry_return( hb_context_t *ctx,
                                                 const struct macrunner_hb_import_thunk *thunk,
-                                                uint64_t value, const uint64_t args[12] )
+                                                uint64_t value, const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
 {
     static int budget = 220;
 
@@ -2205,7 +2259,7 @@ static void macrunner_hb_trace_geometry_return( hb_context_t *ctx,
 static void macrunner_hb_trace_abi_return( hb_context_t *ctx,
                                            const struct macrunner_hb_import_thunk *thunk,
                                            uint64_t ret_addr, uint64_t value,
-                                           const uint64_t args[12] )
+                                           const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
 {
     TEB *teb = NtCurrentTeb();
 
@@ -2325,7 +2379,7 @@ static void macrunner_hb_trace_windowplacement( hb_context_t *ctx,
 
 static void macrunner_hb_trace_abi_stack( hb_context_t *ctx, const char *phase,
                                           const struct macrunner_hb_import_thunk *thunk,
-                                          uint64_t ret_addr, const uint64_t args[12] )
+                                          uint64_t ret_addr, const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
 {
     static const int offsets[] =
     {
@@ -2606,7 +2660,7 @@ static hb_result_t macrunner_hb_call_direct_native_target( hb_context_t *ctx, ui
     void *native_module = NULL;
     char native_module_name[96];
     uint64_t ret_addr = 0;
-    uint64_t args[12] = { 0 };
+    uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] = { 0 };
     uint64_t rc;
     unsigned int i;
 
@@ -2618,7 +2672,7 @@ static hb_result_t macrunner_hb_call_direct_native_target( hb_context_t *ctx, ui
     args[1] = ctx->regs.x64.rdx;
     args[2] = ctx->regs.x64.r8;
     args[3] = ctx->regs.x64.r9;
-    for (i = 4; i < 12; i++)
+    for (i = 4; i < MACRUNNER_HB_IMPORT_ARG_MAX; i++)
         hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 8 + 32 + (i - 4) * 8, &args[i] );
     if ((registered = macrunner_hb_find_import_thunk_by_target( target )))
         macrunner_hb_normalize_import_args( registered, args );
@@ -2775,7 +2829,16 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, uint
     void *old_teb_stack_base = NULL;
     NTSTATUS status = STATUS_UNSUCCESSFUL;
     const char *status_reason = "uninitialised";
+    const char *progress_env = getenv( "MACRUNNER_HB_TRACE_PROGRESS" );
+    char *progress_end = NULL;
+    uint64_t progress_interval = 0;
     hb_result_t ret;
+
+    if (progress_env && *progress_env && *progress_env != '0')
+    {
+        progress_interval = strtoull( progress_env, &progress_end, 0 );
+        if (!progress_interval || progress_interval < 1000) progress_interval = 100000;
+    }
 
     if (!entry || !call) return STATUS_INVALID_PARAMETER;
     if (ret_value) *ret_value = 0;
@@ -2987,6 +3050,22 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, uint
                  wine_dbgstr_longlong(out.steps_executed), (void *)(uintptr_t)ctx->pc );
         hb_ir_func_destroy( func );
         steps += out.steps_executed;
+        if (progress_interval && blocks && !(blocks % progress_interval))
+            fprintf( stderr, "macrunner-hb-progress: label=%s block=%s block_pc=%p "
+                     "next_pc=%p rva=%p ret=%s out=%s out_steps=%s total_steps=%s "
+                     "rax=%p rcx=%p rdx=%p rsi=%p rdi=%p rsp=%p\n",
+                     label ? label : "entry", wine_dbgstr_longlong(blocks),
+                     (void *)(uintptr_t)block_pc, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)(block_pc - image_start),
+                     hb_result_string(ret), hb_result_string(out.result),
+                     wine_dbgstr_longlong(out.steps_executed),
+                     wine_dbgstr_longlong(steps),
+                     (void *)(uintptr_t)ctx->regs.x64.rax,
+                     (void *)(uintptr_t)ctx->regs.x64.rcx,
+                     (void *)(uintptr_t)ctx->regs.x64.rdx,
+                     (void *)(uintptr_t)ctx->regs.x64.rsi,
+                     (void *)(uintptr_t)ctx->regs.x64.rdi,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp );
         if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_LOW_STACK" ) && ctx->memory &&
             (ctx->regs.x64.rsp < ctx->memory->stack_bottom + 0x20000 ||
              ctx->regs.x64.rsp > ctx->memory->stack_top))

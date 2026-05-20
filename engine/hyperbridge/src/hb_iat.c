@@ -3,8 +3,77 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#if defined(__APPLE__) && defined(__MACH__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 
 static uint64_t bridge_calls;
+
+static bool host_addr_has_prot(uintptr_t p, int required) {
+    if (!p) return false;
+#if defined(__APPLE__) && defined(__MACH__)
+    mach_vm_address_t addr = (mach_vm_address_t)p;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object_name = MACH_PORT_NULL;
+    kern_return_t kr = mach_vm_region(mach_task_self(), &addr, &size,
+                                      VM_REGION_BASIC_INFO_64,
+                                      (vm_region_info_t)&info,
+                                      &count, &object_name);
+    if (object_name != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), object_name);
+    }
+    if (kr != KERN_SUCCESS) return false;
+    if (p < (uintptr_t)addr || p >= (uintptr_t)(addr + size)) return false;
+    return (info.protection & required) == required;
+#else
+    FILE* fp = fopen("/proc/self/maps", "r");
+    char line[512];
+    bool allowed = false;
+
+    if (!fp) return false;
+    while (fgets(line, sizeof(line), fp)) {
+        unsigned long start = 0, end = 0;
+        char perms[5] = {0};
+        if (sscanf(line, "%lx-%lx %4s", &start, &end, perms) != 3) continue;
+        if (p >= (uintptr_t)start && p < (uintptr_t)end) {
+            allowed = true;
+            if ((required & 1) && perms[0] != 'r') allowed = false;
+            if ((required & 2) && perms[1] != 'w') allowed = false;
+            if ((required & 4) && perms[2] != 'x') allowed = false;
+            break;
+        }
+    }
+    fclose(fp);
+    return allowed;
+#endif
+}
+
+static bool host_range_has_prot(const void* ptr, size_t size, int required) {
+    uintptr_t start = (uintptr_t)ptr;
+    if (!start || size == 0) return false;
+    uintptr_t end = start + size - 1;
+    if (end < start) return false;
+    return host_addr_has_prot(start, required) && host_addr_has_prot(end, required);
+}
+
+static bool iat_slot_readable(const void* slot) {
+#if defined(__APPLE__) && defined(__MACH__)
+    return host_range_has_prot(slot, sizeof(void*), VM_PROT_READ);
+#else
+    return host_range_has_prot(slot, sizeof(void*), 1);
+#endif
+}
+
+static bool iat_slot_writable(const void* slot) {
+#if defined(__APPLE__) && defined(__MACH__)
+    return host_range_has_prot(slot, sizeof(void*), VM_PROT_WRITE);
+#else
+    return host_range_has_prot(slot, sizeof(void*), 2);
+#endif
+}
 
 hb_result_t hb_iat_plan_init(hb_iat_rewrite_plan_t* plan, size_t capacity) {
     if (!plan || capacity == 0) return HB_ERR_INVALID_ARG;
@@ -51,8 +120,14 @@ hb_result_t hb_iat_plan_apply(hb_iat_rewrite_plan_t* plan, bool dry_run, hb_iat_
             if (stats) stats->denied_count++;
             continue;
         }
+        if (!iat_slot_readable(e->slot)) {
+            return HB_ERR_MEMORY_FAULT;
+        }
         e->original_target = *e->slot;
         if (!dry_run) {
+            if (!iat_slot_writable(e->slot)) {
+                return HB_ERR_MEMORY_FAULT;
+            }
             *e->slot = e->bridge_target;
             __builtin___clear_cache((char*)e->slot, (char*)e->slot + sizeof(void*));
             e->flags |= HB_IAT_FLAG_APPLIED;
@@ -68,7 +143,11 @@ hb_result_t hb_iat_plan_rollback(hb_iat_rewrite_plan_t* plan, hb_iat_stats_t* st
     for (size_t i = 0; i < plan->count; i++) {
         hb_iat_rewrite_entry_t* e = &plan->entries[i];
         if ((e->flags & HB_IAT_FLAG_APPLIED) != 0) {
+            if (!iat_slot_writable(e->slot)) {
+                return HB_ERR_MEMORY_FAULT;
+            }
             *e->slot = e->original_target;
+            __builtin___clear_cache((char*)e->slot, (char*)e->slot + sizeof(void*));
             e->flags &= ~HB_IAT_FLAG_APPLIED;
             if (stats) stats->rollback_count++;
         }

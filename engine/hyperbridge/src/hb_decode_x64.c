@@ -8,6 +8,7 @@ typedef struct {
     size_t len;
     size_t pos;
     uint64_t addr;
+    bool fault;
 } hb_dec_t;
 
 static inline bool can_read(hb_dec_t* d, size_t n) {
@@ -15,6 +16,11 @@ static inline bool can_read(hb_dec_t* d, size_t n) {
 }
 
 static inline uint8_t read_u8(hb_dec_t* d) {
+    if (!can_read(d, 1)) {
+        d->fault = true;
+        d->pos = d->len;
+        return 0xCC;
+    }
     return d->code[d->pos++];
 }
 
@@ -1068,6 +1074,20 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             if (out->op1.is_mem) out->op1.size = 8;
             return HB_OK;
         }
+        if (prefix_f3 && op2 == 0x7E) {
+            /* MOVQ xmm, xmm/m64. Completes the SSE qword transfer decode family
+             * used by compiler-generated helper code around GDI toolbar probes. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = HB_INS_MOVD;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 8, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            if (out->op2.is_mem) out->op2.size = 8;
+            return HB_OK;
+        }
         if (prefix_f3 && op2 == 0xE6) {
             /* CVTDQ2PD xmm, xmm/m64: convert two signed dwords to two doubles. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
@@ -1269,11 +1289,15 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             mark_xmm_operand(out, 2);
             return HB_OK;
         }
-        if (operand16 && (op2 == 0x74 || op2 == 0x75 || op2 == 0x76)) {
-            /* PCMPEQB/PCMPEQW/PCMPEQD xmm, xmm/m128. */
+        if (operand16 && (op2 == 0x64 || op2 == 0x65 || op2 == 0x66 ||
+                          op2 == 0x74 || op2 == 0x75 || op2 == 0x76)) {
+            /* PCMPGTB/W/D and PCMPEQB/W/D xmm, xmm/m128. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
-            if (op2 == 0x74) out->opcode = HB_INS_PCMPEQB;
+            if (op2 == 0x64) out->opcode = HB_INS_PCMPGTB;
+            else if (op2 == 0x65) out->opcode = HB_INS_PCMPGTW;
+            else if (op2 == 0x66) out->opcode = HB_INS_PCMPGTD;
+            else if (op2 == 0x74) out->opcode = HB_INS_PCMPEQB;
             else if (op2 == 0x75) out->opcode = HB_INS_PCMPEQW;
             else out->opcode = HB_INS_PCMPEQD;
             out->writes_flags = false;
@@ -1304,6 +1328,20 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             out->writes_flags = false;
             hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 4, out, 1, 2, false);
             if (r != HB_OK) return r;
+            mark_xmm_operand(out, 2);
+            out->op1.size = 4;
+            return HB_OK;
+        }
+        if ((!operand16 && !prefix_f2 && !prefix_f3 && op2 == 0x50) ||
+            (operand16 && op2 == 0x50)) {
+            /* MOVMSKPS/MOVMSKPD r32, xmm: extract packed FP sign bits. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = operand16 ? HB_INS_MOVMSKPD : HB_INS_MOVMSKPS;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 4, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            if (!out->op2.is_reg) return HB_ERR_UNSUPPORTED_OPCODE;
             mark_xmm_operand(out, 2);
             out->op1.size = 4;
             return HB_OK;
@@ -1346,15 +1384,21 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             set_imm(out, 3, read_u8(d), 1);
             return HB_OK;
         }
-        if (operand16 && op2 == 0x73) {
-            /* SSE2 immediate shifts: PSRLQ/PSRLDQ/PSLLQ/PSLLDQ. */
+        if (operand16 && (op2 == 0x71 || op2 == 0x72 || op2 == 0x73)) {
+            /* SSE2 XMM immediate shifts. 0F 71/72 use /2,/4,/6; 0F 73 also has byte shifts. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
             uint8_t ext = (modrm >> 3) & 7;
-            if (ext == 2) out->opcode = HB_INS_PSRLQ;
-            else if (ext == 3) out->opcode = HB_INS_PSRLDQ;
-            else if (ext == 6) out->opcode = HB_INS_PSLLQ;
-            else if (ext == 7) out->opcode = HB_INS_PSLLDQ;
+            if (op2 == 0x71 && ext == 2) out->opcode = HB_INS_PSRLW;
+            else if (op2 == 0x71 && ext == 4) out->opcode = HB_INS_PSRAW;
+            else if (op2 == 0x71 && ext == 6) out->opcode = HB_INS_PSLLW;
+            else if (op2 == 0x72 && ext == 2) out->opcode = HB_INS_PSRLD;
+            else if (op2 == 0x72 && ext == 4) out->opcode = HB_INS_PSRAD;
+            else if (op2 == 0x72 && ext == 6) out->opcode = HB_INS_PSLLD;
+            else if (op2 == 0x73 && ext == 2) out->opcode = HB_INS_PSRLQ;
+            else if (op2 == 0x73 && ext == 3) out->opcode = HB_INS_PSRLDQ;
+            else if (op2 == 0x73 && ext == 6) out->opcode = HB_INS_PSLLQ;
+            else if (op2 == 0x73 && ext == 7) out->opcode = HB_INS_PSLLDQ;
             else return HB_ERR_UNSUPPORTED_OPCODE;
             out->writes_flags = false;
             hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 16, out, 1);
@@ -1362,6 +1406,21 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             mark_xmm_operand(out, 1);
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             set_imm(out, 2, read_u8(d), 1);
+            return HB_OK;
+        }
+        if (operand16 && (op2 == 0xF8 || op2 == 0xF9 || op2 == 0xFA || op2 == 0xFB)) {
+            /* Packed integer subtract family: PSUBB/PSUBW/PSUBD/PSUBQ xmm, xmm/m128. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            if (op2 == 0xF8) out->opcode = HB_INS_PSUBB;
+            else if (op2 == 0xF9) out->opcode = HB_INS_PSUBW;
+            else if (op2 == 0xFA) out->opcode = HB_INS_PSUBD;
+            else out->opcode = HB_INS_PSUBQ;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
             return HB_OK;
         }
         if (operand16 && (op2 == 0xFC || op2 == 0xFD || op2 == 0xFE || op2 == 0xD4)) {
@@ -1849,8 +1908,15 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
 hb_result_t hb_decode_x64(const uint8_t* code, size_t len, uint64_t addr, hb_decoded_t* out) {
     if (!code || !out || len == 0) return HB_ERR_INVALID_ARG;
 
-    hb_dec_t d = { code, len, 0, addr };
+    hb_dec_t d = {
+        .code = code,
+        .len = len,
+        .pos = 0,
+        .addr = addr,
+        .fault = false
+    };
     hb_result_t r = decode_one(&d, out);
+    if (d.fault && r == HB_OK) r = HB_ERR_DECODE_FAILED;
     if (r != HB_OK) {
         out->len = (uint8_t)(d.pos > 0 ? d.pos : 1);
         if (r == HB_ERR_UNSUPPORTED_OPCODE) out->opcode = HB_INS_UNSUPPORTED;
@@ -1974,7 +2040,12 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_PCMPEQB: return "PCMPEQB";
         case HB_INS_PCMPEQW: return "PCMPEQW";
         case HB_INS_PCMPEQD: return "PCMPEQD";
+        case HB_INS_PCMPGTB: return "PCMPGTB";
+        case HB_INS_PCMPGTW: return "PCMPGTW";
+        case HB_INS_PCMPGTD: return "PCMPGTD";
         case HB_INS_PMOVMSKB: return "PMOVMSKB";
+        case HB_INS_MOVMSKPS: return "MOVMSKPS";
+        case HB_INS_MOVMSKPD: return "MOVMSKPD";
         case HB_INS_UNPCKLPS: return "UNPCKLPS";
         case HB_INS_UNPCKLPD: return "UNPCKLPD";
         case HB_INS_UNPCKHPS: return "UNPCKHPS";
@@ -1990,6 +2061,12 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_PSHUFD: return "PSHUFD";
         case HB_INS_PSHUFLW: return "PSHUFLW";
         case HB_INS_PSHUFHW: return "PSHUFHW";
+        case HB_INS_PSRLW: return "PSRLW";
+        case HB_INS_PSRAW: return "PSRAW";
+        case HB_INS_PSLLW: return "PSLLW";
+        case HB_INS_PSRLD: return "PSRLD";
+        case HB_INS_PSRAD: return "PSRAD";
+        case HB_INS_PSLLD: return "PSLLD";
         case HB_INS_PSRLQ: return "PSRLQ";
         case HB_INS_PSLLQ: return "PSLLQ";
         case HB_INS_PSRLDQ: return "PSRLDQ";
@@ -2033,6 +2110,10 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_PADDW: return "PADDW";
         case HB_INS_PADDD: return "PADDD";
         case HB_INS_PADDQ: return "PADDQ";
+        case HB_INS_PSUBB: return "PSUBB";
+        case HB_INS_PSUBW: return "PSUBW";
+        case HB_INS_PSUBD: return "PSUBD";
+        case HB_INS_PSUBQ: return "PSUBQ";
         case HB_INS_UNKNOWN: return "UNKNOWN";
         case HB_INS_UNSUPPORTED: return "UNSUPPORTED";
         default: return "?";

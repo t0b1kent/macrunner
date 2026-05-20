@@ -615,9 +615,16 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_PCMPEQB: return "PCMPEQB";
         case HB_IR_PCMPEQW: return "PCMPEQW";
         case HB_IR_PCMPEQD: return "PCMPEQD";
+        case HB_IR_PCMPGTB: return "PCMPGTB";
+        case HB_IR_PCMPGTW: return "PCMPGTW";
+        case HB_IR_PCMPGTD: return "PCMPGTD";
         case HB_IR_PMOVMSKB: return "PMOVMSKB";
+        case HB_IR_MOVMSK: return "MOVMSK";
         case HB_IR_PUNPCK: return "PUNPCK";
         case HB_IR_PSHUF: return "PSHUF";
+        case HB_IR_PSRL: return "PSRL";
+        case HB_IR_PSRA: return "PSRA";
+        case HB_IR_PSLL: return "PSLL";
         case HB_IR_PSRLQ: return "PSRLQ";
         case HB_IR_PSLLQ: return "PSLLQ";
         case HB_IR_PSRLDQ: return "PSRLDQ";
@@ -648,6 +655,7 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_CVTTSD2SI: return "CVTTSD2SI";
         case HB_IR_CVTTSS2SI: return "CVTTSS2SI";
         case HB_IR_PADD: return "PADD";
+        case HB_IR_PSUB: return "PSUB";
         case HB_IR_HOST_CALL: return "HOST_CALL";
         case HB_IR_FAULT: return "FAULT";
         case HB_IR_UNSUPPORTED: return "UNSUPPORTED";
@@ -1462,11 +1470,13 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 return HB_ERR_EXEC_FAULT;
             }
             if (ctx->mode == HB_MODE_32BIT) {
-                ctx->regs.x86.esp -= 4;
-                r = hb_memory_write_u32(ctx->memory, ctx->regs.x86.esp, (uint32_t)ret_addr);
+                uint32_t new_esp = ctx->regs.x86.esp - 4;
+                r = hb_memory_write_u32(ctx->memory, new_esp, (uint32_t)ret_addr);
+                if (r == HB_OK) ctx->regs.x86.esp = new_esp;
             } else {
-                ctx->regs.x64.rsp -= 8;
-                r = hb_memory_write_u64(ctx->memory, ctx->regs.x64.rsp, ret_addr);
+                uint64_t new_rsp = ctx->regs.x64.rsp - 8;
+                r = hb_memory_write_u64(ctx->memory, new_rsp, ret_addr);
+                if (r == HB_OK) ctx->regs.x64.rsp = new_rsp;
             }
             if (r != HB_OK) return r;
             ctx->pc = target;
@@ -1903,6 +1913,40 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
+        case HB_IR_PCMPGTB:
+        case HB_IR_PCMPGTW:
+        case HB_IR_PCMPGTD: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t lbytes[16], rbytes[16], obytes[16];
+            unsigned lane = instr->op == HB_IR_PCMPGTB ? 1 : (instr->op == HB_IR_PCMPGTW ? 2 : 4);
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
+            if (r != HB_OK) return r;
+            memcpy(lbytes, lhs, sizeof(lbytes));
+            memcpy(rbytes, rhs, sizeof(rbytes));
+            memset(obytes, 0, sizeof(obytes));
+            for (unsigned i = 0; i < 16; i += lane) {
+                bool gt = false;
+                if (lane == 1) gt = *(int8_t *)(lbytes + i) > *(int8_t *)(rbytes + i);
+                else if (lane == 2) {
+                    int16_t a, b;
+                    memcpy(&a, lbytes + i, sizeof(a));
+                    memcpy(&b, rbytes + i, sizeof(b));
+                    gt = a > b;
+                } else {
+                    int32_t a, b;
+                    memcpy(&a, lbytes + i, sizeof(a));
+                    memcpy(&b, rbytes + i, sizeof(b));
+                    gt = a > b;
+                }
+                if (gt) memset(obytes + i, 0xff, lane);
+            }
+            memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
         case HB_IR_PMOVMSKB: {
             if (instr->dst.type != HB_OP_REG || instr->src1.type != HB_OP_REG ||
                 !is_xmm_reg(instr->src1.reg)) return HB_ERR_INTERNAL;
@@ -1914,6 +1958,23 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             memcpy(bytes, xmm, sizeof(bytes));
             for (unsigned i = 0; i < 16; i++)
                 if (bytes[i] & 0x80) mask |= (uint32_t)1 << i;
+            write_reg_sized(ctx, instr->dst.reg, mask, HB_SIZE_32);
+            return HB_OK;
+        }
+
+        case HB_IR_MOVMSK: {
+            if (instr->dst.type != HB_OP_REG || instr->src1.type != HB_OP_REG ||
+                !is_xmm_reg(instr->src1.reg)) return HB_ERR_INTERNAL;
+            uint64_t xmm[2];
+            uint8_t bytes[16];
+            uint32_t mask = 0;
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
+            r = read_xmm_reg(ctx, instr->src1.reg, xmm);
+            if (r != HB_OK) return r;
+            memcpy(bytes, xmm, sizeof(bytes));
+            for (unsigned i = 0, bit = 0; i < 16; i += lane, bit++)
+                if (bytes[i + lane - 1] & 0x80) mask |= (uint32_t)1 << bit;
             write_reg_sized(ctx, instr->dst.reg, mask, HB_SIZE_32);
             return HB_OK;
         }
@@ -1976,6 +2037,57 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 return HB_ERR_INTERNAL;
             }
             memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PSRL:
+        case HB_IR_PSRA:
+        case HB_IR_PSLL: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            if (instr->src2.type != HB_OP_IMM) return HB_ERR_INTERNAL;
+            uint64_t in[2], out[2] = {0, 0};
+            uint8_t src[16], dst[16] = {0};
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            unsigned count = (unsigned)(instr->src2.imm & 0xff);
+            if (!(lane == 2 || lane == 4)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand(ctx, &instr->src1, in);
+            if (r != HB_OK) return r;
+            memcpy(src, in, sizeof(src));
+
+            for (unsigned off = 0; off < 16; off += lane) {
+                if (lane == 2) {
+                    uint16_t value;
+                    memcpy(&value, src + off, sizeof(value));
+                    uint16_t result = 0;
+                    if (instr->op == HB_IR_PSRL) {
+                        result = count >= 16 ? 0 : (uint16_t)(value >> count);
+                    } else if (instr->op == HB_IR_PSLL) {
+                        result = count >= 16 ? 0 : (uint16_t)(value << count);
+                    } else {
+                        int16_t signed_value;
+                        memcpy(&signed_value, &value, sizeof(signed_value));
+                        result = (uint16_t)(count >= 16 ? (signed_value < 0 ? -1 : 0)
+                                                        : (int16_t)(signed_value >> count));
+                    }
+                    memcpy(dst + off, &result, sizeof(result));
+                } else {
+                    uint32_t value;
+                    memcpy(&value, src + off, sizeof(value));
+                    uint32_t result = 0;
+                    if (instr->op == HB_IR_PSRL) {
+                        result = count >= 32 ? 0 : (uint32_t)(value >> count);
+                    } else if (instr->op == HB_IR_PSLL) {
+                        result = count >= 32 ? 0 : (uint32_t)(value << count);
+                    } else {
+                        int32_t signed_value;
+                        memcpy(&signed_value, &value, sizeof(signed_value));
+                        result = (uint32_t)(count >= 32 ? (signed_value < 0 ? -1 : 0)
+                                                        : (int32_t)(signed_value >> count));
+                    }
+                    memcpy(dst + off, &result, sizeof(result));
+                }
+            }
+            memcpy(out, dst, sizeof(out));
             return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
@@ -2043,6 +2155,45 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     memcpy(&a, lbytes + i, sizeof(a));
                     memcpy(&b, rbytes + i, sizeof(b));
                     c = a + b;
+                    memcpy(obytes + i, &c, sizeof(c));
+                }
+            }
+            memcpy(out, obytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PSUB: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t lbytes[16], rbytes[16], obytes[16];
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            if (!(lane == 1 || lane == 2 || lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
+            if (r != HB_OK) return r;
+            memcpy(lbytes, lhs, sizeof(lbytes));
+            memcpy(rbytes, rhs, sizeof(rbytes));
+            for (unsigned i = 0; i < 16; i += lane) {
+                if (lane == 1) {
+                    obytes[i] = (uint8_t)(lbytes[i] - rbytes[i]);
+                } else if (lane == 2) {
+                    uint16_t a, b, c;
+                    memcpy(&a, lbytes + i, sizeof(a));
+                    memcpy(&b, rbytes + i, sizeof(b));
+                    c = (uint16_t)(a - b);
+                    memcpy(obytes + i, &c, sizeof(c));
+                } else if (lane == 4) {
+                    uint32_t a, b, c;
+                    memcpy(&a, lbytes + i, sizeof(a));
+                    memcpy(&b, rbytes + i, sizeof(b));
+                    c = a - b;
+                    memcpy(obytes + i, &c, sizeof(c));
+                } else {
+                    uint64_t a, b, c;
+                    memcpy(&a, lbytes + i, sizeof(a));
+                    memcpy(&b, rbytes + i, sizeof(b));
+                    c = a - b;
                     memcpy(obytes + i, &c, sizeof(c));
                 }
             }
@@ -2410,7 +2561,10 @@ hb_result_t hb_interpreter_run(hb_interpreter_t* interp, const hb_ir_func_t* fun
             out->result = HB_ERR_BLOCK_LIMIT;
             out->steps_executed = steps;
             out->blocks_executed = blocks_executed;
-            return HB_OK;
+            out->faulted = true;
+            out->fault_reason = "block limit reached";
+            ctx->last_result = HB_ERR_BLOCK_LIMIT;
+            return HB_ERR_BLOCK_LIMIT;
         }
         blocks_executed++;
 
@@ -2450,6 +2604,15 @@ hb_result_t hb_interpreter_run(hb_interpreter_t* interp, const hb_ir_func_t* fun
             if (instr->op == HB_IR_JMP || instr->op == HB_IR_Jcc || instr->op == HB_IR_CALL || instr->op == HB_IR_RET) {
                 hb_ir_block_t* next = find_block(func->cfg, ctx->pc);
                 if (!next) {
+                    if (func->truncated) {
+                        out->result = HB_ERR_TRANSLATION_TRUNCATED;
+                        out->steps_executed = steps;
+                        out->blocks_executed = blocks_executed;
+                        out->faulted = true;
+                        out->fault_reason = "translated function truncated before branch target";
+                        ctx->last_result = HB_ERR_TRANSLATION_TRUNCATED;
+                        return HB_ERR_TRANSLATION_TRUNCATED;
+                    }
                     if (instr->op == HB_IR_CALL || instr->op == HB_IR_RET) {
                         out->result = HB_OK;
                         out->steps_executed = steps;

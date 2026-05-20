@@ -241,11 +241,37 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, i, dec);
             return HB_OK;
         }
+        case HB_INS_PCMPGTB:
+        case HB_INS_PCMPGTW:
+        case HB_INS_PCMPGTD: {
+            hb_ir_op_t op = HB_IR_PCMPGTB;
+            if (dec->opcode == HB_INS_PCMPGTW) op = HB_IR_PCMPGTW;
+            else if (dec->opcode == HB_INS_PCMPGTD) op = HB_IR_PCMPGTD;
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, op);
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_PMOVMSKB: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PMOVMSKB);
             if (i) { i->dst = dst; i->src1 = src; }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_MOVMSKPS:
+        case HB_INS_MOVMSKPD: {
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_MOVMSK);
+            if (i) {
+                i->dst = dst;
+                i->src1 = src;
+                i->target = dec->opcode == HB_INS_MOVMSKPD ? 8 : 4;
+            }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -304,6 +330,29 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, i, dec);
             return HB_OK;
         }
+        case HB_INS_PSRLW:
+        case HB_INS_PSRAW:
+        case HB_INS_PSLLW:
+        case HB_INS_PSRLD:
+        case HB_INS_PSRAD:
+        case HB_INS_PSLLD: {
+            hb_ir_op_t op = HB_IR_PSRL;
+            if (dec->opcode == HB_INS_PSRAW || dec->opcode == HB_INS_PSRAD) op = HB_IR_PSRA;
+            else if (dec->opcode == HB_INS_PSLLW || dec->opcode == HB_INS_PSLLD) op = HB_IR_PSLL;
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t imm = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, op);
+            if (i) {
+                i->dst = dst;
+                i->src1 = dst;
+                i->src2 = imm;
+                i->target = (dec->opcode == HB_INS_PSRLW ||
+                             dec->opcode == HB_INS_PSRAW ||
+                             dec->opcode == HB_INS_PSLLW) ? 2 : 4;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_PSRLQ:
         case HB_INS_PSLLQ:
         case HB_INS_PSRLDQ:
@@ -329,6 +378,24 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                 if (dec->opcode == HB_INS_PADDW) lane = 2;
                 else if (dec->opcode == HB_INS_PADDD) lane = 4;
                 else if (dec->opcode == HB_INS_PADDQ) lane = 8;
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = lane;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PSUBB:
+        case HB_INS_PSUBW:
+        case HB_INS_PSUBD:
+        case HB_INS_PSUBQ: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PSUB);
+            if (i) {
+                unsigned lane = 1;
+                if (dec->opcode == HB_INS_PSUBW) lane = 2;
+                else if (dec->opcode == HB_INS_PSUBD) lane = 4;
+                else if (dec->opcode == HB_INS_PSUBQ) lane = 8;
                 i->dst = operand_from_dec(dec, 1);
                 i->src1 = i->dst;
                 i->src2 = operand_from_dec(dec, 2);
@@ -737,6 +804,7 @@ hb_result_t hb_lift_func_x64(hb_decoder_t* dec, hb_ir_func_t** out) {
 
     hb_decoded_t d;
     size_t count = 0;
+    const size_t instr_limit = 10000;
     while (hb_decode_next(dec, &d) == HB_OK || d.opcode == HB_INS_UNSUPPORTED) {
         hb_result_t r = hb_lift_x64(&d, b);
         if (r != HB_OK && r != HB_ERR_UNSUPPORTED_FEATURE) {
@@ -745,10 +813,16 @@ hb_result_t hb_lift_func_x64(hb_decoder_t* dec, hb_ir_func_t** out) {
             return r;
         }
         count++;
-        if (count > 10000) break; /* safety limit */
         if (d.is_branch || d.is_ret || d.is_call) {
             /* For MVP: single basic block per function.
                Future: split into multiple blocks at branches. */
+            break;
+        }
+        if (count >= instr_limit) {
+            if (dec->pos < dec->code_len) {
+                func->truncated = true;
+                func->truncation_reason = "x64 lifter instruction limit";
+            }
             break;
         }
     }

@@ -6,12 +6,8 @@
 
 hb_result_t hb_abi_x64_call(hb_context_t* ctx, uint64_t target, hb_abi_x64_call_t* call, uint64_t* out) {
     if (!ctx || !call) return HB_ERR_INVALID_ARG;
-
-    /* Set argument registers */
-    ctx->regs.x64.rcx = call->rcx;
-    ctx->regs.x64.rdx = call->rdx;
-    ctx->regs.x64.r8  = call->r8;
-    ctx->regs.x64.r9  = call->r9;
+    if (!ctx->memory) return HB_ERR_INVALID_ARG;
+    if (call->stack_arg_count && !call->stack_args) return HB_ERR_INVALID_ARG;
 
     /* Simulate the state after a Windows x64 CALL:
      * [rsp]            return address
@@ -36,12 +32,25 @@ hb_result_t hb_abi_x64_call(hb_context_t* ctx, uint64_t target, hb_abi_x64_call_
 
     rsp -= 8 + 32 + stack_bytes + align_pad;
 
-    hb_memory_write_u64(ctx->memory, rsp, 0xFFFF0000);
-    for (size_t i = 0; i < 4; i++)
-        hb_memory_write_u64(ctx->memory, rsp + 8 + i * 8, call->shadow_space[i]);
-    for (size_t i = 0; i < call->stack_arg_count; i++)
-        hb_memory_write_u64(ctx->memory, rsp + 8 + 32 + i * 8, call->stack_args[i]);
+    if (!hb_memory_can_write_span(ctx->memory, rsp, 8 + 32 + stack_bytes))
+        return HB_ERR_MEMORY_FAULT;
 
+    hb_result_t r = hb_memory_write_u64(ctx->memory, rsp, 0xFFFF0000);
+    if (r != HB_OK) return r;
+    for (size_t i = 0; i < 4; i++) {
+        r = hb_memory_write_u64(ctx->memory, rsp + 8 + i * 8, call->shadow_space[i]);
+        if (r != HB_OK) return r;
+    }
+    for (size_t i = 0; i < call->stack_arg_count; i++) {
+        r = hb_memory_write_u64(ctx->memory, rsp + 8 + 32 + i * 8, call->stack_args[i]);
+        if (r != HB_OK) return r;
+    }
+
+    /* Commit guest-visible call state only after the synthetic frame is valid. */
+    ctx->regs.x64.rcx = call->rcx;
+    ctx->regs.x64.rdx = call->rdx;
+    ctx->regs.x64.r8  = call->r8;
+    ctx->regs.x64.r9  = call->r9;
     ctx->regs.x64.rsp = rsp;
     ctx->pc = target;
     ctx->regs.x64.rip = target;

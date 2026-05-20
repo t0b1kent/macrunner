@@ -1,6 +1,12 @@
 #include "hb_thunk.h"
+#include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__APPLE__) && defined(__MACH__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 
 hb_thunk_table_t* hb_thunk_table_create(void) {
     hb_thunk_table_t* t = calloc(1, sizeof(hb_thunk_table_t));
@@ -16,10 +22,24 @@ void hb_thunk_table_destroy(hb_thunk_table_t* table) {
     free(table);
 }
 
+uint64_t hb_thunk_guest_target_from_id(uint32_t id) {
+    if (!id || id > HB_IMPORT_THUNK_MAX) return 0;
+    return HB_IMPORT_THUNK_BASE + (uint64_t)id * HB_IMPORT_THUNK_STRIDE;
+}
+
 hb_result_t hb_thunk_register(hb_thunk_table_t* table, const hb_thunk_def_t* def) {
+    hb_thunk_def_t copy;
+
     if (!table || !def) return HB_ERR_INVALID_ARG;
     if (table->count >= table->capacity) return HB_ERR_OUT_OF_MEMORY;
-    table->thunks[table->count++] = *def;
+
+    copy = *def;
+    if (!copy.guest_target) {
+        copy.guest_target = hb_thunk_guest_target_from_id(copy.id);
+        if (!copy.guest_target) return HB_ERR_INVALID_ARG;
+    }
+
+    table->thunks[table->count++] = copy;
     return HB_OK;
 }
 
@@ -73,6 +93,79 @@ hb_result_t hb_thunk_init_builtins(hb_thunk_table_t* table) {
 
 static hb_generated_thunk_t generated_thunks[HB_GENERATED_THUNK_MAX];
 static hb_thunk_stats_t generated_stats;
+static pthread_mutex_t generated_thunks_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static bool ptr_in_guest_region(const hb_context_t* ctx, const void* ptr) {
+    if (!ctx || !ctx->memory || !ptr) return false;
+    hb_gva_t addr = (hb_gva_t)(uintptr_t)ptr;
+    for (hb_region_t* r = ctx->memory->regions; r; r = r->next) {
+        if (addr >= r->base && addr - r->base < r->size) return true;
+    }
+    return false;
+}
+
+static bool host_ptr_is_executable(const void* ptr) {
+    uintptr_t p = (uintptr_t)ptr;
+    if (!p || p < 0x100000000ULL) return false;
+#if defined(__APPLE__) && defined(__MACH__)
+    mach_vm_address_t addr = (mach_vm_address_t)p;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object_name = MACH_PORT_NULL;
+    kern_return_t kr = mach_vm_region(mach_task_self(), &addr, &size,
+                                      VM_REGION_BASIC_INFO_64,
+                                      (vm_region_info_t)&info,
+                                      &count, &object_name);
+    if (object_name != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), object_name);
+    }
+    if (kr != KERN_SUCCESS) return false;
+    if (p < (uintptr_t)addr || p >= (uintptr_t)(addr + size)) return false;
+    return (info.protection & VM_PROT_EXECUTE) != 0;
+#else
+    FILE* fp = fopen("/proc/self/maps", "r");
+    char line[512];
+    bool executable = false;
+
+    if (!fp) return false;
+    while (fgets(line, sizeof(line), fp)) {
+        unsigned long start = 0, end = 0;
+        char perms[5] = {0};
+        if (sscanf(line, "%lx-%lx %4s", &start, &end, perms) != 3) continue;
+        if (p >= (uintptr_t)start && p < (uintptr_t)end) {
+            executable = perms[2] == 'x';
+            break;
+        }
+    }
+    fclose(fp);
+    return executable;
+#endif
+}
+
+static bool generated_thunk_is_registered(const hb_generated_thunk_t* thunk) {
+    if (!thunk || !thunk->valid || !thunk->target_ptr) return false;
+    for (size_t i = 0; i < HB_GENERATED_THUNK_MAX; i++) {
+        const hb_generated_thunk_t* t = &generated_thunks[i];
+        if (t->valid &&
+            t->module_id == thunk->module_id &&
+            t->signature_id == thunk->signature_id &&
+            t->target_ptr == thunk->target_ptr &&
+            t->native_entry == thunk->native_entry &&
+            t->generation == thunk->generation) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static hb_result_t validate_target_ptr(const hb_context_t* ctx, const void* ptr) {
+    if (!ptr) return HB_ERR_INVALID_ARG;
+    if ((uintptr_t)ptr < 0x100000000ULL) return HB_ERR_INVALID_ARG;
+    if (ptr_in_guest_region(ctx, ptr)) return HB_ERR_INVALID_ARG;
+    if (!host_ptr_is_executable(ptr)) return HB_ERR_INVALID_ARG;
+    return HB_OK;
+}
 
 hb_result_t hb_thunk_trace_enable(hb_thunk_table_t* table, bool enable) {
     (void)table;
@@ -85,16 +178,27 @@ bool hb_thunk_trace_is_enabled(hb_thunk_table_t* table) {
     return false;
 }
 
-hb_result_t hb_thunk_get(uint64_t module_id, hb_thunk_signature_id_t signature_id, void* target_ptr, hb_generated_thunk_t* out) {
-    if (!target_ptr || !out) {
+hb_result_t hb_thunk_get(const hb_context_t* ctx, uint64_t module_id, hb_thunk_signature_id_t signature_id,
+                         void* target_ptr, hb_generated_thunk_t* out) {
+    if (!ctx || !target_ptr || !out) {
+        pthread_mutex_lock(&generated_thunks_lock);
         generated_stats.unsupported++;
+        pthread_mutex_unlock(&generated_thunks_lock);
         return HB_ERR_INVALID_ARG;
     }
+    if (validate_target_ptr(ctx, target_ptr) != HB_OK) {
+        pthread_mutex_lock(&generated_thunks_lock);
+        generated_stats.unsupported++;
+        pthread_mutex_unlock(&generated_thunks_lock);
+        return HB_ERR_INVALID_ARG;
+    }
+    pthread_mutex_lock(&generated_thunks_lock);
     for (size_t i = 0; i < HB_GENERATED_THUNK_MAX; i++) {
         hb_generated_thunk_t* t = &generated_thunks[i];
         if (t->valid && t->module_id == module_id && t->signature_id == signature_id && t->target_ptr == target_ptr) {
             generated_stats.cache_hits++;
             *out = *t;
+            pthread_mutex_unlock(&generated_thunks_lock);
             return HB_OK;
         }
     }
@@ -110,26 +214,32 @@ hb_result_t hb_thunk_get(uint64_t module_id, hb_thunk_signature_id_t signature_i
             t->valid = true;
             generated_stats.generated++;
             *out = *t;
+            pthread_mutex_unlock(&generated_thunks_lock);
             return HB_OK;
         }
     }
     generated_stats.unsupported++;
+    pthread_mutex_unlock(&generated_thunks_lock);
     return HB_ERR_OUT_OF_MEMORY;
 }
 
 hb_result_t hb_thunk_release(uint64_t module_id) {
+    pthread_mutex_lock(&generated_thunks_lock);
     for (size_t i = 0; i < HB_GENERATED_THUNK_MAX; i++) {
         if (generated_thunks[i].valid && generated_thunks[i].module_id == module_id) {
             generated_thunks[i].valid = false;
             generated_stats.released++;
         }
     }
+    pthread_mutex_unlock(&generated_thunks_lock);
     return HB_OK;
 }
 
 hb_result_t hb_thunk_stats(hb_thunk_stats_t* out) {
     if (!out) return HB_ERR_INVALID_ARG;
+    pthread_mutex_lock(&generated_thunks_lock);
     *out = generated_stats;
+    pthread_mutex_unlock(&generated_thunks_lock);
     out->wx_pages_used = false;
     return HB_OK;
 }
@@ -161,6 +271,12 @@ static uint64_t hb_thunk_x86_stack_arg(hb_context_t* ctx, unsigned idx) {
 
 hb_result_t hb_thunk_call_generated(hb_context_t* ctx, const hb_generated_thunk_t* thunk) {
     if (!ctx || !thunk || !thunk->valid || !thunk->target_ptr) return HB_ERR_INVALID_ARG;
+    pthread_mutex_lock(&generated_thunks_lock);
+    bool registered = generated_thunk_is_registered(thunk);
+    pthread_mutex_unlock(&generated_thunks_lock);
+    if (!registered) return HB_ERR_INVALID_ARG;
+    hb_result_t vr = validate_target_ptr(ctx, thunk->target_ptr);
+    if (vr != HB_OK) return vr;
     switch (thunk->signature_id) {
         case HB_THUNK_SIG_VOID_VOID: {
             typedef void (*fn_t)(void);

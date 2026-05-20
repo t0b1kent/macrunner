@@ -3,12 +3,53 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#if defined(__APPLE__) && defined(__MACH__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 
 #ifdef __APPLE__
 #  ifndef MAP_JIT
 #    define MAP_JIT 0x800
 #  endif
 #endif
+
+static bool force_jit_verify_failure(void) {
+    const char* value = getenv("MACRUNNER_HB_TEST_FORCE_JIT_VERIFY_FAIL");
+    return value && value[0] && value[0] != '0';
+}
+
+static bool jit_addr_has_prot(uintptr_t p, int required) {
+    if (!p) return false;
+#if defined(__APPLE__) && defined(__MACH__)
+    mach_vm_address_t addr = (mach_vm_address_t)p;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object_name = MACH_PORT_NULL;
+    kern_return_t kr = mach_vm_region(mach_task_self(), &addr, &size,
+                                      VM_REGION_BASIC_INFO_64,
+                                      (vm_region_info_t)&info,
+                                      &count, &object_name);
+    if (object_name != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), object_name);
+    }
+    if (kr != KERN_SUCCESS) return false;
+    if (p < (uintptr_t)addr || p >= (uintptr_t)(addr + size)) return false;
+    return (info.protection & required) == required;
+#else
+    (void)required;
+    return true;
+#endif
+}
+
+static bool jit_range_has_prot(const void* ptr, size_t size, int required) {
+    uintptr_t start = (uintptr_t)ptr;
+    if (!start || size == 0) return false;
+    uintptr_t end = start + size - 1;
+    if (end < start) return false;
+    return jit_addr_has_prot(start, required) && jit_addr_has_prot(end, required);
+}
 
 hb_jit_buffer_t* hb_jit_buffer_create(size_t size) {
     hb_jit_buffer_t* buf = calloc(1, sizeof(hb_jit_buffer_t));
@@ -44,7 +85,13 @@ void hb_jit_buffer_destroy(hb_jit_buffer_t* buf) {
 
 hb_result_t hb_jit_buffer_commit(hb_jit_buffer_t* buf) {
     if (!buf) return HB_ERR_INVALID_ARG;
+    buf->is_executable = false;
     if (mprotect(buf->writable, buf->size, PROT_READ | PROT_EXEC) != 0) return HB_ERR_JIT_FAILED;
+    if (force_jit_verify_failure() ||
+        !jit_range_has_prot(buf->writable, buf->size, PROT_EXEC)) {
+        (void)mprotect(buf->writable, buf->size, PROT_READ | PROT_WRITE);
+        return HB_ERR_JIT_FAILED;
+    }
     buf->is_executable = true;
     __builtin___clear_cache((char*)buf->writable, (char*)buf->writable + buf->size);
     return HB_OK;

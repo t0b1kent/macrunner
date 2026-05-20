@@ -80,6 +80,28 @@ static hb_ir_block_t* find_block(const hb_ir_cfg_t* cfg, uint64_t addr) {
     return NULL;
 }
 
+static void set_helper_fault_result(hb_exec_result_t* out, hb_context_t* ctx,
+                                    uint64_t steps, uint64_t blocks_executed) {
+    out->result = ctx->last_result;
+    out->steps_executed = steps;
+    out->blocks_executed = blocks_executed;
+    out->faulted = true;
+    out->fault_reason = "JIT helper fault";
+}
+
+static hb_result_t set_runtime_fault_result(hb_exec_result_t* out, hb_context_t* ctx,
+                                            hb_result_t result, uint64_t steps,
+                                            uint64_t blocks_executed,
+                                            const char* reason) {
+    if (ctx) ctx->last_result = result;
+    out->result = result;
+    out->steps_executed = steps;
+    out->blocks_executed = blocks_executed;
+    out->faulted = true;
+    out->fault_reason = reason;
+    return result;
+}
+
 hb_result_t hb_jit_runtime_compile(hb_jit_runtime_t* rt, const hb_ir_func_t* func) {
     (void)rt; (void)func;
     /* Compilation is done on-demand per-block in hb_jit_runtime_run for MVP */
@@ -93,6 +115,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
     hb_context_t* ctx = rt->ctx;
     uint64_t steps = 0;
     uint64_t blocks_executed = 0;
+    ctx->last_result = HB_OK;
 
     while (1) {
         if (ctx->step_limit > 0 && steps >= ctx->step_limit) {
@@ -102,14 +125,17 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             return HB_OK;
         }
         if (ctx->block_limit > 0 && blocks_executed >= ctx->block_limit) {
-            out->result = HB_ERR_BLOCK_LIMIT;
-            out->steps_executed = steps;
-            out->blocks_executed = blocks_executed;
-            return HB_OK;
+            return set_runtime_fault_result(out, ctx, HB_ERR_BLOCK_LIMIT, steps,
+                                            blocks_executed, "block limit reached");
         }
 
         hb_ir_block_t* block = find_block(func->cfg, ctx->pc);
         if (!block) {
+            if (func->truncated) {
+                return set_runtime_fault_result(out, ctx, HB_ERR_TRANSLATION_TRUNCATED,
+                                                steps, blocks_executed,
+                                                "translated function truncated before current PC");
+            }
             out->result = HB_OK;
             out->steps_executed = steps;
             out->blocks_executed = blocks_executed;
@@ -179,6 +205,10 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             exec(ctx);
             steps += block->instr_count;
         }
+        if (ctx->last_result != HB_OK) {
+            set_helper_fault_result(out, ctx, steps, blocks_executed);
+            return HB_OK;
+        }
 
         /* Determine if we should continue or stop */
         if (block->instr_count == 0) {
@@ -199,6 +229,11 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
         /* For CALL/JMP/Jcc, PC was updated by JIT code; find next block */
         hb_ir_block_t* next = find_block(func->cfg, ctx->pc);
         if (!next) {
+            if (func->truncated) {
+                return set_runtime_fault_result(out, ctx, HB_ERR_TRANSLATION_TRUNCATED,
+                                                steps, blocks_executed,
+                                                "translated function truncated before branch target");
+            }
             if (last->op == HB_IR_CALL || last->op == HB_IR_RET) {
                 out->result = HB_OK;
                 out->steps_executed = steps;

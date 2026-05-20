@@ -235,6 +235,7 @@ hb_result_t hb_lift_func_x86(hb_decoder_t* dec, hb_ir_func_t** out) {
 
     hb_decoded_t d;
     size_t count = 0;
+    const size_t instr_limit = 10000;
     while (hb_decode_next(dec, &d) == HB_OK || d.opcode == HB_INS_UNSUPPORTED) {
         hb_result_t r = hb_lift_x86(&d, b);
         if (r != HB_OK && r != HB_ERR_UNSUPPORTED_FEATURE) {
@@ -243,8 +244,14 @@ hb_result_t hb_lift_func_x86(hb_decoder_t* dec, hb_ir_func_t** out) {
             return r;
         }
         count++;
-        if (count > 10000) break;
         if (d.is_branch || d.is_ret || d.is_call) break;
+        if (count >= instr_limit) {
+            if (dec->pos < dec->code_len) {
+                func->truncated = true;
+                func->truncation_reason = "x86 lifter instruction limit";
+            }
+            break;
+        }
     }
 
     hb_ir_builder_destroy(b);

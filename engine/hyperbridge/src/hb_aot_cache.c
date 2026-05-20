@@ -62,6 +62,19 @@ static int write_header(FILE* fp, uint32_t format_version, uint32_t abi_version)
     return (fwrite(&h, sizeof(h), 1, fp) == 1) ? 0 : -1;
 }
 
+static bool force_aot_sync_failure(void) {
+    const char* value = getenv("MACRUNNER_HB_TEST_FORCE_AOT_SYNC_FAIL");
+    return value && value[0] && value[0] != '0';
+}
+
+static int flush_and_sync(FILE* fp) {
+    if (!fp) return -1;
+    if (fflush(fp) != 0) return -1;
+    if (force_aot_sync_failure()) return -1;
+    if (fsync(fileno(fp)) != 0) return -1;
+    return 0;
+}
+
 static int read_header(FILE* fp, uint32_t format_version, uint32_t abi_version) {
     hb_aot_header_t h;
     if (fread(&h, sizeof(h), 1, fp) != 1) return -1;
@@ -97,9 +110,8 @@ static int ensure_file(hb_cache_t* c) {
     fp = fopen(c->path, "wb");
     if (!fp) return -1;
     if (write_header(fp, c->format_version, c->abi_version) != 0) { fclose(fp); return -1; }
-    fflush(fp);
-    fsync(fileno(fp));
-    fclose(fp);
+    if (flush_and_sync(fp) != 0) { fclose(fp); return -1; }
+    if (fclose(fp) != 0) return -1;
     return 0;
 }
 
@@ -186,8 +198,7 @@ static hb_result_t write_entries_atomic(hb_cache_t* c, const hb_disk_entry_t* en
             }
         }
     }
-    fflush(fp);
-    fsync(fileno(fp));
+    if (flush_and_sync(fp) != 0) { fclose(fp); unlink(tmp); return HB_ERR_NOT_FOUND; }
     if (fclose(fp) != 0) { unlink(tmp); return HB_ERR_NOT_FOUND; }
     if (rename(tmp, c->path) != 0) { unlink(tmp); return HB_ERR_NOT_FOUND; }
     return HB_OK;

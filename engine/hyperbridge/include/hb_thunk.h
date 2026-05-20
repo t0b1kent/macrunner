@@ -10,6 +10,10 @@
 extern "C" {
 #endif
 
+#define HB_IMPORT_THUNK_MAX 4096U
+#define HB_IMPORT_THUNK_BASE 0x00006f0000000000ULL
+#define HB_IMPORT_THUNK_STRIDE 0x10ULL
+
 /* Thunk function signature */
 typedef hb_result_t (*hb_thunk_fn_t)(hb_context_t* ctx);
 
@@ -45,6 +49,7 @@ typedef struct {
 /* Thunk registration */
 typedef struct {
     uint32_t id;
+    uint64_t guest_target;
     const char* dll_name;
     const char* func_name;
     hb_thunk_fn_t fn;
@@ -63,6 +68,7 @@ void hb_thunk_table_destroy(hb_thunk_table_t* table);
 
 hb_result_t hb_thunk_register(hb_thunk_table_t* table, const hb_thunk_def_t* def);
 hb_result_t hb_thunk_unregister(hb_thunk_table_t* table, uint32_t id);
+uint64_t hb_thunk_guest_target_from_id(uint32_t id);
 
 hb_thunk_def_t* hb_thunk_find_by_name(hb_thunk_table_t* table, const char* dll, const char* func);
 hb_thunk_def_t* hb_thunk_find_by_id(hb_thunk_table_t* table, uint32_t id);
@@ -76,7 +82,8 @@ hb_result_t hb_thunk_init_builtins(hb_thunk_table_t* table);
 hb_result_t hb_thunk_trace_enable(hb_thunk_table_t* table, bool enable);
 bool hb_thunk_trace_is_enabled(hb_thunk_table_t* table);
 
-hb_result_t hb_thunk_get(uint64_t module_id, hb_thunk_signature_id_t signature_id, void* target_ptr, hb_generated_thunk_t* out);
+hb_result_t hb_thunk_get(const hb_context_t* ctx, uint64_t module_id, hb_thunk_signature_id_t signature_id,
+                         void* target_ptr, hb_generated_thunk_t* out);
 hb_result_t hb_thunk_release(uint64_t module_id);
 hb_result_t hb_thunk_stats(hb_thunk_stats_t* out);
 hb_result_t hb_thunk_call_generated(hb_context_t* ctx, const hb_generated_thunk_t* thunk);

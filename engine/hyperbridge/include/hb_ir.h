@@ -135,9 +135,16 @@ typedef enum {
     HB_IR_PCMPEQB,
     HB_IR_PCMPEQW,
     HB_IR_PCMPEQD,
+    HB_IR_PCMPGTB,
+    HB_IR_PCMPGTW,
+    HB_IR_PCMPGTD,
     HB_IR_PMOVMSKB,
+    HB_IR_MOVMSK,
     HB_IR_PUNPCK,
     HB_IR_PSHUF,
+    HB_IR_PSRL,
+    HB_IR_PSRA,
+    HB_IR_PSLL,
     HB_IR_PSRLQ,
     HB_IR_PSLLQ,
     HB_IR_PSRLDQ,
@@ -168,6 +175,7 @@ typedef enum {
     HB_IR_CVTTSD2SI,
     HB_IR_CVTTSS2SI,
     HB_IR_PADD,
+    HB_IR_PSUB,
     HB_IR_HOST_CALL,
     HB_IR_FAULT,
     HB_IR_UNSUPPORTED
@@ -236,6 +244,8 @@ typedef struct {
     size_t flat_count;
     bool has_unsupported;
     const char* unsupported_reason;
+    bool truncated;
+    const char* truncation_reason;
 } hb_ir_func_t;
 
 /* IR builder */

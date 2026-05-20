@@ -382,6 +382,53 @@ App "works" имеет **два независимых уровня**. Не пу
 
 ---
 
+## 🛑 MANDATORY: Engine memory — git diff + change journal (НЕ перечитывай код, помни)
+
+**Проблема которую это решает**: `engine/` в `.gitignore` (12GB). Раньше агент
+не мог увидеть свои же прошлые правки → писал "сверяю реальные фрагменты",
+перечитывал код, терял контекст после compaction, не отличал band-aid от root-fix.
+
+**Решение — два механизма памяти движка, оба обязательны:**
+
+### 1. Key engine source files force-tracked в git
+Несмотря на `engine/` в gitignore, активно редактируемые файлы движка
+**принудительно отслеживаются** (`git add -f`): `engine/hyperbridge/src/*.c`,
+`engine/hyperbridge/include/*.h`, `engine/hyperbridge/tests/hb_test_runner.c`,
+и активные Wine DLL: `user32/cursoricon.c`, `comctl32/{imagelist,tab}.c`,
+`win32u/{dib,defwnd,font,sysparams}.c`, `ntdll/unix/{macrunner_hb,virtual,signal_arm64}.c`.
+
+Поэтому:
+- **`git diff engine/<file>`** = увидеть СВОИ изменения, не перечитывая весь файл.
+  Это твоя память о том ЧТО ты менял. Используй ВМЕСТО "сверяю фрагменты".
+- **`git log --oneline -- engine/<file>`** = история правок этого файла.
+- **`git checkout engine/<file>`** = чисто откатить band-aids БЕЗ потери root-fix
+  (откатывает к последнему коммиту; коммить root-fix отдельно от экспериментов).
+- Новый редактируемый файл движка → сразу `git add -f` чтобы он попал в трекинг.
+
+### 2. docs/ENGINE-CHANGE-JOURNAL.md — append-only журнал (ЗАЧЕМ менял)
+Каждая правка движка ОБЯЗАНА быть записана в `docs/ENGINE-CHANGE-JOURNAL.md`:
+```
+## YYYY-MM-DD HH:MM — короткий заголовок
+File(s): engine/path:line
+Type: ROOT-FIX | REVERT | DIAGNOSTIC | WORKAROUND(TODO)
+What: что изменено в одну строку
+Why: гипотеза/evidence/root cause
+Verify: как проверено (тест, trace, smoke)
+Status: applied | reverted | needs-verify
+```
+git diff = ЧТО изменилось (механически). Журнал = ЗАЧЕМ (намерение, evidence,
+статус). Вместе они переживают context compaction и дают полную память.
+
+### Правило
+- Перед тем как трогать движок: `git diff engine/<file>` + прочитай последние
+  записи журнала по этому файлу. Это восстанавливает контекст за секунды.
+- После каждой правки: добавь запись в журнал. WORKAROUND помечай `TODO` —
+  потом заменяется на ROOT-FIX, старая запись → Status: reverted.
+- Это работает ВМЕСТЕ с context-mode hooks (PreCompact). Hooks спасают session
+  state; git+журнал — постоянная память движка через любой wipe.
+
+---
+
 ## GUI rendering bug catalog (reuse для всех apps)
 
 Когда GUI app выглядит неправильно — это известные классы. Проверяй сразу все

@@ -283,6 +283,97 @@ Notepad++ run → fastfail повторился с тем же RCX=5.
 
 ---
 
+## 🛑 MANDATORY: Batch diagnostics — один проход, не 1000 итераций
+
+**Запрещено** чинить по одному symptom → rebuild → run → next → repeat. Это
+сжигает часы. Каждый rebuild = минуты; 50 итераций = потерянный день.
+
+### Правило single-pass
+
+Когда диагностируешь app blocker(ы):
+1. Включи **ВСЕ** relevant traces сразу (opcode faults, GetSysColor, GDI, font/glyph,
+   ImageList, shell32, comctl32, menu IDs, dialog creation — что относится).
+2. Подними **ВСЕ limits** (block/step) до "никогда не достигнуть при legit work"
+   (10M+). НЕ increment по чуть-чуть — сразу высоко. Безопасность через step-limit.
+3. **Один long run** (60-120s) собирает полную картину всех failures.
+4. Классифицируй все failures в **families**.
+5. Batch-fix каждый family → **один** rebuild → verify.
+
+Думай как доктор заказывающий **полный анализ крови один раз**, не по тесту в неделю.
+
+### Запрещённый anti-pattern
+
+❌ "found one opcode → fix → rebuild → found next → fix → rebuild" (×50)
+❌ Гонять тот же smoke harness по кругу когда он уже PASS
+❌ Raise limit by small increments
+
+---
+
+## 🛑 MANDATORY: Functional PASS ≠ Visual PASS — раздельные gates
+
+App "works" имеет **два независимых уровня**. Не путай и не закрывай app пока
+оба не green:
+
+### Functional gate (программно проверяемо)
+- Window HWND exists, visible, enabled
+- Editor/controls accept input, round-trip данные
+- Menu command IDs резолвятся, dispatch actions
+- Dialogs создаются (#32770 HWND appears)
+- File ops (save/open) пишут/читают disk
+- Clean process exit
+
+→ Проверяется smoke harness (Win32 messages, HWND enumeration, не screenshots).
+
+### Visual gate (выглядит как на Windows)
+- Window control buttons (min/max/close) — настоящие glyphs, не пустые квадраты
+- Tabs, toolbar icons — настоящие colored icons, не gray/black placeholders
+- System colors correct (не black buttons/bands) — GetSysColor
+- Folder/file icons в dialogs — настоящие shell icons, не blank
+- Scrollbars styled, не артефакты
+- Fonts match Windows baseline (metrics + glyphs)
+
+→ Проверяется Visual Regression Lab + screenshot diff vs Windows baseline.
+
+**Functional PASS НЕ значит app готов.** Если smoke green но кнопки чёрные/
+иконки серые — это checkpoint, не closure. И НЕ гоняй functional smoke снова
+если он уже PASS — переключайся на visual gate.
+
+---
+
+## 🛑 MANDATORY: Auto-continue — не останавливайся между подзадачами
+
+Когда задача дана с master brief / closure checklist:
+- Закрыл один item → **сразу продолжай следующий** по списку. НЕ останавливайся
+  и не жди подтверждения пользователя между шагами.
+- Останавливайся только: (1) TRUE blocker требующий решения, (2) весь checklist
+  green, (3) обнаружил что-то требующее strategic decision.
+- Reporting — пиши progress, но не блокируйся ожидая ответа на каждый шаг.
+
+Пользователь дал mega-brief = мандат идти по всему списку автономно.
+
+---
+
+## GUI rendering bug catalog (reuse для всех apps)
+
+Когда GUI app выглядит неправильно — это известные классы. Проверяй сразу все
+relevant за один trace pass (не открывай каждый отдельно):
+
+| Симптом | Вероятный root cause | Где смотреть |
+|---|---|---|
+| Window min/max/close = пустые квадраты | **Marlett font** не загружен | win32u NC paint + font load; Windows рисует эти glyphs шрифтом Marlett (chars 0/1/2/r) |
+| Чёрные кнопки/bands/контролы, текст invisible | **GetSysColor** возвращает black (0) | win32u/sysparams system color table init |
+| Серые/blank toolbar icons | ImageList / icon resource load | comctl32 ImageList_Draw, GDI+ alpha, BMP/PNG decode |
+| Чёрные квадраты на tabs | comctl32 tab owner-draw / close-icon imagelist | comctl32/tab.c paint |
+| Blank folder/drive icons в dialogs | shell32 system image list | shell32 SHGetFileInfo / SHGetImageList / iconcache |
+| Scrollbar артефакты | comctl32 scrollbar / COLOR_SCROLLBAR | comctl32 scrollbar paint + GetSysColor |
+| Fonts косые/wrong metrics | FreeType integration / GetTextMetrics | winemac.drv font, GetTextMetricsW vs Windows baseline |
+| Capture shows no-color но visible OK | GDI DIB capture path != macOS surface | toolbar_render capture method (icons render в surface не в DIB) |
+
+Закрытие одного класса (напр. GetSysColor) часто чинит **много** симптомов сразу.
+После каждого app — добавляй новые найденные классы сюда.
+
+---
+
 ## Первое действие в каждой сессии
 
 ```bash

@@ -1,0 +1,32 @@
+ПЕРЕКЛЮЧЕНИЕ: пауза cloud backend (это future infrastructure, закоммичено — вернёшься позже). Сейчас нужна ENGINE работа полезная для НАСТОЯЩЕГО — помочь Codex закрыть Notepad++ visual bugs прямо сейчас.
+
+Контекст: Notepad++ функционально работает (dialogs открываются, menus, editor, toolbar). Остались ЧИСТО ВИЗУАЛЬНЫЕ баги в Wine rendering. Codex медленно итерирует. Ты блестяще нашёл combase dim 06/08 root causes (точные file:line) — сделай то же для rendering.
+
+Задача — engine rendering audit (read-only, как combase). Найди ТОЧНЫЕ root causes (file:line + evidence) для каждого, forward Codex:
+
+1. WINDOW CONTROL BUTTONS пустые квадраты (свернуть/развернуть/закрыть).
+   → Marlett font. Windows рисует min/max/close glyphs шрифтом Marlett (символы 0/1/2/r).
+   Audit: engine/wine/dlls/win32u/ NC paint (nc_paint, draw_nc_button) + font loading.
+   Где Marlett резолвится? Есть ли он в prefix Fonts? GetGlyphOutline для Marlett возвращает glyph или fail?
+   Найди где загрузка/substitution Marlett ломается.
+
+2. TAB control чёрные квадраты (close button / modified indicator на вкладках).
+   → comctl32 tab. Audit: engine/wine/dlls/comctl32/tab.c paint path + ImageList draw.
+   Где close-icon imagelist резолвится? Owner-draw color path?
+
+3. FOLDER ICONS белые в Save As (My Computer, Documents, Favorites tree).
+   → shell32 system image list. Audit: engine/wine/dlls/shell32/ SHGetFileInfo / SHGetImageList /
+   iconcache. Где folder/drive icons извлекаются из shell32 resources? Почему возвращают blank?
+
+4. SCROLLBAR артефакты (чёрные).
+   → comctl32 scrollbar OR GetSysColor(COLOR_SCROLLBAR). Audit scrollbar paint + system color.
+
+Для каждого: symptom → root cause analysis → exact file:line → suggested fix scope → confidence.
+Output: docs/ENGINE-AUDIT-RENDER-{marlett,tab,shell-icons,scrollbar}.md
+Forward к Codex (он implements, ты audit — read-only).
+
+Это namного полезнее cloud сейчас — directly unblocks Notepad++ commercial closure (the present goal).
+
+После rendering audit done → опциональные engine audit dims (03 decoder coverage, 05 JIT/interp consistency) — find opcode gaps до того как next apps (KeePass/1С) их hit. Тоже present-useful.
+
+Cloud backend возобновишь после Notepad++ closed. Per AGENTS.md: patch-by-evidence, точные file:line, honest confidence. RUSTC_WRAPPER не нужен (нет Rust сейчас). Source config/env.sh.

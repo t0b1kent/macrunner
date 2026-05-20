@@ -1,0 +1,29 @@
+СТОП гонять smoke harness по кругу — он уже PASSES функционально (menu IDs, editor roundtrip, toolbar ready всё green). Оставшаяся проблема ВИЗУАЛЬНАЯ, не функциональная. Не запускай тот же smoke 1000 раз.
+
+Оставшиеся visual bugs (точный список из визуального review) — трейсь ВСЕ за ОДИН comprehensive run, не по одному:
+
+1. Window control buttons (свернуть/развернуть/закрыть) = 3 пустых квадрата вместо glyphs.
+   → Гипотеза: Marlett font не загружен (Windows рисует min/max/close glyphs шрифтом Marlett — символы 0,1,2,r). Trace font load + GetGlyphOutline для Marlett. Если Marlett отсутствует в prefix Fonts — install/map к substitute.
+
+2. Чёрные квадраты на tab "new 1" (close button / modified indicator).
+   → comctl32 tab control owner-draw / GDI fill wrong color. Trace TabCtrl paint + ImageList для close icon.
+
+3. Белые иконки папок в Save As (My Computer, Documents, Favorites tree).
+   → shell32 system image list. Trace SHGetFileInfo / SHGetImageList / system icon extraction. Folder icons не резолвятся.
+
+4. Scrollbar artifacts (чёрные).
+   → comctl32 scrollbar paint OR GetSysColor для scrollbar track (COLOR_SCROLLBAR).
+
+МЕТОД: ОДИН run с ВСЕМИ трассами сразу:
+- font/glyph trace (Marlett especially)
+- comctl32 paint trace (tabs + scrollbar)
+- shell32 imagelist/SHGetFileInfo trace
+- GetSysColor remaining indices
+- block limit 10M
+Собери ВСЕ failures за один проход → классифицируй 4 families → batch-fix каждый class → один rebuild → verify через Visual Regression Lab + screenshot.
+
+После того как закроешь эти 4 visual families — НЕ останавливайся и не жди меня. Продолжай master brief (docs/CODEX-MEGA-DIRECTIVE-v2-batch-method.md + docs/CODEX-DIRECTIVE-notepad-plus-plus-full-functional.md): font baseline match, dialogs (Find/Replace/Preferences actually open — cmd IDs уже резолвятся), clean bounded exit, 30-min stability. Иди по 80 closure criteria автоматически до full functional.
+
+Каждый visual fix → regression в Visual Regression Lab. Per AGENTS.md: family audit, patch-by-evidence, native fix.
+
+Source config/env.sh для ccache. Verify Marlett trace first (самый вероятный для пустых window buttons).

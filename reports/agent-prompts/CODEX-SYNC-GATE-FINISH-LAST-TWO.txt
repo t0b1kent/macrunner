@@ -1,0 +1,34 @@
+Codex — тулбар/folder/header ЗАКРЫТЫ (gate 17:00: всё PASS). Осталось РОВНО 2 реальных
+дефекта + 1 непроверенный. СТОП блайнд-итерации (за 3ч много сборок + реверты —
+признак трэшинга). Синхронизируйся с gate, добей только оставшееся.
+
+ОСТАЛОСЬ (строгий gate, RESULT 17:00 — но ты пересобрал 4 раза с тех пор):
+1. marlett_center FAIL слот [2] — нет глифа в ЦЕНТРЕ одной из кнопок окна (min/max/
+   close). Рамка рисуется, глиф (Marlett символ 0/1/2) — нет. win32u/defwnd
+   nonclient caption paint. Корень: native Marlett TextOut не эмитит глиф в центр.
+2. tab_black_square FAIL (1000,324) ratio=1.0 — чёрный квадрат в табе. comctl32 tab
+   owner-draw / close-icon imagelist (stale/black fill rect).
+3. scrollbar_functional SKIP — не проверено, двигается ли viewport (отдельный агент
+   доделает проверку).
+
+ПОРЯДОК ДЕЙСТВИЙ (анти-трэшинг):
+1. НЕ правь вслепую. Сначала узнай актуальное состояние: отдельный агент сейчас
+   перепрогоняет строгий gate на твоём ЛАДНЕМ билде (18:43) →
+   reports/visual-regression/notepad-gate/RESULT.md. Дождись/прочти его.
+2. Чини ТОЛЬКО то, что gate ещё помечает FAIL. Если поздние сборки уже закрыли
+   marlett_center[2] или tab square — НЕ трогай (не вскрывай заново).
+3. Метод: source-search-FIRST (grep caption paint / Marlett TextOut; tab owner-draw)
+   → гипотеза → ОДНА трасса подтвердить → root-fix (не band-aid). Family audit.
+4. Verify ТОЛЬКО через строгий gate (marlett_center per-slot, tab_black_square
+   координата) на РЕАЛЬНОМ окне. НЕ объявляй verified по lenient non-black / off-
+   screen метрике (3 ложных verified уже было).
+
+ДИСЦИПЛИНА (AGENTS.md):
+- git diff engine/<file> + журнал перед правкой. Реверты — тоже patch-by-evidence
+  (не зацепи соседнюю семью; реверты 18:08 и т.п. — проверь, что не сломали тулбар,
+  он сейчас PASS, не регрессируй его).
+- Журнал на каждую правку. Не накапливай band-aids поверх.
+
+ЦЕЛЬ: gate ALL PASS (toolbar остаётся PASS + marlett_center + tab_black_square +
+scrollbar_functional зелёные) = Notepad++ визуально закрыт. Это последние 2-3 пункта,
+не разнеси уже закрытое. Когда gate зелёный — заяви закрытие, не раньше.

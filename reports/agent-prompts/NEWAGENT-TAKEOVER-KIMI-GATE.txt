@@ -1,0 +1,54 @@
+Ты подключаешься к проекту MacRunner как помощник по ВИЗУАЛЬНОЙ приёмке (роль Кими,
+у него кончились лимиты). Контекста у тебя нет — этот промт самодостаточный.
+
+=== ПЕРВОЕ ДЕЙСТВИЕ (обязательно) ===
+1. cd /Volumes/MacOS/MacRunner        # ЕДИНСТВЕННЫЙ рабочий root. НЕ другой worktree.
+   pwd должно быть ровно /Volumes/MacOS/MacRunner
+2. Прочитай по порядку (абсолютные пути):
+   - /Volumes/MacOS/MacRunner/AGENTS.md                 (законы проекта)
+   - /Volumes/MacOS/MacRunner/docs/KIMI-CONTEXT-RESTORE.md (контекст роли Кими)
+3. Твоя задача целиком описана в двух файлах — прочитай и выполняй ИХ:
+   - reports/agent-prompts/KIMI-FINISH-GATE-THEN-FULL-VISUAL-SWEEP.txt
+   - reports/agent-prompts/KIMI-GATE-PER-SLOT-STRICTNESS.txt
+
+=== ЧТО ЗА ПРОЕКТ (кратко) ===
+MacRunner запускает Windows-приложения на Apple Silicon через свой транслятор
+x86_64→ARM64 + форк Wine ARM64. Сейчас доводим Notepad++ x64 до визуального
+совершенства. Твоя зона — визуальный regression-gate + полный визуальный аудит.
+
+=== ТВОЯ ЗАДАЧА (суть) ===
+A. Дофиниши/проверь визуальный gate: scripts/visual-gate-notepad.sh +
+   tools/visual_regression/gate_notepad.py + profiles/notepad-visual-profile.json.
+   - Он должен мерять ПО КАЖДОМУ слоту иконки (variance/edges), а не суммарный цвет,
+     чтобы ловить ПУСТЫЕ серые квадраты (битые disabled-иконки). Сейчас он ложно
+     проходит на агрегате.
+   - Прогони на текущем билде → reports/visual-regression/notepad-gate/RESULT.md.
+     Сверь вердикт с реальностью на скриншоте окна (RESULT-annotated.png). Если не
+     совпадает — чини пороги/сегментацию.
+B. Полный визуальный sweep: обойди ВСЕ поверхности Notepad++ (главное окно: тулбар,
+   вкладки, меню, статус-бар, скроллбары, кнопки окна Marlett; диалоги: Save As,
+   Open, Find/Replace, Preferences, About) — один проход, классифицируй КАЖДЫЙ
+   визуальный дефект → swarm/inbox-for-codex/NOTEPAD-FULL-VISUAL-PUNCHLIST.md
+   (Surface | Element | Симптом | Семья | Severity | file:line гипотеза | Confidence).
+
+=== ЖЁСТКИЕ ГРАНИЦЫ (нарушение = поломка координации) ===
+- НЕ редактируй движок (engine/**/*.c, *.h). Codex — ЕДИНСТВЕННЫЙ engine-editor.
+  Ты только tools/ + scripts/ + reports/ + profile json + punch-list. Иначе merge hell.
+- Wine запускай ТОЛЬКО bounded и СЕРИАЛИЗОВАННО. Codex сейчас верифицирует свой
+  фикс иконок и периодически гоняет Notepad++. ПЕРЕД запуском Wine:
+  pgrep -fl '[n]otepad\+\+\.exe|[w]ine-preloader' — если живо, ЖДИ (в gate уже есть
+  wait_for_queue). RAM 8GB — два параллельных Wine = swap death.
+- Часть работы (per-slot логика, сегментация, профиль) — это КОД, без Wine. Делай
+  её сразу; запуск gate отложи до момента, когда Codex не гоняет Wine.
+- Канонический запуск Notepad++ — через scripts/run-notepad-x64.sh (cwd=APPDIR +
+  FreeType DYLD + env.sh). Не изобретай свой launch.
+
+=== МЕТОДОЛОГИЯ (из AGENTS.md) ===
+- Пруф визуала = РЕАЛЬНОЕ окно (скриншот окна), НЕ агрегатная метрика и не off-screen
+  CG-рендер. Gate должен ловить то, что видит глаз.
+- Family-aware: toolbar BMP ≠ folder ICO ≠ disabled-saturate — раздельные проверки.
+- Честный confidence. Disjoint output (своя папка/файлы) = ноль конфликта с Codex.
+
+=== КООРДИНАЦИЯ ===
+- Готовые находки → swarm/inbox-for-codex/*.md (Codex заберёт и починит серийно).
+- Не трогай файлы, которые правит Codex (engine/**). Твои выходы — gate + punch-list.

@@ -1,0 +1,36 @@
+Codex — твой PACKUSWB фикс верный, но НЕ достаточный. SIMD-аудит
+(reports/engine-audit/HYPERBRIDGE-SIMD-AUDIT.md) нашёл ещё ОТСУТСТВУЮЩИЕ инструкции,
+которые blit/alpha-blend путь тоже использует. Иконки, вероятно, останутся чёрными/
+частичными пока не добавишь всю семью. Добавь БАТЧЕМ (не по одной).
+
+ОТСУТСТВУЮТ В ДЕКОДЕ/IR/INTERPRETER (x64), все нужны для blit/blend (High risk):
+1. **PADDUSB** — unsigned saturating add байт (clamp цветовых каналов). КАНДИДАТ №1.
+2. **PAVGB** — среднее unsigned байт (blit/blend).
+3. **PMULLW** — signed 16-bit mullo (alpha/коэффициенты).
+4. **PMADDWD** — pair mul-add 16→32 (фильтры/скейл/конверсии).
+5. **MOVDQU** — unaligned 128-bit move (буферы иконок, часто unaligned).
+6. **MOVDQA** — aligned 128-bit move.
+7. **PSHUFB** — SSSE3 byte shuffle by mask (современные оптимиз. пути).
+
+МЕТОД (как с PACKUSWB, family-audit):
+- Декод → lift → interpreter покрытие для каждой. Семантику сверь с **sse2neon**
+  (vqtbl1 для pshufb, vmull/vpadd для pmaddwd, vrhadd для pavgb, vqadd для paddusb,
+  vmul для pmullw, vld1q/vst1q для movdqu/movdqa) + Intel SDM (saturation/округление).
+- Тесты в hb_test_runner на каждую (как ты делал для PACK).
+- Один rebuild libhyperbridge.a + relink ntdll.so.
+
+VERIFY (на РЕАЛЬНОМ окне, сток comctl32 = validation target, НЕ возвращай патчи):
+- Запусти стоковый Notepad++ → тулбар. Цель: иконки ЦВЕТНЫЕ (как CrossOver), не
+  чёрные. Если ещё частично чёрные → трасса покажет какая ещё инструкция UNSUPPORTED
+  в blit-пути (добавь её тоже). Итерируй пока сток не рисует правильно.
+- Когда сток рисует как CrossOver → транслятор починен, можно выкидывать 469+117
+  comctl32-патчей (отдельный шаг).
+
+ЖУРНАЛ: запись на батч (инструкции, sse2neon-сверка, тесты, on-screen вердикт).
+
+ОТДЕЛЬНО (записать, не сейчас): x86 (32-бит) SIMD в hb_decode_x86.c почти отсутствует
+(только Jcc/SETcc/CMOVcc). Это блокер для KeePass (32-бит) и будущего — отдельная
+большая задача после закрытия x64 icon-path.
+
+ЦЕННОСТЬ: эти 7 инструкций нужны не только иконкам — это базовый SIMD для графики/
+видео/игр всех будущих apps. Добавив их раз, закрываешь огромный класс багов.

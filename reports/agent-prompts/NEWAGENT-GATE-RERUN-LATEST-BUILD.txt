@@ -1,0 +1,28 @@
+Перепрогнать gate на ТЕКУЩЕМ билде — RESULT 17:00 устарел (Codex с тех пор пересобрал
+4 раза: 17:36, 18:16, 18:43). Root: /Volumes/MacOS/MacRunner. Read-only по движку.
+Wine сериализуй (pgrep notepad++/wine, wait_for_queue — Codex может ещё гонять).
+
+КОНТЕКСТ: на 17:00 gate почти всё зелёное (toolbar/folder_icons/marlett-aggregate/
+bands/treeview/header/status_bar/scrollbar-visual/tabs = PASS). Остались 2 реальных
+FAIL + 1 SKIP:
+- marlett_center FAIL: нет центр-глифа в caption-слоте [2] (одна из min/max/close).
+- tab_black_square FAIL: чёрный квадрат в табе (1000,324) ratio=1.0.
+- scrollbar_functional SKIP: не было after-scroll кадра.
+
+ЗАДАЧА:
+1. Прогони gate на ТЕКУЩЕМ билде (последняя сборка ~18:43). Дай свежий RESULT.md.
+   Цель — узнать, починил ли Codex marlett_center[2] и tab_black_square в поздних
+   сборках. Сверь с реальным окном (скриншот окна, не агрегат).
+2. ДОДЕЛАЙ scrollbar_functional (сейчас SKIP — не было after-scroll кадра):
+   - Дай контент (длинный файл/много строк), сними кадр, прокрути (PgDn/колесо),
+     сними второй кадр, сравни viewport. Двигается = PASS, нарисован но статичен = FAIL.
+3. Обнови punchlist (swarm/inbox-for-codex/NOTEPAD-FULL-VISUAL-PUNCHLIST.md): отметь
+   что стало PASS, что ещё FAIL — чтобы у Codex был актуальный список до зелёного.
+
+ЕСЛИ всё PASS (включая marlett_center, tab_black_square, scrollbar_functional) —
+заяви явно: "Notepad++ визуально ЗАКРЫТ по gate" + приложи RESULT + аннотированный
+скриншот. Это веха.
+
+МЕТОД (AGENTS.md): пруф = реальное окно, per-element/per-slot, центр-зона для глифов,
+функционал отдельно от визуала. Disjoint output, ноль правок движка. НЕ Wine
+параллельно с Codex.

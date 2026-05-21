@@ -41,3 +41,23 @@ JIT), вероятно баг №10. Месяцы comctl32-патчей лечи
 
 ЦЕННОСТЬ: один translator-фикс закроет иконки ВЕЗДЕ (тулбар/папки/tab/везде где DIB-
 blit), и для ВСЕХ будущих приложений. Это корень, а не косметика.
+
+=== ЭТАЛОНЫ ИЗ ИНТЕРНЕТА (как ПРАВИЛЬНО транслировать — open source) ===
+Прямого решения для HyperBridge нет (он наш), но есть reference-реализации x86→ARM,
+с которыми сверять найденную инструкцию:
+- **sse2neon** (github.com/DLTcollab/sse2neon) — корректный перевод КАЖДОГО SSE-
+  интринсика в ARM NEON, хорошо оттестирован. Нашёл подозрительную инструкцию →
+  сверь свою трансляцию с тем, как sse2neon делает NEON-эквивалент.
+- **FEX-Emu** (github.com/FEX-Emu/FEX) и **box64** — открытые x86→ARM JIT. Их
+  обработка blit/SIMD = reference-correct. Глянь их issue-трекеры по инструкции.
+ИЗВЕСТНЫЕ ГРАБЛИ SSE→NEON (вероятные кандидаты на чёрные пиксели):
+- **packuswb** (pack с unsigned saturation) — поведение saturation у SSE и NEON
+  РАЗНОЕ; частая в alpha-blend. Если HyperBridge врёт saturation → битые пиксели.
+- **pmullw / pmaddwd** (умножение в alpha-math), **punpcklbw/punpckhbw** (распаковка
+  байт→слов в премультипликации), **psrlw** (сдвиг).
+- **pmovmskb** — у NEON нет прямого эквивалента, требует редизайна (частый источник
+  багов перевода).
+- IEEE-754 расхождения в float-пути (если иконки через float alpha).
+СТРАТЕГИЯ: blit/AlphaBlend премультиплицирует alpha через SSE2 (pmullw/psrlw/
+packuswb/punpck). Чёрные пиксели = одна из них даёт нули. Начни проверку с packuswb
+saturation и punpck — сверь с sse2neon/Intel SDM.

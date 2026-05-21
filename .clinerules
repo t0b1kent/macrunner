@@ -1,0 +1,28 @@
+# Cline rules — MacRunner workspace (auto-loaded every session)
+
+## ФАЙЛЫ: НИКОГДА не писать через terminal heredoc
+- ЗАПРЕЩЕНО писать файлы командами `cat > file <<EOF ... EOF`, `tee <<EOF`, любые
+  heredoc (`<<`) в терминале. Это ЗАВИСАЕТ (shell ждёт терминатор вечно → задача
+  застревает на `cmdand heredoc>`).
+- ВСЕГДА создавай/редактируй файлы своим инструментом write_to_file / replace_in_file.
+- git commit с многострочным сообщением: запиши сообщение в файл инструментом, затем
+  `git commit -F <file>`. НЕ `git commit -m "$(cat <<EOF...)"`.
+- Терминал — только короткие однострочные команды (ls, grep, git status, build).
+  Никакого многострочного контента через stdin/heredoc.
+
+## TERMINAL: избегать зависаний
+- Не запускай интерактивные/блокирующие команды (ждущие ввод). Если команда может
+  ждать stdin — не запускай её в терминале.
+- Длинные логи: пиши в файл (`> reports/.../log` ) и парси через grep/tail, НЕ
+  выводи большой объём в терминал (превышает лимит инструмента).
+- cwd часто слетает в /Users/timurtoby — начинай команды с
+  `cd /Volumes/MacOS/MacRunner && ...`.
+
+## WORKSPACE
+- Корень workspace = /Volumes/MacOS/MacRunner (не Desktop). Если видишь "Cannot use
+  checkpoints in Desktop directory" — переоткрой папку /Volumes/MacOS/MacRunner.
+
+## РОЛЬ (read-only по движку)
+- Ты аудитор/визуальная приёмка. НЕ редактируй engine/**/*.c — Codex единственный
+  engine-editor. Твои выходы: reports/**, tools/**, swarm/inbox-for-codex/**, profile.
+- Текущая задача обычно описана в reports/agent-prompts/NEWAGENT-*.txt — следуй ему.

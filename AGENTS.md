@@ -486,6 +486,7 @@ relevant за один trace pass (не открывай каждый отдел
 | Чёрные квадраты на tabs | comctl32 tab owner-draw / close-icon imagelist | comctl32/tab.c paint |
 | Blank folder/drive icons в dialogs | shell32 system image list | shell32 SHGetFileInfo / SHGetImageList / iconcache |
 | Scrollbar артефакты | comctl32 scrollbar / COLOR_SCROLLBAR | comctl32 scrollbar paint + GetSysColor |
+| ListView Details: нет вертикальных разделителей колонок (File\|Size\|Type) | comctl32 **SysHeader32** не рисует divider-линии + нижнюю границу | comctl32 header paint; цвет линии из GetSysColor (COLOR_3DSHADOW/BTNSHADOW) — может быть родня GetSysColor-семьи |
 | Fonts косые/wrong metrics | FreeType integration / GetTextMetrics | winemac.drv font, GetTextMetricsW vs Windows baseline |
 | Capture shows no-color но visible OK | GDI DIB capture path != macOS surface | toolbar_render capture method (icons render в surface не в DIB) |
 

@@ -1,0 +1,61 @@
+Ты — агент-инженер инструментов MacRunner. Read-only по движку, tooling/docs можно.
+Самодостаточно.
+
+=== ПЕРВОЕ ===
+1. cd /Volumes/MacOS/MacRunner. Прочитай .clinerules — файлы ТОЛЬКО write_to_file,
+   НИКАКИХ heredoc/cat<<EOF. Длинные выводы → файл + grep.
+2. Контекст: Codex чинит family-fixes, НЕ мешай, НЕ редактируй engine/**. Уже готово:
+   reports/hyperbridge-gaps/ (Gap Board, fixpacks, NEXT-CODEX-ORDER) и tools/hb_oracle/
+   (фикстуры + expected + compare.py).
+
+=== ЦЕЛЬ ===
+Fast Validation Layer: чтобы Codex после family-fix валидировал семантику за СЕКУНДЫ
+(oracle fixtures + FileCheck trace), а полный Notepad++-прогон запускал ТОЛЬКО если
+быстрые тесты зелёные. Самое медленное в цикле — app-прогон; убираем его из inner loop.
+
+ГРАНИЦЫ: НЕ редактировать engine/**. Ты строишь tooling-скаффолд; реальный запуск
+фикстур под HyperBridge подключит Codex к hb_test_runner. Долгие Wine-прогоны не
+запускать. write_to_file (НЕ heredoc).
+
+=== ЧТО СДЕЛАТЬ ===
+
+1. tools/hb_filecheck/hb_filecheck.py + README.md — FileCheck-style валидатор trace.
+   Директивы: CHECK:, CHECK-NOT:, CHECK-ORDER:, CHECK-COUNT:, CHECK-REGEX:.
+   Примеры: tools/hb_filecheck/examples/{rep_movs_forward,rep_movs_df1,memory_fault}.check
+   (паттерны вида: CHECK: rep_movs_enter rcx=16 / CHECK: write_ok / CHECK-NOT: MEMORY_FAULT).
+
+2. tools/hb_oracle/compare_oracle_results.py — строгий compare expected vs actual JSON
+   (по схеме). FAIL при: неверный flag | неверный RCX/RSI/RDI | silent memory fault |
+   неожиданный ноль | regs/mem/pc mismatch. (compare.py уже есть — дополни/обобщи.)
+   + tools/hb_oracle/schema/oracle-result.schema.json (fixture_name/family/backend/
+   initial+final regs+flags/memory_before+after/expected+actual_fault/pass/diff).
+
+3. tools/hb_oracle/fast_validate_family.sh — ОДНА команда:
+   `tools/hb_oracle/fast_validate_family.sh rep_movs` → гоняет oracle-фикстуры семьи +
+   FileCheck trace-чеки + минимальные hb_test_runner кейсы (если доступны) → PASS/FAIL.
+   Скаффолд: где Codex подключит реальный запуск под interpreter+JIT (помечай TODO-hook).
+   Выход: reports/hyperbridge-validation/LATEST-FAST-VALIDATION.md (+ .json).
+
+4. tools/build_health/measure_hyperbridge_loop.sh — таймит: build libhyperbridge.a,
+   hb_test_runner, ntdll relink (app smoke только если явно включён). ccache stats
+   before/after. → reports/hyperbridge-validation/BUILD-LOOP-TIMING.md (+ .json).
+   Заодно проверь: ccache включён для HyperBridge? используется ли (hit-rate)?
+
+5. reports/hyperbridge-validation/REFERENCE-BACKENDS.md — как использовать как oracle:
+   Intel SDE (x86 поведение), sse2neon (SSE→NEON семантика), FEX/Box64/QEMU/Remill
+   (архитектурный reference), Rosetta/CrossOver (только app-level black-box). Адаптеры-
+   заглушки: sde_adapter.py / hyperbridge_adapter.py / expected_json_adapter.py
+   (интерфейс, без реализации если инструмент не установлен).
+
+6. reports/hyperbridge-validation/CODEX-FAST-VALIDATION-RULES.md — правило Codex:
+   после каждого family-fix → СНАЧАЛА fast_validate_family → только если зелёное,
+   запускать app smoke. Если fast FAIL — app не гонять. Если app FAIL, а fast PASS —
+   копать boundary/Wine integration.
+
+=== ВЫХОД ===
+tools/hb_filecheck/**, tools/hb_oracle/** (дополнения), tools/build_health/**,
+reports/hyperbridge-validation/**. Финал: список инструментов, пример FileCheck PASS/
+FAIL, как Codex гоняет fast_validate за секунды.
+
+ЦЕННОСТЬ: Codex проверяет family-fix за секунды (fixtures+FileCheck), полный Notepad++
+— только в конце. Главное ускорение inner loop. Read-only по engine.

@@ -1,0 +1,39 @@
+Codex — корень disabled-иконок НАЙДЕН (веб + наш исходник). Хватит итеративных трасс
+— вот точный путь. Подтверди ОДНИМ batch-прогоном и чини.
+
+ЦЕПОЧКА (наш дерево, не upstream):
+1. comctl32/toolbar.c:837-844 — disabled-кнопка: нет himlDis (Notepad++ его не
+   ставит) → fallback на DEFAULT imagelist с draw_masked=TRUE.
+2. toolbar.c:877-878 — draw_masked → TOOLBAR_DrawMasked().
+3. TOOLBAR_DrawMasked (toolbar.c:736-763) — для 32bpp С alpha берёт ILS_ALPHA
+   (строка 758-763, "keeps hue"). НО иконки тулбара = zero-alpha + mono-mask →
+   has_alpha=FALSE → НЕ попадают в ILS_ALPHA → проваливаются в ILS_SATURATE.
+4. imagelist.c:1523-1531 — ILS_SATURATE grayscale (gray = R*299+G*587+B*114)/1000;
+   строка 1530: if (has_alpha) gray = gray*alpha/255. Для zero-alpha+mask семьи это
+   даёт ПЛОСКУЮ серую заливку вместо затенённого силуэта = пустые квадраты на экране.
+
+ВЫВОД: та же zero-alpha+mask семья, что ты чинил для enabled (image+mask путь), но в
+SATURATE/grayscale ветке для disabled. Enabled закрыл, saturate-ветку — нет.
+
+BATCH-ТРАССА (один проход, все точки сразу — НЕ по одной; trace-макрос уже есть в
+toolbar.c:873 MACRUNNER_TRACE_TOOLBAR_ICON):
+В ОДНОМ прогоне залогируй для disabled-кнопок: draw_masked флаг, попадание в
+TOOLBAR_DrawMasked, has_alpha/mask статус, выбор ILS_ALPHA vs ILS_SATURATE, и в
+imagelist.c:1523 — что приходит на вход saturate (32bpp? alpha=0? mask есть?). Это
+подтвердит цепочку за один запуск.
+
+ФИКС (family audit):
+- В TOOLBAR_DrawMasked / ILS_SATURATE: для 32bpp zero-alpha-С-mask трактуй mask как
+  непрозрачность (как в enabled image+mask фиксе), и грейскей по mask-силуэту, а не
+  плоско. Цель: disabled-иконка = ЗАТЕНЁННЫЙ СИЛУЭТ (серый, но виден рисунок), не
+  пустой квадрат.
+- Покрой ВСЕ disabled-кнопки (Save/Save All/Undo/Redo/macro), не одну.
+
+VERIFY (AGENTS.md — реальное окно, не прокси):
+- Захват живого окна (visual-gate-notepad.sh / cg_window_capture.swift). Disabled-
+  иконки показывают затенённый силуэт. toolbar_render_cg / агрегатный цвет — НЕ пруф.
+- Журнал: Type ROOT-FIX, file:line (toolbar.c/imagelist.c), Why (эта цепочка),
+  Verify (реальное окно), Status.
+
+ИСТОЧНИКИ механизма: wine comctl32 toolbar.c GETDISIMAGELIST/TOOLBAR_DrawMasked +
+imagelist.c ILS_SATURATE grayscale (check_ImageList_DrawIndirect_grayscale в тестах).

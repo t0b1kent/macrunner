@@ -1,0 +1,48 @@
+Ты — агент-аудитор MacRunner (HyperBridge x86→ARM64 транслятор). Read-only, движок НЕ
+правь. Самодостаточно.
+
+=== ПЕРВОЕ ===
+1. Workspace /Volumes/MacOS/MacRunner. Команды: `cd /Volumes/MacOS/MacRunner && ...`.
+2. Прочитай .clinerules — ГЛАВНОЕ: файлы ТОЛЬКО write_to_file, НИКАКИХ heredoc/cat<<EOF
+   в терминале (виснет). Длинные выводы → в файл + grep.
+3. Контекст: твои прошлые аудиты reports/engine-audit/HYPERBRIDGE-SIMD-AUDIT.md и
+   HYPERBRIDGE-MEMCOPY-AUDIT.md уже покрыли SIMD-арифметику и copy-инструкции
+   (нашли missing PACKUSWB-семью и REP MOVS). НЕ повторяй их.
+
+=== ЗАДАЧА: полная карта покрытия x64-инструкций (ОСТАВШИЕСЯ семьи) ===
+Цель: мастер-атлас что HyperBridge декодирует/исполняет vs Intel SDM по ВСЕМ
+оставшимся классам (не SIMD, не copy — те уже сделаны). Находим missing/кривые
+инструкции ДО того как они укусят (как REP MOVS), и роадмап для всех будущих apps
+(KeePass crypto, 1С, AutoCAD).
+
+Файлы (ЧИТАТЬ): engine/hyperbridge/src/hb_decode_x64.c, hb_interpreter.c,
+hb_lift_x64.c, include/hb_decoder.h (enum HB_INS_*).
+
+Проверь по КАЖДОЙ группе: декодируется? трансляция корректна по Intel SDM (особенно
+флаги/edge-cases)? вердикт OK/ОТСУТСТВУЕТ/ПОДОЗРИТЕЛЬНО, риск:
+
+1. **Integer ALU + EFLAGS**: ADD/SUB/ADC/SBB/AND/OR/XOR/CMP/TEST/NEG/NOT/INC/DEC —
+   и КОРРЕКТНОСТЬ флагов (CF/OF/SF/ZF/PF/AF). Кривые флаги → неверные ветки везде.
+2. **MUL/IMUL/DIV/IDIV** (вкл. 128-бит результат, #DE на делении).
+3. **Сдвиги/ротации**: SHL/SHR/SAR/ROL/ROR/RCL/RCR/SHLD/SHRD (флаги, count&0x3F).
+4. **String (кроме MOVS/STOS)**: CMPS, LODS, SCAS (+REP/REPE/REPNE семантика).
+5. **Атомарные/sync**: LOCK-префикс, XCHG, CMPXCHG/CMPXCHG16B, XADD, LFENCE/MFENCE/
+   SFENCE, PAUSE. Критично для threading/COM (были COM-проблемы).
+6. **x87 FPU**: FLD/FST/FADD/FMUL/FDIV/FCOM/FILD/FISTP и т.д. (математика, crypto).
+7. **Конверсии SSE**: CVTSI2SD/SS, CVTTSD2SI, CVTDQ2PS, CVTPS2PD и пр. (float<->int).
+8. **Bit-manip**: POPCNT, LZCNT, TZCNT, BSF/BSR, BT/BTS/BTR/BTC, BMI1/BMI2 (ANDN,
+   BEXTR, BZHI, SHLX, MULX) — оптимизированный CRT/crypto код.
+9. **Control-flow indirect/misc**: CALL/JMP r/m, RET imm, SETcc/CMOVcc (есть?),
+   LEA edge-cases, ENDBR, prefetch, NOP-варианты.
+
+ВЫХОД (write_to_file, НЕ heredoc): reports/engine-audit/HYPERBRIDGE-OPCODE-COVERAGE-
+ATLAS.md
+- Таблица по группам: класс | декод? | трансляция/флаги | вердикт | риск | коммент.
+- Сводка: ТОП missing/подозрительных (приоритет фикса для Codex), отдельно отметь что
+  критично для стабильности (атомики/флаги) и для будущих apps (FPU/BMI/crypto).
+
+ГРАНИЦЫ: read-only по engine (Codex единственный editor). Не Wine параллельно с
+Codex. Файлы только write_to_file.
+
+ЦЕННОСТЬ: завершает картину покрытия транслятора (SIMD+copy+это = почти всё).
+Находит скрытые missing-инструкции до того как новый app на них упадёт. Мастер-роадмап.

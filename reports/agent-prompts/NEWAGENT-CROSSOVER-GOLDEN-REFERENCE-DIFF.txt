@@ -1,0 +1,48 @@
+Большой апгрейд верификации: встроить CrossOver как ЭТАЛОН (golden reference) в gate /
+Visual Regression Lab / AI Configurator. Read-only по движку, parallel с Codex. Root:
+/Volumes/MacOS/MacRunner.
+
+ИДЕЯ (от пользователя): CrossOver (стоковый Wine 26) рендерит Notepad++ ПРАВИЛЬНО.
+Вместо угаданных порогов (которые давали ложные PASS) — сравнивай НАШ рендер с
+рендером CrossOver пиксельно. Дельта = ровно наши баги. И это переиспользуемо для
+ЛЮБОГО app (вписать в AI Configurator pipeline).
+
+ЧТО СДЕЛАТЬ:
+
+1. ЗАХВАТ ЭТАЛОНА CrossOver (golden):
+   - CrossOver Notepad++: /Volumes/MacOS/Cross/1/drive_c/Program Files/Notepad++/
+     notepad++.exe, бутылка /Volumes/MacOS/Cross/1.
+   - Запусти его (через CrossOver: cxstart по бутылке 1, или открой Notepad++.app),
+     дождись окна, захвати окно тем же window-capture (cg_window_capture.swift).
+   - Сохрани как reference: reports/visual-regression/crossover-golden/notepad-
+     toolbar.png (+ полное окно, + Save As диалог). Это ЭТАЛОН.
+   - RAM: CrossOver Wine + наш Wine = два Wine. НЕ запускай одновременно с прогоном
+     Codex. Сериализуй (pgrep, wait). Захвати CrossOver, закрой, потом наш.
+
+2. DIFF наш-vs-эталон (per-element):
+   - Выровняй регионы (тулбар, слоты иконок, caption-кнопки, таб) между двумя
+     кадрами (разный размер окна → нормализуй по элементам, не по абсолютным px).
+   - Для каждого элемента: дельта (есть иконка у CrossOver но нет у нас = FAIL;
+     цвет/grayscale несоответствие; чёрный квадрат у нас но не у CrossOver = FAIL).
+   - Это заменяет/дополняет угаданные пороги ОБЪЕКТИВНЫМ эталоном.
+
+3. ВПИШИ В PIPELINE (переиспользуемо):
+   - Параметризуй: gate принимает golden-reference для приложения (путь к CrossOver-
+     рендеру). Для нового app — захватил эталон в CrossOver раз, дальше авто-дифф.
+   - Свяжи с AI Configurator (reports/ai-configurator/): добавь шаг "capture
+     CrossOver golden + diff" в его прогон, чтобы он сразу показывал где наш движок
+     отстаёт от стока. Это и есть автоматизация oracle-методологии (AGENTS.md
+     "CrossOver как reference-oracle").
+
+4. ПРИМЕНИ К Notepad++ СЕЙЧАС:
+   - Эталон CrossOver-тулбар vs наш текущий → точная дельта (пустые слоты? disabled
+     цвет vs серый? чёрный квадрат?). Положи в RESULT.md + punchlist для Codex.
+
+ВЫХОД:
+- reports/visual-regression/crossover-golden/* (эталоны).
+- gate умеет diff vs golden (per-element), параметризован по app.
+- Notepad++ diff-отчёт: что именно у нас != CrossOver (для Codex).
+- (если успеешь) hook в AI Configurator pipeline.
+
+МЕТОД (AGENTS.md): пруф = реальное окно; теперь ещё и vs golden reference. Disjoint
+output, ноль правок движка. НЕ Wine параллельно с Codex (RAM 8GB, два Wine = swap).

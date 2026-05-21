@@ -455,7 +455,7 @@ Codex. Поэтому Codex обязан забирать inbox сам — ин�
 Несмотря на `engine/` в gitignore, активно редактируемые файлы движка
 **принудительно отслеживаются** (`git add -f`): `engine/hyperbridge/src/*.c`,
 `engine/hyperbridge/include/*.h`, `engine/hyperbridge/tests/hb_test_runner.c`,
-и активные Wine DLL: `user32/cursoricon.c`, `comctl32/{imagelist,tab}.c`,
+и активные Wine DLL: `user32/cursoricon.c`, `comctl32/{imagelist,tab,toolbar}.c`,
 `win32u/{dib,defwnd,font,sysparams}.c`, `ntdll/unix/{macrunner_hb,virtual,signal_arm64}.c`.
 
 Поэтому:

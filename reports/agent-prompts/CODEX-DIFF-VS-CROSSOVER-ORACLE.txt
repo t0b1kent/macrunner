@@ -1,0 +1,41 @@
+Codex — да, сравни как CrossOver (стоковый Wine 26, рендерит ВСЁ правильно) запускает
+и рисует Notepad++ vs как мы — чтобы найти КОРЕНЬ icon-багов. CrossOver = эталон-оракул.
+
+ГДЕ CrossOver:
+- exe: /Volumes/MacOS/Cross/1/drive_c/Program Files/Notepad++/notepad++.exe
+- бутылка (prefix): /Volumes/MacOS/Cross/1 (template win10_64, CrossOver Wine 26)
+- наш: artifacts/phase-h/npp-x64/notepad++.exe, prefix artifacts/phase-h/prefix-npp-x64-current
+
+ДВА СРАВНЕНИЯ (найди РАСХОЖДЕНИЕ):
+
+1. SOURCE (главное — корень тут). CrossOver ≈ upstream Wine. Сравни наш форк против
+   upstream (github wine-mirror/wine):
+   - engine/wine/dlls/comctl32/imagelist.c: ImageList_DrawIndirect, DIB-конверсия,
+     GdiAlphaBlend, ILS_SATURATE/grayscale, mask-обработка.
+   - engine/wine/dlls/comctl32/toolbar.c: TOOLBAR_DrawImage/DrawMasked disabled-ветка.
+   Найди где наш код ОТЛИЧАЕТСЯ от upstream и ломает рендер. Стоковый Wine рисует
+   правильно → значит наши правки (или HyperBridge DIB-путь) divergнули. Почини туда.
+
+2. RUNTIME/ENV. Сравни окружение запуска:
+   - CrossOver: template win10_64, какие DLL overrides, comctl32 версия (v5 vs v6/
+     themed), uxtheme/theming вкл?, реестр бутылки (/Volumes/MacOS/Cross/1/system.reg
+     — grep comctl32, uxtheme, Themes, version).
+   - Наш prefix: те же ключи. Возможно CrossOver грузит comctl32 v6 (themed) с другим
+     путём отрисовки, который у нас сломан, ИЛИ DLL override отличается.
+   - Если разница в env (напр. themed comctl32) объясняет правильный рендер — это
+     зацепка где наш движок должен совпасть.
+
+REFERENCE CAPTURE (опц., для пиксельного сравнения):
+- Запусти CrossOver Notepad++ (cxstart по бутылке 1) → захвати тулбар = ЭТАЛОН.
+- Сравни с нашим рендером тех же иконок → точная дельта (что именно у нас не так:
+  цвет/alpha/disabled-grayscale/пустые слоты).
+
+ЦЕЛЬ: найти и убрать расхождение нашего форка от стокового Wine, чтобы иконки (вкл.
+disabled-серые → active-цветные) рисовались как у CrossOver. Не переизобретать —
+выровнять по upstream.
+
+МЕТОД (AGENTS.md): source-search/diff FIRST, evidence, root-fix не band-aid, verify
+строгим gate на реальном окне, не регрессируй рабочее.
+
+ВАЖНО (анти-трэшинг): сперва верни рабочий тулбар (он был PASS 17:00, регресс от
+твоих imagelist-правок), потом diff vs CrossOver/upstream для disabled-состояния.

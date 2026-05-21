@@ -410,6 +410,26 @@ App "works" имеет **два независимых уровня**. Не пу
 иконки серые — это checkpoint, не closure. И НЕ гоняй functional smoke снова
 если он уже PASS — переключайся на visual gate.
 
+### 🛑 CrossOver как reference-oracle (дифференциальное тестирование)
+
+CrossOver (`/Volumes/MacOS/Cross/`, CrossOver 26 на СТОКОВОМ Wine + Rosetta)
+рендерит Windows-приложения **правильно** (эталон). MacRunner = свой форк Wine +
+HyperBridge без Rosetta. Когда у нас визуальный/функц. баг, а у CrossOver его нет —
+**баг = РАСХОЖДЕНИЕ нашего форка от upstream Wine**, не фундаментальный.
+
+Метод (для ЛЮБОГО app, не только Notepad++):
+1. Запусти то же приложение в CrossOver → захвати рендер = **golden reference**.
+2. Сравни с нашим рендером → точная дельта (что именно у нас не так).
+3. SOURCE-diff: наш `engine/wine/dlls/...` против upstream Wine (github wine-mirror;
+   CrossOver ≈ upstream). Найди где наш форк divergнул → почини туда, выровняй по
+   стоку. Не переизобретай.
+4. ENV-diff: template (win10_64), DLL overrides, реестр бутылки (comctl32 v6/themed,
+   uxtheme) — может объяснить правильный рендер у CrossOver.
+
+Это масштабируется: прогоняй новые apps в CrossOver параллельно → сразу видишь, где
+наш движок отстаёт, и есть доказательство что это рендерится (значит чинимо).
+CrossOver bottle = полный prefix (`Cross/1/drive_c/Program Files/...`, system.reg).
+
 ### 🛑 "Verified" = РЕАЛЬНОЕ окно, не прокси-метрика (реальный ложный PASS)
 
 Случай (icons, 2026-05-21): агент записал иконки тулбара как `verified` на основе

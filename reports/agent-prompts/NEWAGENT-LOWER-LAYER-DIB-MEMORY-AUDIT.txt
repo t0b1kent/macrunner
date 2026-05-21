@@ -1,0 +1,48 @@
+Следующий аудит (read-only, disjoint, НЕ правь движок — Codex единственный editor).
+SIMD-аудит готов. Теперь Codex сузил icon-баг: добавил всю SIMD-арифметику (174 теста),
+НО иконки всё ещё чёрные, и арифметика даже не исполняется — реальный blit-путь =
+ВЕКТОРНАЯ ПАМЯТЬ (MOVDQU/MOVDQA/PUNPCK на DIB-буфере). Корень: либо vector-memory op
+врёт байты, либо данные иконки уже нулевые ДО SIMD (нижний слой). Аудируем НИЖНИЙ СЛОЙ
+для Notepad++ icon-path, чтобы помочь Codex локализовать.
+
+Root: /Volumes/MacOS/MacRunner. Не запускай Wine параллельно с Codex.
+
+=== ШАГ 0 (быстро) ===
+Дозахвати CrossOver golden (всё ещё нет): /Volumes/MacOS/Cross/Notepad++.app → window-
+capture тулбара → reports/visual-regression/crossover-golden/notepad-main.bmp. Эталон
+для финальной валидации.
+
+=== ГЛАВНОЕ — аудит icon DIB/blit/memory пути (нижний слой) ===
+Цель: карта КАК данные иконки текут от ресурса до экрана, где могут обнулиться, и
+наши ли патчи виноваты (band-aids как comctl32) или HyperBridge memory mapping.
+
+ФАЙЛЫ (читать, НЕ править), с числом наших патчей:
+- ntdll/unix/virtual.c (82 патча!) — HyperBridge memory mapping. КАК гость читает
+  DIB-буфер. Гипотеза: MOVDQU читает DIB-память, а маппинг отдаёт нули для
+  region/alignment → чёрное. Это ядро HyperBridge (не band-aid, но может иметь баг).
+- win32u/dib.c (21), win32u/bitblt.c (20), win32u/dibdrv/bitblt.c (7),
+  win32u/bitmap.c (8), win32u/cursoricon.c (3) — DIB-рендер. Наши патчи vs upstream
+  Wine 11.0 (скачай как делали с comctl32: raw github wine-mirror wine-11.0). Band-aids?
+
+ЧТО СДЕЛАТЬ:
+1. Трасса ДАННЫХ (статически): icon → LoadImage/DIB section → буфер пикселей →
+   blit (MOVDQU read) → surface. Перечисли функции/файлы на каждом шаге.
+2. Для win32u dib/bitblt: diff наш vs upstream-11.0. Классифицируй патчи: band-aid
+   (как comctl32, под снос) vs нужный. Что делает СТОК.
+3. Для virtual.c (82 патча): как мапится гостевая память, есть ли путь где чтение
+   региона DIB могло бы вернуть нули/мусор (alignment, COW, PROT, page boundary).
+   Это самый вероятный «нижний слой» для vector-memory-читает-нули.
+4. Свяжи с находкой Codex "vector memory MOVDQU on DIB buffer": если DIB-буфер
+   маппится/читается неверно → MOVDQU тащит нули → чёрное, БЕЗ fault.
+
+ВЫХОД: reports/engine-audit/ICON-LOWER-LAYER-AUDIT.md:
+- Карта data-flow иконки (resource→DIB→blit→surface, файлы/функции).
+- Таблица подозрительных мест: файл:строка | что | наш патч/сток | гипотеза как
+  обнуляет | приоритет.
+- Топ-кандидаты для Codex (особенно в virtual.c memory mapping и win32u dib band-aids).
+
+ЦЕННОСТЬ: Codex трассирует RUNTIME-данные, ты картируешь подозрительный СТАТИЧЕСКИЙ
+код нижнего слоя → вместе быстро найдёте где иконка обнуляется. Breadth+depth.
+
+МЕТОД (AGENTS.md): read-only, source-search-first, diff vs upstream-11.0, честный
+confidence, не конфликтуй с Codex.

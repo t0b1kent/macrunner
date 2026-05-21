@@ -1,0 +1,47 @@
+Ты — агент-аудитор MacRunner (HyperBridge x86→ARM64 транслятор). Read-only, движок НЕ
+правь. Самодостаточно.
+
+=== ПЕРВОЕ ===
+1. Workspace /Volumes/MacOS/MacRunner. Команды: `cd /Volumes/MacOS/MacRunner && ...`.
+2. Прочитай .clinerules — ГЛАВНОЕ: НИКОГДА не пиши файлы через cat<<EOF/heredoc в
+   терминале (виснет!). ВСЕГДА write_to_file. Длинные логи → в файл + grep.
+3. Контекст: reports/engine-audit/HYPERBRIDGE-SIMD-AUDIT.md (твой прошлый),
+   docs/ENGINE-CHANGE-JOURNAL.md записи 03:58/05:12/06:08 (Codex доказал: PE-ресурс
+   иконки цветной, DIB-fill сохраняет, SSE2 MOVDQU/MOVDQA load/store ТОЧНЫ; данные
+   обнуляются ПРИ КОПИРОВАНИИ на границе comctl32 ImageList).
+
+=== ЗАДАЧА: аудит КОПИРУЮЩИХ инструкций HyperBridge (за пределами SSE2) ===
+Гипотеза: иконка обнуляется в bulk-copy/memcpy на пути ImageList. SSE2-moves уже
+доказаны точными. Значит виновата ДРУГАЯ копирующая инструкция, которую транслятор
+не покрывает/врёт (как был missing PACKUSWB). Найди её — это следующий вероятный
+корень.
+
+Файлы (ЧИТАТЬ): engine/hyperbridge/src/hb_decode_x64.c, hb_interpreter.c,
+hb_lift_x64.c, include/*.h.
+
+Проверь покрытие/корректность КОПИРУЮЩИХ инструкций (CRT memcpy/blit их использует):
+1. **REP MOVS** (REP MOVSB/MOVSW/MOVSD/MOVSQ) — основной memcpy/ERMSB. Декодируется?
+   корректно копирует с учётом RCX/RSI/RDI/DF? ОЧЕНЬ вероятный кандидат.
+2. **REP STOS** (STOSB/STOSD) — memset (может обнулять не то / лишнее).
+3. **AVX/AVX2 256-бит moves** (VEX-кодирование): VMOVDQU/VMOVDQA/VMOVUPS/VMOVAPS
+   (ymm). Современный CRT memcpy на AVX. Декодируется ли VEX-префикс вообще?
+4. **128-бит float-moves**: MOVUPS/MOVAPS/MOVUPD/MOVAPD (memcpy их тоже юзает).
+5. **Non-temporal**: MOVNTDQ/MOVNTPS/MOVNTI (stream stores).
+6. **LDDQU** (SSE3 unaligned load), **MOVSD/MOVSS scalar** (если в пути).
+
+Для КАЖДОЙ: декодируется? (есть в hb_decode_x64.c) | трансляция корректна по Intel
+SDM? | сверь с sse2neon/FEX где уместно | вердикт OK/ОТСУТСТВУЕТ/ПОДОЗРИТЕЛЬНО | риск.
+Особый фокус: AVX/VEX (если не декодируется ВООБЩЕ — современный memcpy упадёт/даст
+мусор) и REP MOVS (классический memcpy).
+
+ВЫХОД (write_to_file, НЕ heredoc): reports/engine-audit/HYPERBRIDGE-MEMCOPY-AUDIT.md
+- Таблица: инструкция | декод? | трансляция | эталон | вердикт | риск | комментарий.
+- Топ-кандидаты на «обнуление при копировании иконки» для Codex (особенно если AVX/
+  VEX или REP MOVS отсутствуют/кривые).
+
+ГРАНИЦЫ: read-only по engine (Codex единственный editor). Не Wine параллельно с
+Codex. Файлы только write_to_file.
+
+ЦЕННОСТЬ: если найдёшь отсутствующую/кривую copy-инструкцию (как PACKUSWB) — это
+прямой кандидат на корень иконок, и Codex добьёт его decode/lift. Плюс эти copy-ops
+нужны ВСЕМ будущим приложениям.

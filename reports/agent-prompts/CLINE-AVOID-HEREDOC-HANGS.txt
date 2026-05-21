@@ -1,0 +1,25 @@
+Cline — корректировка, чтобы не зависать (терминал застревал на heredoc).
+
+ПРОБЛЕМА: ты пишешь файлы через shell heredoc (`cat > file <<EOF ... EOF`). Если в
+содержимом есть строка, совпадающая с терминатором, спецсимволы, или терминатор не
+на отдельной строке — shell ждёт EOF вечно → терминал виснет (`cmdand heredoc>`).
+
+ПРАВИЛА:
+1. НИКОГДА не пиши файлы через heredoc в терминале. Используй СВОЙ file-write
+   инструмент (write_to_file / create file), а не `cat <<EOF`. Это и надёжнее, и не
+   виснет.
+2. Терминал — только для коротких команд (ls, grep, git, build). Не для записи
+   многострочного контента.
+3. Если делаешь git commit с многострочным сообщением — пиши сообщение в файл
+   инструментом, потом `git commit -F file`, а не heredoc.
+
+WORKSPACE / CHECKPOINTS:
+4. Открывай workspace как папку **/Volumes/MacOS/MacRunner** (не Desktop) — иначе
+   "Cannot use checkpoints in Desktop directory".
+5. cwd команд держи в /Volumes/MacOS/MacRunner (он часто слетает в /Users/timurtoby —
+   начинай команды с `cd /Volumes/MacOS/MacRunner && ...`).
+
+ТЕКУЩАЯ ЗАДАЧА: твой lower-layer аудит уже спасён на диск
+(reports/engine-audit/ICON-LOWER-LAYER-AUDIT.md). Не переделывай. Следующее — по
+запросу координатора (x86 32-бит coverage atlas для KeePass:
+reports/agent-prompts/NEWAGENT-X86-32BIT-COVERAGE-AUDIT.txt).

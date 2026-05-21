@@ -1,0 +1,25 @@
+{
+  "family": "flags_df_lazy",
+  "version": 1,
+  "semantic_rules": [
+    {
+      "rule": "ADC_SBB_CF_CHAIN",
+      "description": "ADC/SBB consume prior CF and update CF deterministically",
+      "source": "Intel SDM ADC/SBB",
+      "confidence": "high"
+    },
+    {
+      "rule": "AF_OF_EDGE_CASES",
+      "description": "AF/OF are sensitive to width and operand patterns; require directed vectors",
+      "source": "Intel SDM flags",
+      "confidence": "medium",
+      "todo": "add exhaustive 8/16/32/64 edge matrix"
+    },
+    {
+      "rule": "DF_CONTROL",
+      "description": "CLD clears DF; STD sets DF",
+      "source": "Intel SDM CLD/STD",
+      "confidence": "high"
+    }
+  ]
+}

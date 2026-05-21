@@ -1,0 +1,25 @@
+{
+  "family": "partial_registers_movzx_movsx",
+  "version": 1,
+  "semantic_rules": [
+    {
+      "rule": "MOVZX_ZERO_EXTEND",
+      "description": "upper destination bits must be zero",
+      "source": "Intel SDM MOVZX",
+      "confidence": "high"
+    },
+    {
+      "rule": "MOVSX_SIGN_EXTEND",
+      "description": "upper destination bits replicate sign bit of source",
+      "source": "Intel SDM MOVSX/MOVSXD",
+      "confidence": "high"
+    },
+    {
+      "rule": "HIGH8_REGS",
+      "description": "AH/CH/BH/DH high-8 register interactions are special and require explicit vectors",
+      "source": "x86 encoding rules",
+      "confidence": "medium",
+      "todo": "add dedicated AH/CH fixtures before strict gate"
+    }
+  ]
+}

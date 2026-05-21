@@ -1,0 +1,31 @@
+{
+  "family": "string_ops_rep_movs",
+  "version": 1,
+  "semantic_rules": [
+    {
+      "rule": "REP_MOVSB_DF0",
+      "description": "while RCX!=0: *(RDI)=*(RSI); RSI++; RDI++; RCX--",
+      "source": "Intel SDM Vol.2 MOVS + REP",
+      "confidence": "high"
+    },
+    {
+      "rule": "REP_MOVSB_DF1",
+      "description": "while RCX!=0: *(RDI)=*(RSI); RSI--; RDI--; RCX--",
+      "source": "Intel SDM Vol.2 MOVS + DF",
+      "confidence": "high"
+    },
+    {
+      "rule": "RCX_ZERO_NOOP",
+      "description": "if RCX=0 then no memory/register movement except RIP advance",
+      "source": "Intel SDM REP termination",
+      "confidence": "high"
+    },
+    {
+      "rule": "OVERLAP_CASE",
+      "description": "overlap behavior should match literal step-by-step MOVSB semantics",
+      "source": "Intel SDM MOVS",
+      "confidence": "medium",
+      "todo": "Cross-check with Intel SDE/FEX/Box64 traces before hard-gating"
+    }
+  ]
+}

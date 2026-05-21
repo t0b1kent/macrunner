@@ -1,0 +1,7 @@
+# rep_movs backward (DF=1) trace expectations
+CHECK: rep_movs_enter
+CHECK: df=1
+CHECK: rcx=16
+CHECK: write_ok
+CHECK-ORDER: rep_movs_enter >> write_ok >> rep_movs_exit
+CHECK-NOT: MEMORY_FAULT

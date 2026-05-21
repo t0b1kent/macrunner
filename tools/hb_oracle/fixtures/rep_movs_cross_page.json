@@ -1,0 +1,22 @@
+{
+  "name": "rep_movs_cross_page",
+  "family": "string_ops_rep_movs",
+  "mode": "x64",
+  "bytes_hex": "F3A4",
+  "initial_state": {
+    "registers": {"rsi": "0x1FFE", "rdi": "0x2FFE", "rcx": "0x0004", "rip": "0x400000"},
+    "flags": {"df": 0},
+    "memory": [
+      {"address": "0x1FFE", "bytes_hex": "A1B2C3D4"},
+      {"address": "0x2FFE", "bytes_hex": "00000000"}
+    ]
+  },
+  "expected": {
+    "registers": {"rsi": "0x2002", "rdi": "0x3002", "rcx": "0x0000"},
+    "flags": {"df": 0},
+    "memory": [{"address": "0x2FFE", "bytes_hex": "A1B2C3D4"}],
+    "rip": "next",
+    "fault": null
+  },
+  "reference": {"sdm": "Intel SDM MOVS", "notes": "cross-page linear copy"}
+}

@@ -1,0 +1,26 @@
+{
+  "name": "rep_movs_overlap",
+  "family": "string_ops_rep_movs",
+  "mode": "x64",
+  "bytes_hex": "F3A4",
+  "initial_state": {
+    "registers": {"rsi": "0x3000", "rdi": "0x3001", "rcx": "0x0004", "rip": "0x400000"},
+    "flags": {"df": 0},
+    "memory": [
+      {"address": "0x3000", "bytes_hex": "1020304050"}
+    ]
+  },
+  "expected": {
+    "registers": {"rsi": "0x3004", "rdi": "0x3005", "rcx": "0x0000"},
+    "flags": {"df": 0},
+    "memory": [{"address": "0x3000", "bytes_hex": "1010101010"}],
+    "rip": "next",
+    "fault": null
+  },
+  "reference": {
+    "sdm": "Intel SDM MOVS",
+    "notes": "overlap semantics are implementation-sensitive for forward direction; keep as explicit fixture expectation",
+    "confidence": "medium",
+    "todo": "Cross-check against SDE/FEX/Box64 trace before hard-gating"
+  }
+}

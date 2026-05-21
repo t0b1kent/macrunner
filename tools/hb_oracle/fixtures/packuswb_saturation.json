@@ -1,0 +1,24 @@
+{
+  "name": "packuswb_saturation",
+  "family": "sse2_pack_sat",
+  "mode": "x64",
+  "bytes_hex": "660F67C1",
+  "initial_state": {
+    "registers": {"xmm0": "FF7F008001000200FFFFFFFFFFFFFFFF", "xmm1": "0001007F008000FF7FFF800001020304", "rip": "0x400000"},
+    "flags": {},
+    "memory": []
+  },
+  "expected": {
+    "registers": {"xmm0": "FF7F00FF01020000017F00FF7F000104"},
+    "flags": {},
+    "memory": [],
+    "rip": "next",
+    "fault": null
+  },
+  "reference": {
+    "sdm": "Intel SDM PACKUSWB",
+    "sse2neon": "vqmovun_s16 style saturation",
+    "confidence": "medium",
+    "todo": "Verify lane ordering against interpreter test vector dump"
+  }
+}

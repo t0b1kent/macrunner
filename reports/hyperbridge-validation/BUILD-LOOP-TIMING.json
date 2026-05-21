@@ -1,0 +1,12 @@
+{
+  "build_libhyperbridge_a_sec": 1,
+  "build_hb_test_runner_sec": 1,
+  "ntdll_relink_sec": 1,
+  "app_smoke_sec": 0,
+  "app_smoke_enabled": false,
+  "total_sec": 3,
+  "notes": [
+    "Scaffold timings use TODO hooks; replace sleep calls with real build commands.",
+    "ccache stats are captured in markdown report for before/after comparison."
+  ]
+}

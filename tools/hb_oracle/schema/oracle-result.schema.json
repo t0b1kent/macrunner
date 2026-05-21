@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://macrunner.local/hb_oracle/oracle-result.schema.json",
+  "title": "HyperBridge Oracle Result",
+  "type": "object",
+  "required": [
+    "fixture_name",
+    "family",
+    "backend",
+    "initial",
+    "final",
+    "expected",
+    "actual",
+    "actual_fault",
+    "pass",
+    "diff"
+  ],
+  "properties": {
+    "fixture_name": { "type": "string" },
+    "family": { "type": "string" },
+    "backend": { "type": "string" },
+    "initial": { "$ref": "#/$defs/state" },
+    "final": { "$ref": "#/$defs/state" },
+    "expected": { "$ref": "#/$defs/state" },
+    "actual": { "$ref": "#/$defs/state" },
+    "actual_fault": { "type": ["string", "null"] },
+    "pass": { "type": "boolean" },
+    "diff": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diffRow" }
+    }
+  },
+  "$defs": {
+    "hexOrInt": {
+      "oneOf": [
+        { "type": "integer" },
+        { "type": "string", "pattern": "^0x[0-9a-fA-F]+$" }
+      ]
+    },
+    "memoryRow": {
+      "type": "object",
+      "required": ["address", "bytes_hex"],
+      "properties": {
+        "address": { "type": "string" },
+        "bytes_hex": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "state": {
+      "type": "object",
+      "properties": {
+        "registers": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/hexOrInt" }
+        },
+        "flags": {
+          "type": "object",
+          "additionalProperties": { "type": ["integer", "boolean", "string"] }
+        },
+        "memory_before": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/memoryRow" }
+        },
+        "memory_after": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/memoryRow" }
+        },
+        "rip": { "$ref": "#/$defs/hexOrInt" },
+        "fault": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "diffRow": {
+      "type": "object",
+      "required": ["kind", "key", "expected", "actual"],
+      "properties": {
+        "kind": { "type": "string" },
+        "key": { "type": "string" },
+        "expected": {},
+        "actual": {},
+        "severity": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

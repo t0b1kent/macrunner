@@ -1,0 +1,23 @@
+{
+  "name": "lazy_flags_sbb_adc",
+  "family": "flags_lazyflags",
+  "mode": "x64",
+  "bytes_hex": "48F9B8010000004819C04811C0",
+  "initial_state": {
+    "registers": {"rax": "0x0000000000000001", "rcx": "0x0000000000000001", "rip": "0x400000"},
+    "flags": {"cf": 1},
+    "memory": []
+  },
+  "expected": {
+    "registers": {"rax": "0x0000000000000000"},
+    "flags": {"cf": 0, "zf": 1},
+    "memory": [],
+    "rip": "next",
+    "fault": null
+  },
+  "reference": {
+    "sdm": "Intel SDM ADC/SBB",
+    "confidence": "medium",
+    "todo": "Expand to AF/OF edge vectors in dedicated table"
+  }
+}

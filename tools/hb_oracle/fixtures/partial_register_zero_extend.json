@@ -1,0 +1,22 @@
+{
+  "name": "partial_register_zero_extend",
+  "family": "partial_registers_movzx_movsx",
+  "mode": "x86",
+  "bytes_hex": "0FB6C00FBEC00FB7C00FBFC4",
+  "initial_state": {
+    "registers": {"eax": "0x800000FF", "ecx": "0x00008001", "rip": "0x00400000"},
+    "flags": {},
+    "memory": []
+  },
+  "expected": {
+    "registers": {"eax": "0xFFFFFFFF"},
+    "flags": {},
+    "memory": [],
+    "rip": "next",
+    "fault": null
+  },
+  "reference": {
+    "sdm": "Intel SDM MOVZX/MOVSX",
+    "notes": "Covers zero/sign extension behavior; AH/CH high-8 TODO split fixture"
+  }
+}

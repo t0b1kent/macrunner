@@ -1,0 +1,22 @@
+{
+  "name": "pmovmskb_mask",
+  "family": "sse2_mask_extract",
+  "mode": "x64",
+  "bytes_hex": "660FD7C1",
+  "initial_state": {
+    "registers": {"xmm1": "80FF007F01020304FFFFFFFF00000080", "rcx": "0x0", "rip": "0x400000"},
+    "flags": {},
+    "memory": []
+  },
+  "expected": {
+    "registers": {"rcx": "0xC081"},
+    "flags": {},
+    "memory": [],
+    "rip": "next",
+    "fault": null
+  },
+  "reference": {
+    "sdm": "Intel SDM PMOVMSKB",
+    "notes": "collect MSB of 16 bytes into low 16 bits"
+  }
+}

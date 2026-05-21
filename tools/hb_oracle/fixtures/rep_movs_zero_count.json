@@ -1,0 +1,22 @@
+{
+  "name": "rep_movs_zero_count",
+  "family": "string_ops_rep_movs",
+  "mode": "x64",
+  "bytes_hex": "F3A4",
+  "initial_state": {
+    "registers": {"rsi": "0x1000", "rdi": "0x2000", "rcx": "0x0000", "rip": "0x400000"},
+    "flags": {"df": 0},
+    "memory": [
+      {"address": "0x1000", "bytes_hex": "11223344"},
+      {"address": "0x2000", "bytes_hex": "AABBCCDD"}
+    ]
+  },
+  "expected": {
+    "registers": {"rsi": "0x1000", "rdi": "0x2000", "rcx": "0x0000"},
+    "flags": {"df": 0},
+    "memory": [{"address": "0x2000", "bytes_hex": "AABBCCDD"}],
+    "rip": "next",
+    "fault": null
+  },
+  "reference": {"sdm": "Intel SDM REP termination", "notes": "no-op when RCX=0"}
+}

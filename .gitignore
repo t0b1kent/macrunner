@@ -26,6 +26,7 @@ wine-fork/dist/
 
 # Bottles (test prefixes)
 test-bottles/
+artifacts/ccache/
 *.wine-prefix/
 
 # Logs
@@ -47,3 +48,4 @@ tests/installers/*.exe
 tests/installers/*.msi
 engine/
 licensing/signing.key
+__pycache__/

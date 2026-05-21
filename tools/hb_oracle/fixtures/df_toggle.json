@@ -1,0 +1,22 @@
+{
+  "name": "df_toggle",
+  "family": "flags_df_control",
+  "mode": "x64",
+  "bytes_hex": "FDFCFD",
+  "initial_state": {
+    "registers": {"rip": "0x400000"},
+    "flags": {"df": 0},
+    "memory": []
+  },
+  "expected": {
+    "registers": {},
+    "flags": {"df": 1},
+    "memory": [],
+    "rip": "next",
+    "fault": null
+  },
+  "reference": {
+    "sdm": "Intel SDM STD/CLD",
+    "notes": "STD; CLD; STD => DF ends as 1"
+  }
+}

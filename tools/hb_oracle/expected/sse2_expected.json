@@ -1,0 +1,26 @@
+{
+  "family": "sse2_pack_mask",
+  "version": 1,
+  "semantic_rules": [
+    {
+      "rule": "PACKUSWB_SAT",
+      "description": "pack signed 16-bit lanes to unsigned 8-bit with saturation [0..255]",
+      "source": "Intel SDM PACKUSWB",
+      "secondary": "sse2neon narrowing saturation equivalents",
+      "confidence": "high"
+    },
+    {
+      "rule": "PMOVMSKB",
+      "description": "extract MSB of each byte lane to low 16 bits of GPR",
+      "source": "Intel SDM PMOVMSKB",
+      "confidence": "high"
+    },
+    {
+      "rule": "LANE_ORDERING",
+      "description": "byte/lane indexing in expected vectors must be verified against HB interpreter dumps",
+      "source": "implementation check",
+      "confidence": "medium",
+      "todo": "confirm endianness+lane map with hb_test_runner trace"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "rep_movs_df0_forward",
+  "family": "string_ops_rep_movs",
+  "mode": "x64",
+  "bytes_hex": "F3A4",
+  "initial_state": {
+    "registers": {"rsi": "0x1000", "rdi": "0x2000", "rcx": "0x0004", "rip": "0x400000"},
+    "flags": {"df": 0},
+    "memory": [
+      {"address": "0x1000", "bytes_hex": "11223344"},
+      {"address": "0x2000", "bytes_hex": "00000000"}
+    ]
+  },
+  "expected": {
+    "registers": {"rsi": "0x1004", "rdi": "0x2004", "rcx": "0x0000"},
+    "flags": {"df": 0},
+    "memory": [{"address": "0x2000", "bytes_hex": "11223344"}],
+    "rip": "next",
+    "fault": null
+  },
+  "reference": {"sdm": "Intel SDM Vol.2 MOVS/REP", "notes": "forward copy"}
+}

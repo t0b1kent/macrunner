@@ -1,0 +1,7 @@
+# memory fault trace expectations
+CHECK: rep_movs_enter
+CHECK: page_cross=1
+CHECK: fault=MEMORY_FAULT
+CHECK: rep_movs_exit
+CHECK-ORDER: rep_movs_enter >> fault=MEMORY_FAULT >> rep_movs_exit
+CHECK-NOT: write_ok

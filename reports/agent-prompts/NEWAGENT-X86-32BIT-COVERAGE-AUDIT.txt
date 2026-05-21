@@ -1,0 +1,42 @@
+Следующий аудит (read-only, disjoint, НЕ правь движок — Codex единственный editor).
+Твой SIMD-аудит выявил: hb_decode_x86.c (32-бит путь) почти БЕЗ SIMD-покрытия. Это
+блокер для KeePass (32-бит app, следующий после Notepad++) и будущего. Углубляем.
+Root: /Volumes/MacOS/MacRunner. Не запускай Wine параллельно с Codex.
+
+=== ШАГ 0 (быстро — для валидации x64-фикса Codex) ===
+Дозахвати CrossOver golden (всё ещё не сделан): запусти CrossOver Notepad++
+(/Volumes/MacOS/Cross/Notepad++.app), window-capture тулбара →
+reports/visual-regression/crossover-golden/notepad-main.bmp. Нужен как эталон, когда
+Codex добавит SIMD-семью — сравнить наш сток-рендер с CrossOver (должны совпасть).
+
+=== ГЛАВНОЕ — аудит покрытия x86 (32-бит) декодера ===
+Цель: карта что hb_decode_x86.c НЕ умеет, чтобы знать объём работы для KeePass
+(32-бит) и будущих 32-бит apps. Это swarm-lane 1 из KeePass-брифа.
+
+Файлы (читать, НЕ править): engine/hyperbridge/src/hb_decode_x86.c (+ сравнить с
+hb_decode_x64.c — что x64 умеет, а x86 нет), hb_interpreter.c, hb_lift_x86.c если есть.
+
+Что сделать:
+1. Перечисли что hb_decode_x86.c покрывает (по факту: Jcc/SETcc/CMOVcc в 0x0F,
+   остальное HB_ERR_UNSUPPORTED_OPCODE — подтверди и детализируй).
+2. Сравни с x64-веткой: какие классы есть в x64, но отсутствуют в x86:
+   - SIMD/SSE/SSE2/MMX (вся пачка PACK/PUNPCK/PADD/PMUL/MOV* — есть в x64 после
+     фикса Codex, нет в x86).
+   - x87 FPU, string ops, прочее.
+3. Отдельно: 32-бит специфика (Intel SDM 32-бит) — что отличается от x64:
+   - адресация (нет RIP-rel; ModRM/SIB 32-бит), сегменты (fs/gs для TEB 32-бит),
+     стек 32-бит, calling convention (stdcall/cdecl/thiscall), SEH (fs:[0]).
+4. Классифицируй: критично-для-GUI (SIMD/blit как у x64) | критично-для-старта
+   (loader/ABI) | реже-нужно.
+
+ВЫХОД: reports/engine-audit/X86-32BIT-COVERAGE-ATLAS.md — таблица:
+класс инструкций | x64 умеет? | x86 умеет? | нужно для KeePass GUI/старта? | приоритет.
++ сводка: дорожная карта «что добавить в x86-декодер чтобы KeePass запустился и
+рисовал» (по приоритету: сначала старт/ABI, потом SIMD для иконок).
+
+ЦЕННОСТЬ: пока Codex закрывает x64 icon-path, ты готовишь карту 32-бит работы →
+KeePass стартует быстрее (известен объём заранее, как Calc swarm-аудит). Reuse
+методологии "CrossOver как oracle" — KeePass тоже можно сверять с CrossOver.
+
+МЕТОД (AGENTS.md): read-only, source-search-first, family-aware, честный confidence,
+disjoint output, не конфликтуй с Codex.

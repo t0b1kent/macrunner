@@ -1,0 +1,55 @@
+Ты — агент-инженер инструментов MacRunner. Read-only по движку, tooling/docs можно.
+Самодостаточно.
+
+=== ПЕРВОЕ ===
+1. cd /Volumes/MacOS/MacRunner. Прочитай .clinerules — файлы ТОЛЬКО write_to_file,
+   НИКАКИХ heredoc/cat<<EOF (виснет). Длинные выводы → файл + grep.
+2. Контекст: Codex чинит REP MOVS, НЕ мешай, НЕ редактируй engine/**. Gap Board уже
+   готов: reports/hyperbridge-gaps/HYPERBRIDGE-GAP-BOARD.md + fixpacks + NEXT-CODEX-ORDER.
+
+=== ЦЕЛЬ ===
+Сделать Oracle Fixture систему: крошечные x86/x64-фикстуры на инструкции-семьи с
+ЭТАЛОННЫМ ожидаемым выводом (regs/flags/mem/fault), чтобы family-fix валидировался за
+СЕКУНДЫ через diff, а не полным прогоном Notepad++. Самое медленное в цикле Codex —
+rebuild+run app; oracle убирает это для correctness.
+
+ГРАНИЦЫ: НЕ редактировать engine/hyperbridge/** и engine/wine/**. Ты ПРОЕКТИРУЕШЬ +
+СКАФФОЛДИШЬ tooling (tools/hb_oracle/) + пишешь эталонные таблицы. Запуск под
+HyperBridge interpreter/JIT потом подключит Codex к hb_test_runner (у него уже 174
+теста). Долгие Wine-прогоны НЕ запускать.
+
+=== ЧТО СДЕЛАТЬ (всё write_to_file) ===
+
+1. tools/hb_oracle/README.md — архитектура: фикстура (байты x86 + начальное
+   состояние regs/mem) → ожидаемый итог (regs/flags/mem/fault/rip) → diff. Backends:
+   HyperBridge interpreter, HyperBridge JIT, и reference-источники для семантики
+   (Intel SDM таблица, sse2neon, FEX/Box64 — как сверять, не как запускать).
+
+2. tools/hb_oracle/fixtures/ — спецификации фикстур (по одному .json/.md на кейс):
+   - rep_movs_df0_forward, rep_movs_df1_backward, rep_movs_zero_count,
+     rep_movs_cross_page, rep_movs_overlap
+   - packuswb_saturation, pmovmskb_mask
+   - partial_register_zero_extend (AL/AX/EAX→RAX, MOVZX/MOVSX, high-8 AH/CH)
+   - lazy_flags_sbb_adc (CF/OF/AF края), df_toggle
+   Формат фикстуры: имя | байты (hex) | начальные regs/mem | ожидаемые regs/flags/mem
+   /fault/rip | семья | reference (SDM §/sse2neon-функция).
+
+3. tools/hb_oracle/expected/ — эталонные таблицы (выведи из Intel SDM семантики;
+   честно помечай confidence, где не уверен — TODO для дифф-проверки с SDE/FEX).
+
+4. tools/hb_oracle/compare.py — скелет: парсит actual-вывод (формат как у
+   hb_test_runner / MACRUNNER_HB_TRACE_*) и expected, выдаёт diff: register/flags/
+   memory/pc/fault mismatch. Не запускай (движок не трогаешь) — только структура +
+   интерфейс, чтобы Codex подключил.
+
+5. reports/hyperbridge-gaps/ORACLE-FIXTURE-PLAN.md — план: какие фикстуры на какую
+   family из NEXT-CODEX-ORDER, как Codex прогоняет (interpreter+JIT), критерий PASS.
+   Свяжи с FileCheck-стилем: CHECK:/CHECK-NOT: паттерны для trace (вместо ручного grep).
+
+=== ВЫХОД ===
+tools/hb_oracle/** + reports/hyperbridge-gaps/ORACLE-FIXTURE-PLAN.md. Финал: список
+фикстур, привязка к семьям, как Codex это гоняет за секунды.
+
+ЦЕННОСТЬ: Codex после family-fix прогоняет oracle-фикстуры (секунды) → подтверждает
+семантику ДО дорогого app-прогона. Ускоряет весь конвейер. Reuse: Intel SDM/sse2neon/
+FEX как reference семантики. Read-only по engine, write_to_file (НЕ heredoc).

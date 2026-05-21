@@ -403,6 +403,28 @@ App "works" имеет **два независимых уровня**. Не пу
 
 ---
 
+## 🛑 MANDATORY: Swarm inbox — Codex потребляет discovery сам (не ждёт указания)
+
+Кими-swarm пишет read-only discovery (root causes, file:line) в
+`swarm/inbox-for-codex/*.md`. **Codex — единственный engine-editor — обязан сам
+проверять эту папку, без напоминания пользователя.**
+
+Протокол (Codex):
+- На старте сессии И при достижении natural break (закрыл item / functional PASS /
+  перед выбором следующей задачи): `ls -t swarm/inbox-for-codex/` → есть новые .md?
+- Новый отчёт = готовый root cause (symptom, file:line, fix scope, confidence).
+  Это твоя legwork, уже сделанная. Читай → фикси серийно по приоритету.
+- Особо: `CROSS-APP-ROOT-SYNTHESIS.md` — ранжированный punch-list + порядок фиксов
+  на несколько приложений. Если есть — это твой план, начинай с Pass 1.
+- Consumed отчёт → перемести в `swarm/reports/done/` (idempotent: done = не брать снова).
+- Family audit: один shared root часто закрывает семью в НЕСКОЛЬКИХ приложениях —
+  фикси по synthesis-порядку, не по одному симптому.
+
+Discovery (breadth, параллельно) делает swarm; fixing (depth, серийно) — только
+Codex. Поэтому Codex обязан забирать inbox сам — иначе legwork лежит зря.
+
+---
+
 ## 🛑 MANDATORY: Engine memory — git diff + change journal (НЕ перечитывай код, помни)
 
 **Проблема которую это решает**: `engine/` в `.gitignore` (12GB). Раньше агент

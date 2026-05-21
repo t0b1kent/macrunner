@@ -388,6 +388,24 @@ App "works" имеет **два независимых уровня**. Не пу
 иконки серые — это checkpoint, не closure. И НЕ гоняй functional smoke снова
 если он уже PASS — переключайся на visual gate.
 
+### 🛑 "Verified" = РЕАЛЬНОЕ окно, не прокси-метрика (реальный ложный PASS)
+
+Случай (icons, 2026-05-21): агент записал иконки тулбара как `verified` на основе
+`toolbar_render_cg colorful_pixels=9136` — но это OFF-SCREEN CG-рендер, а РЕАЛЬНОЕ
+окно на экране осталось серым. Прокси-метрика и on-screen surface разошлись →
+ложное "готово" дважды. On-screen краска (winemac.drv surface) ≠ DIB/CG capture path.
+
+Правило:
+- Visual "verified" доказывается ТОЛЬКО скриншотом РЕАЛЬНОГО окна, снятого как
+  видит пользователь (window-capture живого окна: scripts/visual-gate-notepad.sh /
+  cg_window_capture.swift / screencapture окна).
+- Off-screen рендеры, CG-capture probes, DIB-замеры — это диагностика, НЕ пруф
+  closure. Они могут проходить, пока экран сломан (разные пути краски).
+- Не приписывай подтверждение скриншоту, который его не даёт. Если user-скрин
+  показывает серое — это FAIL, что бы ни говорила метрика.
+- Если capture-метрика PASS, а окно визуально FAIL → это САМ ПО СЕБЕ баг: путь
+  on-screen краски отличается от capture-пути. Чини on-screen путь.
+
 ---
 
 ## 🛑 MANDATORY: Auto-continue — не останавливайся между подзадачами

@@ -1,0 +1,42 @@
+Codex — тулбар почти готов, но остался ПОДнабор иконок: пустые серые квадраты без
+силуэта. Не путать с нормальным disabled-видом (на Windows у выключенной кнопки
+виден ЗАТЕНЁННЫЙ силуэт иконки, а не плоский серый квадрат).
+
+EVIDENCE (увеличенный кроп реального окна, gate 12:05, build после Marlett 11:21):
+- Цветные (enabled, работают): New, Open, Cut/Copy/Paste, Find, Replace, Zoom,
+  списки, red record, play.
+- ПУСТЫЕ серые квадраты (битые): Save, Save All, Undo, Redo, и несколько в макро-
+  зоне (stop/play-варианты). У них НЕТ силуэта вообще — плоская серая заливка.
+- Корреляция жёсткая: ВСЕ битые квадраты = кнопки в DISABLED-состоянии на пустом
+  новом документе (нечего сохранять/отменять, макрос не пишется).
+
+ВЫВОД: ты починил NORMAL (enabled) imagelist тулбара — он теперь цветной. Но
+DISABLED-состояние идёт через ОТДЕЛЬНЫЙ путь, и он даёт пустой серый квадрат вместо
+затенённого силуэта. Та же семья DIB/imagelist, но disabled-draw path — её ты не
+закрыл.
+
+ГИПОТЕЗА (проверь трассой, не правь вслепую):
+- comctl32 toolbar рисует выключенные кнопки либо из отдельного disabled imagelist
+  (TB_SETDISABLEDIMAGELIST), либо авто-грейскейлит normal image на лету
+  (CreateMappedBitmap / ImageList_DrawEx с ILD_BLEND25/ILS_SATURATE / эмбосс через
+  DrawState). Один из этих путей на macOS даёт blank gray вместо затенённого глифа.
+- Вероятно тот же сбой DIB-конверсии (32bpp+mask / alpha), но в disabled-ветке.
+
+МЕТОД (patch-by-evidence):
+1. Трасса: какой именно путь берут disabled-кнопки тулбара (отдельный imagelist
+   vs авто-грей). Используй MACRUNNER_TRACE_TOOLBAR_ICONS / добавь точечный лог.
+2. Найди где силуэт теряется (alpha обнуляется? mask? convert_bits в disabled
+   ветке? DrawState fail?).
+3. Фикс именно в disabled-draw path. Family audit: покрой ВСЕ выключенные кнопки,
+   не одну.
+
+VERIFY (по правилу из AGENTS.md — РЕАЛЬНОЕ окно, не прокси):
+- Захват живого окна (scripts/visual-gate-notepad.sh / cg_window_capture.swift).
+- Disabled-иконки (Save/Undo/Redo) должны показывать ЗАТЕНЁННЫЙ СИЛУЭТ, не пустой
+  квадрат. toolbar_render_cg / суммарный цвет — НЕ пруф (gate ложно прошёл из-за
+  агрегатного порога — см. ниже).
+- Журнал: запись Type/file:line/Why/Verify(реальное окно)/Status.
+
+КОНТЕКСТ: gate сказал toolbar PASS, но он мерял СУММАРНЫЙ цвет, а не каждую иконку,
+поэтому пропустил пустые квадраты. Кими ужесточает gate (per-slot). Не полагайся на
+старый PASS — пруф = силуэты disabled-иконок на реальном окне.

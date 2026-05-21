@@ -1,0 +1,43 @@
+АУДИТ: Atlas расхождений нашего Wine от upstream 11.0 (read-only, disjoint).
+Лучше для Кими (аудит-специалист) или отдельного агента. НЕ редактировать движок —
+только аудит/документирование. Root: /Volumes/MacOS/MacRunner.
+
+ЦЕЛЬ: систематически знать ЧТО и ЗАЧЕМ мы изменили в Wine vs сток, чтобы при будущих
+багах сразу понимать — это наше расхождение (откатить/выровнять) или нужный патч.
+CrossOver = доказательство, что сток рендерит правильно → наши графические патчи под
+подозрением.
+
+ФАКТЫ:
+- Наш Wine = 11.0. Напатчено 46 файлов (grep "MACRUNNER|macrunner_" в engine/wine/dlls).
+- Два класса:
+  * HyperBridge-essential: ntdll/* (loader, signal_arm64, virtual, macrunner_hb*,
+    thread, env, file, unixlib) — ядро транслятора. НЕ аудировать на откат (essential).
+  * Графический стек (фокус аудита): comctl32/{imagelist,status,tab,toolbar}.c,
+    user32/{dialog,menu,nonclient,scroll,uitools,win}.c, uxtheme/{draw,scrollbar,
+    window}.c, win32u/{bitblt,bitmap,cursoricon,dce,defwnd,dib}.c, dibdrv/bitblt.c,
+    gdi32/dc.c, shell32/{iconcache,shell32_main}.c.
+
+ЗАДАЧА (для каждого файла графического стека):
+1. Достань upstream Wine 11.0 версию файла (git tag wine-11.0, github wine-mirror/wine).
+2. Diff наш vs сток. Для каждого MACRUNNER-блока:
+   - Что изменено (одна строка).
+   - Зачем (из комментария/журнала ENGINE-CHANGE-JOURNAL / коммитов).
+   - Классификация: ESSENTIAL (реальная macOS/HyperBridge нужда, сток падает без неё)
+     | INTEGRATION (winemac.drv/CG glue) | BAND-AID (косметика/обход, сток работает
+     без) | EXPERIMENTAL (попытка фикса, возможно вредная).
+   - Работает ли сток без нашей правки? (гипотеза/если проверяемо).
+3. Выход: reports/engine-audit/WINE-DIVERGENCE-ATLAS.md — таблица:
+   File | MACRUNNER-блок (line) | Что | Зачем | Класс | Сток-без-неё | Риск-регресса.
+4. Сводка: какие патчи — кандидаты на откат к стоку (BAND-AID/EXPERIMENTAL), какие
+   беречь (ESSENTIAL/INTEGRATION).
+
+ВТОРИЧНО (опц.): скачай опубликованный CrossOver Wine source (codeweavers.com, LGPL)
+→ глянь, патчили ли ОНИ те же файлы (comctl32/win32u). Скорее всего НЕТ (рендеринг у
+них стоковый) — это подтвердит, что наши граф-патчи лишние/вредные.
+
+ЦЕННОСТЬ: атлас = постоянная карта. Будущий визуальный/функц. баг → смотришь файл в
+атласе → знаешь наше расхождение и стоит ли откатить. Масштабируется на все apps.
+
+МЕТОД (AGENTS.md): read-only, family-aware, честный confidence, disjoint output.
+Связано с методологией "CrossOver как reference-oracle" и задачей Codex
+align-comctl32-to-upstream (STEP-0 stock test даст первый сигнал по comctl32).

@@ -1,0 +1,42 @@
+Ты — агент-аудитор в проекте MacRunner (x86→ARM64 транслятор HyperBridge + Wine
+ARM64). Read-only задача, движок НЕ редактируй. Самодостаточно.
+
+=== ПЕРВОЕ (обязательно) ===
+1. Workspace = /Volumes/MacOS/MacRunner. Команды начинай с
+   `cd /Volumes/MacOS/MacRunner && ...` (cwd слетает в /Users/timurtoby).
+2. Прочитай /Volumes/MacOS/MacRunner/.clinerules — там жёсткие правила. Главное:
+   - НИКОГДА не пиши файлы через `cat<<EOF`/heredoc в терминале (виснет!). ВСЕГДА
+     создавай файлы своим инструментом write_to_file.
+   - Длинные логи → в файл + grep, не в терминал.
+3. Прочитай reports/engine-audit/HYPERBRIDGE-SIMD-AUDIT.md (твой прошлый аудит) для
+   контекста о x64 SIMD-покрытии.
+
+=== ЗАДАЧА: x86 (32-бит) coverage atlas для KeePass ===
+Контекст: твой SIMD-аудит показал, что hb_decode_x86.c (32-бит путь) почти БЕЗ
+покрытия (только Jcc/SETcc/CMOVcc, остальное HB_ERR_UNSUPPORTED_OPCODE). Это блокер
+для KeePass (32-бит app, следующий после Notepad++). Нужна карта объёма работы.
+
+Файлы (ЧИТАТЬ, не править): engine/hyperbridge/src/hb_decode_x86.c,
+hb_decode_x64.c (для сравнения что x64 умеет), hb_interpreter.c, hb_lift_x86.c (если
+есть), include/*.h.
+
+Сделать:
+1. Что hb_decode_x86.c реально декодирует (подтверди и детализируй).
+2. Сравни с x64: какие классы есть в x64, нет в x86 — SIMD/SSE/SSE2/MMX (вся пачка
+   PACK/PUNPCK/PADD/PMUL/MOV*), x87 FPU, string ops.
+3. 32-бит специфика (Intel SDM 32-бит): адресация без RIP-rel (ModRM/SIB 32-бит),
+   сегменты fs/gs (TEB 32-бит), стек/calling conv (stdcall/cdecl/thiscall), SEH fs:[0].
+4. Классифицируй: критично-для-старта (loader/ABI) | критично-для-GUI (SIMD/blit) |
+   реже-нужно.
+
+ВЫХОД (write_to_file, НЕ heredoc!): reports/engine-audit/X86-32BIT-COVERAGE-ATLAS.md
+- Таблица: класс инструкций | x64 умеет? | x86 умеет? | нужно для KeePass старт/GUI? |
+  приоритет.
+- Сводка: дорожная карта «что добавить в x86-декодер чтобы KeePass запустился и
+  рисовал» (сначала старт/ABI, потом SIMD).
+
+ГРАНИЦЫ: read-only по engine (Codex единственный engine-editor). Не запускай Wine
+параллельно с Codex. Disjoint output (только reports/). Файлы — только write_to_file.
+
+ЦЕННОСТЬ: пока Codex закрывает x64 иконки, ты готовишь карту 32-бит → KeePass
+стартует быстрее (объём известен заранее).

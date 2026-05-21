@@ -1,0 +1,60 @@
+Ты — агент-аудитор/планировщик MacRunner. Read-only, движок НЕ правь. Самодостаточно.
+
+=== ПЕРВОЕ ===
+1. cd /Volumes/MacOS/MacRunner. Прочитай .clinerules — файлы ТОЛЬКО write_to_file,
+   НИКАКИХ heredoc/cat<<EOF (виснет). Длинные выводы → файл + grep.
+2. Контекст: Codex СЕЙЧАС чинит REP MOVS — НЕ мешай, НЕ редактируй engine/**.
+
+=== ЦЕЛЬ ===
+Ускорить закрытие дыр HyperBridge: из РАЗРОЗНЕННЫХ атласов сделать ЕДИНУЮ Gap Board +
+готовые Codex-fixpacks, чтобы Codex брал family-pack из очереди, а не искал руками.
+НЕ переаудит — КОНСОЛИДАЦИЯ уже собранного + дозаполнение.
+
+ИСХОДНЫЕ (читать): reports/engine-audit/{HYPERBRIDGE-SIMD-AUDIT, HYPERBRIDGE-MEMCOPY-
+AUDIT, HYPERBRIDGE-OPCODE-COVERAGE-ATLAS, X86-32BIT-COVERAGE-ATLAS, ICON-LOWER-LAYER-
+AUDIT}.md + engine/hyperbridge/src/{hb_decode_x64,hb_interpreter,hb_lift_x64}.c (для
+проверки статуса).
+
+=== ФАЗА 1 — единый Gap Board ===
+Создай (write_to_file): reports/hyperbridge-gaps/HYPERBRIDGE-GAP-BOARD.md (+ .json)
+Сведи ВСЕ известные дыры в ОДНУ таблицу:
+| family | инструкции | decode? | IR? | lift? | interp? | JIT? | tests? | app-evidence | риск | приоритет |
+Семьи (из атласов): String ops (REP MOVS/CMPS/LODS missing), SSE2 pack/sat (PACKUSWB
+done), AVX/VEX (missing), MOVNT/LDDQU, x87 FPU (missing), shifts RCL/RCR/SHLD/SHRD,
+atomics/fences/CMPXCHG16B/PAUSE, flags AF/PF/OF edge-cases, partial-reg MOVZX/MOVSX
+(x86!), x86 integer-core (MUL/DIV/ADC/SBB/ротации — см. x86 atlas).
+Помечай статус ЧЕСТНО (проверь по коду, не копируй вслепую).
+
+=== ФАЗА 2 — fault-evidence (light) ===
+Grep логи на реальные падения (без долгих прогонов, только чтение):
+reports/phase-h/**, reports/redteam/**, engine/hyperbridge/tests/** на:
+UNSUPPORTED_OPCODE, macrunner-hb-fault, MEMORY_FAULT, "bytes=", unsupported.
+Добавь в Gap Board колонку «реально падало в app / где».
+
+=== ФАЗА 3 — Codex-ready fixpacks (готовые брифы) ===
+В reports/hyperbridge-gaps/fixpacks/ создай брифы (write_to_file) для СЛЕДУЮЩИХ
+семей после REP MOVS:
+- STRING-OPS-CMPS-LODS-CODEX-BRIEF.md
+- SSE2-REMAINING-MASK-PACK-CODEX-BRIEF.md
+- PARTIAL-REGISTERS-MOVZX-MOVSX-CODEX-BRIEF.md
+- FLAGS-DF-LAZYFLAGS-CODEX-BRIEF.md
+- X86-INTEGER-CORE-CODEX-BRIEF.md (MUL/DIV/ADC/SBB/ротации — для KeePass)
+Каждый бриф: точная Intel-семантика | working analogue в коде (что копировать, напр.
+REP STOS для string) | файлы которые трогать | sse2neon/FEX/box64 reference search-
+terms | test-matrix (interpreter + JIT + app) | что НЕ трогать.
+
+=== ФАЗА 4 — очередь приоритетов ===
+reports/hyperbridge-gaps/NEXT-CODEX-ORDER.md — точный порядок ПОСЛЕ REP MOVS.
+Критерии: вероятный impact на Notepad++ / installer / будущие apps; риск; testability.
+
+=== ФАЗА 5 — Rosetta-oracle план (кратко) ===
+reports/hyperbridge-gaps/ROSETTA-ORACLE-DIFFERENTIAL-PLAN.md: как гонять крошечный x64-
+fixture под Rosetta/CrossOver (эталон) vs HyperBridge и сравнивать regs/mem/flags/
+pixels. Fixtures: rep movs (DF=0/1), paletted icon copy, mask blit, small DIB, packed
+SSE convert.
+
+ВЫХОД: всё в reports/hyperbridge-gaps/. Финал: счётчики (семей, дыр), топ-10 missing,
+порядок для Codex.
+
+ГРАНИЦЫ: read-only по engine. Не Wine долгие прогоны. Файлы только write_to_file
+(НЕ heredoc). Не мешай Codex (он на REP MOVS). Честно — без выдуманных статусов.

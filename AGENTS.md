@@ -208,6 +208,27 @@ Audit completed: yes
 3 sibling opcodes тоже missing — это OK, добавь все 3 в этот же коммит, это и есть
 правильный family fix.
 
+### 🛑 Translator instruction = ВСЯ семья + весь стек за один проход
+
+Когда добавляешь/чинишь x86/x64-инструкцию в HyperBridge — НЕ по одной. За один
+family-fix закрывай:
+- ВСЮ семью (напр. String Ops: MOVSB/W/D/Q + REP/REPE/REPNE + DF + RCX/RSI/RDI +
+  cross-page/overlap; не только REP MOVSB).
+- ВЕСЬ стек: decode → IR → lift → interpreter → **JIT (если есть путь)** → tests →
+  app-validation на реальном окне.
+- Семантику сверь: Intel SDM + working analogue в коде (напр. REP STOS для REP MOVS)
+  + sse2neon/FEX/box64.
+Причина: цикл (decode→IR→lift→interp→JIT→test→rebuild libhyperbridge.a→relink
+ntdll.so→прогон) ДОРОГОЙ. По одной инструкции = недели. Семьёй = один цикл закрывает
+кучу будущих дыр. Бери следующий family из reports/hyperbridge-gaps/NEXT-CODEX-ORDER.md
+(swarm готовит fixpacks), не ищи руками.
+
+### Параллелизм закрытия дыр (swarm doctrine, см. doc 96)
+- Разведка/группировка/fixpacks/test-matrix — параллельно, read-only (Кими/Cline,
+  8-12 агентов когда доступны). Disjoint output в reports/hyperbridge-gaps/.
+- Фикс кода — ТОЛЬКО Codex, ОДНА family за раз. НИКОГДА 2 агента на hb_decode_x64.c/
+  hb_lift_x64.c/hb_interpreter.c/hb_ir.h — это merge hell.
+
 ---
 
 ## 🛑 MANDATORY: Patch-by-evidence, никогда не patch-by-suspicion

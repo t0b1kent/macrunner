@@ -1,0 +1,42 @@
+Отличная работа: строгий gate-код готов (Marlett центр-глиф, tab black-square,
+scrollbar визуал+функционал), punchlist детальный (items 12-14 для Codex). Теперь
+довести до рабочей приёмки. Root: /Volumes/MacOS/MacRunner. Read-only по движку. Wine
+сериализуй (pgrep notepad++/wine, wait_for_queue — Codex сейчас чинит Marlett/tab/
+scrollbar, НЕ запускай Wine параллельно).
+
+=== ПРИОРИТЕТ 1 — ЧИСТЫЙ ПРОГОН gate → RESULT.md (сейчас не доходит) ===
+Прогон 15:00 не дошёл до захвата: reports/visual-regression/notepad-gate/ ПУСТОЙ,
+stderr всего 304 байта (только hb-init), RESULT.md нет. Та же болезнь window-capture/
+probe, что чинили раньше — окно не находится / захват не срабатывает.
+Почини и доведи до конца:
+- Отладь window-probe/capture (retry-loop ожидания окна Wine, правильный owner/title
+  match — это уже было, проверь что не регрессировало).
+- Доведи ОДИН прогон до RESULT.md + RESULT.json + RESULT-annotated.png с вердиктами
+  по КАЖДОМУ элементу.
+- Ожидаемо на текущем билде: toolbar PASS (disabled-иконки Codex починил 14:24),
+  marlett FAIL (пустые рамки, центр-глиф), tab FAIL (чёрный квадрат), scrollbar
+  FAIL/PASS (нужен контент для проверки). Сверь вердикты с реальным окном — если
+  marlett даёт PASS, значит центр-чек не строгий, чини.
+
+=== ПРИОРИТЕТ 2 — стать ЖИВОЙ ПРИЁМКОЙ для фиксов Codex ===
+Codex чинит Marlett → tab → scrollbar. После каждого его rebuild — перепрогоняй gate,
+обновляй RESULT.md. Это объективный сигнал «починил/нет» по каждому элементу, чтобы
+больше не было ложных verified. Когда элемент стал PASS — отметь в punchlist.
+
+=== ПРИОРИТЕТ 3 (мелочь) — автоматизация диалогов через МЕНЮ-КЛИК, не клавиши ===
+goto/run/about = FALSE CAPTURE: CGEventPost клавиш (Ctrl+G/F5/Alt+H) не доходит до
+Wine (macOS перехватывает). Замени на клик по МЕНЮ мышью:
+- Найди координаты пункта меню (Search→Go To, Run→Run, ?→About) и кликни мышью
+  (CGEventPost mouse / cliclick), а не шли горячую клавишу.
+- Так goto/run/about реально откроются и захватятся. Это харнесс-фикс, не баг NPP.
+- Также item 1-2: Open-диалог отличается от Save As (0 цветных в верхней полосе,
+  -39% цветных) — сними зум верхней полосы Open, подтверди old-style vs Vista-style.
+  Если реальный дефект → в punchlist для Codex.
+
+=== ВЫХОД ===
+- Рабочий RESULT.md с честными per-element вердиктами (главное).
+- Обновляемый после каждого фикса Codex.
+- (мелочь) меню-клик автоматизация → goto/run/about захвачены; Open-полоса проверена.
+
+МЕТОД (AGENTS.md): пруф = реальное окно, per-element, центр-зона для глифов,
+функционал отдельно. Disjoint output, ноль правок движка. НЕ Wine параллельно с Codex.

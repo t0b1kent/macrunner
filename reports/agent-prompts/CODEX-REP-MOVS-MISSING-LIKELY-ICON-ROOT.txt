@@ -1,0 +1,36 @@
+Codex — Cline memcopy-аудит (reports/engine-audit/HYPERBRIDGE-MEMCOPY-AUDIT.md) нашёл
+СИЛЬНЕЙШЕГО кандидата на корень иконок:
+
+**REP MOVS (A4/A5 + F3/F2) ПОЛНОСТЬЮ ОТСУТСТВУЕТ в HyperBridge** — нет decode/lift/IR/
+exec, нет HB_INS_MOVS в enum. Это классический memcpy/memmove. Если копирование
+иконки на границе ImageList (твой трейс 06:08) идёт через `rep movs` → копия не
+выполняется → dest остаётся нулевым → чёрные иконки. Сильнее PACKUSWB.
+
+Также отсутствуют (для справки): AVX/VEX 256-бит (VMOV*), MOVNT*, LDDQU.
+OK: REP STOS (memset), 128-бит SSE moves (MOVUPS/MOVAPS/MOVDQU/MOVDQA/scalar).
+
+ШАГ 1 — ПОДТВЕРДИ на твоём ImageList-трейсе (06:08):
+- В пути ingest/draw ImageList, где данные впервые нули — какие инструкции делают
+  копирование? Есть ли среди них **REP MOVS (0xA4/0xA5 с REP-префиксом F3)**?
+- Нюанс: ты раньше видел "no unsupported/fault lines". Проверь — REP MOVS при
+  отсутствии decode даёт fault ИЛИ молча игнорируется/неверно интерпретируется?
+  Если в icon-copy пути есть rep movs и он не копирует → это корень.
+- Дамп: source-буфер ОК перед `rep movs`, dest нулевой после → подтверждение.
+
+ШАГ 2 — ФИКС (family, как ты делал PACK):
+- Если подтвердилось (icon-copy использует rep movs) ИЛИ даже если нет — REP MOVS
+  отсутствует = критично для ВСЕХ приложений (memcpy везде). Добавь:
+  decode (0xA4 MOVSB, 0xA5 MOVSW/D/Q) + REP-префикс (F3) → lift → interpreter loop
+  с корректной семантикой RCX/RSI/RDI/DF (как у тебя REP STOS уже сделан — возьми
+  его за образец, он OK по аудиту). Тесты в hb_test_runner.
+- Потом по приоритету: VEX/AVX (хотя бы детерминированный путь), MOVNT*, LDDQU.
+
+VERIFY (сток comctl32 = target, патчи НЕ возвращать):
+- Сток Notepad++ → иконки ЦВЕТНЫЕ (как CrossOver). Если ещё нет — трасса покажет
+  следующую недостающую copy-инструкцию (VEX? MOVNT?), добавь её.
+- Журнал: подтверждение rep-movs-в-icon-path + фикс.
+
+КОНТЕКСТ: REP STOS у тебя уже корректен (аудит подтвердил) — REP MOVS делается по
+тому же образцу. Это, возможно, ТОТ САМЫЙ корень (источник цветной, fill сохраняет,
+SSE-moves точны → осталась bulk-copy инструкция, и rep movs отсутствует). Один фикс
+закроет иконки + memcpy для всех будущих apps.

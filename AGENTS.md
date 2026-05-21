@@ -357,6 +357,28 @@ mono-icon, mono-icon-invert, transparent-placeholder, copyimage-fallback, uxthem
 ❌ Гонять тот же smoke harness по кругу когда он уже PASS
 ❌ Raise limit by small increments
 
+### 🛑 Source-search-by-name FIRST, trace ТОЛЬКО для подтверждения
+
+Для вопросов «какой код рисует/обрабатывает X» и «почему X выглядит не так» —
+**локализация пути = статический поиск по имени, НЕ runtime-трассировка.**
+
+Правильный порядок (реальный случай: disabled toolbar icons — найдено за минуты
+grep'ом, после ~50 мин слепых трасс):
+1. **Grep по именам** в подсистеме (из GUI catalog «где смотреть»): функции draw/
+   state/imagelist, флаги, константы. Напр.: `GETDISIMAGELIST`, `TOOLBAR_DrawMasked`,
+   `CDIS_DISABLED`, `ILS_SATURATE`. Читай upstream (github wine-mirror) + наше дерево.
+2. **Гипотеза из кода**: какой branch берётся, где теряется цвет/alpha/mask.
+3. **ОДНА целевая трасса** — подтвердить, какую ветку бьёт конкретное приложение
+   (has_alpha? mask? какой imagelist?). Trace = CONFIRM, не FIND.
+4. Фикс по найденному пути + family audit.
+
+❌ Анти-паттерн: «трассируй час вслепую → потом смотри код». Дорого, медленно.
+✅ Grep/чтение исходника — бесплатно, без Wine, секунды. Web (исходники Wine) +
+   `grep` по символам находят путь до запуска чего-либо. Трасса — последний шаг.
+
+Это дополняет batch-diagnostics: когда трасса всё же нужна — дропай ВСЕ нужные
+точки за один проход (см. выше), а не итеративно.
+
 ---
 
 ## 🛑 MANDATORY: Functional PASS ≠ Visual PASS — раздельные gates

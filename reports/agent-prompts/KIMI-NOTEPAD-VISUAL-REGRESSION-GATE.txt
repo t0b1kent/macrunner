@@ -1,0 +1,41 @@
+Кими — cross-app синтез принят (swarm/inbox-for-codex/CROSS-APP-ROOT-SYNTHESIS.md),
+отлично. Следующая задача: автоматический визуальный regression-gate для Notepad++.
+
+ЗАЧЕМ: иконки тулбара регрессировали ДВАЖДЫ, и оба раза ловил это пользователь
+глазами на скриншоте, а не машина. Пока Codex серийно фиксит Roots A+B (font path +
+DIB convert_bits), ты строишь автогейт, который на каждый rebuild Codex даёт
+pass/fail по тем семьям, что регрессируют. Машина ловит регресс, не человек.
+
+ЭТО RE-USE, НЕ С НУЛЯ: у тебя уже есть tools/visual_regression + reports/visual-
+regression (dashboard, taxonomy, classification JSON). Расширь под Notepad++,
+не строй заново.
+
+GATE ДОЛЖЕН ПРОВЕРЯТЬ (именно регрессирующие семьи, pass/fail на каждую):
+1. Иконки тулбара — ЦВЕТНЫЕ (не серые, не чёрные, не пустые). Семья comctl32 BMP.
+2. Иконки папок/диалогов (Save As) — ЦВЕТНЫЕ. Семья cursoricon ICO. (это РАЗНАЯ
+   дорожка от тулбара — урок two-path, проверяй раздельно.)
+3. Marlett — кнопки окна (min/max/close) присутствуют как glyph, не пустые квадраты.
+4. Нет чёрных полос/bands (GetSysColor регрессия).
+5. Текст рендерится (не tofu) — baseline.
+
+КАК (read-only по движку, НЕ правь engine; Wine запускай ТОЛЬКО bounded, RAM 8GB,
+сериализуй — НЕ параллель с Codex; если Codex гоняет Wine — подожди очередь):
+- Baseline-скриншот эталона (последнее известное good-состояние или Windows-эталон
+  если есть) → per-region проверки (toolbar bbox, dialog icon bbox, NC buttons bbox).
+- Метрики на регион: доля цветных пикселей (saturation>0), доля чёрных, наличие
+  не-фоновых пикселей в зоне glyph. Пороги → PASS/FAIL.
+- Output: reports/visual-regression/notepad-gate/RESULT.md + RESULT.json
+  (per-check PASS/FAIL + аннотированный скриншот с подсветкой провалов).
+- Один скрипт-вход: scripts/visual-gate-notepad.sh (bounded run + анализ + вердикт),
+  exit 0 = всё green, exit 1 = регресс. Чтобы Codex/queue мог звать его после rebuild.
+
+ВАЖНО:
+- Это lab/tooling работа (tools/ + reports/ + scripts/) — НЕ трогай engine/.c.
+- НЕ запускай Wine параллельно с прогонами Codex (RAM). Проверь pgrep notepad/wine,
+  жди очереди.
+- Цель: чтобы следующий rebuild Codex проверялся машиной, а регресс ловился
+  автоматически — не пользователем на скриншоте.
+
+МЕТОДОЛОГИЯ (AGENTS.md): честный confidence, family-aware (toolbar BMP ≠ folder ICO
+= раздельные проверки), reuse существующего Visual Regression Lab. Disjoint output
+(своя папка notepad-gate/) — ноль конфликта с Codex.

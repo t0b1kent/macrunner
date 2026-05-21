@@ -1,0 +1,46 @@
+Кими — визуальный gate построен (scripts/visual-gate-notepad.sh + tools/visual_
+regression/gate_notepad.py + profiles/notepad-visual-profile.json), хорошая работа.
+Но он НИ РАЗУ не прогонялся (reports/visual-regression/notepad-gate/ пусто), и в нём
+два изъяна. Непроверенный gate, который меряет не то, хуже отсутствия gate.
+
+ЗАДАЧА: закалить + провалидировать gate, чтобы Codex мог ему доверять как closure-
+проверке после каждого rebuild. Disjoint (tools/ + scripts/ + reports/), НЕ трогай
+engine/.c. Wine сейчас свободен; в скрипте уже есть wait_for_queue — не запускай
+параллельно с Codex, дай очереди отработать.
+
+ИЗЪЯН 1 — Захват всего экрана vs регионы в % окна.
+Скрипт делает `screencapture -x` (весь экран), а профиль задаёт регионы как % ОКНА
+(toolbar y 2-18%, folder dialog, nc_buttons top-right и т.д.). На full-screen с
+перекрытыми окнами фиксированные bbox попадут не туда → ложные PASS/FAIL.
+Фикс: захватывай ТОЛЬКО окно Notepad++ (по window id / bounds), либо найди bounds
+окна и кропни перед анализом. Регионы должны считаться от прямоугольника ОКНА, не
+экрана. Save As — отдельное окно (folder ICO регион) → учти, что это может быть
+другое top-level окно, не клиентская область главного.
+
+ИЗЪЯН 2 — Запуск не канонический.
+Скрипт зовёт голый wine64 со своим WINEPREFIX. Реальный app запускается через
+scripts/run-notepad-x64.sh (cwd=APPDIR обязателен per AGENTS.md, FreeType DYLD path,
+. config/env.sh, тот же prefix). Иначе gate тестирует ДРУГУЮ среду рендеринга →
+показания не соответствуют тому, что видит пользователь.
+Фикс: запускай Notepad++ ровно как run-notepad-x64.sh (переиспользуй его, напр.
+`scripts/run-notepad-x64.sh --hold` + захват + kill, или вынеси общую launch-логику).
+Тот же cwd, env, prefix, FreeType path.
+
+ВАЛИДАЦИЯ (обязательно — gate без прогона не принят):
+- Прогони gate ОДИН раз на ТЕКУЩЕМ билде → reports/visual-regression/notepad-gate/
+  RESULT.md + RESULT.json + аннотированный скриншот.
+- Это даст ОБЪЕКТИВНОЕ чтение текущего состояния иконок (пользователь сейчас судит
+  глазами по частичным скринам — gate должен заменить это машинным вердиктом).
+- Проверь, что вердикты совпадают с реальностью: если на скрине тулбар серый — gate
+  обязан сказать toolbar FAIL; если папки в Save As цветные — folder PASS. Если не
+  совпадает → пороги/регионы кривые, чини до совпадения. Это и есть валидация.
+- Запиши в RESULT.md per-family: toolbar / folder ICO / Marlett / bands / tofu —
+  PASS/FAIL + метрики (colorful_pixels, black_ratio и т.д.).
+
+ИТОГ: gate, который (а) меряет реальное окно в реальной среде, (б) доказанно
+совпадает с глазами на текущем билде. После этого Codex зовёт
+scripts/visual-gate-notepad.sh после rebuild → exit 0/1 = объективное закрытие/регресс.
+
+МЕТОДОЛОГИЯ (AGENTS.md): family-aware (toolbar BMP ≠ folder ICO — раздельные
+регионы, уже так), честный confidence, reuse run-notepad-x64.sh (не изобретай
+launch заново). НЕ запускай Wine параллельно с Codex.

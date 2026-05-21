@@ -1,0 +1,50 @@
+Кими — отличная работа по Calc Win7. 4 lane уже в swarm/inbox-for-codex/:
+calc-win7-x86-decoder.md, calc-win7-gdiplus.md, calc-win7-mui.md, calc-win7-wic.md.
+
+Задача: ДОЗАКРЫТЬ Calc Win7 pre-audit оставшимися disjoint lane. Это read-only
+static analysis (PE inspection + code audit движка), НЕ запускай Wine, НЕ редактируй
+engine. Calc payload: artifacts/phase-h/win7-calc-rebased/calc.exe (x86, GDI+-heavy).
+
+ПРАВИЛО (swarm/SWARM-ARCHITECTURE.md): каждый lane = ОТДЕЛЬНЫЙ output файл.
+Никогда два lane в один файл. Output → swarm/inbox-for-codex/calc-win7-<lane>.md.
+Идемпотентно: lane готов = файл существует. Не переделывай 4 готовых.
+
+ОСТАВШИЕСЯ LANE (каждый = отдельный файл):
+1. calc-win7-gdi32-blit.md     — gdi32 BitBlt/StretchBlt/AlphaBlend: alpha-композ
+                                  кнопок Calc, premultiply, 32bpp surface path.
+2. calc-win7-gdi32-font.md      — gdi32/win32u font+text: GetTextMetrics, DrawText,
+                                  ClearType/AA для дисплея Calc (reuse Notepad++
+                                  font findings если применимо).
+3. calc-win7-gdiplus-brush.md   — gdiplus brushes/pens: gradient fills кнопок Calc
+                                  (LinearGradientBrush, PathGradient), отдельно от
+                                  уже готового gdiplus-core lane.
+4. calc-win7-shell32-animate.md — shell32 AnimateWindow / AnimateWindowSize COM
+                                  helper (quirk анимации разворота Calc).
+5. calc-win7-com-apartment.md   — COM STA init для Calc (CoInitializeEx apartment,
+                                  WIC/shell COM). Сверь с findings dim06/08 — те же
+                                  ли INFINITE wait риски на этих путях.
+6. calc-win7-shell32-fileinfo.md— shell32 SHGetFileInfo/SHGetImageList (иконки если
+                                  Calc их грузит). Reuse урок two-path icons:
+                                  toolbar comctl32 BMP ≠ folder/dialog cursoricon ICO.
+7. calc-win7-clipboard.md       — clipboard data exchange (Calc copy/paste результата:
+                                  CF_TEXT/CF_UNICODETEXT path).
+
+Формат каждого файла (per swarm brief):
+# Calc Win7 — <lane>
+App: Calc Win7 (x86)
+Status: AUDIT COMPLETE
+## How Calc exercises this subsystem  [какие API, сценарий]
+## Potential issues found
+### Issue N.x — Severity CRIT/HIGH/MED/LOW, Confidence high/med/low
+File: engine/path:line · Symptom (predicted) · Root cause hypothesis · Fix scope
+## Reuse from prior findings  [ссылки на готовые аудиты/баги]
+## What looks OK  [validated paths]
+
+МЕТОДОЛОГИЯ (AGENTS.md): patch-by-evidence (предсказания с confidence), family audit
+(opcode/API покрывает всю семью), честный confidence. Reuse GUI bug catalog
+(Marlett/GetSysColor/comctl32/shell32 из Notepad++) и урок two-path icons.
+
+ВАЖНО: это discovery для СЛЕДУЮЩЕГО приложения (Calc), накапливает inbox пока Codex
+серийно закрывает Notepad++. Не конфликтует с ним (disjoint read-only). Codex
+заберёт когда освободится. KeePass пока НЕ берём — payload не extracted + Notepad++
+ещё не закрыт.

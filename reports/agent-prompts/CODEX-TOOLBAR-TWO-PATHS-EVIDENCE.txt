@@ -1,0 +1,46 @@
+Codex — иконки тулбара Notepad++ снова чёрные/пустые после твоего revert+root-fix.
+Причину я уже локализовал по git diff. Не перебирай band-aids — действуй по evidence.
+
+КОНТЕКСТ (важно — две РАЗНЫЕ иконочные дорожки):
+1. Папки/диалоги (Save As и т.п.) → user32/cursoricon.c, индексные ICO 4/8bpp.
+   Сюда корректно лёг root-fix из аудита Кими (SetDIBits palette expansion). Не трогай.
+2. Тулбар Notepad++ → comctl32/imagelist.c, 32bpp BMP с нулевым alpha + mono-маской.
+   Это ДРУГАЯ семья. cursoricon-фикс ей не помогает.
+
+ЧТО ПРОИЗОШЛО (git diff подтверждает):
+Твой revert убрал из add_with_alpha фоллбэк, чей комментарий дословно описывает
+симптом: "32-bpp color bitmap с нулевым alpha + отдельная mono-маска; сохранение
+как alpha turns transparent pixels into opaque black squares. Fall back to the
+classic image+mask path for that family." Ты счёл его band-aid и откатил —
+но это была защита РОВНО для семьи иконок тулбара. Без неё они снова чёрные.
+
+ШАГ 1 — ПОДТВЕРДИ ЗАМЕРОМ (не правь код пока не увидишь данные):
+Запусти ОДИН bounded прогон Notepad++ (НЕ --duration=0, дай 18s + захват) с уже
+существующим trace macrunner_trace_toolbar_icons включённым. Для каждой иконки
+тулбара зафиксируй: bpp, has_alpha, has_nonopaque_alpha, наличие hbmMask, и какой
+путь выбран (add_with_alpha vs image+mask). Гипотеза: тулбар = 32bpp,
+has_nonopaque_alpha=FALSE (alpha весь 0 или весь 0xff), hbmMask present.
+
+ШАГ 2 — ЕСЛИ замер подтверждает гипотезу:
+Восстанови ИМЕННО тот фоллбэк (zero/opaque-alpha + mask → классический image+mask
+путь), но как ROOT-FIX, а не band-aid: с проверкой возвращаемых значений и family
+audit (покрывает ВСЕ иконки этой семьи, не один индекс). Это не band-aid —
+комментарий и замер доказывают, что это правильный путь для данной BMP-семьи.
+
+ШАГ 3 — ЕСЛИ замер показывает другое (напр. has_nonopaque_alpha=TRUE):
+Тогда корень иной — копай по фактическим данным, не возвращай старый код вслепую.
+
+ДИСЦИПЛИНА ПАМЯТИ (AGENTS.md, обязательно):
+- Перед правкой: git diff engine/wine/dlls/comctl32/imagelist.c + прочитай свои
+  последние записи в docs/ENGINE-CHANGE-JOURNAL.md по этому файлу.
+- Чистый откат своего же revert — git checkout если нужно вернуть к baseline,
+  потом примени корректный путь.
+- После правки: запись в ENGINE-CHANGE-JOURNAL.md (file:line, Type, What, Why,
+  Verify, Status). Старую запись "Revert imagelist icon band-aids" пометь
+  superseded — она ошибочно зачислила рабочий путь в band-aids.
+
+ВЕРИФИКАЦИЯ: bounded прогон + скриншот тулбара И Save As (обе семьи разом).
+Тулбар — цветные иконки; папки — цветные иконки. НЕ заявляй "готово" без скриншота.
+
+ВАЖНО: семья иконок тулбара регрессировала ИЗ рабочего состояния. Цель — вернуть
+рабочее + не сломать папки. Один проход, по замеру. Без спекулятивного перебора.

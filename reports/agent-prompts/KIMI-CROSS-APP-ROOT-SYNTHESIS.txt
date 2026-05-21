@@ -1,0 +1,53 @@
+Кими — Calc Win7 pre-audit закрыт полностью (11 lane в swarm/inbox-for-codex/).
+Отличная работа. Два твоих HIGH-findings оказались ОБЩИМИ корнями с Notepad++ —
+это и есть следующая задача.
+
+ЗАДАЧА: один синтез-отчёт (disjoint, read-only, НЕ запускай Wine, НЕ правь engine).
+Output → swarm/inbox-for-codex/CROSS-APP-ROOT-SYNTHESIS.md (новый файл, не трогай 11
+существующих lane).
+
+ПОЧЕМУ: твои Calc-находки вскрыли оба оставшихся блокера Notepad++ как ОДНИ корни
+на два приложения. Codex серийный — ему нужен ранжированный punch-list + явная
+связь "фикс закрывает семью в ОБОИХ приложениях", а не 11 сырых файлов.
+
+ОТЧЁТ ДОЛЖЕН СОДЕРЖАТЬ 3 ЧАСТИ:
+
+ЧАСТЬ 1 — Triage всего Calc-inbox в ранжированный punch-list.
+Таблица: lane | issue | severity | confidence | file:line | one-line fix scope.
+Сортировка CRITICAL→HIGH→MED→LOW. Это карта для Codex что брать первым.
+
+ЧАСТЬ 2 — Cross-app shared roots (главное).
+Для каждого общего корня: какие приложения задеты + какой симптом в каждом.
+Минимум эти два (проверь, нет ли ещё пересечений среди 11 lane):
+
+  A) DIB/convert_bits non-32bpp → 32bpp чёрные пиксели
+     - Calc:    gdi32-blit Issue 1.1 (win32u/dibdrv/bitblt.c:1112-1149,
+                dibdrv_BlendImage отвергает non-32bpp + AC_SRC_ALPHA)
+     - Notepad++: иконки тулбара (comctl32/imagelist.c add_with_alpha) + folder
+                иконки (cursoricon.c) — та же DIB-конверсия → чёрные квадраты
+     - Это семья StretchDIBits/convert_bits на macOS ARM64. Codex чинит её СЕЙЧАС.
+     - Углуби: точный file:line в win32u/dibdrv где convert_bits молча даёт нули
+       для 24bpp/indexed→32bpp, и рецепт: expand с alpha=0xFF + проверка возврата.
+
+  B) Font defaults / WINEDATADIR не находит share/wine/fonts
+     - Calc:    gdi32-font Issue 2.1 (win32u/font.c:3297 "no font defaults for
+                codepages") — цифры как tofu/Courier
+     - Notepad++: Marlett — кнопки окна (min/max/close пустые квадраты),
+                ENGINE-AUDIT-RENDER-marlett.md — ИДЕНТИЧНЫЙ корень
+     - Углуби: где именно ntdll_get_data_dir()/WINEDATADIR указывает мимо
+       dist-pure-arm64/share/wine/fonts, и рецепт фикса (launcher env vs
+       font enumeration path). Точный file:line.
+
+ЧАСТЬ 3 — Рекомендация Codex по порядку.
+Что фиксить первым чтобы закрыть МАКСИМУМ семей в ОБОИХ приложениях за один проход.
+Явно: "fix A → закрывает иконки Notepad++ (тулбар+папки) И кнопки/фон Calc";
+"fix B → закрывает Marlett-кнопки Notepad++ И цифры Calc".
+
+МЕТОДОЛОГИЯ (AGENTS.md): family audit (один корень покрывает всю семью + все
+приложения), patch-by-evidence (file:line + механизм + confidence), честный
+confidence. Reuse урок two-path icons (toolbar comctl32 BMP ≠ folder cursoricon ICO
+— это РАЗНЫЕ дорожки даже если корень DIB-конверсии общий: убедись что не сливаешь
+их в одну правку).
+
+ВАЖНО: это прямо ускоряет закрытие Notepad++ (текущий блокер) — даёшь Codex
+cross-app карту вместо россыпи. KeePass по-прежнему НЕ берём (payload не extracted).

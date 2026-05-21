@@ -430,6 +430,29 @@ HyperBridge без Rosetta. Когда у нас визуальный/функц
 наш движок отстаёт, и есть доказательство что это рендерится (значит чинимо).
 CrossOver bottle = полный prefix (`Cross/1/drive_c/Program Files/...`, system.reg).
 
+### 🛑 Корректный транслятор гонит СТОКОВЫЙ Wine — рендеринг-патчи Wine = smell
+
+Принцип (следствие Zeroth Principle): правильный HyperBridge должен запускать
+**стоковый Wine БЕЗ правок** (CrossOver гоняет сток через Rosetta — работает). Если
+мы патчим Wine **рендеринг** (comctl32/user32/win32u DIB/uxtheme) чтобы «починить»
+визуал — это **КОСТЫЛЬ вокруг бага транслятора**, не фикс.
+
+Реальный случай (icons, 2026-05-21): накопили +469 строк в comctl32/imagelist.c +
+117 в toolbar.c. Чистый upstream Wine 11.0 на нашем движке → ЧЁРНЫЕ КВАДРАТЫ; тот же
+сток + Rosetta (CrossOver) → правильно. winemac.drv (хост ARM64) исправен (CrossOver
+на нём рисует). Вывод: баг в **HyperBridge** (трансляция x86 DIB/blit), а патчи Wine
+лечили не тот слой.
+
+Правило:
+- Баг рендеринга → подозревай ТРАНСЛЯТОР (decoder/lifter/JIT), не патчи Wine. Тестируй
+  СТОКОВЫЙ Wine: если сток сломан на нашем движке, а у CrossOver/Rosetta ок → баг в
+  HyperBridge. Чини транслятор, СТОК = цель валидации.
+- Легитимны: `ntdll/*` (HyperBridge↔Wine интеграция: loader/signal/macrunner_hb/
+  virtual), winemac.drv (хостовый драйвер). Это НЕ костыли.
+- Рендеринг-патчи (comctl32/user32/win32u/uxtheme) = под подозрением. После фикса
+  транслятора — выкинуть к стоку (ноль расхождений с upstream).
+- Reference корректной x86→ARM трансляции: sse2neon (SSE→NEON), FEX-Emu, box64.
+
 ### 🛑 "Verified" = РЕАЛЬНОЕ окно, не прокси-метрика (реальный ложный PASS)
 
 Случай (icons, 2026-05-21): агент записал иконки тулбара как `verified` на основе

@@ -53,6 +53,18 @@ export MACRUNNER_NPP_X64_DIR MACRUNNER_NPP_X64_APP
 : "${DYLD_FALLBACK_LIBRARY_PATH:=$MACRUNNER_HOMEBREW_LIBRARY_PATHS:/usr/local/lib:/usr/lib}"
 export MACRUNNER_HOMEBREW_LIBRARY_PATHS DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
 
+# Wine launch timeouts — щедрые, но ОГРАНИЧЕННЫЕ (не бесконечные).
+# Зачем: при тяжёлой трассировке (SIMD-дампы, opcode-fault, block limit 10M) Wine
+# работает в разы медленнее, и дефолтные таймауты (ready=30s, wineserver=20s,
+# wineboot=60s) ловят медленные прогоны как "timeout" — Codex теряет на этом время.
+# Здесь заданы раз и навсегда для ВСЕХ скриптов (run-notepad-x64.sh и т.д.).
+# НЕ бесконечные намеренно: настоящий deadlock должен всё же падать за пару минут,
+# а не висеть вечно. Переопределяемы (можно поднять для совсем тяжёлой трассы).
+: "${MACRUNNER_NPP_AFTER_LAUNCH_READY_SECS:=240}"   # окно/готовность app (было 30)
+: "${MACRUNNER_WINESERVER_WAIT_SECS:=120}"          # ожидание wineserver (было 20)
+: "${MACRUNNER_WINEBOOT_WAIT_SECS:=180}"            # wineboot init/update (было 60)
+export MACRUNNER_NPP_AFTER_LAUNCH_READY_SECS MACRUNNER_WINESERVER_WAIT_SECS MACRUNNER_WINEBOOT_WAIT_SECS
+
 # Удобные shortcuts для скриптов
 macrunner_bottle() {
     # Usage: macrunner_bottle <name> → echoes the path, creates dir

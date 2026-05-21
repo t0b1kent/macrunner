@@ -1,0 +1,47 @@
+СМЕНА ЗАДАЧИ. Диагностика сошлась: баг иконок — в HyperBridge (транслятор врёт x86
+SIMD/blit инструкцию → чёрные пиксели), НЕ в Wine/comctl32. Поэтому тонкий тюнинг
+визуального gate сейчас низкоценен (мы на стоковом Wine, всё чёрное пока транслятор
+не починен). Перенаправляю.
+
+Root: /Volumes/MacOS/MacRunner. READ-ONLY по движку (Codex — ЕДИНСТВЕННЫЙ кто правит
+HyperBridge; ты только аудируешь/документируешь, НЕ редактируешь .c). Не запускай
+Wine параллельно с Codex.
+
+=== ШАГ 0 (быстро, сохранить для будущей валидации) ===
+Дозахвати CrossOver golden (раньше был SKIP): запусти CrossOver Notepad++
+(/Volumes/MacOS/Cross/Notepad++.app или cxstart по бутылке 1), window-capture →
+reports/visual-regression/crossover-golden/notepad-main.bmp (+ тулбар). Это эталон
+для финальной валидации, КОГДА Codex починит транслятор (сток должен стать = CrossOver).
+Не тюнингуй пороги сейчас — отложи.
+
+=== ГЛАВНАЯ ЗАДАЧА — аудит SIMD-трансляции HyperBridge (read-only, family-audit) ===
+Цель: пока Codex ищет ОДНУ blit-инструкцию, ты систематически находишь ВСЕ
+подозрительные SSE/SSE2/MMX трансляции — атлас, чтобы закрыть всю семью, не только
+иконки.
+
+Файлы движка (читать, НЕ править): engine/hyperbridge/src/hb_decode_x86.c,
+hb_decode_x64.c, hb_interpreter.c, hb_jit.c (+ include/*.h).
+
+Что сделать:
+1. Перечисли, какие SSE/SSE2/MMX инструкции HyperBridge ДЕКОДИРУЕТ и как ТРАНСЛИРУЕТ
+   (особенно blit/alpha-blend семья): packuswb, packsswb, punpcklbw/punpckhbw,
+   pmullw, pmaddwd, psrlw/psllw, paddusb, pavgb, pmovmskb, movdqa/movdqu, pshufb.
+2. Для КАЖДОЙ сверь нашу трансляцию (NEON-эквивалент / интерпретация) с:
+   - **sse2neon** (github.com/DLTcollab/sse2neon) — корректный NEON для каждого SSE.
+   - **Intel SDM** — точная семантика (saturation/округление/флаги).
+   - FEX-Emu/box64 при сомнении.
+3. Флаги: ОТСУТСТВУЕТ (не декодируется) | НЕВЕРНАЯ saturation/rounding | partial-
+   register/alignment проблема | OK.
+4. Особый фокус — saturation: packuswb/packsswb (SSE saturate vs NEON vqmovun) —
+   главный подозреваемый на чёрные пиксели в alpha-blend.
+
+ВЫХОД: reports/engine-audit/HYPERBRIDGE-SIMD-AUDIT.md — таблица:
+Инструкция | декодируется? | наша трансляция | sse2neon/SDM эталон | вердикт | риск |
+комментарий. + сводка: топ-кандидаты на blit-баг (для Codex).
+
+ЦЕННОСТЬ: Codex чинит иконочную инструкцию сейчас; твой атлас даёт ему остальные
+кандидаты + находит будущие баги (видео/игры/3D тоже бьют SIMD). Это family-audit
+транслятора, не косметика. Связано с AGENTS.md "корректный транслятор гонит сток".
+
+МЕТОД (AGENTS.md): read-only, честный confidence, disjoint output, source-search-
+first, не конфликтуй с Codex (он правит, ты аудируешь).

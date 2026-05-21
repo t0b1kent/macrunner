@@ -1,0 +1,31 @@
+Codex — твой STEP-0 (20:40) был НЕВАЛИДНЫЙ: ты восстановил "tracked baseline"
+comctl32, а он УЖЕ с нашими патчами (потому отличий мало). Нужен ЧИСТЫЙ upstream.
+
+ГОТОВО ДЛЯ ТЕБЯ: я скачал чистый upstream Wine 11.0 (наша точная база) и сохранил:
+- reports/upstream-wine-11.0-reference/comctl32/imagelist.c (3856 строк, сток)
+- reports/upstream-wine-11.0-reference/comctl32/toolbar.c (7173 строки, сток)
+ФАКТ расхождения: наш imagelist.c = +469 строк к стоку, toolbar.c = +117. Сток
+рендерит правильно БЕЗ них (CrossOver = доказательство).
+
+НАСТОЯЩИЙ ТЕСТ:
+1. Сохрани наши (git уже трекает; запомни HEAD, чтобы вернуть точно).
+2. Скопируй ЧИСТЫЕ upstream поверх наших:
+   cp reports/upstream-wine-11.0-reference/comctl32/imagelist.c engine/wine/dlls/comctl32/imagelist.c
+   cp reports/upstream-wine-11.0-reference/comctl32/toolbar.c   engine/wine/dlls/comctl32/toolbar.c
+3. Собери comctl32 → запусти Notepad++ → сними тулбар РЕАЛЬНОГО окна (не off-screen).
+
+ВЕРДИКТ (вынеси САМ, не "пусть юзер посмотрит"):
+- Сток рисует ВСЕ иконки правильно (тулбар полный, disabled серые)? → наши 469+117
+  строк И ЕСТЬ баг. Стратегия: НАЧАТЬ СО СТОКА, добавить обратно ТОЛЬКО реально нужное
+  (HyperBridge DIB) — а не громоздить патч на патч. Это огромное упрощение.
+- Сток ВСЁ РАВНО сломан (пустые/чёрные слоты)? → корень ГЛУБЖЕ comctl32: win32u
+  (dib/bitblt/cursoricon), winemac.drv, HyperBridge. comctl32-патчи были band-aids
+  поверх. Трасса нижнего слоя, чини там.
+4. ВЕРНИ наши файлы: git checkout engine/wine/dlls/comctl32/{imagelist,toolbar}.c
+   (или к запомненному HEAD). Это диагностика, не финальная правка.
+
+ЗАПИШИ В ЖУРНАЛ: "pure upstream-11.0 comctl32 на HyperBridge → [все иконки рисует /
+не рисует]" + вердикт где корень + скриншот. Это определит ВСЮ стратегию.
+
+ВАЖНО: win32u тоже патчен у нас — даже если сток comctl32 не идеален, сравни СТЕПЕНЬ:
+у стока больше иконок? меньше чёрных? Это градиент к корню. Пруф = реальное окно.

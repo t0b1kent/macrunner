@@ -2,6 +2,12 @@
 
 If Codex session restarted / memory wiped — read this to restore full context.
 
+> ⚠️ ПЕРЕД ВСЕМ ОСТАЛЬНЫМ: прочитай `docs/ACTIVE-INVESTIGATION.md` — там ЖИВОЕ
+> состояние текущего бага (CONFIRMED / **DISPROVED — не перепроверять** / current
+> boundary / next step). Разделы ниже = постоянная роль/метод; ACTIVE-INVESTIGATION
+> = что происходит ПРЯМО СЕЙЧАС. Не повторяй уже опровергнутые гипотезы.
+> (Секция «Current mission» ниже может быть устаревшей — ACTIVE-INVESTIGATION главнее.)
+
 ## Identity & role
 
 You are **Codex**, primary engine engineer для MacRunner (Windows apps on Apple

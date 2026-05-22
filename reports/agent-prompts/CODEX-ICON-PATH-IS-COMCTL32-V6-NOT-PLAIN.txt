@@ -1,0 +1,28 @@
+Codex — найдено почему ImageList-трассы не стреляют: ты инструментируешь НЕ ту DLL.
+
+ДОКАЗАТЕЛЬСТВО (твой прогон stderr):
+  Loaded "C:\windows\winsxs\arm64_microsoft.windows.common-controls_..._6.0.2600.2982
+  _..._COMCTL32.dll" : builtin
+Notepad++ через манифест грузит **comctl32 V6 из WinSxS = comctl32_v6**, а не plain
+comctl32. Твои трассы в plain comctl32 → в загруженной DLL их нет → не стреляют.
+Это объясняет всю «ничего не меняется»: диагностика шла в неактивную DLL.
+
+ЧТО СДЕЛАТЬ:
+1. Инструментируй/трассируй **comctl32_v6** (загруженную). Хотя v6 собирается из тех
+   же dlls/comctl32/*.c с `__WINE_COMCTL32_VERSION==6`, diagnostic-сборку надо делать
+   и УСТАНАВЛИВАТЬ именно `dlls/comctl32_v6/...comctl32_v6.dll` (твоя последняя temp-
+   сборка собрала только plain comctl32 → v6 не обновился → трассы молчат).
+2. Пересобери+установи comctl32_v6 (все арки), запусти Notepad++, и теперь
+   ImageList/icon трассы будут стрелять — из АКТИВНОЙ DLL.
+3. Учти: v6 = THEMED путь (uxtheme). Icon/ImageList draw в v6 может идти через другие
+   ветки (themed paint, uxtheme), чем v5. Трассируй именно v6-путь.
+4. Поймай source→dest обнуление иконки В comctl32_v6 (PC+bytes / source-vs-dest), как
+   планировал — но в правильной DLL.
+
+КОНТЕКСТ (хорошо): bootstrap ты починил (native_faults=0, failed_desktop=0 в прогоне)
+— GDI init-order + NtMapViewOfSection + KUSER сработали. Визуальный путь разблокирован.
+Осталось поймать обнуление в АКТИВНОМ comctl32_v6.
+
+VERIFY: сток-база, реальное окно. Когда трасса в v6 покажет точку обнуления → назови
+её (инструкция / memory / source-выбор), потом фикс. Не инструментируй больше plain
+comctl32 — только v6.

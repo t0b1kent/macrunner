@@ -1,0 +1,74 @@
+Codex — чистая сток-база зафиксирована, окно-капча валидна. Закрываем остаток визуала,
+потом берём пачку P0-стабильности. Один проход = одна семья/слой, evidence-driven.
+
+=== ТЕКУЩЕЕ СОСТОЯНИЕ (твой же gate-run) ===
+- Капча валидна: window-cropped BMP 1784x1210 (не full-screen), окно появляется поздно
+  (~80s) — старый 40s таймаут был багом харнесса, уже исправлен (VG_PROBE_TIMEOUT=300).
+- comctl32 / comctl32_v6 — обратно СТОК (marker_strings=0), временные ImageList-трассы убраны.
+- Bootstrap чист: native_faults=0, no unsupported opcode, no desktop-queue failure.
+- Overall: FAIL, активные пункты:
+  1. marlett_center FAIL — отсутствуют center-глифы в caption-слотах [0,1,2]
+     (min/max/close в заголовке окна).
+  2. folder_icons SKIP — диалог Save As не открыт в gate (не протестировано, НЕ proof).
+  3. toolbar FAIL — black_ratio=0.274 > max=0.25, colorful=17882 (рисуется, но margin).
+
+=== ЗАДАЧА A — marlett_center глифы [0,1,2] (главный явный FAIL) ===
+Это caption-кнопки окна (min/max/close), рисуются Marlett-глифами через win32u nonclient
+paint, НЕ через comctl32. На сток-базе это изолированный FAIL — значит причина в одном из:
+- Marlett-шрифт не резолвится / глиф не растеризуется (font path / freetype / GDI glyph);
+- nonclient caption paint берёт не тот источник глифа (NC_DrawCaption / win32u);
+- транслятор-инструкция в glyph blit/rasterize обнуляет результат (как было с иконками).
+ПОРЯДОК: сначала determine — рисуется ли глиф вообще (есть данные, но не в слотах) ИЛИ
+данные нулевые. Source-search-by-name по caption/Marlett/NC paint в win32u, потом трасса
+ТОЛЬКО для подтверждения точки обнуления. Назови точку (инструкция / память / source-выбор),
+потом фикс — в ПРАВИЛЬНОМ слое (translator decode/lift/interp ИЛИ host-интеграция win32u),
+НЕ рендеринг-костыль.
+
+=== ЗАДАЧА B — folder_icons: убрать SKIP, получить реальный proof ===
+Gate сейчас не открывает Save As → folder_icons не тестируется (SKIP ≠ PASS).
+Доработай visual-gate harness (scripts/visual-gate-notepad.sh): после готовности окна
+открыть Save As (Ctrl+S / меню), дождаться диалога, снять капчу области с папками/иконками.
+Только тогда folder_icons даёт настоящий verdict. Это harness-работа (tools/scripts), не engine.
+
+=== ЗАДАЧА C — toolbar black_ratio 0.274 vs 0.25 ===
+colorful=17882 — тулбар рисуется. Подтверди evidence-ом: 0.274 это серые disabled-кнопки
+(легитимный Win-вид), а не дефект рендера. Если это disabled-state grays — НЕ трогай рендер,
+скорректируй порог gate (disabled-aware), задокументируй почему. Если чёрный = реальный
+дефект — трасса до точки, фикс в правильном слое. НЕ подгоняй порог чтобы скрыть баг.
+
+=== ЗАДАЧА D — после визуала: пачка P0 стабильности (cross-arch ABI) ===
+Источник с file:line: reports/engine-audit/CROSS-ARCH-ABI-BOOTSTRAP-MAP.md,
+секция "## Doaudit: shared-addr/ABI остаток (Cline)". P0 (тот же класс, что KUSER/
+NtMapViewOfSection, которые ты уже закрыл):
+  - GdiBatchCount → TEB64 carrier-pointer: dlls/ntdll/unix/virtual.c:4365,
+    dlls/ntdll/unix/server.c:1714, dlls/win32u/winstation.c:809, ntdll_misc.h:107,
+    unix_private.h:72. Риск: ULONG GdiBatchCount несёт TEB64*; неверный offset/ширина →
+    cast в чужую память на ARM64 host. Гипотеза: централизовать wow-teb derivation
+    (один источник истины) + compile-time layout assertions + runtime guard каноничности
+    адреса перед deref.
+  - PEB64 write GdiSharedHandleTable mirror: dlls/win32u/gdiobj.c:576-578, :583,
+    include/winternl.h:1021. Тот же класс, что был NULL GdiSharedHandleTable. Гипотеза:
+    invariant-check chain перед записью (GdiBatchCount!=0, teb64->Peb!=0, range/alignment),
+    лог деградации + безопасный fallback без mirror-write.
+  - Compact-ABI gating dual-prototype NtMapViewOfSection: include/winternl.h:4631,
+    :4700-4703, dlls/ntdll/unix/virtual.c:6709-6713, unix_private.h:81. Ты патчил ОДНО
+    место — Cline нашёл остальные prototype/contract расхождения. Гипотеза: явный
+    boundary-wrapper (как win32u_map_view_of_section) + запрет direct calls на
+    ABI-sensitive API в host-ARM путях.
+P1 (после P0): унификация TEB64 access-wrappers (winstation.c:882-888,
+virtual.c:3882-3895), wow_peb derivation cross-check (server.c:1716, virtual.c:4371,
+locale.c:92-97), NtMapViewOfSectionEx контракт (winternl.h:4705, virtual.c:6800,
+server.c:637).
+
+=== ПРИНЦИП (держать строго) ===
+- Цель: СТОКОВЫЙ Wine-рендеринг + корректный транслятор + host-интеграция = всё рисуется
+  БЕЗ comctl32-патчей (как CrossOver на стоке). НЕ скатывайся в патч comctl32/comctl32_v6.
+- Фикс в правильном слое: мистрансляция → HyperBridge decode/lift/interp/jit (вся семья,
+  весь стек, тесты+oracle за один проход); ABI/память/init-order → host (ntdll/win32u).
+- Временные трассы = только для локализации, после — УБРАТЬ, слой остаётся стоковым.
+- Verified = РЕАЛЬНОЕ окно на экране, НЕ off-screen CG render и НЕ прокси-метрика.
+- Память: каждое изменение → docs/ENGINE-CHANGE-JOURNAL.md (append) + git diff видимый.
+- ОДНА семья/слой за проход. НЕ трогай файлы, которые сейчас правит другой агент.
+
+ПОРЯДОК: A (marlett_center, явный FAIL) → B (folder_icons proof) → C (toolbar confirm) →
+D (P0 ABI пачкой). После A-C — реальный on-screen verify, не прокси.

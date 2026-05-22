@@ -1,0 +1,40 @@
+Ты — агент-аудитор MacRunner. READ-ONLY по движку + ОДИН write_to_file. .clinerules:
+НИКАКИХ heredoc / незакрытых кавычек / бэктиков в shell. cd /Volumes/MacOS/MacRunner.
+Файл пиши ТОЛЬКО write_to_file. Задача BOUNDED (НЕ «вообще все пути» — это подвесит).
+
+=== ЗАЧЕМ ===
+Строим карту «визуальный/функциональный элемент Notepad++ → путь в Wine (file:line) →
+примитив, важный для HyperBridge (copy/decode/blit/glyph)». Цель: когда probe/трасса
+скажет «данные чёрные на стадии X», мы СРАЗУ знаем слой и куда ставить точечный probe —
+без тяжёлого smoke. Это сокращает поиск, не отменяет рантайм-проверку.
+
+=== SCOPE: ТОЛЬКО эти элементы (конечный список, не больше) ===
+1. toolbar icons (producer DIB) — уже частично: imagelist.c:285 GetDIBits → add_dib_bits.
+2. folder/file icons (Open/Save dialog) — shell32/comdlg32 icon path.
+3. scrollbar — отрисовка ползунка/стрелок.
+4. tab control — вкладки.
+5. status bar / bottom bands — нижняя полоса.
+6. menu popup + dialog create — см. уже готовую reports/engine-audit/MENU-COMMAND-DISPATCH-AUDIT.md (не дублируй, сошлись).
+(marlett caption — SKIP, оказался артефактом захвата macOS-titlebar, НЕ включать.)
+
+=== ДЛЯ КАЖДОГО ЭЛЕМЕНТА (чистое чтение, grep + read) ===
+- Источник данных: откуда берётся картинка/глиф (PE resource / PNG / GDI primitive / шрифт).
+- Путь в Wine: ключевые file:line от загрузки до финального blit/present
+  (user32/win32u/comctl32/comctl32_v6/gdi/dibdrv).
+- Примитив(ы), важные для транслятора: где идёт массовое копирование/декод/блит пикселей
+  (memcpy/SetDIBits/StretchDIBits/AlphaBlend/glyph raster) — кандидаты на missing-opcode.
+- Где наш форк трогал этот путь (грепни MACRUNNER-маркеры + сверь с docs/ENGINE-CHANGE-JOURNAL.md).
+- Где логично ставить точечный probe (одна-две точки), а не тяжёлый smoke.
+
+=== ВЫХОД (write_to_file, ОДИН файл) ===
+reports/engine-audit/NPP-RENDER-PATH-ATLAS.md
+- Таблица: элемент | источник | путь Wine (file:line) | критичный примитив | форк трогал? | точка probe.
+- Раздел «Общие примитивы»: какие copy/decode/blit-примитивы используются НЕСКОЛЬКИМИ
+  элементами (если один из них мистранслирован — чинит сразу несколько → семейный фикс).
+- Раздел «Что probe проверит вместо трассы» (по приоритету).
+
+=== ГРАНИЦЫ ===
+READ-ONLY, только grep/read + ОДИН write_to_file. БЕЗ Wine/сборок/многострочного shell.
+Если велико для остатка токенов — сделай первые 2-3 элемента ПОЛНОСТЬЮ и запиши, пометь
+остальные TODO. НЕ зависай, НЕ выдумывай file:line — только реально найденное.
+Ценность: breadth-карта, чтобы фиксы шли в общий слой (HyperBridge/host), а не подгонкой.

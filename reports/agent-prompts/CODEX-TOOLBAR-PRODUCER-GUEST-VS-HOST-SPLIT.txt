@@ -1,0 +1,49 @@
+Codex — твой pinpoint доказал: toolbar source DIB-биты уже чёрные ДО ImageList
+(add_dib_bits_raw colorful=0, 32/32). Present/draw исключены. Следующий слой —
+ПРОДЮСЕР бит. Вот решающая развилка с точными координатами, чтобы добить за один заход.
+
+=== ЧТО ИЗВЕСТНО ТОЧНО ===
+- comctl32/imagelist.c:285: биты в add_dib_bits приходят из GetDIBits(hdc, hbmImage, ...).
+  Значит источник = hbmImage, который создаёт/заполняет САМ Notepad++ (LoadImage/
+  LoadBitmap/CreateDIBSection + SetDIBits из его ресурса/PNG тулбара).
+- add_dib_bits_raw уже чёрный → либо (G) hbmImage чёрный (продюсер на стороне гостя), либо
+  (H) GetDIBits/host DIB-store отдаёт чёрное при цветном hbmImage.
+
+=== РЕШАЮЩАЯ РАЗВИЛКА (G гость vs H хост) — одна трасса ===
+Поставь временную трассу на ВХОДЕ host-DIB продюсера в win32u и сравни цвет ВХОДЯЩИХ
+исходных бит (от гостя/NPP) с тем, что потом читает GetDIBits:
+  - dlls/win32u/dib.c:887  NtGdiSetDIBitsToDeviceInternal (вход source bits)
+  - dlls/win32u/dib.c:658  set_dib_bits / SetDIBits path
+  - dlls/win32u/dib.c:1471 NtGdiCreateDIBSection (если NPP грузит через DIBSection)
+  - (для readback) GetDIBits host-путь dibdrv get
+Сними a_colorful/a_black на ВХОДЕ для тех же 32 toolbar-картинок (16x16).
+
+ИНТЕРПРЕТАЦИЯ:
+- Если входящие в SetDIBits/CreateDIBSection биты ЦВЕТНЫЕ, а GetDIBits/readback ЧЁРНЫЙ →
+  (H) host-side win32u DIB store/get обнуляет → фикс в host-интеграции (win32u dib/dibdrv),
+  как gdi_init/Map-wrapper. НЕ рендер-костыль.
+- Если входящие биты УЖЕ ЧЁРНЫЕ → (G) гость (NPP) произвёл чёрное ещё до Wine → значит
+  мистрансляция в загрузке/декоде/копировании изображения у NPP → HyperBridge. Тогда:
+    * привяжи к КОНКРЕТНОМУ PC/опкоду/memcopy-примитиву (какой код NPP заполняет буфер:
+      CRT memcpy/memset, PNG/BMP decode loop, SIMD-копирование);
+    * добей ВСЮ семью + весь стек (decode->IR->lift->interp->jit->тесты->oracle/FileCheck);
+    * это тот же класс, что REP MOVS/CMPS/LODS, но конкретный примитив ещё не покрыт.
+
+=== ПОРЯДОК ===
+1. Трасса на входе host-DIB продюсера (G vs H) — это РЕШАЕТ слой за один прогон.
+2. По результату — фикс в правильном слое (host win32u dib ИЛИ HyperBridge опкод/семья).
+3. Verify на РЕАЛЬНОМ окне: toolbar colorful_pixels > 0 on-screen, не off-screen CG,
+   не прокси. Трассы убрать после локализации, баз остаётся стоковой.
+
+=== ОПОРА ===
+- reports/phase-h/MILESTONE/TOOLBAR-BLACK-ONSCREEN-PINPOINT-20260523.md (твой вердикт).
+- reports/engine-audit/HYPERBRIDGE-SIMD-AUDIT.md / HYPERBRIDGE-MEMCOPY-AUDIT.md — если G,
+  свериться какие copy/decode/SIMD примитивы ещё не покрыты (кандидаты в продюсере).
+- Прошлые трассы «PE icon bits colorful до DIB» были про ДРУГОЙ путь (user32 cursoricon/
+  folder), НЕ про NPP toolbar bitmap — здесь продюсер пере-трассируется заново.
+
+=== ПРИНЦИП ===
+Цель: стоковый Wine + корректный транслятор + host-интеграция = иконки рисуются БЕЗ
+comctl32-патчей. Verified = реальный пиксель в окне. Журнал + git diff на каждое изменение.
+folder_icons/menu — ОТДЕЛЬНЫЙ корень (не present-объединение, как выяснилось); вести
+после toolbar по MENU-COMMAND-DISPATCH-AUDIT.md. P1 ABI — фоновая добивка.

@@ -1,0 +1,29 @@
+Codex — апдейт к toolbar-black (CODEX-TOOLBAR-BLACK-ONSCREEN-PINPOINT-CORE.txt).
+Dispatch-карта готова, и есть гипотеза, объединяющая ДВА блокера в один фикс.
+
+ГОТОВО: reports/engine-audit/MENU-COMMAND-DISPATCH-AUDIT.md
+- Вся цепочка меню/команд/диалога — ЧИСТЫЙ СТОК (нет fork-маркеров в win32u/menu.c,
+  message.c, user32/dialog.c, comdlg32/filedlg.c, server.c). Дефект НЕ в логике dispatch.
+- folder_icons-хелпер шлёт cross-process PostMessageA (обходит синтетику ввода).
+
+ГИПОТЕЗА ОБЪЕДИНЕНИЯ (проверь — может закрыть оба разом):
+  toolbar-black S1 = «биты есть в DC, но не доходят до видимой surface (present/flush)».
+  Диалог Open/Save, возможно, СОЗДАЁТСЯ, но его window-surface ТОЖЕ не презентуется на
+  экран = ТОТ ЖЕ present/flush-баг. Тогда «dialog not detected» — артефакт детекции
+  невидимого окна (как marlett был артефактом захвата), и ОДИН фикс host present/flush
+  закрывает И toolbar-black, И folder_icons.
+
+ЧТО СДЕЛАТЬ (дёшево, высокая отдача — сделай в рамках S1/S2-разделения toolbar):
+1. Когда будешь различать toolbar S1 (present) vs S2 (blit-обнуление) — параллельно
+   подтверди present-гипотезу на диалоге: PostMessage NPPM_MENUCOMMAND напрямую, трасса
+   на comdlg32 GetOpenFileNameW вход + user32/dialog.c:444 DIALOG_CreateIndirect
+   (HWND ret + IsWindowVisible).
+2. Если оба симптома = «контент нарисован/окно создано, но не видно на экране» → корень
+   ОБЩИЙ (win32u surface flush -> winemac.drv present). Чини его ОДИН раз в host-слое,
+   проверь, что закрылись оба: toolbar-иконки И появление Open-диалога.
+3. Если toolbar = S2 (blit-обнуление в themed v6), а диалог = present — это РАЗНЫЕ корни,
+   тогда веди их раздельно (toolbar приоритет, диалог следующим).
+
+ПРИНЦИП (без изменений): фикс в правильном слое (translator ИЛИ host present/flush),
+НЕ патч comctl32/comdlg32/menu. Verified = реальный пиксель/видимое окно, не «detected»
+и не off-screen CG. Трассы убрать после локализации. Журнал + git diff на каждое изменение.

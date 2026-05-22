@@ -30,4 +30,14 @@ ILC_MASK)+ImageList_AddIcon → GetDIBits [stage imagelist_after_add]. Секу�
 - обе стадии цветные, окно чёрное → root позже (draw/themed v6/present).
 
 Не хардкодить 0x05ed. Не запускать /review пока probe бежит.
+
+## ПОСЛЕ ФИКСА: проверь cross-element (семейный каскад)
+По reports/engine-audit/NPP-RENDER-PATH-ATLAS.md эти элементы сидят на ОБЩИХ примитивах:
+- DIB ingest/extract (GetDIBits/SetDIBits/StretchDIBits) — toolbar + folder/file + icon.
+- Mask/ROP blit (BitBlt SRCAND/SRCPAINT/SRCCOPY + PATCOPY) — toolbar + tab + scrollbar.
+- ImageList compose (comctl32/imagelist.c) — toolbar + tab + shell list/tree icons.
+Когда probe назовёт слой и ты починишь — НЕ останавливайся на toolbar: проверь, что тот же
+фикс закрыл folder-иконки (cursoricon.c:879 indexed→32bpp) и tab (imagelist transparent-mask
+branch). Если фикс в HyperBridge/host общего примитива — он обязан закрыть семью разом.
+Это критерий «не подгонка»: один корень → несколько зелёных элементов одним фиксом.
 folder_icons/menu — ОТДЕЛЬНЫЙ корень (см. reports/engine-audit/MENU-COMMAND-DISPATCH-AUDIT.md).

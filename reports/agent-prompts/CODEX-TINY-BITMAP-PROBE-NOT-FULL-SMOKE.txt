@@ -1,0 +1,58 @@
+Codex — СТОП: не гоняй полный Notepad++ smoke ради BITMAP_Load/producer-трейса. Это
+слишком дорого и недетерминированно (последний smoke не дошёл до toolbar path, поймал
+только OEM 0x7fe3). Сделай МАЛЕНЬКИЙ targeted probe — секунды вместо 45 минут.
+
+=== НОВОЕ ПРАВИЛО ===
+Full Notepad++ smoke БОЛЬШЕ НЕ основной способ валидировать producer DIB-бит тулбара.
+Сначала tiny probe изолирует слой; полный smoke — только ОДИН раз для финального
+визуального подтверждения ПОСЛЕ того, как probe назвал слой.
+
+=== ЗАДАЧА: tiny x64 probe ===
+Файл: reports/phase-h/MILESTONE/smoke-tools/bitmap_load_probe.c
+Собрать тем же llvm-mingw x64 target и запустить через dist-pure-arm64 wine (тот же
+HyperBridge+Wine путь), bounded duration, БЕЗ desktop/readiness/toolbar-окна.
+
+Probe должен (точный путь, НЕ угадывать ID):
+1. Открыть notepad++.exe как модуль с ресурсами:
+   LoadLibraryExW(npp_path, NULL, LOAD_LIBRARY_AS_DATAFILE) — путь как аргумент.
+2. ПЕРЕЧИСЛИТЬ реальные ресурсы, не хардкодить 0x05ed:
+   - EnumResourceNamesW(h, RT_BITMAP, ...) — все BITMAP-ресурсы.
+   - EnumResourceTypesW — заодно отметить, есть ли RT_RCDATA/PNG (если тулбар грузится
+     как PNG/32bpp, классический LoadImage(IMAGE_BITMAP) НЕ воспроизведёт путь — это
+     важный результат сам по себе, записать его).
+3. Для каждого BITMAP-ресурса воспроизвести ИМЕННО тот путь, что использует BITMAP_Load:
+   - LoadImageW(h, MAKEINTRESOURCEW(id), IMAGE_BITMAP, 0, 0, LR_DEFAULTCOLOR|LR_CREATEDIBSECTION)
+   - GetObjectW(hbmp, sizeof(BITMAP), &bm) — width/height/bpp.
+   - GetDIBits в 32bpp top-down DIB → посчитать colorful / nonwhite / black пиксели.
+   - Если producer внутри делает StretchDIBits в hdcImage перед SelectObject(original) —
+     воспроизвести и снять stats ДО (resource_bits) и ПОСЛЕ (hbitmap_after_stretch).
+   - Печать: MR_BITMAP_PROBE resid=<id> hbitmap=<h> w=<> h=<> bpp=<> colorful=<>
+     nonwhite=<> black=<> stage=<resource_bits|after_stretch>
+4. Acceptance probe:
+   - попадает в toolbar/BITMAP-ресурсы КАЖДЫЙ запуск (через enumerate);
+   - печатает resource_bits и (если есть) after_stretch stats;
+   - завершается за секунды; НЕ зависит от FULL_UI_READY / создания toolbar-окна.
+
+=== РЕШЕНИЕ ПО РЕЗУЛЬТАТУ (слой за один прогон) ===
+- resource_bits ЦВЕТНЫЕ, after_stretch/GetDIBits ЧЁРНЫЕ → root = host user32/win32u
+  bitmap producer/readback (StretchDIBits/GetDIBits/DIBSection store) → фикс host-win32u.
+- resource_bits УЖЕ ЧЁРНЫЕ → root = resource load / guest decode / HyperBridge memory-copy
+  → привязать к PC/опкоду/memcopy-семье, добить весь стек (decode→IR→lift→interp→jit→
+  тесты→oracle/FileCheck), как REP MOVS/CMPS/LODS.
+- probe ЦВЕТНОЙ, но NPP toolbar всё равно чёрный → root ПОЗЖЕ (app/comctl32-специфичный
+  путь), НЕ BITMAP_Load → вернуться к comctl32 ingest с этим знанием.
+- enumerate показал, что тулбар = PNG/RCDATA, а не RT_BITMAP → producer другой (Gdiplus/
+  свой декодер) → перенацелить probe на тот API.
+
+=== УСКОРЕНИЕ ОКРУЖЕНИЯ (применить РЕАЛЬНЫЕ свои гейты) ===
+- Отключи лишний trace/CG/диалоги/шрифты в smoke на время probe-стадии (минимальная
+  trace-поверхность). Мастер предлагает в духе: HB image-API trace off, smoke CG toolbar
+  off, skip dialogs, skip font — применяй те var-имена, что реально существуют у тебя.
+- НЕ запускай /review, пока probe/smoke бежит (конкуренция за терминал/ресурсы).
+- Полный NPP smoke — ОДИН раз, только для финального on-screen подтверждения после фикса.
+
+=== ПРИНЦИП ===
+Verified = реальный пиксель. Фикс в правильном слое (host-win32u ИЛИ HyperBridge), без
+comctl32-костылей. Трассы временные, убрать после локализации. Журнал + git diff на каждое.
+Опора: reports/phase-h/MILESTONE/TOOLBAR-BLACK-ONSCREEN-PINPOINT-20260523.md (твой вердикт:
+add_dib_bits_raw чёрный, imagelist.c:285 берёт из GetDIBits(hbmImage)).

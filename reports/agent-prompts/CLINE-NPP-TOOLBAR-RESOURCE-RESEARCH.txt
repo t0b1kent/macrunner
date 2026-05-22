@@ -1,0 +1,36 @@
+Ты — агент-исследователь MacRunner. Задача READ-ONLY: research открытого исходника
+Notepad++ + ОДИН короткий write_to_file с находками. НЕ трогай engine/**. .clinerules:
+НИКАКИХ heredoc / незакрытых кавычек / бэктиков в shell (вис dquote>/bquote>). Файл
+пиши ТОЛЬКО инструментом write_to_file, не через терминал. cd /Volumes/MacOS/MacRunner.
+
+=== ЗАЧЕМ ===
+Codex строит tiny probe, который должен воспроизвести ТОЧНО тот путь, которым Notepad++
+загружает иконки тулбара. Сейчас есть догадка «RT_BITMAP resource 0x05ed», но она не
+подтверждена. Если NPP грузит тулбар иначе (PNG/32bpp/свой декодер/CreateMappedBitmap),
+probe по угаданному BITMAP-ID даст ложный результат. Нужно из исходника NPP узнать ТОЧНО:
+каким API и из какого ресурса строится toolbar ImageList.
+
+=== ЧТО НАЙТИ (Notepad++ open source, github.com/notepad-plus-plus/notepad-plus-plus) ===
+1. Как создаётся toolbar ImageList: какой API — ImageList_Create + ImageList_AddMasked /
+   LoadImage / LoadBitmap / CreateMappedBitmap / Gdiplus PNG-decode / своя функция?
+   Искать: Toolbar, ToolBar.cpp/.h, reBarTop, _toolBarIcons, ImageList, TB_SETIMAGELIST,
+   setToolBarIcons, IDR_*TOOLBAR*, LoadImage, AddBitmap.
+2. Из какого РЕСУРСА: имя/ID ресурса (RT_BITMAP? RT_RCDATA с PNG? отдельные .ico?),
+   как он объявлен в .rc файле NPP. Дай реальные resource id/имена.
+3. Разные наборы иконки (standard vs Fluent vs filled) — какой грузится по умолчанию и
+   меняет ли это API/ресурс.
+4. bpp/формат: 24bpp BMP с маской, или 32bpp с альфой? (важно для probe — какой LoadImage
+   flag и какой DIB layout воспроизводить.)
+
+=== ВЫХОД (write_to_file, ОДИН файл, коротко) ===
+reports/engine-audit/NPP-TOOLBAR-RESOURCE-FINDINGS.md
+- Краткий вывод (2-3 строки): API + ресурс + формат, которыми NPP грузит toolbar.
+- Таблица: вопрос | ответ | ссылка на файл/строку в исходнике NPP (url или path).
+- Раздел «Что воспроизвести в probe»: точный API-вызов(ы) и resource id для Codex.
+- Если набор иконок зависит от версии/настройки — отметить дефолт.
+
+=== ГРАНИЦЫ ===
+Только research (web/чтение) + ОДИН write_to_file. Без Wine, без сборок, без многострочных
+shell-команд. Если что-то не нашёл — честно напиши «не подтверждено», не выдумывай ID.
+Если токенов мало — запиши что успел и заверши, не зависай. Ценность: probe Codex бьёт в
+ПРАВИЛЬНЫЙ ресурс/API с первого раза, без догадки 0x05ed.

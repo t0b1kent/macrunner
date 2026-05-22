@@ -1,0 +1,42 @@
+Codex — карта marlett_center [0,1,2] готова (Cline, read-only). Бери ПОСЛЕ folder_icons,
+без поиска: цепочка уже разложена по file:line, проверена мной (координаты точны).
+
+ИСТОЧНИК: reports/engine-audit/MARLETT-CAPTION-GLYPH-DATAFLOW-MAP.md
+
+=== ЦЕПОЧЕ (подтверждено в дереве) ===
+- dlls/win32u/defwnd.c:1344-1348 — DFCS_CAPTION* -> Marlett codepoint:
+  MIN=0x30, MAX=0x31, RESTORE=0x32, CLOSE=0x72. (gate-слоты [0,1,2] = 0x30/0x31/0x32.)
+- dlls/win32u/defwnd.c:1354-1365 — создаётся Marlett (SYMBOL_CHARSET), считается size глифа.
+- dlls/win32u/defwnd.c:1369 (INACTIVE highlight) и :1372 (основной) — NtGdiExtTextOutW
+  выводит ОДИН глиф в caption HDC по центру (xc-size.cx/2, yc-size.cy/2).
+- dlls/win32u/font.c:6146 — physdev->funcs->pExtTextOut(...) — фактический backend blit.
+- Подозрение №1 (Cline): caption HDC может уходить в null_driver/fallback
+  (dlls/win32u/driver.c:543, dlls/win32u/font.c:5699-5776) — «успех без пикселя».
+
+=== УЖЕ ОПРОВЕРГНУТО (не повторять) ===
+- Marlett грузится, CreateFontIndirect выбирает Marlett, outline 0/1/2/r валидны.
+- Старые fallback-оверлеи (PatBlt/DFC_CAPTION) удалены как костыли — НЕ возвращать.
+- Mapping DFCS->codepoint совпадает с user32/uitools.c:928-955 (эталон) — символ верный.
+Значит: ищи потерю center-глифа ПОСЛЕ выбора шрифта/символа, на blit/backend.
+
+=== ПОРЯДОК (минимум трасс, evidence-driven) ===
+1. P0: временная трасса вокруг defwnd.c:1369/1372 ИМЕННО для slots str[0]∈{0x30,0x31,0x32}
+   — ret NtGdiExtTextOutW, coords (xc,yc,size.cx,size.cy), clip, prev_font/HFONT валиден?
+2. P0: подтвердить physdev для caption HDC на font.c:6146 — реальный backend driver или
+   nulldrv/fallback? Если null/fallback на ARM64-хост пути — это и есть «пусто при валидном коде».
+3. P1: если pExtTextOut зовётся корректно, проверить pPutImage/pGetImage ветку
+   (font.c:5756-5776) на «успех без пикселей» для single-glyph blit.
+4. Назови ТОЧКУ обнуления (инструкция-транслятор / backend-driver / координаты-clip),
+   потом фикс в ПРАВИЛЬНОМ слое:
+   - мистрансляция glyph blit -> HyperBridge decode/lift/interp/jit (вся семья, весь стек);
+   - backend/driver/HDC выбор на ARM64-хосте -> host-интеграция win32u (как gdi_init/KUSER);
+   - НЕ рендеринг-костыль, НЕ возврат fallback-оверлеев.
+
+=== ПРИНЦИП ===
+Временные трассы — только для локализации, после УБРАТЬ (слой остаётся стоковым).
+Verified = РЕАЛЬНОЕ окно на экране, не off-screen CG и не прокси-метрика.
+Каждое изменение -> docs/ENGINE-CHANGE-JOURNAL.md (append) + git diff видимый.
+НЕ трогай файлы, которые сейчас правит другой агент.
+
+ОЧЕРЁДНОСТЬ ОБЩАЯ: folder_icons (текущее) -> marlett_center (эта карта) ->
+toolbar black_ratio confirm -> пачка P0 ABI (CROSS-ARCH-ABI-BOOTSTRAP-MAP.md Doaudit).

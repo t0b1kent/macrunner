@@ -229,6 +229,22 @@ ntdll.so→прогон) ДОРОГОЙ. По одной инструкции = 
 - Фикс кода — ТОЛЬКО Codex, ОДНА family за раз. НИКОГДА 2 агента на hb_decode_x64.c/
   hb_lift_x64.c/hb_interpreter.c/hb_ir.h — это merge hell.
 
+### 🛑 ИСПОЛЬЗУЙ acceleration pipeline (Codex — обязательно)
+Swarm построил конвейер — НЕ ищи/не валидируй вручную, пользуйся:
+- **Очередь задач**: reports/hyperbridge-gaps/NEXT-CODEX-ORDER.md + готовые брифы в
+  reports/hyperbridge-gaps/fixpacks/*.md (точная семантика, какие файлы, что копировать,
+  какие тесты, reference). Бери следующий family оттуда.
+- **Gap Board**: reports/hyperbridge-gaps/HYPERBRIDGE-GAP-BOARD.md — статус всех дыр.
+- **Быстрая валидация ДО app-прогона**: после family-fix запускай
+  `tools/hb_oracle/fast_validate_family.sh <family>` (oracle fixtures + FileCheck) —
+  это секунды. Полный Notepad++/Calc smoke — ТОЛЬКО если fast-validate зелёный.
+  Правила: reports/hyperbridge-validation/CODEX-FAST-VALIDATION-RULES.md.
+- **Один раз подключи runner**: fast_validate_family.sh — скаффолд с TODO-хуками;
+  свяжи его с hb_test_runner (реальный запуск fixture под interpreter+JIT). После
+  этого валидация семьи = секунды, не полный app-прогон.
+- Oracle fixtures: tools/hb_oracle/fixtures/ + expected/. FileCheck: tools/hb_filecheck/.
+Если fast-validate PASS, но app FAIL → копай boundary/Wine integration, не инструкцию.
+
 ---
 
 ## 🛑 MANDATORY: Patch-by-evidence, никогда не patch-by-suspicion

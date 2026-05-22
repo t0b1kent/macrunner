@@ -1,0 +1,33 @@
+Ты — агент-аудитор MacRunner. Read-only по движку, write_to_file ТОЛЬКО (см.
+.clinerules — НИКАКИХ heredoc/незакрытых кавычек/бэктиков в shell, иначе вис
+`dquote>`/`bquote>`). cd /Volumes/MacOS/MacRunner. Самодостаточно. Задача МАЛАЯ
+(ты у usage limit) — только чтение исходника, БЕЗ Wine, БЕЗ захватов, БЕЗ сложных
+shell-команд.
+
+КОНТЕКСТ: Codex закрыл desktop-bootstrap (winstation/dce/dib через
+win32u_map_view_of_section, чистый прогон без faults). Остались пункты из
+reports/engine-audit/CROSS-ARCH-ABI-BOOTSTRAP-MAP.md — добей их статикой, чтобы у
+Codex был готовый следующий батч (стабильность). НЕ мешай Codex, engine/** не правь.
+
+ЗАДАЧА — доаудит оставшихся shared-addr / ABI пунктов (чистое чтение):
+1. **GdiBatchCount → TEB64**: найди все обращения (grep по `GdiBatchCount`, `TEB64`,
+   `Peb`, `Teb`). Где читается/пишется TEB64-поле; правильный ли offset/layout на
+   ARM64 host. Файлы win32u/*, ntdll/*.
+2. **PEB/PEB64 writes**: grep `Peb64`, `->Peb`, `PEB64`. Где пишется в PEB/PEB64;
+   корректность адресов (как был NULL GdiSharedHandleTable).
+3. **Compact ABI gating остальные callsites**: grep `_NTSYSTEM_`, `__aarch64__` в
+   winternl/ntdll include + win32u. Где host-ARM win32u и ntdll-only compact ABI могут
+   расходиться (Codex патчил ОДНО место — найди остальные prototype/contract
+   несоответствия).
+
+ВЫХОД (write_to_file — НЕ heredoc): дополни reports/engine-audit/CROSS-ARCH-ABI-
+BOOTSTRAP-MAP.md новой секцией "## Doaudit: shared-addr/ABI остаток (Cline)" с
+таблицей: пункт | файл:строка | риск | гипотеза фикса | приоритет. НЕ переписывай
+существующее (там уже отмечено что Codex сделал) — ДОБАВЬ секцию.
+
+ГРАНИЦЫ: read-only по engine. Только grep/чтение + один write_to_file. Никаких
+многострочных shell-команд (вешают терминал). Если задача велика для остатка
+токенов — сделай частично и запиши что успел (write_to_file), не зависай.
+
+ЦЕННОСТЬ: даёт Codex готовый следующий батч стабильности (TEB64/PEB64/ABI-gating) с
+file:line, чтобы закрыть пачкой после иконок.

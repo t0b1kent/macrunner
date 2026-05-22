@@ -1,0 +1,48 @@
+Ты — агент-аудитор MacRunner. Read-only по движку, write_to_file (НЕ heredoc, см.
+.clinerules). cd /Volumes/MacOS/MacRunner. Самодостаточно.
+
+=== КОНТЕКСТ (важно) ===
+Codex закрывает desktop-bootstrap блокеры ПО ОДНОЙ и мы не успеваем дать карту:
+- 18:57 GDI init-order (gdi_init перед shared_session_init)
+- 20:15 NtMapViewOfSection ARM64 unix ABI boundary
+- 20:20 KUSER shared-data address на Apple ARM64
+Это всё ОДИН класс: **cross-arch ARM64 host ↔ guest-x64 ABI граница + init/bootstrap
+порядок**, где наш форк divergнул. Нужна ПОЛНАЯ карта ВСЕХ таких точек СРАЗУ, чтобы
+Codex закрыл пачкой, а не находил по одной. НЕ мешай Codex, НЕ редактируй engine/**.
+
+=== ЦЕЛЬ ===
+Полный аудит cross-arch ABI boundary + bootstrap/init surface. Найти ВСЕ места, где:
+(a) win32u (host ARM64) зовёт ntdll unix-слой через syscall/unixlib — ABI marshalling
+    может расходиться (как NtMapViewOfSection);
+(b) используются абсолютные адреса shared-структур (KUSER_SHARED_DATA, PEB, TEB,
+    GdiSharedHandleTable) — могут быть неверны на ARM64;
+(c) порядок init/bootstrap (init_user/gdi_init/shared_session/desktop/driver/
+    wineserver) расходится со стоком.
+
+ФАЙЛЫ (читать, сравнивать с upstream wine-11.0 где нужно — raw github wine-mirror):
+- engine/wine/dlls/win32u/*.c (особенно main.c, gdiobj.c, sysparams.c, ntgdi/ntuser
+  unixlib boundary, driver.c, class.c, window.c)
+- engine/wine/dlls/ntdll/unix/*.c (NtMapViewOfSection, virtual.c, syscall thunks,
+  unix_private.h, loader.c) + ntdll/include winternl/compact ABI
+- include где KUSER_SHARED_DATA/PEB/TEB/__aarch64__ ABI определяются
+
+ЧТО СДЕЛАТЬ (полная карта, не одна точка):
+1. ВСЕ win32u→ntdll unix-boundary вызовы: перечисли, проверь ABI marshalling
+   (параметры/размеры/calling conv host-ARM64 vs ntdll compact). NtMapViewOfSection
+   уже найден — найди ОСТАЛЬНЫЕ с тем же риском.
+2. ВСЕ обращения к shared-data адресам (KUSER_SHARED_DATA, PEB->*, TEB->*,
+   GdiSharedHandleTable): правильный ли адрес/layout на ARM64.
+3. Полный init/bootstrap порядок (наш vs upstream): где переставлено/пропущено
+   (gdi_init уже найден — ищи следующие: desktop window, display driver, wineserver
+   queue preconditions).
+4. winternl.h / _NTSYSTEM_ compact-ABI gating: где host-ARM win32u и ntdll-only ABI
+   могут конфликтовать (Codex уже патчил это — найди остальные конфликты).
+
+ВЫХОД (write_to_file): reports/engine-audit/CROSS-ARCH-ABI-BOOTSTRAP-MAP.md
+- Таблица: точка | тип (ABI boundary / shared-addr / init-order / ABI-gating) | файл:
+  строка | риск | уже найдено Codex? | гипотеза фикса.
+- Сводка: ПОЛНЫЙ punch-list для Codex по приоритету (что ещё закрыть для bootstrap +
+  стабильности), помечая что уже сделано (gdi_init/NtMapViewOfSection/KUSER).
+
+ГРАНИЦЫ: read-only по engine. Не Wine долгие прогоны. write_to_file. Цель — дать
+Codex карту ВПЕРЁД, чтобы он не искал по одной. Помечай уже-сделанное, не дублируй.

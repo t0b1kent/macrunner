@@ -1,0 +1,48 @@
+Ты — агент-аудитор MacRunner. Read-only по движку, write_to_file ТОЛЬКО (см. .clinerules
+— НИКАКИХ heredoc / незакрытых кавычек / бэктиков в shell, иначе вис dquote>/bquote>).
+cd /Volumes/MacOS/MacRunner. Самодостаточно. Задача МАЛАЯ (ты близко к usage limit):
+ТОЛЬКО чтение исходника + grep, БЕЗ Wine, БЕЗ сборок, один write_to_file в конце.
+
+=== КОНТЕКСТ ===
+Codex прямо сейчас закрывает folder_icons (Save As gate). Чтобы НЕ простаивал после —
+ему нужна готовая карта СЛЕДУЮЩЕГО пункта. Этот пункт: marlett_center FAIL — отсутствуют
+center-глифы в caption-слотах [0,1,2] (кнопки min/max/close в заголовке окна Notepad++).
+База ЧИСТЫЙ СТОК Wine (comctl32/v6 = upstream, marker_strings=0), bootstrap чист
+(native_faults=0). Значит причина изолирована: либо Marlett-глиф не растеризуется, либо
+nonclient caption paint берёт не тот источник, либо транслятор обнуляет glyph-блит.
+НЕ мешай Codex, engine/** НЕ правь — только читай.
+
+ВАЖНО (из журнала, не повторяй уже опровергнутое): марлетт-пробник показал, что builtin
+Marlett присутствует и CreateFontIndirect("Marlett") выбирает Marlett с валидными
+outline-глифами для 0/1/2/r. Прежние fallback-оверлеи (PatBlt/DFC_CAPTION) были УБРАНЫ как
+костыли. То есть «шрифт не грузится» — уже опровергнуто. Ищи, что происходит ПОСЛЕ выбора
+шрифта: где slot [0,1,2] -> символ глифа, где TextOut/ExtTextOut рисует caption-кнопки,
+и где результат может выйти пустым на ARM64-хосте / через транслятор.
+
+=== ЗАДАЧА (чистое чтение, дать Codex file:line карту) ===
+1. Найди nonclient caption paint в win32u (grep: NC_, caption, DrawCaption, button,
+   Marlett, '\x30'/'0''1''2''r', WS_SYSMENU, HTCLOSE/HTMINBUTTON/HTMAXBUTTON,
+   draw_nc_*, defwnd.c, nonclient). Файлы: dlls/win32u/defwnd.c, dlls/win32u/*.c,
+   dlls/user32/nonclient.c, dlls/user32/uitools.c.
+2. Установи цепочку: что мапит caption-кнопку (close/min/max/restore) в Marlett-символ
+   ('0'/'1'/'2'/'r') и какой код рисует именно ЦЕНТР-глиф в слотах [0,1,2]. Дай точные
+   file:line каждого звена: выбор шрифта -> выбор символа -> TextOut/glyph blit -> dest HDC.
+3. Где на ARM64-хосте / в пути транслятора этот glyph-блит может выйти пустым: укажи
+   подозрительные точки (rasterize/blit/копирование глифа в dest), привязав к file:line.
+   НЕ утверждай root без доказательства — формулируй как гипотезу + что Codex проверит трассой.
+4. Сверь с upstream если полезно: reports/upstream-wine-11.0-reference/ (если есть
+   nonclient/defwnd там) — отметь, расходится ли наш код со стоком в этой цепочке.
+
+=== ВЫХОД (write_to_file — НЕ heredoc, ОДИН файл) ===
+reports/engine-audit/MARLETT-CAPTION-GLYPH-DATAFLOW-MAP.md
+Структура:
+- Краткий вывод (2-3 строки): где наиболее вероятно теряется center-глиф [0,1,2].
+- Таблица: звено цепочки | файл:строка | что делает | риск/гипотеза | что Codex проверит.
+- Раздел «Уже опровергнуто» (шрифт грузится, fallback убраны) — чтобы Codex не повторял.
+- Раздел «Следующий шаг для Codex» (1-3 пункта по приоритету).
+
+=== ГРАНИЦЫ ===
+read-only по engine; только grep/чтение + ОДИН write_to_file; никаких многострочных
+shell-команд (вешают терминал); без Wine/сборок. Если токенов мало — сделай частично и
+запиши что успел (write_to_file), не зависай. Ценность: Codex после folder_icons сразу
+берёт marlett_center с готовой file:line картой, без поиска.

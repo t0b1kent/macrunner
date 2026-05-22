@@ -1,0 +1,46 @@
+Ты — агент-аудитор MacRunner. Read-only по движку, write_to_file (НЕ heredoc).
+Самодостаточно.
+
+=== ПЕРВОЕ ===
+1. cd /Volumes/MacOS/MacRunner. Прочитай .clinerules (файлы только write_to_file,
+   никаких heredoc; длинные выводы → файл+grep; cwd в корень).
+2. Контекст: Codex нашёл корень иконок — НЕ missing-инструкция, а ПОРЯДОК
+   инициализации GDI: `gdi_init()` шёл ПОСЛЕ, `PEB->GdiSharedHandleTable` был NULL →
+   `SelectObject` падал в `user32!create_icon_frame` при ранней загрузке иконки.
+   Фикс: gdi_init перед shared_session_init в win32u:init_user (журнал 18:57).
+   ОСТАЛСЯ блокер: `failed to create desktop window` / server queue errors —
+   отдельный desktop-bootstrap. НЕ мешай Codex, НЕ редактируй engine/**.
+
+=== ЦЕЛЬ ===
+Аудит ПОРЯДКА ИНИЦИАЛИЗАЦИИ win32u/desktop/GDI в нашем форке vs upstream wine-11.0 —
+найти ДРУГИЕ init-order расхождения (тот же класс, что только починили) и причины
+desktop-bootstrap блокера. Карта для Codex.
+
+ФАЙЛЫ (читать, НЕ править): engine/wine/dlls/win32u/{main.c,gdiobj.c,sysparams.c,
+class.c,window.c,driver.c,dce.c}, engine/wine/dlls/win32u/init.c если есть, и любые
+где init_user/gdi_init/shared_session_init/desktop. Сравни с upstream wine-11.0 (raw
+github wine-mirror/wine, как делали с comctl32).
+
+ЧТО СДЕЛАТЬ:
+1. Восстанови ПОСЛЕДОВАТЕЛЬНОСТЬ init: init_user → gdi_init → shared_session_init →
+   desktop window create → display/driver init → wineserver queue. Кто кого вызывает,
+   в каком порядке, что от чего зависит.
+2. Сравни наш порядок vs upstream wine-11.0. Где форк ПЕРЕСТАВИЛ/пропустил/добавил
+   шаги init? (только что нашли один: gdi_init был после shared_session_init.)
+3. Особый фокус — desktop-bootstrap блокер: что нужно для `create desktop window` и
+   server queue; какие наши изменения (или HyperBridge bootstrap timing) могут
+   ломать его. Где `failed to create desktop window` происходит, какие preconditions.
+4. Флаги: init-order divergence | missing precondition | HyperBridge bootstrap timing.
+
+ВЫХОД (write_to_file): reports/engine-audit/WIN32U-INIT-ORDER-DESKTOP-AUDIT.md
+- Диаграмма/список порядка init (наш vs upstream).
+- Таблица расхождений: шаг | наш порядок | upstream | риск | связь с desktop-блокером.
+- Топ-кандидаты для Codex: что переставить/добавить, чтобы desktop window
+  создавался (по образцу gdi_init-фикса).
+
+ГРАНИЦЫ: read-only по engine (Codex единственный editor). Не Wine долгие прогоны.
+Файлы только write_to_file. Не дублируй уже найденный gdi_init-фикс — ищи СЛЕДУЮЩИЕ
+init-order проблемы + desktop-bootstrap.
+
+ЦЕННОСТЬ: Codex чинит desktop-bootstrap по твоей карте → визуальный verify иконок
+разблокируется. Тот же доказательный класс (init-order), что дал прорыв с иконками.

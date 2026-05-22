@@ -10,18 +10,24 @@ Symptom: toolbar-иконки чёрные on-screen; source DIB-биты уже
 - Producer-вход host-стороны: `dlls/win32u/dib.c:887` NtGdiSetDIBitsToDeviceInternal,
   `:658` set_dib_bits, `:1471` NtGdiCreateDIBSection.
 
+## Producer путь УТОЧНЁН (research Cline, NPP-TOOLBAR-RESOURCE-FINDINGS.md)
+Модерн-тулбар NPP грузит иконки как ICON-ресурсы IDI_* (32bpp, ILC_COLOR32), НЕ RT_BITMAP:
+  ImageList_Create(cx,cy,ILC_COLOR32|ILC_MASK) + LoadImage(IMAGE_ICON, IDI_*) +
+  ImageList_AddIcon + TB_SETIMAGELIST.
+Resource id: IDI_NEW_ICON=201 ... IDI_VIEW_DOCLIST_ICON=247 (set2 301-347, dark 251-297).
+RT_BITMAP 0x05ed = legacy TB_STANDARD, НЕ дефолтный путь. БЕЙ ICON-путь первым.
+
 ## Fix scope / next step (НЕ full smoke)
-Сделать tiny x64 probe `reports/phase-h/MILESTONE/smoke-tools/bitmap_load_probe.c`:
-EnumResourceNamesW(RT_BITMAP) по notepad++.exe (LOAD_LIBRARY_AS_DATAFILE) → LoadImageW →
-GetObjectW → GetDIBits 32bpp → count colorful/nonwhite/black, stats до/после StretchDIBits.
-Запуск секунды, без desktop/readiness. Полный бриф:
-`reports/agent-prompts/CODEX-TINY-BITMAP-PROBE-NOT-FULL-SMOKE.txt`.
+tiny x64 probe `reports/phase-h/MILESTONE/smoke-tools/bitmap_load_probe.c`:
+LoadLibraryExW(notepad++.exe, LOAD_LIBRARY_AS_DATAFILE) → LoadImageW(IMAGE_ICON, IDI_* 201..247)
+→ GetIconInfo → GetDIBits(hbmColor) [stage icon_color_bits] → ImageList_Create(ILC_COLOR32|
+ILC_MASK)+ImageList_AddIcon → GetDIBits [stage imagelist_after_add]. Секунды, без desktop.
+Полный бриф: `reports/agent-prompts/CODEX-TINY-BITMAP-PROBE-NOT-FULL-SMOKE.txt`.
 
 ## Decision (слой за один прогон)
-- resource_bits цветные + readback чёрный → host win32u DIB producer/readback фикс.
-- resource_bits уже чёрные → guest/HyperBridge memory-copy семья (как REP MOVS), весь стек.
-- probe цветной, окно чёрное → root позже в comctl32, не BITMAP_Load.
-- тулбар = PNG/RCDATA (не RT_BITMAP) → producer другой (Gdiplus/декодер), перенацелить probe.
+- icon_color_bits цветные + imagelist_after_add чёрный → host comctl32/win32u readback фикс.
+- icon_color_bits уже чёрные → guest/HyperBridge memory-copy семья (как REP MOVS), весь стек.
+- обе стадии цветные, окно чёрное → root позже (draw/themed v6/present).
 
-Не хардкодить resource 0x05ed (догадка). Не запускать /review пока probe бежит.
+Не хардкодить 0x05ed. Не запускать /review пока probe бежит.
 folder_icons/menu — ОТДЕЛЬНЫЙ корень (см. reports/engine-audit/MENU-COMMAND-DISPATCH-AUDIT.md).

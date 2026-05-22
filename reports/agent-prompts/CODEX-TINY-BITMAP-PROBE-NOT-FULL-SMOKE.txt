@@ -12,37 +12,45 @@ Full Notepad++ smoke БОЛЬШЕ НЕ основной способ валид�
 Собрать тем же llvm-mingw x64 target и запустить через dist-pure-arm64 wine (тот же
 HyperBridge+Wine путь), bounded duration, БЕЗ desktop/readiness/toolbar-окна.
 
-Probe должен (точный путь, НЕ угадывать ID):
+!!! ОБНОВЛЕНО по research Cline (reports/engine-audit/NPP-TOOLBAR-RESOURCE-FINDINGS.md):
+МОДЕРН-ТУЛБАР NPP грузит иконки как ICON-ресурсы IDI_* (32bpp), НЕ RT_BITMAP. Точный путь:
+ImageList_Create(cx,cy,ILC_COLOR32|ILC_MASK) + LoadImage(IMAGE_ICON, IDI_*) + ImageList_AddIcon
++ TB_SETIMAGELIST. Resource id: IDI_NEW_ICON=201 ... IDI_VIEW_DOCLIST_ICON=247 (set2 301-347,
+dark 251-297, dark2 351-397). RT_BITMAP 0x05ed = НЕ тот путь (это legacy TB_STANDARD).
+БЕЙ ICON-путь первым — иначе probe даст ложный «всё цветное».
+
+Probe должен (точный ICON-путь):
 1. Открыть notepad++.exe как модуль с ресурсами:
    LoadLibraryExW(npp_path, NULL, LOAD_LIBRARY_AS_DATAFILE) — путь как аргумент.
-2. ПЕРЕЧИСЛИТЬ реальные ресурсы, не хардкодить 0x05ed:
-   - EnumResourceNamesW(h, RT_BITMAP, ...) — все BITMAP-ресурсы.
-   - EnumResourceTypesW — заодно отметить, есть ли RT_RCDATA/PNG (если тулбар грузится
-     как PNG/32bpp, классический LoadImage(IMAGE_BITMAP) НЕ воспроизведёт путь — это
-     важный результат сам по себе, записать его).
-3. Для каждого BITMAP-ресурса воспроизвести ИМЕННО тот путь, что использует BITMAP_Load:
-   - LoadImageW(h, MAKEINTRESOURCEW(id), IMAGE_BITMAP, 0, 0, LR_DEFAULTCOLOR|LR_CREATEDIBSECTION)
-   - GetObjectW(hbmp, sizeof(BITMAP), &bm) — width/height/bpp.
-   - GetDIBits в 32bpp top-down DIB → посчитать colorful / nonwhite / black пиксели.
-   - Если producer внутри делает StretchDIBits в hdcImage перед SelectObject(original) —
-     воспроизвести и снять stats ДО (resource_bits) и ПОСЛЕ (hbitmap_after_stretch).
-   - Печать: MR_BITMAP_PROBE resid=<id> hbitmap=<h> w=<> h=<> bpp=<> colorful=<>
-     nonwhite=<> black=<> stage=<resource_bits|after_stretch>
+2. Перечислить реальные ICON-ресурсы (НЕ хардкодить один id):
+   - EnumResourceNamesW(h, RT_GROUP_ICON, ...) — все group-icon ресурсы; ИЛИ перебрать
+     известный диапазон IDI_* 201..247 (и 301..347 / 251..297, если активна тема/набор).
+3. Для каждого ICON-ресурса воспроизвести ИМЕННО modern producer-путь:
+   - hicon = LoadImageW(h, MAKEINTRESOURCEW(id), IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR)
+     (cx=cy=16 или реальный iconSize).
+   - GetIconInfo(hicon, &ii) → ii.hbmColor (32bpp) и ii.hbmMask.
+   - GetObjectW(ii.hbmColor, ...) — w/h/bpp; GetDIBits hbmColor → 32bpp top-down → посчитать
+     colorful / nonwhite / black. Стадия = icon_color_bits.
+   - Затем реальный comctl32-путь: ImageList_Create(cx,cy,ILC_COLOR32|ILC_MASK,..) →
+     ImageList_AddIcon(himl, hicon) → ImageList_GetIcon / ImageList_Draw в memory DC →
+     GetDIBits → стадия = imagelist_after_add. Это совпадает с add_dib_bits boundary.
+   - Печать: MR_ICON_PROBE resid=<id> hicon=<h> w=<> h=<> bpp=<> colorful=<> nonwhite=<>
+     black=<> stage=<icon_color_bits|imagelist_after_add>
+   - Доп. (опц.): legacy путь LoadImage(IMAGE_BITMAP, IDR_*, LR_LOADMAP3DCOLORS|
+     LR_LOADTRANSPARENT) + GetDIBits — только если modern путь окажется цветным.
 4. Acceptance probe:
-   - попадает в toolbar/BITMAP-ресурсы КАЖДЫЙ запуск (через enumerate);
-   - печатает resource_bits и (если есть) after_stretch stats;
+   - попадает в ICON-ресурсы IDI_* КАЖДЫЙ запуск;
+   - печатает icon_color_bits и imagelist_after_add stats;
    - завершается за секунды; НЕ зависит от FULL_UI_READY / создания toolbar-окна.
 
 === РЕШЕНИЕ ПО РЕЗУЛЬТАТУ (слой за один прогон) ===
-- resource_bits ЦВЕТНЫЕ, after_stretch/GetDIBits ЧЁРНЫЕ → root = host user32/win32u
-  bitmap producer/readback (StretchDIBits/GetDIBits/DIBSection store) → фикс host-win32u.
-- resource_bits УЖЕ ЧЁРНЫЕ → root = resource load / guest decode / HyperBridge memory-copy
-  → привязать к PC/опкоду/memcopy-семье, добить весь стек (decode→IR→lift→interp→jit→
-  тесты→oracle/FileCheck), как REP MOVS/CMPS/LODS.
-- probe ЦВЕТНОЙ, но NPP toolbar всё равно чёрный → root ПОЗЖЕ (app/comctl32-специфичный
-  путь), НЕ BITMAP_Load → вернуться к comctl32 ingest с этим знанием.
-- enumerate показал, что тулбар = PNG/RCDATA, а не RT_BITMAP → producer другой (Gdiplus/
-  свой декодер) → перенацелить probe на тот API.
+- icon_color_bits ЦВЕТНЫЕ, imagelist_after_add ЧЁРНЫЕ → root = host comctl32-ingest /
+  win32u GetDIBits/DIBSection readback → фикс host-win32u/imagelist boundary.
+- icon_color_bits УЖЕ ЧЁРНЫЕ → root = ICON resource load / guest decode / HyperBridge
+  memory-copy при распаковке иконки → привязать к PC/опкоду/memcopy-семье, добить весь
+  стек (decode→IR→lift→interp→jit→тесты→oracle/FileCheck), как REP MOVS/CMPS/LODS.
+- probe ЦВЕТНОЙ на обеих стадиях, но NPP toolbar всё равно чёрный → root ПОЗЖЕ (draw/
+  themed v6 / present) → вернуться к comctl32 ingest/draw с этим знанием.
 
 === УСКОРЕНИЕ ОКРУЖЕНИЯ (применить РЕАЛЬНЫЕ свои гейты) ===
 - Отключи лишний trace/CG/диалоги/шрифты в smoke на время probe-стадии (минимальная

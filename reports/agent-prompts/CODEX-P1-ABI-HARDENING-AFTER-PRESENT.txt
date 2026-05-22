@@ -1,0 +1,50 @@
+Codex — батч P1 ABI-hardening НА ПОТОМ (только когда present/visual закрыт). Это НЕ
+блокер visual-цели, а добивка стабильности того же класса (TEB64/PEB64/dual-ABI).
+Бери в простой, чтобы не идлить. Приоритет НИЖЕ toolbar-black/present-фикса.
+
+=== УЖЕ СДЕЛАНО (НЕ повторять — P0 закрыт тобой же) ===
+- win32u_current_teb64() (win32u_private.h:36) — централизованная TEB64 derivation с полной
+  invariant-цепочкой: batch!=0, offset!=0, teb64==GdiBatchCount carrier, alignment. Это
+  «один источник истины» + runtime guard каноничности.
+- PEB64 mirror GdiSharedHandleTable (gdiobj.c:574-585) — через guard + WARN на invalid.
+- TEB64 TLS access (winstation.c:877-884) — через guard.
+- NtMapViewOfSection dual-ABI — обёрнут win32u_map_view_of_section (win32u_private.h:53).
+- ntdll carrier write (server.c:1714, virtual.c:4365) когерентен с win32u-чтением.
+
+=== ОСТАТОК P1 (точечно, file:line) ===
+1. **wow_peb derivation формула — хрупкая, без cross-check.**
+   dlls/ntdll/unix/server.c:1716 `wow_peb = (PEB64 *)((char *)peb - page_size)` и
+   dlls/ntdll/unix/virtual.c:~4570 (`wow_peb->SpareUlongs[0]`). Формула «PEB64 ровно на
+   страницу ниже PEB32» молча поедет при изменении bootstrap-layout.
+   Гипотеза фикса: задокументировать формулу рядом + добавить cross-check, что
+   wow_peb согласован с teb64->Peb (как ожидается), ранний assert/WARN на drift.
+   Слой: ntdll host-integration. НЕ менять формулу без доказательства — только guard+док.
+
+2. **NtMapViewOfSectionEx — контракт рядом с dual-ABI зоной.**
+   dlls/ntdll/unix/virtual.c:6800. Ex-вариант живёт рядом с уже-пропатченным
+   NtMapViewOfSection. Проверь единообразие call-contract (типы/порядок аргументов) на
+   ARM64 unix boundary; есть ли host-ARM callers, попадающие в неверный prototype.
+   Если в наших путях Ex не зовётся с host-ARM — зафиксируй это как «не входит в path»
+   (классификация важнее патча). Если зовётся — boundary-wrapper как у Map.
+
+3. **NtUnmapViewOfSection direct callsites — быстрый confirm (вероятно безопасно).**
+   dib.c:1565,1771 / dce.c:931 / font.c:3665 / winstation.c:185. В отличие от Map,
+   Unmap = (HANDLE, PVOID) без trailing inherit/alloc/protect → НЕТ той compact-ABI
+   компрессии. Скорее всего фикс НЕ нужен. Задача: подтвердить прототип на ARM64 unix
+   boundary и явно записать «safe, no wrapper needed» ИЛИ обернуть, если найдёшь расхождение.
+   НЕ трать на это много — это verify, не предполагаемый баг.
+
+=== ПОРЯДОК ===
+3 (быстрый confirm) → 2 (классификация Ex) → 1 (wow_peb guard+док). Каждое — отдельный
+маленький проход с журналом. Если что-то «не входит в path» — это валидный результат,
+записать и закрыть, не выдумывать фикс.
+
+=== ПРИНЦИП ===
+Фикс/guard в host-integration слое (ntdll/win32u), как gdi_init/KUSER/Map-wrapper. Никаких
+рендер-костылей. Доказательность: assert/WARN ловит drift, не маскирует. Каждое изменение
+→ docs/ENGINE-CHANGE-JOURNAL.md (append) + git diff. НЕ трогай файлы, которые в работе у
+present-фикса. Verify = чистый bootstrap-прогон без регрессий (native_faults=0,
+desktop-queue ok), не прокси.
+
+ВАЖНО: это берётся ТОЛЬКО после того, как present/toolbar/folder_icons закрыты или ждут
+прогона. Visual-цель (зелёный Notepad++) приоритетнее этой добивки.

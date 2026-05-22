@@ -1,0 +1,50 @@
+Ты — агент-аудитор MacRunner. Read-only по движку, write_to_file ТОЛЬКО (см. .clinerules
+— НИКАКИХ heredoc / незакрытых кавычек / бэктиков в shell, иначе вис dquote>/bquote>).
+cd /Volumes/MacOS/MacRunner. Самодостаточно. Задача МАЛАЯ: только grep/чтение исходника +
+ОДИН write_to_file. БЕЗ Wine, БЕЗ сборок, БЕЗ многострочных shell-команд.
+
+=== КОНТЕКСТ ===
+Codex сейчас чинит ядровый баг toolbar-black (рендер) — НЕ мешай, engine/** НЕ правь,
+файлы рендера/blit не трогай. Тебе — ОТДЕЛЬНАЯ подсистема: маршрутизация меню/команд.
+Codex доказал НОВЫЙ блокер: в Notepad++ меню File не открывается (Alt+F и клик мышью —
+оба FAIL), и Save/Open диалог НЕ создаётся даже при прямых сообщениях: cmd_open=41002,
+NPPM_MENUCOMMAND, WM_COMMAND, sync-send, focus attach, Ctrl+O — всё не создаёт popup/диалог.
+Это блокирует folder_icons-доказательство. Нужна read-only карта пути, чтобы Codex потом
+чинил без поиска.
+
+ВАЖНО (урок marlett): сначала различи РЕАЛЬНЫЙ сбой vs артефакт детекции. marlett_center
+оказался ложным (захватывался macOS-titlebar). Здесь так же: возможно (A) popup/диалог
+реально НЕ создаётся (сбой dispatch/window-creation), либо (B) создаётся, но харнесс его
+не детектит/не захватывает. По коду + по логам smoke попытайся отделить A от B и явно
+напиши, какие признаки за что.
+
+=== ЗАДАЧА (чистое чтение, дать Codex карту file:line) ===
+1. Путь TrackPopupMenu / открытие popup меню: где Alt+F и mouse-click на пункте меню
+   должны создавать popup-окно. grep: TrackPopupMenu, track_popup_menu, MENU_TrackMenu,
+   NtUserTrackPopupMenu, WM_INITMENUPOPUP, menu. Файлы: dlls/win32u/menu.c,
+   dlls/user32/menu.c, dlls/win32u/message.c, dlls/user32/message.c.
+2. Путь WM_COMMAND / NPPM_MENUCOMMAND -> создание модального диалога (Open/Save):
+   grep: DialogBox, CreateDialog, DialogBoxIndirectParam, NtUserCreateWindowEx (для
+   dialog class), GetOpenFileName/GetSaveFileName (comdlg32). Файлы: dlls/user32/dialog.c,
+   dlls/comdlg32/*.c, dlls/win32u/window.c (создание окна).
+3. Маршрутизация сообщений host-ARM64: где синхронные send (SendMessage/sync send) и
+   фокус-attach могут не доходить до целевого окна на нашем форке. grep: send_message,
+   NtUserMessageCall, peek_message, get_server_queue, queue, AttachThreadInput,
+   SetForegroundWindow, SetFocus. Файлы: dlls/win32u/message.c, dlls/ntdll/unix/server.c,
+   dlls/win32u/input.c.
+4. Если успеешь — сверь со стоком: reports/upstream-wine-11.0-reference/ (если есть menu/
+   message/dialog) — отметь расхождения с upstream в этой цепочке.
+
+=== ВЫХОД (write_to_file — НЕ heredoc, ОДИН файл) ===
+reports/engine-audit/MENU-COMMAND-DISPATCH-AUDIT.md
+- Краткий вывод (2-3 строки): сценарий A (реально не создаётся) или B (детект), и где
+  наиболее вероятно рвётся цепочка.
+- Таблица: звено | файл:строка | что делает | риск/гипотеза | что Codex проверит трассой.
+- Раздел «A vs B признаки» (по коду/логам что отличает реальный сбой от артефакта детекции).
+- Раздел «Следующий шаг для Codex» (1-3 пункта по приоритету).
+
+=== ГРАНИЦЫ ===
+read-only по engine; только grep/чтение + ОДИН write_to_file; никаких многострочных
+shell-команд; без Wine/сборок. Если токенов мало — частично + write_to_file, не зависай.
+Ценность: Codex после toolbar-black сразу берёт menu/command-dispatch с готовой картой,
+и это разблокирует folder_icons-доказательство.

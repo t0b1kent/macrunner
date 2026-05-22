@@ -1,0 +1,54 @@
+Codex — после P0 carrier-hardening вернись к ЯДРОВОМУ багу: toolbar реально чёрный
+on-screen. Теперь он чисто изолирован, и это та самая icon-проблема с самого начала.
+
+=== ЧТО ДОКАЗАНО (твоя же сессия 01:18) ===
+- marlett_center = SKIP (захват был native macOS titlebar, не Wine) — НЕ баг, снято.
+- toolbar = РЕАЛЬНО чёрный на честном verdict: toolbar_render_cg black_ratio=0.59,
+  colorful_pixels=0. Это НЕ disabled-серый (ты подтвердил). Прежний colorful=17882 был
+  off-screen CG-прокси (ложь метрики). На стоке comctl32_v6 + чистый bootstrap
+  (native_faults=0) toolbar-иконки ВСЁ РАВНО чёрные → обнуление НЕ покрыто добавленными
+  семьями (REP MOVS / CMPS/LODS / SIMD-pack).
+- P0 TEB64 carrier — сделано (WowTebOffset + сверка с GdiBatchCount).
+
+=== ЗАДАЧА: найти ТОЧКУ обнуления toolbar-иконок на РЕАЛЬНОМ on-screen пути ===
+Ключевая улика: ранее off-screen CG-render тулбара давал colorful, on-screen = 0. Значит
+надо чётко различить ДВА сценария (не угадывай — докажи трассой какой именно):
+  (S1) icon-биты ЕСТЬ в каком-то DC/bitmap, но НЕ доходят до видимой window surface
+       (present/flush path: win32u surface flush -> winemac.drv). Тогда фикс в
+       host-integration слое представления поверхности, НЕ в comctl32.
+  (S2) icon-биты обнуляются ещё ДО surface (blit/ImageList draw в активном comctl32_v6
+       ТЕМИЗИРОВАННОМ пути через uxtheme — иные ветки, чем plain v5). Тогда искать
+       missing/мистранслированную инструкцию в этой ветке (alphablend/gradient/blit) и
+       чинить в HyperBridge decode/lift/interp/jit (вся семья, весь стек).
+
+ПОРЯДОК (evidence-driven, минимум трасс):
+1. Подтверди, какая DLL рисует toolbar-иконки в живом прогоне — comctl32_v6 (themed) или
+   plain. Notepad++ через манифест грузит v6 из WinSxS. Трассируй именно АКТИВНУЮ.
+2. Возьми ОДИН toolbar-кадр и определи S1 vs S2: сравни пиксели в (a) source ImageList
+   bitmap, (b) промежуточном/композит DC, (c) финальном window-surface буфере перед
+   present. Где впервые colorful->0 — там точка.
+3. Назови точку обнуления (инструкция-транслятор / surface-present / blit-ветка), потом
+   фикс в ПРАВИЛЬНОМ слое:
+   - мистрансляция blit/alphablend -> HyperBridge (decode->IR->lift->interp->jit->тесты->
+     oracle/FileCheck за один проход, вся семья);
+   - present/flush/surface на macOS -> host-интеграция (win32u/winemac.drv, как
+     gdi_init/NtMapViewOfSection/KUSER);
+   - НЕ рендеринг-костыль в comctl32/comctl32_v6, НЕ возврат старых патчей.
+
+=== ОПОРА (карты, не искать заново) ===
+- reports/engine-audit/ICON-LOWER-LAYER-AUDIT.md (нижний слой, virtual.c guest-read).
+- reports/engine-audit/HYPERBRIDGE-SIMD-AUDIT.md / HYPERBRIDGE-MEMCOPY-AUDIT.md (что из
+  blit/copy/SIMD ещё не покрыто — alphablend/MMX/SSE blend кандидаты для themed v6).
+- Ранее доказано: PE icon bits colorful до DIB, StretchDIBits/SetDIBits сохраняют —
+  значит источник чист; ищи ниже/позже (composit/blit/present).
+
+=== ПРИНЦИП ===
+Цель: СТОКОВЫЙ Wine-рендеринг + корректный транслятор + host-интеграция = иконки рисуются
+БЕЗ comctl32-патчей (как CrossOver на стоке). Verified = РЕАЛЬНОЕ окно на экране, НЕ
+off-screen CG, НЕ прокси. Временные трассы убрать после локализации. Каждое изменение ->
+docs/ENGINE-CHANGE-JOURNAL.md (append) + git diff. НЕ трогай файлы message-dispatch/меню
+(их сейчас аудитит Cline) — пересечения избегать.
+
+ОЧЕРЁДНОСТЬ: toolbar-black (это, ядро) — приоритет. menu/command-dispatch и folder_icons
+идут после (Cline готовит карту dispatch). P1 ABI (PEB64 mirror, compact-ABI gating
+остальные callsites) — после визуала.

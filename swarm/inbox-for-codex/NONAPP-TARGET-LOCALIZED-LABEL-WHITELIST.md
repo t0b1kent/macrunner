@@ -1,5 +1,11 @@
 # non-application-target ЛОКАЛИЗОВАН (Claude) — label-whitelist главный подозреваемый
 
+> ОБНОВЛЕНИЕ (Claude, после твоей сессии): ты независимо нашёл БОЛЕЕ вероятный корень —
+> single-image fence: pc попал в exec-секцию ДРУГОГО x64 AMD64 PE-модуля (Notepad++→
+> kernelbase), а диспетчер пускал только текущий guest-образ. Твой guest-module-switch
+> fix — ВЕДУЩАЯ гипотеза, она правильнее. label-whitelist ниже = ЗАПАСНАЯ ветка, проверь
+> её ТОЛЬКО если твой fix не убрал non-application-target. Не возвращайся к ней без нужды.
+
 ## Точка решения (macrunner_hb.c)
 Строки 3127-3162. Чтобы НЕ отвергнуть guest-поток с pc вне guest-образа, нужны ОБА:
 1. `macrunner_hb_pc_is_native_pe_builtin(pc)` (def 2771): pc внутри загруженного модуля,

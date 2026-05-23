@@ -1,0 +1,46 @@
+Ты — агент-аудитор MacRunner. READ-ONLY по движку + ОДИН write_to_file. .clinerules:
+НИКАКИХ heredoc / незакрытых кавычек / бэктиков в shell. cd /Volumes/MacOS/MacRunner.
+Файл пиши ТОЛЬКО write_to_file. БЕЗ Wine, БЕЗ сборок.
+
+=== ЗАЧЕМ ===
+Codex локализовал freeze Notepad++ (см. docs/ACTIVE-INVESTIGATION.md «Current Bug»):
+реальные клики доходят до WineEventQueue (`queue_post` + `queue_signal rc=1`), НО NPP
+GUI-поток НЕ просыпается/не дренит (ноль `process_driver_events`/`wait_message`/
+`NtUserMsgWait`/`NtWaitForMultipleObjects` после точки фриза), тогда как explorer дренит
+свою очередь нормально. Граница: `set_queue_fd`/`QS_DRIVER`/`process_driver_events`
+ownership + wake/drain routing для NPP-очереди.
+
+Codex чинит вживую трассами. Твоя задача — СТАТИЧЕСКАЯ карта «как ДОЛЖЕН» работать путь
+пробуждения, чтобы дать ему reference «ожидаемое vs наблюдаемое» и место расхождения.
+ВАЖНО: ты картируешь поток по коду, НЕ объявляешь фикс. Не дублируй live-трассы Codex'а.
+
+=== SCOPE (bounded, read-only) ===
+1. Сигнал очереди → пробуждение: как `queue_signal` / запись в queue fd должна разбудить
+   GUI-поток. Где GUI-поток ЖДЁТ (NtUserMsgWaitForMultipleObjects → server wait →
+   server_select на queue fd). Файлы: dlls/win32u/message.c (wait_message,
+   NtUserMsgWaitForMultipleObjectsEx, peek/get message, process_driver_events),
+   dlls/win32u/main.c.
+2. QS_DRIVER / driver events: где выставляется QS_DRIVER, как `process_driver_events`
+   вызывается из message-wait, кто владелец очереди (set_queue_fd). Файлы:
+   dlls/winemac.drv/macdrv_main.c, dlls/winemac.drv/window.c, dlls/win32u/message.c.
+3. Чем отличается NPP-поток от explorer-потока: почему explorer входит в
+   process_driver_events, а NPP нет. По коду — что определяет, какой поток дренит
+   driver-события (thread queue ownership, foreground/desktop thread, QS routing).
+4. ФОРК vs СТОК: где наш форк (MACRUNNER-маркеры) трогал этот путь
+   (grep MACRUNNER в message.c/macdrv_main.c/window.c) + сверка с upstream Wine 11.0
+   (можно глянуть github wine-mirror wine-11.0 dlls/win32u/message.c и
+   winemac.drv для этих функций) — отметь расхождения в wake/drain логике.
+
+=== ВЫХОД (write_to_file, ОДИН файл) ===
+reports/engine-audit/EVENT-WAKE-DRAIN-PATH-MAP.md
+- Краткий вывод: как ДОЛЖЕН идти wake (signal→GUI-поток просыпается→process_driver_events→
+  drain), и где наиболее вероятно рвётся для NPP-потока (гипотеза по коду).
+- Таблица: звено | файл:строка | что делает | роль в wake/drain | форк трогал? | что Codex сверит.
+- Раздел «NPP-поток vs explorer-поток»: что по коду определяет, кто дренит driver events.
+- Раздел «Форк vs upstream»: расхождения в этом пути (если найдены).
+
+=== ГРАНИЦЫ ===
+READ-ONLY, только grep/чтение/веб-сверка + ОДИН write_to_file. Без Wine/сборок/
+многострочного shell. Если велико — пп.1-3 полно, п.4 TODO, не зависай. Картируешь
+«как должно» + место расхождения, НЕ объявляешь фикс (live-трасса Codex'а решает). Ценность:
+Codex получает reference ожидаемого wake-пути и быстрее находит, почему NPP-поток не дренит.

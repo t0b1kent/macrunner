@@ -14,6 +14,19 @@ Codex чинит вживую трассами. Твоя задача — СТА
 пробуждения, чтобы дать ему reference «ожидаемое vs наблюдаемое» и место расхождения.
 ВАЖНО: ты картируешь поток по коду, НЕ объявляешь фикс. Не дублируй live-трассы Codex'а.
 
+!!! ПУТИ К ИСХОДНИКАМ (прошлый проход искал не там и не нашёл код):
+Реальные исходники тут — `engine/wine/dlls/...`, НЕ `wine-fork/` (там только patches).
+`engine/` в .gitignore, но ФИЗИЧЕСКИ на диске и читается (grep/read свободно). Конкретно:
+- engine/wine/dlls/win32u/message.c   (wait_message, NtUserMsgWaitForMultipleObjectsEx,
+  peek/get message, process_driver_events, set_queue_fd, QS_DRIVER)
+- engine/wine/dlls/win32u/main.c
+- engine/wine/dlls/winemac.drv/macdrv_main.c
+- engine/wine/dlls/winemac.drv/window.c
+- engine/wine/dlls/winemac.drv/event.c (если есть — event delivery)
+Делай grep/чтение ИМЕННО по engine/wine/dlls/** — реальный file:line доступен.
+upstream-сверка: reports/upstream-wine-11.0-reference/ (win32u/winemac при нужде — github
+wine-mirror wine-11.0). На этот раз дай НАСТОЯЩИЙ fork-vs-stock diff, а не TODO.
+
 === SCOPE (bounded, read-only) ===
 1. Сигнал очереди → пробуждение: как `queue_signal` / запись в queue fd должна разбудить
    GUI-поток. Где GUI-поток ЖДЁТ (NtUserMsgWaitForMultipleObjects → server wait →

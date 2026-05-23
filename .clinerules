@@ -30,6 +30,15 @@
 - Корень workspace = /Volumes/MacOS/MacRunner (не Desktop). Если видишь "Cannot use
   checkpoints in Desktop directory" — переоткрой папку /Volumes/MacOS/MacRunner.
 
+## ИСХОДНИКИ ДВИЖКА (важно — не ищи в неверном месте)
+- Реальный код Wine: **`engine/wine/dlls/<dll>/...`** (напр. `engine/wine/dlls/win32u/message.c`,
+  `engine/wine/dlls/winemac.drv/window.c`). HyperBridge: `engine/hyperbridge/src|include/`.
+- `engine/` в `.gitignore` (12GB), НО физически на диске и ЧИТАЕТСЯ свободно (grep/Read ок).
+  Gitignore НЕ мешает чтению — не делай вывод «исходников нет».
+- `wine-fork/` = ТОЛЬКО patches/entitlements, НЕ дерево исходников. Не ищи там dlls.
+- upstream-эталон (для fork-vs-stock сверки): `reports/upstream-wine-11.0-reference/`
+  (есть comctl32/user32; остальное при нужде тянуть с github wine-mirror wine-11.0).
+
 ## РОЛЬ (read-only по движку)
 - Ты аудитор/визуальная приёмка. НЕ редактируй engine/**/*.c — Codex единственный
   engine-editor. Твои выходы: reports/**, tools/**, swarm/inbox-for-codex/**, profile.

@@ -32,3 +32,26 @@ UI-событий**: app паркуется и не просыпается на 
 ## Приоритет
 После закрытия Find-половины. Это последний нюанс интерактивности; iconы/меню/диалоги
 уже работают. Не code-deadlock — не ищи mutex; ищи event-delivery/wakeup в winemac.drv.
+
+## UPDATE 2026-05-23 20:07 (Claude) — консолидация + ПОПРАВКА
+Class-registration фикс закрыл меню/Find/Open (verified). Остался ТОЛЬКО recurring freeze.
+Новые verified-факты (важно — корректируют направление):
+- **Воспроизводится и через ПРОДУКТОВЫЙ путь** (запуск NPP из MacRunner.app), не только dev-скрипт.
+- **5+ сэмплов: ВСЕ wine-процессы на 0.0% CPU** (npp+wineserver+services+explorer) — чистый блок.
+- **ПОПРАВКА (user-verified): переключение фокуса/приложения НЕ будит окно. Только force-quit.**
+  → Значит это НЕ «окно заснуло в ожидании фокуса». `set frontmost to true` / focus-toggle
+  это НЕ починит — не трать на это циклы (этот угол отработан и отрицателен).
+- Стек всегда parked: main в winemac `nextEvent→mach_msg`, rpcrt4 в server_select. Ни spin,
+  ни mutex-frame не видно.
+
+Это true freeze при 0% CPU, не пробуждаемый фокусом. Stack-sampling и focus-toggle
+исчерпаны — НЕ повторять. Декисив — ТРАССА, а не сэмпл:
+1. Инструментируй winemac.drv event delivery: когда окно «заморожено» и приходит реальный
+   клик/событие от macOS — доходит ли macdrv event до Wine queue, просыпается ли CFRunLoop
+   source, что происходит в обработчике события (доходит ли до SendMessage в Wine-окно и
+   возвращается ли). Лог на каждый этап.
+2. Кандидат: главный поток просыпается на событие, заходит в Wine-обработку (SendMessage/
+   server round-trip во время event handling) и не возвращается, а сэмпл ловит его обратно
+   в nextEvent между попытками — проверь, делает ли main thread server-call при обработке
+   события в замороженном состоянии (трасса входа/выхода, не сэмпл).
+Не focus, не spin, не mutex-frame. Нужна именно event-path трасса в момент freeze.

@@ -764,6 +764,18 @@ ps -axo comm= | awk '/^(wine-preloader|wine64-preloader|winedbg|wineserver)$/{c+
     (`winedump -j export` / spec-check) ПЕРЕД запуском.
   - Перед тем как звать no-window/crash «новым багом» — глянь stderr на
     `unimplemented function ... aborting`; если функция в спеке = это stale build.
+- **Приложение бежит из PREFIX, а не из dist — синкай prefix после КАЖДОЙ пересборки.**
+  Две локации с копиями DLL:
+  - `engine/wine/dist-pure-arm64/lib/wine/...` — куда пишет `make install`.
+  - `artifacts/phase-h/prefix-npp-x64-current/drive_c/windows/system32/` (+winsxs для
+    comctl32_v6) — РЕАЛЬНЫЙ runtime, откуда грузится x64-приложение.
+  `make install` обновляет ТОЛЬКО dist. Если prefix не синкнут — app грузит СТАРУЮ DLL
+  из prefix, а ты смотришь на свежий dist и не понимаешь почему «фикс не применился» /
+  missing export / `c000007b`. Это корень build-error whack-a-mole (потерянные часы).
+  **Правило:** после любой пересборки Wine DLL — синкни prefix из dist (system32 x64 +
+  winsxs comctl32_v6) ПЕРЕД запуском. `verify-build-freshness.sh` теперь проверяет это
+  (`prefix_synced_*`: prefix-копия не старше dist) — гони гейт до прогона, FAIL = синкни.
+  Лаунчер должен делать sync автоматически; не полагайся на ручной copy.
 
 ## Architectural bugs reference
 

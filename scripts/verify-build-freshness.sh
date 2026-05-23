@@ -124,6 +124,39 @@ def check_arch_pair(dll: str, max_skew_sec: float = 900.0) -> None:
 for _dll in ("user32", "shell32", "comctl32", "gdi32"):
     check_arch_pair(_dll)
 
+
+def check_prefix_synced(dll: str) -> None:
+    """The x64 app runs from the PREFIX, not from dist. `make install` writes
+    dist; the prefix has its OWN copies. If the prefix copy is older than dist
+    (not re-synced after a rebuild), the app loads a stale DLL -> missing-export
+    aborts or c000007b. This is the root of the build-error whack-a-mole.
+    Prefix system32 (64-bit) must be >= dist x86_64-windows build.
+    SKIP gracefully if the prefix is absent (running outside that context).
+    """
+    label = f"prefix_synced_{dll}"
+    pfx = root / f"artifacts/phase-h/prefix-npp-x64-current/drive_c/windows/system32/{dll}.dll"
+    dist = root / f"engine/wine/dist-pure-arm64/lib/wine/x86_64-windows/{dll}.dll"
+    mt_pfx, mt_dist = mtime(pfx), mtime(dist)
+    if mt_dist is None:
+        print(f"SKIP {label}: no dist x86_64 {dll}.dll")
+        return
+    if mt_pfx is None:
+        print(f"SKIP {label}: prefix not present (no system32/{dll}.dll)")
+        return
+    if mt_pfx + 0.001 < mt_dist:
+        print(
+            f"FAIL {label}: prefix system32/{dll}.dll older than dist build "
+            f"(re-sync prefix from dist before run — app loads from PREFIX, not dist)"
+        )
+        failures.append(label)
+        return
+    print(f"PASS {label}: prefix system32/{dll}.dll >= dist build")
+
+
+# Prefix-vs-dist sync: app runs from prefix, so a stale prefix = stale runtime.
+for _dll in ("user32", "gdi32", "shell32", "kernelbase", "ntdll", "win32u"):
+    check_prefix_synced(_dll)
+
 if failures:
     print("build_freshness=FAIL count=%d" % len(failures))
     sys.exit(1)

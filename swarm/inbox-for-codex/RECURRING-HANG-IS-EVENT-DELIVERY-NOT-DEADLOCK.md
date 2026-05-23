@@ -78,10 +78,16 @@ deadlock. Следствие: одиночный прогон может «по�
 (много input-событий подряд / открытие-закрытие popup/dialog в цикле) + event-трасса,
 чтобы поймать момент гонки. Не объявляй closed по одному чистому прогону.
 
-## UPDATE4: Cline wake-drain карта (для возврата к freeze)
-reports/engine-audit/EVENT-WAKE-DRAIN-PATH-MAP.md — Cline без доступа к исходникам, в
-основном пересказ ACTIVE-INVESTIGATION. Полезный угол: проверь **thread lifecycle
-continuity** — не выпал ли NPP GUI owner-thread из pump / не вышел ли (RtlExitUserThread/
-x64_thread_entry markers) к моменту фриза; если owner-thread выпал, wake не перейдёт в
-drain при валидных queue_signal. Fork-vs-upstream diff по wait_message/process_driver_events/
-set_queue_fd/QS_DRIVER — TODO (Cline не смог, нет исходников; сделать при возврате к freeze).
+## UPDATE4 (ПЕРЕДЕЛАНО, готово): Cline wake-drain карта с реальным fork-vs-stock
+reports/engine-audit/EVENT-WAKE-DRAIN-PATH-MAP.md — Cline прочитал реальные исходники
+(engine/wine/dlls) + скачал upstream Wine 11.0, сравнил. КЛЮЧЕВОЙ ВЫВОД:
+**логика wake/drain = «инструментированный сток», алгоритмического divergence форка НЕТ**
+(единственное отличие — MacRunner trace-маркеры; server/queue.c QS_DRIVER canonical).
+→ Значит freeze НЕ в логике этого пути. Это РАНТАЙМ: race / thread-ownership / liveness —
+почему именно NPP GUI-thread перестаёт входить в wait_message/process_driver_events при
+правильном коде. НЕ ищи logic-bug в wake/drain; ищи runtime-состояние.
+Готовые file:line для трассы (expected path): set_queue_fd macdrv_main.c:529-543;
+QS_DRIVER server/queue.c:1351-1359; process_driver_events message.c:3401-3443; wait_message
+loop message.c:3499-3573; NtUserMsgWaitForMultipleObjectsEx message.c:3649; macdrv_ProcessEvents
+event.c:562-621. Codex по live-репро сверяет, ГДЕ обрывается для NPP-thread (до wait / в wait /
+между wait и post-driver / в drain) + thread liveness (не выпал ли поток).

@@ -77,3 +77,11 @@ freeze НЕ детерминированный → это RACE/timing в event-d
 deadlock. Следствие: одиночный прогон может «повезти». Лови через стресс
 (много input-событий подряд / открытие-закрытие popup/dialog в цикле) + event-трасса,
 чтобы поймать момент гонки. Не объявляй closed по одному чистому прогону.
+
+## UPDATE4: Cline wake-drain карта (для возврата к freeze)
+reports/engine-audit/EVENT-WAKE-DRAIN-PATH-MAP.md — Cline без доступа к исходникам, в
+основном пересказ ACTIVE-INVESTIGATION. Полезный угол: проверь **thread lifecycle
+continuity** — не выпал ли NPP GUI owner-thread из pump / не вышел ли (RtlExitUserThread/
+x64_thread_entry markers) к моменту фриза; если owner-thread выпал, wake не перейдёт в
+drain при валидных queue_signal. Fork-vs-upstream diff по wait_message/process_driver_events/
+set_queue_fd/QS_DRIVER — TODO (Cline не смог, нет исходников; сделать при возврате к freeze).

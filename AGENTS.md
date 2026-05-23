@@ -743,6 +743,27 @@ ps -axo comm= | awk '/^(wine-preloader|wine64-preloader|winedbg|wineserver)$/{c+
   **Verify timestamps**: `libhyperbridge.a` должен быть свежее изменённого source.
   Эта trap нашли через debugging Heisenbug — source changed for hours, behavior unchanged,
   because static archive was stale.
+- **Wine DLL живёт в ДВУХ арках — пересобирай/ставь ОБЕ, иначе stale-mismatch abort.**
+  Активно редактируемые Wine DLL имеют две сборки:
+  - `dist-pure-arm64/lib/wine/x86_64-windows/<dll>.dll` — PE-сторона, её грузит **x64
+    guest-приложение** (Notepad++ и т.п.) через HyperBridge.
+  - `dist-pure-arm64/lib/wine/aarch64-windows/<dll>.dll` — нативная host-сторона.
+  Если пересобрал/переустановил только одну арку (или оставил трассировочную сборку
+  одной из них), x64-app грузит **СТАРУЮ/битую** DLL.
+  **Symptom-распознавание (НЕ диагностируй как баг кода):**
+  `wine: Call ... to unimplemented function user32.dll.Foo, aborting`, где `Foo` ЕСТЬ
+  в `dlls/<dll>/<dll>.spec` (не stub) = установлена **stale/partial** DLL, окно не
+  поднимается. Это build-регрессия, НЕ отсутствие функции и НЕ регресс твоего фикса.
+  **Правило:**
+  - После правки Wine DLL — `make install` для **ОБЕИХ** арок (x86_64-windows И
+    aarch64-windows), не одной. x64-app грузит x86_64-сторону — её забывать нельзя.
+  - Временные trace/diagnostic сборки → ОБЯЗАТЕЛЬНО откатить и **переустановить чистую**
+    DLL для ОБЕИХ арок ДО любого verify-прогона. Не оставляй traced-DLL установленной.
+  - После install: проверь, что **обе арки свежие и согласованы по timestamp**,
+    `verify-build-freshness.sh` PASS, и нужные экспорты на месте
+    (`winedump -j export` / spec-check) ПЕРЕД запуском.
+  - Перед тем как звать no-window/crash «новым багом» — глянь stderr на
+    `unimplemented function ... aborting`; если функция в спеке = это stale build.
 
 ## Architectural bugs reference
 

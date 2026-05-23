@@ -16,9 +16,16 @@ wine: Call ... to unimplemented function shell32.dll.SHGetFolderPathW, aborting
 ВЫВОД: это build/install регрессия от итеративных пересборок, НЕ icon ABI-фикс,
 НЕ доказательство серых иконок. Icon-фикс не трогать.
 
+## ОБНОВЛЕНО: verify-build-freshness теперь ловит рассинхрон арок
+Добавлена авто-проверка `arch_pair_*`. Текущий прогон уже FAIL:
+- `arch_pair_user32 skew 3524s` (x86_64 stale) ← причина no-window.
+- `arch_pair_gdi32 skew 8314s` (x86_64 stale) ← ЛАТЕНТНАЯ мина, тоже переустанови.
+Чистый PASS гейта = обе арки согласованы. Гони гейт ПОСЛЕ install, до запуска окна.
+
 ## ЗАДАЧА: чистый rebuild+install, поднять окно, потом crop
-1. Чистая пересборка user32 (ОБЕ арки: aarch64-windows И x86_64-windows) и shell32 из
-   текущего исходника, БЕЗ остаточных trace-хуков. make install в dist-pure-arm64.
+1. Чистая пересборка user32, **gdi32**, shell32 — ОБЕ арки (aarch64-windows И
+   x86_64-windows) из текущего исходника, БЕЗ остаточных trace-хуков. make install в
+   dist-pure-arm64. (gdi32 добавлен — гейт показал его x86_64 stale.)
 2. Подтвердить экспорты в установленном x86_64 user32.dll (winedump exports / nm /
    spec-check): BroadcastSystemMessageW, плюс что иконочные NtGdi* fixes на месте.
    shell32: SHGetFolderPathW присутствует.

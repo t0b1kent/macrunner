@@ -1,0 +1,47 @@
+Ты — агент-аудитор MacRunner. READ-ONLY по движку + ОДИН write_to_file. .clinerules:
+НИКАКИХ heredoc / незакрытых кавычек / бэктиков в shell. cd /Volumes/MacOS/MacRunner.
+Файл пиши ТОЛЬКО write_to_file. БЕЗ Wine, БЕЗ сборок, БЕЗ профилирования (это сделает Codex).
+
+=== ЗАЧЕМ ===
+Notepad++ работает, но «не летает» — ощущение тормозов/неплавности. Это GDI/CPU-app,
+GPU ни при чём; причина — накладные расходы трансляции HyperBridge (x64→ARM64). Codex
+будет ОПТИМИЗИРОВАТЬ, но СНАЧАЛА он должен ИЗМЕРИТЬ. Твоя задача — статическая карта
+perf-поверхности: ГДЕ в коде могут быть издержки и КУДА Codex ставить замеры. ВАЖНО:
+ты НЕ объявляешь узкое место (это решает измерение Codex'а) — ты картируешь кандидатов
+и точки инструментирования. «Измерить, не угадать» — святое.
+
+=== SCOPE (bounded, read-only grep/чтение) ===
+1. JIT vs interpreter: где принимается решение JIT-ить блок или идти в interpreter; что
+   ТРИГГЕРИТ interpreter-fallback (непокрытый опкод? холодный блок? порог?). Файлы:
+   engine/hyperbridge/src/hb_jit.c, hb_interpreter.c, hb_decode_x64.c, hb_lift_x64.c,
+   include/hb_runtime_cache.h, hb_decoder.h.
+2. Translation/AOT cache: персистентный ли (между запусками) или per-process; warm/cold;
+   eviction; промахи → перекомпиляция. Файлы: engine/hyperbridge/src/hb_aot_cache.c,
+   include/hb_cache.h, hb_cache_eviction.h, hb_cache_dir.h, hb_runtime_cache.h.
+3. Syscall/unixlib boundary: как x64-guest зовёт host (thunks/dispatcher) — стоимость на
+   вызов, есть ли горячий путь, не молотит ли что-то на каждый syscall. Файлы:
+   dlls/ntdll/unix/macrunner_hb.c (call_direct_native_target/import thunk), signal path.
+4. Непокрытые опкоды → interpreter в ГОРЯЧЕМ пути: сверь с
+   reports/engine-audit/HYPERBRIDGE-OPCODE-COVERAGE-ATLAS.md — какие частые опкоды
+   GDI/CRT/event-loop падают в interpreter (медленно).
+5. present/flush (win32u→winemac) — ЛЕГКО, только отметить как кандидат, не углубляться.
+
+СВЕРКА с существующим (НЕ дублировать, ссылаться): reports/HYPERBRIDGE-BENCH.md,
+HYPERBRIDGE-TRANSLATION-CACHE.md, HYPERBRIDGE-LAZY-FLAGS-BENCH.md, HYPERBRIDGE-FLAGS-BASELINE.md
+— что там уже измерено/известно, чтобы Codex не переделывал.
+
+=== ВЫХОД (write_to_file, ОДИН файл) ===
+reports/engine-audit/HYPERBRIDGE-PERF-SURFACE-MAP.md
+- Краткий вывод (2-3 строки): топ-кандидаты издержек по КОДУ (с пометкой «гипотеза,
+  меряет Codex»).
+- Таблица: компонент | файл:строка | что делает | почему может быть дорого | КАК Codex
+  измерит (где счётчик/таймер/трасса) | гипотеза оптимизации.
+- Раздел «Что уже известно из bench/cache отчётов» (ссылки, без дублирования).
+- Раздел «Порядок замеров для Codex» (что мерить первым в NPP-сценарии: открытие меню/
+  диалога, набор текста).
+
+=== ГРАНИЦЫ ===
+READ-ONLY, только grep/чтение + ОДИН write_to_file. Без Wine/сборок/профилирования/
+многострочного shell. Если велико — сделай пп.1-3 полно, остальное TODO, не зависай.
+НЕ объявляй «вот это тормозит» без замера — только «кандидат + куда мерить». Ценность:
+Codex дойдёт до perf и сразу мерит точечно, а не вслепую.

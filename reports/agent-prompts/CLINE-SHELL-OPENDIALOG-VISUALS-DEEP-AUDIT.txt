@@ -1,0 +1,61 @@
+Ты — агент-аудитор MacRunner. READ-ONLY по движку + ОДИН write_to_file. .clinerules
+(см. раздел «ИСХОДНИКИ ДВИЖКА»): реальный код в engine/wine/dlls/ (НЕ wine-fork — там
+patches). engine/ в .gitignore, но ЧИТАЕТСЯ свободно. cd /Volumes/MacOS/MacRunner.
+Файл пиши ТОЛЬКО write_to_file. БЕЗ Wine/сборок/многострочного shell.
+
+=== КОНТЕКСТ ===
+Notepad++ запускается через продукт MacRunner.app. Open-диалог открывается, СПИСОК
+файлов есть (autoCompletion/plugins/notepad++.exe…), НО: (1) ЛЕВАЯ namespace-панель
+(Favorites/Desktop/My Computer tree) ПУСТАЯ; (2) у строк списка НЕТ иконок файлов/папок.
+Иконки тулбара мы уже починили (GDI blit syscall ABI) — значит icon-рендер в принципе
+работает; здесь отдельный shell-путь. Codex сейчас на другом; тебе — глубокая статическая
+карта + fork-vs-stock, чтобы Codex потом чинил точечно.
+
+ГЛАВНЫЙ ВОПРОС каждого пункта: это РЕГРЕССИЯ нашего форка или ОГРАНИЧЕНИЕ стока Wine 11?
+(если сток тоже так — это не наш баг, и фикс другого класса). Делай РЕАЛЬНУЮ сверку с
+upstream (reports/upstream-wine-11.0-reference/ или скачай wine-mirror wine-11.0 в /tmp,
+как делал для wake/drain).
+
+=== ЧАСТЬ A — левая namespace-панель (пустая) ===
+Файлы: engine/wine/dlls/shell32/ebrowser.c (CoCreateInstance(CLSID_NamespaceTreeControl),
+INameSpaceTreeControl2 caller + event sink), engine/wine/dlls/comdlg32/itemdlg.c +
+filedlg.c (какой диалог реально открывается — Vista IFileDialog/itemdlg или classic
+filedlg; где он создаёт левую панель/places bar).
+Выясни:
+1. Есть ли в дереве РЕАЛЬНАЯ реализация INameSpaceTreeControl2 (не только caller/sink в
+   ebrowser.c)? grep CLSID_NamespaceTreeControl, INameSpaceTreeControl, по всему shell32.
+2. Что делает ebrowser.c когда CoCreateInstance не находит impl — пустая панель = ожидаемо?
+3. Сток Wine 11: реализован ли там этот control или тоже заглушка? (это решает: наш баг
+   или Wine-gap). Дай вывод явно.
+4. Если classic filedlg.c — там «places bar» (слева кнопки Desktop/My Computer), не tree.
+   Проверь, какой путь активен для этого диалога NPP и где его левая часть рисуется.
+
+=== ЧАСТЬ B — иконки в списке файлов/папок (отсутствуют) ===
+Файлы: engine/wine/dlls/shell32/shlview.c (Shell_GetImageLists, I_IMAGECALLBACK, LVN_GETDISPINFO,
+SHMapPIDLToSystemImageListIndex), engine/wine/dlls/shell32/iconcache.c (системный imagelist,
+SIC_*), engine/wine/dlls/shell32/shell32_main.c (SHGetFileInfo path).
+Выясни (file:line каждое звено):
+1. Цепочка: создание system image list → присвоение listview (Shell_GetImageLists) →
+   вставка строк с I_IMAGECALLBACK → LVN_GETDISPINFO → SHMapPIDLToSystemImageListIndex →
+   индекс иконки. Где индекс мог бы получиться невалидным/пустым.
+2. Откуда берутся сами иконки (SIC_GetIconIndex / extract → тот же icon-load путь, что мы
+   чинили? или другой). Связано ли с PNG/ICO декодом, который уже чинён.
+3. Fork-vs-stock: трогал ли наш форк этот listview/icon-callback путь, или он сток
+   (тогда искать ниже — imagelist draw / SHGetFileInfo).
+4. Где Codex поставит трассу, чтобы увидеть: index valid? imagelist not empty? draw вызван?
+
+=== ВЫХОД (write_to_file, ОДИН файл) ===
+reports/engine-audit/SHELL-OPENDIALOG-VISUALS-MAP.md
+- Краткий вывод: для A и для B — НАШ баг или Wine-gap (с обоснованием из fork-vs-stock).
+- Таблица A: звено | engine/wine/dlls file:line | что делает | форк vs сток | гипотеза | где Codex мерит.
+- Таблица B: то же по icon-цепочке.
+- Раздел «Fork vs upstream 11.0»: что реально сверил (какие функции/строки), где расхождение.
+- Раздел «Приоритет/класс фикса»: что чинибельно (вероятно B-иконки), что Wine-gap
+  (вероятно A-namespace-tree → отдельное решение/низкий приоритет).
+- Раздел «Что Codex проверит трассой» (по приоритету).
+
+=== ГРАНИЦЫ ===
+READ-ONLY (grep/read по engine/wine/dlls/**) + ОДИН write_to_file. БЕЗ Wine/сборок.
+Дай НАСТОЯЩИЙ fork-vs-stock (как для wake/drain), не TODO. Если велико — часть B (иконки,
+вероятно чинибельно) сделай ПОЛНО первой, A — следом. Не зависай; частично + запись лучше
+зависа. НЕ объявляй фикс — карта + «наш баг vs Wine-gap» + где мерить.

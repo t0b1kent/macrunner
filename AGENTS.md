@@ -4,6 +4,39 @@
 Любой агент, который потерял контекст (compaction, session restart, новая сессия),
 должен прочитать его прежде чем запускать команды.
 
+## 📍 CURRENT WORKSPACE — внутренний SSD only
+
+**С 2026-05-25 активная рабочая копия MacRunner находится здесь:**
+
+`/Users/timurtoby/Documents/MacRunner/Main/MacRunner`
+
+Все новые команды, патчи, сборки, smoke-прогоны и handoff updates выполнять
+только в этой директории. Старый путь `/Volumes/MacOS/MacRunner` считать внешней
+архивной/устаревшей копией; не запускать там build/test/fix без явного запроса
+пользователя.
+
+На 2026-05-25 `/Volumes/MacOS/MacRunner` может существовать как compatibility
+symlink на внутреннюю копию, чтобы старые живые Codex-сессии с `--cd
+/Volumes/MacOS/MacRunner` не роняли hooks с `os error 2`. Это не меняет
+canonical workspace: все команды всё равно запускать из внутреннего пути.
+
+Если старый handoff или инструкция содержит `cd /Volumes/MacOS/MacRunner`,
+заменять его на:
+
+`cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner`
+
+### Build cache rule
+
+Перед сборками source-ить project env:
+
+`. ./config/env.sh`
+
+`config/env.sh` выставляет `MACRUNNER_ROOT` на внутреннюю canonical copy и
+настраивает `CCACHE_DIR=$MACRUNNER_ARTIFACTS_ROOT/ccache` / `CCACHE_BASEDIR`.
+`ccache` установлен и должен использоваться для Wine/HyperBridge rebuilds.
+Отключать его только явно через `MACRUNNER_USE_CCACHE=0` при диагностике самого
+cache/compiler behavior.
+
 ## 🎯 ZEROTH PRINCIPLE — Native, root-cause, seamless
 
 **MacRunner существует чтобы Windows-приложения работали на Mac как нативные.
@@ -226,8 +259,21 @@ ntdll.so→прогон) ДОРОГОЙ. По одной инструкции = 
 ### Параллелизм закрытия дыр (swarm doctrine, см. doc 96)
 - Разведка/группировка/fixpacks/test-matrix — параллельно, read-only (Кими/Cline,
   8-12 агентов когда доступны). Disjoint output в reports/hyperbridge-gaps/.
-- Фикс кода — ТОЛЬКО Codex, ОДНА family за раз. НИКОГДА 2 агента на hb_decode_x64.c/
-  hb_lift_x64.c/hb_interpreter.c/hb_ir.h — это merge hell.
+- Фикс кода CPU-движка — ТОЛЬКО Codex, ОДНА family за раз. НИКОГДА 2 агента на
+  hb_decode_x64.c/hb_lift_x64.c/hb_interpreter.c/hb_ir.h — это merge hell.
+
+### Разделение владения по подсистемам (с 2026-05-28)
+- **Codex** = CPU-движок: `engine/hyperbridge/**`, `engine/wine/dlls/**` (HyperBridge,
+  Wine, WOW64, PE32). Single-editor этих файлов.
+- **Kimi** = ГРАФИЧЕСКОЕ ЯДРО (имплементатор, не просто research): `engine/graphics/**`
+  (DXMT/winemetal/dist/build), `app/game_runtime/**`, графический smoke (`tools/smoke`,
+  `dx11_*`), game-profiles. Работает в СВОЁМ worktree на внешнем golden. Пишет код,
+  собирает, гоняет, чинит блокеры до реального пикселя/игры. См.
+  `docs/KIMI-MANDATE-graphics-core-implementer-SHIP-DONT-REPORT.md`.
+- Граница: ни один не правит файлы другого (только read-only сверка) → нет merge-hell.
+  Графика и CPU-движок — disjoint подсистемы, потому параллелятся безопасно.
+- Kimi: deliverable = РАБОТАЮЩИЙ КОД + пиксели, НЕ research-отчёты. Один живой
+  GRAPHICS-CORE-STATUS.md + коммиты, без новых *-MAP/*-AUDIT отчётов.
 
 ### 🛑 ИСПОЛЬЗУЙ acceleration pipeline (Codex — обязательно)
 Swarm построил конвейер — НЕ ищи/не валидируй вручную, пользуйся:
@@ -647,9 +693,9 @@ relevant за один trace pass (не открывай каждый отдел
 ## Первое действие в каждой сессии
 
 ```bash
-cd /Volumes/MacOS/MacRunner
+cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 . ./config/env.sh
-pwd      # должно быть /Volumes/MacOS/MacRunner
+pwd      # должно быть /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 ```
 
 Если `pwd` показывает `/Users/timurtoby/Documents/MacRunner` — это **Obsidian vault, не код**.
@@ -659,7 +705,7 @@ pwd      # должно быть /Volumes/MacOS/MacRunner
 
 | Что | Путь |
 |---|---|
-| Repo root | `/Volumes/MacOS/MacRunner` |
+| Repo root | `/Users/timurtoby/Documents/MacRunner/Main/MacRunner` |
 | Wine dist (ARM64-native, HyperBridge lane) | `engine/wine/dist-pure-arm64/` |
 | Wine build (ARM64-native) | `engine/wine/build-pure-arm64/` |
 | Wine dist (legacy / non-HB) | `engine/wine/dist/` |

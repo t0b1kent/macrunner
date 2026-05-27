@@ -275,6 +275,13 @@ ntdll.so→прогон) ДОРОГОЙ. По одной инструкции = 
 - Kimi: deliverable = РАБОТАЮЩИЙ КОД + пиксели, НЕ research-отчёты. Один живой
   GRAPHICS-CORE-STATUS.md + коммиты, без новых *-MAP/*-AUDIT отчётов.
 
+### x64 golden = WORKING ORACLE для PE32/x86 (read-only)
+PE32/x86 баг (опкод, control-flow, return/callback, syscall/WOW64 boundary) → СНАЧАЛА
+подглядеть, как тот же путь решён в РАБОТАЮЩЕМ x64 (golden/HyperBridge x64), и зеркалить
+рабочий подход, а не изобретать. x64 NPP ходил целиком → большинство аналогов уже решены.
+Подглядывание = READ-ONLY (x64 golden не править). Уже сработало: x86 SSE-семья скопирована
+с x64-пути. Применять для PC=0/return-target, callback-routing, BOP-return и т.п.
+
 ### 🛑 ИСПОЛЬЗУЙ acceleration pipeline (Codex — обязательно)
 Swarm построил конвейер — НЕ ищи/не валидируй вручную, пользуйся:
 - **Очередь задач**: reports/hyperbridge-gaps/NEXT-CODEX-ORDER.md + готовые брифы в

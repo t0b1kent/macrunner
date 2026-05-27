@@ -282,6 +282,17 @@ PE32/x86 баг (опкод, control-flow, return/callback, syscall/WOW64 bounda
 Подглядывание = READ-ONLY (x64 golden не править). Уже сработало: x86 SSE-семья скопирована
 с x64-пути. Применять для PC=0/return-target, callback-routing, BOP-return и т.п.
 
+### 🛑 KILL ТОЛЬКО СВОЁ Wine-дерево (Kimi↔Codex параллельно — не убивай чужое)
+Kimi (графика, внешний worktree) и Codex (PE32, локальный) гоняют Wine ОДНОВРЕМЕННО на
+одной машине. ГЛОБАЛЬНЫЙ `pkill -9 wine` / `pkill -9 wineserver` / `pkill -f notepad`
+убивает Wine ДРУГОГО агента мид-прогон → ложные «краши»/потеря прогона у соседа.
+ПРАВИЛО: убивай только СВОЙ prefix-tree:
+- `WINEPREFIX="$PREFIX" "$WINE_DIST/bin/wineserver" -k` (чисто гасит wineserver+wine ЭТОГО
+  prefix), ИЛИ pkill scoped по СВОЕМУ winetemp/пути (`pkill -f "$PREFIX"` или по своему
+  winetemp-dir), но НЕ голый `pkill -9 wine`.
+- Prefix'ы у Kimi и Codex в разных корнях → wineserver-сокеты раздельны; коллизия ТОЛЬКО
+  от глобального kill по имени. Не делай его.
+
 ### 🛑 ИСПОЛЬЗУЙ acceleration pipeline (Codex — обязательно)
 Swarm построил конвейер — НЕ ищи/не валидируй вручную, пользуйся:
 - **Очередь задач**: reports/hyperbridge-gaps/NEXT-CODEX-ORDER.md + готовые брифы в

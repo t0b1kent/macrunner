@@ -1,91 +1,112 @@
-# KIMI-TASK — DXMT Bring-Up: First Pixel → Game-Readiness MEGA Master Brief
+# KIMI-TASK — DXMT Bring-Up: First Pixel → MacRunner Game Runtime MEGA Master Brief
 
-**Date:** 2026-05-28
+**Date:** 2026-05-28 (v2 — исправлено: цель = x86_64 PE через HyperBridge, НЕ aarch64-native)
 **Agent:** Kimi (read-only research/forensics; NO engine edits)
-**Working copy:** DXMT worktree `/Volumes/MacOS 1/MacRunner-dxmt-truth-gate-20260527/`
-(внешний golden). НЕ трогать PE32/WOW64/xtajit/HyperBridge активного Codex-лейна; x64
-golden — только read-only.
-**Predecessors:** `reports/research/DXMT-PRESENT-PATH-MAP-20260527.md` (present-path
-размечен), `reports/DXMT-IMPLEMENTATION-MARATHON-20260527.md` (smoke-харнесс собран, упёрся
-в краш до D3D11 init).
+**Working copy:** DXMT worktree `/Volumes/MacOS 1/MacRunner-dxmt-truth-gate-20260527/`.
+НЕ трогать PE32/WOW64/xtajit/HyperBridge активного Codex-лейна; x64 golden — read-only.
+**Predecessors:** `reports/research/DXMT-PRESENT-PATH-MAP-20260527.md`,
+`reports/DXMT-IMPLEMENTATION-MARATHON-20260527.md`.
 
 ---
 
-## Mission
-Present-path размечен и DLL деплоятся, но truth-gate НЕ пройден: нативный aarch64
-`dx11_clear_present` **крашится ДО инициализации D3D11** (Level 3→4, WINE_RUNTIME_CRASH).
-Этот MEGA-бриф ведёт от текущего краша к **первому реальному пикселю на Metal** и дальше
-к **карте готовности к играм**. Read-only research → даёт Codex implementation lane.
+## ЦЕЛЕВАЯ ЦЕПОЧКА (north star — как можно нативнее)
+```
+Windows x64 game.exe
+ → ARM64 Wine host
+ → HyperBridge x64 (исполняет CPU-код игры)
+ → x86_64-windows D3D frontend DLLs = DXMT (НЕ WineD3D, НЕ OpenGL fallback)
+ → (WINE_UNIX_CALL) → aarch64-unix winemetal.so (нативный ARM64 Metal backend)
+ → Apple GPU
+```
+Игра остаётся Windows x64; горячая графика уходит в нативный ARM64 D3D→Metal, НЕ в Rosetta
+и НЕ в WineD3D/OpenGL. Verified = реальный непустой кадр в CG-window capture + метрики.
 
-Принцип: корректный D3D→Metal слой (как стоковый GDI-рендер), НЕ подгонка. Verified =
-реальный непустой кадр в CG-window capture, НЕ «DLL загрузились», НЕ «процесс не упал».
+## ПОПРАВКА к v1 (важно — НЕ повторять)
+- aarch64-native PE smoke = ТУПИК: тестирует не ту конфигурацию (игры — x86_64 PE, не
+  aarch64 PE) и упёрся в посторонний `WINE_UCRT_ARM64_BUG` (`vsnscanf_l`). НЕ идти туда.
+- Правильный smoke = **x86_64 `dx11_*_nocrt.exe` через HyperBridge** с НАСТОЯЩИМ DXMT.
+- Verified-факт (Claude): x86_64-windows DXMT DLL РЕАЛЬНО собраны и лежат в
+  `engine/graphics/dist/dxmt/x86_64-windows/` (d3d11 5.28MB, dxgi, d3d10core, winemetal —
+  символы `dxmt::`, не WineD3D). НО в рантайме грузился WineD3D → wined3d.dll → opengl32
+  → non-application-target. Причина: DXMT не задеплоен/не оверрайднут + НЕТ `x86_64-unix/`.
 
 ---
 
-## PHASE A — Forensics: краш ДО D3D11 init (ИММЕДИАТНЫЙ блокер первого пикселя)
-Цель: назвать ТОЧНУЮ причину, почему нативный aarch64 `dx11_clear_present` падает до
-D3D11 init. Изолированно от HyperBridge (нативный aarch64 Wine, как и рекомендовал Kimi).
-Исследовать (file:line + evidence):
-1. CRT/startup нативного aarch64 PE: static vs dynamic CRT (марафон пробовал static CRT —
-   результат?), entry point, какой первый вызов падает (lldb backtrace из run-dir
-   `reports/phase-h/dx11_clear_present-20260527-17*`).
-2. DLL dependency chain нативного dx11_tri: что грузится до D3D11CreateDevice; падает ли
-   на загрузке/резолве (d3d11→dxgi→winemetal→winemac.so symbols) или в самом startup.
-3. winemetal.so ↔ winemac.so symbol resolution (из present-path map 2.4-2.5): резолвятся
-   ли символы; не тут ли краш.
-4. Классифицировать: краш в (a) CRT/PE-startup, (b) DLL-load/resolve, (c) D3D11 device
-   create, (d) swapchain/CreateMetalViewFromHWND. Дать точку + что Codex чинит/где.
-Выход: точная локализация краша + гипотеза фикса в правильном слое (НЕ обход).
+## PHASE A — Реальный DXMT x86_64 путь загружается (ИММЕДИАТНЫЙ блокер MVP-1)
+Цель: чтобы x86_64 `d3d11.dll`/`dxgi.dll` в рантайме был DXMT, а НЕ WineD3D, и unixlib-
+граница до ARM64 winemetal.so работала. Исследовать (read-only, file:line, спека для Codex):
+1. **Deploy x86_64 DXMT в prefix:** скопировать `dxmt/x86_64-windows/{d3d11,dxgi,d3d10core,
+   winemetal}.dll` в prefix system32; добавить в sync-prefix-from-dist.sh. + DLL overrides
+   (`d3d11,dxgi,d3d10core,winemetal = native,builtin`), чтобы DXMT выигрывал у встроенного
+   WineD3D. Проверить, что загруженный d3d11 = DXMT (символы dxmt::), не WineD3D (нет
+   импорта wined3d/opengl32).
+2. **`x86_64-unix/winemetal.so` — СОЗДАТЬ как symlink → `aarch64-unix/winemetal.so`**
+   (loader-путь для WINE_UNIX_CALL; это НЕ Rosetta, это ARM64 .so по x86_64-unix имени).
+   Сейчас `x86_64-unix/` ОТСУТСТВУЕТ. Проверь по исходнику Wine loader, что он принимает
+   ARM64 .so по этому пути для x86_64 PE unixlib (как именно резолвится __wine_unix_call).
+3. **x86_64 winemetal.dll → winemetal.so boundary:** из present-path map (2.4-2.5) —
+   как PE-thunk x86_64 winemetal.dll вызывает unix winemetal.so через HyperBridge/WINE_UNIX_CALL;
+   что должно быть на месте, чтобы вызов прошёл, а не упал в non-application-target.
+4. Классифицировать оставшийся краш `dx11_clear_present` (марафон, L3→4) ИМЕННО на
+   x86_64-через-HyperBridge пути с НАСТОЯЩИМ DXMT (не WineD3D, не aarch64): где падает —
+   CRT/startup, DLL-load, D3D11CreateDevice, swapchain/CreateMetalViewFromHWND.
+Выход: точная спека «что собрать/слинковать/задеплоить + DLL overrides» + локализация
+оставшегося краха. Это разблокирует MVP-1.
+
+## MVP-1 (ближайшая цель truth-gate)
+x86_64 `dx11_tri_nocrt.exe` (или dx11_clear_present) через HyperBridge с НАСТОЯЩИМ DXMT:
+загрузился exe → DXMT d3d11/dxgi (не WineD3D) → D3D11CreateDevice → swapchain →
+Draw/Present → окно видно через CoreGraphics (непустой кадр). Уровни L1..L5, не засчитывать
+без доказательства. Корпус: dx11_clear_present → dx11_triangle → dx11_texture_quad →
+dx11_many_draws.
 
 ## PHASE B — D3D11 → Metal feature-coverage matrix
-Карта: что DXMT реально реализует vs стаб vs отсутствует, от первого треугольника к игре.
-По исходнику DXMT (engine/graphics/.../dxmt) + present-path map:
-- Device/Context: D3D11CreateDevice, immediate/deferred context.
-- Swapchain/Present: что покрыто (из present-path), флипы/режимы.
-- Resources: buffers, textures (2D/3D/cube), views (SRV/RTV/DSV/UAV), mapping.
-- **Shaders (ядро сложности):** DXBC→? путь (AIR/Metal/MSL), какой компилятор/транслятор,
-  что покрыто (VS/PS/CS/GS/HS/DS), где дыры. Это главный риск для игр — оцени глубоко.
-- Draw/State: draw/drawIndexed/instanced, blend/depth/raster/sampler state, input layout.
-- Таблица: фича | DXMT статус (есть/стаб/нет) | file:line | риск для игр | reference.
+Что DXMT реально реализует vs стаб vs нет (по исходнику dxmt): Device/Context, Swapchain/
+Present, Resources (buffers/textures/SRV/RTV/DSV/UAV/map), **Shaders DXBC→AIR/Metal — ядро
+сложности** (VS/PS/CS/GS/HS/DS, какой транслятор, дыры), Draw/State. Таблица: фича | статус
+| file:line | риск для игр | reference.
 
-## PHASE C — Game-readiness ladder + smoke corpus
-Конкретный корпус проб (по лестнице Obsidian 111), что каждая проверяет:
-1. clear_present (есть) → 2. triangle (есть) → 3. textured quad → 4. many-draws/instancing
-→ 5. маленькая standalone DX11-игра БЕЗ launcher/DRM/anti-cheat.
-Для каждой: что exercise-ит (какие фичи из Phase B), smoke-чеклист (device/swapchain/
-present/shader/непустой кадр/crash), как захватить (cg_window_capture). Назови конкретных
-кандидатов на ступень 5 (мелкие DX11-демки/инди без launcher).
+## PHASE C — Game-readiness ladder (x64 D3D11 first)
+После MVP-1 PASS, по лестнице (Obsidian 111). Первые ИГРОВЫЕ цели — x64 D3D11 Windows-only:
+1. Risk of Rain 2  2. Skyrim Special Edition  3. Fallout 4  4. Dark Souls III.
+(GTA Vice City classic = 32-bit → ПОСЛЕ PE32/WOW64 лейна, не сюда.)
+Для каждой: что exercise-ит из Phase B, smoke-чеклист, что мешает (launcher/CRT/TLS/audio/
+input/services — почему сразу игру не берём, сначала smoke). Без launcher/DRM/anti-cheat
+для первой настоящей.
 
-## PHASE D — Reference backends (что заимствовать на дыры)
-DXVK / DXMT upstream / MoltenVK / DXVK-native: для каждой дыры из Phase B — есть ли готовое
-решение в reference (REFERENCE-BACKENDS.md уже есть в worktree — свериться, не дублировать),
-что переносимо, что нет (лицензия/архитектура).
+## PHASE D — Reference backends (на дыры)
+DXVK / DXMT upstream / MoltenVK: для каждой дыры Phase B — что заимствовать (свериться с
+REFERENCE-BACKENDS.md в worktree, не дублировать).
+
+## PHASE E — MacRunner Graphics Core (north star, после первого пикселя)
+Не просто DXMT, а Game Runtime с проверяемыми метриками. Картировать, ГДЕ это внедрять:
+- **Telemetry:** draw calls, Present count, shader compile ms, pipeline miss, CPU bridge
+  calls, выбранный backend, bottleneck (CPU/GPU/shader/texture-upload/bridge).
+- **Caches:** shader cache + pipeline cache (DXMT уже имеет ShaderCache — где, как
+  персистить/prewarm).
+- **Game profiles:** game_id/exe-hash → best backend, DLL overrides, shader prewarm list,
+  pipeline hints, known-broken paths, fastpath flags, MetalFX/render scale. При повторном
+  запуске MacRunner узнаёт игру → правильный backend + прогретые кэши + меньше фризов.
+- HyperBridge-aware fast thunks для горячих CPU↔GPU границ.
+Это research-карта (где хуки телеметрии/кэша/профилей), не имплементация.
 
 ---
 
-## Truth-gate дисциплина (анти-fake-PASS)
-- ПЕРВЫЙ пиксель — нативно aarch64 под ARM64 Wine, БЕЗ HyperBridge (изоляция GPU-пути от
-  x86-трансляции; x86-игры — позже, отдельный слой).
-- Verified = непустой кадр в CG-window capture (tools/cg_window_capture.swift +
-  analyze_capture.py), НЕ загрузка DLL, НЕ «процесс жив».
-- Уровни: 1 DLL загружены → 2 device create → 3 swapchain → 4 present → 5 непустой кадр.
-  Сейчас застряли 3→4 (краш до init). Не засчитывать уровень без доказательства.
-
 ## Output artifacts (write_to_file)
-- `reports/research/DXMT-BRINGUP-FORENSICS-AND-COVERAGE-<date>.md` — Phases A-D, таблицы
-  file:line, локализация краша, feature-matrix, game-ladder, reference-mapping.
-- Раздел «Handoff to Codex».
+`reports/research/DXMT-X64-PATH-AND-GRAPHICS-CORE-<date>.md` — Phases A-E, таблицы file:line,
+deploy/override/symlink спека, локализация краха на x86_64-DXMT пути, feature-matrix,
+game-ladder, graphics-core hook map. + раздел «Handoff to Codex».
 
 ## Handoff to Codex
-1. Порядок Codex: (A) фикс краша до D3D11 init → первый пиксель (truth-gate L5), (B) закрыть
-   приоритетные дыры feature-matrix под ступень ladder, (C) подниматься по лестнице с smoke.
-2. Не смешивать с PE32-лейном на одном дереве (урок регрессии x64, Obsidian 114) — DXMT в
-   своём worktree/golden.
-3. Verified = реальный кадр; обновить ENGINE-CHANGE-JOURNAL + ACTIVE-INVESTIGATION
+1. Порядок: (A) реальный DXMT x86_64 грузится + x86_64-unix symlink + override WineD3D →
+   (MVP-1) первый пиксель через HyperBridge → (B) дыры feature-matrix под ladder → (C)
+   подъём по лестнице → (E) Graphics Core слой.
+2. Не смешивать с PE32-лейном на одном дереве (Obsidian 114) — DXMT в своём worktree.
+3. Verified = реальный кадр + метрики; обновить ENGINE-CHANGE-JOURNAL + ACTIVE-INVESTIGATION
    (графический лейн отдельной секцией).
 
 ## Границы Kimi
 READ-ONLY. Реальный fork-vs-stock по исходникам (engine/..., не wine-fork/). Не объявлять
-«работает» без present-доказательства. write_to_file для отчёта, без heredoc/опасного shell.
-Если объём велик — Phase A (краш, разблокировка) ПОЛНОСТЬЮ первой, B/C/D следом; частично
-+ запись лучше зависа.
+«работает» без present-доказательства (непустой кадр, не «DLL есть»). write_to_file, без
+heredoc/опасного shell. Если велико — Phase A (разблокировка MVP-1) ПОЛНОСТЬЮ первой,
+B/C/D/E следом; частично + запись лучше зависа.

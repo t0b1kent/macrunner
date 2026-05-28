@@ -5,10 +5,10 @@ import Testing
 struct SettingsTests {
     @Test @MainActor func defaultSettings() {
         let s = AppSettings.default
-        #expect(s.macRunnerRoot == "/Volumes/MacOS/MacRunner")
+        #expect(s.macRunnerRoot == "/Users/timurtoby/Documents/MacRunner/Main/MacRunner")
         #expect(s.defaultTimeout == 45)
         #expect(s.defaultD3DBackend == "none")
-        #expect(s.bottlesDirectory == "/Volumes/MacOS/MacRunner/bottles")
+        #expect(s.bottlesDirectory == "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/bottles")
     }
 
     @Test @MainActor func persistAndLoad() throws {

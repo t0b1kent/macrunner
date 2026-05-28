@@ -17,7 +17,7 @@ struct AppSettings: Codable, Sendable {
     var telemetryOptIn: Bool? = nil
     var communityFixSharingOptIn: Bool? = nil
 
-    static let defaultRoot = "/Volumes/MacOS/MacRunner"
+    static let defaultRoot = "/Users/timurtoby/Documents/MacRunner/Main/MacRunner"
 
     static let `default` = AppSettings(
         macRunnerRoot: defaultRoot,

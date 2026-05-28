@@ -67,7 +67,7 @@ struct ShippablePhase2Tests {
 
     @Test func cachePrewarmPlanUsesRootScript() {
         let plan = TranslationCacheService().prewarmPlan(programPath: "/tmp/game.exe", settings: .default)
-        #expect(plan.currentDirectory == "/Volumes/MacOS/MacRunner")
+        #expect(plan.currentDirectory == "/Users/timurtoby/Documents/MacRunner/Main/MacRunner")
         #expect(plan.arguments.contains("./scripts/run-windows-app.sh"))
     }
 

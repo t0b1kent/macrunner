@@ -37,10 +37,10 @@ struct ControlCenterWorldsTests {
         let planner = ControlCenterBottlePlanner()
         let template = try #require(planner.templates().first { $0.id == "business-1c" })
         let plan = planner.planCreate(template: template, name: "1C Main", settings: .default)
-        #expect(plan.bottlePath.hasPrefix("/Volumes/MacOS/MacRunner/bottles/"))
+        #expect(plan.bottlePath.hasPrefix("/Users/timurtoby/Documents/MacRunner/Main/MacRunner/bottles/"))
         #expect(plan.invocations.first?.executable == "/usr/bin/env")
         #expect(plan.invocations.first?.arguments.contains("wineboot" ) == true)
-        #expect(plan.invocations.first?.currentDirectory == "/Volumes/MacOS/MacRunner")
+        #expect(plan.invocations.first?.currentDirectory == "/Users/timurtoby/Documents/MacRunner/Main/MacRunner")
     }
 
     @Test func profileStoreLoadsSchemaVariants() throws {
@@ -83,7 +83,7 @@ struct ControlCenterWorldsTests {
         let settings = AppSettings.default
         let steps = ControlCenterFirstLaunchPlanner().steps(settings: settings)
         let plan = ControlCenterPackagingPlanner().makePlan(settings: settings)
-        #expect(steps.contains { $0.id == "bottles" && $0.detail == "/Volumes/MacOS/MacRunner/bottles" })
+        #expect(steps.contains { $0.id == "bottles" && $0.detail == "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/bottles" })
         #expect(plan.invocations.first?.executable.contains("app/macr-control-center/scripts/package-control-center.sh") == true)
         #expect(plan.excludedPaths.contains("engine"))
         #expect(plan.excludedPaths.contains("wine-fork"))

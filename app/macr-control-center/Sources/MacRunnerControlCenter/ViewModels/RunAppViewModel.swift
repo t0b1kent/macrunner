@@ -43,14 +43,18 @@ final class RunAppViewModel: ObservableObject {
         args += ["--json", jsonPath]
         jsonOutputPath = jsonPath
 
-        var env: [String: String] = [:]
+        var env = EngineEnv(settings: settings).processEnvironment()
         if let appEnv = app.env {
-            for (k, v) in appEnv {
-                env[k] = v
+            for key in appEnv.keys.sorted() {
+                guard let value = appEnv[key] else { continue }
+                args += ["--env", "\(key)=\(value)"]
+                env[key] = value
             }
         }
 
-        runner.run(command: script, arguments: args, workingDirectory: root, environment: env, timeout: TimeInterval(app.timeout ?? settings.defaultTimeout))
+        let launcherTimeout = app.timeout ?? settings.defaultTimeout
+        let runnerTimeout = TimeInterval(launcherTimeout + 90)
+        runner.run(command: script, arguments: args, workingDirectory: root, environment: env, timeout: runnerTimeout)
 
         Task {
             while runner.isRunning {

@@ -1,0 +1,17 @@
+[
+  {
+    "id": "external_test_pattern",
+    "regex": "EXTERNAL_TEST_PATTERN:.*?sample",
+    "category": "test",
+    "severity": "low",
+    "suggestions": [
+      {
+        "field": "env.MACRUNNER_EXTERNAL_TEST",
+        "value": "1",
+        "confidence": 0.99,
+        "reason": "External pattern loaded successfully",
+        "auto_apply": true
+      }
+    ]
+  }
+]

@@ -35,6 +35,9 @@
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef __APPLE__
+# include <dlfcn.h>
+#endif
 #ifdef HAVE_SYS_PARAM_H
 # include <sys/param.h>
 #endif
@@ -741,6 +744,7 @@ TEB *__wine_get_current_teb_for_x18(void)
 }
 
 extern int macrunner_hb_pc_is_x64_guest_code( void *pc );
+extern int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc );
 extern ULONG64 macrunner_hb_normalize_x64_callback_pc( ULONG64 pc );
 extern ULONG64 macrunner_hb_dispatch_x64_callback( ULONG64 target, const ULONG64 args[8] );
 extern void macrunner_hb_note_x64_guest_fault_handlers_ready(void);
@@ -750,6 +754,36 @@ static BOOL macrunner_hb_trace_callback_route_enabled(void)
 {
     const char *value = getenv( "MACRUNNER_HB_TRACE_CALLBACK_ROUTE" );
     return value && value[0] && value[0] != '0';
+}
+
+static BOOL macrunner_hb_x64_fault_routing_enabled(void)
+{
+    if (!macrunner_hb_x64_loader_enabled()) return FALSE;
+    if (macrunner_hb_x64_guest_process()) return TRUE;
+
+    /* PE32/WOW64 still executes the 64-bit Wine side through AMD64 guest
+     * modules.  A native ARM64 ntdll thunk can therefore fault at a registered
+     * x64 guest target even though the process main image is I386. */
+    return is_wow64() && current_machine == IMAGE_FILE_MACHINE_ARM64 &&
+           main_image_info.Machine == IMAGE_FILE_MACHINE_I386;
+}
+
+static BOOL macrunner_hb_trace_stack_setup_enabled(void)
+{
+    static int count;
+    const char *value = getenv( "MACRUNNER_HB_TRACE_STACK_SETUP" );
+
+    return value && value[0] && value[0] != '0' && count++ < 64;
+}
+
+static void macrunner_hb_trace_callback_target_module( const char *source, ULONG_PTR pc );
+
+static void macrunner_signal_copy_bytes( void *dst, const void *src, size_t size )
+{
+    volatile unsigned char *d = dst;
+    const volatile unsigned char *s = src;
+
+    while (size--) *d++ = *s++;
 }
 
 void macrunner_hb_trace_x64_callback_preserve( ULONG64 target, ULONG64 saved_x26,
@@ -817,28 +851,55 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
                                                    const char *source )
 {
     ULONG_PTR pc, raw_pc, x4_target;
+    BOOL raw_is_guest, fault_is_guest, x4_is_guest;
+    static int rejected_trace_count;
 
-    if (!macrunner_hb_x64_loader_enabled()) return FALSE;
+    if (!macrunner_hb_x64_fault_routing_enabled()) return FALSE;
     raw_pc = PC_sig(context);
     x4_target = REGn_sig(4, context);
+    raw_is_guest = macrunner_hb_pc_is_x64_guest_code_no_lock( (void *)raw_pc );
+    fault_is_guest = macrunner_hb_pc_is_x64_guest_code_no_lock( (void *)fault_addr );
+    x4_is_guest = macrunner_hb_pc_is_x64_guest_code_no_lock( (void *)x4_target );
 
     /* Wine's ARM64EC-style indirect-call path can leave the real x64 target
      * in x4 while the architectural fault PC points at dispatch residue,
      * garbage, or a few bytes into x64 text after an ARM64 fetch attempt.
-     * Prefer that explicit target when it is a guest-code address; otherwise
-     * fall back to normalizing the fault PC itself. */
-    if (macrunner_hb_pc_is_x64_guest_code( (void *)x4_target ))
+     * Prefer that explicit target only when the fault PC/address already
+     * identifies x64 guest execution.  Otherwise a stale native x4 register
+     * can manufacture a bogus callback from an ordinary ARM64 fault. */
+    if (x4_is_guest && (raw_is_guest || fault_is_guest))
     {
         pc = macrunner_hb_normalize_x64_callback_pc( x4_target );
         TRACE( "MacRunner Phase F using x4 x64 callback target raw_pc=%p x4=%p normalized=%p\n",
                (void *)raw_pc, (void *)x4_target, (void *)pc );
     }
-    else if (macrunner_hb_pc_is_x64_guest_code( (void *)fault_addr ))
+    else if (fault_is_guest)
         pc = macrunner_hb_normalize_x64_callback_pc( fault_addr );
-    else if (macrunner_hb_pc_is_x64_guest_code( (void *)raw_pc ))
+    else if (raw_is_guest)
         pc = macrunner_hb_normalize_x64_callback_pc( raw_pc );
     else
+    {
+        if (macrunner_hb_trace_callback_route_enabled() && rejected_trace_count++ < 96)
+            ERR( "macrunner-hb-callback-route-reject: source=%s raw_pc=%p fault=%p "
+                 "lr=%p sp=%p x0=%p x1=%p x2=%p x3=%p x4=%p x16=%p x18=%p "
+                 "x19=%p x20=%p x24=%p x26=%p x27=%p x28=%p\n",
+                 source, (void *)raw_pc, (void *)fault_addr,
+                 (void *)(ULONG_PTR)LR_sig(context), (void *)(ULONG_PTR)SP_sig(context),
+                 (void *)(ULONG_PTR)REGn_sig(0, context),
+                 (void *)(ULONG_PTR)REGn_sig(1, context),
+                 (void *)(ULONG_PTR)REGn_sig(2, context),
+                 (void *)(ULONG_PTR)REGn_sig(3, context),
+                 (void *)(ULONG_PTR)x4_target,
+                 (void *)(ULONG_PTR)REGn_sig(16, context),
+                 (void *)(ULONG_PTR)REGn_sig(18, context),
+                 (void *)(ULONG_PTR)REGn_sig(19, context),
+                 (void *)(ULONG_PTR)REGn_sig(20, context),
+                 (void *)(ULONG_PTR)REGn_sig(24, context),
+                 (void *)(ULONG_PTR)REGn_sig(26, context),
+                 (void *)(ULONG_PTR)REGn_sig(27, context),
+                 (void *)(ULONG_PTR)REGn_sig(28, context) );
         return FALSE;
+    }
 
     TRACE( "MacRunner Phase F routing %s x64 callback pc=%p lr=%p sp=%p "
            "x0=%p x1=%p x2=%p x3=%p x4=%p x5=%p\n",
@@ -851,6 +912,8 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
            (void *)(ULONG_PTR)REGn_sig(4, context),
            (void *)(ULONG_PTR)REGn_sig(5, context) );
     if (macrunner_hb_trace_callback_route_enabled())
+    {
+        macrunner_hb_trace_callback_target_module( source, pc );
         ERR( "macrunner-hb-callback-route: source=%s raw_pc=%p fault=%p normalized=%p "
              "lr=%p sp=%p x4=%p x16=%p x19=%p x26=%p x27=%p x28=%p\n",
              source, (void *)raw_pc, (void *)fault_addr, (void *)pc, (void *)(ULONG_PTR)LR_sig(context),
@@ -860,10 +923,27 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
              (void *)(ULONG_PTR)REGn_sig(26, context),
              (void *)(ULONG_PTR)REGn_sig(27, context),
              (void *)(ULONG_PTR)REGn_sig(28, context) );
+    }
     REGn_sig(16, context) = pc;
     REGn_sig(18, context) = (ULONG_PTR)NtCurrentTeb();
     PC_sig(context) = (ULONG_PTR)macrunner_hb_x64_callback_trampoline;
     return TRUE;
+}
+
+static BOOL macrunner_hb_wow64_i386_execute_fault( ucontext_t *context,
+                                                   const EXCEPTION_RECORD *rec )
+{
+    ULONG_PTR pc;
+
+    if (!is_wow64() || current_machine != IMAGE_FILE_MACHINE_ARM64 ||
+        main_image_info.Machine != IMAGE_FILE_MACHINE_I386)
+        return FALSE;
+    if (!rec || rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION ||
+        rec->NumberParameters < 2 || rec->ExceptionInformation[0] != EXCEPTION_EXECUTE_FAULT)
+        return FALSE;
+
+    pc = rec->ExceptionInformation[1];
+    return pc && pc == PC_sig(context) && pc <= 0xffffffffu;
 }
 
 static BOOL apple_x18_pc_is_resume_thunk( ULONG_PTR pc )
@@ -1028,8 +1108,16 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
     if (rec->ExceptionCode == EXCEPTION_BREAKPOINT) context->Pc -= 4;
 
     stack = virtual_setup_exception( stack_ptr, sizeof(*stack), rec );
-    stack->rec = *rec;
-    stack->context = *context;
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (rec->ExceptionCode == STATUS_STACK_OVERFLOW && NtCurrentTeb())
+    {
+        ULONG_PTR safe_sp = (ULONG_PTR)stack + sizeof(*stack);
+        if (safe_sp > context->Sp && safe_sp <= (ULONG_PTR)NtCurrentTeb()->Tib.StackBase)
+            context->Sp = safe_sp;
+    }
+#endif
+    macrunner_signal_copy_bytes( &stack->rec, rec, sizeof(stack->rec) );
+    macrunner_signal_copy_bytes( &stack->context, context, sizeof(stack->context) );
     context_init_empty_xstate( &stack->context, stack->redzone );
     stack->sp = stack->context.Sp;
     stack->pc = stack->context.Pc;
@@ -1043,6 +1131,14 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
     PC_sig(sigcontext) = (ULONG_PTR)pKiUserExceptionDispatcher;
 #endif
     REGn_sig(18, sigcontext) = (ULONG_PTR)NtCurrentTeb();
+    if (rec->ExceptionCode == STATUS_STACK_OVERFLOW && macrunner_hb_trace_stack_setup_enabled())
+        ERR( "macrunner-hb-stack-setup: pid=%d stack=%p sig_sp=%p saved_sp=%p "
+             "stack_sp=%p stack_pc=%p teb_stack=%p-%p dealloc=%p\n",
+             getpid(), stack, (void *)(ULONG_PTR)SP_sig(sigcontext),
+             (void *)(ULONG_PTR)stack->context.Sp, (void *)(ULONG_PTR)stack->sp,
+             (void *)(ULONG_PTR)stack->pc, NtCurrentTeb() ? NtCurrentTeb()->Tib.StackLimit : NULL,
+             NtCurrentTeb() ? NtCurrentTeb()->Tib.StackBase : NULL,
+             NtCurrentTeb() ? NtCurrentTeb()->DeallocationStack : NULL );
 }
 
 
@@ -1300,6 +1396,17 @@ NTSTATUS KeUserModeCallback( ULONG id, const void *args, ULONG len, void **ret_p
     struct syscall_frame *frame = get_syscall_frame();
     ULONG64 sp = (frame->sp - offsetof( struct callback_stack_layout, args_data[len] ) - 16) & ~15;
     struct callback_stack_layout *stack = (struct callback_stack_layout *)sp;
+    static int macrunner_callback_trace_count;
+
+    if (getenv( "MACRUNNER_HB_TRACE_USER_CALLBACK" ) && macrunner_callback_trace_count++ < 160)
+        fprintf( stderr, "macrunner-hb-user-callback: enter id=%lu len=%lu ret_ptr_slot=%p ret_len_slot=%p "
+                 "frame=%p frame_sp=%p frame_pc=%p frame_lr=%p prev=%p kernel_stack=%p teb_stack=%p-%p "
+                 "user_sp=%p\n",
+                 (unsigned long)id, (unsigned long)len, ret_ptr, ret_len, frame,
+                 (void *)(uintptr_t)frame->sp, (void *)(uintptr_t)frame->pc,
+                 (void *)(uintptr_t)frame->lr, frame->prev_frame, ntdll_get_thread_data()->kernel_stack,
+                 NtCurrentTeb() ? NtCurrentTeb()->Tib.StackLimit : NULL,
+                 NtCurrentTeb() ? NtCurrentTeb()->Tib.StackBase : NULL, (void *)(uintptr_t)sp );
 
     if ((char *)ntdll_get_thread_data()->kernel_stack + min_kernel_stack > (char *)&frame)
     {
@@ -1345,7 +1452,37 @@ NTSTATUS KeUserModeCallback( ULONG id, const void *args, ULONG len, void **ret_p
  */
 NTSTATUS WINAPI NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status )
 {
-    if (!get_syscall_frame()->prev_frame) return STATUS_NO_CALLBACK_ACTIVE;
+    static int macrunner_callback_return_trace_count;
+    struct syscall_frame *frame = get_syscall_frame();
+
+    if (getenv( "MACRUNNER_HB_TRACE_USER_CALLBACK" ) && macrunner_callback_return_trace_count++ < 160)
+    {
+        fprintf( stderr, "macrunner-hb-user-callback: return ret_ptr=%p ret_len=%lu status=%08lx "
+                 "frame=%p prev=%p syscall_cfa=%p frame_sp=%p frame_pc=%p frame_lr=%p "
+                 "kernel_stack=%p teb_stack=%p-%p\n",
+                 ret_ptr, (unsigned long)ret_len, (unsigned long)status, frame,
+                 frame ? frame->prev_frame : NULL,
+                 frame ? (void *)(uintptr_t)frame->syscall_cfa : NULL,
+                 frame ? (void *)(uintptr_t)frame->sp : NULL,
+                 frame ? (void *)(uintptr_t)frame->pc : NULL,
+                 frame ? (void *)(uintptr_t)frame->lr : NULL,
+                 ntdll_get_thread_data()->kernel_stack,
+                 NtCurrentTeb() ? NtCurrentTeb()->Tib.StackLimit : NULL,
+                 NtCurrentTeb() ? NtCurrentTeb()->Tib.StackBase : NULL );
+    }
+
+    if (!frame->prev_frame) return STATUS_NO_CALLBACK_ACTIVE;
+    if (macrunner_hb_x64_loader_enabled() && ntdll_get_thread_data()->kernel_stack &&
+        (char *)frame < (char *)ntdll_get_thread_data()->kernel_stack &&
+        (char *)frame->prev_frame > (char *)ntdll_get_thread_data()->kernel_stack)
+    {
+        if (getenv( "MACRUNNER_HB_TRACE_USER_CALLBACK" ))
+            fprintf( stderr, "macrunner-hb-user-callback: return-skip-bridge-frame frame=%p "
+                     "prev=%p kernel_stack=%p syscall_cfa=%p\n",
+                     frame, frame->prev_frame, ntdll_get_thread_data()->kernel_stack,
+                     (void *)(uintptr_t)frame->syscall_cfa );
+        ntdll_get_thread_data()->syscall_frame = frame->prev_frame;
+    }
     user_mode_callback_return( ret_ptr, ret_len, status, NtCurrentTeb() );
 }
 
@@ -1399,7 +1536,7 @@ static BOOL handle_syscall_fault( ucontext_t *context, EXCEPTION_RECORD *rec )
         REGn_sig(0, context) = (ULONG_PTR)ntdll_get_thread_data()->jmp_buf;
         REGn_sig(1, context) = 1;
         PC_sig(context)      = (ULONG_PTR)longjmp;
-        ntdll_get_thread_data()->jmp_buf = NULL;
+        ntdll_set_exception_jmp_buf( NULL );
     }
     else
     {
@@ -1451,7 +1588,7 @@ static BOOL memory_access_base_copied_from_x18( DWORD *pc, int base_reg )
 {
     unsigned int i;
 
-    for (i = 1; i <= 8; i++)
+    for (i = 1; i <= 32; i++)
     {
         DWORD *prev_pc = pc - i;
         DWORD prev;
@@ -1469,6 +1606,44 @@ static BOOL memory_access_base_copied_from_x18( DWORD *pc, int base_reg )
         if ((prev & 0xffe0ffe0) == 0xaa0003e0 &&
             ((prev >> 16) & 0x1f) == 18 && (prev & 0x1f) == base_reg)
             return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOL memory_access_base_loaded_wow_teb_from_x18( DWORD *pc, int base_reg )
+{
+    unsigned int i, j;
+
+    for (i = 1; i <= 8; i++)
+    {
+        DWORD *prev_pc = pc - i;
+        DWORD prev;
+        int offset_reg;
+
+        if (!virtual_is_valid_code_address( prev_pc, sizeof(prev) )) return FALSE;
+        prev = *prev_pc;
+
+        /* add xBase, x18, xOffset */
+        if ((prev & 0xffe0fc00) != 0x8b000000) continue;
+        if ((prev & 0x1f) != base_reg || ((prev >> 5) & 0x1f) != 18) continue;
+        offset_reg = (prev >> 16) & 0x1f;
+
+        for (j = i + 1; j <= i + 16; j++)
+        {
+            DWORD *load_pc = pc - j;
+            DWORD load;
+
+            if (!virtual_is_valid_code_address( load_pc, sizeof(load) )) return FALSE;
+            load = *load_pc;
+
+            /* ldrsw xOffset, [x18, #TEB.WowTebOffset] */
+            if ((load & 0xffc00000) == 0xb9800000 &&
+                (load & 0x1f) == offset_reg &&
+                ((load >> 5) & 0x1f) == 18 &&
+                get_memory_access_offset( load ) == offsetof( TEB, WowTebOffset ))
+                return TRUE;
+        }
     }
 
     return FALSE;
@@ -1545,6 +1720,51 @@ static void macrunner_hb_native_fault_module_name( void *module, char *name, siz
     snprintf( name, name_size, "%s", (const char *)module + exports->Name );
 }
 
+static void *macrunner_hb_readable_pe_module_from_pc( ULONG_PTR pc )
+{
+    uintptr_t p = pc & ~(uintptr_t)0xfff;
+    unsigned int i;
+
+    for (i = 0; i < 0x100000 && p; i++, p -= 0x1000)
+    {
+        IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)p;
+        IMAGE_NT_HEADERS *nt;
+
+        if (!virtual_check_buffer_for_read( dos, sizeof(*dos) ) ||
+            dos->e_magic != IMAGE_DOS_SIGNATURE ||
+            dos->e_lfanew <= 0 || dos->e_lfanew > 0x100000)
+            continue;
+        nt = (IMAGE_NT_HEADERS *)(p + dos->e_lfanew);
+        if (!virtual_check_buffer_for_read( nt, sizeof(*nt) ) ||
+            nt->Signature != IMAGE_NT_SIGNATURE)
+            continue;
+        return (void *)p;
+    }
+    return NULL;
+}
+
+static void macrunner_hb_trace_callback_target_module( const char *source, ULONG_PTR pc )
+{
+    unsigned char bytes[16] = {0};
+    char hex[sizeof(bytes) * 2 + 1];
+    void *module;
+    char module_name[96];
+    ULONG_PTR rva = 0;
+    unsigned int i;
+
+    if (!macrunner_hb_trace_callback_route_enabled()) return;
+    module = macrunner_hb_readable_pe_module_from_pc( pc );
+    macrunner_hb_native_fault_module_name( module, module_name, sizeof(module_name) );
+    if (module) rva = pc - (ULONG_PTR)module;
+    if (pc && virtual_check_buffer_for_read( (void *)pc, sizeof(bytes) ))
+        memcpy( bytes, (void *)pc, sizeof(bytes) );
+    for (i = 0; i < sizeof(bytes); i++) sprintf( hex + i * 2, "%02x", bytes[i] );
+    hex[sizeof(hex) - 1] = 0;
+
+    fprintf( stderr, "macrunner-hb-callback-target: source=%s pc=%p module=%s base=%p rva=0x%llx bytes=%s\n",
+             source, (void *)pc, module_name, module, (unsigned long long)rva, hex );
+}
+
 static BOOL macrunner_hb_native_fault_read_u64( ULONG_PTR addr, ULONG_PTR *out )
 {
     if (!addr || !out) return FALSE;
@@ -1603,6 +1823,8 @@ static void macrunner_hb_trace_native_fault( const char *kind, ucontext_t *conte
     char module_name[96];
     const char *access = "unknown";
     BOOL have_insn = FALSE;
+    TEB *teb;
+    struct ntdll_thread_data *thread_data;
 
     if (!macrunner_hb_trace_native_faults_enabled()) return;
 
@@ -1619,14 +1841,16 @@ static void macrunner_hb_trace_native_fault( const char *kind, ucontext_t *conte
     }
     module = macrunner_hb_native_fault_module_from_pc( pc );
     macrunner_hb_native_fault_module_name( module, module_name, sizeof(module_name) );
+    teb = NtCurrentTeb();
+    thread_data = teb ? (struct ntdll_thread_data *)&teb->GdiTebBatch : NULL;
 
     fprintf( stderr,
              "macrunner-native-fault: kind=%s code=0x%08lx access=%s fault=0x%llx "
              "pid=%d module=%s base=%p rva=0x%llx pc=0x%llx sp=0x%llx lr=0x%llx esr=0x%llx pstate=0x%llx "
              "x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx "
              "x4=0x%llx x5=0x%llx x6=0x%llx x7=0x%llx "
-             "x9=0x%llx x18=0x%llx x21=0x%llx x24=0x%llx x25=0x%llx "
-             "x26=0x%llx x27=0x%llx x28=0x%llx teb=%p "
+             "x9=0x%llx x18=0x%llx x19=0x%llx x20=0x%llx x21=0x%llx x22=0x%llx x23=0x%llx x24=0x%llx x25=0x%llx "
+             "x26=0x%llx x27=0x%llx x28=0x%llx teb=%p teb_stack=%p-%p dealloc=%p kernel=%p "
              "insn_valid=%u insn=0x%08llx\n",
              kind, rec->ExceptionCode, access, (unsigned long long)fault_addr,
              getpid(), module_name, module, module ? (unsigned long long)(pc - (ULONG_PTR)module) : 0,
@@ -1638,12 +1862,18 @@ static void macrunner_hb_trace_native_fault( const char *kind, ucontext_t *conte
              (unsigned long long)REGn_sig(4, context), (unsigned long long)REGn_sig(5, context),
              (unsigned long long)REGn_sig(6, context), (unsigned long long)REGn_sig(7, context),
              (unsigned long long)REGn_sig(9, context), (unsigned long long)REGn_sig(18, context),
-             (unsigned long long)REGn_sig(21, context), (unsigned long long)REGn_sig(24, context),
+             (unsigned long long)REGn_sig(19, context), (unsigned long long)REGn_sig(20, context),
+             (unsigned long long)REGn_sig(21, context), (unsigned long long)REGn_sig(22, context),
+             (unsigned long long)REGn_sig(23, context), (unsigned long long)REGn_sig(24, context),
              (unsigned long long)REGn_sig(25, context),
              (unsigned long long)REGn_sig(26, context), (unsigned long long)REGn_sig(27, context),
-             (unsigned long long)REGn_sig(28, context), NtCurrentTeb(),
+             (unsigned long long)REGn_sig(28, context), teb,
+             teb ? teb->Tib.StackLimit : NULL, teb ? teb->Tib.StackBase : NULL,
+             teb ? teb->DeallocationStack : NULL, thread_data ? thread_data->kernel_stack : NULL,
              have_insn, (unsigned long long)insn );
 
+    macrunner_hb_native_fault_dump_qwords( "x19", REGn_sig(19, context) );
+    macrunner_hb_native_fault_dump_qwords( "x20", REGn_sig(20, context) );
     macrunner_hb_native_fault_dump_qwords( "x24", REGn_sig(24, context) );
     macrunner_hb_native_fault_dump_vm_region( "x24", REGn_sig(24, context) );
     macrunner_hb_native_fault_dump_qwords( "x26", REGn_sig(26, context) );
@@ -1681,6 +1911,59 @@ static void macrunner_hb_trace_native_fault( const char *kind, ucontext_t *conte
     macrunner_hb_native_fault_dump_qwords( "x27", REGn_sig(27, context) );
     macrunner_hb_native_fault_dump_qwords( "x9", REGn_sig(9, context) );
     macrunner_hb_native_fault_dump_qwords( "fault", fault_addr );
+}
+
+static void macrunner_hb_trace_low_stack_symbol( const char *label, ULONG_PTR addr )
+{
+    Dl_info info;
+
+    if (!addr) return;
+    if (dladdr( (void *)addr, &info ) && info.dli_fname)
+        ERR( "macrunner-hb-low-stack-symbol: %s addr=%p image=%s image_base=%p "
+             "symbol=%s symbol_addr=%p offset=0x%llx\n",
+             label, (void *)addr, info.dli_fname, info.dli_fbase,
+             info.dli_sname ? info.dli_sname : "unknown", info.dli_saddr,
+             info.dli_saddr ? (unsigned long long)(addr - (ULONG_PTR)info.dli_saddr) : 0 );
+}
+
+static void macrunner_hb_trace_low_stack_vm_region( const char *label, ULONG_PTR addr )
+{
+    mach_vm_address_t region = (mach_vm_address_t)addr;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    kern_return_t kr;
+
+    if (!addr) return;
+    kr = mach_vm_region( mach_task_self(), &region, &size, VM_REGION_BASIC_INFO_64,
+                         (vm_region_info_t)&info, &count, &object );
+    if (object != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), object );
+    ERR( "macrunner-hb-low-stack-vm: %s addr=%p kr=%d region=%p size=0x%llx prot=0x%x max=0x%x\n",
+         label, (void *)addr, kr, (void *)(ULONG_PTR)region,
+         (unsigned long long)size, kr == KERN_SUCCESS ? info.protection : 0,
+         kr == KERN_SUCCESS ? info.max_protection : 0 );
+}
+
+static BOOL macrunner_hb_is_low_stack_access_fault( ucontext_t *context, const EXCEPTION_RECORD *rec )
+{
+    TEB *teb = NtCurrentTeb();
+    char *sp = (char *)SP_sig(context);
+    char *fault;
+
+    if (!teb || !teb->DeallocationStack || !teb->Tib.StackLimit) return FALSE;
+    if (rec->NumberParameters < 2) return FALSE;
+    if (sp < (char *)teb->DeallocationStack || sp >= (char *)teb->Tib.StackLimit) return FALSE;
+
+    fault = (char *)rec->ExceptionInformation[1];
+    return (fault >= (char *)teb->DeallocationStack && fault < (char *)teb->Tib.StackLimit);
+}
+
+static BOOL macrunner_hb_trace_low_stack_fault_enabled(void)
+{
+    static int count;
+
+    return count++ < 32;
 }
 
 static BOOL emulate_apple_x18_teb_access( ucontext_t *context, TEB *teb, DWORD insn, ULONG_PTR fault_addr )
@@ -1752,6 +2035,12 @@ static BOOL emulate_apple_x18_teb_access( ucontext_t *context, TEB *teb, DWORD i
     return TRUE;
 }
 
+#else
+static BOOL macrunner_hb_trace_low_stack_fault_enabled(void)
+{
+    return TRUE;
+}
+
 #endif
 
 
@@ -1765,12 +2054,18 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     EXCEPTION_RECORD rec = { 0 };
     ucontext_t *context = sigcontext;
     DWORD64 esr = get_fault_esr( context );
+#if defined(__APPLE__)
+    BOOL low_stack_fault;
+#endif
 
     rec.NumberParameters = 2;
     if ((esr & 0xf0000000) == 0x80000000) rec.ExceptionInformation[0] = EXCEPTION_EXECUTE_FAULT;
     else if (esr & 0x40) rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
     else rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
+#if defined(__APPLE__)
+    low_stack_fault = macrunner_hb_is_low_stack_access_fault( context, &rec );
+#endif
 
     if (macrunner_hb_trace_callback_route_enabled())
         ERR( "macrunner-hb-signal-entry: kind=segv pid=%d pc=%p fault=%p esr=0x%llx "
@@ -1819,19 +2114,14 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         int base_reg;
         ULONG_PTR mem_offset;
 
-        if (!virtual_is_valid_code_address( (void *)pc, sizeof(insn) ))
-        {
-            /* Direct MacRunner HyperBridge calls into ARM64 PE exports can
-             * execute mapped PE code before the normal PE-side virtual-code
-             * metadata path recognizes the page.  For the Apple x18 loss
-             * pattern we still need to decode the current instruction: the
-             * CPU has already fetched it successfully, and the faulting
-             * address is the small TEB-relative address, not PC itself.  Keep
-             * this fallback scoped to x18=NULL low-address faults so unrelated
-             * invalid-PC crashes still flow through normal exception logic. */
-            if (REGn_sig(18, context) != 0 || !teb || fault_addr >= 0x4000 || pc < 0x10000)
-                goto skip_apple_x18_heal;
-        }
+        /* Only the Apple x18/TEB-loss patterns fault on low TEB-relative
+         * addresses.  Avoid querying the virtual map before this cheap scope
+         * check: SIGSEGV can arrive while virtual.c already owns virtual_mutex
+         * (for example during delete_view()), and virtual_is_valid_code_address()
+         * would deadlock inside the signal handler.  The CPU has already
+         * fetched the current instruction for non-execute faults, so reading
+         * the instruction word directly is the signal-safe path here. */
+        if (!teb || fault_addr >= 0x4000 || pc < 0x10000) goto skip_apple_x18_heal;
         insn = *(DWORD *)pc;
         base_reg = get_memory_access_base_reg( insn );
         mem_offset = get_memory_access_offset( insn );
@@ -1876,6 +2166,17 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
             setup_x18_resume_from_sigcontext( context );
             return;
         }
+        if (REGn_sig(18, context) == 0 && teb && get_wow_teb( teb ) &&
+            fault_addr < 0x400 && base_reg >= 0 && base_reg < 31 &&
+            !REGn_sig(base_reg, context) && mem_offset == fault_addr &&
+            memory_access_base_loaded_wow_teb_from_x18( (DWORD *)PC_sig(context), base_reg ))
+        {
+            trace_apple_x18_heal( "wow-teb-derived", context, fault_addr,
+                                  base_reg, REGn_sig(base_reg, context), mem_offset );
+            REGn_sig(base_reg, context) = (ULONG_PTR)get_wow_teb( teb );
+            setup_x18_resume_from_sigcontext( context );
+            return;
+        }
         if (teb && fault_addr < 0x4000 && base_reg >= 0 && base_reg < 31 &&
             REGn_sig(base_reg, context) >= 0x1000 && REGn_sig(base_reg, context) < 0x4000 &&
             (REGn_sig(base_reg, context) + mem_offset == fault_addr ||
@@ -1911,7 +2212,26 @@ skip_apple_x18_heal:
     if (rec.ExceptionInformation[0] == EXCEPTION_EXECUTE_FAULT &&
         macrunner_hb_route_x64_callback_fault( context, rec.ExceptionInformation[1], "segv-exec" ))
         return;
+    if (macrunner_hb_wow64_i386_execute_fault( context, &rec ))
+    {
+        if (macrunner_hb_trace_callback_route_enabled())
+            ERR( "macrunner-hb-wow64-i386-exec-route: pid=%d pc=%p sp=%p fault=%p lr=%p\n",
+                 getpid(), (void *)(ULONG_PTR)PC_sig(context),
+                 (void *)(ULONG_PTR)SP_sig(context),
+                 (void *)(ULONG_PTR)rec.ExceptionInformation[1],
+                 (void *)(ULONG_PTR)LR_sig(context) );
+        setup_exception( context, &rec );
+        return;
+    }
     if (!virtual_handle_fault( &rec, (void *)SP_sig(context) )) return;
+#if defined(__APPLE__)
+    if (low_stack_fault)
+    {
+        rec.ExceptionCode = STATUS_STACK_OVERFLOW;
+        rec.NumberParameters = 0;
+    }
+    else
+#endif
     if (handle_syscall_fault( context, &rec )) return;
     macrunner_hb_trace_native_fault( "segv", context, &rec, esr );
     setup_exception( context, &rec );
@@ -1974,6 +2294,10 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     EXCEPTION_RECORD rec = { EXCEPTION_DATATYPE_MISALIGNMENT };
     ucontext_t *context = sigcontext;
     BOOL alignment_fault = FALSE;
+    BOOL low_stack_fault = FALSE;
+    BOOL stack_overflow_fault = FALSE;
+    BOOL fault_unhandled;
+    TEB *teb = NtCurrentTeb();
 
 #if defined(BUS_ADRALN)
     alignment_fault = (siginfo->si_code == BUS_ADRALN);
@@ -1988,6 +2312,40 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     else
         rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
+#if defined(__APPLE__)
+    stack_overflow_fault = macrunner_hb_is_low_stack_access_fault( context, &rec );
+#endif
+    if (teb && teb->DeallocationStack &&
+        (char *)SP_sig(context) < (char *)teb->Tib.StackLimit + 0x10000)
+    {
+        low_stack_fault = TRUE;
+        if (macrunner_hb_trace_low_stack_fault_enabled())
+            ERR( "macrunner-hb-bus-low-stack: before-virtual pid=%d si_code=%d align=%u "
+                 "pc=%p lr=%p fault=%p esr=0x%llx sp=%p teb_stack=%p-%p dealloc=%p "
+                 "x0=%p x1=%p x2=%p x3=%p x4=%p x16=%p x18=%p x24=%p x26=%p\n",
+                 getpid(), siginfo->si_code, alignment_fault,
+                 (void *)(ULONG_PTR)PC_sig(context), (void *)(ULONG_PTR)LR_sig(context),
+                 (void *)(ULONG_PTR)rec.ExceptionInformation[1],
+                 (unsigned long long)get_fault_esr( context ), (void *)(ULONG_PTR)SP_sig(context),
+                 teb->Tib.StackLimit, teb->Tib.StackBase, teb->DeallocationStack,
+                 (void *)(ULONG_PTR)REGn_sig(0, context),
+                 (void *)(ULONG_PTR)REGn_sig(1, context),
+                 (void *)(ULONG_PTR)REGn_sig(2, context),
+                 (void *)(ULONG_PTR)REGn_sig(3, context),
+                 (void *)(ULONG_PTR)REGn_sig(4, context),
+                 (void *)(ULONG_PTR)REGn_sig(16, context),
+                 (void *)(ULONG_PTR)REGn_sig(18, context),
+                 (void *)(ULONG_PTR)REGn_sig(24, context),
+                 (void *)(ULONG_PTR)REGn_sig(26, context) );
+#ifdef __APPLE__
+        if (macrunner_hb_trace_native_faults_enabled())
+        {
+            macrunner_hb_trace_low_stack_symbol( "pc", PC_sig(context) );
+            macrunner_hb_trace_low_stack_symbol( "lr", LR_sig(context) );
+            macrunner_hb_trace_low_stack_vm_region( "fault", rec.ExceptionInformation[1] );
+        }
+#endif
+    }
 
     if (macrunner_hb_trace_callback_route_enabled())
         ERR( "macrunner-hb-signal-entry: kind=bus pid=%d pc=%p fault=%p esr=0x%llx "
@@ -2003,11 +2361,34 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
      * decodes as a faulting ARM64/SVE memory instruction. */
     if (macrunner_hb_route_x64_callback_fault( context, rec.ExceptionInformation[1], "bus-guest" )) return;
 
-    if (!virtual_handle_fault( &rec, (void *)SP_sig(context) )) return;
+    fault_unhandled = virtual_handle_fault( &rec, (void *)SP_sig(context) );
+    if (low_stack_fault && macrunner_hb_trace_low_stack_fault_enabled())
+        ERR( "macrunner-hb-bus-low-stack: after-virtual pid=%d unhandled=%u code=%#lx "
+             "fault=%p sp=%p teb_stack=%p-%p dealloc=%p\n",
+             getpid(), fault_unhandled, rec.ExceptionCode,
+             (void *)(ULONG_PTR)rec.ExceptionInformation[1],
+             (void *)(ULONG_PTR)SP_sig(context),
+             teb->Tib.StackLimit, teb->Tib.StackBase, teb->DeallocationStack );
+    if (!fault_unhandled)
+    {
+#if defined(__APPLE__)
+        if (virtual_is_valid_code_address( (void *)PC_sig(context), sizeof(DWORD) ))
+            setup_x18_resume_from_sigcontext( context );
+#endif
+        return;
+    }
+#if defined(__APPLE__)
+    if (stack_overflow_fault)
+    {
+        rec.ExceptionCode = STATUS_STACK_OVERFLOW;
+        rec.NumberParameters = 0;
+    }
+    else
+#endif
     if (handle_syscall_fault( context, &rec )) return;
     macrunner_hb_trace_native_fault( "bus", context, &rec, get_fault_esr( context ) );
 
-    if (alignment_fault)
+    if (alignment_fault && !stack_overflow_fault)
     {
         memset( &rec, 0, sizeof(rec) );
         rec.ExceptionCode = EXCEPTION_DATATYPE_MISALIGNMENT;

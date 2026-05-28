@@ -765,131 +765,6 @@ done:
     return alpha;
 }
 
-static inline BOOL get_mono_dib_bit( const void *bits, LONG width, LONG height, LONG x, LONG y )
-{
-    LONG abs_height = abs( height );
-    LONG src_y = height > 0 ? abs_height - 1 - y : y;
-    LONG stride = ((width + 31) / 32) * 4;
-    const BYTE *row = (const BYTE *)bits + src_y * stride;
-
-    return row[x / 8] & (0x80 >> (x & 7));
-}
-
-static inline void set_mono_bitmap_bit( BYTE *bits, LONG stride, LONG x, LONG y, BOOL value )
-{
-    BYTE *pixel = bits + y * stride + x / 8;
-    BYTE mask = 0x80 >> (x & 7);
-
-    if (value) *pixel |= mask;
-    else *pixel &= ~mask;
-}
-
-static HBITMAP create_stretched_mono_icon_mask( LONG width, LONG height, LONG src_width, LONG src_height,
-                                                const void *color_bits, const void *mask_bits )
-{
-    LONG dst_stride = ((width + 15) / 16) * 2;
-    LONG abs_src_height = abs( src_height );
-    BYTE *bits;
-    HBITMAP ret;
-    LONG x, y;
-
-    if (!(bits = calloc( height * 2, dst_stride ))) return 0;
-
-    for (y = 0; y < height; y++)
-    {
-        LONG src_y = y * abs_src_height / height;
-
-        for (x = 0; x < width; x++)
-        {
-            LONG src_x = x * src_width / width;
-
-            set_mono_bitmap_bit( bits, dst_stride, x, y,
-                                 !get_mono_dib_bit( mask_bits, src_width, src_height, src_x, src_y ));
-            set_mono_bitmap_bit( bits, dst_stride, x, height + y,
-                                 get_mono_dib_bit( color_bits, src_width, src_height, src_x, src_y ));
-        }
-    }
-
-    ret = CreateBitmap( width, height * 2, 1, 1, bits );
-    free( bits );
-    return ret;
-}
-
-static UINT get_indexed_dib_pixel( const void *bits, LONG width, LONG height, WORD bpp, LONG x, LONG y )
-{
-    LONG abs_height = abs( height );
-    LONG src_y = height > 0 ? abs_height - 1 - y : y;
-    const BYTE *row;
-
-    switch (bpp)
-    {
-    case 8:
-        row = (const BYTE *)bits + src_y * ((width + 3) & ~3);
-        return row[x];
-    case 4:
-        row = (const BYTE *)bits + src_y * (((width + 1) / 2 + 3) & ~3);
-        return (x & 1) ? row[x / 2] & 0x0f : row[x / 2] >> 4;
-    default:
-        return 0;
-    }
-}
-
-static COLORREF get_indexed_dib_color( const BITMAPINFO *info, UINT index )
-{
-    if (info->bmiHeader.biSize == sizeof(BITMAPCOREHEADER))
-    {
-        const RGBTRIPLE *rgb = (const RGBTRIPLE *)(((const BITMAPCOREHEADER *)info) + 1);
-
-        return RGB( rgb[index].rgbtRed, rgb[index].rgbtGreen, rgb[index].rgbtBlue );
-    }
-    else
-    {
-        const RGBQUAD *rgb = info->bmiColors;
-
-        return RGB( rgb[index].rgbRed, rgb[index].rgbGreen, rgb[index].rgbBlue );
-    }
-}
-
-static BOOL set_indexed_icon_color_bits( HDC hdc, HBITMAP bitmap, LONG width, LONG height,
-                                         const BITMAPINFO *src_info, LONG src_width, LONG src_height,
-                                         WORD bpp, const void *color_bits )
-{
-    BITMAPINFO dst_info;
-    DWORD *dst_bits;
-    LONG x, y;
-    int ret;
-
-    if (bpp != 4 && bpp != 8) return FALSE;
-    if (!(dst_bits = calloc( width * height, sizeof(*dst_bits) ))) return FALSE;
-
-    for (y = 0; y < height; y++)
-    {
-        LONG src_y = y * abs( src_height ) / height;
-        DWORD *dst = dst_bits + (height - 1 - y) * width;
-
-        for (x = 0; x < width; x++)
-        {
-            LONG src_x = x * src_width / width;
-            COLORREF color = get_indexed_dib_color( src_info,
-                get_indexed_dib_pixel( color_bits, src_width, src_height, bpp, src_x, src_y ));
-
-            dst[x] = GetRValue( color ) << 16 | GetGValue( color ) << 8 | GetBValue( color );
-        }
-    }
-
-    memset( &dst_info, 0, sizeof(dst_info) );
-    dst_info.bmiHeader.biSize = sizeof(dst_info.bmiHeader);
-    dst_info.bmiHeader.biWidth = width;
-    dst_info.bmiHeader.biHeight = height;
-    dst_info.bmiHeader.biPlanes = 1;
-    dst_info.bmiHeader.biBitCount = 32;
-    dst_info.bmiHeader.biCompression = BI_RGB;
-
-    ret = SetDIBits( hdc, bitmap, 0, height, dst_bits, &dst_info, DIB_RGB_COLORS );
-    free( dst_bits );
-    return ret == height;
-}
-
 static BOOL create_icon_frame( const BITMAPINFO *bmi, DWORD maxsize, POINT hotspot, BOOL is_icon,
                                INT width, INT height, UINT flags, struct cursoricon_frame *frame )
 {
@@ -899,7 +774,6 @@ static BOOL create_icon_frame( const BITMAPINFO *bmi, DWORD maxsize, POINT hotsp
     LONG bmi_width, bmi_height;
     BITMAPINFO *bmi_copy;
     BOOL do_stretch;
-    BOOL mono_mask_stretched = FALSE;
     HDC hdc = 0;
     WORD bpp;
     BOOL ret = FALSE;
@@ -989,62 +863,22 @@ static BOOL create_icon_frame( const BITMAPINFO *bmi, DWORD maxsize, POINT hotsp
 
     if (is_dib_monochrome( bmi ))
     {
-        if (do_stretch && mask_size)
-        {
-            frame->mask = create_stretched_mono_icon_mask( width, height, bmi_width, bmi_height,
-                                                           color_bits, mask_bits );
-            if (!frame->mask) goto done;
-            mono_mask_stretched = TRUE;
-            mask_size = 0;
-        }
-        else if (!(frame->mask = CreateBitmap( width, height * 2, 1, 1, NULL ))) goto done;
+        if (!(frame->mask = CreateBitmap( width, height * 2, 1, 1, NULL ))) goto done;
 
         /* copy color data into second half of mask bitmap */
-        if (!mono_mask_stretched)
-        {
-            int lines;
-
-            SelectObject( hdc, frame->mask );
-            lines = StretchDIBits( hdc, 0, height, width, height,
-                                   0, 0, bmi_width, bmi_height,
-                                   color_bits, bmi_copy, DIB_RGB_COLORS, SRCCOPY );
-            if (lines == GDI_ERROR || !lines)
-            {
-                WARN( "failed to copy monochrome icon color bits %ldx%ld -> %dx%d\n",
-                      bmi_width, bmi_height, width, height );
-                goto done;
-            }
-        }
+        SelectObject( hdc, frame->mask );
+        StretchDIBits( hdc, 0, height, width, height,
+                       0, 0, bmi_width, bmi_height,
+                       color_bits, bmi_copy, DIB_RGB_COLORS, SRCCOPY );
     }
     else
     {
-        int lines;
-
         if (!(frame->mask = CreateBitmap( width, height, 1, 1, NULL ))) goto done;
         if (!(frame->color = create_color_bitmap( width, height ))) goto done;
         SelectObject( hdc, frame->color );
-        if (bpp == 4 || bpp == 8)
-        {
-            if (!set_indexed_icon_color_bits( hdc, frame->color, width, height, bmi_copy,
-                                              bmi_width, bmi_height, bpp, color_bits ))
-            {
-                WARN( "failed indexed icon color expansion %ubpp %ldx%ld -> %dx%d\n",
-                      bpp, bmi_width, bmi_height, width, height );
-                goto done;
-            }
-        }
-        else
-        {
-            lines = StretchDIBits( hdc, 0, 0, width, height,
-                                   0, 0, bmi_width, bmi_height,
-                                   color_bits, bmi_copy, DIB_RGB_COLORS, SRCCOPY );
-            if (lines == GDI_ERROR || !lines)
-            {
-                WARN( "failed to copy icon color bits %ubpp %ldx%ld -> %dx%d\n",
-                      bpp, bmi_width, bmi_height, width, height );
-                goto done;
-            }
-        }
+        StretchDIBits( hdc, 0, 0, width, height,
+                       0, 0, bmi_width, bmi_height,
+                       color_bits, bmi_copy, DIB_RGB_COLORS, SRCCOPY );
 
         if (bmi_has_alpha( bmi_copy, color_bits ))
         {
@@ -1092,18 +926,10 @@ static BOOL create_icon_frame( const BITMAPINFO *bmi, DWORD maxsize, POINT hotsp
 
     if (mask_size)
     {
-        int lines;
-
         SelectObject( hdc, frame->mask );
-        lines = StretchDIBits( hdc, 0, 0, width, height,
-                               0, 0, bmi_width, bmi_height,
-                               mask_bits, bmi_copy, DIB_RGB_COLORS, SRCCOPY );
-        if (lines == GDI_ERROR || !lines)
-        {
-            WARN( "failed to copy icon mask bits %ldx%ld -> %dx%d\n",
-                  bmi_width, bmi_height, width, height );
-            goto done;
-        }
+        StretchDIBits( hdc, 0, 0, width, height,
+                       0, 0, bmi_width, bmi_height,
+                       mask_bits, bmi_copy, DIB_RGB_COLORS, SRCCOPY );
     }
 
     frame->width   = width;
@@ -2522,9 +2348,7 @@ HANDLE WINAPI CopyImage( HANDLE hnd, UINT type, INT desiredx,
                    compatible to the screen */
                 if (objSize == sizeof(DIBSECTION) ||
                     ds.dsBm.bmBitsPixel == 1 ||
-                    ds.dsBm.bmBitsPixel == get_display_bpp() ||
-                    /* Display-compatible DCs accept 32-bit DDBs; keep CopyImage in sync. */
-                    ds.dsBm.bmBitsPixel == 32)
+                    ds.dsBm.bmBitsPixel == get_display_bpp())
                 {
                     /* The source bitmap may already be selected in a device context,
                        use GetDIBits/StretchDIBits and not StretchBlt  */

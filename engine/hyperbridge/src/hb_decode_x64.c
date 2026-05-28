@@ -3,6 +3,9 @@
 #include <string.h>
 #include <stdlib.h>
 
+#define HB_X64_DEFAULT_MXCSR 0x1f80u
+#define HB_X87_DEFAULT_CONTROL_WORD 0x037fu
+
 typedef struct {
     const uint8_t* code;
     size_t len;
@@ -797,6 +800,34 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         else set_reg(out, 1, HB_REG_RAX, 4);
         return HB_OK;
     }
+    if (opcode == 0xA4 || opcode == 0xA5) {
+        /* MOVS m8/m16/m32/m64. REP is carried as an immediate mode. */
+        out->opcode = HB_INS_MOVS;
+        uint8_t sz = (opcode == 0xA4) ? 1 : (rex_w ? 8 : (operand16 ? 2 : 4));
+        set_reg(out, 1, HB_REG_RSI, sz);
+        set_imm(out, 2, prefix_f2 ? 0xf2 : prefix_f3 ? 0xf3 : 0, 1);
+        out->writes_flags = false;
+        return HB_OK;
+    }
+    if (opcode == 0xA6 || opcode == 0xA7) {
+        /* CMPS m8/m16/m32/m64. REPNE/REPE are carried as an immediate mode. */
+        out->opcode = HB_INS_CMPS;
+        uint8_t sz = (opcode == 0xA6) ? 1 : (rex_w ? 8 : (operand16 ? 2 : 4));
+        set_reg(out, 1, HB_REG_RSI, sz);
+        set_imm(out, 2, prefix_f2 ? 0xf2 : prefix_f3 ? 0xf3 : 0, 1);
+        out->reads_flags = true;
+        out->writes_flags = true;
+        return HB_OK;
+    }
+    if (opcode == 0xAC || opcode == 0xAD) {
+        /* LODS m8/m16/m32/m64. REP is carried as an immediate mode. */
+        out->opcode = HB_INS_LODS;
+        uint8_t sz = (opcode == 0xAC) ? 1 : (rex_w ? 8 : (operand16 ? 2 : 4));
+        set_reg(out, 1, HB_REG_RAX, sz);
+        set_imm(out, 2, prefix_f2 ? 0xf2 : prefix_f3 ? 0xf3 : 0, 1);
+        out->writes_flags = false;
+        return HB_OK;
+    }
     if (opcode == 0xAE || opcode == 0xAF) {
         /* SCAS m8/m16/m32/m64. REPNE/REPE are carried as an immediate mode. */
         out->opcode = HB_INS_SCAS;
@@ -893,6 +924,12 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         out->opcode = HB_INS_NOP;
         return HB_OK;
     }
+    if (opcode == 0x9B) {
+        /* FWAIT waits for pending x87 exceptions. HyperBridge does not model
+           asynchronous x87 exceptions yet, so it is a serialization no-op. */
+        out->opcode = HB_INS_NOP;
+        return HB_OK;
+    }
     if (opcode == 0x86 || opcode == 0x87) {
         /* XCHG r/m, r. LOCK is valid for memory operands and is consumed by
            the prefix scanner; execution stays atomic at the lifted op level. */
@@ -918,6 +955,23 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             uint8_t modrm = read_u8(d);
             if (modrm == 0xD0) {
                 out->opcode = HB_INS_XGETBV;
+                return HB_OK;
+            }
+            return HB_ERR_UNSUPPORTED_OPCODE;
+        }
+        if (op2 == 0x38) {
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t op3 = read_u8(d);
+            if (operand16 && op3 == 0x00) {
+                /* SSSE3 PSHUFB xmm, xmm/m128. */
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                out->opcode = HB_INS_PSHUFB;
+                out->writes_flags = false;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                mark_xmm_operand(out, 1);
+                mark_xmm_operand(out, 2);
                 return HB_OK;
             }
             return HB_ERR_UNSUPPORTED_OPCODE;
@@ -1003,6 +1057,45 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             hb_result_t r = parse_modrm_ext(d, modrm, rex_w, rex_b, 1, out, 1);
             if (r != HB_OK) return r;
             return HB_OK;
+        }
+        if (op2 == 0xAE) {
+            /* Control-state group needed by compiler setjmp helpers:
+             *   0F AE /2 LDMXCSR m32  -- no-op until MXCSR is modeled
+             *   0F AE /3 STMXCSR m32  -- store architectural reset MXCSR
+             *   0F AE E8/F0/F8        -- LFENCE/MFENCE/SFENCE as ordering no-ops
+             * FXSAVE/FXRSTOR/XSAVE/XRSTOR are not scalar control-word ops and
+             * require a real extended-state image, so keep them unsupported. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            uint8_t mod = (modrm >> 6) & 3;
+            uint8_t ext = (modrm >> 3) & 7;
+            if (mod == 3) {
+                if ((modrm & 7) == 0 && (ext == 5 || ext == 6 || ext == 7)) {
+                    out->opcode = HB_INS_NOP;
+                    return HB_OK;
+                }
+                return HB_ERR_UNSUPPORTED_OPCODE;
+            }
+            if (ext == 2) {
+                out->opcode = HB_INS_NOP;
+                hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 4, out, 1);
+                if (r != HB_OK) return r;
+                return HB_OK;
+            }
+            if (ext == 3) {
+                out->opcode = HB_INS_MOV;
+                hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 4, out, 1);
+                if (r != HB_OK) return r;
+                set_imm(out, 2, HB_X64_DEFAULT_MXCSR, 4);
+                return HB_OK;
+            }
+            if (ext == 7) {
+                out->opcode = HB_INS_NOP;
+                hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 1, out, 1);
+                if (r != HB_OK) return r;
+                return HB_OK;
+            }
+            return HB_ERR_UNSUPPORTED_OPCODE;
         }
         if (op2 == 0xAF) {
             /* IMUL r32/64, r/m32/64 */
@@ -1367,6 +1460,62 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             mark_xmm_operand(out, 2);
             return HB_OK;
         }
+        if (operand16 && (op2 == 0x63 || op2 == 0x67 || op2 == 0x6B)) {
+            /* SSE2 PACK signed/unsigned saturation family, xmm, xmm/m128. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            if (op2 == 0x63) out->opcode = HB_INS_PACKSSWB;
+            else if (op2 == 0x67) out->opcode = HB_INS_PACKUSWB;
+            else out->opcode = HB_INS_PACKSSDW;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            return HB_OK;
+        }
+        if (operand16 && (op2 == 0xD5 || op2 == 0xE5 || op2 == 0xE4 || op2 == 0xF5)) {
+            /* SSE2 packed 16-bit multiply family, xmm, xmm/m128. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            if (op2 == 0xD5) out->opcode = HB_INS_PMULLW;
+            else if (op2 == 0xE5) out->opcode = HB_INS_PMULHW;
+            else if (op2 == 0xE4) out->opcode = HB_INS_PMULHUW;
+            else out->opcode = HB_INS_PMADDWD;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            return HB_OK;
+        }
+        if (operand16 && (op2 == 0xEC || op2 == 0xED || op2 == 0xDC || op2 == 0xDD)) {
+            /* SSE2 packed saturating add family, xmm, xmm/m128. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            if (op2 == 0xEC) out->opcode = HB_INS_PADDSB;
+            else if (op2 == 0xED) out->opcode = HB_INS_PADDSW;
+            else if (op2 == 0xDC) out->opcode = HB_INS_PADDUSB;
+            else out->opcode = HB_INS_PADDUSW;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            return HB_OK;
+        }
+        if (operand16 && (op2 == 0xE0 || op2 == 0xE3)) {
+            /* SSE2 packed rounded unsigned average family, xmm, xmm/m128. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = op2 == 0xE0 ? HB_INS_PAVGB : HB_INS_PAVGW;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            return HB_OK;
+        }
         if ((operand16 && op2 == 0x70) || (prefix_f2 && op2 == 0x70) ||
             (prefix_f3 && op2 == 0x70)) {
             /* PSHUFD/PSHUFLW/PSHUFHW xmm, xmm/m128, imm8. */
@@ -1438,6 +1587,23 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             mark_xmm_operand(out, 2);
             return HB_OK;
         }
+        if (op2 == 0xA4 || op2 == 0xA5 || op2 == 0xAC || op2 == 0xAD) {
+            /* SHLD/SHRD r/m16/32/64, r16/32/64, imm8/CL. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = (op2 == 0xA4 || op2 == 0xA5) ? HB_INS_SHLD : HB_INS_SHRD;
+            out->writes_flags = true;
+            hb_result_t r = parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b,
+                                        rex_w ? 8 : (operand16 ? 2 : 4), out, 1, 2, true);
+            if (r != HB_OK) return r;
+            if (op2 == 0xA4 || op2 == 0xAC) {
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                set_imm(out, 3, read_u8(d), 1);
+            } else {
+                set_reg(out, 3, HB_REG_RCX, 1);
+            }
+            return HB_OK;
+        }
         if (op2 == 0xBC) {
             /* TZCNT/BSF r32/64, r/m32/64. We normalize this path to TZCNT;
                Wine uses the F3-prefixed form in ntdll's wait primitives. */
@@ -1450,10 +1616,10 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             return HB_OK;
         }
         if (op2 == 0xBD) {
-            /* BSR r32/64, r/m32/64 */
+            /* BSR or F3-prefixed LZCNT r32/64, r/m32/64. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
-            out->opcode = HB_INS_BSR;
+            out->opcode = prefix_f3 ? HB_INS_LZCNT : HB_INS_BSR;
             out->writes_flags = true;
             hb_result_t r = parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b, 4, out, 1, 2, false);
             if (r != HB_OK) return r;
@@ -1494,11 +1660,28 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             out->op2.size = src_size;
             return HB_OK;
         }
+        if (!prefix_f2 && !prefix_f3 && (op2 == 0x12 || op2 == 0x13)) {
+            /* MOVLPS/MOVLPD memory forms: low qword load/store.  The ModRM
+             * register form aliases MOVHLPS and needs lane-specific IR, so keep
+             * that sibling out until the high-lane family is implemented. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+            out->opcode = HB_INS_SSE_MOV;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 8, out, 1, 2, op2 == 0x13);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, op2 == 0x13 ? 2 : 1);
+            if (op2 == 0x13) out->op2.size = 8;
+            else out->op1.size = 8;
+            return HB_OK;
+        }
         if (op2 == 0x10 || op2 == 0x11 || op2 == 0x28 || op2 == 0x29 ||
             op2 == 0x6F || op2 == 0x7F) {
             /* MOVUPS/MOVAPS/MOVDQA/MOVDQU are 128-bit moves.  Legacy scalar
-             * MOVSS/MOVSD (F3/F2 0F 10/11) only transfers the low 4/8 bytes;
-             * the interpreter preserves the rest of the destination XMM reg. */
+             * MOVSS/MOVSD (F3/F2 0F 10/11) only transfers the low 4/8 bytes.
+             * Register sources preserve the upper destination lanes; memory
+             * sources zero them. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
             bool scalar_move = (op2 == 0x10 || op2 == 0x11) && (prefix_f2 || prefix_f3);
@@ -1541,6 +1724,44 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             hb_result_t r = parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b,
                                         op2 == 0xB0 ? 1 : 4, out, 1, 2, true);
             if (r != HB_OK) return r;
+            return HB_OK;
+        }
+        if (op2 == 0xC7) {
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            if (((modrm >> 3) & 7) != 1 || (modrm >> 6) == 3 || rex_w)
+                return HB_ERR_UNSUPPORTED_OPCODE;
+            out->opcode = HB_INS_CMPXCHG8B;
+            out->writes_flags = true;
+            hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 8, out, 1);
+            if (r != HB_OK) return r;
+            refresh_rip_targets(d, out);
+            return HB_OK;
+        }
+        return HB_ERR_UNSUPPORTED_OPCODE;
+    }
+
+    if (opcode == 0xD9) {
+        /* x87 control-word scalar load/store pair used adjacent to STMXCSR in
+           Wine's x64 setjmp helper. HyperBridge currently does not execute x87
+           arithmetic, so FLDCW is a no-op and FNSTCW stores the reset control
+           word expected by code saving a fresh thread context. */
+        if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+        uint8_t modrm = read_u8(d);
+        uint8_t mod = (modrm >> 6) & 3;
+        uint8_t ext = (modrm >> 3) & 7;
+        if (mod == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (ext == 5) {
+            out->opcode = HB_INS_NOP;
+            hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 2, out, 1);
+            if (r != HB_OK) return r;
+            return HB_OK;
+        }
+        if (ext == 7) {
+            out->opcode = HB_INS_MOV;
+            hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 2, out, 1);
+            if (r != HB_OK) return r;
+            set_imm(out, 2, HB_X87_DEFAULT_CONTROL_WORD, 2);
             return HB_OK;
         }
         return HB_ERR_UNSUPPORTED_OPCODE;
@@ -1948,8 +2169,14 @@ void hb_decoder_destroy(hb_decoder_t* d) {
 hb_result_t hb_decode_next(hb_decoder_t* d, hb_decoded_t* out) {
     if (!d || !out) return HB_ERR_INVALID_ARG;
     if (d->pos >= d->code_len) return HB_ERR_DECODE_FAILED;
-    hb_result_t r = hb_decode_x64(d->code + d->pos, d->code_len - d->pos,
-                                    d->base_addr + d->pos, out);
+    hb_result_t r;
+    if (d->arch == HB_ARCH_X86) {
+        r = hb_decode_x86(d->code + d->pos, d->code_len - d->pos,
+                          d->base_addr + d->pos, out);
+    } else {
+        r = hb_decode_x64(d->code + d->pos, d->code_len - d->pos,
+                          d->base_addr + d->pos, out);
+    }
     if (r == HB_OK || r == HB_ERR_UNSUPPORTED_OPCODE) {
         d->pos += out->len;
     } else if (r == HB_ERR_DECODE_FAILED) {
@@ -1960,6 +2187,10 @@ hb_result_t hb_decode_next(hb_decoder_t* d, hb_decoded_t* out) {
 
 hb_result_t hb_decode_at(hb_decoder_t* d, size_t offset, hb_decoded_t* out) {
     if (!d || !out || offset >= d->code_len) return HB_ERR_INVALID_ARG;
+    if (d->arch == HB_ARCH_X86) {
+        return hb_decode_x86(d->code + offset, d->code_len - offset,
+                             d->base_addr + offset, out);
+    }
     return hb_decode_x64(d->code + offset, d->code_len - offset,
                          d->base_addr + offset, out);
 }
@@ -2002,9 +2233,12 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_SAR: return "SAR";
         case HB_INS_ROL: return "ROL";
         case HB_INS_ROR: return "ROR";
+        case HB_INS_SHLD: return "SHLD";
+        case HB_INS_SHRD: return "SHRD";
         case HB_INS_CMP: return "CMP";
         case HB_INS_TEST: return "TEST";
         case HB_INS_CMPXCHG: return "CMPXCHG";
+        case HB_INS_CMPXCHG8B: return "CMPXCHG8B";
         case HB_INS_XCHG: return "XCHG";
         case HB_INS_XADD: return "XADD";
         case HB_INS_PUSH: return "PUSH";
@@ -2026,9 +2260,13 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_CPUID: return "CPUID";
         case HB_INS_XGETBV: return "XGETBV";
         case HB_INS_NOP: return "NOP";
+        case HB_INS_MOVS: return "MOVS";
+        case HB_INS_CMPS: return "CMPS";
+        case HB_INS_LODS: return "LODS";
         case HB_INS_SCAS: return "SCAS";
         case HB_INS_STOS: return "STOS";
         case HB_INS_TZCNT: return "TZCNT";
+        case HB_INS_LZCNT: return "LZCNT";
         case HB_INS_BSR: return "BSR";
         case HB_INS_BSWAP: return "BSWAP";
         case HB_INS_SSE_MOV: return "SSE_MOV";
@@ -2058,6 +2296,22 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_PUNPCKHWD: return "PUNPCKHWD";
         case HB_INS_PUNPCKHDQ: return "PUNPCKHDQ";
         case HB_INS_PUNPCKHQDQ: return "PUNPCKHQDQ";
+        case HB_INS_PACKSSWB: return "PACKSSWB";
+        case HB_INS_PACKUSWB: return "PACKUSWB";
+        case HB_INS_PACKSSDW: return "PACKSSDW";
+        case HB_INS_PMULLW: return "PMULLW";
+        case HB_INS_PMULHW: return "PMULHW";
+        case HB_INS_PMULHUW: return "PMULHUW";
+        case HB_INS_PMADDWD: return "PMADDWD";
+        case HB_INS_PADDSB: return "PADDSB";
+        case HB_INS_PADDSW: return "PADDSW";
+        case HB_INS_PADDUSB: return "PADDUSB";
+        case HB_INS_PADDUSW: return "PADDUSW";
+        case HB_INS_PAVGB: return "PAVGB";
+        case HB_INS_PAVGW: return "PAVGW";
+        case HB_INS_PSHUFB: return "PSHUFB";
+        case HB_INS_PINSRW: return "PINSRW";
+        case HB_INS_PEXTRW: return "PEXTRW";
         case HB_INS_PSHUFD: return "PSHUFD";
         case HB_INS_PSHUFLW: return "PSHUFLW";
         case HB_INS_PSHUFHW: return "PSHUFHW";
@@ -2114,6 +2368,33 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_PSUBW: return "PSUBW";
         case HB_INS_PSUBD: return "PSUBD";
         case HB_INS_PSUBQ: return "PSUBQ";
+        case HB_INS_X87_FLD: return "X87_FLD";
+        case HB_INS_X87_FST: return "X87_FST";
+        case HB_INS_X87_FSTP: return "X87_FSTP";
+        case HB_INS_X87_FILD: return "X87_FILD";
+        case HB_INS_X87_FISTP: return "X87_FISTP";
+        case HB_INS_X87_FLDCW: return "X87_FLDCW";
+        case HB_INS_X87_FNSTCW: return "X87_FNSTCW";
+        case HB_INS_X87_FNSTSW: return "X87_FNSTSW";
+        case HB_INS_X87_FADD: return "X87_FADD";
+        case HB_INS_X87_FMUL: return "X87_FMUL";
+        case HB_INS_X87_FCOM: return "X87_FCOM";
+        case HB_INS_X87_FCOMP: return "X87_FCOMP";
+        case HB_INS_X87_FSUB: return "X87_FSUB";
+        case HB_INS_X87_FSUBR: return "X87_FSUBR";
+        case HB_INS_X87_FDIV: return "X87_FDIV";
+        case HB_INS_X87_FDIVR: return "X87_FDIVR";
+        case HB_INS_X87_FADDP: return "X87_FADDP";
+        case HB_INS_X87_FMULP: return "X87_FMULP";
+        case HB_INS_X87_FCOMPP: return "X87_FCOMPP";
+        case HB_INS_X87_FSUBP: return "X87_FSUBP";
+        case HB_INS_X87_FSUBRP: return "X87_FSUBRP";
+        case HB_INS_X87_FDIVP: return "X87_FDIVP";
+        case HB_INS_X87_FDIVRP: return "X87_FDIVRP";
+        case HB_INS_X87_FXCH: return "X87_FXCH";
+        case HB_INS_X87_FRNDINT: return "X87_FRNDINT";
+        case HB_INS_X87_FNCLEX: return "X87_FNCLEX";
+        case HB_INS_X87_FNINIT: return "X87_FNINIT";
         case HB_INS_UNKNOWN: return "UNKNOWN";
         case HB_INS_UNSUPPORTED: return "UNSUPPORTED";
         default: return "?";

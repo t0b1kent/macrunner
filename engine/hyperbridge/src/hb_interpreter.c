@@ -1,14 +1,158 @@
 #include "hb_runtime.h"
 #include "hb_memory.h"
 #include "hb_flags.h"
+#include "hb_x87.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
 
-static bool trace_native_write_enabled(void) {
-    const char* val = getenv("MACRUNNER_HB_TRACE_NATIVE_WRITES");
+static const char* ir_op_name(hb_ir_op_t op);
+
+static _Thread_local const hb_ir_instr_t* trace_current_instr;
+static _Thread_local unsigned int trace_runtime_flags;
+
+enum {
+    TRACE_FLAG_MEM_WATCH     = 1u << 0,
+    TRACE_FLAG_NATIVE_WRITES = 1u << 1,
+    TRACE_FLAG_STACK_FAULTS  = 1u << 2,
+    TRACE_FLAG_ATOMICS       = 1u << 3,
+    TRACE_FLAG_FAULTS        = 1u << 4,
+    TRACE_FLAG_PC            = 1u << 5,
+    TRACE_FLAG_STRCPY        = 1u << 6,
+    TRACE_FLAG_BRANCHES      = 1u << 7,
+    TRACE_FLAG_SIMD          = 1u << 8,
+    TRACE_FLAG_SIMD_DATA     = 1u << 9,
+};
+
+static inline void sync_arch_pc(hb_context_t* ctx) {
+    if (ctx->arch == HB_ARCH_X64) ctx->regs.x64.rip = ctx->pc;
+    else if (ctx->arch == HB_ARCH_X86) ctx->regs.x86.eip = (uint32_t)ctx->pc;
+}
+
+static bool trace_env_enabled(const char* name) {
+    const char* val = getenv(name);
     return val && val[0] && val[0] != '0';
+}
+
+static void trace_refresh_runtime_flags(void) {
+    static uint32_t call_count = 0;
+    if (call_count++ % 16384 != 0) return;
+
+    unsigned int flags = 0;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_MEM_WATCH")) flags |= TRACE_FLAG_MEM_WATCH;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_NATIVE_WRITES")) flags |= TRACE_FLAG_NATIVE_WRITES;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_STACK_FAULTS")) flags |= TRACE_FLAG_STACK_FAULTS;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_ATOMICS")) flags |= TRACE_FLAG_ATOMICS;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_FAULTS")) flags |= TRACE_FLAG_FAULTS;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_PC")) flags |= TRACE_FLAG_PC;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_STRCPY_PROBE")) flags |= TRACE_FLAG_STRCPY;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_BRANCHES")) flags |= TRACE_FLAG_BRANCHES;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_SIMD")) flags |= TRACE_FLAG_SIMD;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_SIMD_DATA")) flags |= TRACE_FLAG_SIMD_DATA;
+    trace_runtime_flags = flags;
+}
+
+static bool trace_mem_watch_enabled(void) {
+    return (trace_runtime_flags & TRACE_FLAG_MEM_WATCH) != 0;
+}
+
+static bool trace_mem_watch_range(uint64_t addr, size_t size, uint64_t* start, uint64_t* end) {
+    const char* start_env = getenv("MACRUNNER_HB_TRACE_MEM_WATCH_START");
+    const char* end_env = getenv("MACRUNNER_HB_TRACE_MEM_WATCH_END");
+    uint64_t last;
+
+    if (!trace_mem_watch_enabled() || !start_env || !start_env[0]) return false;
+    *start = strtoull(start_env, NULL, 0);
+    *end = (end_env && end_env[0]) ? strtoull(end_env, NULL, 0) : *start;
+    if (*end < *start) *end = *start;
+    last = size ? addr + size - 1 : addr;
+    if (last < addr) return true;
+    return addr <= *end && last >= *start;
+}
+
+static bool trace_mem_watch_take_budget(void) {
+    static unsigned int count;
+    unsigned int limit = 160;
+    const char* limit_env = getenv("MACRUNNER_HB_TRACE_MEM_WATCH_BUDGET");
+
+    if (limit_env && limit_env[0]) {
+        unsigned long parsed = strtoul(limit_env, NULL, 0);
+        if (parsed > 0 && parsed < 100000) limit = (unsigned int)parsed;
+    }
+    if (++count > limit) {
+        if (count == limit + 1)
+            fprintf(stderr, "macrunner-hb-mem-watch: budget exhausted, silencing\n");
+        return false;
+    }
+    return true;
+}
+
+static bool trace_mem_watch_pc_allowed(uint64_t pc) {
+    const char* start_env = getenv("MACRUNNER_HB_TRACE_MEM_WATCH_PC_START");
+    const char* end_env = getenv("MACRUNNER_HB_TRACE_MEM_WATCH_PC_END");
+    uint64_t start, end;
+
+    if (!start_env || !start_env[0]) return true;
+    start = strtoull(start_env, NULL, 0);
+    end = (end_env && end_env[0]) ? strtoull(end_env, NULL, 0) : start;
+    if (end < start) end = start;
+    return pc >= start && pc <= end;
+}
+
+static void trace_hex_bytes(const uint8_t* bytes, size_t count) {
+    for (size_t i = 0; i < count; i++) fprintf(stderr, "%02x", bytes[i]);
+}
+
+static void trace_instr_bytes(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    if (!ctx || !ctx->memory || !instr) return;
+    for (uint8_t i = 0; i < instr->guest_len && i < 15; i++) {
+        uint8_t byte = 0;
+        if (hb_memory_read_u8(ctx->memory, instr->guest_addr + i, &byte) == HB_OK)
+            fprintf(stderr, "%02x", byte);
+        else
+            fprintf(stderr, "??");
+    }
+}
+
+static void trace_mem_watch_bytes(hb_context_t* ctx, const char* phase, uint64_t addr,
+                                  const void* data, size_t size, const void* before) {
+    const hb_ir_instr_t* instr = trace_current_instr;
+    uint64_t start = 0, end = 0;
+    size_t count = size > 32 ? 32 : size;
+
+    if (!ctx || !trace_mem_watch_range(addr, size, &start, &end)) return;
+    if (!trace_mem_watch_pc_allowed(instr ? instr->guest_addr : 0)) return;
+    if (!trace_mem_watch_take_budget()) return;
+
+    fprintf(stderr,
+            "macrunner-hb-mem-watch: phase=%s pc=0x%llx len=%u op=%s addr=0x%llx size=%zu "
+            "watch=0x%llx-0x%llx rax=0x%llx rcx=0x%llx rdx=0x%llx rsi=0x%llx rdi=0x%llx "
+            "bytes=",
+            phase,
+            instr ? (unsigned long long)instr->guest_addr : 0,
+            instr ? instr->guest_len : 0,
+            instr ? ir_op_name(instr->op) : "unknown",
+            (unsigned long long)addr, size,
+            (unsigned long long)start, (unsigned long long)end,
+            (unsigned long long)ctx->regs.x64.rax,
+            (unsigned long long)ctx->regs.x64.rcx,
+            (unsigned long long)ctx->regs.x64.rdx,
+            (unsigned long long)ctx->regs.x64.rsi,
+            (unsigned long long)ctx->regs.x64.rdi);
+    if (data && count) trace_hex_bytes((const uint8_t*)data, count);
+    else fprintf(stderr, "-");
+    if (before && count) {
+        fprintf(stderr, " before=");
+        trace_hex_bytes((const uint8_t*)before, count);
+    }
+    fprintf(stderr, " instr=");
+    trace_instr_bytes(ctx, instr);
+    fprintf(stderr, "\n");
+}
+
+static bool trace_native_write_enabled(void) {
+    return (trace_runtime_flags & TRACE_FLAG_NATIVE_WRITES) != 0;
 }
 
 static bool trace_native_write_addr(uint64_t addr, size_t size) {
@@ -133,14 +277,28 @@ static bool is_xmm_reg(int idx) {
 }
 
 static hb_result_t read_xmm_reg(hb_context_t* ctx, int idx, uint64_t out[2]) {
-    if (!ctx || !out || !is_xmm_reg(idx) || ctx->mode == HB_MODE_32BIT) return HB_ERR_INVALID_ARG;
+    if (!ctx || !out || !is_xmm_reg(idx)) return HB_ERR_INVALID_ARG;
+    if (ctx->mode == HB_MODE_32BIT) {
+        unsigned n = (unsigned)(idx - HB_REG_XMM0);
+        if (n >= 8) return HB_ERR_INVALID_ARG;
+        out[0] = ctx->regs.x86.xmm[n][0];
+        out[1] = ctx->regs.x86.xmm[n][1];
+        return HB_OK;
+    }
     out[0] = ctx->regs.x64.xmm[idx - HB_REG_XMM0][0];
     out[1] = ctx->regs.x64.xmm[idx - HB_REG_XMM0][1];
     return HB_OK;
 }
 
 static hb_result_t write_xmm_reg(hb_context_t* ctx, int idx, const uint64_t in[2]) {
-    if (!ctx || !in || !is_xmm_reg(idx) || ctx->mode == HB_MODE_32BIT) return HB_ERR_INVALID_ARG;
+    if (!ctx || !in || !is_xmm_reg(idx)) return HB_ERR_INVALID_ARG;
+    if (ctx->mode == HB_MODE_32BIT) {
+        unsigned n = (unsigned)(idx - HB_REG_XMM0);
+        if (n >= 8) return HB_ERR_INVALID_ARG;
+        ctx->regs.x86.xmm[n][0] = in[0];
+        ctx->regs.x86.xmm[n][1] = in[1];
+        return HB_OK;
+    }
     ctx->regs.x64.xmm[idx - HB_REG_XMM0][0] = in[0];
     ctx->regs.x64.xmm[idx - HB_REG_XMM0][1] = in[1];
     return HB_OK;
@@ -334,7 +492,13 @@ static uint64_t sign_extend_from_size(uint64_t val, hb_size_t size) {
 
 static void write_reg_sized(hb_context_t* ctx, int idx, uint64_t val, hb_size_t size) {
     if (ctx->mode == HB_MODE_32BIT) {
-        write_reg(ctx, idx, val);
+        if (size == HB_SIZE_8 || size == HB_SIZE_16) {
+            uint64_t old = read_reg(ctx, idx);
+            uint64_t mask = mask_for_size(size);
+            write_reg(ctx, idx, (old & ~mask) | (val & mask));
+        } else {
+            write_reg(ctx, idx, val);
+        }
         return;
     }
 
@@ -374,6 +538,11 @@ static uint64_t resolve_addr(hb_context_t* ctx, const hb_ir_operand_t* op) {
     }
     if (op->mem.segment == 0x64) base += ctx->fs_base;
     else if (op->mem.segment == 0x65) base += ctx->gs_base;
+    if (ctx->mode == HB_MODE_32BIT) {
+        uint32_t base32 = (uint32_t)base;
+        uint32_t index32 = (uint32_t)index;
+        return (uint32_t)(base32 + index32 * op->mem.scale + (uint32_t)op->mem.disp);
+    }
     if (op->mem.addr32) {
         uint32_t base32 = (uint32_t)base;
         uint32_t index32 = (uint32_t)index;
@@ -398,6 +567,7 @@ static hb_result_t mem_read(hb_context_t* ctx, uint64_t addr, uint64_t* out, hb_
             hb_result_t r = hb_memory_read_u8(ctx->memory, addr, &v);
             if (r != HB_OK) return r;
             *out = v;
+            if (trace_mem_watch_enabled()) trace_mem_watch_bytes(ctx, "read", addr, &v, sizeof(v), NULL);
             return HB_OK;
         }
         case HB_SIZE_16: {
@@ -405,6 +575,7 @@ static hb_result_t mem_read(hb_context_t* ctx, uint64_t addr, uint64_t* out, hb_
             hb_result_t r = hb_memory_read_u16(ctx->memory, addr, &v);
             if (r != HB_OK) return r;
             *out = v;
+            if (trace_mem_watch_enabled()) trace_mem_watch_bytes(ctx, "read", addr, &v, sizeof(v), NULL);
             return HB_OK;
         }
         case HB_SIZE_32: {
@@ -412,6 +583,7 @@ static hb_result_t mem_read(hb_context_t* ctx, uint64_t addr, uint64_t* out, hb_
             hb_result_t r = hb_memory_read_u32(ctx->memory, addr, &v);
             if (r != HB_OK) return r;
             *out = v;
+            if (trace_mem_watch_enabled()) trace_mem_watch_bytes(ctx, "read", addr, &v, sizeof(v), NULL);
             return HB_OK;
         }
         case HB_SIZE_64: {
@@ -419,6 +591,7 @@ static hb_result_t mem_read(hb_context_t* ctx, uint64_t addr, uint64_t* out, hb_
             hb_result_t r = hb_memory_read_u64(ctx->memory, addr, &v);
             if (r != HB_OK) return r;
             *out = v;
+            if (trace_mem_watch_enabled()) trace_mem_watch_bytes(ctx, "read", addr, &v, sizeof(v), NULL);
             return HB_OK;
         }
         default:
@@ -443,7 +616,7 @@ static const hb_region_t* nearest_region(hb_memory_t* mem, uint64_t addr, int be
 
 static void trace_stack_write_fault(hb_context_t* ctx, uint64_t addr, uint64_t val, hb_size_t sz, hb_result_t result) {
     static int budget = 0;
-    if (!getenv("MACRUNNER_HB_TRACE_STACK_FAULTS")) return;
+    if (!(trace_runtime_flags & TRACE_FLAG_STACK_FAULTS)) return;
     if (++budget > 20) return;
 
     hb_memory_t* mem = ctx ? ctx->memory : NULL;
@@ -487,6 +660,11 @@ static void trace_stack_write_fault(hb_context_t* ctx, uint64_t addr, uint64_t v
 
 static hb_result_t mem_write(hb_context_t* ctx, uint64_t addr, uint64_t val, hb_size_t sz) {
     hb_result_t r;
+    uint8_t before[8] = {0};
+    size_t bytes = (size_t)sz;
+    if (bytes > sizeof(before)) bytes = sizeof(before);
+    if (trace_mem_watch_enabled() && bytes)
+        (void)hb_memory_read(ctx->memory, addr, before, bytes);
     trace_guest_native_write(ctx, "interp_mem_write", addr, val, sz);
     switch (sz) {
         case HB_SIZE_8:  r = hb_memory_write_u8(ctx->memory, addr, (uint8_t)val); break;
@@ -496,7 +674,257 @@ static hb_result_t mem_write(hb_context_t* ctx, uint64_t addr, uint64_t val, hb_
         default: r = HB_ERR_MEMORY_FAULT; break;
     }
     if (r != HB_OK) trace_stack_write_fault(ctx, addr, val, sz, r);
+    else if (trace_mem_watch_enabled()) trace_mem_watch_bytes(ctx, "write", addr, &val, (size_t)sz, before);
     return r;
+}
+
+static hb_result_t x87_read_real_mem(hb_context_t* ctx, const hb_ir_operand_t* op, double* out) {
+    uint64_t addr = resolve_addr(ctx, op);
+
+    if (!out) return HB_ERR_INVALID_ARG;
+    if (op->size == HB_SIZE_32) {
+        float f;
+        hb_result_t r = hb_memory_read(ctx->memory, addr, &f, sizeof(f));
+        if (r != HB_OK) return r;
+        *out = (double)f;
+    } else if (op->size == HB_SIZE_64) {
+        hb_result_t r = hb_memory_read(ctx->memory, addr, out, sizeof(*out));
+        if (r != HB_OK) return r;
+    } else {
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    }
+    return HB_OK;
+}
+
+static hb_result_t x87_fld_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    double value;
+    hb_result_t r = x87_read_real_mem(ctx, op, &value);
+    if (r != HB_OK) return r;
+    return hb_x87_push_f64(&ctx->regs.x86.x87, value);
+}
+
+static hb_result_t x87_fstp_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    uint64_t addr = resolve_addr(ctx, op);
+    double value;
+    hb_result_t r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &value);
+    if (r != HB_OK) return r;
+
+    if (op->size == HB_SIZE_32) {
+        float f = (float)value;
+        r = hb_memory_write(ctx->memory, addr, &f, sizeof(f));
+    } else if (op->size == HB_SIZE_64) {
+        r = hb_memory_write(ctx->memory, addr, &value, sizeof(value));
+    } else {
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    }
+    if (r != HB_OK) return r;
+    return hb_x87_pop(&ctx->regs.x86.x87);
+}
+
+static hb_result_t x87_fst_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    uint64_t addr = resolve_addr(ctx, op);
+    double value;
+    hb_result_t r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &value);
+    if (r != HB_OK) return r;
+
+    if (op->size == HB_SIZE_32) {
+        float f = (float)value;
+        return hb_memory_write(ctx->memory, addr, &f, sizeof(f));
+    }
+    if (op->size == HB_SIZE_64) {
+        return hb_memory_write(ctx->memory, addr, &value, sizeof(value));
+    }
+    return HB_ERR_UNSUPPORTED_FEATURE;
+}
+
+static hb_result_t x87_fild_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    uint64_t addr = resolve_addr(ctx, op);
+    double value;
+
+    if (op->size == HB_SIZE_16) {
+        int16_t v;
+        hb_result_t r = hb_memory_read(ctx->memory, addr, &v, sizeof(v));
+        if (r != HB_OK) return r;
+        value = (double)v;
+    } else if (op->size == HB_SIZE_32) {
+        int32_t v;
+        hb_result_t r = hb_memory_read(ctx->memory, addr, &v, sizeof(v));
+        if (r != HB_OK) return r;
+        value = (double)v;
+    } else if (op->size == HB_SIZE_64) {
+        int64_t v;
+        hb_result_t r = hb_memory_read(ctx->memory, addr, &v, sizeof(v));
+        if (r != HB_OK) return r;
+        value = (double)v;
+    } else {
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    }
+    return hb_x87_push_f64(&ctx->regs.x86.x87, value);
+}
+
+static hb_result_t x87_fistp_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    uint64_t addr = resolve_addr(ctx, op);
+
+    if (op->size == HB_SIZE_16) {
+        int16_t v;
+        hb_result_t r = hb_x87_fistp_i16(&ctx->regs.x86.x87, &v);
+        if (r != HB_OK) return r;
+        return hb_memory_write(ctx->memory, addr, &v, sizeof(v));
+    }
+    if (op->size == HB_SIZE_32) {
+        int32_t v;
+        hb_result_t r = hb_x87_fistp_i32(&ctx->regs.x86.x87, &v);
+        if (r != HB_OK) return r;
+        return hb_memory_write(ctx->memory, addr, &v, sizeof(v));
+    }
+    if (op->size == HB_SIZE_64) {
+        int64_t v;
+        hb_result_t r = hb_x87_fistp_i64(&ctx->regs.x86.x87, &v);
+        if (r != HB_OK) return r;
+        return hb_memory_write(ctx->memory, addr, &v, sizeof(v));
+    }
+    return HB_ERR_UNSUPPORTED_FEATURE;
+}
+
+static hb_result_t x87_fldcw_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    uint16_t cw;
+    uint64_t addr = resolve_addr(ctx, op);
+    hb_result_t r = hb_memory_read(ctx->memory, addr, &cw, sizeof(cw));
+    if (r != HB_OK) return r;
+    return hb_x87_fldcw(&ctx->regs.x86.x87, cw);
+}
+
+static hb_result_t x87_fnstcw_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    uint16_t cw;
+    uint64_t addr = resolve_addr(ctx, op);
+    hb_result_t r = hb_x87_fnstcw(&ctx->regs.x86.x87, &cw);
+    if (r != HB_OK) return r;
+    return hb_memory_write(ctx->memory, addr, &cw, sizeof(cw));
+}
+
+static hb_result_t x87_arith_mem(hb_context_t* ctx, const hb_ir_operand_t* op, hb_ir_op_t arith_op) {
+    double lhs;
+    double rhs;
+    double result;
+    hb_result_t r = x87_read_real_mem(ctx, op, &rhs);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &lhs);
+    if (r != HB_OK) return r;
+
+    switch (arith_op) {
+        case HB_IR_X87_FADD:  result = lhs + rhs; break;
+        case HB_IR_X87_FMUL:  result = lhs * rhs; break;
+        case HB_IR_X87_FSUB:  result = lhs - rhs; break;
+        case HB_IR_X87_FSUBR: result = rhs - lhs; break;
+        case HB_IR_X87_FDIV:  result = lhs / rhs; break;
+        case HB_IR_X87_FDIVR: result = rhs / lhs; break;
+        default: return HB_ERR_INTERNAL;
+    }
+    return hb_x87_set_st_f64(&ctx->regs.x86.x87, 0, result);
+}
+
+static hb_result_t x87_fcom_mem(hb_context_t* ctx, const hb_ir_operand_t* op, bool pop_after) {
+    double rhs;
+    hb_result_t r = x87_read_real_mem(ctx, op, &rhs);
+    if (r != HB_OK) return r;
+    r = hb_x87_fcom(&ctx->regs.x86.x87, rhs);
+    if (r != HB_OK) return r;
+    return pop_after ? hb_x87_pop(&ctx->regs.x86.x87) : HB_OK;
+}
+
+static hb_result_t x87_st_index(const hb_ir_operand_t* op, unsigned* index) {
+    if (!op || !index || op->type != HB_OP_IMM || op->imm < 0 || op->imm > 7) return HB_ERR_INTERNAL;
+    *index = (unsigned)op->imm;
+    return HB_OK;
+}
+
+static hb_result_t x87_fld_st(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    unsigned index;
+    double value;
+    hb_result_t r = x87_st_index(op, &index);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &value);
+    if (r != HB_OK) return r;
+    return hb_x87_push_f64(&ctx->regs.x86.x87, value);
+}
+
+static hb_result_t x87_fxch(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    unsigned index;
+    double st0;
+    double sti;
+    hb_result_t r = x87_st_index(op, &index);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &st0);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &sti);
+    if (r != HB_OK) return r;
+    r = hb_x87_set_st_f64(&ctx->regs.x86.x87, 0, sti);
+    if (r != HB_OK) return r;
+    return hb_x87_set_st_f64(&ctx->regs.x86.x87, index, st0);
+}
+
+static hb_result_t x87_arith_st0_sti(hb_context_t* ctx, const hb_ir_operand_t* op, hb_ir_op_t arith_op) {
+    unsigned index;
+    double lhs;
+    double rhs;
+    double result;
+    hb_result_t r = x87_st_index(op, &index);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &lhs);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &rhs);
+    if (r != HB_OK) return r;
+    switch (arith_op) {
+        case HB_IR_X87_FADD:  result = lhs + rhs; break;
+        case HB_IR_X87_FMUL:  result = lhs * rhs; break;
+        case HB_IR_X87_FSUB:  result = lhs - rhs; break;
+        case HB_IR_X87_FSUBR: result = rhs - lhs; break;
+        case HB_IR_X87_FDIV:  result = lhs / rhs; break;
+        case HB_IR_X87_FDIVR: result = rhs / lhs; break;
+        default: return HB_ERR_INTERNAL;
+    }
+    return hb_x87_set_st_f64(&ctx->regs.x86.x87, 0, result);
+}
+
+static hb_result_t x87_arith_pop_sti_st0(hb_context_t* ctx, const hb_ir_operand_t* op, hb_ir_op_t arith_op) {
+    unsigned index;
+    double st0;
+    double sti;
+    double result;
+    hb_result_t r = x87_st_index(op, &index);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &st0);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &sti);
+    if (r != HB_OK) return r;
+    switch (arith_op) {
+        case HB_IR_X87_FADDP:  result = sti + st0; break;
+        case HB_IR_X87_FMULP:  result = sti * st0; break;
+        case HB_IR_X87_FSUBP:  result = sti - st0; break;
+        case HB_IR_X87_FSUBRP: result = st0 - sti; break;
+        case HB_IR_X87_FDIVP:  result = sti / st0; break;
+        case HB_IR_X87_FDIVRP: result = st0 / sti; break;
+        default: return HB_ERR_INTERNAL;
+    }
+    r = hb_x87_set_st_f64(&ctx->regs.x86.x87, index, result);
+    if (r != HB_OK) return r;
+    return hb_x87_pop(&ctx->regs.x86.x87);
+}
+
+static hb_result_t x87_fcom_st(hb_context_t* ctx, const hb_ir_operand_t* op, unsigned pops) {
+    unsigned index;
+    double rhs;
+    hb_result_t r = x87_st_index(op, &index);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &rhs);
+    if (r != HB_OK) return r;
+    r = hb_x87_fcom(&ctx->regs.x86.x87, rhs);
+    if (r != HB_OK) return r;
+    while (pops--) {
+        r = hb_x87_pop(&ctx->regs.x86.x87);
+        if (r != HB_OK) return r;
+    }
+    return HB_OK;
 }
 
 static hb_result_t read_operand_value(hb_context_t* ctx, const hb_ir_operand_t* op, uint64_t* out) {
@@ -529,6 +957,88 @@ static hb_result_t write_operand_value(hb_context_t* ctx, const hb_ir_operand_t*
     return HB_ERR_INTERNAL;
 }
 
+static hb_result_t read_seg_selector(hb_context_t* ctx, uint16_t seg, uint16_t* out) {
+    if (!ctx || !out) return HB_ERR_INVALID_ARG;
+    switch (seg) {
+        case 0: *out = ctx->seg_es; return HB_OK;
+        case 1: *out = ctx->seg_cs; return HB_OK;
+        case 2: *out = ctx->seg_ss; return HB_OK;
+        case 3: *out = ctx->seg_ds; return HB_OK;
+        case 4: *out = ctx->seg_fs; return HB_OK;
+        case 5: *out = ctx->seg_gs; return HB_OK;
+        default: return HB_ERR_UNSUPPORTED_OPCODE;
+    }
+}
+
+static hb_result_t write_seg_selector(hb_context_t* ctx, uint16_t seg, uint16_t value) {
+    if (!ctx) return HB_ERR_INVALID_ARG;
+    switch (seg) {
+        case 0: ctx->seg_es = value; return HB_OK;
+        case 1: ctx->seg_cs = value; return HB_OK;
+        case 2: ctx->seg_ss = value; return HB_OK;
+        case 3: ctx->seg_ds = value; return HB_OK;
+        case 4: ctx->seg_fs = value; return HB_OK;
+        case 5: ctx->seg_gs = value; return HB_OK;
+        default: return HB_ERR_UNSUPPORTED_OPCODE;
+    }
+}
+
+static uint64_t status_flags_mask(void) {
+    return (1ULL << 0) | (1ULL << 2) | (1ULL << 4) |
+           (1ULL << 6) | (1ULL << 7) | (1ULL << 11);
+}
+
+static void sync_status_flags_from_image(hb_context_t* ctx, uint64_t image) {
+    ctx->flags.cf = (image & (1ULL << 0)) != 0;
+    ctx->flags.pf = (image & (1ULL << 2)) != 0;
+    ctx->flags.af = (image & (1ULL << 4)) != 0;
+    ctx->flags.zf = (image & (1ULL << 6)) != 0;
+    ctx->flags.sf = (image & (1ULL << 7)) != 0;
+    ctx->flags.of = (image & (1ULL << 11)) != 0;
+}
+
+static uint64_t flags_width_mask(hb_size_t size) {
+    if (size == HB_SIZE_16) return 0xffffu;
+    if (size == HB_SIZE_32) return 0xffffffffu;
+    return UINT64_MAX;
+}
+
+static hb_result_t read_flags_image(hb_context_t* ctx, hb_size_t size, uint64_t* out) {
+    uint64_t image;
+    hb_result_t r;
+    if (!ctx || !out) return HB_ERR_INVALID_ARG;
+    r = hb_lazy_flags_materialize(ctx, HB_FLAG_BIT_ALL);
+    if (r != HB_OK) return r;
+    image = ctx->mode == HB_MODE_32BIT ? ctx->regs.x86.eflags : ctx->regs.x64.rflags;
+    image &= ~status_flags_mask();
+    image |= ctx->flags.cf ? (1ULL << 0) : 0;
+    image |= ctx->flags.pf ? (1ULL << 2) : 0;
+    image |= ctx->flags.af ? (1ULL << 4) : 0;
+    image |= ctx->flags.zf ? (1ULL << 6) : 0;
+    image |= ctx->flags.sf ? (1ULL << 7) : 0;
+    image |= ctx->flags.of ? (1ULL << 11) : 0;
+    image |= 0x2u;
+    if (ctx->mode == HB_MODE_32BIT) ctx->regs.x86.eflags = (uint32_t)image;
+    else ctx->regs.x64.rflags = image;
+    *out = image & flags_width_mask(size);
+    return HB_OK;
+}
+
+static hb_result_t write_flags_image(hb_context_t* ctx, hb_size_t size, uint64_t value) {
+    uint64_t image;
+    uint64_t mask;
+    if (!ctx) return HB_ERR_INVALID_ARG;
+    image = ctx->mode == HB_MODE_32BIT ? ctx->regs.x86.eflags : ctx->regs.x64.rflags;
+    mask = flags_width_mask(size);
+    image = (image & ~mask) | (value & mask);
+    image |= 0x2u;
+    if (ctx->mode == HB_MODE_32BIT) ctx->regs.x86.eflags = (uint32_t)image;
+    else ctx->regs.x64.rflags = image;
+    sync_status_flags_from_image(ctx, image);
+    hb_lazy_flags_clear(ctx);
+    return HB_OK;
+}
+
 static void trace_operand(const char* name, hb_context_t* ctx, const hb_ir_operand_t* op) {
     if (!op) return;
     if (op->type == HB_OP_MEM) {
@@ -549,14 +1059,14 @@ static void trace_operand(const char* name, hb_context_t* ctx, const hb_ir_opera
 }
 
 static bool trace_atomics_enabled(void) {
-    const char* enabled = getenv("MACRUNNER_HB_TRACE_ATOMICS");
-    return enabled && enabled[0] && enabled[0] != '0';
+    return (trace_runtime_flags & TRACE_FLAG_ATOMICS) != 0;
 }
 
 static const char* ir_op_name(hb_ir_op_t op) {
     switch (op) {
         case HB_IR_NOP: return "NOP";
         case HB_IR_MOV: return "MOV";
+        case HB_IR_MOV_SEG: return "MOV_SEG";
         case HB_IR_LEA: return "LEA";
         case HB_IR_ADD: return "ADD";
         case HB_IR_ADC: return "ADC";
@@ -580,9 +1090,12 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_SAR: return "SAR";
         case HB_IR_ROL: return "ROL";
         case HB_IR_ROR: return "ROR";
+        case HB_IR_SHLD: return "SHLD";
+        case HB_IR_SHRD: return "SHRD";
         case HB_IR_CMP: return "CMP";
         case HB_IR_TEST: return "TEST";
         case HB_IR_CMPXCHG: return "CMPXCHG";
+        case HB_IR_CMPXCHG8B: return "CMPXCHG8B";
         case HB_IR_XCHG: return "XCHG";
         case HB_IR_XADD: return "XADD";
         case HB_IR_LAHF: return "LAHF";
@@ -595,17 +1108,23 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_STORE: return "STORE";
         case HB_IR_PUSH: return "PUSH";
         case HB_IR_POP: return "POP";
+        case HB_IR_PUSHF: return "PUSHF";
+        case HB_IR_POPF: return "POPF";
         case HB_IR_CALL: return "CALL";
         case HB_IR_RET: return "RET";
         case HB_IR_JMP: return "JMP";
         case HB_IR_Jcc: return "Jcc";
         case HB_IR_SIGN_EXTEND: return "SIGN_EXTEND";
         case HB_IR_CWD: return "CWD";
+        case HB_IR_MOVS: return "MOVS";
+        case HB_IR_CMPS: return "CMPS";
+        case HB_IR_LODS: return "LODS";
         case HB_IR_SCAS: return "SCAS";
         case HB_IR_STOS: return "STOS";
         case HB_IR_ZERO_EXTEND: return "ZERO_EXTEND";
         case HB_IR_TRUNC: return "TRUNC";
         case HB_IR_TZCNT: return "TZCNT";
+        case HB_IR_LZCNT: return "LZCNT";
         case HB_IR_BSR: return "BSR";
         case HB_IR_BSWAP: return "BSWAP";
         case HB_IR_XMM_AND: return "XMM_AND";
@@ -621,6 +1140,22 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_PMOVMSKB: return "PMOVMSKB";
         case HB_IR_MOVMSK: return "MOVMSK";
         case HB_IR_PUNPCK: return "PUNPCK";
+        case HB_IR_PACKSSWB: return "PACKSSWB";
+        case HB_IR_PACKUSWB: return "PACKUSWB";
+        case HB_IR_PACKSSDW: return "PACKSSDW";
+        case HB_IR_PMULLW: return "PMULLW";
+        case HB_IR_PMULHW: return "PMULHW";
+        case HB_IR_PMULHUW: return "PMULHUW";
+        case HB_IR_PMADDWD: return "PMADDWD";
+        case HB_IR_PADDSB: return "PADDSB";
+        case HB_IR_PADDSW: return "PADDSW";
+        case HB_IR_PADDUSB: return "PADDUSB";
+        case HB_IR_PADDUSW: return "PADDUSW";
+        case HB_IR_PAVGB: return "PAVGB";
+        case HB_IR_PAVGW: return "PAVGW";
+        case HB_IR_PSHUFB: return "PSHUFB";
+        case HB_IR_PINSRW: return "PINSRW";
+        case HB_IR_PEXTRW: return "PEXTRW";
         case HB_IR_PSHUF: return "PSHUF";
         case HB_IR_PSRL: return "PSRL";
         case HB_IR_PSRA: return "PSRA";
@@ -656,6 +1191,33 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_CVTTSS2SI: return "CVTTSS2SI";
         case HB_IR_PADD: return "PADD";
         case HB_IR_PSUB: return "PSUB";
+        case HB_IR_X87_FLD: return "X87_FLD";
+        case HB_IR_X87_FST: return "X87_FST";
+        case HB_IR_X87_FSTP: return "X87_FSTP";
+        case HB_IR_X87_FILD: return "X87_FILD";
+        case HB_IR_X87_FISTP: return "X87_FISTP";
+        case HB_IR_X87_FLDCW: return "X87_FLDCW";
+        case HB_IR_X87_FNSTCW: return "X87_FNSTCW";
+        case HB_IR_X87_FNSTSW: return "X87_FNSTSW";
+        case HB_IR_X87_FADD: return "X87_FADD";
+        case HB_IR_X87_FMUL: return "X87_FMUL";
+        case HB_IR_X87_FCOM: return "X87_FCOM";
+        case HB_IR_X87_FCOMP: return "X87_FCOMP";
+        case HB_IR_X87_FSUB: return "X87_FSUB";
+        case HB_IR_X87_FSUBR: return "X87_FSUBR";
+        case HB_IR_X87_FDIV: return "X87_FDIV";
+        case HB_IR_X87_FDIVR: return "X87_FDIVR";
+        case HB_IR_X87_FADDP: return "X87_FADDP";
+        case HB_IR_X87_FMULP: return "X87_FMULP";
+        case HB_IR_X87_FCOMPP: return "X87_FCOMPP";
+        case HB_IR_X87_FSUBP: return "X87_FSUBP";
+        case HB_IR_X87_FSUBRP: return "X87_FSUBRP";
+        case HB_IR_X87_FDIVP: return "X87_FDIVP";
+        case HB_IR_X87_FDIVRP: return "X87_FDIVRP";
+        case HB_IR_X87_FXCH: return "X87_FXCH";
+        case HB_IR_X87_FRNDINT: return "X87_FRNDINT";
+        case HB_IR_X87_FNCLEX: return "X87_FNCLEX";
+        case HB_IR_X87_FNINIT: return "X87_FNINIT";
         case HB_IR_HOST_CALL: return "HOST_CALL";
         case HB_IR_FAULT: return "FAULT";
         case HB_IR_UNSUPPORTED: return "UNSUPPORTED";
@@ -666,9 +1228,8 @@ static const char* ir_op_name(hb_ir_op_t op) {
 static void trace_exec_fault(hb_context_t* ctx, const hb_ir_instr_t* instr,
                              hb_result_t result, uint64_t block_guest,
                              size_t ir_idx, uint64_t step_idx) {
-    const char* enabled = getenv("MACRUNNER_HB_TRACE_FAULTS");
     static unsigned int fault_count;
-    if (!enabled || !enabled[0] || enabled[0] == '0') return;
+    if (!(trace_runtime_flags & TRACE_FLAG_FAULTS)) return;
     if (++fault_count > 50) {
         if (fault_count == 51)
             fprintf(stderr, "macrunner-hb-fault: budget exhausted, silencing\n");
@@ -768,10 +1329,14 @@ static bool trace_pc_matches(const char* val, uint64_t guest_addr) {
 }
 
 static void trace_pc_probe(hb_context_t* ctx, const hb_ir_instr_t* instr) {
-    const char* val = getenv("MACRUNNER_HB_TRACE_PC");
-    const char* limit_env = getenv("MACRUNNER_HB_TRACE_PC_LIMIT");
     static unsigned int count;
-    unsigned int limit = limit_env && limit_env[0] ? (unsigned int)strtoul(limit_env, NULL, 0) : 80;
+    const char* val;
+    const char* limit_env;
+    unsigned int limit = 80;
+    if (!(trace_runtime_flags & TRACE_FLAG_PC)) return;
+    val = getenv("MACRUNNER_HB_TRACE_PC");
+    limit_env = getenv("MACRUNNER_HB_TRACE_PC_LIMIT");
+    limit = limit_env && limit_env[0] ? (unsigned int)strtoul(limit_env, NULL, 0) : 80;
     if (!val || !val[0] || !ctx || ctx->mode != HB_MODE_64BIT) return;
 
     if (!trace_pc_matches(val, instr->guest_addr)) return;
@@ -840,8 +1405,7 @@ static void trace_pc_probe(hb_context_t* ctx, const hb_ir_instr_t* instr) {
 }
 
 static bool trace_strcpy_probe_enabled(void) {
-    const char* enabled = getenv("MACRUNNER_HB_TRACE_STRCPY_PROBE");
-    return enabled && enabled[0] && enabled[0] != '0';
+    return (trace_runtime_flags & TRACE_FLAG_STRCPY) != 0;
 }
 
 static size_t trace_bounded_strlen(hb_context_t* ctx, uint64_t addr, size_t limit, bool* found_nul) {
@@ -880,8 +1444,8 @@ static void trace_ascii_bytes(hb_context_t* ctx, uint64_t addr, size_t limit) {
 
 static void trace_strcpy_probe(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     static unsigned int count;
-    const char* limit_env = getenv("MACRUNNER_HB_TRACE_STRCPY_PROBE_LIMIT");
-    unsigned int limit = limit_env && limit_env[0] ? (unsigned int)strtoul(limit_env, NULL, 0) : 200;
+    const char* limit_env;
+    unsigned int limit = 200;
     const char* label = NULL;
     uint64_t src = 0;
     bool have_src = false;
@@ -890,6 +1454,8 @@ static void trace_strcpy_probe(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     uint64_t object_src = 0;
 
     if (!trace_strcpy_probe_enabled() || !ctx || ctx->mode != HB_MODE_64BIT || !instr) return;
+    limit_env = getenv("MACRUNNER_HB_TRACE_STRCPY_PROBE_LIMIT");
+    limit = limit_env && limit_env[0] ? (unsigned int)strtoul(limit_env, NULL, 0) : 200;
 
     switch (instr->guest_addr) {
         case 0x1403e72e0ULL: label = "before-strlen-call"; src = ctx->regs.x64.rcx; have_src = true; break;
@@ -942,8 +1508,7 @@ static void trace_strcpy_probe(hb_context_t* ctx, const hb_ir_instr_t* instr) {
 }
 
 static int trace_branches_enabled(void) {
-    const char* enabled = getenv("MACRUNNER_HB_TRACE_BRANCHES");
-    return enabled && enabled[0] && enabled[0] != '0';
+    return (trace_runtime_flags & TRACE_FLAG_BRANCHES) != 0;
 }
 
 static void trace_branch_event(hb_context_t* ctx, const hb_ir_instr_t* instr,
@@ -976,6 +1541,234 @@ static void trace_branch_event(hb_context_t* ctx, const hb_ir_instr_t* instr,
             (unsigned long long)ctx->regs.x64.r13,
             (unsigned long long)ctx->regs.x64.r14,
             (unsigned long long)ctx->regs.x64.r15);
+}
+
+static bool operand_is_xmm_or_vecmem(const hb_ir_operand_t* op) {
+    if (!op) return false;
+    if (op->type == HB_OP_REG) return is_xmm_reg(op->reg);
+    return op->type == HB_OP_MEM && op->size == 16;
+}
+
+static bool trace_simd_op_selected(const hb_ir_instr_t* instr) {
+    if (!instr) return false;
+    switch (instr->op) {
+        case HB_IR_XMM_AND:
+        case HB_IR_XMM_ANDN:
+        case HB_IR_XMM_OR:
+        case HB_IR_XORPS:
+        case HB_IR_PCMPEQB:
+        case HB_IR_PCMPEQW:
+        case HB_IR_PCMPEQD:
+        case HB_IR_PCMPGTB:
+        case HB_IR_PCMPGTW:
+        case HB_IR_PCMPGTD:
+        case HB_IR_PMOVMSKB:
+        case HB_IR_MOVMSK:
+        case HB_IR_PUNPCK:
+        case HB_IR_PACKSSWB:
+        case HB_IR_PACKUSWB:
+        case HB_IR_PACKSSDW:
+        case HB_IR_PMULLW:
+        case HB_IR_PMULHW:
+        case HB_IR_PMULHUW:
+        case HB_IR_PMADDWD:
+        case HB_IR_PADDSB:
+        case HB_IR_PADDSW:
+        case HB_IR_PADDUSB:
+        case HB_IR_PADDUSW:
+        case HB_IR_PAVGB:
+        case HB_IR_PAVGW:
+        case HB_IR_PSHUFB:
+        case HB_IR_PINSRW:
+        case HB_IR_PEXTRW:
+        case HB_IR_PSHUF:
+        case HB_IR_PSRL:
+        case HB_IR_PSRA:
+        case HB_IR_PSLL:
+        case HB_IR_PSRLQ:
+        case HB_IR_PSLLQ:
+        case HB_IR_PSRLDQ:
+        case HB_IR_PSLLDQ:
+        case HB_IR_MOVD:
+        case HB_IR_CVTDQ2PD:
+        case HB_IR_CVTDQ2PS:
+        case HB_IR_CVTPS2DQ:
+        case HB_IR_CVTTPS2DQ:
+        case HB_IR_CVTPS2PD:
+        case HB_IR_CVTPD2PS:
+        case HB_IR_CVTSS2SD:
+        case HB_IR_CVTSD2SS:
+        case HB_IR_CVTSI2SD:
+        case HB_IR_CVTSI2SS:
+        case HB_IR_FADD:
+        case HB_IR_FSUB:
+        case HB_IR_ADDSD:
+        case HB_IR_SUBSD:
+        case HB_IR_DIVSD:
+        case HB_IR_MULSD:
+        case HB_IR_DIVSS:
+        case HB_IR_MULSS:
+        case HB_IR_FMIN:
+        case HB_IR_FMAX:
+        case HB_IR_COMISS:
+        case HB_IR_COMISD:
+        case HB_IR_CVTTSD2SI:
+        case HB_IR_CVTTSS2SI:
+        case HB_IR_PADD:
+        case HB_IR_PSUB:
+            return true;
+        case HB_IR_LOAD:
+            return operand_is_xmm_or_vecmem(&instr->dst) || operand_is_xmm_or_vecmem(&instr->src1);
+        case HB_IR_STORE:
+            return operand_is_xmm_or_vecmem(&instr->src1) || operand_is_xmm_or_vecmem(&instr->src2);
+        case HB_IR_MOV:
+            return operand_is_xmm_or_vecmem(&instr->dst) || operand_is_xmm_or_vecmem(&instr->src1);
+        default:
+            return false;
+    }
+}
+
+static void trace_simd_exec(hb_context_t* ctx, const hb_ir_instr_t* instr,
+                            uint64_t block_guest, size_t ir_idx, uint64_t step_idx) {
+    static unsigned int simd_count;
+    if (!(trace_runtime_flags & TRACE_FLAG_SIMD)) return;
+    if (!trace_simd_op_selected(instr)) return;
+
+    unsigned int limit = 400;
+    const char* limit_env = getenv("MACRUNNER_HB_TRACE_SIMD_BUDGET");
+    if (limit_env && limit_env[0]) {
+        unsigned long parsed = strtoul(limit_env, NULL, 0);
+        if (parsed > 0 && parsed < 100000) limit = (unsigned int)parsed;
+    }
+    if (++simd_count > limit) {
+        if (simd_count == limit + 1)
+            fprintf(stderr, "macrunner-hb-simd: budget exhausted, silencing\n");
+        return;
+    }
+
+    fprintf(stderr,
+            "macrunner-hb-simd: op=%s(%d) guest=0x%llx block=0x%llx ir_idx=%zu step=%llu "
+            "dst=t%d/r%d/s%d src1=t%d/r%d/s%d src2=t%d/r%d/s%d bytes=",
+            ir_op_name(instr->op), instr->op,
+            (unsigned long long)instr->guest_addr,
+            (unsigned long long)block_guest, ir_idx,
+            (unsigned long long)step_idx,
+            instr->dst.type, instr->dst.reg, instr->dst.size,
+            instr->src1.type, instr->src1.reg, instr->src1.size,
+            instr->src2.type, instr->src2.reg, instr->src2.size);
+    for (uint8_t i = 0; i < instr->guest_len && i < 15; i++) {
+        uint8_t byte = 0;
+        if (ctx && ctx->memory && hb_memory_read_u8(ctx->memory, instr->guest_addr + i, &byte) == HB_OK)
+            fprintf(stderr, "%02x", byte);
+        else
+            fprintf(stderr, "??");
+    }
+    fprintf(stderr, "\n");
+}
+
+static bool trace_simd_data_enabled(void) {
+    return (trace_runtime_flags & TRACE_FLAG_SIMD_DATA) != 0;
+}
+
+static bool trace_simd_data_in_range(uint64_t guest) {
+    const char* start_env = getenv("MACRUNNER_HB_TRACE_SIMD_DATA_GUEST_START");
+    const char* end_env = getenv("MACRUNNER_HB_TRACE_SIMD_DATA_GUEST_END");
+    if (!start_env || !start_env[0]) return true;
+
+    uint64_t start = strtoull(start_env, NULL, 0);
+    uint64_t end = end_env && end_env[0] ? strtoull(end_env, NULL, 0) : start;
+    if (end < start) end = start;
+    return guest >= start && guest <= end;
+}
+
+static bool trace_simd_data_take_budget(void) {
+    static unsigned int count;
+    unsigned int limit = 256;
+    const char* limit_env = getenv("MACRUNNER_HB_TRACE_SIMD_DATA_BUDGET");
+    if (limit_env && limit_env[0]) {
+        unsigned long parsed = strtoul(limit_env, NULL, 0);
+        if (parsed > 0 && parsed < 100000) limit = (unsigned int)parsed;
+    }
+    if (++count > limit) {
+        if (count == limit + 1)
+            fprintf(stderr, "macrunner-hb-simd-data: budget exhausted, silencing\n");
+        return false;
+    }
+    return true;
+}
+
+static void trace_simd_data_hex(const uint8_t* bytes, size_t count) {
+    for (size_t i = 0; i < count; i++) fprintf(stderr, "%02x", bytes[i]);
+}
+
+static size_t trace_simd_operand_bytes(const hb_ir_operand_t* op, size_t fallback) {
+    size_t bytes = bytes_for_size(op->size);
+    if (!bytes) bytes = fallback;
+    if (!bytes) bytes = 16;
+    return bytes > 16 ? 16 : bytes;
+}
+
+static void trace_simd_data_operand(hb_context_t* ctx, const char* label,
+                                    const hb_ir_operand_t* op, size_t fallback) {
+    uint8_t bytes[16] = {0};
+    size_t count = trace_simd_operand_bytes(op, fallback);
+
+    if (op->type == HB_OP_REG && is_xmm_reg(op->reg)) {
+        uint64_t xmm[2] = {0, 0};
+        hb_result_t r = read_xmm_reg(ctx, op->reg, xmm);
+        memcpy(bytes, xmm, sizeof(bytes));
+        fprintf(stderr, " %s=xmm%d/%zu:", label, op->reg - HB_REG_XMM0, count);
+        if (r == HB_OK) trace_simd_data_hex(bytes, count);
+        else fprintf(stderr, "ERR%d", r);
+        return;
+    }
+
+    if (op->type == HB_OP_MEM) {
+        uint64_t addr = resolve_addr(ctx, op);
+        hb_result_t r = hb_memory_read(ctx->memory, addr, bytes, count);
+        fprintf(stderr, " %s=mem@0x%llx/%zu:", label, (unsigned long long)addr, count);
+        if (r == HB_OK) trace_simd_data_hex(bytes, count);
+        else fprintf(stderr, "ERR%d", r);
+        return;
+    }
+
+    if (op->type == HB_OP_REG) {
+        uint64_t value = read_reg_sized(ctx, op->reg, op->size, op->reg_offset);
+        memcpy(bytes, &value, count > sizeof(value) ? sizeof(value) : count);
+        fprintf(stderr, " %s=reg%d/%zu:", label, op->reg, count);
+        trace_simd_data_hex(bytes, count);
+        return;
+    }
+
+    if (op->type == HB_OP_IMM) {
+        uint64_t value = (uint64_t)op->imm;
+        memcpy(bytes, &value, count > sizeof(value) ? sizeof(value) : count);
+        fprintf(stderr, " %s=imm/%zu:", label, count);
+        trace_simd_data_hex(bytes, count);
+    }
+}
+
+static void trace_simd_data_exec(hb_context_t* ctx, const hb_ir_instr_t* instr,
+                                 const char* phase, uint64_t block_guest,
+                                 size_t ir_idx, uint64_t step_idx) {
+    if (!trace_simd_data_enabled()) return;
+    if (!trace_simd_op_selected(instr)) return;
+    if (!trace_simd_data_in_range(instr->guest_addr)) return;
+    if (!trace_simd_data_take_budget()) return;
+
+    size_t fallback = 16;
+    if (instr->op == HB_IR_LOAD) fallback = trace_simd_operand_bytes(&instr->src1, 16);
+    else if (instr->op == HB_IR_STORE) fallback = trace_simd_operand_bytes(&instr->src1, 16);
+    else if (instr->op == HB_IR_MOV) fallback = trace_simd_operand_bytes(&instr->dst, 16);
+
+    fprintf(stderr,
+            "macrunner-hb-simd-data: phase=%s op=%s guest=0x%llx block=0x%llx ir_idx=%zu step=%llu",
+            phase, ir_op_name(instr->op), (unsigned long long)instr->guest_addr,
+            (unsigned long long)block_guest, ir_idx, (unsigned long long)step_idx);
+    trace_simd_data_operand(ctx, "dst", &instr->dst, fallback);
+    trace_simd_data_operand(ctx, "src1", &instr->src1, fallback);
+    trace_simd_data_operand(ctx, "src2", &instr->src2, fallback);
+    fprintf(stderr, "\n");
 }
 
 static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
@@ -1011,6 +1804,22 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             }
             else return HB_ERR_INTERNAL;
             return HB_OK;
+        }
+
+        case HB_IR_MOV_SEG: {
+            if (instr->src1.type == HB_OP_IMM && instr->dst.type != HB_OP_IMM) {
+                uint16_t selector = 0;
+                r = read_seg_selector(ctx, (uint16_t)instr->src1.imm, &selector);
+                if (r != HB_OK) return r;
+                return write_operand_value(ctx, &instr->dst, selector);
+            }
+            if (instr->dst.type == HB_OP_IMM && instr->src1.type != HB_OP_IMM) {
+                uint64_t selector = 0;
+                r = read_operand_value(ctx, &instr->src1, &selector);
+                if (r != HB_OK) return r;
+                return write_seg_selector(ctx, (uint16_t)instr->dst.imm, (uint16_t)selector);
+            }
+            return HB_ERR_INTERNAL;
         }
 
         case HB_IR_LEA: {
@@ -1302,6 +2111,29 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             return HB_OK;
         }
 
+        case HB_IR_CMPXCHG8B: {
+            uint64_t mem = 0;
+            uint64_t acc = ((uint64_t)(uint32_t)read_reg(ctx, HB_REG_RDX) << 32) |
+                           (uint32_t)read_reg(ctx, HB_REG_RAX);
+            uint64_t src = ((uint64_t)(uint32_t)read_reg(ctx, HB_REG_RCX) << 32) |
+                           (uint32_t)read_reg(ctx, HB_REG_RBX);
+            bool equal;
+
+            r = read_operand_value(ctx, &instr->dst, &mem);
+            if (r != HB_OK) return r;
+            equal = (mem == acc);
+            hb_lazy_flags_clear(ctx);
+            ctx->flags.zf = equal;
+            if (equal) {
+                r = write_operand_value(ctx, &instr->dst, src);
+                if (r != HB_OK) return r;
+            } else {
+                write_reg_sized(ctx, HB_REG_RAX, (uint32_t)mem, HB_SIZE_32);
+                write_reg_sized(ctx, HB_REG_RDX, (uint32_t)(mem >> 32), HB_SIZE_32);
+            }
+            return HB_OK;
+        }
+
         case HB_IR_XCHG: {
             uint64_t dst_val = 0;
             uint64_t src_val = 0;
@@ -1373,18 +2205,20 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 uint64_t xmm[2] = {0, 0};
                 size_t bytes = bytes_for_size(instr->src1.size);
                 if (bytes == 0) bytes = 16;
-                if (bytes < 16) {
+                if (bytes < 16 && !instr->zero_upper) {
                     r = read_xmm_reg(ctx, instr->dst.reg, xmm);
                     if (r != HB_OK) return r;
                 }
                 r = hb_memory_read(ctx->memory, addr, xmm, bytes);
                 if (r != HB_OK) return r;
+                trace_mem_watch_bytes(ctx, "read", addr, xmm, bytes, NULL);
                 return write_xmm_reg(ctx, instr->dst.reg, xmm);
             }
             uint64_t val = 0;
             r = mem_read(ctx, addr, &val, instr->dst.size);
             if (r != HB_OK) return r;
-            if (instr->dst.type == HB_OP_REG) write_reg(ctx, instr->dst.reg, val);
+            if (instr->dst.type == HB_OP_REG)
+                write_reg_sized_offset(ctx, instr->dst.reg, val, instr->dst.size, instr->dst.reg_offset);
             else return HB_ERR_INTERNAL;
             return HB_OK;
         }
@@ -1400,12 +2234,17 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 r = read_xmm_reg(ctx, instr->src2.reg, xmm);
                 if (r != HB_OK) return r;
                 trace_guest_native_write(ctx, "interp_xmm_store", addr, xmm[0], (hb_size_t)bytes);
+                uint8_t before[16] = {0};
+                if (trace_mem_watch_enabled())
+                    (void)hb_memory_read(ctx->memory, addr, before, bytes > sizeof(before) ? sizeof(before) : bytes);
                 r = hb_memory_write(ctx->memory, addr, xmm, bytes);
                 if (r != HB_OK) trace_stack_write_fault(ctx, addr, xmm[0], (hb_size_t)bytes, r);
+                else trace_mem_watch_bytes(ctx, "write", addr, xmm, bytes, before);
                 return r;
             }
             uint64_t val = 0;
-            if (instr->src2.type == HB_OP_REG) val = read_reg(ctx, instr->src2.reg);
+            if (instr->src2.type == HB_OP_REG)
+                val = read_reg_sized(ctx, instr->src2.reg, instr->src2.size, instr->src2.reg_offset);
             else if (instr->src2.type == HB_OP_IMM) val = (uint64_t)instr->src2.imm;
             else return HB_ERR_INTERNAL;
             r = mem_write(ctx, addr, val, instr->src2.size);
@@ -1413,12 +2252,141 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             return HB_OK;
         }
 
+        case HB_IR_X87_FLD:
+            if (instr->src1.type == HB_OP_IMM) return x87_fld_st(ctx, &instr->src1);
+            if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fld_mem(ctx, &instr->src1);
+
+        case HB_IR_X87_FST:
+            if (instr->dst.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fst_mem(ctx, &instr->dst);
+
+        case HB_IR_X87_FSTP:
+            if (instr->dst.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fstp_mem(ctx, &instr->dst);
+
+        case HB_IR_X87_FILD:
+            if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fild_mem(ctx, &instr->src1);
+
+        case HB_IR_X87_FISTP:
+            if (instr->dst.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fistp_mem(ctx, &instr->dst);
+
+        case HB_IR_X87_FLDCW:
+            if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fldcw_mem(ctx, &instr->src1);
+
+        case HB_IR_X87_FNSTCW:
+            if (instr->dst.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fnstcw_mem(ctx, &instr->dst);
+
+        case HB_IR_X87_FNSTSW:
+            if (instr->dst.type != HB_OP_REG) return HB_ERR_INTERNAL;
+            return write_operand_value(ctx, &instr->dst, ctx->regs.x86.x87.status_word);
+
+        case HB_IR_X87_FADD:
+        case HB_IR_X87_FMUL:
+        case HB_IR_X87_FSUB:
+        case HB_IR_X87_FSUBR:
+        case HB_IR_X87_FDIV:
+        case HB_IR_X87_FDIVR:
+            if (instr->src1.type == HB_OP_IMM) return x87_arith_st0_sti(ctx, &instr->src1, instr->op);
+            if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_arith_mem(ctx, &instr->src1, instr->op);
+
+        case HB_IR_X87_FCOM:
+            if (instr->src1.type == HB_OP_IMM) return x87_fcom_st(ctx, &instr->src1, 0);
+            if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fcom_mem(ctx, &instr->src1, false);
+
+        case HB_IR_X87_FCOMP:
+            if (instr->src1.type == HB_OP_IMM) return x87_fcom_st(ctx, &instr->src1, 1);
+            if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fcom_mem(ctx, &instr->src1, true);
+
+        case HB_IR_X87_FADDP:
+        case HB_IR_X87_FMULP:
+        case HB_IR_X87_FSUBP:
+        case HB_IR_X87_FSUBRP:
+        case HB_IR_X87_FDIVP:
+        case HB_IR_X87_FDIVRP:
+            return x87_arith_pop_sti_st0(ctx, &instr->src1, instr->op);
+
+        case HB_IR_X87_FCOMPP:
+            return x87_fcom_st(ctx, &instr->src1, 2);
+
+        case HB_IR_X87_FXCH:
+            return x87_fxch(ctx, &instr->src1);
+
+        case HB_IR_X87_FRNDINT:
+            return hb_x87_frndint(&ctx->regs.x86.x87);
+
+        case HB_IR_X87_FNCLEX:
+            return hb_x87_fnclex(&ctx->regs.x86.x87);
+
+        case HB_IR_X87_FNINIT:
+            return hb_x87_fninit(&ctx->regs.x86.x87);
+
+        case HB_IR_PUSHF: {
+            hb_size_t size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
+            uint64_t value = 0;
+            uint64_t rsp_before = ctx->mode == HB_MODE_32BIT ? ctx->regs.x86.esp : ctx->regs.x64.rsp;
+            r = read_flags_image(ctx, size, &value);
+            if (r != HB_OK) return r;
+            if (ctx->mode == HB_MODE_32BIT) {
+                if (size == HB_SIZE_16) {
+                    ctx->regs.x86.esp -= 2;
+                    r = hb_memory_write_u16(ctx->memory, ctx->regs.x86.esp, (uint16_t)value);
+                } else {
+                    ctx->regs.x86.esp -= 4;
+                    r = hb_memory_write_u32(ctx->memory, ctx->regs.x86.esp, (uint32_t)value);
+                }
+            } else {
+                ctx->regs.x64.rsp -= 8;
+                r = hb_memory_write_u64(ctx->memory, ctx->regs.x64.rsp, value);
+            }
+            if (r != HB_OK) return r;
+            if (ctx->mode == HB_MODE_64BIT)
+                trace_branch_event(ctx, instr, "pushf", rsp_before, value, 0);
+            return HB_OK;
+        }
+
+        case HB_IR_POPF: {
+            hb_size_t size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
+            uint64_t value = 0;
+            uint64_t rsp_before = ctx->mode == HB_MODE_32BIT ? ctx->regs.x86.esp : ctx->regs.x64.rsp;
+            if (ctx->mode == HB_MODE_32BIT) {
+                if (size == HB_SIZE_16) {
+                    uint16_t v16 = 0;
+                    r = hb_memory_read_u16(ctx->memory, ctx->regs.x86.esp, &v16);
+                    if (r != HB_OK) return r;
+                    value = v16;
+                    ctx->regs.x86.esp += 2;
+                } else {
+                    uint32_t v32 = 0;
+                    r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp, &v32);
+                    if (r != HB_OK) return r;
+                    value = v32;
+                    ctx->regs.x86.esp += 4;
+                }
+            } else {
+                r = hb_memory_read_u64(ctx->memory, ctx->regs.x64.rsp, &value);
+                if (r != HB_OK) return r;
+                ctx->regs.x64.rsp += 8;
+            }
+            r = write_flags_image(ctx, size, value);
+            if (r != HB_OK) return r;
+            if (ctx->mode == HB_MODE_64BIT)
+                trace_branch_event(ctx, instr, "popf", rsp_before, value, value);
+            return HB_OK;
+        }
+
         case HB_IR_PUSH: {
             uint64_t val = 0;
             uint64_t rsp_before = ctx->mode == HB_MODE_32BIT ? ctx->regs.x86.esp : ctx->regs.x64.rsp;
-            if (instr->src1.type == HB_OP_REG) val = read_reg(ctx, instr->src1.reg);
-            else if (instr->src1.type == HB_OP_IMM) val = (uint64_t)instr->src1.imm;
-            else return HB_ERR_INTERNAL;
+            r = read_operand_value(ctx, &instr->src1, &val);
+            if (r != HB_OK) return r;
             if (ctx->mode == HB_MODE_32BIT) {
                 ctx->regs.x86.esp -= 4;
                 r = hb_memory_write_u32(ctx->memory, ctx->regs.x86.esp, (uint32_t)val);
@@ -1436,16 +2404,31 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             uint64_t val = 0;
             uint64_t rsp_before = ctx->mode == HB_MODE_32BIT ? ctx->regs.x86.esp : ctx->regs.x64.rsp;
             if (ctx->mode == HB_MODE_32BIT) {
-                r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp, (uint32_t*)&val);
-                if (r != HB_OK) return r;
-                ctx->regs.x86.esp += 4;
+                if (instr->dst.size == HB_SIZE_16) {
+                    uint16_t v16 = 0;
+                    r = hb_memory_read_u16(ctx->memory, ctx->regs.x86.esp, &v16);
+                    if (r != HB_OK) return r;
+                    val = v16;
+                    ctx->regs.x86.esp += 2;
+                } else {
+                    r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp, (uint32_t*)&val);
+                    if (r != HB_OK) return r;
+                    ctx->regs.x86.esp += 4;
+                }
             } else {
                 r = hb_memory_read_u64(ctx->memory, ctx->regs.x64.rsp, &val);
                 if (r != HB_OK) return r;
                 ctx->regs.x64.rsp += 8;
             }
-            if (instr->dst.type == HB_OP_REG) write_reg(ctx, instr->dst.reg, val);
-            else return HB_ERR_INTERNAL;
+            if (instr->dst.type == HB_OP_REG) {
+                write_reg_sized(ctx, instr->dst.reg, val, instr->dst.size);
+            } else if (instr->dst.type == HB_OP_MEM) {
+                uint64_t addr = resolve_addr(ctx, &instr->dst);
+                r = mem_write(ctx, addr, val, instr->dst.size);
+                if (r != HB_OK) return r;
+            } else {
+                return HB_ERR_INTERNAL;
+            }
             if (ctx->mode == HB_MODE_64BIT)
                 trace_branch_event(ctx, instr, "pop", rsp_before, val, val);
             return HB_OK;
@@ -1480,26 +2463,29 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             }
             if (r != HB_OK) return r;
             ctx->pc = target;
-            if (ctx->mode == HB_MODE_64BIT)
-                trace_branch_event(ctx, instr, "call", rsp_before, ret_addr, target);
+            sync_arch_pc(ctx);
+            trace_branch_event(ctx, instr, "call", rsp_before, ret_addr, target);
             return HB_OK;
         }
 
         case HB_IR_RET: {
             uint64_t ret_addr = 0;
+            uint64_t ret_imm = instr->src1.type == HB_OP_IMM ? (uint64_t)instr->src1.imm : 0;
             uint64_t rsp_before = ctx->mode == HB_MODE_32BIT ? ctx->regs.x86.esp : ctx->regs.x64.rsp;
             if (ctx->mode == HB_MODE_32BIT) {
-                r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp, (uint32_t*)&ret_addr);
+                uint32_t ret32 = 0;
+                r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp, &ret32);
                 if (r != HB_OK) return r;
-                ctx->regs.x86.esp += 4;
+                ret_addr = ret32;
+                ctx->regs.x86.esp += 4 + (uint32_t)ret_imm;
             } else {
                 r = hb_memory_read_u64(ctx->memory, ctx->regs.x64.rsp, &ret_addr);
                 if (r != HB_OK) return r;
-                ctx->regs.x64.rsp += 8;
+                ctx->regs.x64.rsp += 8 + ret_imm;
             }
             ctx->pc = ret_addr;
-            if (ctx->mode == HB_MODE_64BIT)
-                trace_branch_event(ctx, instr, "ret", rsp_before, ret_addr, ret_addr);
+            sync_arch_pc(ctx);
+            trace_branch_event(ctx, instr, "ret", rsp_before, ret_addr, ret_addr);
             return HB_OK;
         }
 
@@ -1521,8 +2507,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 return HB_ERR_EXEC_FAULT;
             }
             ctx->pc = target;
-            if (ctx->mode == HB_MODE_64BIT)
-                trace_branch_event(ctx, instr, "jmp", rsp_before, 0, target);
+            sync_arch_pc(ctx);
+            trace_branch_event(ctx, instr, "jmp", rsp_before, 0, target);
             return HB_OK;
         }
 
@@ -1536,9 +2522,9 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             } else {
                 ctx->pc = instr->guest_addr + instr->guest_len;
             }
-            if (ctx->mode == HB_MODE_64BIT)
-                trace_branch_event(ctx, instr, taken ? "jcc-taken" : "jcc-fallthrough",
-                                   rsp_before, instr->cc, ctx->pc);
+            sync_arch_pc(ctx);
+            trace_branch_event(ctx, instr, taken ? "jcc-taken" : "jcc-fallthrough",
+                               rsp_before, instr->cc, ctx->pc);
             return HB_OK;
         }
 
@@ -1547,16 +2533,14 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_SAR:
         case HB_IR_ROL:
         case HB_IR_ROR: {
-            if (instr->dst.type != HB_OP_REG || instr->src1.type != HB_OP_REG) return HB_ERR_INTERNAL;
-            if (instr->src2.type != HB_OP_REG && instr->src2.type != HB_OP_IMM) return HB_ERR_INTERNAL;
-            hb_flags_exec_binop(ctx, instr->op,
-                                instr->dst.reg, instr->dst.reg_offset,
-                                instr->src1.reg, instr->src1.reg_offset,
-                                instr->src2.type == HB_OP_REG,
-                                instr->src2.type == HB_OP_REG ? (uint64_t)instr->src2.reg : (uint64_t)instr->src2.imm,
-                                instr->src2.type == HB_OP_REG ? instr->src2.reg_offset : 0,
-                                instr->dst.size);
-            return HB_OK;
+            return hb_flags_exec_binop_operand(ctx, instr->op, &instr->dst,
+                                               &instr->src1, &instr->src2, NULL);
+        }
+
+        case HB_IR_SHLD:
+        case HB_IR_SHRD: {
+            return hb_flags_exec_double_shift_operand(ctx, instr->op, &instr->dst,
+                                                      &instr->src1, &instr->src2, NULL);
         }
 
         case HB_IR_NOT: {
@@ -1673,7 +2657,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             r = hb_flags_eval_cond(ctx, instr->cc, &value);
             if (r != HB_OK) return r;
             if (instr->dst.type == HB_OP_REG) {
-                write_reg(ctx, instr->dst.reg, value ? 1 : 0);
+                write_reg_sized_offset(ctx, instr->dst.reg, value ? 1 : 0, HB_SIZE_8,
+                                       instr->dst.reg_offset);
             } else if (instr->dst.type == HB_OP_MEM) {
                 uint64_t addr = resolve_addr(ctx, &instr->dst);
                 r = mem_write(ctx, addr, value ? 1 : 0, HB_SIZE_8);
@@ -1740,15 +2725,136 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             return HB_OK;
         }
 
+        case HB_IR_MOVS: {
+            hb_size_t size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
+            uint64_t rep = (instr->src2.type == HB_OP_IMM) ? (uint64_t)instr->src2.imm : 0;
+            bool repeated = (rep == 0xf2 || rep == 0xf3);
+            bool mode32 = ctx->mode == HB_MODE_32BIT;
+            uint64_t count = repeated ? (mode32 ? ctx->regs.x86.ecx : ctx->regs.x64.rcx) : 1;
+            uint64_t rsi = mode32 ? ctx->regs.x86.esi : ctx->regs.x64.rsi;
+            uint64_t rdi = mode32 ? ctx->regs.x86.edi : ctx->regs.x64.rdi;
+            int64_t step = (int64_t)size;
+            if ((mode32 ? ctx->regs.x86.eflags : ctx->regs.x64.rflags) & (1ULL << 10))
+                step = -step; /* Direction flag. */
+
+            uint64_t iterations = 0;
+            while (count > 0) {
+                uint64_t value = 0;
+                r = mem_read(ctx, rsi, &value, size);
+                if (r != HB_OK) return r;
+                r = mem_write(ctx, rdi, value, size);
+                if (r != HB_OK) return r;
+                rsi = (uint64_t)((int64_t)rsi + step);
+                rdi = (uint64_t)((int64_t)rdi + step);
+                if (repeated) count--;
+                if (!repeated) break;
+                if (++iterations > 0x100000) return HB_ERR_STEP_LIMIT;
+            }
+
+            if (mode32) {
+                ctx->regs.x86.esi = (uint32_t)rsi;
+                ctx->regs.x86.edi = (uint32_t)rdi;
+                if (repeated) ctx->regs.x86.ecx = (uint32_t)count;
+            } else {
+                ctx->regs.x64.rsi = rsi;
+                ctx->regs.x64.rdi = rdi;
+                if (repeated) ctx->regs.x64.rcx = count;
+            }
+            return HB_OK;
+        }
+
+        case HB_IR_CMPS: {
+            hb_size_t size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
+            uint64_t rep = (instr->src2.type == HB_OP_IMM) ? (uint64_t)instr->src2.imm : 0;
+            bool repeated = (rep == 0xf2 || rep == 0xf3);
+            bool mode32 = ctx->mode == HB_MODE_32BIT;
+            uint64_t count = repeated ? (mode32 ? ctx->regs.x86.ecx : ctx->regs.x64.rcx) : 1;
+            uint64_t rsi = mode32 ? ctx->regs.x86.esi : ctx->regs.x64.rsi;
+            uint64_t rdi = mode32 ? ctx->regs.x86.edi : ctx->regs.x64.rdi;
+            int64_t step = (int64_t)size;
+            if ((mode32 ? ctx->regs.x86.eflags : ctx->regs.x64.rflags) & (1ULL << 10))
+                step = -step; /* Direction flag. */
+
+            uint64_t iterations = 0;
+            while (count > 0) {
+                uint64_t left = 0, right = 0;
+                r = mem_read(ctx, rsi, &left, size);
+                if (r != HB_OK) return r;
+                r = mem_read(ctx, rdi, &right, size);
+                if (r != HB_OK) return r;
+                left = trunc_to_size(left, size);
+                right = trunc_to_size(right, size);
+                hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, size, left, right, left - right, 0);
+                r = hb_lazy_flags_materialize(ctx, HB_FLAG_BIT_ZF | HB_FLAG_BIT_SF |
+                                                   HB_FLAG_BIT_AF | HB_FLAG_BIT_PF |
+                                                   HB_FLAG_BIT_CF | HB_FLAG_BIT_OF);
+                if (r != HB_OK) return r;
+
+                rsi = (uint64_t)((int64_t)rsi + step);
+                rdi = (uint64_t)((int64_t)rdi + step);
+                if (repeated) count--;
+                if (!repeated) break;
+                if (rep == 0xf2 && ctx->flags.zf) break;  /* REPNE/REPNZ stops on match. */
+                if (rep == 0xf3 && !ctx->flags.zf) break; /* REPE/REPZ stops on mismatch. */
+                if (++iterations > 0x100000) return HB_ERR_STEP_LIMIT;
+            }
+
+            if (mode32) {
+                ctx->regs.x86.esi = (uint32_t)rsi;
+                ctx->regs.x86.edi = (uint32_t)rdi;
+                if (repeated) ctx->regs.x86.ecx = (uint32_t)count;
+            } else {
+                ctx->regs.x64.rsi = rsi;
+                ctx->regs.x64.rdi = rdi;
+                if (repeated) ctx->regs.x64.rcx = count;
+            }
+            return HB_OK;
+        }
+
+        case HB_IR_LODS: {
+            hb_size_t size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
+            uint64_t rep = (instr->src2.type == HB_OP_IMM) ? (uint64_t)instr->src2.imm : 0;
+            bool repeated = (rep == 0xf2 || rep == 0xf3);
+            bool mode32 = ctx->mode == HB_MODE_32BIT;
+            uint64_t count = repeated ? (mode32 ? ctx->regs.x86.ecx : ctx->regs.x64.rcx) : 1;
+            uint64_t rsi = mode32 ? ctx->regs.x86.esi : ctx->regs.x64.rsi;
+            int64_t step = (int64_t)size;
+            if ((mode32 ? ctx->regs.x86.eflags : ctx->regs.x64.rflags) & (1ULL << 10))
+                step = -step; /* Direction flag. */
+
+            uint64_t iterations = 0;
+            while (count > 0) {
+                uint64_t value = 0;
+                r = mem_read(ctx, rsi, &value, size);
+                if (r != HB_OK) return r;
+                write_reg_sized(ctx, HB_REG_RAX, value, size);
+                rsi = (uint64_t)((int64_t)rsi + step);
+                if (repeated) count--;
+                if (!repeated) break;
+                if (++iterations > 0x100000) return HB_ERR_STEP_LIMIT;
+            }
+
+            if (mode32) {
+                ctx->regs.x86.esi = (uint32_t)rsi;
+                if (repeated) ctx->regs.x86.ecx = (uint32_t)count;
+            } else {
+                ctx->regs.x64.rsi = rsi;
+                if (repeated) ctx->regs.x64.rcx = count;
+            }
+            return HB_OK;
+        }
+
         case HB_IR_SCAS: {
             hb_size_t size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
             uint64_t rep = (instr->src2.type == HB_OP_IMM) ? (uint64_t)instr->src2.imm : 0;
             bool repeated = (rep == 0xf2 || rep == 0xf3);
-            uint64_t count = repeated ? ctx->regs.x64.rcx : 1;
-            uint64_t rdi = ctx->regs.x64.rdi;
+            bool mode32 = ctx->mode == HB_MODE_32BIT;
+            uint64_t count = repeated ? (mode32 ? ctx->regs.x86.ecx : ctx->regs.x64.rcx) : 1;
+            uint64_t rdi = mode32 ? ctx->regs.x86.edi : ctx->regs.x64.rdi;
             uint64_t acc = read_reg_sized(ctx, HB_REG_RAX, size, 0);
             int64_t step = (int64_t)size;
-            if (ctx->regs.x64.rflags & (1ULL << 10)) step = -step; /* Direction flag. */
+            if ((mode32 ? ctx->regs.x86.eflags : ctx->regs.x64.rflags) & (1ULL << 10))
+                step = -step; /* Direction flag. */
 
             uint64_t iterations = 0;
             while (count > 0) {
@@ -1770,8 +2876,13 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 if (++iterations > 0x100000) return HB_ERR_STEP_LIMIT;
             }
 
-            ctx->regs.x64.rdi = rdi;
-            if (repeated) ctx->regs.x64.rcx = count;
+            if (mode32) {
+                ctx->regs.x86.edi = (uint32_t)rdi;
+                if (repeated) ctx->regs.x86.ecx = (uint32_t)count;
+            } else {
+                ctx->regs.x64.rdi = rdi;
+                if (repeated) ctx->regs.x64.rcx = count;
+            }
             return HB_OK;
         }
 
@@ -1779,11 +2890,13 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             hb_size_t size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
             uint64_t rep = (instr->src2.type == HB_OP_IMM) ? (uint64_t)instr->src2.imm : 0;
             bool repeated = (rep == 0xf2 || rep == 0xf3);
-            uint64_t count = repeated ? ctx->regs.x64.rcx : 1;
-            uint64_t rdi = ctx->regs.x64.rdi;
+            bool mode32 = ctx->mode == HB_MODE_32BIT;
+            uint64_t count = repeated ? (mode32 ? ctx->regs.x86.ecx : ctx->regs.x64.rcx) : 1;
+            uint64_t rdi = mode32 ? ctx->regs.x86.edi : ctx->regs.x64.rdi;
             uint64_t acc = read_reg_sized(ctx, HB_REG_RAX, size, 0);
             int64_t step = (int64_t)size;
-            if (ctx->regs.x64.rflags & (1ULL << 10)) step = -step; /* Direction flag. */
+            if ((mode32 ? ctx->regs.x86.eflags : ctx->regs.x64.rflags) & (1ULL << 10))
+                step = -step; /* Direction flag. */
 
             uint64_t iterations = 0;
             while (count > 0) {
@@ -1795,8 +2908,13 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 if (++iterations > 0x100000) return HB_ERR_STEP_LIMIT;
             }
 
-            ctx->regs.x64.rdi = rdi;
-            if (repeated) ctx->regs.x64.rcx = count;
+            if (mode32) {
+                ctx->regs.x86.edi = (uint32_t)rdi;
+                if (repeated) ctx->regs.x86.ecx = (uint32_t)count;
+            } else {
+                ctx->regs.x64.rdi = rdi;
+                if (repeated) ctx->regs.x64.rcx = count;
+            }
             return HB_OK;
         }
 
@@ -1812,6 +2930,26 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             if (val) {
                 result = 0;
                 while (((val >> result) & 1ULL) == 0) result++;
+            }
+            write_reg_sized(ctx, instr->dst.reg, result, size);
+            hb_lazy_flags_clear(ctx);
+            ctx->flags.zf = (result == 0);
+            ctx->flags.cf = (val == 0);
+            return HB_OK;
+        }
+
+        case HB_IR_LZCNT: {
+            if (instr->dst.type != HB_OP_REG) return HB_ERR_INTERNAL;
+            uint64_t val = 0;
+            r = read_operand_value(ctx, &instr->src1, &val);
+            if (r != HB_OK) return r;
+            hb_size_t size = instr->dst.size ? instr->dst.size : HB_SIZE_64;
+            val = trunc_to_size(val, size);
+            uint64_t width = (size == HB_SIZE_32) ? 32 : (size == HB_SIZE_16) ? 16 : (size == HB_SIZE_8) ? 8 : 64;
+            uint64_t result = width;
+            if (val) {
+                result = 0;
+                for (int64_t bit = (int64_t)width - 1; bit >= 0 && ((val >> bit) & 1ULL) == 0; bit--) result++;
             }
             write_reg_sized(ctx, instr->dst.reg, result, size);
             hb_lazy_flags_clear(ctx);
@@ -2006,6 +3144,199 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             uint64_t out[2];
             memcpy(out, obytes, sizeof(obytes));
             return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PACKSSWB:
+        case HB_IR_PACKUSWB:
+        case HB_IR_PACKSSDW: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t obytes[16] = {0};
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
+            if (r != HB_OK) return r;
+
+            if (instr->op == HB_IR_PACKSSDW) {
+                int32_t l[4], rr[4];
+                int16_t o[8];
+                memcpy(l, lhs, sizeof(l));
+                memcpy(rr, rhs, sizeof(rr));
+                for (unsigned i = 0; i < 4; i++) {
+                    int32_t v = l[i];
+                    o[i] = v > 32767 ? 32767 : (v < -32768 ? -32768 : (int16_t)v);
+                }
+                for (unsigned i = 0; i < 4; i++) {
+                    int32_t v = rr[i];
+                    o[4 + i] = v > 32767 ? 32767 : (v < -32768 ? -32768 : (int16_t)v);
+                }
+                memcpy(obytes, o, sizeof(o));
+            } else {
+                int16_t l[8], rr[8];
+                memcpy(l, lhs, sizeof(l));
+                memcpy(rr, rhs, sizeof(rr));
+                for (unsigned i = 0; i < 8; i++) {
+                    int16_t v = l[i];
+                    if (instr->op == HB_IR_PACKUSWB)
+                        obytes[i] = v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
+                    else
+                        obytes[i] = (uint8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
+                }
+                for (unsigned i = 0; i < 8; i++) {
+                    int16_t v = rr[i];
+                    if (instr->op == HB_IR_PACKUSWB)
+                        obytes[8 + i] = v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
+                    else
+                        obytes[8 + i] = (uint8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
+                }
+            }
+            memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PMULLW:
+        case HB_IR_PMULHW:
+        case HB_IR_PMULHUW:
+        case HB_IR_PMADDWD: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
+            if (r != HB_OK) return r;
+
+            if (instr->op == HB_IR_PMADDWD) {
+                int16_t l[8], rr[8];
+                int32_t o[4];
+                memcpy(l, lhs, sizeof(l));
+                memcpy(rr, rhs, sizeof(rr));
+                for (unsigned i = 0; i < 4; i++) {
+                    int32_t a = (int32_t)l[i * 2] * (int32_t)rr[i * 2];
+                    int32_t b = (int32_t)l[i * 2 + 1] * (int32_t)rr[i * 2 + 1];
+                    o[i] = a + b;
+                }
+                memcpy(out, o, sizeof(o));
+            } else {
+                uint16_t o[8];
+                if (instr->op == HB_IR_PMULHUW) {
+                    uint16_t l[8], rr[8];
+                    memcpy(l, lhs, sizeof(l));
+                    memcpy(rr, rhs, sizeof(rr));
+                    for (unsigned i = 0; i < 8; i++) {
+                        uint32_t p = (uint32_t)l[i] * (uint32_t)rr[i];
+                        o[i] = (uint16_t)(p >> 16);
+                    }
+                } else {
+                    int16_t l[8], rr[8];
+                    memcpy(l, lhs, sizeof(l));
+                    memcpy(rr, rhs, sizeof(rr));
+                    for (unsigned i = 0; i < 8; i++) {
+                        int32_t p = (int32_t)l[i] * (int32_t)rr[i];
+                        o[i] = (uint16_t)(instr->op == HB_IR_PMULLW ? p : (p >> 16));
+                    }
+                }
+                memcpy(out, o, sizeof(o));
+            }
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PADDSB:
+        case HB_IR_PADDSW:
+        case HB_IR_PADDUSB:
+        case HB_IR_PADDUSW:
+        case HB_IR_PAVGB:
+        case HB_IR_PAVGW: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t lbytes[16], rbytes[16], obytes[16] = {0};
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
+            if (r != HB_OK) return r;
+            memcpy(lbytes, lhs, sizeof(lbytes));
+            memcpy(rbytes, rhs, sizeof(rbytes));
+
+            if (instr->op == HB_IR_PADDSB || instr->op == HB_IR_PADDUSB || instr->op == HB_IR_PAVGB) {
+                for (unsigned i = 0; i < 16; i++) {
+                    if (instr->op == HB_IR_PAVGB) {
+                        obytes[i] = (uint8_t)(((unsigned)lbytes[i] + (unsigned)rbytes[i] + 1u) >> 1);
+                    } else if (instr->op == HB_IR_PADDUSB) {
+                        unsigned v = (unsigned)lbytes[i] + (unsigned)rbytes[i];
+                        obytes[i] = (uint8_t)(v > 255u ? 255u : v);
+                    } else {
+                        int v = (int)(int8_t)lbytes[i] + (int)(int8_t)rbytes[i];
+                        if (v > 127) v = 127;
+                        else if (v < -128) v = -128;
+                        obytes[i] = (uint8_t)(int8_t)v;
+                    }
+                }
+            } else {
+                uint16_t lw[8], rw[8], ow[8];
+                memcpy(lw, lbytes, sizeof(lw));
+                memcpy(rw, rbytes, sizeof(rw));
+                for (unsigned i = 0; i < 8; i++) {
+                    if (instr->op == HB_IR_PAVGW) {
+                        ow[i] = (uint16_t)(((uint32_t)lw[i] + (uint32_t)rw[i] + 1u) >> 1);
+                    } else if (instr->op == HB_IR_PADDUSW) {
+                        uint32_t v = (uint32_t)lw[i] + (uint32_t)rw[i];
+                        ow[i] = (uint16_t)(v > 65535u ? 65535u : v);
+                    } else {
+                        int32_t v = (int32_t)(int16_t)lw[i] + (int32_t)(int16_t)rw[i];
+                        if (v > 32767) v = 32767;
+                        else if (v < -32768) v = -32768;
+                        ow[i] = (uint16_t)(int16_t)v;
+                    }
+                }
+                memcpy(obytes, ow, sizeof(ow));
+            }
+            memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PSHUFB: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t src[16], mask[16], obytes[16];
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
+            if (r != HB_OK) return r;
+            memcpy(src, lhs, sizeof(src));
+            memcpy(mask, rhs, sizeof(mask));
+            for (unsigned i = 0; i < 16; i++) {
+                obytes[i] = (mask[i] & 0x80) ? 0 : src[mask[i] & 0x0f];
+            }
+            memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PINSRW: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t xmm[2], out[2] = {0, 0};
+            uint8_t bytes[16];
+            uint64_t word = 0;
+            unsigned lane = (unsigned)(instr->target & 7u);
+            r = read_xmm_operand(ctx, &instr->src1, xmm);
+            if (r != HB_OK) return r;
+            r = read_operand_value(ctx, &instr->src2, &word);
+            if (r != HB_OK) return r;
+            memcpy(bytes, xmm, sizeof(bytes));
+            bytes[lane * 2] = (uint8_t)(word & 0xffu);
+            bytes[lane * 2 + 1] = (uint8_t)((word >> 8) & 0xffu);
+            memcpy(out, bytes, sizeof(bytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PEXTRW: {
+            if (instr->dst.type != HB_OP_REG || is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t xmm[2];
+            uint8_t bytes[16];
+            unsigned lane = (unsigned)(instr->target & 7u);
+            r = read_xmm_operand(ctx, &instr->src1, xmm);
+            if (r != HB_OK) return r;
+            memcpy(bytes, xmm, sizeof(bytes));
+            uint16_t word = (uint16_t)bytes[lane * 2] | ((uint16_t)bytes[lane * 2 + 1] << 8);
+            return write_operand_value(ctx, &instr->dst, word);
         }
 
         case HB_IR_PSHUF: {
@@ -2556,6 +3887,10 @@ hb_result_t hb_interpreter_run(hb_interpreter_t* interp, const hb_ir_func_t* fun
     uint64_t steps = 0;
     uint64_t blocks_executed = 0;
 
+    trace_refresh_runtime_flags();
+    const unsigned int instr_trace_flags = trace_runtime_flags &
+        (TRACE_FLAG_PC | TRACE_FLAG_STRCPY | TRACE_FLAG_SIMD | TRACE_FLAG_SIMD_DATA);
+
     while (block) {
         if (ctx->block_limit > 0 && blocks_executed >= ctx->block_limit) {
             out->result = HB_ERR_BLOCK_LIMIT;
@@ -2579,9 +3914,17 @@ hb_result_t hb_interpreter_run(hb_interpreter_t* interp, const hb_ir_func_t* fun
             steps++;
 
             const hb_ir_instr_t* instr = &block->instrs[i];
-            trace_pc_probe(ctx, instr);
-            trace_strcpy_probe(ctx, instr);
+            if (trace_mem_watch_enabled()) trace_current_instr = instr;
+            if (instr_trace_flags) {
+                trace_pc_probe(ctx, instr);
+                trace_strcpy_probe(ctx, instr);
+                trace_simd_exec(ctx, instr, block->guest_addr, i, steps);
+                trace_simd_data_exec(ctx, instr, "pre", block->guest_addr, i, steps);
+            }
             hb_result_t r = exec_instr(ctx, instr);
+            if (r == HB_OK && (trace_runtime_flags & TRACE_FLAG_SIMD_DATA))
+                trace_simd_data_exec(ctx, instr, "post", block->guest_addr, i, steps);
+            trace_current_instr = NULL;
             if (r == HB_ERR_UNSUPPORTED_OPCODE || r == HB_ERR_EXEC_FAULT) {
                 trace_exec_fault(ctx, instr, r, block->guest_addr, i, steps);
                 out->result = r;
@@ -2613,7 +3956,8 @@ hb_result_t hb_interpreter_run(hb_interpreter_t* interp, const hb_ir_func_t* fun
                         ctx->last_result = HB_ERR_TRANSLATION_TRUNCATED;
                         return HB_ERR_TRANSLATION_TRUNCATED;
                     }
-                    if (instr->op == HB_IR_CALL || instr->op == HB_IR_RET) {
+                    if (instr->op == HB_IR_CALL || instr->op == HB_IR_RET ||
+                        instr->op == HB_IR_JMP || instr->op == HB_IR_Jcc) {
                         out->result = HB_OK;
                         out->steps_executed = steps;
                         out->blocks_executed = blocks_executed;
@@ -2638,8 +3982,12 @@ hb_result_t hb_interpreter_run(hb_interpreter_t* interp, const hb_ir_func_t* fun
             if (block->instr_count) {
                 const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
                 ctx->pc = last->guest_addr + last->guest_len;
-                if (ctx->arch == HB_ARCH_X64) ctx->regs.x64.rip = ctx->pc;
-                else if (ctx->arch == HB_ARCH_X86) ctx->regs.x86.eip = (uint32_t)ctx->pc;
+                sync_arch_pc(ctx);
+                hb_ir_block_t* next = find_block(func->cfg, ctx->pc);
+                if (next) {
+                    block = next;
+                    continue;
+                }
             }
             out->result = HB_OK;
             out->steps_executed = steps;

@@ -350,7 +350,13 @@ void hb_context_write_reg_value(hb_context_t* ctx, uint64_t idx, uint64_t val) {
 void hb_context_write_reg_value_sized(hb_context_t* ctx, uint64_t idx, uint64_t val, hb_size_t size) {
     if (!ctx) return;
     if (ctx->mode == HB_MODE_32BIT) {
-        hb_context_write_reg_value(ctx, idx, (uint32_t)val);
+        if (size == HB_SIZE_8 || size == HB_SIZE_16) {
+            uint64_t old = hb_context_read_reg_value(ctx, idx);
+            uint64_t mask = trunc_val(~0ULL, size);
+            hb_context_write_reg_value(ctx, idx, (old & ~mask) | (val & mask));
+        } else {
+            hb_context_write_reg_value(ctx, idx, (uint32_t)val);
+        }
         return;
     }
 
@@ -567,12 +573,134 @@ hb_result_t hb_flags_exec_binop_operand(hb_context_t* ctx, hb_ir_op_t op,
         case HB_IR_AND: result = lhs & rhs; break;
         case HB_IR_OR:  result = lhs | rhs; break;
         case HB_IR_XOR: result = lhs ^ rhs; break;
+        case HB_IR_ROL:
+        case HB_IR_ROR: {
+            unsigned msb = msb_bit(dst->size);
+            unsigned width = msb + 1;
+            uint64_t mask = (msb == 63) ? ~0ULL : ((1ULL << width) - 1ULL);
+            uint64_t tlhs = trunc_val(lhs, dst->size);
+            uint64_t raw_count = rhs & ((dst->size == HB_SIZE_64) ? 0x3FULL : 0x1FULL);
+            count = raw_count % width;
+            if (count == 0) {
+                result = tlhs;
+                r = hb_flags_write_operand_value(ctx, dst, result);
+                if (r != HB_OK) return r;
+                if (out) *out = result;
+                return HB_OK;
+            }
+            if (op == HB_IR_ROL) result = ((tlhs << count) | (tlhs >> (width - count))) & mask;
+            else result = ((tlhs >> count) | (tlhs << (width - count))) & mask;
+            r = hb_flags_write_operand_value(ctx, dst, result);
+            if (r != HB_OK) return r;
+            if (ctx->lazy_flags.pending) {
+                (void)hb_lazy_flags_materialize(ctx, ctx->lazy_flags.valid_mask);
+                hb_lazy_flags_clear(ctx);
+            }
+            ctx->flags.cf = (op == HB_IR_ROL) ?
+                ((result & 1ULL) != 0) :
+                (((result >> msb) & 1ULL) != 0);
+            if (count == 1) {
+                bool top = ((result >> msb) & 1ULL) != 0;
+                bool next = ((result >> (msb - 1)) & 1ULL) != 0;
+                ctx->flags.of = (op == HB_IR_ROL) ?
+                    (top != ctx->flags.cf) :
+                    (top != next);
+            }
+            if (out) *out = result;
+            return HB_OK;
+        }
+        case HB_IR_SHL:
+        case HB_IR_SHR:
+        case HB_IR_SAR: {
+            count = rhs & ((dst->size == HB_SIZE_64) ? 0x3FULL : 0x1FULL);
+            if (count == 0) {
+                result = trunc_val(lhs, dst->size);
+                r = hb_flags_write_operand_value(ctx, dst, result);
+                if (r != HB_OK) return r;
+                if (out) *out = result;
+                return HB_OK;
+            }
+            unsigned msb = msb_bit(dst->size);
+            uint64_t mask = (msb == 63) ? ~0ULL : ((1ULL << (msb + 1)) - 1ULL);
+            uint64_t tlhs = trunc_val(lhs, dst->size);
+            if (op == HB_IR_SHL) result = (tlhs << count) & mask;
+            else if (op == HB_IR_SHR) result = tlhs >> count;
+            else {
+                int64_t slhs = (int64_t)(tlhs << (63 - msb)) >> (63 - msb);
+                result = (uint64_t)(slhs >> count) & mask;
+            }
+            break;
+        }
         default: return HB_ERR_UNSUPPORTED_OPCODE;
     }
     result = trunc_val(result, dst->size);
     r = hb_flags_write_operand_value(ctx, dst, result);
     if (r != HB_OK) return r;
     hb_lazy_flags_note(ctx, kind_for_op(op), dst->size, lhs, rhs, result, count);
+    if (out) *out = result;
+    return HB_OK;
+}
+
+hb_result_t hb_flags_exec_double_shift_operand(hb_context_t* ctx, hb_ir_op_t op,
+                                               const hb_ir_operand_t* dst,
+                                               const hb_ir_operand_t* src,
+                                               const hb_ir_operand_t* count_op,
+                                               uint64_t* out) {
+    if (!ctx || !dst || !src || !count_op) return HB_ERR_INVALID_ARG;
+    if (op != HB_IR_SHLD && op != HB_IR_SHRD) return HB_ERR_UNSUPPORTED_OPCODE;
+
+    uint64_t lhs = 0, rhs = 0, raw_count = 0;
+    hb_result_t r = hb_flags_read_operand_value(ctx, dst, &lhs);
+    if (r != HB_OK) return r;
+    r = hb_flags_read_operand_value(ctx, src, &rhs);
+    if (r != HB_OK) return r;
+    r = hb_flags_read_operand_value(ctx, count_op, &raw_count);
+    if (r != HB_OK) return r;
+
+    hb_size_t size = dst->size ? dst->size : src->size;
+    if (!size) size = HB_SIZE_64;
+    unsigned msb = msb_bit(size);
+    unsigned width = msb + 1;
+    uint64_t mask = (msb == 63) ? ~0ULL : ((1ULL << width) - 1ULL);
+    uint64_t count = raw_count & (size == HB_SIZE_64 ? 0x3fULL : 0x1fULL);
+    uint64_t old = trunc_val(lhs, size);
+    uint64_t srcv = trunc_val(rhs, size);
+
+    if (count == 0) {
+        r = hb_flags_write_operand_value(ctx, dst, old);
+        if (r != HB_OK) return r;
+        if (out) *out = old;
+        return HB_OK;
+    }
+    if (count > width) count %= width;
+    if (count == 0) count = width;
+
+    uint64_t result;
+    if (op == HB_IR_SHLD) {
+        result = ((old << count) | (srcv >> (width - count))) & mask;
+    } else {
+        result = ((old >> count) | (srcv << (width - count))) & mask;
+    }
+
+    r = hb_flags_write_operand_value(ctx, dst, result);
+    if (r != HB_OK) return r;
+
+    if (ctx->lazy_flags.pending) {
+        (void)hb_lazy_flags_materialize(ctx, ctx->lazy_flags.valid_mask);
+        hb_lazy_flags_clear(ctx);
+    }
+    ctx->flags.cf = (op == HB_IR_SHLD) ?
+        (((old >> (width - count)) & 1ULL) != 0) :
+        (((old >> (count - 1)) & 1ULL) != 0);
+    if (count == 1) {
+        bool result_msb = ((result >> msb) & 1ULL) != 0;
+        bool old_msb = ((old >> msb) & 1ULL) != 0;
+        ctx->flags.of = (op == HB_IR_SHLD) ? (result_msb != ctx->flags.cf)
+                                           : (result_msb != old_msb);
+    }
+    ctx->flags.sf = ((result >> msb) & 1ULL) != 0;
+    ctx->flags.zf = (result == 0);
+    ctx->flags.pf = parity_even8(result);
     if (out) *out = result;
     return HB_OK;
 }

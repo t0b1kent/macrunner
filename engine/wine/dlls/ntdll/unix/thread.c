@@ -86,6 +86,17 @@ pthread_key_t teb_key = 0;
 
 static LONG nb_threads = 1;
 
+static BOOL trace_ui_thread_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+        enabled = getenv("MACRUNNER_TRACE_UI_INPUT") != NULL ||
+                  getenv("MACRUNNER_TRACE_UI_EVENT_PATH") != NULL ||
+                  getenv("MACRUNNER_TRACE_UI_WAIT") != NULL;
+    return enabled;
+}
+
 static inline int get_unix_exit_code( NTSTATUS status )
 {
     /* prevent a nonzero exit code to end up truncated to zero in unix */
@@ -1214,21 +1225,40 @@ NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_size, SIZE
     struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
     WOW_TEB *wow_teb = get_wow_teb( teb );
     INITIAL_TEB stack;
+    const char *trace_stack = getenv( "MACRUNNER_HB_TRACE_STACK_INIT" );
+    BOOL trace_stack_init = trace_stack && *trace_stack && *trace_stack != '0';
     NTSTATUS status;
+
+    if (trace_stack_init)
+        ERR( "macrunner-hb-stack-init: enter wow=%u reserve=%#lx commit=%#lx limit=%#lx kernel_stack_size=%#lx\n",
+             !!wow_teb, (unsigned long)reserve_size, (unsigned long)commit_size,
+             (unsigned long)limit, (unsigned long)kernel_stack_size );
 
     /* kernel stack */
     if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, kernel_stack_size, kernel_stack_size, FALSE )))
         return status;
     thread_data->kernel_stack = stack.DeallocationStack;
+    if (trace_stack_init)
+        ERR( "macrunner-hb-stack-init: kernel dealloc=%p limit=%p base=%p\n",
+             stack.DeallocationStack, stack.StackLimit, stack.StackBase );
 
     if (wow_teb)
     {
         WOW64_CPURESERVED *cpu;
+        SIZE_T wow64_stack_size = 0x40000;
         SIZE_T cpusize = sizeof(WOW64_CPURESERVED) +
             ((get_machine_context_size( main_image_info.Machine ) + 7) & ~7) + sizeof(ULONG64);
 
+#if defined(__APPLE__) && defined(__aarch64__)
+        wow64_stack_size = kernel_stack_size;
+#endif
+
         /* 64-bit stack */
-        if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, 0x40000, 0x40000, TRUE ))) return status;
+        if ((status = virtual_alloc_thread_stack( &stack, limit_4g, 0, wow64_stack_size, wow64_stack_size, TRUE )))
+            return status;
+        if (trace_stack_init)
+            ERR( "macrunner-hb-stack-init: wow64 host reserve=%#lx dealloc=%p limit=%p base=%p\n",
+                 (unsigned long)wow64_stack_size, stack.DeallocationStack, stack.StackLimit, stack.StackBase );
         cpu = (WOW64_CPURESERVED *)(((ULONG_PTR)stack.StackBase - cpusize) & ~15);
         cpu->Machine = main_image_info.Machine;
 
@@ -1244,6 +1274,10 @@ NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_size, SIZE
         wow_teb->Tib.StackBase = PtrToUlong( stack.StackBase );
         wow_teb->Tib.StackLimit = PtrToUlong( stack.StackLimit );
         wow_teb->DeallocationStack = PtrToUlong( stack.DeallocationStack );
+        if (trace_stack_init)
+            ERR( "macrunner-hb-stack-init: return win64 teb=%p-%p dealloc=%p wow=%#x-%#x dealloc=%#x\n",
+                 teb->Tib.StackLimit, teb->Tib.StackBase, teb->DeallocationStack,
+                 wow_teb->Tib.StackLimit, wow_teb->Tib.StackBase, wow_teb->DeallocationStack );
         return STATUS_SUCCESS;
 #else
         wow_teb->Tib.StackBase = wow_teb->TlsSlots[WOW64_TLS_CPURESERVED] = PtrToUlong( cpu );
@@ -1251,6 +1285,14 @@ NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_size, SIZE
         wow_teb->DeallocationStack = PtrToUlong( stack.DeallocationStack );
 #endif
     }
+
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (wow_teb)
+    {
+        if (reserve_size < kernel_stack_size) reserve_size = kernel_stack_size;
+        if (commit_size < kernel_stack_size) commit_size = kernel_stack_size;
+    }
+#endif
 
 #ifdef __aarch64__
     if (is_arm64ec())
@@ -1276,6 +1318,10 @@ NTSTATUS init_thread_stack( TEB *teb, ULONG_PTR limit, SIZE_T reserve_size, SIZE
     teb->Tib.StackBase = stack.StackBase;
     teb->Tib.StackLimit = stack.StackLimit;
     teb->DeallocationStack = stack.DeallocationStack;
+    if (trace_stack_init)
+        ERR( "macrunner-hb-stack-init: native reserve=%#lx commit=%#lx teb=%p-%p dealloc=%p\n",
+             (unsigned long)reserve_size, (unsigned long)commit_size,
+             teb->Tib.StackLimit, teb->Tib.StackBase, teb->DeallocationStack );
     return STATUS_SUCCESS;
 }
 
@@ -1521,6 +1567,13 @@ static DECLSPEC_NORETURN void exit_thread( int status )
     static void *prev_teb;
     TEB *teb;
 
+    if (trace_ui_thread_enabled())
+    {
+        fprintf( stderr, "macrunner-ui-input: stage=ntdll_exit_thread pid=%d tid=%lx status=0x%x\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), status );
+        fflush( stderr );
+    }
+
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
 
     if (InterlockedDecrement( &nb_threads ) <= 0) exit_process( status );
@@ -1544,6 +1597,13 @@ static DECLSPEC_NORETURN void exit_thread( int status )
  */
 void exit_process( int status )
 {
+    if (trace_ui_thread_enabled() || getenv("MACRUNNER_TRACE_PROCESS_EXIT"))
+    {
+        fprintf( stderr, "macrunner-process-exit: stage=exit_process pid=%d tid=%lx status=0x%x unix=0x%x\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), status, get_unix_exit_code( status ) );
+        fflush( stderr );
+    }
+
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
     process_exit_wrapper( get_unix_exit_code( status ));
 }
@@ -1647,6 +1707,54 @@ NTSTATUS WINAPI NtRaiseException( EXCEPTION_RECORD *rec, CONTEXT *context, BOOL 
     else
         ERR_(seh)("Unhandled exception code %x flags %x addr %p\n",
                   rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress );
+
+    if (getenv("MACRUNNER_TRACE_PROCESS_EXIT") || getenv("MACRUNNER_TRACE_UI_INPUT"))
+    {
+        fprintf( stderr, "macrunner-process-exit: stage=NtRaiseException_unhandled "
+                 "pid=%d tid=%lx first=%d code=0x%x flags=0x%x addr=%p "
+                 "params=%lu info0=%p info1=%p info2=%p info3=%p context=%p\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), first_chance,
+                 (unsigned int)rec->ExceptionCode, (unsigned int)rec->ExceptionFlags,
+                 rec->ExceptionAddress, (unsigned long)rec->NumberParameters,
+                 rec->NumberParameters > 0 ? (void *)(uintptr_t)rec->ExceptionInformation[0] : NULL,
+                 rec->NumberParameters > 1 ? (void *)(uintptr_t)rec->ExceptionInformation[1] : NULL,
+                 rec->NumberParameters > 2 ? (void *)(uintptr_t)rec->ExceptionInformation[2] : NULL,
+                 rec->NumberParameters > 3 ? (void *)(uintptr_t)rec->ExceptionInformation[3] : NULL,
+                 context );
+        if (rec->ExceptionCode == 0xe06d7363 && rec->NumberParameters > 1)
+        {
+            const void *obj = (const void *)(uintptr_t)rec->ExceptionInformation[1];
+            ULONG_PTR qwords[3] = { 0 };
+            unsigned int i;
+
+            if (virtual_check_buffer_for_read( obj, sizeof(qwords) ))
+            {
+                memcpy( qwords, obj, sizeof(qwords) );
+                fprintf( stderr, "macrunner-process-exit: stage=cpp_exception_object "
+                         "obj=%p q0=%p q1=%p q2=%p\n",
+                         obj, (void *)qwords[0], (void *)qwords[1], (void *)qwords[2] );
+                for (i = 0; i < 3; i++)
+                {
+                    const char *candidate = (const char *)qwords[i];
+                    char text[161];
+                    unsigned int j;
+
+                    if (!candidate || !virtual_check_buffer_for_read( candidate, 1 )) continue;
+                    memset( text, 0, sizeof(text) );
+                    for (j = 0; j < sizeof(text) - 1; j++)
+                    {
+                        if (!virtual_check_buffer_for_read( candidate + j, 1 )) break;
+                        text[j] = candidate[j];
+                        if (!text[j]) break;
+                        if ((unsigned char)text[j] < 32 || (unsigned char)text[j] > 126) text[j] = '.';
+                    }
+                    fprintf( stderr, "macrunner-process-exit: stage=cpp_exception_text "
+                             "slot=%u ptr=%p text=\"%s\"\n", i, candidate, text );
+                }
+            }
+        }
+        fflush( stderr );
+    }
 
     NtTerminateProcess( NtCurrentProcess(), rec->ExceptionCode );
     return STATUS_SUCCESS;
@@ -1753,6 +1861,14 @@ NTSTATUS WINAPI NtTerminateThread( HANDLE handle, LONG exit_code )
     unsigned int ret;
     BOOL self;
 
+    if (trace_ui_thread_enabled())
+    {
+        fprintf( stderr,
+                 "macrunner-ui-input: stage=NtTerminateThread_enter pid=%d tid=%lx handle=%p exit_code=0x%x\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), handle, exit_code );
+        fflush( stderr );
+    }
+
     SERVER_START_REQ( terminate_thread )
     {
         req->handle    = wine_server_obj_handle( handle );
@@ -1761,6 +1877,14 @@ NTSTATUS WINAPI NtTerminateThread( HANDLE handle, LONG exit_code )
         self = !ret && reply->self;
     }
     SERVER_END_REQ;
+
+    if (trace_ui_thread_enabled())
+    {
+        fprintf( stderr,
+                 "macrunner-ui-input: stage=NtTerminateThread_after_server pid=%d tid=%lx ret=0x%x self=%d\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), ret, self );
+        fflush( stderr );
+    }
 
     if (self)
     {
@@ -1920,8 +2044,25 @@ NTSTATUS get_thread_context( HANDLE handle, void *context, BOOL *self, USHORT ma
  */
 void ntdll_set_exception_jmp_buf( jmp_buf jmp )
 {
-    assert( !jmp || !ntdll_get_thread_data()->jmp_buf );
-    ntdll_get_thread_data()->jmp_buf = jmp;
+    struct ntdll_thread_data *data = ntdll_get_thread_data();
+
+    if (jmp)
+    {
+        if (data->jmp_buf)
+        {
+            if (data->jmp_buf_depth < ARRAY_SIZE(data->jmp_buf_stack))
+                data->jmp_buf_stack[data->jmp_buf_depth++] = data->jmp_buf;
+            else
+                WARN( "exception jmp_buf stack overflow, replacing nested handler\n" );
+        }
+        data->jmp_buf = jmp;
+    }
+    else if (data->jmp_buf_depth)
+    {
+        data->jmp_buf = data->jmp_buf_stack[--data->jmp_buf_depth];
+        data->jmp_buf_stack[data->jmp_buf_depth] = NULL;
+    }
+    else data->jmp_buf = NULL;
 }
 
 

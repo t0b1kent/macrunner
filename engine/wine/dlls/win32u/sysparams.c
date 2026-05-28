@@ -26,8 +26,6 @@
 
 #include <pthread.h>
 #include <assert.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -5379,18 +5377,10 @@ DWORD get_dialog_base_units(void)
 }
 
 /* adjust some of the raw values found in the registry */
-static int clamp_nonclient_metric( int value, int min_value, int max_value )
-{
-    if (value < min_value) return min_value;
-    if (value > max_value) return max_value;
-    return value;
-}
-
 static void normalize_nonclientmetrics( NONCLIENTMETRICSW *pncm)
 {
     TEXTMETRICW tm;
     HDC hdc = get_display_dc();
-    int min_menu_height, min_caption_height, min_sm_caption_height;
 
     if( pncm->iBorderWidth < 1) pncm->iBorderWidth = 1;
     if( pncm->iCaptionWidth < 8) pncm->iCaptionWidth = 8;
@@ -5399,31 +5389,12 @@ static void normalize_nonclientmetrics( NONCLIENTMETRICSW *pncm)
 
     /* adjust some heights to the corresponding font */
     get_text_metr_size( hdc, &pncm->lfMenuFont, &tm, NULL);
-    min_menu_height = 2 + tm.tmHeight + tm.tmExternalLeading;
-    pncm->iMenuHeight = max( pncm->iMenuHeight, min_menu_height );
+    pncm->iMenuHeight = max( pncm->iMenuHeight, 2 + tm.tmHeight + tm.tmExternalLeading );
     get_text_metr_size( hdc, &pncm->lfCaptionFont, &tm, NULL);
-    min_caption_height = 2 + tm.tmHeight;
-    pncm->iCaptionHeight = max( pncm->iCaptionHeight, min_caption_height);
+    pncm->iCaptionHeight = max( pncm->iCaptionHeight, 2 + tm.tmHeight);
     get_text_metr_size( hdc, &pncm->lfSmCaptionFont, &tm, NULL);
-    min_sm_caption_height = 2 + tm.tmHeight;
-    pncm->iSmCaptionHeight = max( pncm->iSmCaptionHeight, min_sm_caption_height);
+    pncm->iSmCaptionHeight = max( pncm->iSmCaptionHeight, 2 + tm.tmHeight);
     release_display_dc( hdc );
-
-    /* MacRunner: stale/corrupted Wine prefixes can contain positive pixel
-     * WindowMetrics values in the thousands.  Wine treats positive twips
-     * entries as pixels, which can make menus/title bars taller than the
-     * monitor and collapse otherwise healthy windows into tiny slivers.
-     * Keep the normal low-end Wine clamping above, but cap impossible
-     * non-client sizes before they reach winemac.drv. */
-    pncm->iBorderWidth = clamp_nonclient_metric( pncm->iBorderWidth, 1, 16 );
-    pncm->iScrollWidth = clamp_nonclient_metric( pncm->iScrollWidth, 8, 64 );
-    pncm->iScrollHeight = clamp_nonclient_metric( pncm->iScrollHeight, 8, 64 );
-    pncm->iCaptionWidth = clamp_nonclient_metric( pncm->iCaptionWidth, 8, 64 );
-    pncm->iCaptionHeight = clamp_nonclient_metric( pncm->iCaptionHeight, 8, max( 32, min_caption_height + 16 ));
-    pncm->iSmCaptionWidth = clamp_nonclient_metric( pncm->iSmCaptionWidth, 8, 64 );
-    pncm->iSmCaptionHeight = clamp_nonclient_metric( pncm->iSmCaptionHeight, 8, max( 32, min_sm_caption_height + 16 ));
-    pncm->iMenuWidth = clamp_nonclient_metric( pncm->iMenuWidth, 8, 64 );
-    pncm->iMenuHeight = clamp_nonclient_metric( pncm->iMenuHeight, 8, max( 32, min_menu_height + 16 ));
 }
 
 /* load a font (binary) parameter from the registry */
@@ -7285,20 +7256,9 @@ static int get_system_metrics_for_dpi( int index, unsigned int dpi )
 COLORREF get_sys_color( int index )
 {
     COLORREF ret = 0;
-    static int trace = -1;
 
     if (index >= 0 && index < ARRAY_SIZE( system_colors ))
         get_entry( &system_colors[index], 0, &ret );
-    if (trace == -1)
-    {
-        const char *value = getenv( "MACRUNNER_HB_TRACE_SYSCOLOR" );
-        const char *visual = getenv( "MACRUNNER_TRACE_VISUAL_BATCH" );
-        trace = (value && value[0] && value[0] != '0') ||
-                (visual && visual[0] && visual[0] != '0');
-    }
-    if (trace)
-        fprintf( stderr, "macrunner-syscolor: index=%d returned=0x%06lx\n",
-                 index, (unsigned long)(ret & 0xffffff) );
     return ret;
 }
 

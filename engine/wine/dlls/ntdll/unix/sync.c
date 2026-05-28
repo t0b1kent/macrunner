@@ -79,6 +79,17 @@ WINE_DEFAULT_DEBUG_CHANNEL(sync);
 HANDLE keyed_event = 0;
 int inproc_device_fd = -1;
 
+static BOOL trace_ui_wait_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+        enabled = getenv("MACRUNNER_TRACE_UI_INPUT") != NULL ||
+                  getenv("MACRUNNER_TRACE_UI_EVENT_PATH") != NULL ||
+                  getenv("MACRUNNER_TRACE_UI_WAIT") != NULL;
+    return enabled;
+}
+
 static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
 {
     if (!timeout) return "(infinite)";
@@ -2463,6 +2474,15 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
     if (!count || count > MAXIMUM_WAIT_OBJECTS) return STATUS_INVALID_PARAMETER_1;
     if (type != WaitAll && type != WaitAny) FIXME( "Unsupported wait type %u\n", type );
 
+    if (trace_ui_wait_enabled())
+    {
+        fprintf( stderr,
+                 "macrunner-ui-input: stage=NtWaitForMultipleObjects_enter pid=%d tid=%lx count=%lu type=%u alertable=%u timeout=%s first=%p last=%p\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), (unsigned long)count,
+                 type, alertable, debugstr_timeout(timeout), handles[0], handles[count - 1] );
+        fflush( stderr );
+    }
+
     if (TRACE_ON(sync))
     {
         TRACE( "type %u, alertable %u, handles {%p", type, alertable, handles[0] );
@@ -2478,6 +2498,13 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
 
     if ((ret = inproc_wait( count, handles, type, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
     {
+        if (trace_ui_wait_enabled())
+        {
+            fprintf( stderr,
+                     "macrunner-ui-input: stage=NtWaitForMultipleObjects_exit pid=%d tid=%lx via=inproc ret=0x%x count=%lu\n",
+                     getpid(), (unsigned long)GetCurrentThreadId(), ret, (unsigned long)count );
+            fflush( stderr );
+        }
         TRACE( "-> %#x\n", ret );
         return ret;
     }
@@ -2486,6 +2513,13 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
     select_op.wait.op = type == WaitAll ? SELECT_WAIT_ALL : SELECT_WAIT;
     for (i = 0; i < count; i++) select_op.wait.handles[i] = wine_server_obj_handle( handles[i] );
     ret = server_wait( &select_op, offsetof( union select_op, wait.handles[count] ), flags, timeout );
+    if (trace_ui_wait_enabled())
+    {
+        fprintf( stderr,
+                 "macrunner-ui-input: stage=NtWaitForMultipleObjects_exit pid=%d tid=%lx via=server ret=0x%x count=%lu\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), ret, (unsigned long)count );
+        fflush( stderr );
+    }
     TRACE( "-> %#x\n", ret );
     return ret;
 }

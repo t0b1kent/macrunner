@@ -359,6 +359,53 @@ static BOOL macrunner_hb_x64_loader_enabled(void)
     return enabled && enabled[0] && enabled[0] != '0' && strcasecmp( enabled, "false" );
 }
 
+static BOOL macrunner_hb_unicode_basename_matches_ascii( const UNICODE_STRING *path, const char *name )
+{
+    unsigned int i, base = 0, len;
+    size_t name_len = strlen( name );
+
+    if (!path || !path->Buffer) return FALSE;
+    len = path->Length / sizeof(WCHAR);
+    for (i = 0; i < len; i++)
+        if (path->Buffer[i] == '/' || path->Buffer[i] == '\\') base = i + 1;
+    if (len - base != name_len) return FALSE;
+
+    for (i = 0; i < name_len; i++)
+    {
+        WCHAR a = path->Buffer[base + i];
+        char b = name[i];
+
+        if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+        if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+        if (a > 127 || (char)a != b) return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOL macrunner_hb_ansi_name_matches_ascii( const ANSI_STRING *string, const char *name )
+{
+    size_t len = strlen( name );
+
+    return string && string->Buffer && string->Length == len && !strncasecmp( string->Buffer, name, len );
+}
+
+static BOOL macrunner_hb_builtin_name_matches( const UNICODE_STRING *nt_name, const ANSI_STRING *exp_name,
+                                               const char *name )
+{
+    return macrunner_hb_ansi_name_matches_ascii( exp_name, name ) ||
+           macrunner_hb_unicode_basename_matches_ascii( nt_name, name );
+}
+
+static BOOL macrunner_hb_is_wow64_host_builtin( const UNICODE_STRING *nt_name, const ANSI_STRING *exp_name )
+{
+    return macrunner_hb_builtin_name_matches( nt_name, exp_name, "wow64.dll" ) ||
+           macrunner_hb_builtin_name_matches( nt_name, exp_name, "wow64win.dll" ) ||
+           macrunner_hb_builtin_name_matches( nt_name, exp_name, "wow64cpu.dll" ) ||
+           macrunner_hb_builtin_name_matches( nt_name, exp_name, "xtajit.dll" ) ||
+           macrunner_hb_builtin_name_matches( nt_name, exp_name, "xtajit64.dll" ) ||
+           macrunner_hb_builtin_name_matches( nt_name, exp_name, "win32u.dll" );
+}
+
 static void macrunner_hb_init_flags(void)
 {
     macrunner_hb_x64_loader = macrunner_hb_x64_loader_enabled();
@@ -1675,6 +1722,7 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
     NTSTATUS status;
     USHORT search_machine = image_info->machine;
     enum loadorder loadorder = get_load_order( nt_name );
+    BOOL force_current_machine_builtin = FALSE;
 
     if (loadorder == LO_DISABLED) return STATUS_DLL_NOT_FOUND;
 
@@ -1693,6 +1741,34 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
     if (is_arm64ec() && image_info->is_hybrid && search_machine == IMAGE_FILE_MACHINE_AMD64)
         search_machine = current_machine;
 
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (macrunner_hb_x64_loader &&
+        current_machine == IMAGE_FILE_MACHINE_ARM64 &&
+        main_image_info.Machine == IMAGE_FILE_MACHINE_ARM64 &&
+        image_info->machine == IMAGE_FILE_MACHINE_AMD64 &&
+        (!machine || machine == current_machine))
+    {
+        TRACE( "MacRunner native ARM64 helper using current-machine builtin for wrong-arch prefix image %s\n",
+               debugstr_us(nt_name) );
+        search_machine = current_machine;
+        machine = current_machine;
+        force_current_machine_builtin = TRUE;
+    }
+
+    if (macrunner_hb_x64_loader &&
+        current_machine == IMAGE_FILE_MACHINE_ARM64 &&
+        main_image_info.Machine == IMAGE_FILE_MACHINE_I386 &&
+        image_info->machine == IMAGE_FILE_MACHINE_AMD64 &&
+        !macrunner_hb_is_wow64_host_builtin( nt_name, exp_name ))
+    {
+        TRACE( "MacRunner HyperBridge PE32 builtin using i386 lane for wrong-arch prefix image %s\n",
+               debugstr_us(nt_name) );
+        search_machine = IMAGE_FILE_MACHINE_I386;
+        machine = IMAGE_FILE_MACHINE_I386;
+        force_current_machine_builtin = TRUE;
+    }
+#endif
+
     switch (loadorder)
     {
     case LO_NATIVE:
@@ -1705,7 +1781,10 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
         status = find_builtin_dll( nt_name, exp_name, module, size, info, limit_low, limit_high,
                                    search_machine, machine, (loadorder == LO_DEFAULT), offset );
         if (status == STATUS_DLL_NOT_FOUND || status == STATUS_NOT_SUPPORTED)
+        {
+            if (force_current_machine_builtin) return status;
             return STATUS_IMAGE_ALREADY_LOADED;
+        }
         return status;
     }
 }
@@ -1735,6 +1814,60 @@ static const WCHAR *get_machine_wow64_dir( WORD machine )
     case IMAGE_FILE_MACHINE_ARMNT:       return sysarm32;
     default: return NULL;
     }
+}
+
+static BOOL macrunner_hb_same_basename( const UNICODE_STRING *path, const WCHAR *name )
+{
+    unsigned int i, base = 0, len = path->Length / sizeof(WCHAR);
+    unsigned int name_len = wcslen( name );
+
+    for (i = 0; i < len; i++)
+        if (path->Buffer[i] == '/' || path->Buffer[i] == '\\') base = i + 1;
+
+    return len - base == name_len && !wcsnicmp( path->Buffer + base, name, name_len );
+}
+
+static BOOL macrunner_hb_is_system_helper_path( const UNICODE_STRING *path, BOOL allow_windows_dir )
+{
+    static const WCHAR windows[] = {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\',0};
+    const WCHAR *system32 = get_machine_wow64_dir( IMAGE_FILE_MACHINE_TARGET_HOST );
+    unsigned int i, base = 0, len = path->Length / sizeof(WCHAR);
+    unsigned int system32_len = wcslen( system32 );
+    unsigned int windows_len = wcslen( windows );
+
+    for (i = 0; i < len; i++)
+        if (path->Buffer[i] == '/' || path->Buffer[i] == '\\') base = i + 1;
+
+    if (base == system32_len && !wcsnicmp( path->Buffer, system32, system32_len )) return TRUE;
+    return allow_windows_dir && base == windows_len && !wcsnicmp( path->Buffer, windows, windows_len );
+}
+
+BOOL macrunner_hb_prefer_native_helper_exe( const UNICODE_STRING *path )
+{
+    static const WCHAR wineboot[] = {'w','i','n','e','b','o','o','t','.','e','x','e',0};
+    static const WCHAR services[] = {'s','e','r','v','i','c','e','s','.','e','x','e',0};
+    static const WCHAR explorer[] = {'e','x','p','l','o','r','e','r','.','e','x','e',0};
+    static const WCHAR rpcss[] = {'r','p','c','s','s','.','e','x','e',0};
+    static const WCHAR plugplay[] = {'p','l','u','g','p','l','a','y','.','e','x','e',0};
+    static const WCHAR winedevice[] = {'w','i','n','e','d','e','v','i','c','e','.','e','x','e',0};
+    static const WCHAR svchost[] = {'s','v','c','h','o','s','t','.','e','x','e',0};
+    BOOL explorer_path;
+
+    if (!path || !path->Buffer || !path->Length) return FALSE;
+    if (current_machine != IMAGE_FILE_MACHINE_ARM64) return FALSE;
+    if (!macrunner_hb_x64_loader_enabled()) return FALSE;
+
+    explorer_path = macrunner_hb_same_basename( path, explorer );
+    if (!explorer_path &&
+        !macrunner_hb_same_basename( path, wineboot ) &&
+        !macrunner_hb_same_basename( path, services ) &&
+        !macrunner_hb_same_basename( path, plugplay ) &&
+        !macrunner_hb_same_basename( path, winedevice ) &&
+        !macrunner_hb_same_basename( path, svchost ) &&
+        !macrunner_hb_same_basename( path, rpcss ))
+        return FALSE;
+
+    return macrunner_hb_is_system_helper_path( path, explorer_path );
 }
 
 
@@ -1816,6 +1949,15 @@ NTSTATUS load_main_exe( UNICODE_STRING *nt_name, USHORT load_machine, void **mod
     unsigned int status;
     SIZE_T size;
     USHORT search_machine;
+
+    if (macrunner_hb_prefer_native_helper_exe( nt_name ))
+    {
+        TRACE( "MacRunner loading native helper builtin for %s\n", debugstr_us(nt_name) );
+        status = find_builtin_dll( nt_name, NULL, module, &size, &main_image_info, 0, 0,
+                                   current_machine, current_machine, FALSE, 0 );
+        if (status == STATUS_IMAGE_NOT_AT_BASE) status = virtual_relocate_module( *module );
+        if (status != STATUS_DLL_NOT_FOUND && status != STATUS_NOT_SUPPORTED) return status;
+    }
 
     status = open_main_image( nt_name, module, &main_image_info, loadorder, load_machine );
     if (status != STATUS_DLL_NOT_FOUND) return status;

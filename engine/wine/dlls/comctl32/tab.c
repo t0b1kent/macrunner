@@ -54,8 +54,6 @@
 
 #include <assert.h>
 #include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "windef.h"
@@ -1830,11 +1828,6 @@ TAB_DrawItemInterior(const TAB_INFO *infoPtr, HDC hdc, INT iItem, RECT *drawRect
       }
 
       TRACE("drawing image %d, left %ld, top %ld\n", item->iImage, rcImage.left, rcImage.top-1);
-      if (getenv("MACRUNNER_TRACE_VISUAL_BATCH") || getenv("MACRUNNER_TRACE_VISUAL_COMCTL32"))
-        fprintf(stderr, "macrunner-visual-tab: hwnd=%p item=%d text=\"%ls\" image=%d himl=%p icon=%dx%d rect=%ld,%ld,%ld,%ld image_pos=%ld,%ld style=0x%08lx selected=%d\n",
-                infoPtr->hwnd, iItem, item->pszText ? item->pszText : L"", item->iImage, infoPtr->himl,
-                cx, cy, drawRect->left, drawRect->top, drawRect->right, drawRect->bottom,
-                rcImage.left, rcImage.top, infoPtr->dwStyle, iItem == infoPtr->iSelected);
       ImageList_Draw
         (
         infoPtr->himl,
@@ -1842,7 +1835,7 @@ TAB_DrawItemInterior(const TAB_INFO *infoPtr, HDC hdc, INT iItem, RECT *drawRect
         hdc,
         rcImage.left,
         rcImage.top,
-        ILD_TRANSPARENT
+        ILD_NORMAL
         );
     }
 

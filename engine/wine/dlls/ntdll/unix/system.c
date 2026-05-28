@@ -4106,7 +4106,11 @@ NTSTATUS WINAPI NtQuerySystemInformationEx( SYSTEM_INFORMATION_CLASS class,
         for (i = 1, j = 1; i < supported_machines_count; i++)
         {
 #if defined(__APPLE__) && defined(__aarch64__)
-            if (!is_machine_64bit( supported_machines[i] )) continue;
+            if (!is_machine_64bit( supported_machines[i] ) &&
+                !(supported_machines[i] == IMAGE_FILE_MACHINE_I386 &&
+                  (main_image_info.Machine == IMAGE_FILE_MACHINE_I386 ||
+                   getenv( "MACRUNNER_HB_WOW64_GUEST32" ))))
+                continue;
 #endif
             machines[j].Machine = supported_machines[i];
             machines[j].UserMode = 1;

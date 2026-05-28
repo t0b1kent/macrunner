@@ -234,11 +234,12 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                                                 steps, blocks_executed,
                                                 "translated function truncated before branch target");
             }
-            if (last->op == HB_IR_CALL || last->op == HB_IR_RET) {
+            if (last->op == HB_IR_CALL || last->op == HB_IR_RET ||
+                last->op == HB_IR_JMP || last->op == HB_IR_Jcc) {
                 out->result = HB_OK;
                 out->steps_executed = steps;
                 out->blocks_executed = blocks_executed;
-                return HB_OK; /* External call or return */
+                return HB_OK; /* External branch/call/return boundary */
             }
             out->result = HB_ERR_NOT_FOUND;
             out->steps_executed = steps;
@@ -256,6 +257,8 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
         ctx->pc = last->guest_addr + last->guest_len;
         if (ctx->arch == HB_ARCH_X64) ctx->regs.x64.rip = ctx->pc;
         else if (ctx->arch == HB_ARCH_X86) ctx->regs.x86.eip = (uint32_t)ctx->pc;
+        next = find_block(func->cfg, ctx->pc);
+        if (next) continue;
         out->result = HB_OK;
         out->steps_executed = steps;
         out->blocks_executed = blocks_executed;

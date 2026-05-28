@@ -7,6 +7,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#define HB_GUEST32_SIZE 0x100000000ULL
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,20 +24,32 @@ typedef enum {
 /* Memory region */
 typedef struct hb_region {
     hb_gva_t base;
+    void* host_base; /* backing address for private guest mappings */
     size_t size;
     hb_perm_t perm;
+    uint64_t gen;
+    uint32_t vma_flags;
     bool is_stack;
     bool is_heap;
     bool is_guard;
+    bool is_guest32;
     bool allocated; /* true if hb_memory_map allocated backing memory */
     struct hb_region* next;
+    struct hb_region* tree_left;
+    struct hb_region* tree_right;
+    uint32_t tree_prio;
 } hb_region_t;
 
 /* Memory sandbox */
 typedef struct hb_memory {
     hb_region_t* regions;
+    hb_region_t* region_tree;
     size_t total_size;
     size_t max_size;
+    uint64_t generation;
+    void* guest32_base;
+    size_t guest32_size;
+    bool guest32_owned;
     hb_gva_t stack_top;
     hb_gva_t stack_bottom;
     hb_gva_t heap_base;
@@ -50,8 +64,18 @@ hb_memory_t* hb_memory_create(size_t max_size);
 void hb_memory_destroy(hb_memory_t* mem);
 
 hb_result_t hb_memory_map(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
+hb_result_t hb_memory_map_private(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
 hb_result_t hb_memory_unmap(hb_memory_t* mem, hb_gva_t base);
 hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
+
+hb_result_t hb_memory_guest32_reserve(hb_memory_t* mem);
+void* hb_memory_guest32_base(const hb_memory_t* mem);
+void* hb_memory_guest32_to_host(hb_memory_t* mem, uint32_t guest_addr);
+hb_result_t hb_memory_guest32_map(hb_memory_t* mem, uint32_t base, size_t size, hb_perm_t perm);
+hb_result_t hb_memory_guest32_unmap(hb_memory_t* mem, uint32_t base, size_t size);
+hb_result_t hb_memory_guest32_protect(hb_memory_t* mem, uint32_t base, size_t size, hb_perm_t perm);
+uint64_t hb_memory_generation(const hb_memory_t* mem);
+uint64_t hb_memory_region_generation(hb_memory_t* mem, hb_gva_t addr);
 
 hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t size);
 hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, size_t size);

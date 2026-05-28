@@ -1818,9 +1818,15 @@ static void *build_wow64_parameters( const RTL_USER_PROCESS_PARAMETERS *params )
                    + ((params->RuntimeInfo.MaximumLength + 1) & ~1)
                    + params->EnvironmentSize);
 
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_WIN64)
+    status = macrunner_hb_wow64_guest32_alloc( size, PAGE_READWRITE, (void **)&wow64_params );
+    if (status)
+#endif
+    {
     status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&wow64_params, limit_2g - 1, &size,
                                       MEM_COMMIT, PAGE_READWRITE );
     assert( !status );
+    }
 
     wow64_params->AllocationSize  = size;
     wow64_params->Size            = size;

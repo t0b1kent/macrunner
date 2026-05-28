@@ -26,7 +26,6 @@
 
 #include <limits.h>
 #include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -61,71 +60,6 @@ struct font_physdev
 static inline struct font_physdev *get_font_dev( PHYSDEV dev )
 {
     return (struct font_physdev *)dev;
-}
-
-static BOOL macrunner_trace_visual_font(void)
-{
-    return !!getenv( "MACRUNNER_TRACE_VISUAL_FONT" ) || !!getenv( "MACRUNNER_TRACE_VISUAL_BATCH" ) ||
-           !!getenv( "MACRUNNER_TRACE_GDI_BLIT" );
-}
-
-static BOOL macrunner_wstr_eq_ascii_ci( const WCHAR *wstr, const char *str )
-{
-    unsigned int i;
-
-    if (!wstr || !str) return FALSE;
-    for (i = 0; wstr[i] && str[i]; i++)
-    {
-        WCHAR wc = wstr[i];
-        char c = str[i];
-        if (wc >= 'A' && wc <= 'Z') wc += 'a' - 'A';
-        if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
-        if (wc != (unsigned char)c) return FALSE;
-    }
-    return !wstr[i] && !str[i];
-}
-
-static void macrunner_trace_glyph_outline( const char *stage, const struct gdi_font *font,
-                                           UINT glyph, UINT format, DWORD size, DWORD ret,
-                                           const GLYPHMETRICS *metrics )
-{
-    if (!macrunner_trace_visual_font()) return;
-    if (font && !macrunner_wstr_eq_ascii_ci( font->lf.lfFaceName, "Marlett" ) &&
-        glyph != '0' && glyph != '1' && glyph != '2' && glyph != 'r')
-        return;
-
-    fprintf( stderr,
-             "macrunner-visual-font: stage=%s face=\"%ls\" glyph=0x%04x('%c') format=0x%04x size=%lu ret=%lu gm=%ld,%ld,%ld,%ld file=\"%ls\"\n",
-             stage, font ? font->lf.lfFaceName : L"", glyph,
-             (glyph >= 32 && glyph < 127) ? glyph : '.',
-             format, (unsigned long)size, (unsigned long)ret,
-             metrics ? metrics->gmBlackBoxX : -1, metrics ? metrics->gmBlackBoxY : -1,
-             metrics ? metrics->gmptGlyphOrigin.x : -1, metrics ? metrics->gmptGlyphOrigin.y : -1,
-             font ? font->file : L"" );
-}
-
-static const char *macrunner_class_name_from_hdc(HDC hdc, HWND *hwnd_ret)
-{
-    static WCHAR class_name[64];
-    UNICODE_STRING str = { .Buffer = class_name, .MaximumLength = sizeof(class_name) };
-    HWND hwnd = NtUserWindowFromDC( hdc );
-
-    class_name[0] = 0;
-    if (hwnd) NtUserGetClassName( hwnd, FALSE, &str );
-    if (hwnd_ret) *hwnd_ret = hwnd;
-    return wine_dbgstr_w( class_name );
-}
-
-static BOOL macrunner_trace_visual_textout(INT x, INT y, const WCHAR *str, UINT count, const LOGFONTW *lf)
-{
-    UINT i;
-
-    if (!macrunner_trace_visual_font()) return FALSE;
-    if (lf && macrunner_wstr_eq_ascii_ci( lf->lfFaceName, "Marlett" )) return TRUE;
-    for (i = 0; str && i < count; i++)
-        if (str[i] == '0' || str[i] == '1' || str[i] == '2' || str[i] == 'r')
-            return TRUE;
-    return count <= 24;
 }
 
 struct gdi_font_family
@@ -539,9 +473,9 @@ static pthread_mutex_t font_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void get_fonts_data_dir_path( const WCHAR *file, WCHAR *path )
 {
-    const WCHAR *dir = ntdll_get_data_dir();
+    const WCHAR *dir = ntdll_get_build_dir();
 
-    if (!dir) dir = ntdll_get_build_dir();
+    if (!dir) dir = ntdll_get_data_dir();
     wcscpy( path, dir );
     asciiz_to_unicode( path + wcslen(path), "\\fonts\\" );
     if (file) lstrcatW( path, file );
@@ -4226,7 +4160,6 @@ static DWORD font_GetGlyphOutline( PHYSDEV dev, UINT glyph, UINT format,
     pthread_mutex_lock( &font_lock );
     ret = get_glyph_outline( physdev->font, glyph, format, gm, NULL, buflen, buf, mat );
     pthread_mutex_unlock( &font_lock );
-    macrunner_trace_glyph_outline( "fontdev", physdev->font, glyph, format, buflen, ret, gm );
     return ret;
 }
 
@@ -5444,7 +5377,6 @@ BOOL WINAPI NtGdiGetTextMetricsW( HDC hdc, TEXTMETRICW *metrics, ULONG flags )
 {
     PHYSDEV physdev;
     BOOL ret = FALSE;
-    static int trace = -1;
     DC * dc = get_dc_ptr( hdc );
     if (!dc) return FALSE;
 
@@ -5489,18 +5421,6 @@ BOOL WINAPI NtGdiGetTextMetricsW( HDC hdc, TEXTMETRICW *metrics, ULONG flags )
           metrics->tmDescent,
           metrics->tmHeight );
     }
-    if (trace == -1)
-    {
-        const char *value = getenv( "MACRUNNER_HB_TRACE_FONT" );
-        trace = value && value[0] && value[0] != '0';
-    }
-    if (trace)
-        fprintf( stderr, "macrunner-font: hdc=%p ret=%d height=%ld ascent=%ld descent=%ld internal=%ld external=%ld ave_width=%ld max_width=%ld charset=%u pitch=0x%x flags=0x%lx\n",
-                 hdc, ret, ret ? (long)metrics->tmHeight : 0, ret ? (long)metrics->tmAscent : 0,
-                 ret ? (long)metrics->tmDescent : 0, ret ? (long)metrics->tmInternalLeading : 0,
-                 ret ? (long)metrics->tmExternalLeading : 0, ret ? (long)metrics->tmAveCharWidth : 0,
-                 ret ? (long)metrics->tmMaxCharWidth : 0, ret ? metrics->tmCharSet : 0,
-                 ret ? metrics->tmPitchAndFamily : 0, (unsigned long)flags );
     release_dc_ptr( dc );
     return ret;
 }
@@ -6223,17 +6143,6 @@ BOOL WINAPI NtGdiExtTextOutW( HDC hdc, INT x, INT y, UINT flags, const RECT *lpr
         }
     }
 
-    if (macrunner_trace_visual_textout( x, y, str, count, &lf ))
-    {
-        HWND hwnd = 0;
-        const char *class_name = macrunner_class_name_from_hdc( hdc, &hwnd );
-        fprintf( stderr,
-                 "macrunner-visual-text: hwnd=%p class=%s hdc=%p xy=%d,%d count=%u flags=0x%x face=\"%ls\" height=%ld charset=%u text=%s rect=%ld,%ld,%ld,%ld\n",
-                 hwnd, class_name, hdc, x, y, count, flags, lf.lfFaceName, (long)lf.lfHeight,
-                 lf.lfCharSet, debugstr_wn( str, count ), (long)rc.left, (long)rc.top,
-                 (long)rc.right, (long)rc.bottom );
-    }
-
     ret = physdev->funcs->pExtTextOut( physdev, x, y, (flags & ~ETO_OPAQUE), &rc,
                                        str, count, (INT*)deltas );
 
@@ -6414,7 +6323,6 @@ DWORD WINAPI NtGdiGetGlyphOutline( HDC hdc, UINT ch, UINT format, GLYPHMETRICS *
     dev = GET_DC_PHYSDEV( dc, pGetGlyphOutline );
     ret = dev->funcs->pGetGlyphOutline( dev, ch & 0xffff, format, metrics, size, buffer, mat2 );
     release_dc_ptr( dc );
-    macrunner_trace_glyph_outline( "ntgdi", NULL, ch & 0xffff, format, size, ret, metrics );
     return ret;
 }
 

@@ -53,6 +53,16 @@ typedef struct {
     uint64_t xmm[16][2];
 } hb_regs_x64_t;
 
+typedef struct {
+    uint16_t control_word;
+    uint16_t status_word;
+    uint16_t tag_word;
+    uint16_t reserved0;
+    uint32_t top;
+    uint32_t reserved1;
+    double st[8];
+} hb_x87_state_t;
+
 /* Guest register file x86 */
 typedef struct {
     uint32_t eax, ebx, ecx, edx;
@@ -60,6 +70,7 @@ typedef struct {
     uint32_t esp, ebp;
     uint32_t eip;
     uint32_t eflags;
+    hb_x87_state_t x87;
     uint64_t xmm[8][2];
 } hb_regs_x86_t;
 
@@ -149,6 +160,9 @@ struct hb_context {
     /* Guest segment bases. Windows x64 uses GS for the TEB. */
     uint64_t fs_base;
     uint64_t gs_base;
+
+    /* Guest segment selectors. i386 CONTEXT capture stores these with MOV Sreg. */
+    uint16_t seg_cs, seg_ds, seg_es, seg_fs, seg_gs, seg_ss;
 
     /* Exit status */
     int exit_code;

@@ -258,6 +258,9 @@ static void *preload_reserve_start;
 static void *preload_reserve_end;
 static BOOL force_exec_prot;  /* whether to force PROT_EXEC on all PROT_READ mmaps */
 static BOOL enable_write_exceptions;  /* raise exception on writes to executable memory */
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_WIN64)
+static __thread BOOL macrunner_hb_wow64_guest32_map_active;
+#endif
 
 struct range_entry
 {
@@ -858,16 +861,29 @@ static NTSTATUS get_builtin_unix_funcs( void *module, BOOL wow, const void **fun
     sigset_t sigset;
     NTSTATUS status = STATUS_DLL_NOT_FOUND;
     struct builtin_module *builtin;
+    char *unix_path = NULL;
+    void *unix_handle = NULL;
+    BOOL tried_load = FALSE;
+    BOOL need_load = FALSE;
 
+retry:
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     LIST_FOR_EACH_ENTRY( builtin, &builtin_modules, struct builtin_module, entry )
     {
         if (builtin->module != module) continue;
-        if (builtin->unix_path && !builtin->unix_handle)
+        if (unix_handle)
         {
-            builtin->unix_handle = dlopen( builtin->unix_path, RTLD_NOW );
             if (!builtin->unix_handle)
-                WARN_(module)( "failed to load %s: %s\n", debugstr_a(builtin->unix_path), dlerror() );
+            {
+                builtin->unix_handle = unix_handle;
+                unix_handle = NULL;
+            }
+        }
+        if (builtin->unix_path && !builtin->unix_handle && !tried_load)
+        {
+            unix_path = strdup( builtin->unix_path );
+            need_load = TRUE;
+            break;
         }
         if (builtin->unix_handle)
         {
@@ -877,6 +893,20 @@ static NTSTATUS get_builtin_unix_funcs( void *module, BOOL wow, const void **fun
         break;
     }
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+
+    if (need_load)
+    {
+        tried_load = TRUE;
+        need_load = FALSE;
+        if (!unix_path) return STATUS_NO_MEMORY;
+        unix_handle = dlopen( unix_path, RTLD_NOW );
+        if (!unix_handle)
+            WARN_(module)( "failed to load %s: %s\n", debugstr_a(unix_path), dlerror() );
+        free( unix_path );
+        unix_path = NULL;
+        goto retry;
+    }
+    if (unix_handle) dlclose( unix_handle );
     return status;
 }
 
@@ -1115,19 +1145,14 @@ static BYTE get_page_vprot( const void *addr )
  */
 static BYTE get_host_page_vprot( const void *addr )
 {
-    size_t i, idx = (size_t)ROUND_ADDR( addr, host_page_mask ) >> page_shift;
-    const BYTE *vprot_ptr;
+    char *page = ROUND_ADDR( addr, host_page_mask );
+    size_t i;
     BYTE vprot = 0;
 
-#ifdef _WIN64
-    if ((idx >> pages_vprot_shift) >= pages_vprot_size) return 0;
-    if (!pages_vprot[idx >> pages_vprot_shift]) return 0;
-    assert( host_page_mask >> page_shift <= pages_vprot_mask );
-    vprot_ptr = pages_vprot[idx >> pages_vprot_shift] + (idx & pages_vprot_mask);
-#else
-    vprot_ptr = pages_vprot + idx;
-#endif
-    for (i = 0; i < host_page_size / page_size; i++) vprot |= vprot_ptr[i];
+    /* A host page may span the end of a lazily allocated vprot bucket.  Use
+     * the per-page accessor so signal handling for unmapped addresses cannot
+     * fault while trying to classify the original fault. */
+    for (i = 0; i < host_page_size; i += page_size) vprot |= get_page_vprot( page + i );
     return vprot;
 }
 
@@ -2361,6 +2386,47 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
 
     unix_prot &= ~PROT_EXEC;
 
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_WIN64)
+    if (is_win64 && (main_image_info.Machine == IMAGE_FILE_MACHINE_I386 ||
+                     macrunner_hb_wow64_guest32_map_active ||
+                     getenv( "MACRUNNER_HB_WOW64_GUEST32" )))
+    {
+        ULONG protect = PAGE_NOACCESS;
+        if (vprot & VPROT_EXEC)
+            protect = (vprot & (VPROT_WRITE | VPROT_WRITECOPY)) ? PAGE_EXECUTE_READWRITE :
+                      (vprot & VPROT_READ) ? PAGE_EXECUTE_READ : PAGE_EXECUTE;
+        else if (vprot & (VPROT_WRITE | VPROT_WRITECOPY))
+            protect = PAGE_READWRITE;
+        else if (vprot & VPROT_READ)
+            protect = PAGE_READONLY;
+
+        if (base && (ULONG_PTR)base < limit_4g && (uint64_t)(ULONG_PTR)base + size <= limit_4g)
+        {
+            status = macrunner_hb_wow64_guest32_map_fixed( (ULONG_PTR)base, size, protect, &ptr );
+            if (!status)
+            {
+                TRACE( "got fixed WOW64 guest32 mem %p-%p for guest %p-%p\n",
+                       ptr, (char *)ptr + size, base, (char *)base + size );
+                goto done;
+            }
+            return status;
+        }
+        else if (!base)
+        {
+            ULONG_PTR guest_low = max( limit_low, (ULONG_PTR)address_space_start );
+            ULONG_PTR guest_high = limit_high ? min( limit_high, limit_4g ) : min( (ULONG_PTR)user_space_limit, limit_4g );
+            if (guest_low < guest_high && size <= guest_high - guest_low &&
+                !macrunner_hb_wow64_guest32_alloc_range( size, protect, guest_low, guest_high,
+                                                         top_down, &ptr ))
+            {
+                TRACE( "got WOW64 guest32 mem %p-%p for guest range %#lx-%#lx\n",
+                       ptr, (char *)ptr + size, guest_low, guest_high );
+                goto done;
+            }
+        }
+    }
+#endif
+
     if (base)
     {
         if (is_beyond_limit( base, size, address_space_limit )) return STATUS_WORKING_SET_LIMIT_RANGE;
@@ -2444,6 +2510,19 @@ static BOOL macrunner_hb_strip_host_exec_for_image( const struct pe_image_info *
     return macrunner_hb_is_x64_guest_image( image_info );
 #else
     return FALSE;
+#endif
+}
+
+static void macrunner_hb_protect_wow64_guest32_image_range( const struct pe_image_info *image_info,
+                                                            void *base, SIZE_T size, BYTE vprot,
+                                                            unsigned int map_prot )
+{
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_WIN64)
+    ULONG_PTR guest_base = (ULONG_PTR)base;
+
+    if (!is_win64 || !image_info || image_info->machine != IMAGE_FILE_MACHINE_I386) return;
+    if (!guest_base || !size) return;
+    (void)macrunner_hb_wow64_guest32_protect( guest_base, size, get_win32_prot( vprot, map_prot ) );
 #endif
 }
 
@@ -3395,6 +3474,10 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
 
         /* set the image protections */
         set_vprot( view, ptr, total_size, VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY | VPROT_EXEC );
+        macrunner_hb_protect_wow64_guest32_image_range( image_info, ptr, total_size,
+                                                        VPROT_COMMITTED | VPROT_READ |
+                                                        VPROT_WRITECOPY | VPROT_EXEC,
+                                                        view->protect );
 
         /* no relocations are performed on non page-aligned binaries */
         status = STATUS_SUCCESS;
@@ -3521,6 +3604,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
 #if defined(__APPLE__) && defined(__aarch64__)
         if (machine == IMAGE_FILE_MACHINE_ARM64 &&
             nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 &&
+            macrunner_hb_x64_guest_process() &&
             macrunner_hb_is_x64_guest_image( image_info ))
         {
             if (macrunner_hb_trace_host_exec())
@@ -3560,6 +3644,10 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     /* set the image protections */
 
     set_vprot( view, ptr, ROUND_SIZE( 0, header_size, align_mask ), VPROT_COMMITTED | VPROT_READ );
+    macrunner_hb_protect_wow64_guest32_image_range( image_info, ptr,
+                                                    ROUND_SIZE( 0, header_size, align_mask ),
+                                                    VPROT_COMMITTED | VPROT_READ,
+                                                    view->protect );
 
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
@@ -3578,6 +3666,8 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
         if (!set_vprot( view, ptr + sec[i].VirtualAddress, size, vprot ) && (vprot & VPROT_EXEC))
             ERR( "failed to set %08x protection on %s section %.8s, noexec filesystem?\n",
                  sec[i].Characteristics, debugstr_us(nt_name), sec[i].Name );
+        macrunner_hb_protect_wow64_guest32_image_range( image_info, ptr + sec[i].VirtualAddress,
+                                                        size, vprot, view->protect );
     }
 
 #ifdef VALGRIND_LOAD_PDB_DEBUGINFO
@@ -3658,6 +3748,11 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
     ULONG_PTR start, end;
     BOOL top_down = (image_info->image_charact & IMAGE_FILE_DLL) &&
                     (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated);
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_WIN64)
+    BOOL old_guest32_map_active = macrunner_hb_wow64_guest32_map_active;
+    if (is_win64 && image_info->machine == IMAGE_FILE_MACHINE_I386)
+        macrunner_hb_wow64_guest32_map_active = TRUE;
+#endif
 
     if (macrunner_x64_guest)
     {
@@ -3693,6 +3788,9 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
         if (!status)
         {
             if (macrunner_x64_guest) macrunner_hb_register_x64_guest_range( (*view_ret)->base, (*view_ret)->size );
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_WIN64)
+            macrunner_hb_wow64_guest32_map_active = old_guest32_map_active;
+#endif
             return status;
         }
     }
@@ -3715,6 +3813,9 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
         if (!status)
         {
             if (macrunner_x64_guest) macrunner_hb_register_x64_guest_range( (*view_ret)->base, (*view_ret)->size );
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_WIN64)
+            macrunner_hb_wow64_guest32_map_active = old_guest32_map_active;
+#endif
             return status;
         }
     }
@@ -3723,6 +3824,9 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
 
     status = map_view( view_ret, NULL, size, top_down ? MEM_TOP_DOWN : 0, vprot, limit_low, limit_high, 0 );
     if (!status && macrunner_x64_guest) macrunner_hb_register_x64_guest_range( (*view_ret)->base, (*view_ret)->size );
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_WIN64)
+    macrunner_hb_wow64_guest32_map_active = old_guest32_map_active;
+#endif
     return status;
 }
 
@@ -4730,10 +4834,15 @@ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, UL
 
     size = max( reserve_size, commit_size );
     if (size < 1024 * 1024) size = 1024 * 1024;  /* Xlib needs a large stack */
-#if defined(__aarch64__)
-    /* arm64 macOS uses 16K host pages and the Mach-O signal/exception
-     * frames are larger than Linux's, so the 1 MB default is consistently
-     * exhausted during PE init. Bump the minimum to 2 MB. */
+#if defined(__APPLE__) && defined(__aarch64__)
+    /* Pure-arm64 WOW64/HyperBridge executes PE32 init through native ARM64 PE
+     * syscalls, unixlib callbacks, and translated guest frames.  The previous
+     * 8 MB minimum still reaches the guard page during nested win32u/user32
+     * callbacks; keep normal native-stack exception delivery room on
+     * macOS/arm64. */
+    if (size < 16 * 1024 * 1024) size = 16 * 1024 * 1024;
+#elif defined(__aarch64__)
+    /* arm64 uses larger signal/exception frames than x86. */
     if (size < 2 * 1024 * 1024) size = 2 * 1024 * 1024;
 #endif
     size = ROUND_SIZE( 0, size, granularity_mask );
@@ -4901,6 +5010,12 @@ static BOOL is_inside_thread_stack( void *ptr, struct thread_stack_info *stack )
     WOW_TEB *wow_teb = get_wow_teb( teb );
     size_t min_guaranteed = max( page_size * (is_win64 ? 2 : 1), host_page_size );
 
+#if defined(__APPLE__) && defined(__aarch64__)
+    /* ARM64 PE exception dispatch uses larger native frames than the generic
+     * host-page guarantee leaves available after a guard-page stack overflow. */
+    min_guaranteed = max( min_guaranteed, (size_t)0x100000 );
+#endif
+
     stack->start = teb->DeallocationStack;
     stack->limit = teb->Tib.StackLimit;
     stack->end   = teb->Tib.StackBase;
@@ -4989,6 +5104,24 @@ NTSTATUS virtual_handle_fault( EXCEPTION_RECORD *rec, void *stack )
     }
 #endif
 
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (!is_inside_signal_stack( stack ) && err != EXCEPTION_EXECUTE_FAULT)
+    {
+        struct thread_stack_info stack_info;
+
+        if (is_inside_thread_stack( addr, &stack_info ) &&
+            page < stack_info.start + host_page_size &&
+            (char *)stack >= stack_info.start &&
+            (char *)stack < stack_info.start + host_page_size)
+        {
+            set_page_vprot_bits( stack_info.start, host_page_size, VPROT_COMMITTED, VPROT_GUARD );
+            mprotect_range( stack_info.start, host_page_size, 0, 0 );
+            ret = STATUS_SUCCESS;
+            goto done;
+        }
+    }
+#endif
+
     if (!is_inside_signal_stack( stack ) && (vprot & VPROT_GUARD))
     {
         struct thread_stack_info stack_info;
@@ -5054,12 +5187,60 @@ void *virtual_setup_exception( void *stack_ptr, size_t size, EXCEPTION_RECORD *r
         return stack - size;
     }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (rec->ExceptionCode == STATUS_STACK_OVERFLOW &&
+        stack_info.guaranteed >= host_page_size &&
+        stack_info.limit <= stack_info.start + host_page_size)
+    {
+        char *guarantee = stack_info.start + host_page_size;
+        char *guarantee_top = guarantee + stack_info.guaranteed;
+
+        if (guarantee_top > stack_info.end) guarantee_top = stack_info.end;
+        stack = (char *)((ULONG_PTR)guarantee_top & ~(ULONG_PTR)15) - size;
+        if (stack >= stack_info.start + host_page_size)
+        {
+            mutex_lock( &virtual_mutex );
+            set_page_vprot_bits( guarantee, guarantee_top - guarantee,
+                                 VPROT_COMMITTED, VPROT_GUARD );
+            mprotect_range( guarantee, guarantee_top - guarantee, 0, 0 );
+            mutex_unlock( &virtual_mutex );
+            rec->NumberParameters = 0;
+            return stack;
+        }
+    }
+#endif
+
     stack -= size;
 
     if (stack < stack_info.start + host_page_size)
     {
+        UINT diff;
+#if defined(__APPLE__) && defined(__aarch64__)
+        if (stack_info.guaranteed >= host_page_size &&
+            stack_info.limit <= stack_info.start + host_page_size &&
+            (rec->ExceptionCode == STATUS_STACK_OVERFLOW ||
+             (char *)stack_ptr <= stack_info.start + host_page_size))
+        {
+            char *guarantee = stack_info.start + host_page_size;
+            char *guarantee_top = guarantee + stack_info.guaranteed;
+
+            if (guarantee_top > stack_info.end) guarantee_top = stack_info.end;
+            stack = (char *)((ULONG_PTR)guarantee_top & ~(ULONG_PTR)15) - size;
+            if (stack >= stack_info.start + host_page_size)
+            {
+                mutex_lock( &virtual_mutex );
+                set_page_vprot_bits( guarantee, guarantee_top - guarantee,
+                                     VPROT_COMMITTED, VPROT_GUARD );
+                mprotect_range( guarantee, guarantee_top - guarantee, 0, 0 );
+                mutex_unlock( &virtual_mutex );
+                rec->ExceptionCode = STATUS_STACK_OVERFLOW;
+                rec->NumberParameters = 0;
+                return stack;
+            }
+        }
+#endif
         /* stack overflow on last page, unrecoverable */
-        UINT diff = stack_info.start + host_page_size - stack;
+        diff = stack_info.start + host_page_size - stack;
         ERR( "stack overflow %u bytes addr %p stack %p (%p-%p-%p)\n",
              diff, rec->ExceptionAddress, stack, stack_info.start, stack_info.limit, stack_info.end );
         abort_thread(1);

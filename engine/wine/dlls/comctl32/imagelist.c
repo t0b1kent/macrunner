@@ -29,7 +29,6 @@
  */
 
 #include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,224 +47,6 @@
 #include "wine/exception.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(imagelist);
-
-static BOOL macrunner_trace_toolbar_icons(void)
-{
-    static int enabled = -1;
-    char value[16];
-
-    if (enabled == -1)
-        enabled = GetEnvironmentVariableA("MACRUNNER_TRACE_TOOLBAR_ICONS", value, sizeof(value)) && value[0] != '0';
-    return enabled;
-}
-
-static BOOL macrunner_trace_toolbar_icon_budget(void)
-{
-    static int budget = -1;
-    char value[16];
-
-    if (budget == -1)
-    {
-        budget = 360;
-        if (GetEnvironmentVariableA("MACRUNNER_TRACE_TOOLBAR_ICONS_BUDGET", value, sizeof(value)))
-            budget = atoi(value);
-    }
-    if (!macrunner_trace_toolbar_icons() || budget <= 0) return FALSE;
-    budget--;
-    return TRUE;
-}
-
-static void macrunner_trace_toolbar_icon_write(const char *format, ...)
-{
-    static HANDLE file = INVALID_HANDLE_VALUE;
-    static BOOL file_checked;
-    char path[MAX_PATH];
-    char buffer[1024];
-    DWORD written;
-    va_list args;
-    int len;
-
-    if (!macrunner_trace_toolbar_icon_budget()) return;
-
-    va_start(args, format);
-    len = vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
-    if (len < 0) return;
-    if (len >= sizeof(buffer)) len = sizeof(buffer) - 1;
-
-    fprintf(stderr, "macrunner-toolbar-icons: %s", buffer);
-
-    if (!file_checked)
-    {
-        DWORD path_len = GetEnvironmentVariableA("MACRUNNER_TRACE_TOOLBAR_ICONS_FILE", path, sizeof(path));
-        file_checked = TRUE;
-        if (path_len && path_len < sizeof(path))
-            file = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                               NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    }
-    if (file != INVALID_HANDLE_VALUE)
-    {
-        WriteFile(file, "imagelist: ", 11, &written, NULL);
-        WriteFile(file, buffer, len, &written, NULL);
-    }
-}
-
-#define MACRUNNER_TRACE_TOOLBAR_ICON(...) \
-    do { macrunner_trace_toolbar_icon_write(__VA_ARGS__); } while (0)
-
-static void macrunner_trace_hdc_pixels_at(const char *phase, HIMAGELIST himl, HDC hdc,
-                                          INT left, INT top, INT width, INT height, COLORREF mask)
-{
-    INT x, y;
-    unsigned int colorful = 0, nonwhite = 0, mask_pixels = 0, total;
-
-    if (!macrunner_trace_toolbar_icons() || !hdc || width <= 0 || height <= 0 || width * height > 4096) return;
-    total = width * height;
-    for (y = 0; y < height; y++)
-    {
-        for (x = 0; x < width; x++)
-        {
-            COLORREF c = GetPixel(hdc, left + x, top + y);
-            BYTE r = GetRValue(c), g = GetGValue(c), b = GetBValue(c);
-            BYTE maxc = max(max(r, g), b);
-            BYTE minc = min(min(r, g), b);
-
-            if (maxc - minc > 36) colorful++;
-            if (r < 245 || g < 245 || b < 245) nonwhite++;
-            if (c == mask) mask_pixels++;
-        }
-    }
-    MACRUNNER_TRACE_TOOLBAR_ICON("hdc_pixels phase=%s himl=%p origin=%d,%d size=%dx%d colorful=%u nonwhite=%u mask_pixels=%u total=%u mask=0x%06lx sample0=0x%06lx\n",
-                                 phase, himl, left, top, width, height, colorful, nonwhite, mask_pixels, total,
-                                 mask, GetPixel(hdc, left, top));
-}
-
-static void macrunner_trace_hdc_pixels(const char *phase, HIMAGELIST himl, HDC hdc, INT width, INT height, COLORREF mask)
-{
-    macrunner_trace_hdc_pixels_at(phase, himl, hdc, 0, 0, width, height, mask);
-}
-
-static void macrunner_trace_bitmap_pixels(const char *phase, HIMAGELIST himl, HBITMAP bitmap, COLORREF mask)
-{
-    HBITMAP old_bitmap;
-    BITMAP bm;
-    HDC hdc;
-    INT width, height;
-
-    if (!macrunner_trace_toolbar_icons() || !bitmap) return;
-    if (!GetObjectW(bitmap, sizeof(bm), &bm))
-    {
-        MACRUNNER_TRACE_TOOLBAR_ICON("bitmap_pixels phase=%s himl=%p bitmap=%p reason=getobject_failed gle=%lu\n",
-                                     phase, himl, bitmap, GetLastError());
-        return;
-    }
-
-    width = min(bm.bmWidth, 64);
-    height = min(abs(bm.bmHeight), 64);
-    MACRUNNER_TRACE_TOOLBAR_ICON("bitmap_info phase=%s himl=%p bitmap=%p size=%ldx%ld bpp=%u planes=%u sampled=%dx%d\n",
-                                 phase, himl, bitmap, bm.bmWidth, bm.bmHeight,
-                                 bm.bmBitsPixel, bm.bmPlanes, width, height);
-    if (width <= 0 || height <= 0 || width * height > 4096) return;
-
-    if (!(hdc = CreateCompatibleDC(0))) return;
-    old_bitmap = SelectObject(hdc, bitmap);
-    macrunner_trace_hdc_pixels(phase, himl, hdc, width, height, mask);
-    SelectObject(hdc, old_bitmap);
-    DeleteDC(hdc);
-}
-
-struct macrunner_icon_stats
-{
-    unsigned int black;
-    unsigned int nonwhite;
-    unsigned int total;
-};
-
-static BOOL macrunner_get_icon_stats(HICON icon, INT width, INT height, UINT flags,
-                                     struct macrunner_icon_stats *stats)
-{
-    BITMAPINFO info;
-    HBITMAP bitmap, old_bitmap;
-    HDC hdc;
-    INT x, y;
-    BOOL ret;
-
-    memset(stats, 0, sizeof(*stats));
-    if (!icon || width <= 0 || height <= 0 || width * height > 4096) return FALSE;
-
-    memset(&info, 0, sizeof(info));
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = width;
-    info.bmiHeader.biHeight = -height;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-
-    if (!(hdc = CreateCompatibleDC(0))) return FALSE;
-    if (!(bitmap = CreateDIBSection(hdc, &info, DIB_RGB_COLORS, NULL, NULL, 0)))
-    {
-        DeleteDC(hdc);
-        return FALSE;
-    }
-
-    old_bitmap = SelectObject(hdc, bitmap);
-    PatBlt(hdc, 0, 0, width, height, WHITENESS);
-    ret = DrawIconEx(hdc, 0, 0, icon, width, height, 0, NULL, flags);
-    if (ret)
-    {
-        stats->total = width * height;
-        for (y = 0; y < height; y++)
-            for (x = 0; x < width; x++)
-            {
-                COLORREF c = GetPixel(hdc, x, y);
-                BYTE r = GetRValue(c), g = GetGValue(c), b = GetBValue(c);
-
-                if (r < 245 || g < 245 || b < 245) stats->nonwhite++;
-                if (r < 25 && g < 25 && b < 25) stats->black++;
-            }
-    }
-    SelectObject(hdc, old_bitmap);
-    DeleteObject(bitmap);
-    DeleteDC(hdc);
-    return ret;
-}
-
-static void macrunner_trace_icon_pixels(const char *phase, HIMAGELIST himl, HICON icon, INT width, INT height, UINT flags)
-{
-    BITMAPINFO info;
-    HBITMAP bitmap, old_bitmap;
-    void *bits;
-    HDC hdc;
-    BOOL ret;
-
-    if (!macrunner_trace_toolbar_icons() || !icon || width <= 0 || height <= 0) return;
-    if (width * height > 4096) return;
-
-    memset(&info, 0, sizeof(info));
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = width;
-    info.bmiHeader.biHeight = -height;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-
-    if (!(hdc = CreateCompatibleDC(0))) return;
-    if (!(bitmap = CreateDIBSection(hdc, &info, DIB_RGB_COLORS, &bits, NULL, 0)))
-    {
-        DeleteDC(hdc);
-        return;
-    }
-
-    old_bitmap = SelectObject(hdc, bitmap);
-    PatBlt(hdc, 0, 0, width, height, WHITENESS);
-    ret = DrawIconEx(hdc, 0, 0, icon, width, height, 0, NULL, flags);
-    MACRUNNER_TRACE_TOOLBAR_ICON("icon_draw phase=%s himl=%p icon=%p size=%dx%d flags=0x%x ret=%d gle=%lu\n",
-                                 phase, himl, icon, width, height, flags, ret, GetLastError());
-    macrunner_trace_hdc_pixels(phase, himl, hdc, width, height, RGB(0, 0, 0));
-    SelectObject(hdc, old_bitmap);
-    DeleteObject(bitmap);
-    DeleteDC(hdc);
-}
 
 #define MAX_OVERLAYIMAGE 15
 
@@ -431,28 +212,13 @@ static void add_dib_bits( HIMAGELIST himl, int pos, int count, int width, int he
     for (n = 0; n < count; n++)
     {
         BOOL has_alpha = FALSE;
-        unsigned int alpha_pixels = 0, opaque_pixels = 0, colorful_pixels = 0;
 
         imagelist_point_from_index( himl, pos + n, &pt );
 
         /* check if bitmap has an alpha channel */
-        for (i = 0; i < height; i++)
+        for (i = 0; i < height && !has_alpha; i++)
             for (j = n * width; j < (n + 1) * width; j++)
-            {
-                DWORD px = bits[i * stride + j];
-                BYTE alpha = px >> 24;
-                BYTE r = px >> 16, g = px >> 8, b = px;
-                BYTE max = max( max( r, g ), b );
-                BYTE min = min( min( r, g ), b );
-
-                if (alpha) has_alpha = TRUE, alpha_pixels++;
-                if (alpha > 25) opaque_pixels++;
-                if (max - min > 36) colorful_pixels++;
-            }
-
-        MACRUNNER_TRACE_TOOLBAR_ICON("add_dib_bits himl=%p index=%d size=%dx%d has_alpha=%d alpha_pixels=%u opaque_pixels=%u colorful_pixels=%u mask=%d flags=0x%x\n",
-                                     himl, pos + n, width, height, has_alpha, alpha_pixels,
-                                     opaque_pixels, colorful_pixels, mask_info != NULL, himl->flags);
+                if ((has_alpha = ((bits[i * stride + j] & 0xff000000) != 0))) break;
 
         if (has_alpha)
         {
@@ -477,15 +243,9 @@ static void add_dib_bits( HIMAGELIST himl, int pos, int count, int width, int he
         }
         StretchDIBits( himl->hdcImage, pt.x, pt.y, himl->cx, himl->cy,
                        n * width, 0, width, height, bits, info, DIB_RGB_COLORS, SRCCOPY );
-        macrunner_trace_hdc_pixels_at("add_after_image", himl, himl->hdcImage,
-                                      pt.x, pt.y, himl->cx, himl->cy, 0);
         if (mask_info)
-        {
             StretchDIBits( himl->hdcMask, pt.x, pt.y, himl->cx, himl->cy,
                            n * width, 0, width, height, mask_bits, mask_info, DIB_RGB_COLORS, SRCCOPY );
-            macrunner_trace_hdc_pixels_at("add_after_mask", himl, himl->hdcMask,
-                                          pt.x, pt.y, himl->cx, himl->cy, 0);
-        }
     }
 }
 
@@ -500,27 +260,13 @@ static BOOL add_with_alpha( HIMAGELIST himl, HDC hdc, int pos, int count,
     BYTE *mask_bits = NULL;
     DWORD mask_width;
 
-    if (!GetObjectW( hbmImage, sizeof(bm), &bm ))
-    {
-        MACRUNNER_TRACE_TOOLBAR_ICON("add_with_alpha_fail himl=%p image=%p mask=%p reason=getobject gle=%lu\n",
-                                     himl, hbmImage, hbmMask, GetLastError());
-        return FALSE;
-    }
+    if (!GetObjectW( hbmImage, sizeof(bm), &bm )) return FALSE;
 
     /* if either the imagelist or the source bitmap don't have an alpha channel, bail out now */
-    if (!(himl->flags & ILC_COLOR32))
-    {
-        MACRUNNER_TRACE_TOOLBAR_ICON("add_with_alpha_fail himl=%p image=%p mask=%p reason=imagelist_not_color32 flags=0x%x bpp=%u\n",
-                                     himl, hbmImage, hbmMask, himl->flags, bm.bmBitsPixel);
-        return FALSE;
-    }
-    if (bm.bmBitsPixel != 32)
-    {
-        MACRUNNER_TRACE_TOOLBAR_ICON("add_with_alpha_fail himl=%p image=%p mask=%p reason=bitmap_not_32bpp flags=0x%x bpp=%u\n",
-                                     himl, hbmImage, hbmMask, himl->flags, bm.bmBitsPixel);
-        return FALSE;
-    }
+    if ((himl->flags & 0xfe) != ILC_COLOR32) return FALSE;
+    if (bm.bmBitsPixel != 32) return FALSE;
 
+    SelectObject( hdc, hbmImage );
     mask_width = (bm.bmWidth + 31) / 32 * 4;
 
     if (!(info = Alloc( FIELD_OFFSET( BITMAPINFO, bmiColors[256] )))) goto done;
@@ -536,12 +282,7 @@ static BOOL add_with_alpha( HIMAGELIST himl, HDC hdc, int pos, int count,
     info->bmiHeader.biClrUsed = 0;
     info->bmiHeader.biClrImportant = 0;
     if (!(bits = Alloc( info->bmiHeader.biSizeImage ))) goto done;
-    if (!GetDIBits( hdc, hbmImage, 0, height, bits, info, DIB_RGB_COLORS ))
-    {
-        MACRUNNER_TRACE_TOOLBAR_ICON("add_with_alpha_fail himl=%p image=%p mask=%p reason=getdibits_image height=%d gle=%lu\n",
-                                     himl, hbmImage, hbmMask, height, GetLastError());
-        goto done;
-    }
+    if (!GetDIBits( hdc, hbmImage, 0, height, bits, info, DIB_RGB_COLORS )) goto done;
 
     if (hbmMask)
     {
@@ -552,52 +293,7 @@ static BOOL add_with_alpha( HIMAGELIST himl, HDC hdc, int pos, int count,
         mask_info->bmiHeader.biSizeImage = mask_width * height;
         if (!(mask_bits = Alloc( mask_info->bmiHeader.biSizeImage )))
             goto done;
-        if (!GetDIBits( hdc, hbmMask, 0, height, mask_bits, mask_info, DIB_RGB_COLORS ))
-        {
-            MACRUNNER_TRACE_TOOLBAR_ICON("add_with_alpha_fail himl=%p image=%p mask=%p reason=getdibits_mask height=%d gle=%lu\n",
-                                         himl, hbmImage, hbmMask, height, GetLastError());
-            goto done;
-        }
-    }
-
-    /*
-     * This path is only correct for real alpha bitmaps. Some small icon
-     * resources expose a 32-bpp color bitmap with an all-zero alpha channel
-     * plus a separate monochrome mask; storing those as alpha images turns
-     * transparent pixels into opaque black squares. Fall back to the classic
-     * image+mask path for that family.
-     */
-    {
-        BOOL has_alpha = FALSE, has_nonopaque_alpha = FALSE;
-        unsigned int alpha_pixels = 0, total_pixels = width * count * height;
-        int stride = info->bmiHeader.biWidth;
-        int i, j;
-
-        for (i = 0; i < height; i++)
-            for (j = 0; j < width * count; j++)
-            {
-                BYTE alpha = bits[i * stride + j] >> 24;
-                if (alpha)
-                {
-                    has_alpha = TRUE;
-                    alpha_pixels++;
-                }
-                if (alpha != 0xff) has_nonopaque_alpha = TRUE;
-            }
-        if (!has_alpha)
-        {
-            MACRUNNER_TRACE_TOOLBAR_ICON("add_with_alpha_fail himl=%p image=%p mask=%p reason=no_alpha_channel flags=0x%x bpp=%u count=%d size=%dx%d\n",
-                                         himl, hbmImage, hbmMask, himl->flags, bm.bmBitsPixel,
-                                         count, width, height);
-            goto done;
-        }
-        if (hbmMask && !has_nonopaque_alpha)
-        {
-            MACRUNNER_TRACE_TOOLBAR_ICON("add_with_alpha_fail himl=%p image=%p mask=%p reason=opaque_alpha_with_mask flags=0x%x bpp=%u count=%d size=%dx%d alpha_pixels=%u total=%u\n",
-                                         himl, hbmImage, hbmMask, himl->flags, bm.bmBitsPixel,
-                                         count, width, height, alpha_pixels, total_pixels);
-            goto done;
-        }
+        if (!GetDIBits( hdc, hbmMask, 0, height, mask_bits, mask_info, DIB_RGB_COLORS )) goto done;
     }
 
     add_dib_bits( himl, pos, count, width, height, info, mask_info, bits, mask_bits );
@@ -609,48 +305,6 @@ done:
     Free( bits );
     Free( mask_bits );
     return ret;
-}
-
-static HBITMAP create_32bpp_bitmap_from_bitmap( HBITMAP src )
-{
-    BITMAP bm;
-    BITMAPINFO info;
-    HBITMAP dst, old_src, old_dst;
-    HDC src_dc, dst_dc;
-    void *bits;
-
-    if (!GetObjectW( src, sizeof(bm), &bm ) || bm.bmWidth <= 0 || bm.bmHeight <= 0)
-        return 0;
-
-    memset( &info, 0, sizeof(info) );
-    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    info.bmiHeader.biWidth = bm.bmWidth;
-    info.bmiHeader.biHeight = -bm.bmHeight;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-
-    dst = CreateDIBSection( 0, &info, DIB_RGB_COLORS, &bits, 0, 0 );
-    if (!dst) return 0;
-
-    src_dc = CreateCompatibleDC( 0 );
-    dst_dc = CreateCompatibleDC( 0 );
-    if (!src_dc || !dst_dc)
-    {
-        if (src_dc) DeleteDC( src_dc );
-        if (dst_dc) DeleteDC( dst_dc );
-        DeleteObject( dst );
-        return 0;
-    }
-
-    old_src = SelectObject( src_dc, src );
-    old_dst = SelectObject( dst_dc, dst );
-    BitBlt( dst_dc, 0, 0, bm.bmWidth, bm.bmHeight, src_dc, 0, 0, SRCCOPY );
-    SelectObject( src_dc, old_src );
-    SelectObject( dst_dc, old_dst );
-    DeleteDC( src_dc );
-    DeleteDC( dst_dc );
-    return dst;
 }
 
 UINT WINAPI
@@ -771,20 +425,16 @@ ImageList_Add (HIMAGELIST himl,	HBITMAP hbmImage, HBITMAP hbmMask)
 
     TRACE("%p has %d images (%d x %d) bpp %d\n", hbmImage, nImageCount, bmp.bmWidth, bmp.bmHeight,
           bmp.bmBitsPixel);
-    MACRUNNER_TRACE_TOOLBAR_ICON("imagelist_add himl=%p image=%p mask=%p flags=0x%x cx=%d cy=%d bmp=%ldx%ld bpp=%u count=%d cur=%d max=%d\n",
-                                 himl, hbmImage, hbmMask, himl->flags, himl->cx, himl->cy,
-                                 (long)bmp.bmWidth, (long)bmp.bmHeight, bmp.bmBitsPixel, nImageCount,
-                                 himl->cCurImage, himl->cMaxImage);
 
     IMAGELIST_InternalExpandBitmaps(himl, nImageCount);
 
     hdcBitmap = CreateCompatibleDC(0);
 
+    SelectObject(hdcBitmap, hbmImage);
+
     if (add_with_alpha( himl, hdcBitmap, himl->cCurImage, nImageCount,
                         himl->cx, min( himl->cy, bmp.bmHeight), hbmImage, hbmMask ))
         goto done;
-
-    SelectObject(hdcBitmap, hbmImage);
 
     if (himl->hbmMask)
     {
@@ -827,8 +477,6 @@ done:
 
     nFirstIndex = himl->cCurImage;
     himl->cCurImage += nImageCount;
-    MACRUNNER_TRACE_TOOLBAR_ICON("imagelist_add_done himl=%p first=%d new_cur=%d added=%d\n",
-                                 himl, nFirstIndex, himl->cCurImage, nImageCount);
 
     return nFirstIndex;
 }
@@ -886,9 +534,6 @@ ImageList_AddMasked (HIMAGELIST himl, HBITMAP hBitmap, COLORREF clrMask)
 
     if (!GetObjectW(hBitmap, sizeof(BITMAP), &bmp))
         return -1;
-    MACRUNNER_TRACE_TOOLBAR_ICON("imagelist_add_masked himl=%p image=%p mask_color=0x%06lx flags=0x%x cx=%d cy=%d bmp=%ldx%ld bpp=%u cur=%d\n",
-                                 himl, hBitmap, clrMask & 0xffffff, himl->flags, himl->cx, himl->cy,
-                                 (long)bmp.bmWidth, (long)bmp.bmHeight, bmp.bmBitsPixel, himl->cCurImage);
 
     hdcBitmap = CreateCompatibleDC(0);
     SelectObject(hdcBitmap, hBitmap);
@@ -900,7 +545,6 @@ ImageList_AddMasked (HIMAGELIST himl, HBITMAP hBitmap, COLORREF clrMask)
 
     /* create monochrome image to the mask bitmap */
     bkColor = (clrMask != CLR_DEFAULT) ? clrMask : GetPixel (hdcBitmap, 0, 0);
-    macrunner_trace_hdc_pixels("masked_before", himl, hdcBitmap, bmp.bmWidth, bmp.bmHeight, bkColor);
     SetBkColor (hdcBitmap, bkColor);
     BitBlt (hdcMask, 0, 0, bmp.bmWidth, bmp.bmHeight, hdcBitmap, 0, 0, SRCCOPY);
 
@@ -917,11 +561,10 @@ ImageList_AddMasked (HIMAGELIST himl, HBITMAP hBitmap, COLORREF clrMask)
      *
      *  Blt mode 0x220326 is NOTSRCAND
      */
-    if (bmp.bmBitsPixel > 8 && bmp.bmBitsPixel != 32)  /* NOTSRCAND can't work with palettes or alpha */
+    if (bmp.bmBitsPixel > 8)  /* NOTSRCAND can't work with palettes */
     {
         SetBkColor(hdcBitmap, RGB(255,255,255));
         BitBlt(hdcBitmap, 0, 0, bmp.bmWidth, bmp.bmHeight, hdcMask, 0, 0, 0x220326);
-        macrunner_trace_hdc_pixels("masked_after", himl, hdcBitmap, bmp.bmWidth, bmp.bmHeight, bkColor);
     }
 
     DeleteDC(hdcBitmap);
@@ -930,7 +573,6 @@ ImageList_AddMasked (HIMAGELIST himl, HBITMAP hBitmap, COLORREF clrMask)
     ret = ImageList_Add( himl, hBitmap, hMaskBitmap );
 
     DeleteObject(hMaskBitmap);
-    MACRUNNER_TRACE_TOOLBAR_ICON("imagelist_add_masked_done himl=%p ret=%d cur=%d\n", himl, ret, himl->cCurImage);
     return ret;
 }
 
@@ -1125,19 +767,13 @@ ImageList_Create (INT cx, INT cy, UINT flags,
     IImageList2 *himl;
 
     TRACE("(%d %d 0x%x %d %d)\n", cx, cy, flags, cInitial, cGrow);
-    MACRUNNER_TRACE_TOOLBAR_ICON("imagelist_create cx=%d cy=%d flags=0x%x initial=%d grow=%d\n",
-                                 cx, cy, flags, cInitial, cGrow);
 
     /* Create the IImageList interface for the image list */
     if (FAILED(ImageListImpl_CreateInstance(NULL, &IID_IImageList2, (void **)&himl)))
         return NULL;
 
     if (IImageList2_Initialize(himl, cx, cy, flags, cInitial, cGrow) == S_OK)
-    {
-        MACRUNNER_TRACE_TOOLBAR_ICON("imagelist_create_done himl=%p cx=%d cy=%d flags=0x%x initial=%d grow=%d\n",
-                                     himl, cx, cy, flags, cInitial, cGrow);
         return (HIMAGELIST)himl;
-    }
 
     IImageList2_Release(himl);
     return NULL;
@@ -1728,12 +1364,6 @@ ImageList_DrawIndirect (IMAGELISTDRAWPARAMS *pimldp)
     oldImageBk = SetBkColor( hImageDC, RGB( 0xff, 0xff, 0xff ) );
 
     has_alpha = himl->item_flags[pimldp->i] & ILIF_ALPHA;
-    MACRUNNER_TRACE_TOOLBAR_ICON("imagelist_draw himl=%p image=%d dst=%p x=%d y=%d cx=%d cy=%d style=0x%x state=0x%lx transparent=%d mask=%d blend=%d has_alpha=%d flags=0x%x\n",
-                                 himl, pimldp->i, pimldp->hdcDst, pimldp->x, pimldp->y, cx, cy,
-                                 fStyle, fState, bIsTransparent, bMask, bBlend, has_alpha, himl->flags);
-    macrunner_trace_hdc_pixels_at("draw_source_image", himl, hImageListDC, pt.x, pt.y, cx, cy, 0);
-    if (himl->hbmMask)
-        macrunner_trace_hdc_pixels_at("draw_source_mask", himl, hMaskListDC, pt.x, pt.y, cx, cy, 0);
     if (!bMask && (has_alpha || (fState & ILS_ALPHA) || (fState & ILS_SATURATE)))
     {
         COLORREF colour, blend_col = CLR_NONE;
@@ -1788,12 +1418,7 @@ ImageList_DrawIndirect (IMAGELISTDRAWPARAMS *pimldp)
 	/* blend the image with the needed solid background */
         COLORREF colour = RGB(0,0,0);
 
-        if (bIsTransparent)
-        {
-            colour = GetPixel( pimldp->hdcDst, pimldp->x, pimldp->y );
-            if (colour == CLR_INVALID) colour = GetBkColor(pimldp->hdcDst);
-        }
-        else
+        if( !bIsTransparent )
         {
             colour = pimldp->rgbBk;
             if( colour == CLR_DEFAULT )
@@ -1864,7 +1489,6 @@ ImageList_DrawIndirect (IMAGELISTDRAWPARAMS *pimldp)
     if (fStyle & ILD_DPISCALE) FIXME("ILD_DPISCALE: unimplemented!\n");
 
     /* now copy the image to the screen */
-    macrunner_trace_hdc_pixels_at("draw_temp_before_dst", himl, hImageDC, 0, 0, cx, cy, 0);
     dwRop = SRCCOPY;
     if (himl->hbmMask && bIsTransparent ) {
 	COLORREF oldDstFg = SetTextColor(pimldp->hdcDst, RGB( 0, 0, 0 ) );
@@ -1876,7 +1500,6 @@ ImageList_DrawIndirect (IMAGELISTDRAWPARAMS *pimldp)
     }
     if (fStyle & ILD_ROP) dwRop = pimldp->dwRop;
     BitBlt (pimldp->hdcDst, pimldp->x,  pimldp->y, cx, cy, hImageDC, 0, 0, dwRop);
-    macrunner_trace_hdc_pixels_at("draw_dst_after", himl, pimldp->hdcDst, pimldp->x, pimldp->y, cx, cy, 0);
 
     bResult = TRUE;
 end:
@@ -2818,11 +2441,11 @@ ImageList_Replace (HIMAGELIST himl, INT i, HBITMAP hbmImage,
 
     hdcImage = CreateCompatibleDC (0);
 
-    if (add_with_alpha( himl, hdcImage, i, 1, bmp.bmWidth, bmp.bmHeight, hbmImage, hbmMask ))
-        goto done;
-
     /* Replace Image */
     SelectObject (hdcImage, hbmImage);
+
+    if (add_with_alpha( himl, hdcImage, i, 1, bmp.bmWidth, bmp.bmHeight, hbmImage, hbmMask ))
+        goto done;
 
     imagelist_point_from_index(himl, i, &pt);
     StretchBlt (himl->hdcImage, pt.x, pt.y, himl->cx, himl->cy,
@@ -2873,11 +2496,9 @@ INT WINAPI
 ImageList_ReplaceIcon (HIMAGELIST himl, INT nIndex, HICON hIcon)
 {
     HICON   hBestFitIcon;
-    HICON   hDrawIcon;
     ICONINFO  ii;
     BITMAP  bmp;
     BOOL    ret;
-    BOOL    use_source_icon = FALSE;
     POINT   pt;
 
     TRACE("(%p %d %p)\n", himl, nIndex, hIcon);
@@ -2904,48 +2525,6 @@ ImageList_ReplaceIcon (HIMAGELIST himl, INT nIndex, HICON hIcon)
             0);
     if (!hBestFitIcon)
         return -1;
-    hDrawIcon = hBestFitIcon;
-
-    {
-        struct macrunner_icon_stats source_stats, best_stats;
-
-        if (macrunner_get_icon_stats(hIcon, himl->cx, himl->cy, DI_NORMAL, &source_stats) &&
-            macrunner_get_icon_stats(hBestFitIcon, himl->cx, himl->cy, DI_NORMAL, &best_stats) &&
-            best_stats.total && best_stats.black == best_stats.total &&
-            source_stats.black != source_stats.total)
-        {
-            use_source_icon = TRUE;
-            hDrawIcon = hIcon;
-            MACRUNNER_TRACE_TOOLBAR_ICON("replace_icon_copyimage_black_fallback himl=%p hicon=%p best=%p size=%dx%d source_nonwhite=%u source_black=%u best_black=%u total=%u\n",
-                                         himl, hIcon, hBestFitIcon, himl->cx, himl->cy,
-                                         source_stats.nonwhite, source_stats.black,
-                                         best_stats.black, best_stats.total);
-        }
-    }
-
-    if (macrunner_trace_toolbar_icons())
-    {
-        ICONINFOEXW infoex;
-
-        infoex.cbSize = sizeof(infoex);
-        if (GetIconInfoExW(hIcon, &infoex))
-        {
-            MACRUNNER_TRACE_TOOLBAR_ICON("replace_icon_source himl=%p hicon=%p is_icon=%d res_id=%u res_name0=0x%04x mod0=0x%04x hotspot=%ld,%ld\n",
-                                         himl, hIcon, infoex.fIcon, infoex.wResID,
-                                         infoex.szResName[0], infoex.szModName[0],
-                                         infoex.xHotspot, infoex.yHotspot);
-            DeleteObject(infoex.hbmColor);
-            DeleteObject(infoex.hbmMask);
-        }
-    }
-
-    MACRUNNER_TRACE_TOOLBAR_ICON("replace_icon himl=%p index=%d hicon=%p best=%p size=%dx%d flags=0x%x cur=%d max=%d\n",
-                                 himl, nIndex, hIcon, hBestFitIcon, himl->cx, himl->cy,
-                                 himl->flags, himl->cCurImage, himl->cMaxImage);
-    macrunner_trace_icon_pixels("replace_icon_orig_draw_normal", himl, hIcon, himl->cx, himl->cy, DI_NORMAL);
-    macrunner_trace_icon_pixels("replace_icon_orig_draw_image", himl, hIcon, himl->cx, himl->cy, DI_IMAGE);
-    macrunner_trace_icon_pixels("replace_icon_draw_normal", himl, hBestFitIcon, himl->cx, himl->cy, DI_NORMAL);
-    macrunner_trace_icon_pixels("replace_icon_draw_image", himl, hBestFitIcon, himl->cx, himl->cy, DI_IMAGE);
 
     if (nIndex == -1) {
         if (himl->cCurImage + 1 >= himl->cMaxImage)
@@ -2955,52 +2534,27 @@ ImageList_ReplaceIcon (HIMAGELIST himl, INT nIndex, HICON hIcon)
         himl->cCurImage++;
     }
 
-    if (!use_source_icon && (himl->flags & ILC_COLOR32) && GetIconInfo (hBestFitIcon, &ii))
+    if ((himl->flags & 0xfe) == ILC_COLOR32 && GetIconInfo (hBestFitIcon, &ii))
     {
-        HBITMAP image_for_add = ii.hbmColor;
-        HBITMAP converted_color = 0;
         HDC hdcImage = CreateCompatibleDC( 0 );
         GetObjectW (ii.hbmMask, sizeof(BITMAP), &bmp);
-
-        MACRUNNER_TRACE_TOOLBAR_ICON("replace_icon_getinfo himl=%p index=%d color=%p mask=%p mask_size=%ldx%ld mask_bpp=%u\n",
-                                     himl, nIndex, ii.hbmColor, ii.hbmMask,
-                                     bmp.bmWidth, bmp.bmHeight, bmp.bmBitsPixel);
-        macrunner_trace_bitmap_pixels("replace_icon_color", himl, ii.hbmColor, 0);
-        macrunner_trace_bitmap_pixels("replace_icon_mask", himl, ii.hbmMask, RGB(0, 0, 0));
 
         if (!ii.hbmColor)
         {
             UINT height = bmp.bmHeight / 2;
             HDC hdcMask = CreateCompatibleDC( 0 );
             HBITMAP color = CreateBitmap( bmp.bmWidth, height, 1, 1, NULL );
-            HBITMAP old_color = SelectObject( hdcImage, color );
-            HBITMAP old_mask = SelectObject( hdcMask, ii.hbmMask );
+            SelectObject( hdcImage, color );
+            SelectObject( hdcMask, ii.hbmMask );
             BitBlt( hdcImage, 0, 0, bmp.bmWidth, height, hdcMask, 0, height, SRCCOPY );
-            SelectObject( hdcImage, old_color );
-            SelectObject( hdcMask, old_mask );
             ret = add_with_alpha( himl, hdcImage, nIndex, 1, bmp.bmWidth, height, color, ii.hbmMask );
             DeleteDC( hdcMask );
             DeleteObject( color );
         }
-        else
-        {
-            BITMAP color_bm;
-            if (GetObjectW( ii.hbmColor, sizeof(color_bm), &color_bm ) && color_bm.bmBitsPixel != 32)
-            {
-                converted_color = create_32bpp_bitmap_from_bitmap( ii.hbmColor );
-                if (converted_color)
-                {
-                    MACRUNNER_TRACE_TOOLBAR_ICON("replace_icon_promote_color32 himl=%p index=%d color=%p converted=%p bpp=%u\n",
-                                                 himl, nIndex, ii.hbmColor, converted_color, color_bm.bmBitsPixel);
-                    image_for_add = converted_color;
-                }
-            }
-            ret = add_with_alpha( himl, hdcImage, nIndex, 1, bmp.bmWidth, bmp.bmHeight,
-                                  image_for_add, ii.hbmMask );
-        }
+        else ret = add_with_alpha( himl, hdcImage, nIndex, 1, bmp.bmWidth, bmp.bmHeight,
+                                   ii.hbmColor, ii.hbmMask );
 
         DeleteDC( hdcImage );
-        if (converted_color) DeleteObject( converted_color );
         DeleteObject (ii.hbmMask);
         if (ii.hbmColor) DeleteObject (ii.hbmColor);
         if (ret) goto done;
@@ -3010,9 +2564,9 @@ ImageList_ReplaceIcon (HIMAGELIST himl, INT nIndex, HICON hIcon)
 
     if (himl->hbmMask)
     {
-        DrawIconEx( himl->hdcImage, pt.x, pt.y, hDrawIcon, himl->cx, himl->cy, 0, 0, DI_IMAGE );
+        DrawIconEx( himl->hdcImage, pt.x, pt.y, hBestFitIcon, himl->cx, himl->cy, 0, 0, DI_IMAGE );
         PatBlt( himl->hdcMask, pt.x, pt.y, himl->cx, himl->cy, WHITENESS );
-        DrawIconEx( himl->hdcMask, pt.x, pt.y, hDrawIcon, himl->cx, himl->cy, 0, 0, DI_MASK );
+        DrawIconEx( himl->hdcMask, pt.x, pt.y, hBestFitIcon, himl->cx, himl->cy, 0, 0, DI_MASK );
     }
     else
     {
@@ -3023,7 +2577,7 @@ ImageList_ReplaceIcon (HIMAGELIST himl, INT nIndex, HICON hIcon)
         PatBlt( himl->hdcImage, pt.x, pt.y, himl->cx, himl->cy, PATCOPY );
         SelectObject( himl->hdcImage, GetStockObject(BLACK_BRUSH) );
         DeleteObject( brush );
-        DrawIconEx( himl->hdcImage, pt.x, pt.y, hDrawIcon, himl->cx, himl->cy, 0, 0, DI_NORMAL );
+        DrawIconEx( himl->hdcImage, pt.x, pt.y, hBestFitIcon, himl->cx, himl->cy, 0, 0, DI_NORMAL );
     }
 
 done:

@@ -84,62 +84,113 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(toolbar);
 
-static BOOL macrunner_trace_toolbar_icons(void)
+struct mr_toolbar_pixel_counts
+{
+    unsigned int colorful;
+    unsigned int nonwhite;
+    unsigned int black;
+    BOOL ok;
+};
+
+static BOOL mr_toolbar_producer_trace_enabled(void)
 {
     static int enabled = -1;
-    char value[16];
-
+    char value[8];
     if (enabled == -1)
-        enabled = GetEnvironmentVariableA("MACRUNNER_TRACE_TOOLBAR_ICONS", value, sizeof(value)) && value[0] != '0';
+        enabled = GetEnvironmentVariableA("MACRUNNER_TOOLBAR_PRODUCER_TRACE", value, sizeof(value)) > 0;
     return enabled;
 }
 
-static BOOL macrunner_trace_toolbar_icon_budget(void)
+static int mr_toolbar_color_spread(DWORD px)
 {
-    static int budget = 240;
-
-    if (!macrunner_trace_toolbar_icons() || budget <= 0) return FALSE;
-    budget--;
-    return TRUE;
+    int b = px & 0xff;
+    int g = (px >> 8) & 0xff;
+    int r = (px >> 16) & 0xff;
+    int max = max(r, max(g, b));
+    int min = min(r, min(g, b));
+    return max - min;
 }
 
-static void macrunner_trace_toolbar_icon_write(const char *format, ...)
+static void mr_toolbar_count_pixels(const DWORD *pixels, int width, int height,
+                                    struct mr_toolbar_pixel_counts *counts)
 {
-    static HANDLE file = INVALID_HANDLE_VALUE;
-    static BOOL file_checked;
-    char path[MAX_PATH];
-    char buffer[1024];
-    DWORD written;
-    va_list args;
-    int len;
-
-    if (!macrunner_trace_toolbar_icon_budget()) return;
-
-    va_start(args, format);
-    len = vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
-    if (len < 0) return;
-    if (len >= sizeof(buffer)) len = sizeof(buffer) - 1;
-
-    fprintf(stderr, "macrunner-toolbar-icons: %s", buffer);
-
-    if (!file_checked)
+    int x, y;
+    memset(counts, 0, sizeof(*counts));
+    if (!pixels || width <= 0 || height <= 0) return;
+    counts->ok = TRUE;
+    for (y = 0; y < height; y++)
     {
-        DWORD path_len = GetEnvironmentVariableA("MACRUNNER_TRACE_TOOLBAR_ICONS_FILE", path, sizeof(path));
-        file_checked = TRUE;
-        if (path_len && path_len < sizeof(path))
-            file = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                               NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    }
-    if (file != INVALID_HANDLE_VALUE)
-    {
-        WriteFile(file, "toolbar: ", 9, &written, NULL);
-        WriteFile(file, buffer, len, &written, NULL);
+        for (x = 0; x < width; x++)
+        {
+            DWORD px = pixels[y * width + x];
+            int b = px & 0xff;
+            int g = (px >> 8) & 0xff;
+            int r = (px >> 16) & 0xff;
+            if (mr_toolbar_color_spread(px) > 36) counts->colorful++;
+            if (!(r > 245 && g > 245 && b > 245)) counts->nonwhite++;
+            if (r < 16 && g < 16 && b < 16) counts->black++;
+        }
     }
 }
 
-#define MACRUNNER_TRACE_TOOLBAR_ICON(...) \
-    do { macrunner_trace_toolbar_icon_write(__VA_ARGS__); } while (0)
+static void mr_toolbar_count_bitmap(HBITMAP bitmap, int width, int height,
+                                    struct mr_toolbar_pixel_counts *counts)
+{
+    BITMAPINFO info;
+    HDC src_dc, mem_dc;
+    HBITMAP dib;
+    HGDIOBJ old_src, old_mem;
+    DWORD *bits = NULL;
+
+    memset(counts, 0, sizeof(*counts));
+    if (!bitmap || width <= 0 || height <= 0 || width > 2048 || height > 2048) return;
+    memset(&info, 0, sizeof(info));
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    if (!(src_dc = CreateCompatibleDC(0))) return;
+    if (!(mem_dc = CreateCompatibleDC(0)))
+    {
+        DeleteDC(src_dc);
+        return;
+    }
+    if (!(dib = CreateDIBSection(src_dc, &info, DIB_RGB_COLORS, (void **)&bits, 0, 0)))
+    {
+        DeleteDC(mem_dc);
+        DeleteDC(src_dc);
+        return;
+    }
+    old_src = SelectObject(src_dc, bitmap);
+    old_mem = SelectObject(mem_dc, dib);
+    if (old_src && old_mem && BitBlt(mem_dc, 0, 0, width, height, src_dc, 0, 0, SRCCOPY))
+    {
+        GdiFlush();
+        mr_toolbar_count_pixels(bits, width, height, counts);
+    }
+    if (old_mem) SelectObject(mem_dc, old_mem);
+    if (old_src) SelectObject(src_dc, old_src);
+    DeleteObject(dib);
+    DeleteDC(mem_dc);
+    DeleteDC(src_dc);
+}
+
+static void mr_toolbar_log_bitmap(const char *stage, HIMAGELIST himl, HBITMAP bitmap,
+                                  HINSTANCE hinst, INT id, INT buttons, int width, int height)
+{
+    static LONG logged;
+    struct mr_toolbar_pixel_counts counts;
+
+    if (InterlockedIncrement(&logged) > 512) return;
+    mr_toolbar_count_bitmap(bitmap, width, height, &counts);
+    fprintf(stderr,
+            "MR_TOOLBAR_PRODUCER stage=%s himl=%p hbitmap=%p hInst=%p nID=%d nButtons=%d "
+            "width=%d height=%d ok=%d colorful=%u nonwhite=%u black=%u\n",
+            stage, himl, bitmap, hinst, id, buttons,
+            width, height, counts.ok, counts.colorful, counts.nonwhite, counts.black);
+}
 
 static HCURSOR hCursorDrag = NULL;
 
@@ -739,11 +790,8 @@ static void TOOLBAR_DrawMasked(HIMAGELIST himl, int index, HDC hdc, INT x, INT y
     INT cx, cy;
     HBITMAP hbmMask, hbmImage;
     HDC hdcMask, hdcImage;
-    IMAGEINFO image_info;
-    BOOL has_mask;
 
     ImageList_GetIconSize(himl, &cx, &cy);
-    has_mask = ImageList_GetImageInfo(himl, index, &image_info) && image_info.hbmMask;
 
     draw_params.cbSize = sizeof(draw_params);
     draw_params.himl = himl;
@@ -758,26 +806,13 @@ static void TOOLBAR_DrawMasked(HIMAGELIST himl, int index, HDC hdc, INT x, INT y
     draw_params.fStyle = draw_flags;
     draw_params.fState = ILS_NORMAL;
 
-    /* 32bpp image with alpha channel keeps hue; do not saturate to grayscale. */
+    /* 32bpp image with alpha channel is converted to grayscale */
     if (imagelist_has_alpha(himl, index))
     {
-        MACRUNNER_TRACE_TOOLBAR_ICON("draw_masked_alpha himl=%p index=%d x=%d y=%d cx=%d cy=%d flags=0x%x state=ILS_ALPHA\n",
-                                     himl, index, x, y, cx, cy, draw_flags);
-        draw_params.fState = ILS_ALPHA;
-        draw_params.Frame = 128;
-        ImageList_DrawIndirect(&draw_params);
-        return;
-    }
-    if (has_mask)
-    {
-        MACRUNNER_TRACE_TOOLBAR_ICON("draw_masked_saturate himl=%p index=%d x=%d y=%d cx=%d cy=%d flags=0x%x state=ILS_SATURATE mask=1\n",
-                                     himl, index, x, y, cx, cy, draw_flags);
         draw_params.fState = ILS_SATURATE;
         ImageList_DrawIndirect(&draw_params);
         return;
     }
-    MACRUNNER_TRACE_TOOLBAR_ICON("draw_masked_legacy himl=%p index=%d x=%d y=%d cx=%d cy=%d flags=0x%x\n",
-                                 himl, index, x, y, cx, cy, draw_flags);
 
     /* Create src image */
     hdcImage = CreateCompatibleDC(hdc);
@@ -881,10 +916,6 @@ TOOLBAR_DrawImage(const TOOLBAR_INFO *infoPtr, TBUTTON_INFO *btnPtr, INT left, I
     TRACE("drawing index=%d, himl=%p, left=%d, top=%d, offset=%d\n",
       index, himl, left, top, offset);
 
-    MACRUNNER_TRACE_TOOLBAR_ICON("draw_image hwnd=%p himl=%p index=%d draw_masked=%d item_state=0x%x item_flags=0x%x left=%d top=%d offset=%d draw_flags=0x%x\n",
-                                 infoPtr->hwndSelf, himl, index, draw_masked, tbcd->nmcd.uItemState,
-                                 dwItemCDFlag, left, top, offset, draw_flags);
-
     if (draw_masked)
         TOOLBAR_DrawMasked (himl, index, tbcd->nmcd.hdc, left + offset, top + offset, draw_flags);
     else
@@ -970,10 +1001,9 @@ TOOLBAR_DrawSeparator (const TOOLBAR_INFO *infoPtr, TBUTTON_INFO *btnPtr, HDC hd
 #if __WINE_COMCTL32_VERSION == 6
     if (infoPtr->hTheme)
     {
-        /* Toolbar separator theme images are alpha ImageFiles.  Until
-         * uxtheme's ImageFile alpha path is reliable here, use the flat
-         * separator fallback instead of painting black transparent pixels.
-         */
+        int part = (infoPtr->dwStyle & CCS_VERT) ? TP_SEPARATORVERT : TP_SEPARATOR;
+        DrawThemeBackground (infoPtr->hTheme, hdc, part, 0, rect, NULL);
+        return;
     }
 #endif
 
@@ -1008,6 +1038,7 @@ static void TOOLBAR_DrawButtonFrame (const TOOLBAR_INFO *infoPtr, TBUTTON_INFO *
     {
         if (!(dwItemCDFlag & TBCDRF_NOBACKGROUND))
         {
+            int partId = drawSepDropDownArrow ? TP_SPLITBUTTON : TP_BUTTON;
             int stateId = TS_NORMAL;
 
             if (tbcd->nmcd.uItemState & CDIS_DISABLED)
@@ -1020,13 +1051,7 @@ static void TOOLBAR_DrawButtonFrame (const TOOLBAR_INFO *infoPtr, TBUTTON_INFO *
                      || (drawSepDropDownArrow && btnPtr->bDropDownPressed))
                 stateId = TS_HOT;
 
-            /* Toolbar button theme images are transparent ImageFiles.  Wine's
-             * current uxtheme alpha fallback can turn those transparent pixels
-             * black, so keep the erased background for idle buttons and use the
-             * classic flat frame for active states.
-             */
-            if (stateId != TS_NORMAL && stateId != TS_DISABLED)
-                TOOLBAR_DrawFlatButtonFrame(infoPtr, tbcd, rect, dwItemCDFlag);
+            DrawThemeBackground(infoPtr->hTheme, hdc, partId, stateId, rect, NULL);
         }
 
         return;
@@ -2875,7 +2900,6 @@ TOOLBAR_AddBitmapToImageList(TOOLBAR_INFO *infoPtr, HIMAGELIST himlDef, const TB
     INT cxIcon, cyIcon;
     INT nAdded;
     INT nIndex;
-    BITMAP bm;
 
     TRACE("adding hInst=%p nID=%d nButtons=%d\n", bitmap->hInst, bitmap->nID, bitmap->nButtons);
     /* Add bitmaps to the default image list */
@@ -2885,39 +2909,34 @@ TOOLBAR_AddBitmapToImageList(TOOLBAR_INFO *infoPtr, HIMAGELIST himlDef, const TB
         hbmLoad = LoadImageW( bitmap->hInst, MAKEINTRESOURCEW(bitmap->nID),
                               IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION );
     else
+        hbmLoad = CreateMappedBitmap(bitmap->hInst, bitmap->nID, 0, NULL, 0);
+    if (mr_toolbar_producer_trace_enabled() && hbmLoad)
     {
-        hbmLoad = LoadImageW( bitmap->hInst, MAKEINTRESOURCEW(bitmap->nID),
-                              IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION );
-        if (!hbmLoad) hbmLoad = CreateMappedBitmap(bitmap->hInst, bitmap->nID, 0, NULL, 0);
+        BITMAP trace_bmp;
+        if (GetObjectW(hbmLoad, sizeof(trace_bmp), &trace_bmp))
+            mr_toolbar_log_bitmap("toolbar_after_load", himlDef, hbmLoad, bitmap->hInst,
+                                  bitmap->nID, bitmap->nButtons, trace_bmp.bmWidth, trace_bmp.bmHeight);
     }
 
     /* enlarge the bitmap if needed */
     ImageList_GetIconSize(himlDef, &cxIcon, &cyIcon);
-    if (hbmLoad && GetObjectW(hbmLoad, sizeof(bm), &bm))
-        MACRUNNER_TRACE_TOOLBAR_ICON("add_bitmap_loaded hwnd=%p himl=%p hinst=%p id=%d buttons=%d bmp=%p size=%ldx%ld bpp=%u icon=%dx%d count_before=%d\n",
-                                     infoPtr->hwndSelf, himlDef, bitmap->hInst, bitmap->nID, bitmap->nButtons,
-                                     hbmLoad, (long)bm.bmWidth, (long)bm.bmHeight, bm.bmBitsPixel, cxIcon, cyIcon, nCountBefore);
-    else
-        MACRUNNER_TRACE_TOOLBAR_ICON("add_bitmap_load_failed hwnd=%p himl=%p hinst=%p id=%d buttons=%d bmp=%p gle=%lu icon=%dx%d count_before=%d\n",
-                                     infoPtr->hwndSelf, himlDef, bitmap->hInst, bitmap->nID, bitmap->nButtons,
-                                     hbmLoad, GetLastError(), cxIcon, cyIcon, nCountBefore);
     if (bitmap->hInst != COMCTL32_hModule)
         COMCTL32_EnsureBitmapSize(&hbmLoad, cxIcon*(INT)bitmap->nButtons, cyIcon, comctl32_color.clrBtnFace);
-    if (hbmLoad && GetObjectW(hbmLoad, sizeof(bm), &bm))
-        MACRUNNER_TRACE_TOOLBAR_ICON("add_bitmap_sized hwnd=%p himl=%p hinst=%p id=%d buttons=%d bmp=%p size=%ldx%ld bpp=%u\n",
-                                     infoPtr->hwndSelf, himlDef, bitmap->hInst, bitmap->nID, bitmap->nButtons,
-                                     hbmLoad, (long)bm.bmWidth, (long)bm.bmHeight, bm.bmBitsPixel);
-
+    if (mr_toolbar_producer_trace_enabled() && hbmLoad)
+    {
+        BITMAP trace_bmp;
+        if (GetObjectW(hbmLoad, sizeof(trace_bmp), &trace_bmp))
+            mr_toolbar_log_bitmap("toolbar_after_ensure", himlDef, hbmLoad, bitmap->hInst,
+                                  bitmap->nID, bitmap->nButtons, trace_bmp.bmWidth, trace_bmp.bmHeight);
+    }
+    
     nIndex = ImageList_AddMasked(himlDef, hbmLoad, comctl32_color.clrBtnFace);
     DeleteObject(hbmLoad);
     if (nIndex == -1)
         return FALSE;
-
+    
     nCountAfter = ImageList_GetImageCount(himlDef);
     nAdded =  nCountAfter - nCountBefore;
-    MACRUNNER_TRACE_TOOLBAR_ICON("add_bitmap_done hwnd=%p himl=%p hinst=%p id=%d buttons=%d first_index=%d count_after=%d added=%d\n",
-                                 infoPtr->hwndSelf, himlDef, bitmap->hInst, bitmap->nID, bitmap->nButtons,
-                                 nIndex, nCountAfter, nAdded);
     if (bitmap->nButtons == 0) /* wParam == 0 is special and means add only one image */
     {
         ImageList_SetImageCount(himlDef, nCountBefore + 1);
@@ -5537,11 +5556,9 @@ TOOLBAR_DoEraseBackground (TOOLBAR_INFO *infoPtr, WPARAM wParam, LPARAM lParam)
     }
 
     /* If the toolbar is "transparent" then pass the WM_ERASEBKGND up
-     * to my parent for processing.  A themed toolbar is not necessarily
-     * transparent; Notepad++ creates a themed, non-transparent toolbar
-     * over a black parent client area and expects the toolbar class brush.
+     * to my parent for processing.
      */
-    if (infoPtr->dwStyle & TBSTYLE_TRANSPARENT) {
+    if (TOOLBAR_IsThemed(infoPtr) || (infoPtr->dwStyle & TBSTYLE_TRANSPARENT)) {
 	POINT pt, ptorig;
 	HDC hdc = (HDC)wParam;
 	HWND parent;

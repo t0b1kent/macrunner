@@ -53,12 +53,6 @@ static struct list dce_list = LIST_INIT(dce_list);
 static struct list window_surfaces = LIST_INIT( window_surfaces );
 static pthread_mutex_t surfaces_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static BOOL macrunner_trace_geometry(void)
-{
-    const char *val = getenv( "MACRUNNER_HB_TRACE_GEOMETRY" );
-    return val && val[0] && val[0] != '0';
-}
-
 /*******************************************************************
  * Dummy window surface for windows that shouldn't get painted.
  */
@@ -292,19 +286,8 @@ void create_window_surface( HWND hwnd, BOOL create_layered, const RECT *surface_
         else window_surface_add_ref( (driver_surface = &dummy_surface) );
     }
 
-    if (macrunner_trace_geometry())
-        fprintf( stderr, "macrunner-window-surface: stage=before-driver-create-surface hwnd=%p "
-                 "layered=%d monitor_dpi=%u rect=%s current_surface=%p driver_surface=%p\n",
-                 hwnd, create_layered, monitor_dpi, wine_dbgstr_rect(&monitor_rect),
-                 *window_surface, driver_surface );
-
     if (!user_driver->pCreateWindowSurface( hwnd, create_layered, &monitor_rect, &driver_surface ))
     {
-        if (macrunner_trace_geometry())
-            fprintf( stderr, "macrunner-window-surface: stage=driver-create-surface-failed hwnd=%p "
-                     "layered=%d monitor_dpi=%u rect=%s current_surface=%p driver_surface=%p\n",
-                     hwnd, create_layered, monitor_dpi, wine_dbgstr_rect(&monitor_rect),
-                     *window_surface, driver_surface );
         if (driver_surface) window_surface_release( driver_surface );
         if (*window_surface)
         {
@@ -313,12 +296,6 @@ void create_window_surface( HWND hwnd, BOOL create_layered, const RECT *surface_
         }
         return;
     }
-
-    if (macrunner_trace_geometry())
-        fprintf( stderr, "macrunner-window-surface: stage=driver-create-surface-ok hwnd=%p "
-                 "layered=%d monitor_dpi=%u rect=%s result_surface=%p current_surface=%p\n",
-                 hwnd, create_layered, monitor_dpi, wine_dbgstr_rect(&monitor_rect),
-                 driver_surface, *window_surface );
 
     if (!driver_surface || dpi == monitor_dpi)
     {
@@ -936,8 +913,8 @@ void process_surface_message( struct flush_shm_surface_params *params )
 
     TRACE( "Flushing %p window surface %s\n", hwnd, wine_dbgstr_rect( &params->bounds ));
 
-    status = WINE_NT_MAP_VIEW( mapping, GetCurrentProcess(), (void**)&bits,
-                                 0, 0, NULL, &view_size, ViewShare, 0, PAGE_READONLY );
+    status = win32u_map_view_of_section( mapping, GetCurrentProcess(), (void **)&bits,
+                                         0, 0, NULL, &view_size, ViewShare, 0, PAGE_READONLY );
     if (!bits)
     {
         ERR( "NtMapViewOfSection failed: %x\n", status );

@@ -82,6 +82,18 @@ static inline hb_ir_instr_t* emit(hb_ir_builder_t* b, hb_ir_instr_t* i, const hb
     return i;
 }
 
+static bool is_legacy_scalar_sse_mem_load(const hb_decoded_t* dec) {
+    bool has_scalar_prefix = false;
+
+    if (!dec) return false;
+    for (uint8_t i = 0; i + 1 < dec->len && i < sizeof(dec->bytes); i++) {
+        uint8_t byte = dec->bytes[i];
+        if (byte == 0xf2 || byte == 0xf3) has_scalar_prefix = true;
+        if (byte == 0x0f) return has_scalar_prefix && dec->bytes[i + 1] == 0x10;
+    }
+    return false;
+}
+
 hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
     if (!dec || !b) return HB_ERR_INVALID_ARG;
 
@@ -107,7 +119,8 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             if (dec->op1.is_mem && dec->op2.is_reg) {
                 emit(b, hb_ir_emit_store(b, dst, src), dec);
             } else if (dec->op1.is_reg && dec->op2.is_mem) {
-                emit(b, hb_ir_emit_load(b, dst, src), dec);
+                hb_ir_instr_t* i = emit(b, hb_ir_emit_load(b, dst, src), dec);
+                if (i) i->zero_upper = is_legacy_scalar_sse_mem_load(dec);
             } else {
                 emit(b, hb_ir_emit_mov(b, dst, src), dec);
             }
@@ -317,6 +330,66 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, i, dec);
             return HB_OK;
         }
+        case HB_INS_PACKSSWB:
+        case HB_INS_PACKUSWB:
+        case HB_INS_PACKSSDW: {
+            hb_ir_op_t op = HB_IR_PACKSSWB;
+            if (dec->opcode == HB_INS_PACKUSWB) op = HB_IR_PACKUSWB;
+            else if (dec->opcode == HB_INS_PACKSSDW) op = HB_IR_PACKSSDW;
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, op);
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PMULLW:
+        case HB_INS_PMULHW:
+        case HB_INS_PMULHUW:
+        case HB_INS_PMADDWD: {
+            hb_ir_op_t op = HB_IR_PMULLW;
+            if (dec->opcode == HB_INS_PMULHW) op = HB_IR_PMULHW;
+            else if (dec->opcode == HB_INS_PMULHUW) op = HB_IR_PMULHUW;
+            else if (dec->opcode == HB_INS_PMADDWD) op = HB_IR_PMADDWD;
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, op);
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PADDSB:
+        case HB_INS_PADDSW:
+        case HB_INS_PADDUSB:
+        case HB_INS_PADDUSW: {
+            hb_ir_op_t op = HB_IR_PADDSB;
+            if (dec->opcode == HB_INS_PADDSW) op = HB_IR_PADDSW;
+            else if (dec->opcode == HB_INS_PADDUSB) op = HB_IR_PADDUSB;
+            else if (dec->opcode == HB_INS_PADDUSW) op = HB_IR_PADDUSW;
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, op);
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PAVGB:
+        case HB_INS_PAVGW: {
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, dec->opcode == HB_INS_PAVGB ? HB_IR_PAVGB : HB_IR_PAVGW);
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PSHUFB: {
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PSHUFB);
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_PSHUFD:
         case HB_INS_PSHUFLW:
         case HB_INS_PSHUFHW: {
@@ -497,6 +570,11 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, hb_ir_emit_binop(b, HB_IR_CMPXCHG, dst, dst, src), dec);
             return HB_OK;
         }
+        case HB_INS_CMPXCHG8B: {
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            emit(b, hb_ir_emit_unop(b, HB_IR_CMPXCHG8B, dst, dst), dec);
+            return HB_OK;
+        }
         case HB_INS_XCHG: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
@@ -553,6 +631,16 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, hb_ir_emit_binop(b, ir_op, dst, dst, src), dec);
             return HB_OK;
         }
+        case HB_INS_SHLD:
+        case HB_INS_SHRD: {
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_operand_t count = operand_from_dec(dec, 3);
+            hb_ir_instr_t *i = hb_ir_emit(b, dec->opcode == HB_INS_SHLD ? HB_IR_SHLD : HB_IR_SHRD);
+            if (i) { i->dst = dst; i->src1 = src; i->src2 = count; }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_NOT: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             emit(b, hb_ir_emit_unop(b, HB_IR_NOT, dst, dst), dec);
@@ -588,7 +676,9 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             return HB_OK;
         }
         case HB_INS_RET: {
-            emit(b, hb_ir_emit_ret(b), dec);
+            hb_ir_instr_t *i = hb_ir_emit_ret(b);
+            if (i && dec->ret_imm) i->src1 = hb_ir_imm(dec->ret_imm, HB_SIZE_16);
+            emit(b, i, dec);
             return HB_OK;
         }
         case HB_INS_JMP: {
@@ -644,6 +734,33 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, i, dec);
             return HB_OK;
         }
+        case HB_INS_MOVS: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_MOVS);
+            if (i) {
+                i->src1 = operand_from_dec(dec, 1);
+                i->src2 = operand_from_dec(dec, 2);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_CMPS: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_CMPS);
+            if (i) {
+                i->src1 = operand_from_dec(dec, 1);
+                i->src2 = operand_from_dec(dec, 2);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_LODS: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_LODS);
+            if (i) {
+                i->src1 = operand_from_dec(dec, 1);
+                i->src2 = operand_from_dec(dec, 2);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_SCAS: {
             hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_SCAS);
             if (i) {
@@ -657,6 +774,14 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_TZCNT);
+            if (i) { i->dst = dst; i->src1 = src; }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_LZCNT: {
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_LZCNT);
             if (i) { i->dst = dst; i->src1 = src; }
             emit(b, i, dec);
             return HB_OK;

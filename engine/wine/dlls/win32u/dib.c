@@ -67,10 +67,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-#ifdef __APPLE__
-#include <execinfo.h>
-#include <unistd.h>
-#endif
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -84,128 +80,6 @@
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(bitmap);
-
-
-static BOOL macrunner_trace_gdi_dibits(void)
-{
-    static int enabled = -1;
-    const char *value;
-
-    if (enabled == -1)
-    {
-        value = getenv( "MACRUNNER_TRACE_GDI_BITMAPS" );
-        enabled = value && value[0] && value[0] != '0';
-    }
-    return enabled;
-}
-
-static void macrunner_trace_gdi_dibits_backtrace(DWORD rop, UINT max_info, UINT max_bits)
-{
-#ifdef __APPLE__
-    static int budget = 6;
-    void *frames[24];
-    int count;
-
-    if (!macrunner_trace_gdi_dibits() || budget <= 0) return;
-    if (rop == SRCCOPY && max_info < 1024 * 1024 && max_bits < 1024 * 1024) return;
-
-    budget--;
-    count = backtrace(frames, ARRAY_SIZE(frames));
-    fprintf(stderr, "macrunner-gdi-dibits-backtrace: rop=0x%08x max_info=%u max_bits=%u frames=%d\n",
-            rop, max_info, max_bits, count);
-    backtrace_symbols_fd(frames, count, STDERR_FILENO);
-#else
-    (void)rop;
-    (void)max_info;
-    (void)max_bits;
-#endif
-}
-
-static void macrunner_count_dib_pixels(const BITMAPINFO *info, const void *bits,
-                                       unsigned int *colorful, unsigned int *nonwhite,
-                                       unsigned int *alpha, DWORD *sample)
-{
-    const DWORD *pixels = bits;
-    LONG width, height, total, i;
-
-    *colorful = *nonwhite = *alpha = 0;
-    *sample = 0;
-    if (!info || !bits || info->bmiHeader.biBitCount != 32 ||
-        info->bmiHeader.biCompression != BI_RGB) return;
-
-    width = info->bmiHeader.biWidth;
-    height = abs( info->bmiHeader.biHeight );
-    if (width <= 0 || height <= 0 || width * height > 4096) return;
-
-    total = width * height;
-    *sample = pixels[0];
-    for (i = 0; i < total; i++)
-    {
-        DWORD px = pixels[i];
-        BYTE a = px >> 24;
-        BYTE r = px >> 16, g = px >> 8, b = px;
-        BYTE maxc = max(max(r, g), b);
-        BYTE minc = min(min(r, g), b);
-
-        if (a) (*alpha)++;
-        if (maxc - minc > 36) (*colorful)++;
-        if (r < 245 || g < 245 || b < 245) (*nonwhite)++;
-    }
-}
-
-static void macrunner_count_hdc_pixels(HDC hdc, INT x_org, INT y_org, INT width, INT height,
-                                       unsigned int *colorful, unsigned int *nonwhite,
-                                       unsigned int *invalid, COLORREF *sample)
-{
-    INT x, y;
-
-    *colorful = *nonwhite = *invalid = 0;
-    *sample = CLR_INVALID;
-    if (!hdc || width <= 0 || height <= 0 || width * height > 4096) return;
-
-    for (y = 0; y < height; y++)
-    {
-        for (x = 0; x < width; x++)
-        {
-            COLORREF c = NtGdiGetPixel( hdc, x_org + x, y_org + y );
-            BYTE r, g, b, maxc, minc;
-
-            if (!x && !y) *sample = c;
-            if (c == CLR_INVALID)
-            {
-                (*invalid)++;
-                continue;
-            }
-            r = GetRValue(c);
-            g = GetGValue(c);
-            b = GetBValue(c);
-            maxc = max(max(r, g), b);
-            minc = min(min(r, g), b);
-            if (maxc - minc > 36) (*colorful)++;
-            if (r < 245 || g < 245 || b < 245) (*nonwhite)++;
-        }
-    }
-}
-
-static void macrunner_trace_setdibits(const char *phase, HDC hdc, HBITMAP target, INT x, INT y,
-                                      DWORD cx, DWORD cy, UINT startscan, UINT lines,
-                                      const void *bits, const BITMAPINFO *info, INT ret)
-{
-    unsigned int src_colorful, src_nonwhite, src_alpha;
-    unsigned int dst_colorful, dst_nonwhite, dst_invalid;
-    DWORD src_sample;
-    COLORREF dst_sample;
-
-    if (!macrunner_trace_gdi_dibits() || !target || !info) return;
-    macrunner_count_dib_pixels( info, bits, &src_colorful, &src_nonwhite, &src_alpha, &src_sample );
-    macrunner_count_hdc_pixels( hdc, x, y, cx, cy, &dst_colorful, &dst_nonwhite, &dst_invalid, &dst_sample );
-    fprintf(stderr, "macrunner-gdi-dibits: phase=%s ret=%d target=%p dst=%ux%u at=%d,%d start=%u lines=%u bmi=%ldx%ld bpp=%u comp=%u src_color=%u src_nonwhite=%u src_alpha=%u src_sample=0x%08x dst_color=%u dst_nonwhite=%u dst_invalid=%u dst_sample=0x%06x\n",
-            phase, ret, target, cx, cy, x, y, startscan, lines,
-            info->bmiHeader.biWidth, info->bmiHeader.biHeight,
-            info->bmiHeader.biBitCount, info->bmiHeader.biCompression,
-            src_colorful, src_nonwhite, src_alpha, src_sample,
-            dst_colorful, dst_nonwhite, dst_invalid, dst_sample);
-}
 
 static INT DIB_GetObject( HGDIOBJ handle, INT count, LPVOID buffer );
 static BOOL DIB_DeleteObject( HGDIOBJ handle );
@@ -711,11 +585,6 @@ INT nulldrv_StretchDIBits( PHYSDEV dev, INT xDst, INT yDst, INT widthDst, INT he
     dev = GET_DC_PHYSDEV( dc, pPutImage );
     copy_bitmapinfo( dst_info, src_info );
     err = dev->funcs->pPutImage( dev, clip, dst_info, &src_bits, &src, &dst, rop );
-    if (macrunner_trace_gdi_dibits() && abs(dst.width) <= 64 && abs(dst.height) <= 64)
-        fprintf(stderr, "macrunner-gdi-dibits: phase=put1 err=%lu dst_bpp=%u src_bpp=%u src_rect=%d,%d %dx%d dst_rect=%d,%d %dx%d dst_vis=%ld,%ld,%ld,%ld\n",
-                err, dst_info->bmiHeader.biBitCount, src_info->bmiHeader.biBitCount,
-                src.x, src.y, src.width, src.height, dst.x, dst.y, dst.width, dst.height,
-                dst.visrect.left, dst.visrect.top, dst.visrect.right, dst.visrect.bottom);
     if (err == ERROR_BAD_FORMAT)
     {
         DWORD dst_colors = dst_info->bmiHeader.biClrUsed;
@@ -735,10 +604,6 @@ INT nulldrv_StretchDIBits( PHYSDEV dev, INT xDst, INT yDst, INT widthDst, INT he
             /* get rid of the fake 1-bpp table */
             dst_info->bmiHeader.biClrUsed = dst_colors;
             err = dev->funcs->pPutImage( dev, clip, dst_info, &src_bits, &src, &dst, rop );
-            if (macrunner_trace_gdi_dibits() && abs(dst.width) <= 64 && abs(dst.height) <= 64)
-                fprintf(stderr, "macrunner-gdi-dibits: phase=put2 err=%lu dst_bpp=%u src_bpp=%u src_rect=%d,%d %dx%d dst_rect=%d,%d %dx%d\n",
-                        err, dst_info->bmiHeader.biBitCount, src_info->bmiHeader.biBitCount,
-                        src.x, src.y, src.width, src.height, dst.x, dst.y, dst.width, dst.height);
         }
     }
 
@@ -746,14 +611,7 @@ INT nulldrv_StretchDIBits( PHYSDEV dev, INT xDst, INT yDst, INT widthDst, INT he
     {
         copy_bitmapinfo( src_info, dst_info );
         err = stretch_bits( src_info, &src, dst_info, &dst, &src_bits, dc->attr->stretch_blt_mode );
-        if (!err)
-        {
-            err = dev->funcs->pPutImage( dev, NULL, dst_info, &src_bits, &src, &dst, rop );
-            if (macrunner_trace_gdi_dibits() && abs(dst.width) <= 64 && abs(dst.height) <= 64)
-                fprintf(stderr, "macrunner-gdi-dibits: phase=put3 err=%lu dst_bpp=%u src_bpp=%u src_rect=%d,%d %dx%d dst_rect=%d,%d %dx%d\n",
-                        err, dst_info->bmiHeader.biBitCount, src_info->bmiHeader.biBitCount,
-                        src.x, src.y, src.width, src.height, dst.x, dst.y, dst.width, dst.height);
-        }
+        if (!err) err = dev->funcs->pPutImage( dev, NULL, dst_info, &src_bits, &src, &dst, rop );
     }
     if (err) ret = 0;
 
@@ -777,15 +635,6 @@ INT MACRUNNER_ARM64_MS_SYSCALL_ABI WINAPI NtGdiStretchDIBitsInternal( HDC hdc, I
     DC *dc;
     INT ret = 0;
 
-    if (macrunner_trace_gdi_dibits() && abs(widthDst) <= 64 && abs(heightDst) <= 64)
-    {
-        fprintf(stderr,
-                "macrunner-gdi-dibits: phase=stretch_entry hdc=%p dst=%d,%d %dx%d src=%d,%d %dx%d bits=%p bmi=%p coloruse=%u rop=0x%08x max_info=%u max_bits=%u xform=%p\n",
-                hdc, xDst, yDst, widthDst, heightDst, xSrc, ySrc, widthSrc, heightSrc,
-                bits, bmi, coloruse, rop, max_info, max_bits, xform);
-        macrunner_trace_gdi_dibits_backtrace(rop, max_info, max_bits);
-    }
-
     if (!bits) return 0;
     if (!bitmapinfo_from_user_bitmapinfo( info, bmi, coloruse, TRUE ))
     {
@@ -796,13 +645,9 @@ INT MACRUNNER_ARM64_MS_SYSCALL_ABI WINAPI NtGdiStretchDIBitsInternal( HDC hdc, I
     if ((dc = get_dc_ptr( hdc )))
     {
         update_dc( dc );
-        macrunner_trace_setdibits( "stretch_before", hdc, dc->hBitmap, xDst, yDst,
-                                   widthDst, heightDst, 0, heightSrc, bits, info, 0 );
         physdev = GET_DC_PHYSDEV( dc, pStretchDIBits );
         ret = physdev->funcs->pStretchDIBits( physdev, xDst, yDst, widthDst, heightDst,
                                               xSrc, ySrc, widthSrc, heightSrc, bits, info, coloruse, rop );
-        macrunner_trace_setdibits( "stretch_after", hdc, dc->hBitmap, xDst, yDst,
-                                   widthDst, heightDst, 0, heightSrc, bits, info, ret );
         release_dc_ptr( dc );
     }
     return ret;
@@ -1062,13 +907,9 @@ INT MACRUNNER_ARM64_MS_SYSCALL_ABI WINAPI NtGdiSetDIBitsToDeviceInternal( HDC hd
     if ((dc = get_dc_ptr( hdc )))
     {
         update_dc( dc );
-        macrunner_trace_setdibits( "before", hdc, dc->hBitmap, xDest, yDest, cx, cy,
-                                   startscan, lines, bits, info, 0 );
         physdev = GET_DC_PHYSDEV( dc, pSetDIBitsToDevice );
         ret = physdev->funcs->pSetDIBitsToDevice( physdev, xDest, yDest, cx, cy, xSrc,
-                                                   ySrc, startscan, lines, bits, info, coloruse );
-        macrunner_trace_setdibits( "after", hdc, dc->hBitmap, xDest, yDest, cx, cy,
-                                   startscan, lines, bits, info, ret );
+                                                  ySrc, startscan, lines, bits, info, coloruse );
         release_dc_ptr( dc );
     }
     return ret;
@@ -1698,8 +1539,8 @@ HBITMAP WINAPI NtGdiCreateDIBSection( HDC hdc, HANDLE section, DWORD offset, con
 
         map_offset.QuadPart = offset - (offset % system_info.AllocationGranularity);
         map_size = bmp->dib.dsBmih.biSizeImage + (offset - map_offset.QuadPart);
-        if (WINE_NT_MAP_VIEW( section, GetCurrentProcess(), &mapBits, 0, 0, &map_offset,
-                                &map_size, ViewShare, 0, PAGE_READWRITE ))
+        if (win32u_map_view_of_section( section, GetCurrentProcess(), &mapBits, 0, 0, &map_offset,
+                                        &map_size, ViewShare, 0, PAGE_READWRITE ))
             goto error;
         bmp->dib.dsBm.bmBits = (char *)mapBits + (offset - map_offset.QuadPart);
     }

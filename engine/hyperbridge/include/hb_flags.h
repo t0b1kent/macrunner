@@ -34,6 +34,11 @@ hb_result_t hb_flags_write_operand_value(hb_context_t* ctx, const hb_ir_operand_
 hb_result_t hb_flags_exec_binop_operand(hb_context_t* ctx, hb_ir_op_t op,
                                          const hb_ir_operand_t* dst, const hb_ir_operand_t* src1,
                                          const hb_ir_operand_t* src2, uint64_t* out);
+hb_result_t hb_flags_exec_double_shift_operand(hb_context_t* ctx, hb_ir_op_t op,
+                                               const hb_ir_operand_t* dst,
+                                               const hb_ir_operand_t* src,
+                                               const hb_ir_operand_t* count_op,
+                                               uint64_t* out);
 
 #ifdef __cplusplus
 }

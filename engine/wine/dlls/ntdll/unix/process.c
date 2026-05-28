@@ -706,7 +706,16 @@ static unsigned int get_pe_file_info( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *n
     HANDLE mapping;
 
     *handle = 0;
+    *unix_name = NULL;
+    nt_name->Buffer = NULL;
+    nt_name->Length = nt_name->MaximumLength = 0;
     memset( info, 0, sizeof(*info) );
+    if (macrunner_hb_prefer_native_helper_exe( attr->ObjectName ))
+    {
+        info->machine = IMAGE_FILE_MACHINE_ARM64;
+        TRACE( "assuming native helper builtin for %s\n", debugstr_us(attr->ObjectName));
+        return STATUS_SUCCESS;
+    }
     if (!(status = get_nt_and_unix_names( attr, nt_name, unix_name, FILE_OPEN, FALSE )))
     {
         status = open_unix_file( handle, *unix_name, GENERIC_READ, attr, 0,
@@ -1460,6 +1469,23 @@ NTSTATUS WINAPI NtTerminateProcess( HANDLE handle, LONG exit_code )
     unsigned int ret;
     BOOL self;
 
+    if (getenv("MACRUNNER_TRACE_PROCESS_EXIT") || getenv("MACRUNNER_TRACE_UI_INPUT"))
+    {
+        const RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb ? NtCurrentTeb()->Peb->ProcessParameters : NULL;
+#ifdef __APPLE__
+        char **argv = *_NSGetArgv();
+#else
+        char **argv = NULL;
+#endif
+        fprintf( stderr,
+                 "macrunner-process-exit: stage=NtTerminateProcess_enter pid=%d tid=%lx handle=%p exit_code=0x%x image=%s cmd=%s argv0=%s\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), handle, exit_code,
+                 params ? debugstr_us( &params->ImagePathName ) : "(null)",
+                 params ? debugstr_us( &params->CommandLine ) : "(null)",
+                 (argv && argv[0]) ? argv[0] : "(null)" );
+        fflush( stderr );
+    }
+
     SERVER_START_REQ( terminate_process )
     {
         req->handle    = wine_server_obj_handle( handle );
@@ -1468,6 +1494,15 @@ NTSTATUS WINAPI NtTerminateProcess( HANDLE handle, LONG exit_code )
         self = reply->self;
     }
     SERVER_END_REQ;
+
+    if (getenv("MACRUNNER_TRACE_PROCESS_EXIT") || getenv("MACRUNNER_TRACE_UI_INPUT"))
+    {
+        fprintf( stderr,
+                 "macrunner-process-exit: stage=NtTerminateProcess_after_server pid=%d tid=%lx ret=0x%x self=%d\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), ret, self );
+        fflush( stderr );
+    }
+
     if (self)
     {
         if (!handle) process_exiting = TRUE;

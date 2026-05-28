@@ -24,9 +24,6 @@
 #pragma makedep unix
 #endif
 
-#include <stdio.h>
-#include <stdlib.h>
-
 #include "ntgdi_private.h"
 #include "ntuser_private.h"
 #include "wine/server.h"
@@ -41,12 +38,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(win);
 #define KEYDATA_PREVSTATE       0x4000
 
 static short f10_key = 0;
-
-static BOOL macrunner_trace_visual_nc(void)
-{
-    return getenv("MACRUNNER_TRACE_VISUAL_BATCH") || getenv("MACRUNNER_TRACE_VISUAL_NC") ||
-           getenv("MACRUNNER_TRACE_GDI_BLIT");
-}
 static short menu_sys_key = 0;
 
 static BOOL has_dialog_frame( UINT style, UINT ex_style )
@@ -1330,8 +1321,6 @@ static BOOL draw_push_button( HDC dc, RECT *r, UINT flags )
     return TRUE;
 }
 
-static void draw_caption_fallback_glyph( HDC dc, const RECT *rect, UINT flags, int color_idx );
-
 static BOOL draw_frame_caption( HDC dc, RECT *r, UINT flags )
 {
     RECT rect;
@@ -1373,11 +1362,6 @@ static BOOL draw_frame_caption( HDC dc, RECT *r, UINT flags )
     NtGdiGetDCDword( dc, NtGdiGetTextColor, &prev_color );
     prev_font = NtGdiSelectFont( dc, font );
     NtGdiGetTextExtentExW( dc, str, 1, 0, NULL, NULL, &size, 0 );
-    if (macrunner_trace_visual_nc())
-        fprintf(stderr, "macrunner-visual-nc: path=win32u-draw-frame-caption flags=0x%04x glyph=0x%04x rect=%ld,%ld,%ld,%ld font=%p extent=%ld,%ld inactive=%d\n",
-                flags, str[0], (long)r->left, (long)r->top, (long)r->right, (long)r->bottom,
-                font, (long)size.cx, (long)size.cy,
-                !!(flags & DFCS_INACTIVE));
 
     if (flags & DFCS_INACTIVE)
     {
@@ -1386,7 +1370,6 @@ static BOOL draw_frame_caption( HDC dc, RECT *r, UINT flags )
     }
     NtGdiGetAndSetDCDword( dc, NtGdiSetTextColor, get_sys_color( color_idx ), NULL );
     NtGdiExtTextOutW( dc, xc-size.cx/2, yc-size.cy/2, 0, NULL, str, 1, NULL, 0 );
-    draw_caption_fallback_glyph( dc, &rect, flags, color_idx );
 
     NtGdiSelectFont(dc, prev_font);
     NtGdiGetAndSetDCDword( dc, NtGdiSetTextColor, prev_color, NULL );
@@ -1395,59 +1378,6 @@ static BOOL draw_frame_caption( HDC dc, RECT *r, UINT flags )
     NtGdiDeleteObjectApp( font );
 
     return TRUE;
-}
-
-static void draw_caption_fallback_glyph( HDC dc, const RECT *rect, UINT flags, int color_idx )
-{
-    HPEN prev_pen = NtGdiSelectPen( dc, get_sys_color_pen( color_idx ));
-    HBRUSH prev_brush = NtGdiSelectBrush( dc, get_sys_color_brush( color_idx ));
-    RECT glyph = *rect;
-    int width = glyph.right - glyph.left;
-    int height = glyph.bottom - glyph.top;
-    int inset = max( 3, min( width, height ) / 4 );
-    int i, len;
-
-    InflateRect( &glyph, -inset, -inset );
-    if (glyph.right <= glyph.left || glyph.bottom <= glyph.top)
-    {
-        NtGdiSelectBrush( dc, prev_brush );
-        NtGdiSelectPen( dc, prev_pen );
-        return;
-    }
-
-    switch (flags & 0xf)
-    {
-    case DFCS_CAPTIONCLOSE:
-        len = min( glyph.right - glyph.left, glyph.bottom - glyph.top );
-        for (i = 0; i < len; i++)
-        {
-            NtGdiPatBlt( dc, glyph.left + i, glyph.top + i, 2, 2, PATCOPY );
-            NtGdiPatBlt( dc, glyph.right - i - 2, glyph.top + i, 2, 2, PATCOPY );
-        }
-        break;
-    case DFCS_CAPTIONMIN:
-        NtGdiPatBlt( dc, glyph.left, glyph.bottom - 2, glyph.right - glyph.left, 2, PATCOPY );
-        break;
-    case DFCS_CAPTIONMAX:
-        NtGdiPatBlt( dc, glyph.left, glyph.top, glyph.right - glyph.left, 2, PATCOPY );
-        NtGdiPatBlt( dc, glyph.left, glyph.bottom - 1, glyph.right - glyph.left, 1, PATCOPY );
-        NtGdiPatBlt( dc, glyph.left, glyph.top, 1, glyph.bottom - glyph.top, PATCOPY );
-        NtGdiPatBlt( dc, glyph.right - 1, glyph.top, 1, glyph.bottom - glyph.top, PATCOPY );
-        break;
-    case DFCS_CAPTIONRESTORE:
-        NtGdiPatBlt( dc, glyph.left + 2, glyph.top, glyph.right - glyph.left - 2, 1, PATCOPY );
-        NtGdiPatBlt( dc, glyph.right - 1, glyph.top, 1, glyph.bottom - glyph.top - 2, PATCOPY );
-        NtGdiPatBlt( dc, glyph.left + 2, glyph.bottom - 3, glyph.right - glyph.left - 2, 1, PATCOPY );
-        NtGdiPatBlt( dc, glyph.left + 2, glyph.top, 1, glyph.bottom - glyph.top - 2, PATCOPY );
-        NtGdiPatBlt( dc, glyph.left, glyph.top + 2, glyph.right - glyph.left - 2, 1, PATCOPY );
-        NtGdiPatBlt( dc, glyph.right - 3, glyph.top + 2, 1, glyph.bottom - glyph.top - 2, PATCOPY );
-        NtGdiPatBlt( dc, glyph.left, glyph.bottom - 1, glyph.right - glyph.left - 2, 1, PATCOPY );
-        NtGdiPatBlt( dc, glyph.left, glyph.top + 2, 1, glyph.bottom - glyph.top - 2, PATCOPY );
-        break;
-    }
-
-    NtGdiSelectBrush( dc, prev_brush );
-    NtGdiSelectPen( dc, prev_pen );
 }
 
 void draw_menu_button( HWND hwnd, HDC dc, RECT *r, enum NONCLIENT_BUTTON_TYPE type, BOOL down, BOOL grayed )

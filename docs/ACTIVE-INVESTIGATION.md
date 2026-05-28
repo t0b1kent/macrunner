@@ -963,3 +963,25 @@ hardware message, or wndproc/message dispatch.
 - `reports/phase-h/MILESTONE/event-trace-20260523-204929/`
 - `reports/phase-h/npp-x64-20260523-212033/`
 - `reports/phase-h/MILESTONE/real-event-freeze-live-20260523-212033/`
+
+## Update 2026-05-29 09:10 (Antigravity, Claude Opus 4.6 Thinking):
+
+**What:** Dirty-tree triage + commit of all pending Codex/Cline/Kimi work (94 files).
+No code changes made by this agent. This is a handoff-cleanup session.
+
+**Commits made (4):**
+1. `3172f52` — pe32: HyperBridge x86 decoder/lifter/interpreter + WOW64 signal (39 files, 15K+/3.7K-)
+2. `aa37d0c` — docs/config: canonical workspace migration + PE32 investigation state
+3. `4288c19` — app: control center UI (Cline/Kimi)
+4. `51d450a` — docs/scripts/tools: status updates, validation, profiles
+
+**Current blocker (unchanged from Codex 18:59 update):**
+PE32 Notepad++ c000001d — process alive but no CG window. `_sigtramp` with
+`x13=0xc000001d` (STATUS_ILLEGAL_INSTRUCTION), unknown native target. Codex
+identified xtajit trace knobs but didn't get `publish-exception-context`
+(guest EIP + instruction bytes) before running out of tokens.
+
+**Next step:** Get `publish-exception-context` via scoped xtajit trace, classify
+the instruction, apply family fix per AGENTS protocol.
+
+**ARM64EC research brief:** NOT done. Focus is PE32 c000001d.

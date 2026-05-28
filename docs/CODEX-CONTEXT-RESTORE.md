@@ -24,7 +24,7 @@ configurator, engine audits (read-only). Don't duplicate Kimi's work.
 
 ## Mandatory reading order (every restart)
 
-1. `/Volumes/MacOS/MacRunner/AGENTS.md` — Zeroth Principle + all mandatory protocols
+1. `/Users/timurtoby/Documents/MacRunner/Main/MacRunner/AGENTS.md` — Zeroth Principle + all mandatory protocols
 2. `docs/CODEX-MEGA-DIRECTIVE-v2-batch-method.md` — current method + Notepad++ closure
 3. `docs/CODEX-DIRECTIVE-notepad-plus-plus-full-functional.md` — 80 closure criteria
 4. `/Users/timurtoby/Documents/MacRunner/90-architectural-discoveries-fundamental-bugs.md` — 9 bugs found
@@ -68,7 +68,7 @@ Plus 10+ SIMD families. Block cap fix for x64-signal-callback.
 ## Build incantation
 
 ```bash
-cd /Volumes/MacOS/MacRunner
+cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 . config/env.sh   # sets CCACHE_DIR, paths
 
 # HyperBridge change:

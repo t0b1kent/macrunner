@@ -39,5 +39,15 @@ Native Windows app & game runner for Apple Silicon Macs.
 
 ```bash
 ./scripts/install-deps.sh
-./scripts/setup-wine.sh
+./scripts/build-wine.sh
+./scripts/launch-exe.sh path/to/program.exe
+```
+
+## Launch
+
+Use the architecture-aware launcher for Windows executables:
+
+```bash
+./scripts/launch-exe.sh path/to/program.exe
+./scripts/launch-exe.sh --profile 1c-enterprise-83 path/to/program.exe
 ```

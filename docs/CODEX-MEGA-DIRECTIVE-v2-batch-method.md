@@ -163,7 +163,7 @@ Kimi also built `AI Configurator MVP v0.1 — unified orchestrator for Codex tas
 ```bash
 # Verify config in config/env.sh sourced:
 . config/env.sh
-echo $CCACHE_DIR    # should be /Volumes/MacOS/MacRunner/artifacts/ccache
+echo $CCACHE_DIR    # should be /Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/ccache
 ccache -s           # check hit rate
 
 # Builds должны go through ccache wrappers:

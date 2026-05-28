@@ -74,7 +74,17 @@ Apple с macOS Sonoma (14) разрешила Rosetta для эмуляции в
 posix_spawnattr_setflags(&attr, POSIX_SPAWN_OSX_USE_ROSETTA);
 ```
 
-Wine компилируется как **ARM64-нативный**. Только Windows-бинарник идёт через Rosetta. Это даёт ~80-90% от нативной x86 Windows скорости.
+MacRunner использует **два execution lane**:
+
+- `arm64-native` для ARM64 PE и основной быстрый путь.
+- `x86_64-rosetta` для legacy Intel бинарников.
+
+Launcher выбирает lane по PE machine type и кладёт их в раздельные prefix’ы:
+
+- `bottles/<profile-id>/prefix-arm64`
+- `bottles/<profile-id>/prefix-x86_64-rosetta`
+
+Rosetta здесь — compatibility path, а не собственный emulator stack.
 
 ## AI автоконфигуратор — наш дифференциатор
 
@@ -142,7 +152,8 @@ actor Configurator {
 
 ### Неделя 6: Rosetta 2
 - Системное API integration
-- Тест: x86 .exe запускается на ARM Wine
+- Архи-aware launcher для выбора lane по PE arch
+- Тест: x86 .exe запускается через x86_64-rosetta lane
 
 ### Неделя 7-8: Real software test
 - 1С полный цикл

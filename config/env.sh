@@ -1,13 +1,14 @@
 # MacRunner — единая конфигурация путей для всех скриптов
 # Source-ить в начале каждого скрипта: . "$PROJECT_ROOT/config/env.sh"
 
-# Корень проекта (внешний диск)
-: "${MACRUNNER_ROOT:=/Volumes/MacOS/MacRunner}"
+# Корень проекта (внутренний SSD, canonical workspace с 2026-05-25)
+: "${MACRUNNER_ROOT:=/Users/timurtoby/Documents/MacRunner/Main/MacRunner}"
 export MACRUNNER_ROOT
 
-# Все Wine bottles живут на внешнем диске рядом с движком.
+# Все Wine bottles живут рядом с активным движком.
 # Раньше: $HOME/Library/Application Support/MacRunner/bottles/ (внутренний SSD, износ)
-# Сейчас: /Volumes/MacOS/MacRunner/bottles/ (внешний, 190GB свободно)
+# Сейчас: $MACRUNNER_ROOT/bottles/ в canonical workspace. Если нужно вынести bottles,
+# переопредели MACRUNNER_BOTTLES_ROOT явно перед source config/env.sh.
 : "${MACRUNNER_BOTTLES_ROOT:=$MACRUNNER_ROOT/bottles}"
 export MACRUNNER_BOTTLES_ROOT
 mkdir -p "$MACRUNNER_BOTTLES_ROOT" 2>/dev/null || true
@@ -17,7 +18,8 @@ mkdir -p "$MACRUNNER_BOTTLES_ROOT" 2>/dev/null || true
 : "${MACRUNNER_ARTIFACTS_ROOT:=$MACRUNNER_ROOT/artifacts}"
 export MACRUNNER_REPORTS_ROOT MACRUNNER_ARTIFACTS_ROOT
 
-# Compiler cache lives on the external MacRunner disk, not the internal SSD.
+# Compiler cache is mandatory for local rebuild velocity. Disable only with
+# MACRUNNER_USE_CCACHE=0 when debugging compiler/cache behavior.
 : "${MACRUNNER_CCACHE_DIR:=$MACRUNNER_ARTIFACTS_ROOT/ccache}"
 export MACRUNNER_CCACHE_DIR
 if command -v ccache >/dev/null 2>&1; then

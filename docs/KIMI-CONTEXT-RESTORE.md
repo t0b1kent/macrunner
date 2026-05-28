@@ -10,7 +10,7 @@ Codex владеет engine (HyperBridge, Wine ntdll/kernelbase/win32u).
 
 ## Mandatory reading order (every restart)
 
-1. `/Volumes/MacOS/MacRunner/AGENTS.md` — paths, mandatory protocols, traps
+1. `/Users/timurtoby/Documents/MacRunner/Main/MacRunner/AGENTS.md` — paths, mandatory protocols, traps
 2. `/Users/timurtoby/Documents/MacRunner/90-architectural-discoveries-fundamental-bugs.md` — 8 fundamental bugs found
 3. Your active progress logs:
    - `docs/KIMI-PROGRESS-audio.md` (Phase 1+2 done, awaits E2E)
@@ -27,7 +27,7 @@ Codex владеет engine (HyperBridge, Wine ntdll/kernelbase/win32u).
 
 | Path | Purpose |
 |---|---|
-| `/Volumes/MacOS/MacRunner` | Repo root (work here) |
+| `/Users/timurtoby/Documents/MacRunner/Main/MacRunner` | Repo root (work here) |
 | `/Users/timurtoby/Documents/MacRunner` | Obsidian vault (DOCS ONLY, NOT code) |
 | `engine/audio/macos/avaudio/` | Your audio workspace |
 | `engine/hyperbridge/cache/` | Your AOT cache workspace |

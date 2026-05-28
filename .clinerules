@@ -22,13 +22,13 @@
   потом запусти файл.
 - Не запускай интерактивные/блокирующие команды (ждущие stdin).
 - Длинные логи: в файл (`> reports/.../log`) + grep/tail, НЕ в терминал.
-- cwd часто слетает в /Users/timurtoby — начинай с `cd /Volumes/MacOS/MacRunner && ...`.
+- cwd часто слетает в /Users/timurtoby — начинай с `cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner && ...`.
 - Если терминал завис на вторичном промпте — это твоя ошибка квотинга; не повторяй
   команду, перепиши через файл-инструмент.
 
 ## WORKSPACE
-- Корень workspace = /Volumes/MacOS/MacRunner (не Desktop). Если видишь "Cannot use
-  checkpoints in Desktop directory" — переоткрой папку /Volumes/MacOS/MacRunner.
+- Корень workspace = /Users/timurtoby/Documents/MacRunner/Main/MacRunner (не Desktop). Если видишь "Cannot use
+  checkpoints in Desktop directory" — переоткрой папку /Users/timurtoby/Documents/MacRunner/Main/MacRunner.
 
 ## ИСХОДНИКИ ДВИЖКА (важно — не ищи в неверном месте)
 - Реальный код Wine: **`engine/wine/dlls/<dll>/...`** (напр. `engine/wine/dlls/win32u/message.c`,

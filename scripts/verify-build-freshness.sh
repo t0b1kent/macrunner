@@ -121,7 +121,7 @@ def check_arch_pair(dll: str, max_skew_sec: float = 900.0) -> None:
 
 
 # Dual-arch consistency for actively-edited render/icon DLLs.
-for _dll in ("user32", "shell32", "comctl32", "gdi32"):
+for _dll in ("user32", "shell32", "comdlg32", "comctl32", "gdi32"):
     check_arch_pair(_dll)
 
 
@@ -154,7 +154,7 @@ def check_prefix_synced(dll: str) -> None:
 
 
 # Prefix-vs-dist sync: app runs from prefix, so a stale prefix = stale runtime.
-for _dll in ("user32", "gdi32", "shell32", "kernelbase", "ntdll", "win32u"):
+for _dll in ("user32", "gdi32", "shell32", "comdlg32", "kernelbase", "ntdll", "win32u", "comctl32", "comctl32_v6"):
     check_prefix_synced(_dll)
 
 if failures:

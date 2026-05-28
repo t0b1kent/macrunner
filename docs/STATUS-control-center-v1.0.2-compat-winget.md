@@ -46,7 +46,7 @@ Result: PASS, verifier refuses mismatched content.
 
 ```terminal
 $ python3 tools/compat-runner/runner.py --plan tools/compat-runner/plan.yaml --limit 5
-/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-132420
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/compat-runs/20260514-132420
 engine_state: pass=0 fail=0 hang=1
 result.json files: 5
 results: ENGINE_REGRESSION
@@ -54,7 +54,7 @@ results: ENGINE_REGRESSION
 
 ```terminal
 $ python3 tools/compat-runner/runner.py --plan tools/compat-runner/plan.yaml --limit 5
-/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-132712
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/compat-runs/20260514-132712
 engine_state: pass=1 fail=0 hang=0
 result.json files: 5
 results: FAIL, PARTIAL
@@ -75,7 +75,7 @@ Result: PASS, runner emits valid result.json files and real ENGINE_REGRESSION ar
 
 ```terminal
 $ python3 tools/compat-runner/report.py && grep -c "MacRunner only" reports/compat-public/index.md
-/Volumes/MacOS/MacRunner/reports/compat-public
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/compat-public
 rows=50
 1
 ```

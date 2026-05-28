@@ -14,16 +14,16 @@ Command:
 Output:
 
 ```text
-/Volumes/MacOS/MacRunner/engine/graphics/dist/tests/clear-d3d11-arm64.exe: PE32+ executable (console) Aarch64, for MS Windows
-/Volumes/MacOS/MacRunner/engine/graphics/dist/tests/hello-triangle-d3d11-arm64.exe: PE32+ executable (console) Aarch64, for MS Windows
-/Volumes/MacOS/MacRunner/engine/graphics/dist/tests/hello-triangle-d3d12-arm64.exe: PE32+ executable (console) Aarch64, for MS Windows
-ppm: /Volumes/MacOS/MacRunner/engine/graphics/artifacts/runtime-samples/d3d11_triangle_runtime/d3d11_triangle_runtime.ppm
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/tests/clear-d3d11-arm64.exe: PE32+ executable (console) Aarch64, for MS Windows
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/tests/hello-triangle-d3d11-arm64.exe: PE32+ executable (console) Aarch64, for MS Windows
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/tests/hello-triangle-d3d12-arm64.exe: PE32+ executable (console) Aarch64, for MS Windows
+ppm: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/artifacts/runtime-samples/d3d11_triangle_runtime/d3d11_triangle_runtime.ppm
 size: 64x64
 unique_pixels: 1153
-png: /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/native-shader-validation.png
+png: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/screenshots/native-shader-validation.png
 png_bytes: 1294
-native shader validation screenshot: /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/native-shader-validation.png
-wine dxmt e2e screenshot: WAITING on Phase G runtime fix -> /Volumes/MacOS/MacRunner/engine/graphics/dist/screenshots/hello-triangle-d3d11-via-wine.png
+native shader validation screenshot: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/screenshots/native-shader-validation.png
+wine dxmt e2e screenshot: WAITING on Phase G runtime fix -> /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/screenshots/hello-triangle-d3d11-via-wine.png
 ```
 
 ## Actual Wine fixture attempt

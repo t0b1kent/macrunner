@@ -10,7 +10,6 @@
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST="$PROJECT_ROOT/engine/wine/dist"
 ENT="$PROJECT_ROOT/wine-fork/wine.entitlements"
 
 # Если идентичность не передали — пробуем найти Apple Development cert автоматически
@@ -45,9 +44,6 @@ if [ ! -f "$ENT" ]; then
 EOF
 fi
 
-echo "🔏 Подписываю Wine бинари..."
-echo ""
-
 # CrossOver source ставит identifier `com.codeweavers.CrossOver.wineloader`
 # в loader/wine_info.plist.in — Apple привязал его к team 27GN9XE9CP.
 # Когда мы подписываем нашим сертификатом, ASP видит mismatch и блокирует.
@@ -58,38 +54,50 @@ MR_LIB_PREFIX="app.macrunner.lib"
 
 SIGNED=0
 
-# Top-level bin/* — даём bin-уровневый identifier
-for f in "$DIST/bin/"*; do
-    [ -f "$f" ] || continue
-    if file "$f" | grep -q "Mach-O.*executable"; then
-        name=$(basename "$f")
+sign_dist() {
+    local dist="$1"
+    local archdir="$2"
+    [ -d "$dist" ] || return 0
+    echo "🔏 Подписываю Wine dist: $dist"
+
+    for f in "$dist/bin/"*; do
+        [ -f "$f" ] || continue
+        if file "$f" | grep -q "Mach-O.*executable"; then
+            name=$(basename "$f")
+            codesign --force --sign "$IDENTITY" \
+                --identifier "$MR_BIN_ID.$name" \
+                --entitlements "$ENT" --options runtime "$f" 2>&1 | tail -1
+            SIGNED=$((SIGNED + 1))
+        fi
+    done
+
+    if [ -f "$dist/lib/wine/$archdir/wine" ]; then
         codesign --force --sign "$IDENTITY" \
-            --identifier "$MR_BIN_ID.$name" \
-            --entitlements "$ENT" --options runtime "$f" 2>&1 | tail -1
+            --identifier "$MR_LOADER_ID.$archdir" \
+            --entitlements "$ENT" --options runtime \
+            "$dist/lib/wine/$archdir/wine" 2>&1 | tail -1
         SIGNED=$((SIGNED + 1))
     fi
-done
 
-# Secondary loader (lib/wine/aarch64-unix/wine) — наш identifier
-codesign --force --sign "$IDENTITY" \
-    --identifier "$MR_LOADER_ID" \
-    --entitlements "$ENT" --options runtime \
-    "$DIST/lib/wine/aarch64-unix/wine" 2>&1 | tail -1
-SIGNED=$((SIGNED + 1))
+    for f in "$dist/lib/wine/$archdir/"*.so; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f" .so)
+        codesign --force --sign "$IDENTITY" \
+            --identifier "$MR_LIB_PREFIX.$archdir.$name" \
+            --entitlements "$ENT" --options runtime "$f" 2>/dev/null
+        SIGNED=$((SIGNED + 1))
+    done
+}
 
-# Все .so в aarch64-unix
-for f in "$DIST/lib/wine/aarch64-unix/"*.so; do
-    [ -f "$f" ] || continue
-    name=$(basename "$f" .so)
-    codesign --force --sign "$IDENTITY" \
-        --identifier "$MR_LIB_PREFIX.$name" \
-        --entitlements "$ENT" --options runtime "$f" 2>/dev/null
-    SIGNED=$((SIGNED + 1))
-done
+echo "🔏 Подписываю Wine бинари..."
+echo ""
+
+sign_dist "$PROJECT_ROOT/engine/wine/dist" "aarch64-unix"
+sign_dist "$PROJECT_ROOT/engine/wine-x86_64" "x86_64-unix"
 
 echo ""
 echo "✅ Подписано $SIGNED файлов"
 echo ""
 echo "Тест:"
-echo "   $DIST/bin/wine wineboot --init"
-echo "   $DIST/bin/wine notepad.exe"
+echo "   $PROJECT_ROOT/engine/wine/dist/bin/wine wineboot --init"
+echo "   /usr/bin/arch -x86_64 $PROJECT_ROOT/engine/wine-x86_64/bin/wine --version"

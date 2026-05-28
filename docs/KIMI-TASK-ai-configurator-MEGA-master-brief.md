@@ -14,7 +14,7 @@
 
 ## 0. Mandatory reading
 
-1. [/Volumes/MacOS/MacRunner/AGENTS.md](../AGENTS.md) — **🎯 Zeroth Principle**, protocols
+1. [/Users/timurtoby/Documents/MacRunner/Main/MacRunner/AGENTS.md](../AGENTS.md) — **🎯 Zeroth Principle**, protocols
 2. [/Users/timurtoby/Documents/MacRunner/88-competitive-analysis-mythic.md](file:///Users/timurtoby/Documents/MacRunner/88-competitive-analysis-mythic.md) — **why AI is the moat**, в деталях
 3. [/Users/timurtoby/Documents/MacRunner/92-strategic-app-ladder-roadmap.md](file:///Users/timurtoby/Documents/MacRunner/92-strategic-app-ladder-roadmap.md) — app ladder context
 4. Your other briefs (especially networking — Phase G cloud) — coordination points
@@ -344,7 +344,7 @@ Escalate (Timur):
 ## 5. Workspace
 
 ```
-/Volumes/MacOS/MacRunner/
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/
 ├── app/configurator/                              # EXTEND existing (with care)
 │   ├── ai/                                         # NEW your AI subsystem
 │   │   ├── pe_analyzer/                            # Phase A.1 — deep PE inspection
@@ -604,7 +604,7 @@ This is **the experience** что makes MacRunner worth paying for. Wine alone =
 ## Appendix A — Path quick reference
 
 ```
-Repo:                    /Volumes/MacOS/MacRunner
+Repo:                    /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 AI subsystem workspace:  app/configurator/ai/
 Templates workspace:     profiles/templates/
 Docs:                    docs/AI-CONFIGURATOR-*.md
@@ -614,7 +614,7 @@ Progress log:            docs/KIMI-PROGRESS-ai-configurator.md
 ## Appendix B — Sanity check first
 
 ```bash
-cd /Volumes/MacOS/MacRunner
+cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 . config/env.sh
 echo "Root: $MACRUNNER_ROOT"
 

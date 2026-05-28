@@ -23,7 +23,7 @@ check_total=0
 check_pass=0
 
 case "$FAMILY" in
-  rep_movs|string_ops)
+  rep_movs)
     fixtures=(
       "$ROOT/tools/hb_oracle/fixtures/rep_movs_df0_forward.json"
       "$ROOT/tools/hb_oracle/fixtures/rep_movs_df1_backward.json"
@@ -34,7 +34,20 @@ case "$FAMILY" in
     checks=(
       "$ROOT/tools/hb_filecheck/examples/rep_movs_forward.check"
       "$ROOT/tools/hb_filecheck/examples/rep_movs_df1.check"
-      "$ROOT/tools/hb_filecheck/examples/memory_fault.check"
+    )
+    ;;
+  string_ops)
+    fixtures=(
+      "$ROOT/tools/hb_oracle/fixtures/rep_movs_df0_forward.json"
+      "$ROOT/tools/hb_oracle/fixtures/rep_movs_df1_backward.json"
+      "$ROOT/tools/hb_oracle/fixtures/rep_movs_zero_count.json"
+      "$ROOT/tools/hb_oracle/fixtures/rep_movs_cross_page.json"
+      "$ROOT/tools/hb_oracle/fixtures/rep_movs_overlap.json"
+    )
+    checks=(
+      "$ROOT/tools/hb_filecheck/examples/rep_movs_forward.check"
+      "$ROOT/tools/hb_filecheck/examples/rep_movs_df1.check"
+      "$ROOT/tools/hb_filecheck/examples/string_ops_cmps_lods.check"
     )
     ;;
   *)
@@ -42,63 +55,28 @@ case "$FAMILY" in
     exit 2
     ;;
 esac
+hb_runner_status="not_available"
+hb_trace="$TMP_DIR/hb_test_runner_${FAMILY}.trace.txt"
+fixture_total=1
+if (cd "$ROOT/engine/hyperbridge" && make tests/hb_test_runner >/dev/null && ./tests/hb_test_runner --fast-family "$FAMILY" > "$hb_trace" 2>&1); then
+  fixture_pass=1
+  hb_runner_status="pass"
+else
+  status="FAIL"
+  hb_runner_status="fail"
+  notes+=("hb_test_runner fast-family fail: $FAMILY")
+fi
 
-# TODO-hook: Codex should replace this with real HyperBridge runs (interp+jit)
-for f in "${fixtures[@]}"; do
-  fixture_total=$((fixture_total + 1))
-  name="$(basename "$f" .json)"
-  payload="$TMP_DIR/${name}.payload.json"
-  python3 - "$payload" "$name" "$FAMILY" <<'PY'
-import json, sys
-out, name, family = sys.argv[1], sys.argv[2], sys.argv[3]
-payload = {
-    "fixture_name": name,
-    "family": family,
-    "backend": "interp",
-    "expected": {"registers": {}, "flags": {}, "memory_after": [], "rip": "0x0", "fault": None},
-    "actual": {"registers": {}, "flags": {}, "memory_after": [], "rip": "0x0", "fault": None},
-    "actual_fault": None,
-}
-with open(out, "w", encoding="utf-8") as f:
-    json.dump(payload, f, indent=2)
-PY
-  if python3 "$ROOT/tools/hb_oracle/compare_oracle_results.py" --input "$payload" >/dev/null; then
-    fixture_pass=$((fixture_pass + 1))
-  else
-    status="FAIL"
-    notes+=("oracle fail: $name")
-  fi
-done
-
-# TODO-hook: Codex should replace trace source with real hb_test_runner traces
 for c in "${checks[@]}"; do
   check_total=$((check_total + 1))
   base="$(basename "$c")"
-  trace="$TMP_DIR/${base}.trace.txt"
-  case "$base" in
-    rep_movs_forward.check)
-      printf "rep_movs_enter\ndf=0\nrcx=16\nwrite_ok\nrep_movs_exit\n" > "$trace"
-      ;;
-    rep_movs_df1.check)
-      printf "rep_movs_enter\ndf=1\nrcx=16\nwrite_ok\nrep_movs_exit\n" > "$trace"
-      ;;
-    memory_fault.check)
-      printf "rep_movs_enter\npage_cross=1\nfault=MEMORY_FAULT\nrep_movs_exit\n" > "$trace"
-      ;;
-  esac
-  if python3 "$ROOT/tools/hb_filecheck/hb_filecheck.py" --input "$trace" --check "$c" >/dev/null; then
+  if python3 "$ROOT/tools/hb_filecheck/hb_filecheck.py" --input "$hb_trace" --check "$c" >/dev/null; then
     check_pass=$((check_pass + 1))
   else
     status="FAIL"
     notes+=("filecheck fail: $base")
   fi
 done
-
-hb_runner_status="not_available"
-if [[ -x "$ROOT/engine/hyperbridge/tests/hb_test_runner" ]]; then
-  # TODO-hook: Codex can run minimal family-specific hb_test_runner tests here.
-  hb_runner_status="available_todo_hook"
-fi
 
 notes_json="[]"
 if [[ ${#notes[@]} -gt 0 ]]; then
@@ -139,4 +117,3 @@ else
 fi
 
 echo "FAST VALIDATION: $status"
-

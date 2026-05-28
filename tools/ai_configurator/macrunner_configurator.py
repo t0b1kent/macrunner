@@ -419,6 +419,15 @@ def run_configurator(app_profile_path: Path, artifacts_dir: Optional[Path], mode
     # Route to final blocker category
     router = determine_blocker_category(artifacts_dir, compat_result, visual_result, stderr_text, exit_code)
 
+    golden_diff_json = VISUAL_DIR / "crossover-golden" / "notepad-vs-our-golden-diff.json"
+    golden_diff_md = VISUAL_DIR / "crossover-golden" / "notepad-vs-our-golden-diff.md"
+    golden_diff = {}
+    if golden_diff_json.exists():
+        try:
+            golden_diff = load_json(golden_diff_json)
+        except Exception:
+            golden_diff = {}
+
     result = {
         "app_profile_path": str(app_profile_path),
         "selected_run_dir": str(artifacts_dir),
@@ -448,6 +457,8 @@ def run_configurator(app_profile_path: Path, artifacts_dir: Optional[Path], mode
             "visual_classification_md": str(VISUAL_DIR / "LATEST-VISUAL-CLASSIFICATION.md") if (VISUAL_DIR / "LATEST-VISUAL-CLASSIFICATION.md").exists() else None,
             "visual_analysis_json": str(VISUAL_DIR / "latest-visual-analysis.json") if (VISUAL_DIR / "latest-visual-analysis.json").exists() else None,
             "visual_analysis_md": str(VISUAL_DIR / "LATEST-VISUAL-ANALYSIS.md") if (VISUAL_DIR / "LATEST-VISUAL-ANALYSIS.md").exists() else None,
+            "golden_diff_json": str(golden_diff_json) if golden_diff_json.exists() else None,
+            "golden_diff_md": str(golden_diff_md) if golden_diff_md.exists() else None,
             "codex_fixpack_md": str(COMPAT_DIR / "CODEX-NEXT-FIXPACK.md") if (COMPAT_DIR / "CODEX-NEXT-FIXPACK.md").exists() else None,
             "codex_next_task_md": None,
         },
@@ -462,6 +473,12 @@ def run_configurator(app_profile_path: Path, artifacts_dir: Optional[Path], mode
             "findings": visual_result.get("findings", []),
             "confidence": visual_result.get("confidence"),
             "likely_root_layer": visual_result.get("likely_root_layer"),
+        },
+        "golden_diff": {
+            "overall": golden_diff.get("overall"),
+            "checks": golden_diff.get("checks", []),
+            "golden": golden_diff.get("golden"),
+            "current": golden_diff.get("current"),
         },
         "recommended_codex_action": router["recommended_codex_action"],
         "forbidden_actions": router["forbidden_actions"],
@@ -554,6 +571,21 @@ def write_outputs(result: dict, out_dir: Path):
     for f in result["visual"].get("findings", []):
         lines.append(f"  - `{f.get('class')}` ({f.get('layer')}): {f.get('detail')}")
     if not result["visual"].get("findings"):
+        lines.append("  - (none)")
+    lines.append("")
+
+    lines.extend([
+        "## CrossOver Golden Diff",
+        "",
+        f"- Overall: `{result.get('golden_diff', {}).get('overall', 'N/A')}`",
+        f"- Golden: `{result.get('golden_diff', {}).get('golden', 'N/A')}`",
+        f"- Current: `{result.get('golden_diff', {}).get('current', 'N/A')}`",
+        "- Checks:",
+    ])
+    gd_checks = result.get("golden_diff", {}).get("checks", [])
+    for c in gd_checks:
+        lines.append(f"  - `{c.get('element')}`: {c.get('status')} ({'; '.join(c.get('reasons', [])) if c.get('reasons') else 'within thresholds'})")
+    if not gd_checks:
         lines.append("  - (none)")
     lines.append("")
 

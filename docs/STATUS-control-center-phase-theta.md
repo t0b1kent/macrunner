@@ -5,7 +5,7 @@ Area: Onboarding and first launch
 
 ## Implemented
 
-- Updated default root and onboarding root to /Volumes/MacOS/MacRunner.
+- Updated default root and onboarding root to /Users/timurtoby/Documents/MacRunner/Main/MacRunner.
 - Added ControlCenterFirstLaunchPlanner with root, bottles, profiles, and Process-only doctor handoff checks.
 - Preserved existing onboarding Process execution style.
 

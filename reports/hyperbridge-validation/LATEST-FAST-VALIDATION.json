@@ -1,14 +1,14 @@
 {
-  "family": "rep_movs",
+  "family": "string_ops",
   "status": "PASS",
   "oracle": {
-    "total": 5,
-    "pass": 5
+    "total": 1,
+    "pass": 1
   },
   "filecheck": {
     "total": 3,
     "pass": 3
   },
-  "hb_test_runner": "available_todo_hook",
+  "hb_test_runner": "pass",
   "notes": []
 }

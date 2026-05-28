@@ -1,38 +1,46 @@
 {
+  "schema_version": 3,
   "id": "1c-enterprise-83",
+  "kind": "profile",
   "name": "1С:Предприятие 8.3",
-  "category": "business",
-  "region": "ru",
-  "status": "research",
-  "windows_version": "win10",
-  "architecture": "x86_64",
-  "required_dlls": [
-    "msxml3",
-    "msxml6",
-    "vcrun2015",
-    "dotnet48"
+  "inherits": [
+    "_base",
+    "_category-business"
   ],
-  "patches": [
-    {
-      "file": "backend.dll",
-      "tool": "1C_8x_UniPatch.exe",
-      "required": true,
-      "note": "Без патча — лицензионная проверка не проходит"
-    }
-  ],
-  "wine_settings": {
-    "locale": "ru_RU.UTF-8",
-    "winedebug": "-all"
-  },
-  "known_issues": [
-    "Русские имена файлов требуют настройки кодировки",
-    "Сетевая работа с сервером 1С — отдельная настройка"
-  ],
-  "test_status": {
-    "launches": null,
-    "stable": null,
-    "last_tested": null,
-    "tested_version": null
-  },
-  "notes": "Подтверждено сообществом BUH.1C — работает с 8.1, 8.2, 8.3"
+  "overrides": {
+    "category": "business",
+    "region": "ru",
+    "status": "research",
+    "windows_version": "win10",
+    "architecture": "x86_64",
+    "required_dlls": [
+      "msxml3",
+      "msxml6",
+      "vcrun2015",
+      "dotnet48"
+    ],
+    "patches": [
+      {
+        "file": "backend.dll",
+        "tool": "1C_8x_UniPatch.exe",
+        "required": true,
+        "note": "Без патча — лицензионная проверка не проходит"
+      }
+    ],
+    "wine_settings": {
+      "locale": "ru_RU.UTF-8",
+      "winedebug": "-all"
+    },
+    "known_issues": [
+      "Русские имена файлов требуют настройки кодировки",
+      "Сетевая работа с сервером 1С — отдельная настройка"
+    ],
+    "test_status": {
+      "launches": null,
+      "stable": null,
+      "last_tested": null,
+      "tested_version": null
+    },
+    "notes": "Подтверждено сообществом BUH.1C — работает с 8.1, 8.2, 8.3"
+  }
 }

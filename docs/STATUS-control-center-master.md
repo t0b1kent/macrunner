@@ -1,7 +1,7 @@
 # Control Center Master Status
 
 Date: 2026-05-14
-Root: /Volumes/MacOS/MacRunner
+Root: /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 Scope: app/macr-control-center, profiles, config, docs/STATUS-control-center-*, tools
 Protected: engine, wine-fork, scripts/build-wine.sh, scripts/sign-engine.sh, scripts/loop-wineboot.sh
 

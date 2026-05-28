@@ -95,7 +95,7 @@ Build complete! (2.09s)
 
 ## Gate 5 compat runner
 ```console
-/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-111119
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/compat-runs/20260514-111119
 compat runner: 3/3 PASS
 notepad-plus-plus: Notepad++ -> portable-fixture
 libreoffice-viewer: Office Viewer -> manual-media-required
@@ -107,7 +107,7 @@ dry-run entries: 5/50
 
 ## Gate 6 compat report
 ```console
-/Volumes/MacOS/MacRunner/reports/compat-public
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/compat-public
 rows=50
 rows 50
 macrunner_only 21
@@ -246,7 +246,7 @@ Archive:  /var/folders/sp/jbp4ynb53310q0w1db69lrlm0000gn/T/bug-report-2026-05-14
 ## Gate 9 package DMG
 ```console
 
-/Volumes/MacOS/MacRunner/app/macr-control-center/Sources/MacRunnerControlCenter/ViewModels/AppLibraryViewModel.swift:30:74: warning: left side of nil coalescing operator '??' has non-optional type 'Date', so the right side is never used
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/app/macr-control-center/Sources/MacRunnerControlCenter/ViewModels/AppLibraryViewModel.swift:30:74: warning: left side of nil coalescing operator '??' has non-optional type 'Date', so the right side is never used
 28 |             result.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 29 |         case .lastRun:
 30 |             result.sort { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
@@ -254,7 +254,7 @@ Archive:  /var/folders/sp/jbp4ynb53310q0w1db69lrlm0000gn/T/bug-report-2026-05-14
 31 |         case .duration:
 32 |             result.sort { ($0.lastDurationMs ?? 0) > ($1.lastDurationMs ?? 0) }
 
-/Volumes/MacOS/MacRunner/app/macr-control-center/Sources/MacRunnerControlCenter/ViewModels/BottleManagerViewModel.swift:76:13: warning: initialization of immutable value 'base' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/app/macr-control-center/Sources/MacRunnerControlCenter/ViewModels/BottleManagerViewModel.swift:76:13: warning: initialization of immutable value 'base' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
  74 |
  75 |     func deleteAllStale() {
  76 |         let base = (settings.bottlesDirectory as NSString).expandingTildeInPath
@@ -262,7 +262,7 @@ Archive:  /var/folders/sp/jbp4ynb53310q0w1db69lrlm0000gn/T/bug-report-2026-05-14
  77 |         for bottle in bottles where bottle.status == "stale" {
  78 |             _ = delete(bottle, confirmed: true)
 
-/Volumes/MacOS/MacRunner/app/macr-control-center/Sources/MacRunnerControlCenter/ViewModels/DebugBundleViewModel.swift:43:13: warning: initialization of immutable value 'task' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/app/macr-control-center/Sources/MacRunnerControlCenter/ViewModels/DebugBundleViewModel.swift:43:13: warning: initialization of immutable value 'task' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
 41 |
 42 |     func exportFromTaskQueue(settings: AppSettings) {
 43 |         let task = TaskQueue.shared.tasks.first { $0.status == .success || $0.status == .failed }
@@ -270,7 +270,7 @@ Archive:  /var/folders/sp/jbp4ynb53310q0w1db69lrlm0000gn/T/bug-report-2026-05-14
 44 |         export(settings: settings)
 45 |     }
 
-/Volumes/MacOS/MacRunner/app/macr-control-center/Sources/MacRunnerControlCenter/Views/LiveLogView.swift:47:22: warning: 'onChange(of:perform:)' was deprecated in macOS 14.0: Use `onChange` with a two or zero parameter action closure instead. [#DeprecatedDeclaration]
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/app/macr-control-center/Sources/MacRunnerControlCenter/Views/LiveLogView.swift:47:22: warning: 'onChange(of:perform:)' was deprecated in macOS 14.0: Use `onChange` with a two or zero parameter action closure instead. [#DeprecatedDeclaration]
  45 |                     }
  46 |                     .padding(.vertical, 4)
  47 |                     .onChange(of: streamer.lines.count) { _ in
@@ -282,8 +282,8 @@ Archive:  /var/folders/sp/jbp4ynb53310q0w1db69lrlm0000gn/T/bug-report-2026-05-14
 [3/5] Write Objects.LinkFileList
 [4/5] Linking MacRunnerControlCenter
 Build complete! (31.79s)
-/Volumes/MacOS/MacRunner/dist/stage/MacRunner.app: replacing existing signature
-DMG: /Volumes/MacOS/MacRunner/dist/MacRunner-1.0.dmg
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/dist/stage/MacRunner.app: replacing existing signature
+DMG: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/dist/MacRunner-1.0.dmg
 SHA256: fc8998b8f8773e533263cb0f4bdebd893524df49983697f9fe59b82288fb8a11
 hdiutil: verify: checksum of "dist/MacRunner-1.0.dmg" is VALID
 GPT Partition Data (Primary GPT Tabl: verified   CRC32 $DED11308
@@ -298,12 +298,12 @@ GPT Partition Data (Backup GPT Table: verified   CRC32 $DED11308
 Checksumming GPT Header (Backup GPT Header : 7)…
   GPT Header (Backup GPT Header : 7): verified   CRC32 $987C61F4
 verified   CRC32 $79D9A635
---validated:/Volumes/MacOS/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Downloader.xpc
---prepared:/Volumes/MacOS/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Installer.xpc
---validated:/Volumes/MacOS/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Installer.xpc
---validated:/Volumes/MacOS/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/Sparkle.framework/Versions/Current/.
---prepared:/Volumes/MacOS/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/CrashReporter.framework/Versions/Current/.
---validated:/Volumes/MacOS/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/CrashReporter.framework/Versions/Current/.
+--validated:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Downloader.xpc
+--prepared:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Installer.xpc
+--validated:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/Sparkle.framework/Versions/Current/XPCServices/Installer.xpc
+--validated:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/Sparkle.framework/Versions/Current/.
+--prepared:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/CrashReporter.framework/Versions/Current/.
+--validated:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/dist/stage/MacRunner.app/Contents/Frameworks/CrashReporter.framework/Versions/Current/.
 dist/stage/MacRunner.app: valid on disk
 dist/stage/MacRunner.app: satisfies its Designated Requirement
 LICENSES_PRESENT

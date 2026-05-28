@@ -15,7 +15,7 @@
 - **Wine 11** ARM64-native fork
 - **Future**: DXMT graphics, AI auto-config
 
-Repository root: `/Volumes/MacOS/MacRunner`
+Repository root: `/Users/timurtoby/Documents/MacRunner/Main/MacRunner`
 
 Required reading (in this order):
 1. [AGENTS.md](../AGENTS.md) — paths, scripts, process hygiene, mandatory protocols
@@ -23,11 +23,11 @@ Required reading (in this order):
 3. This brief
 
 **Important paths**:
-- Repo root: `/Volumes/MacOS/MacRunner`
-- Wine source: `/Volumes/MacOS/MacRunner/engine/wine/`
-- Wine builds: `/Volumes/MacOS/MacRunner/engine/wine/build-pure-arm64/`
-- Wine dist (ARM64-native): `/Volumes/MacOS/MacRunner/engine/wine/dist-pure-arm64/`
-- Your workspace (write only here for new work): `/Volumes/MacOS/MacRunner/engine/audio/macos/` (create)
+- Repo root: `/Users/timurtoby/Documents/MacRunner/Main/MacRunner`
+- Wine source: `/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/`
+- Wine builds: `/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/build-pure-arm64/`
+- Wine dist (ARM64-native): `/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-pure-arm64/`
+- Your workspace (write only here for new work): `/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/audio/macos/` (create)
 
 **DO NOT touch** (Codex's active areas):
 - `engine/hyperbridge/`
@@ -263,7 +263,7 @@ For your very first session, do exactly:
 ## Appendix A — Quick path reference
 
 ```
-/Volumes/MacOS/MacRunner                                # repo root
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner                                # repo root
 ├── AGENTS.md                                            # READ FIRST
 ├── config/env.sh                                        # source for paths
 ├── engine/audio/macos/avaudio/                          # YOUR WORKSPACE (create)
@@ -276,7 +276,7 @@ For your very first session, do exactly:
 ## Appendix B — Sanity check first command
 
 ```bash
-cd /Volumes/MacOS/MacRunner
+cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 . config/env.sh
 echo "Root: $MACRUNNER_ROOT"
 echo "Wine ARM64 dist: $MACRUNNER_WINE_DIST_ARM64"

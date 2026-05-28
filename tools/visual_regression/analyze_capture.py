@@ -35,6 +35,8 @@ THRESHOLDS = {
     "statusbar_region_bottom_px": 30,
     "scrollbar_region_right_px": 24,
     "editor_region_inset_px": 4,
+    "window_button_empty_square_min_count": 3,
+    "folder_icon_colorful_floor": 120,
 }
 
 
@@ -145,6 +147,87 @@ def analyze_scrollbar_region(pixels: list, width: int, height: int) -> dict:
     }
 
 
+def black_square_components(pixels: list, width: int, height: int, region: tuple[int, int, int, int]) -> list[dict]:
+    x0, y0, x1, y1 = region
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(width, x1), min(height, y1)
+    seen = set()
+    components = []
+
+    def pixel_is_black(x: int, y: int) -> bool:
+        return is_black(*pixels[y * width + x][:3], threshold=25)
+
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            if (x, y) in seen or not pixel_is_black(x, y):
+                continue
+            stack = [(x, y)]
+            seen.add((x, y))
+            area = 0
+            min_x = max_x = x
+            min_y = max_y = y
+            while stack:
+                px, py = stack.pop()
+                area += 1
+                min_x, max_x = min(min_x, px), max(max_x, px)
+                min_y, max_y = min(min_y, py), max(max_y, py)
+                for nx, ny in ((px + 1, py), (px - 1, py), (px, py + 1), (px, py - 1)):
+                    if nx < x0 or nx >= x1 or ny < y0 or ny >= y1 or (nx, ny) in seen:
+                        continue
+                    if pixel_is_black(nx, ny):
+                        seen.add((nx, ny))
+                        stack.append((nx, ny))
+            bw = max_x - min_x + 1
+            bh = max_y - min_y + 1
+            if 8 <= bw <= 32 and 8 <= bh <= 32 and abs(bw - bh) <= 6 and area >= 35:
+                components.append({"area": area, "bbox": [min_x, min_y, max_x + 1, max_y + 1]})
+
+    return sorted(components, key=lambda c: c["area"], reverse=True)
+
+
+def analyze_window_buttons(pixels: list, width: int, height: int) -> dict:
+    region = (int(width * 0.68), int(height * 0.03), width, int(height * 0.13))
+    comps = black_square_components(pixels, width, height, region)
+    return {
+        "region": list(region),
+        "empty_square_count": len(comps),
+        "components": comps[:12],
+        "empty_buttons_detected": len(comps) >= THRESHOLDS["window_button_empty_square_min_count"],
+    }
+
+
+def analyze_tab_artifacts(pixels: list, width: int, height: int) -> dict:
+    region = (0, int(height * 0.10), int(width * 0.30), int(height * 0.22))
+    comps = black_square_components(pixels, width, height, region)
+    return {
+        "region": list(region),
+        "black_square_count": len(comps),
+        "components": comps[:12],
+        "black_squares_detected": len(comps) > 0,
+    }
+
+
+def analyze_folder_icons(pixels: list, width: int, height: int, image_path: Path) -> dict:
+    name = image_path.name.lower()
+    checked = "folder-icons" in name or "save" in name or "open" in name
+    region = (0, int(height * 0.12), int(width * 0.45), int(height * 0.92))
+    x0, y0, x1, y1 = region
+    colorful = sum(
+        1 for y in range(y0, y1) for x in range(x0, x1)
+        if is_colorful(*pixels[y * width + x])
+    )
+    comps = black_square_components(pixels, width, height, region)
+    return {
+        "checked": checked,
+        "region": list(region),
+        "colorful_pixels": colorful,
+        "colorful_floor": THRESHOLDS["folder_icon_colorful_floor"],
+        "black_square_count": len(comps),
+        "components": comps[:12],
+        "pass": not checked or (colorful >= THRESHOLDS["folder_icon_colorful_floor"] and len(comps) == 0),
+    }
+
+
 def analyze_image(image_path: Path) -> dict:
     ext = image_path.suffix.lower()
     try:
@@ -181,6 +264,9 @@ def analyze_image(image_path: Path) -> dict:
         "toolbar": analyze_toolbar_region(pixels, width, height),
         "statusbar": analyze_statusbar_region(pixels, width, height),
         "scrollbar": analyze_scrollbar_region(pixels, width, height),
+        "window_buttons": analyze_window_buttons(pixels, width, height),
+        "tabs": analyze_tab_artifacts(pixels, width, height),
+        "folder_icons": analyze_folder_icons(pixels, width, height, image_path),
     }
 
     return result
@@ -231,6 +317,20 @@ def write_outputs(result: dict, out_dir: Path):
         f"- Black pixels: {result['scrollbar']['black_pixels']} / {result['scrollbar']['total_pixels']}",
         f"- Black ratio: {result['scrollbar']['black_ratio']:.4f}",
         f"- Black artifact: {'YES' if result['scrollbar']['black_artifact'] else 'NO'}",
+        "",
+        f"### Window Buttons",
+        f"- Empty square components: {result['window_buttons']['empty_square_count']}",
+        f"- Detected: {'YES' if result['window_buttons']['empty_buttons_detected'] else 'NO'}",
+        "",
+        f"### Tabs",
+        f"- Black square components: {result['tabs']['black_square_count']}",
+        f"- Detected: {'YES' if result['tabs']['black_squares_detected'] else 'NO'}",
+        "",
+        f"### Folder Icons",
+        f"- Checked: {'YES' if result['folder_icons']['checked'] else 'NO'}",
+        f"- Colorful pixels: {result['folder_icons']['colorful_pixels']}",
+        f"- Black square components: {result['folder_icons']['black_square_count']}",
+        f"- Pass: {'YES' if result['folder_icons']['pass'] else 'NO'}",
         "",
     ]
     if "error" in result:

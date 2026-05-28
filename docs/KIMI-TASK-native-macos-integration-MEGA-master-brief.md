@@ -16,7 +16,7 @@
 
 ## 0. Mandatory reading
 
-1. [/Volumes/MacOS/MacRunner/AGENTS.md](../AGENTS.md) — **🎯 Zeroth Principle**, protocols
+1. [/Users/timurtoby/Documents/MacRunner/Main/MacRunner/AGENTS.md](../AGENTS.md) — **🎯 Zeroth Principle**, protocols
 2. [/Users/timurtoby/Documents/MacRunner/88-competitive-analysis-mythic.md](file:///Users/timurtoby/Documents/MacRunner/88-competitive-analysis-mythic.md) — UX gaps Mythic / CrossOver / Whisky
 3. Your other briefs — methodology pattern stays same
 4. macOS Human Interface Guidelines: https://developer.apple.com/design/human-interface-guidelines/macos
@@ -391,7 +391,7 @@ Final layer of native feel:
 ## 7. Workspace
 
 ```
-/Volumes/MacOS/MacRunner/
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/
 ├── engine/native-macos/                            # YOUR PRIMARY workspace
 │   ├── menubar/                                     # Phase Φ.1
 │   ├── dialogs/                                     # Phase Φ.2
@@ -595,7 +595,7 @@ E) "Find things in Spotlight"
 ## Appendix A — Path quick reference
 
 ```
-Repo:                       /Volumes/MacOS/MacRunner
+Repo:                       /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 Native macOS workspace:     engine/native-macos/
 Wine driver:                engine/wine/dlls/winemac.drv/ (extend)
 Common dialogs:             engine/wine/dlls/comdlg32/ (extend)
@@ -606,7 +606,7 @@ Progress log:               docs/KIMI-PROGRESS-native-macos.md
 ## Appendix B — Sanity check first
 
 ```bash
-cd /Volumes/MacOS/MacRunner
+cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 . config/env.sh
 echo "Root: $MACRUNNER_ROOT"
 

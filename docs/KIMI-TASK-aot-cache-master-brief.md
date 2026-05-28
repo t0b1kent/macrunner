@@ -9,8 +9,8 @@
 
 ## 0. Read first (mandatory)
 
-1. [/Volumes/MacOS/MacRunner/AGENTS.md](../AGENTS.md) — особенно **🎯 Zeroth Principle** (native, root-cause, seamless) и mandatory protocols
-2. [/Volumes/MacOS/MacRunner/docs/KIMI-TASK-audio-stack-master-brief.md](KIMI-TASK-audio-stack-master-brief.md) — твой первый brief, формат и стиль работы остаются те же
+1. [/Users/timurtoby/Documents/MacRunner/Main/MacRunner/AGENTS.md](../AGENTS.md) — особенно **🎯 Zeroth Principle** (native, root-cause, seamless) и mandatory protocols
+2. [/Users/timurtoby/Documents/MacRunner/Main/MacRunner/docs/KIMI-TASK-audio-stack-master-brief.md](KIMI-TASK-audio-stack-master-brief.md) — твой первый brief, формат и стиль работы остаются те же
 3. This brief
 
 If you completed audio stack Phase 1+2 (12/12 tasks) — отлично. Эта задача following the same methodology: design first, evidence-driven, family fixes, decision autonomy.
@@ -220,7 +220,7 @@ Don't block waiting for confirmation on reasonable choices. Document decision в
 ### Where to write
 
 ```
-/Volumes/MacOS/MacRunner/
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/
 ├── engine/hyperbridge/cache/                      # NEW DIR for your extension work
 │   ├── hb_cache_dir.c                              # default dir resolver
 │   ├── hb_cache_dir.h
@@ -353,7 +353,7 @@ Cycle: design → impl → tests → progress entry. Same disciplined rhythm as 
 ## Appendix A — Path quick reference
 
 ```
-Repo root:          /Volumes/MacOS/MacRunner
+Repo root:          /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 Your workspace:     engine/hyperbridge/cache/  (CREATE — new)
 Existing AOT:       engine/hyperbridge/src/hb_aot_cache.c  (READ ONLY)
 Existing AOT header: engine/hyperbridge/include/hb_cache.h  (READ ONLY)
@@ -368,7 +368,7 @@ Progress log:       docs/KIMI-PROGRESS-aot.md
 ## Appendix B — Sanity check first command
 
 ```bash
-cd /Volumes/MacOS/MacRunner
+cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 . config/env.sh
 echo "Root: $MACRUNNER_ROOT"
 ls engine/hyperbridge/include/hb_cache.h

@@ -174,3 +174,148 @@ Smallest reliable first harness:
 ## Rule
 
 No broad fixes from screenshots alone. Each failing item becomes a narrow bug with evidence, then family audit if the class is architectural.
+
+2026-05-19 manual visual check after c3bc86e:
+- Run dir: `reports/phase-h/npp-x64-20260519-155221/`
+- User screenshot confirms Notepad++ remains visible and interactive enough to show title/menu/tab/editor structure after default `x64-signal-callback` cap fix.
+- Still not product-grade visually:
+  - Toolbar buttons render as gray placeholder squares instead of real icons.
+  - Black toolbar/background bands remain too large and non-native.
+  - Font/menu metrics still look off compared with a native/Windows baseline.
+- Treat these as visual/product-smoke failures, not Phase H closure.
+
+2026-05-19 full-functional directive intake:
+- Source directive: `docs/CODEX-DIRECTIVE-notepad-plus-plus-full-functional.md`
+- Closure checklist created: `reports/phase-h/MILESTONE/closure-checklist.md`
+- Directive Section 1 currently contains 100 checkbox criteria; initial conservative status:
+  - PASS=0
+  - YELLOW=2
+  - FAIL=22
+  - UNVERIFIED=76
+- Phase H remains open. KeePass remains paused.
+
+2026-05-19 menu/command discovery evidence:
+- Good smoke evidence before command fallback:
+  - Run dir: `reports/phase-h/npp-x64-20260519-163648/`
+  - `case=discover status=PASS`
+  - `case=editor_remote_scintilla status=PASS`
+  - `case=menu_child_scan status=PASS`
+  - `case=menu_alt_file_input status=PASS gui_flags=0x5`
+  - `case=toolbar_inventory status=PASS button_count=41`
+- Menu is not custom/nonexistent: the live main HWND has `menu=0x10064`.
+- Cross-process menu enumeration is invalid evidence under current Wine:
+  - `GetMenu(main)` returns `HMENU=0x10064`
+  - `GetMenuItemCount(0x10064)` returns `-1`
+  - Wine `win32u/menu.c::grab_menu_ptr()` rejects other-process menu handles (`OBJ_OTHER_PROCESS`), so the smoke helper cannot discover IDs by directly walking the live Notepad++ menu.
+- Harness fix in progress:
+  - `npp_ui_smoke_helper.c` now falls back to loading menu resources from the actual Notepad++ executable via `LoadLibraryEx(..., LOAD_LIBRARY_AS_DATAFILE)` and scans menu resource IDs `1500/1501/1950` inside the helper process.
+  - `run-notepad-x64-ui-smoke.sh` exports `MACRUNNER_NPP_APP_WIN` for that fallback.
+  - This is harness evidence plumbing, not a product workaround; live behavior is still verified through `WM_COMMAND`/dialogs against the running Notepad++ process.
+
+2026-05-19 helper opcode blocker:
+- Trigger:
+  - Run dir: `reports/phase-h/npp-x64-20260519-163648/`
+  - `macrunner-hb-runtime-fail ... pc=0x140002c7f ... reason=UNSUPPORTED`
+- Disassembly of helper at `0x140002c7f`:
+  - `f3 0f 7e b4 24 b8 01 00 00` = `movq 0x1b8(%rsp), %xmm6`
+- Family audit:
+  - Family: SSE qword transfer family
+  - Existing coverage before this finding: `66 0F 6E`, `66 0F 7E`, `66 0F D6`
+  - Missing member fixed: `F3 0F 7E` (`MOVQ xmm, xmm/m64`)
+  - Regression added: memory-displacement trigger, memory sibling, and XMM-register sibling in `hb_test_runner.c`
+- Verification:
+  - `./scripts/test-hyperbridge.sh` => `133 passed, 0 failed`
+  - `libhyperbridge.a` rebuilt from fresh `hb_decode_x64.o`
+  - `ntdll.so` force-relinked and ad-hoc codesigned after the HyperBridge change
+- Product rerun is not yet certified after this fix because the next two canonical smoke attempts failed before app launch with `wineserver: bind: Operation not permitted`:
+  - `reports/phase-h/npp-x64-20260519-170409/`
+  - `reports/phase-h/npp-x64-20260519-170555/`
+- Treat the bind failure as harness/infrastructure, not Notepad++ product evidence.
+
+2026-05-19 Scintilla harness readiness correction:
+- Trigger evidence:
+  - Run dir: `reports/phase-h/npp-x64-20260519-185814/`
+  - `case=discover status=PASS ... class="Notepad++" title=""`
+  - `case=editor_remote_scintilla status=FAIL len=-1 text_match=0`
+  - Immediately after that, `window_snapshot tag="main-before-menu"` showed the same HWND visible with title `new 1 - Notepad++ [Administrator]`.
+- Interpretation:
+  - Treat this as harness timing, not product editor failure: discovery accepted the main HWND as soon as toolbar existed, before the main window was visible/titled and before the visible Scintilla child was proven message-responsive.
+  - The previous helper also hid the failing substep; `len=-1` did not distinguish allocation, `SCI_SETTEXT`, `SCI_GETTEXTLENGTH`, `SCI_GETTEXT`, or remote read failure.
+- Harness fix:
+  - Added `case=editor_ready`: re-scan the real Notepad++ HWND until main window is visible, Scintilla is visible, title is non-empty, and `SCI_GETTEXTLENGTH` responds.
+  - Added substep evidence to `editor_remote_scintilla`: `VirtualAllocEx`, `WriteProcessMemory`, `SCI_SETTEXT`, `SCI_GETTEXTLENGTH`, `SCI_GETTEXT`, `ReadProcessMemory`, byte counts, and `GetLastError` values.
+  - Fixed helper compile after the diagnostic API change; `npp_ui_smoke_helper.exe` rebuilt at `2026-05-19 19:55:23`.
+- Focused verification:
+  - Run dir: `reports/phase-h/npp-x64-20260519-195550/`
+  - Run mode: dialogs, toolbar, and font intentionally skipped to isolate editor/menu harness reliability.
+  - `case=editor_ready status=PASS attempts=7 ... title="new 1 - Notepad++ [Administrator]" len=0`
+  - `case=editor_remote_scintilla status=PASS ready_len=0 len=98 text_match=1 ... set_ok=1 len_ok=1 get_ok=1 read_ok=1`
+  - `case=menu_inventory status=PASS ... cmd_new=41001 cmd_open=41002 cmd_save=41006 cmd_save_as=41008 cmd_find=43001 cmd_preferences=48011`
+  - `case=menu_alt_file_input status=PASS`
+  - `overall=PASS fail_count=0 yellow_count=8`; yellows are expected skipped cases and live cross-process menu enumeration limitation.
+- Remaining:
+  - Full product smoke is not green. Dialogs, toolbar render/click, font baseline, and clean exit still need non-skipped evidence.
+  - Last unskipped toolbar path remains blocked by a helper-side HyperBridge unsupported opcode at `guest=0x14000348e bytes=66 0f 50` (`MOVMSKPD`). Per current directive, do not fix engine until the Scintilla harness failure is documented and isolated.
+
+2026-05-20 wineserver lifecycle classification correction:
+- Trigger evidence:
+  - Run dir before fix: `reports/phase-h/npp-x64-20260520-100808/`
+  - `wineboot-init.err`: `wineserver: bind: Operation not permitted`
+  - `wineboot-update.err`: `wineserver: bind: Operation not permitted`
+  - `stderr.log`: `wineserver: bind: Operation not permitted`
+  - UI smoke summary: `status=125 reason=INFRA_WINESERVER_BIND_OPERATION_NOT_PERMITTED`
+- Root classification:
+  - This is not Notepad++ product evidence and not toolbar/comctl32 evidence.
+  - Current Codex sandbox denies even a minimal local `AF_UNIX bind()` probe with `errno=1 Operation not permitted`, so Wine cannot create the wineserver socket from this environment.
+- Harness fix:
+  - `scripts/run-notepad-x64.sh` now runs an AF_UNIX socket preflight before `wineboot`.
+  - On failure it writes `infra.status` and exits `125` before any Wine bootstrap/app evidence can be misclassified.
+  - `scripts/run-notepad-x64-ui-smoke.sh` now reads launcher `infra.status` in foreground-hook fallback.
+- Verification:
+  - `python3 -m unittest tests.test_run_notepad_x64_script tests.test_npp_ui_smoke_script tests.test_npp_ui_smoke_helper -v` => `14 tests OK`
+  - Run dir after fix: `reports/phase-h/npp-x64-20260520-102035/`
+  - `infra-preflight.log`: `unix_socket_bind_preflight=FAIL errno=1 strerror=Operation not permitted`
+  - Smoke exits quickly with `status=125 reason=INFRA_WINESERVER_BIND_OPERATION_NOT_PERMITTED`, not a product failure.
+- Remaining:
+  - Full Notepad++ product smoke must be rerun from a host/session where AF_UNIX bind is allowed.
+  - If that host reaches product evidence again, resume with the current known product blockers: toolbar icon rendering, dialogs, font baseline, and clean exit.
+
+2026-05-20 Notepad++ toolbar DIM-07/DIM-09 update:
+- Focused report: `reports/phase-h/MILESTONE/notepad-toolbar-dim07-20260520.md`
+- Current classification:
+  - DIM-11 stale artifact check: PASS (`build_freshness=PASS` after comctl32 rebuilds).
+  - DIM-07 product toolbar: substantially fixed. macOS CG capture shows a light toolbar background and colored icons.
+  - DIM-09 smoke capture: still open. Windows-side `toolbar_render` capture reports a black/low-color strip while CG capture shows the product window rendered correctly.
+- Key artifacts:
+  - Product-side CG capture: `reports/phase-h-toolbar-cg-v6checkedfill-retry-20260520-130721/window.png`
+  - 30s required smoke: `reports/phase-h/npp-x64-20260520-130942/` (`status=124`, helper readiness timeout before `toolbar_render`)
+  - 120s extended smoke: `reports/phase-h/npp-x64-20260520-131204/` (`toolbar_new_click=PASS`, `toolbar_render=FAIL` by helper capture, `dialog_preferences=FAIL`)
+- Remaining:
+  - Fix/replace helper `toolbar_render` capture/readback before using it as product evidence.
+  - Continue `dialog_preferences` after toolbar capture validity is resolved.
+
+2026-05-21 Notepad++ x64 zero-yellow product smoke:
+- Root visual fixes:
+  - `uxtheme` 32bpp msstyles BMP unused-alpha handling now preserves opaque RGB instead of premultiplying all-zero alpha to black.
+  - `uxtheme` themed bitmap drawing now composes copied/scaled 32bpp pixels explicitly for opaque, binary-alpha, and full-alpha paths.
+  - `comctl32` status bar uses the classic paint path by default; themed status bar paint is opt-in via `MACRUNNER_USE_THEME_STATUSBAR`.
+- Harness fixes:
+  - Windows-side toolbar readback is no longer a product-color gate when macOS CG capture proves the real product toolbar is colorful.
+  - Cross-process menu handle enumeration is reported as a resource-menu fallback pass when command IDs are proven from the app resource and live `WM_COMMAND` probes pass.
+  - `Alt+F` menu input now retries before falling back to mouse menu evidence, removing a focus-timing flake.
+  - Dialog icon CG probe now waits for the short-lived hold helper to exit and records lifecycle PASS.
+- Unit verification:
+  - `python3 -m pytest -q tests/test_npp_ui_smoke_helper.py tests/test_npp_ui_smoke_script.py tests/test_npp_smoke_effective_overall.py tools/compat_learning/tests/test_toolbar_threshold.py` => `33 passed`.
+- Product smoke verification:
+  - Single zero-yellow run: `reports/phase-h/npp-x64-20260521-034629/`
+    - `PASS=27 YELLOW=0 FAIL=0`
+    - `overall_effective=PASS fail_count=0 yellow_count=0`
+    - `case=clean_exit status=PASS ... wine_processes=0`
+  - Three consecutive zero-yellow runs: `reports/notepad-zero-yellow-regression-20260521-035030/summary.txt`
+    - Run 1: `reports/phase-h/npp-x64-20260521-035040/`, `PASS=27 YELLOW=0 FAIL=0`
+    - Run 2: `reports/phase-h/npp-x64-20260521-035406/`, `PASS=27 YELLOW=0 FAIL=0`
+    - Run 3: `reports/phase-h/npp-x64-20260521-035732/`, `PASS=27 YELLOW=0 FAIL=0`
+- Current remaining closure gates:
+  - 30-minute manual heavy-use still requires human verification.
+  - 1-hour idle RSS stability still needs a dedicated long-run artifact.
+  - Windows baseline visual comparison and final user sign-off are not automatable inside this session.

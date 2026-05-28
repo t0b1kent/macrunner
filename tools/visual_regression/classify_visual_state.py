@@ -26,6 +26,8 @@ VISUAL_CLASSES = [
     "VISUAL_FAIL_RIGHT_BAND",
     "VISUAL_FAIL_SCROLLBAR_BLACK",
     "VISUAL_FAIL_FOLDER_ICONS_BLACK",
+    "VISUAL_FAIL_WINDOW_BUTTONS_EMPTY",
+    "VISUAL_FAIL_TAB_BLACK_SQUARES",
     "VISUAL_FAIL_STATUSBAR",
     "VISUAL_FAIL_UI_METRICS",
     "VISUAL_INCONCLUSIVE",
@@ -94,6 +96,39 @@ def classify(analysis: dict, profile: dict) -> dict:
             "root_candidates": ["scrollbar part/state drawing", "pPatBlt ROP=0", "mask/alpha"],
         })
 
+    # Empty MDI/window control glyph boxes
+    wb = analysis.get("window_buttons", {})
+    if wb.get("empty_buttons_detected"):
+        findings.append({
+            "class": "VISUAL_FAIL_WINDOW_BUTTONS_EMPTY",
+            "detail": f"empty_window_button_squares={wb.get('empty_square_count')} components={wb.get('components', [])[:3]}",
+            "layer": "WINE_WIN32U_MARLETT",
+            "root_candidates": ["Marlett font load", "caption glyph fallback", "MDI menubar magic bitmap drawing"],
+        })
+
+    # Tab close/modified black squares
+    tabs = analysis.get("tabs", {})
+    if tabs.get("black_squares_detected"):
+        findings.append({
+            "class": "VISUAL_FAIL_TAB_BLACK_SQUARES",
+            "detail": f"tab_black_square_components={tabs.get('black_square_count')} components={tabs.get('components', [])[:3]}",
+            "layer": "WINE_COMCTL32",
+            "root_candidates": ["ImageList ILD_TRANSPARENT mask draw", "CopyImage monochrome placeholder", "tab owner-draw imagelist"],
+        })
+
+    # Shell folder/drive icons in file dialogs
+    folder = analysis.get("folder_icons", {})
+    if folder.get("checked") and not folder.get("pass", True):
+        findings.append({
+            "class": "VISUAL_FAIL_FOLDER_ICONS_BLACK",
+            "detail": (
+                f"folder_icon_colorful_pixels={folder.get('colorful_pixels')} "
+                f"floor={folder.get('colorful_floor')} black_square_components={folder.get('black_square_count')}"
+            ),
+            "layer": "WINE_USER32_CURSORICON",
+            "root_candidates": ["indexed ICO StretchDIBits conversion", "shell32 system image list", "HICON mask/color extraction"],
+        })
+
     # Statusbar
     st = analysis.get("statusbar", {})
     if st.get("bad_background"):
@@ -143,9 +178,11 @@ def classify(analysis: dict, profile: dict) -> dict:
             "VISUAL_FAIL_BOTTOM_BAND": 1,
             "VISUAL_FAIL_RIGHT_BAND": 2,
             "VISUAL_FAIL_UI_METRICS": 3,
-            "VISUAL_FAIL_SCROLLBAR_BLACK": 4,
-            "VISUAL_FAIL_STATUSBAR": 5,
-            "VISUAL_FAIL_FOLDER_ICONS_BLACK": 6,
+            "VISUAL_FAIL_WINDOW_BUTTONS_EMPTY": 4,
+            "VISUAL_FAIL_TAB_BLACK_SQUARES": 5,
+            "VISUAL_FAIL_SCROLLBAR_BLACK": 6,
+            "VISUAL_FAIL_STATUSBAR": 7,
+            "VISUAL_FAIL_FOLDER_ICONS_BLACK": 8,
             "VISUAL_INCONCLUSIVE": 99,
             "CAPTURE_MISSING": 99,
         }
@@ -183,6 +220,16 @@ def generate_next_action(primary: dict) -> str:
             "2. Trace uxtheme scrollbar part DrawThemeBackground destination HDC.\n"
             "3. Check pPatBlt with ROP=0 in gdi32/bitblt.c.\n"
             "4. Do NOT patch uxtheme blindly."
+        ),
+        "VISUAL_FAIL_WINDOW_BUTTONS_EMPTY": (
+            "1. Trace Marlett font load and glyph index for 0x30/0x31/0x32/0x72.\n"
+            "2. Verify MDI menubar magic bitmap drawing overlays caption glyph fallback.\n"
+            "3. Re-run CG capture and require empty_square_count=0."
+        ),
+        "VISUAL_FAIL_TAB_BLACK_SQUARES": (
+            "1. Trace ImageList_DrawIndirect ILD_TRANSPARENT mask path.\n"
+            "2. Verify temp bitmap uses destination background and CopyImage black placeholder fallback is active.\n"
+            "3. Re-run CG capture and require tab_black_square_components=0."
         ),
         "VISUAL_FAIL_STATUSBAR": (
             "1. Trace WM_ERASEBKGND -> DefWindowProc -> FillRect / DrawThemeBackground.\n"

@@ -6,7 +6,7 @@ Area: Bottle and prefix manager foundation
 ## Implemented
 
 - Added ControlCenterBottlePlanner and reusable bottle templates for games, 1C, AutoCAD, and office apps.
-- Bottle paths are derived from /Volumes/MacOS/MacRunner/bottles through AppSettings defaults.
+- Bottle paths are derived from /Users/timurtoby/Documents/MacRunner/Main/MacRunner/bottles through AppSettings defaults.
 - Wine actions are represented as Process invocations, not linked engine calls.
 
 ## Remaining Limitations

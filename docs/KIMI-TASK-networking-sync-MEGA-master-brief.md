@@ -16,7 +16,7 @@
 
 ## 0. Mandatory reading
 
-1. [/Volumes/MacOS/MacRunner/AGENTS.md](../AGENTS.md) — **🎯 Zeroth Principle** especially "native by default", все mandatory protocols
+1. [/Users/timurtoby/Documents/MacRunner/Main/MacRunner/AGENTS.md](../AGENTS.md) — **🎯 Zeroth Principle** especially "native by default", все mandatory protocols
 2. Your previous briefs (audio, AOT, graphics) — methodology pattern, same here
 3. This brief
 4. Apple Network.framework docs: https://developer.apple.com/documentation/network
@@ -366,7 +366,7 @@ Escalate (Questions for Timur):
 ## 5. Workspace
 
 ```
-/Volumes/MacOS/MacRunner/
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/
 ├── engine/networking/                            # YOUR PRIMARY workspace
 │   ├── macos/native/                              # Network.framework wrappers
 │   ├── macos/dns/                                 # DNS via macOS resolver
@@ -628,7 +628,7 @@ This is **production infrastructure** для MacRunner commercial product. Canno
 ## Appendix A — Path quick reference
 
 ```
-Repo root:              /Volumes/MacOS/MacRunner
+Repo root:              /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 Networking workspace:   engine/networking/
 Cloud server:           cloud/
 Wine network DLLs:      engine/wine/dlls/ws2_32/, wininet/, winhttp/, secur32/, dnsapi/, ...
@@ -639,7 +639,7 @@ Progress log:           docs/KIMI-PROGRESS-networking.md
 ## Appendix B — Sanity check first
 
 ```bash
-cd /Volumes/MacOS/MacRunner
+cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 . config/env.sh
 echo "Root: $MACRUNNER_ROOT"
 ls engine/wine/dlls/ | grep -iE 'ws2|wsock|wininet|winhttp|dnsapi|secur32' | sort

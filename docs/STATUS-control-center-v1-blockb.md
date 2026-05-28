@@ -1,6 +1,6 @@
 ## Block B verifiers
 $ python3 tools/compat-runner/runner.py --plan tools/compat-runner/plan-test.yaml
-/Volumes/MacOS/MacRunner/reports/compat-runs/20260514-105439
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/compat-runs/20260514-105439
 compat runner: 3/3 PASS
 $ find reports/compat-runs -name result.json | tail -3
 reports/compat-runs/20260514-105439/notepad-fixture/result.json
@@ -16,7 +16,7 @@ dry-run entries: 5/50
 $ python3 - <<PY count plan entries
 50
 $ python3 tools/compat-runner/report.py
-/Volumes/MacOS/MacRunner/reports/compat-public
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/compat-public
 rows=3
 $ ls reports/compat-public/
 badges
@@ -30,7 +30,7 @@ $ grep -c "MacRunner only" reports/compat-public/index.md
 
 ## Block B report rerun after 50-plan overlay
 $ python3 tools/compat-runner/report.py
-/Volumes/MacOS/MacRunner/reports/compat-public
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/compat-public
 rows=50
 $ python3 - <<PY len reports/compat-public/index.json
 50

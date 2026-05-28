@@ -6,6 +6,7 @@
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$PROJECT_ROOT/config/env.sh"
 WINE_SRC="$PROJECT_ROOT/engine/wine"
 WINE_BUILD="$PROJECT_ROOT/engine/wine/build"
 WINE_INSTALL="$PROJECT_ROOT/engine/wine/dist"
@@ -21,20 +22,43 @@ echo "📁 Build:  $WINE_BUILD"
 echo "📁 Install: $WINE_INSTALL"
 echo ""
 
+echo "🌉 Сборка HyperBridge runtime для Wine Unix-side entrypoint dispatch..."
+make -C "$PROJECT_ROOT/engine/hyperbridge" all
+echo ""
+
 # Toolchain layout:
 # - host arm64 build: Apple clang (/usr/bin/clang)
-# - aarch64 PE: llvm-mingw aarch64-w64-mingw32-clang
-# - x86_64 / i386 PE: Homebrew mingw-w64
-# llvm-mingw имеет свой `clang` который нацелен на Windows — кладём его bin
-# В КОНЕЦ PATH чтобы не затенял Apple clang. wrappers (aarch64-w64-mingw32-*)
-# всё равно попадают в PATH через эту директорию.
+# - all PE targets: bundled llvm-mingw *-w64-mingw32-clang
+#
+# ARM64EC builds compile some x64 companion objects with $(x86_64_CC). Homebrew
+# mingw-gcc cannot consume Wine's clang-style ARM64EC flags/assembler output, so
+# target-prefixed compilers must resolve to llvm-mingw first. Host CC is still
+# pinned to Apple clang below, so prepending llvm-mingw does not hijack host code.
 LLVM_MINGW="$PROJECT_ROOT/engine/toolchain/llvm-mingw-20260505-ucrt-macos-universal/bin"
-export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/usr/local/bin:$PATH:$LLVM_MINGW"
+export PATH="$LLVM_MINGW:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/usr/local/bin:$PATH"
 
 # Apple clang явно — иначе configure возьмёт Windows-target clang и не сможет
 # собрать host loader.
-export CC="/usr/bin/clang"
-export CXX="/usr/bin/clang++"
+if command -v ccache >/dev/null 2>&1 && [ "${MACRUNNER_USE_CCACHE:-1}" != "0" ]; then
+    echo "⚡ ccache enabled: $CCACHE_DIR"
+    CCACHE_PREFIX="ccache "
+else
+    CCACHE_PREFIX=""
+fi
+
+export CC="${CCACHE_PREFIX}/usr/bin/clang"
+export CXX="${CCACHE_PREFIX}/usr/bin/clang++"
+
+# Keep target compiler selection deterministic even if Homebrew mingw-w64 is
+# installed earlier in a user's shell PATH.
+export aarch64_CC="${CCACHE_PREFIX}$LLVM_MINGW/aarch64-w64-mingw32-clang"
+export aarch64_CXX="${CCACHE_PREFIX}$LLVM_MINGW/aarch64-w64-mingw32-clang++"
+export arm64ec_CC="${CCACHE_PREFIX}$LLVM_MINGW/arm64ec-w64-mingw32-clang"
+export arm64ec_CXX="${CCACHE_PREFIX}$LLVM_MINGW/arm64ec-w64-mingw32-clang++"
+export x86_64_CC="${CCACHE_PREFIX}$LLVM_MINGW/x86_64-w64-mingw32-clang"
+export x86_64_CXX="${CCACHE_PREFIX}$LLVM_MINGW/x86_64-w64-mingw32-clang++"
+export i386_CC="${CCACHE_PREFIX}$LLVM_MINGW/i686-w64-mingw32-clang"
+export i386_CXX="${CCACHE_PREFIX}$LLVM_MINGW/i686-w64-mingw32-clang++"
 
 # Флаги
 export CFLAGS="-O2 -arch arm64 -mmacosx-version-min=14.0 -I/opt/homebrew/include"
@@ -55,13 +79,18 @@ done
 mkdir -p "$WINE_BUILD" "$WINE_INSTALL"
 cd "$WINE_BUILD"
 
+if [ "${FORCE_RECONFIGURE:-0}" = "1" ]; then
+    rm -f Makefile
+fi
+
 if [ ! -f "Makefile" ]; then
     echo "⚙️  Запускаю configure..."
     # aarch64 PE — для host системных сервисов (wineboot, services, conhost, ...)
-    # x86_64 / i386 PE — для Windows-программ (через Rosetta 2 на M-чипе)
+    # arm64ec PE — для hybrid x64-on-arm64 bootstrap/dispatcher path
+    # x86_64 / i386 PE — для Windows-программ и fallback lanes
     "$WINE_SRC/configure" \
         --prefix="$WINE_INSTALL" \
-        --enable-archs=aarch64,x86_64,i386 \
+        --enable-archs=aarch64,arm64ec,x86_64,i386 \
         --disable-tests \
         --without-x \
         --without-alsa \

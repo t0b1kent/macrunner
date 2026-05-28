@@ -15,10 +15,10 @@ Output:
 
 ```text
 MacRunner graphics: MoltenVK native arm64 artifact
-source: /Volumes/MacOS/MacRunner/engine/moltenvk
-/Volumes/MacOS/MacRunner/engine/graphics/dist/lib/libMoltenVK.dylib: Mach-O 64-bit dynamically linked shared library arm64
+source: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/moltenvk
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/lib/libMoltenVK.dylib: Mach-O 64-bit dynamically linked shared library arm64
 /System/Library/Frameworks/Metal.framework/Versions/A/Metal
-MoltenVK PASS: /Volumes/MacOS/MacRunner/engine/graphics/dist/lib/libMoltenVK.dylib
+MoltenVK PASS: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/lib/libMoltenVK.dylib
 ```
 
 ## Result

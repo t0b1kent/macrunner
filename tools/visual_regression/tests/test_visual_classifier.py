@@ -87,6 +87,24 @@ def main():
     ))
 
     results.append(run_test(
+        "window_buttons_empty",
+        "VISUAL_FAIL_WINDOW_BUTTONS_EMPTY",
+        "WINE_WIN32U_MARLETT"
+    ))
+
+    results.append(run_test(
+        "tab_black_squares",
+        "VISUAL_FAIL_TAB_BLACK_SQUARES",
+        "WINE_COMCTL32"
+    ))
+
+    results.append(run_test(
+        "folder_icons_blank",
+        "VISUAL_FAIL_FOLDER_ICONS_BLACK",
+        "WINE_USER32_CURSORICON"
+    ))
+
+    results.append(run_test(
         "capture_missing",
         "CAPTURE_MISSING",
         "HELPER"

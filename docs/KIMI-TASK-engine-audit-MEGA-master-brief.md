@@ -22,7 +22,7 @@ This is **multiplier work**: 1-2 weeks audit может сэкономить **m
 
 ## 0. Mandatory reading first
 
-1. [/Volumes/MacOS/MacRunner/AGENTS.md](../AGENTS.md) — **🎯 Zeroth Principle**, family audit protocol, patch-by-evidence rule
+1. [/Users/timurtoby/Documents/MacRunner/Main/MacRunner/AGENTS.md](../AGENTS.md) — **🎯 Zeroth Principle**, family audit protocol, patch-by-evidence rule
 2. [/Users/timurtoby/Documents/MacRunner/90-architectural-discoveries-fundamental-bugs.md](file:///Users/timurtoby/Documents/MacRunner/90-architectural-discoveries-fundamental-bugs.md) — **all 7 bugs found so far**, in detail
 3. [/Users/timurtoby/Documents/MacRunner/91-notepad-plus-plus-journey.md](file:///Users/timurtoby/Documents/MacRunner/91-notepad-plus-plus-journey.md) — journey context
 4. [/Users/timurtoby/Documents/MacRunner/85-calc-journey-17-layers.md](file:///Users/timurtoby/Documents/MacRunner/85-calc-journey-17-layers.md) — earlier Calc journey
@@ -515,7 +515,7 @@ This single finding может сэкономить Codex hours/days.
 
 Session 1 — Heisenbug deep dive (HIGHEST PRIORITY):
 
-1. Read AGENTS.md, 90-architectural-discoveries doc, и last 200 lines of Codex's recent journey context (latest commits, last few reports from /Volumes/MacOS/MacRunner/reports/phase-h/)
+1. Read AGENTS.md, 90-architectural-discoveries doc, и last 200 lines of Codex's recent journey context (latest commits, last few reports from /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase-h/)
 2. Read complete:
    - engine/wine/dlls/ntdll/unix/virtual.c (7721 lines)
    - engine/wine/dlls/ntdll/unix/signal_arm64.c (2841 lines)
@@ -565,7 +565,7 @@ This audit is **highest leverage work** available right now. Networking is criti
 ## Appendix A — Path quick reference
 
 ```
-Repo root:                  /Volumes/MacOS/MacRunner
+Repo root:                  /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 HyperBridge core:           engine/hyperbridge/{src,include,tests}/
 Wine ntdll Unix side:       engine/wine/dlls/ntdll/unix/
 Wine PE ntdll:              engine/wine/dlls/ntdll/
@@ -580,7 +580,7 @@ Obsidian context:           /Users/timurtoby/Documents/MacRunner/90-architectura
 ## Appendix B — Sanity check first
 
 ```bash
-cd /Volumes/MacOS/MacRunner
+cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 . config/env.sh
 echo "Root: $MACRUNNER_ROOT"
 

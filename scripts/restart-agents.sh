@@ -2,7 +2,7 @@
 # Restart helper for Codex CLI + Kimi with full perms, updated context, ccache.
 # Run sections manually — this is a reference, not auto-executor.
 set -euo pipefail
-ROOT=/Volumes/MacOS/MacRunner
+ROOT=/Users/timurtoby/Documents/MacRunner/Main/MacRunner
 cd "$ROOT"
 . config/env.sh   # CCACHE_DIR, paths, MACRUNNER_* anchors
 
@@ -20,13 +20,13 @@ cat <<'CODEX_PROMPT'
 RESTART CODEX CLI — paste this as the launch prompt:
 =========================================================================
 
-codex --dangerously-bypass-approvals-and-sandbox --cd /Volumes/MacOS/MacRunner
+codex --dangerously-bypass-approvals-and-sandbox --cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 
 Then first message:
 
-Read /Volumes/MacOS/MacRunner/docs/CODEX-CONTEXT-RESTORE.md first, then
-/Volumes/MacOS/MacRunner/AGENTS.md, then
-/Volumes/MacOS/MacRunner/docs/CODEX-MEGA-DIRECTIVE-v2-batch-method.md.
+Read /Users/timurtoby/Documents/MacRunner/Main/MacRunner/docs/CODEX-CONTEXT-RESTORE.md first, then
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/AGENTS.md, then
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/docs/CODEX-MEGA-DIRECTIVE-v2-batch-method.md.
 
 Mission: Notepad++ x64 FULL FUNCTIONAL closure. NOT closed yet.
 Method: BATCH-trace everything in one comprehensive run (all trace
@@ -58,9 +58,9 @@ RESTART KIMI — paste this as the launch prompt:
 
 First message:
 
-Read /Volumes/MacOS/MacRunner/docs/KIMI-CONTEXT-RESTORE.md first, then
-/Volumes/MacOS/MacRunner/AGENTS.md, then
-/Volumes/MacOS/MacRunner/docs/KIMI-MEGA-DIRECTIVE-v2-cloud-backend-pipeline.md.
+Read /Users/timurtoby/Documents/MacRunner/Main/MacRunner/docs/KIMI-CONTEXT-RESTORE.md first, then
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/AGENTS.md, then
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/docs/KIMI-MEGA-DIRECTIVE-v2-cloud-backend-pipeline.md.
 
 Current primary: Cloud Backend + Unified Pipeline (Networking Δ.6 expanded).
 Rust+axum+Postgres server that unifies your Configurator MVP, Visual

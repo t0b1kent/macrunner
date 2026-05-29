@@ -985,3 +985,44 @@ identified xtajit trace knobs but didn't get `publish-exception-context`
 the instruction, apply family fix per AGENTS protocol.
 
 **ARM64EC research brief:** NOT done. Focus is PE32 c000001d.
+
+## Update 2026-05-29 12:xx (Antigravity Opus + Claude coordinator verify):
+
+**Opus fix landed — commit `6b7886b`:** `win32u: Initialize GdiSharedHandleTable
+in PEB32 on 64-bit Unix initialization`.
+- Root cause: our single 64-bit `win32u.so` (`_WIN64` always defined) only set
+  `peb64->GdiSharedHandleTable`; the `#ifndef _WIN64` upstream branch that would
+  set the 32-bit PEB is dead in our unified-win32u design, so 32-bit `gdi32.dll`
+  read `peb32->GdiSharedHandleTable == 0` → `c0000005` in `get_gdi_client_ptr`.
+- Fix (gdiobj.c:585-595): added `#else` branch — when `NtCurrentTeb()->WowTebOffset`
+  set, mirror `gdi_shared` into `peb32->GdiSharedHandleTable`. Verified vs vanilla
+  WineHQ + MacRunner baseline: this is a correct symmetric mirror of the existing
+  upstream pattern (idiomatic `WowTebOffset`), NOT a hack, NOT masking a HyperBridge
+  bug. Bug is genuinely in our Wine OS-layer. CORRECT FIX.
+
+**VERIFIED BY COORDINATOR (clean run, no trace flags):**
+- `c0000005` is GONE — loader proceeds far past old crash. Opus fix CONFIRMED.
+- BUT: **NO WINDOW.** Opus's "fully launch and execute" claim was overstated — he
+  read a 2.2M-line *syscall-trace* log as "launched". It is not.
+
+**NEW BLOCKER (this is the live one):** 100% CPU **hot-spin** (not a syscall block).
+- Log freezes at `NtQuerySystemInformation enter class=102` (SystemModuleInformation
+  family) with no `leave`. Process pegs 98-100% CPU indefinitely.
+- GUI never reached: `0` `NtUser*` / `NtGdi*` / `CreateWindow` calls in log.
+- Syscalls reached: NtMapViewOfSection ×128, NtAllocateVirtualMemory ×18,
+  NtQuerySystemInformation ×2 (last = class 102, hung).
+- Repro: `reports/phase-h/run_window_clean.sh` (clean, WINEDEBUG=-all, no auto-kill).
+
+**Hypotheses for next agent (evidence-first, pick via scoped trace):**
+1. WOW64 thunk for QSI class=102 returns malformed 32-bit-layout struct → guest
+   loops retrying / iterating bad module list.
+2. JIT/interp stuck in a tight loop on an opcode inside the module-enumeration path.
+3. QSI class=102 not implemented for WOW64 → returns success with garbage.
+
+**Next step:** scoped xtajit trace around QSI class=102 to capture guest EIP +
+instruction bytes at the spin point; classify (WOW64 syscall thunk fix vs opcode
+family fix per AGENTS); mirror x64-oracle (how class=102 returns on working x64
+path — read-only). DO NOT stop until real Notepad++ x86 window is on screen
+(CG-capture), not "process alive".
+
+**Discipline note:** verdict = window pixels, not log length. Confirmed twice now.

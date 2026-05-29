@@ -97,6 +97,39 @@ LLD может НЕ до конца линковать arm64ec hybrid PE (отч
 `ExitToX64` — что они должны делать, как FEX `libarm64ecfex.dll` это реализует. Чтобы
 заполнить `xtajit64/cpu.c`. См. `docs/CHATGPT-SEARCH-arm64ec-xtajit64-impl-prompt.md`.
 
+## RESEARCH #3 РЕЗУЛЬТАТЫ — ИМПЛ-КОНТРАКT xtajit64 ГОТОВ (2026-05-29)
+Отчёт: `reports/research/ARM64EC-XTAJIT64-IMPL-chatgpt-20260529.md`. ARM64EC research ЗАКРЫТ.
+
+**ОБЯЗАТЕЛЬНЫЕ экспорты (без них Wine падает / некорректность):**
+- `ProcessInit` — раз при загрузке (`arm64ec_process_init()`), вернуть STATUS_SUCCESS.
+- `ThreadInit` — на каждый поток, инициализировать состояние эмулятора.
+- `BeginSimulation` — ЯДРО. Вызывается из `dispatch_emulation()` в `KiUserEmulationDispatcher`.
+  x64-контекст уже в `get_arm64ec_cpu_area()->ContextAmd64`. Крутить JIT/interp, исполняя
+  x64, пока не встретит ARM64-адрес → выйти, сохранив контекст, `InSimulation=0`.
+- `DispatchJump`/`RetToEntryThunk`/`ExitToX64` — транзишн-thunk'и x64↔ARM64
+  (= `__os_arm64x_x64_jump`/`_dispatch_ret`/`_dispatch_call_no_redirect`). Через `x9`
+  (целевой адрес) + `RtlIsEcCode`: ARM64-код → entry-thunk, иначе → переход в эмулятор.
+- `UpdateProcessorInformation` — заполнить как x86_64 (`PROCESSOR_ARCHITECTURE_AMD64`).
+- `BTCpu64IsProcessorFeaturePresent` — TRUE для реализованных x86_64 фич (MMX/SSE/NX…).
+
+**Заглушки ОК на первом этапе (дополнять по тестам):**
+- `ThreadTerm`, `ProcessTerm`, все `Notify*` (MemoryAlloc/Free/Protect, Map/UnmapView,
+  MemoryDirty, ReadFile), `FlushInstructionCache*` (нужны для self-modifying code/
+  системных либ/отладчика, но не для первого запуска), `ResetToConsistentState` (нужна
+  при исключениях — заглушка возможна, но возможны баги на SEH).
+
+**КЛЮЧЕВОЕ ОТЛИЧИЕ от 32-бит xtajit:** в ARM64EC-x64 НЕТ аналога BOP-кода
+(`BTCpuGetBopCode` есть только в 32-бит). Переход в эмулятор идёт через аппаратное
+исключение BRK → `KiUserEmulationDispatcher` → `BeginSimulation`, и через thunks, НЕ через
+BOP. То есть зеркалить 32-бит xtajit можно по структуре, но механизм входа другой.
+
+**FEX как reference:** исходники `libarm64ecfex.dll` непубличны, но: модуль зависит только
+от ntdll (грузится рано), `BeginSimulation` берёт контекст из `get_arm64ec_cpu_area()`
+(FEX-2409 коммит `cc589ba` «Always use the CPU area context for BeginSimulation»).
+
+**ИТОГ: вся ARM64EC-разведка завершена.** Дальше — только исполнение (build + wire
+xtajit64/cpu.c → HyperBridge x64). Больше ресёрча по ARM64EC не нужно.
+
 ## СВЯЗЬ С ЛЕЙНАМИ
 - Если arm64ec-спайк зелёный → пересборка Wine с arm64ec разблокирует Кими (видеоядро) и
   снимает срочность с системных-DLL опкодов.

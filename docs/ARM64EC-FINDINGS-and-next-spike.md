@@ -52,6 +52,51 @@ LLD может НЕ до конца линковать arm64ec hybrid PE (отч
 (контракт эмулятора), или ARM64EC жёстко завязан на FEX? Это экзистенциально для тезиса
 «свой транслятор, не FEX, не Rosetta». См. `docs/CHATGPT-SEARCH-arm64ec-emulator-contract-prompt.md`.
 
+## RESEARCH #2 РЕЗУЛЬТАТЫ — ОБА ВОПРОСА ЗЕЛЁНЫЕ (2026-05-29)
+Отчёт: `reports/research/ARM64EC-EMULATOR-CONTRACT-chatgpt-20260529.md`.
+
+**Q1: Может ли HyperBridge заменить FEX? → ДА, подтверждено.**
+- Wine грузит эмулятор ПО ИМЕНИ DLL, не хардкод FEX. Дефолт `xtajit64.dll`,
+  override через реестр `HKLM\Software\Microsoft\Wow64\amd64`. Wine не проверяет
+  происхождение DLL → любой модуль с нужными экспортами годится.
+- Контракт = экспорты `BTCpu*`. Минимум обязательных: `BTCpuProcessInit`,
+  `BTCpuSimulate`, `BTCpuGetBopCode`. Остальное — опционально/заглушки.
+- `signal_arm64ec.c` грузит указатели через `RtlFindExportedRoutineByName`,
+  `load_arm64ec_module()` в `loader.c` выбирает имя.
+
+**Q2: Линкует ли наш lld arm64ec? → ДА.**
+- LLVM 21+ (осень 2025) имеет достаточную поддержку arm64ec/arm64x. llvm-mingw 2026
+  (22.x) ставит lld, линкующий arm64ec; префикс `arm64ec-w64-mingw32` работает без
+  MSVC link.exe. Наш toolchain (20260505) — в этом диапазоне.
+- Caveat: редкие фичи (import-thunk оптимизация, `arm64xsameaddress`) могут ещё
+  требовать link.exe, но базовая функциональность есть.
+
+## КЛЮЧЕВОЕ ОТКРЫТИЕ: СКЕЛЕТ УЖЕ В ДЕРЕВЕ
+- `engine/wine/dlls/xtajit64/` УЖЕ существует: `cpu.c` (250 строк) + `xtajit64.spec`.
+- `xtajit64.spec` УЖЕ экспортит правильный интерфейс: `BTCpu64FlushInstructionCache`,
+  `BTCpu64IsProcessorFeaturePresent`, `BeginSimulation`, `ProcessInit`, `ThreadInit`,
+  `ResetToConsistentState`, `DispatchJump`, `RetToEntryThunk`, `ExitToX64` и т.д.
+- `engine/wine/dlls/ntdll/signal_arm64ec.c` тоже есть (Wine-сторона готова).
+- **НО `xtajit64/cpu.c` — ЗАГЛУШКА:** строки 41/53/65/75 = `ERR("x64 emulation not
+  implemented")`. Симуляция (BeginSimulation → диспетч в HyperBridge) НЕ подключена.
+- **Рабочий reference:** `engine/wine/dlls/xtajit/cpu.c` (32-бит) УЖЕ роутит BTCpu →
+  HyperBridge x86 (поэтому PE32 вообще бежит). xtajit64 = зеркаль этот паттерн для x64.
+
+## ИТОГОВЫЙ ПЛАН (когда появятся руки — Codex/Opus, НЕ Flash)
+Это НЕ greenfield. Две части:
+1. **Build:** новый билд-скрипт с `--enable-archs=arm64ec,aarch64,i386 --with-mingw=clang`.
+   Собрать → проверить что ntdll экспортит `__wine_unix_call_dispatcher_arm64ec` +
+   `KiUserEmulationDispatcher` и что xtajit64.dll собирается (lld линкует — Q2 green).
+2. **Wire:** заполнить заглушки в `engine/wine/dlls/xtajit64/cpu.c` — подключить
+   `BeginSimulation`/dispatch в HyperBridge x64 (`hb_decode_x64`/`hb_lift_x64`/
+   `hb_interpreter`). Зеркалить рабочий `dlls/xtajit/cpu.c` (32-бит).
+- Это путь к x64-играм БЕЗ Rosetta/FEX на нашем движке. Стратегически > Rosetta-fallback.
+
+## RESEARCH #3 (отдан ChatGPT) — имплементационный reference
+Точная семантика `BeginSimulation`/`ProcessInit`/BOP-code/`DispatchJump`/`RetToEntryThunk`/
+`ExitToX64` — что они должны делать, как FEX `libarm64ecfex.dll` это реализует. Чтобы
+заполнить `xtajit64/cpu.c`. См. `docs/CHATGPT-SEARCH-arm64ec-xtajit64-impl-prompt.md`.
+
 ## СВЯЗЬ С ЛЕЙНАМИ
 - Если arm64ec-спайк зелёный → пересборка Wine с arm64ec разблокирует Кими (видеоядро) и
   снимает срочность с системных-DLL опкодов.

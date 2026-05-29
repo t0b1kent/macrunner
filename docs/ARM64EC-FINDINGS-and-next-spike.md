@@ -1,8 +1,22 @@
-# ARM64EC — ПОДТВЕРЖДЁННАЯ ПРИЧИНА + план bounded-спайка (PARKED, ждёт рук)
+# ARM64EC — ПОДТВЕРЖДЁННАЯ ПРИЧИНА + план bounded-спайка
 
 **Date:** 2026-05-29
-**Status:** PARKED — нет свободных агентов. Зафиксировано, чтобы поднять без потери контекста.
+**Status:** PART 1 СПАЙКА = GREEN (build feasibility доказана). Part 2 (wire cpu.c) — ждёт go.
 **Research:** `reports/research/ARM64EC-NTDLL-RESEARCH-chatgpt-20260529.md` (ChatGPT web search).
+
+## ⭐ SPIKE PART 1 РЕЗУЛЬТАТ — GREEN (2026-05-29, Cline build + operator verify)
+Отчёт: `reports/research/ARM64EC-SPIKE-build-result-20260529.md`.
+- Сборка `--enable-archs=arm64ec,aarch64,i386` (скрипт `scripts/build-wine-arm64ec-spike.sh`,
+  baseline не тронут, отдельные build/dist-arm64ec-spike) — **прошла, 0 ошибок**.
+- configure подтвердил: `arm64ec-w64-mingw32-clang supports -target arm64ec-windows -fuse-ld=lld
+  ... yes` → **наш lld линкует arm64ec** (главный риск Q2 СНЯТ эмпирически).
+- `aarch64-windows/ntdll.dll` = **`file format coff-arm64x`** (ARM64X-гибрид), экспортит
+  **`__wine_unix_call_dispatcher_arm64ec` + `KiUserEmulationDispatcher`** ✅✅.
+- Блокер Кими (отсутствие этих экспортов) на уровне сборки УСТРАНЁН.
+- ⚠️ Cline выдал чек-лист + grep-дамп, но НЕ сам вердикт/проверку экспортов — закрыто
+  operator-side. Урок: «build installed ✅» ≠ «arm64ec слинкован + экспорты есть».
+- bison < 3.0 уронил первый configure — починено до успешной сборки.
+- **NEXT = Part 2:** wire `xtajit64/cpu.c` → HyperBridge x64 (см. ниже), затем реальный x86_64 PE.
 
 ## SMOKING GUN (root cause подтверждён)
 Блокер Кими (`__wine_unix_call_dispatcher_arm64ec not found`, ntdll `EXEC_FAULT`)

@@ -1,0 +1,1461 @@
+/*
+ * MacRunner i386-on-arm64 HyperBridge CPU module.
+ */
+
+#include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
+#include "windef.h"
+#include "winbase.h"
+#include "winternl.h"
+#include "rtlsupportapi.h"
+
+#include "xtajit_private.h"
+#include "hb_result.h"
+#include "wine/asm.h"
+#include "wine/debug.h"
+
+void WINAPI Wow64PassExceptionToGuest( EXCEPTION_POINTERS *ptrs );
+
+static BYTE syscall_bop[] = { 0x0f, 0xff };
+static BYTE unix_bop[] = { 0x0f, 0xfe };
+static BYTE *syscall_bop_guest;
+static BYTE *unix_bop_guest;
+
+#define XTAJIT_BRIDGE_STACK_SIZE  (64 * 1024 * 1024)
+#define XTAJIT_BRIDGE_SEH_SLACK   0x10000
+#define XTAJIT_BRIDGE_STACK_SLACK 0x200
+#define XTAJIT_TLS_BRIDGE_ACTIVE  15
+#define XTAJIT_TLS_BRIDGE_STACK   16
+#define XTAJIT_TLS_BRIDGE_SIZE    17
+#define XTAJIT_WOW64_NTCALLBACKRETURN 0x0005
+#define XTAJIT_TEB_SYSCALL_FRAME_OFFSET 0x378
+#define XTAJIT_SYSCALL_FRAME_PREV_OFFSET 0x110
+#define XTAJIT_NESTED_CALLBACK_STACK_SLACK 0x10000
+#define XTAJIT_NESTED_CALLBACK_REENTER_GUARD 0x100000
+#define XTAJIT_PENDING_I386_CONTEXT_SLOTS 64
+#define XTAJIT_WOW64_TLS_GUEST32_BASE (WOW64_TLS_MAX_NUMBER - 1)
+
+#ifdef __aarch64__
+typedef NTSTATUS (WINAPI *xtajit_wow64_syscall_func)( UINT num, UINT *args );
+typedef void (WINAPI *xtajit_void_func)(void *);
+extern NTSTATUS xtajit_arm64_call_wow64_syscall( UINT num, UINT *args, void *stack_top,
+                                                 TEB *teb, xtajit_wow64_syscall_func func );
+extern NTSTATUS xtajit_arm64_call_wow64_syscall_current_stack( UINT num, UINT *args, TEB *teb,
+                                                               xtajit_wow64_syscall_func func );
+extern void xtajit_arm64_call_void( void *stack_top, TEB *teb, xtajit_void_func func, void *arg );
+
+__ASM_GLOBAL_FUNC( xtajit_arm64_call_wow64_syscall,
+                   "stp x29, x30, [sp, #-0xd0]!\n\t"
+                   "mov x29, sp\n\t"
+                   "stp x19, x20, [x29, #0x10]\n\t"
+                   "stp x21, x22, [x29, #0x20]\n\t"
+                   "stp x23, x24, [x29, #0x30]\n\t"
+                   "stp x25, x26, [x29, #0x40]\n\t"
+                   "stp x27, x28, [x29, #0x50]\n\t"
+                   "stp d8,  d9,  [x29, #0x60]\n\t"
+                   "stp d10, d11, [x29, #0x70]\n\t"
+                   "stp d12, d13, [x29, #0x80]\n\t"
+                   "stp d14, d15, [x29, #0x90]\n\t"
+                   "mov x20, x4\n\t"
+                   "mov x19, x3\n\t"
+                   "mov x22, x2\n\t"
+                   "mov x18, x19\n\t"
+                   "ldr x7, [x19, #0x378]\n\t"    /* previous thread_data->syscall_frame */
+                   "str x7, [x29, #0xa0]\n\t"
+                   "mrs x8, fpcr\n\t"
+                   "mrs x9, fpsr\n\t"
+                   "bfi x8, x9, #0, #32\n\t"
+                   "ldr x9, [x19]\n\t"            /* teb->Tib.ExceptionList */
+                   "stp x8, x9, [x29, #0xb0]\n\t"
+                   "sub x5, sp, #0x330\n\t"       /* syscall_frame on the caller stack */
+                   "str x5, [x19, #0x378]\n\t"    /* thread_data->syscall_frame */
+                   "str x19, [x5, #0x90]\n\t"     /* frame->x18 / TEB */
+                   "str x30, [x5, #0xf0]\n\t"     /* frame->lr */
+                   "add x8, x22, #0x10, lsl #12\n\t"
+                   "str x8, [x5, #0xf8]\n\t"      /* frame->sp for KeUserModeCallback */
+                   "str x20, [x5, #0x100]\n\t"    /* frame->pc / native target */
+                   "str wzr, [x5, #0x10c]\n\t"    /* frame->restore_flags */
+                   "add x8, x29, #0xd0\n\t"
+                   "stp x7, x8, [x5, #0x110]\n\t" /* frame->prev_frame,syscall_cfa */
+                   "mov sp, x22\n\t"
+                   "blr x20\n\t"
+                   "mov x23, x0\n\t"
+                   "mov sp, x29\n\t"
+                   "ldr x7, [x29, #0xa0]\n\t"
+                   "str x7, [x19, #0x378]\n\t"    /* restore previous syscall_frame */
+                   "ldp x8, x9, [x29, #0xb0]\n\t"
+                   "str x9, [x19]\n\t"            /* restore teb->Tib.ExceptionList */
+                   "msr fpcr, x8\n\t"
+                   "lsr x8, x8, #32\n\t"
+                   "msr fpsr, x8\n\t"
+                   "mov x0, x23\n\t"
+                   "ldp d14, d15, [x29, #0x90]\n\t"
+                   "ldp d12, d13, [x29, #0x80]\n\t"
+                   "ldp d10, d11, [x29, #0x70]\n\t"
+                   "ldp d8,  d9,  [x29, #0x60]\n\t"
+                   "ldp x27, x28, [x29, #0x50]\n\t"
+                   "ldp x25, x26, [x29, #0x40]\n\t"
+                   "ldp x23, x24, [x29, #0x30]\n\t"
+                   "ldp x21, x22, [x29, #0x20]\n\t"
+                   "ldp x19, x20, [x29, #0x10]\n\t"
+                   "ldp x29, x30, [sp], #0xd0\n\t"
+                   "ret" )
+
+__ASM_GLOBAL_FUNC( xtajit_arm64_call_wow64_syscall_current_stack,
+                   "stp x29, x30, [sp, #-0xd0]!\n\t"
+                   "mov x29, sp\n\t"
+                   "stp x19, x20, [x29, #0x10]\n\t"
+                   "stp x21, x22, [x29, #0x20]\n\t"
+                   "stp x23, x24, [x29, #0x30]\n\t"
+                   "stp x25, x26, [x29, #0x40]\n\t"
+                   "stp x27, x28, [x29, #0x50]\n\t"
+                   "stp d8,  d9,  [x29, #0x60]\n\t"
+                   "stp d10, d11, [x29, #0x70]\n\t"
+                   "stp d12, d13, [x29, #0x80]\n\t"
+                   "stp d14, d15, [x29, #0x90]\n\t"
+                   "mov x18, x2\n\t"
+                   "blr x3\n\t"
+                   "ldp d14, d15, [x29, #0x90]\n\t"
+                   "ldp d12, d13, [x29, #0x80]\n\t"
+                   "ldp d10, d11, [x29, #0x70]\n\t"
+                   "ldp d8,  d9,  [x29, #0x60]\n\t"
+                   "ldp x27, x28, [x29, #0x50]\n\t"
+                   "ldp x25, x26, [x29, #0x40]\n\t"
+                   "ldp x23, x24, [x29, #0x30]\n\t"
+                   "ldp x21, x22, [x29, #0x20]\n\t"
+                   "ldp x19, x20, [x29, #0x10]\n\t"
+                   "ldp x29, x30, [sp], #0xd0\n\t"
+                   "ret" )
+
+__ASM_GLOBAL_FUNC( xtajit_arm64_call_void,
+                   "stp x29, x30, [sp, #-0x30]!\n\t"
+                   "mov x29, sp\n\t"
+                   "stp x19, x20, [sp, #0x10]\n\t"
+                   "str x21, [sp, #0x20]\n\t"
+                   "mov x19, x2\n\t"
+                   "mov x20, sp\n\t"
+                   "mov x21, x3\n\t"
+                   "mov x18, x1\n\t"
+                   "mov sp, x0\n\t"
+                   "mov x0, x21\n\t"
+                   "blr x19\n\t"
+                   "mov sp, x20\n\t"
+                   "ldr x21, [sp, #0x20]\n\t"
+                   "ldp x19, x20, [sp, #0x10]\n\t"
+                   "ldp x29, x30, [sp], #0x30\n\t"
+                   "ret" )
+#endif
+
+struct unix_bop_stack
+{
+    unixlib_handle_t handle;
+    UINT id;
+    ULONG args;
+};
+
+struct xtajit_stack_bounds
+{
+    void *limit;
+    void *base;
+};
+
+struct xtajit_initial_i386_context
+{
+    I386_CONTEXT ctx;
+    NTSTATUS status;
+};
+
+struct xtajit_pending_i386_context
+{
+    TEB *teb;
+    BOOL valid;
+    I386_CONTEXT ctx;
+};
+
+static struct xtajit_pending_i386_context pending_i386_contexts[XTAJIT_PENDING_I386_CONTEXT_SLOTS];
+static struct xtajit_pending_i386_context fallback_pending_i386_context;
+
+static inline TEB *xtajit_current_teb(void)
+{
+    return NtCurrentTeb();
+}
+
+static inline TEB32 *xtajit_current_teb32(void)
+{
+    TEB *teb = xtajit_current_teb();
+
+    return (TEB32 *)((char *)teb + teb->WowTebOffset);
+}
+
+static void *guest32_host_ptr( DWORD ptr )
+{
+    ULONG_PTR base;
+    TEB *teb;
+
+    if (!ptr) return NULL;
+    teb = xtajit_current_teb();
+    base = (ULONG_PTR)teb->TlsSlots[XTAJIT_WOW64_TLS_GUEST32_BASE];
+    if (!base) base = (ULONG_PTR)xtajit_current_teb32();
+    base &= ~(ULONG_PTR)0xffffffff;
+    return (void *)(base | ptr);
+}
+
+static BOOL guest32_can_read( DWORD guest, SIZE_T size )
+{
+    BYTE *ptr = guest32_host_ptr( guest );
+    MEMORY_BASIC_INFORMATION mbi;
+    ULONG_PTR start, end, region_end;
+    DWORD protect;
+
+    if (!ptr) return FALSE;
+    if (!size) return TRUE;
+    if (NtQueryVirtualMemory( NtCurrentProcess(), ptr, MemoryBasicInformation,
+                              &mbi, sizeof(mbi), NULL ) != STATUS_SUCCESS)
+        return FALSE;
+    if (mbi.State != MEM_COMMIT) return FALSE;
+    if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) return FALSE;
+    protect = mbi.Protect & 0xff;
+    if (protect != PAGE_READONLY && protect != PAGE_READWRITE &&
+        protect != PAGE_WRITECOPY && protect != PAGE_EXECUTE_READ &&
+        protect != PAGE_EXECUTE_READWRITE && protect != PAGE_EXECUTE_WRITECOPY)
+        return FALSE;
+
+    start = (ULONG_PTR)ptr;
+    end = start + size;
+    region_end = (ULONG_PTR)mbi.BaseAddress + mbi.RegionSize;
+    return end >= start && end <= region_end;
+}
+
+static BOOL trace_native_stack_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        static const WCHAR nameW[] =
+            {'M','A','C','R','U','N','N','E','R','_','X','T','A','J','I','T','_',
+             'T','R','A','C','E','_','S','T','A','C','K',0};
+        WCHAR value[4];
+        UNICODE_STRING name, val;
+
+        RtlInitUnicodeString( &name, nameW );
+        val.Buffer = value;
+        val.Length = 0;
+        val.MaximumLength = sizeof(value);
+        enabled = RtlQueryEnvironmentVariable_U( NULL, &name, &val ) != STATUS_VARIABLE_NOT_FOUND;
+    }
+    return enabled;
+}
+
+static BOOL trace_all_simulate_enabled(void);
+
+static BOOL trace_syscalls_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        static const WCHAR nameW[] =
+            {'M','A','C','R','U','N','N','E','R','_','X','T','A','J','I','T','_',
+             'T','R','A','C','E','_','S','Y','S','C','A','L','L','S',0};
+        WCHAR value[4];
+        UNICODE_STRING name, val;
+
+        RtlInitUnicodeString( &name, nameW );
+        val.Buffer = value;
+        val.Length = 0;
+        val.MaximumLength = sizeof(value);
+        enabled = RtlQueryEnvironmentVariable_U( NULL, &name, &val ) != STATUS_VARIABLE_NOT_FOUND ||
+                  trace_native_stack_enabled() || trace_all_simulate_enabled();
+    }
+    return enabled;
+}
+
+static BOOL trace_process_exit_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        static const WCHAR nameW[] =
+            {'M','A','C','R','U','N','N','E','R','_',
+             'T','R','A','C','E','_','P','R','O','C','E','S','S','_','E','X','I','T',0};
+        WCHAR value[4];
+        UNICODE_STRING name, val;
+
+        RtlInitUnicodeString( &name, nameW );
+        val.Buffer = value;
+        val.Length = 0;
+        val.MaximumLength = sizeof(value);
+        enabled = RtlQueryEnvironmentVariable_U( NULL, &name, &val ) != STATUS_VARIABLE_NOT_FOUND;
+    }
+    return enabled;
+}
+
+static BOOL trace_all_simulate_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        static const WCHAR nameW[] =
+            {'M','A','C','R','U','N','N','E','R','_','X','T','A','J','I','T','_',
+             'T','R','A','C','E','_','A','L','L','_','S','I','M','U','L','A','T','E',0};
+        WCHAR value[4];
+        UNICODE_STRING name, val;
+
+        RtlInitUnicodeString( &name, nameW );
+        val.Buffer = value;
+        val.Length = 0;
+        val.MaximumLength = sizeof(value);
+        enabled = RtlQueryEnvironmentVariable_U( NULL, &name, &val ) != STATUS_VARIABLE_NOT_FOUND;
+    }
+    return enabled;
+}
+
+static ULONG_PTR current_native_sp(void)
+{
+#ifdef __aarch64__
+    ULONG_PTR sp;
+    __asm__ volatile( "mov %0, sp" : "=r"(sp) );
+    return sp;
+#else
+    volatile char marker;
+    return (ULONG_PTR)&marker;
+#endif
+}
+
+static LONG_PTR current_native_stack_slack( ULONG_PTR sp )
+{
+    TEB *teb = xtajit_current_teb();
+    ULONG_PTR limit = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
+
+    return limit ? (LONG_PTR)(sp - limit) : 0;
+}
+
+static void trace_native_stack( const char *phase, DWORD eip, DWORD esp, DWORD service, NTSTATUS status )
+{
+    TEB *teb = xtajit_current_teb();
+    ULONG_PTR sp = current_native_sp();
+    ULONG_PTR limit = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
+    ULONG_PTR base = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
+    LONG_PTR slack = current_native_stack_slack( sp );
+    static unsigned int count;
+    unsigned int sample = count++;
+
+    if (!trace_native_stack_enabled()) return;
+    if (sample >= 128 && slack >= 0x40000 && (sample & 0x3fff)) return;
+
+    MESSAGE( "macrunner-xtajit-stack: phase=%s count=%u native_sp=%p teb_stack=%p-%p "
+             "dealloc=%p slack=%ld eip=%08lx esp=%08lx svc=%08lx status=%08lx\n",
+                 phase, sample, (void *)sp,
+                 (void *)limit, (void *)base, teb ? teb->DeallocationStack : NULL,
+                 (long)slack, eip, esp, service, status );
+}
+
+static void clear_wow64_reset_state(void)
+{
+    TEB *teb = xtajit_current_teb();
+    WOW64_CPURESERVED *cpu = teb ? teb->TlsSlots[WOW64_TLS_CPURESERVED] : NULL;
+
+    if (cpu) cpu->Flags &= ~WOW64_CPURESERVED_FLAG_RESET_STATE;
+}
+
+static struct xtajit_pending_i386_context *get_pending_i386_context_slot( TEB *teb, BOOL create )
+{
+    struct xtajit_pending_i386_context *free_slot = NULL;
+    unsigned int i;
+
+    if (!teb) return NULL;
+    for (i = 0; i < XTAJIT_PENDING_I386_CONTEXT_SLOTS; i++)
+    {
+        if (pending_i386_contexts[i].teb == teb) return &pending_i386_contexts[i];
+        if (!pending_i386_contexts[i].teb && !free_slot) free_slot = &pending_i386_contexts[i];
+    }
+    if (!create || !free_slot) return NULL;
+    free_slot->teb = teb;
+    free_slot->valid = FALSE;
+    return free_slot;
+}
+
+static void publish_pending_i386_context( const I386_CONTEXT *ctx )
+{
+    struct xtajit_pending_i386_context *pending;
+    DWORD flags;
+
+    if (!ctx) return;
+    flags = ctx->ContextFlags & ~CONTEXT_i386;
+    if (!(flags & CONTEXT_I386_CONTROL)) return;
+    pending = get_pending_i386_context_slot( xtajit_current_teb(), TRUE );
+    if (pending)
+    {
+        pending->ctx = *ctx;
+        pending->valid = TRUE;
+        fallback_pending_i386_context.teb = pending->teb;
+    }
+    else fallback_pending_i386_context.teb = xtajit_current_teb();
+    fallback_pending_i386_context.ctx = *ctx;
+    fallback_pending_i386_context.valid = TRUE;
+}
+
+static BOOL consume_pending_i386_context( I386_CONTEXT *ctx )
+{
+    struct xtajit_pending_i386_context *pending;
+
+    if (!ctx || !(pending = get_pending_i386_context_slot( xtajit_current_teb(), FALSE )) ||
+        !pending->valid)
+    {
+        if (!ctx || !fallback_pending_i386_context.valid) return FALSE;
+        *ctx = fallback_pending_i386_context.ctx;
+        fallback_pending_i386_context.valid = FALSE;
+        return TRUE;
+    }
+    *ctx = pending->ctx;
+    pending->valid = FALSE;
+    fallback_pending_i386_context.valid = FALSE;
+    return TRUE;
+}
+
+static void release_pending_i386_context(void)
+{
+    struct xtajit_pending_i386_context *pending;
+
+    if ((pending = get_pending_i386_context_slot( xtajit_current_teb(), FALSE )))
+    {
+        pending->valid = FALSE;
+        pending->teb = NULL;
+    }
+    fallback_pending_i386_context.valid = FALSE;
+}
+
+static NTSTATUS read_current_i386_context( I386_CONTEXT *ctx )
+{
+    TEB *teb = xtajit_current_teb();
+    WOW64_CPURESERVED *cpu = teb ? teb->TlsSlots[WOW64_TLS_CPURESERVED] : NULL;
+    WOW64_CPU_AREA_INFO info;
+    NTSTATUS status;
+
+    if (!ctx || !cpu) return STATUS_INVALID_PARAMETER;
+    if ((status = RtlWow64GetCpuAreaInfo( cpu, 0, &info ))) return status;
+    if (info.Machine != IMAGE_FILE_MACHINE_I386) return STATUS_INVALID_PARAMETER;
+
+    *ctx = *(I386_CONTEXT *)info.Context;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS consume_reset_i386_context( I386_CONTEXT *ctx )
+{
+    TEB *teb = xtajit_current_teb();
+    WOW64_CPURESERVED *cpu = teb ? teb->TlsSlots[WOW64_TLS_CPURESERVED] : NULL;
+    NTSTATUS status;
+
+    if (!ctx || !cpu || !(cpu->Flags & WOW64_CPURESERVED_FLAG_RESET_STATE)) return STATUS_NOT_FOUND;
+    if ((status = read_current_i386_context( ctx ))) return status;
+    cpu->Flags &= ~WOW64_CPURESERVED_FLAG_RESET_STATE;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS write_current_i386_context( const I386_CONTEXT *context, BOOL reset_state )
+{
+    TEB *teb = xtajit_current_teb();
+    WOW64_CPURESERVED *cpu = teb ? teb->TlsSlots[WOW64_TLS_CPURESERVED] : NULL;
+    WOW64_CPU_AREA_INFO info;
+    I386_CONTEXT *wow_frame;
+    DWORD flags;
+    NTSTATUS status;
+
+    if (!cpu) return STATUS_INVALID_PARAMETER;
+    if ((status = RtlWow64GetCpuAreaInfo( cpu, 0, &info ))) return status;
+    if (info.Machine != IMAGE_FILE_MACHINE_I386) return STATUS_INVALID_PARAMETER;
+
+    wow_frame = info.Context;
+    flags = context->ContextFlags & ~CONTEXT_i386;
+
+    if (flags & CONTEXT_I386_INTEGER)
+    {
+        wow_frame->Eax = context->Eax;
+        wow_frame->Ebx = context->Ebx;
+        wow_frame->Ecx = context->Ecx;
+        wow_frame->Edx = context->Edx;
+        wow_frame->Esi = context->Esi;
+        wow_frame->Edi = context->Edi;
+    }
+    if (flags & CONTEXT_I386_CONTROL)
+    {
+        wow_frame->Esp    = context->Esp;
+        wow_frame->Ebp    = context->Ebp;
+        wow_frame->Eip    = context->Eip;
+        wow_frame->EFlags = context->EFlags;
+        wow_frame->SegCs  = context->SegCs;
+        wow_frame->SegSs  = context->SegSs;
+        if (reset_state) cpu->Flags |= WOW64_CPURESERVED_FLAG_RESET_STATE;
+    }
+    if (flags & CONTEXT_I386_SEGMENTS)
+    {
+        wow_frame->SegDs = context->SegDs;
+        wow_frame->SegEs = context->SegEs;
+        wow_frame->SegFs = context->SegFs;
+        wow_frame->SegGs = context->SegGs;
+    }
+    if (flags & CONTEXT_I386_DEBUG_REGISTERS)
+    {
+        wow_frame->Dr0 = context->Dr0;
+        wow_frame->Dr1 = context->Dr1;
+        wow_frame->Dr2 = context->Dr2;
+        wow_frame->Dr3 = context->Dr3;
+        wow_frame->Dr6 = context->Dr6;
+        wow_frame->Dr7 = context->Dr7;
+    }
+    if (flags & CONTEXT_I386_EXTENDED_REGISTERS)
+        memcpy( wow_frame->ExtendedRegisters, context->ExtendedRegisters, sizeof(context->ExtendedRegisters) );
+    if (flags & CONTEXT_I386_FLOATING_POINT)
+        memcpy( &wow_frame->FloatSave, &context->FloatSave, sizeof(context->FloatSave) );
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS set_current_i386_context( const I386_CONTEXT *context )
+{
+    return write_current_i386_context( context, TRUE );
+}
+
+static void capture_initial_i386_context( struct xtajit_initial_i386_context *initial )
+{
+    if (!initial) return;
+
+    RtlZeroMemory( initial, sizeof(*initial) );
+    initial->ctx.ContextFlags = CONTEXT_I386_ALL;
+    if (consume_pending_i386_context( &initial->ctx ))
+    {
+        initial->status = STATUS_SUCCESS;
+        clear_wow64_reset_state();
+        return;
+    }
+
+    initial->status = consume_reset_i386_context( &initial->ctx );
+    if (initial->status == STATUS_NOT_FOUND)
+    {
+        initial->status = read_current_i386_context( &initial->ctx );
+        if (initial->status)
+            initial->status = RtlWow64GetThreadContext( GetCurrentThread(), &initial->ctx );
+    }
+    clear_wow64_reset_state();
+}
+
+static void prepare_arm64_pe_call(void)
+{
+#ifdef __aarch64__
+    TEB *teb = xtajit_current_teb();
+
+    /* HyperBridge execution can leave x18 with guest state. Rehydrate it before
+     * entering ARM64 PE wow64 code; the x64 callback trampoline does the same. */
+    __asm__ volatile( "mov x18, %0" :: "r"(teb) : "memory" );
+#endif
+}
+
+static NTSTATUS ensure_bridge_stack(void)
+{
+    TEB *teb = xtajit_current_teb();
+    void *stack = NULL;
+    SIZE_T size = XTAJIT_BRIDGE_STACK_SIZE + XTAJIT_BRIDGE_SEH_SLACK;
+    NTSTATUS status;
+
+    if (!teb) return STATUS_INVALID_PARAMETER;
+    if (teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK]) return STATUS_SUCCESS;
+    status = NtAllocateVirtualMemory( NtCurrentProcess(), &stack, 0, &size,
+                                      MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE );
+    if (!status)
+    {
+        teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK] = stack;
+        teb->TlsSlots[XTAJIT_TLS_BRIDGE_SIZE] = (void *)size;
+    }
+    return status;
+}
+
+static void release_bridge_stack(void)
+{
+    TEB *teb = xtajit_current_teb();
+    void *stack = teb ? teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK] : NULL;
+    SIZE_T size = 0;
+
+    if (teb)
+    {
+        teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK] = NULL;
+        teb->TlsSlots[XTAJIT_TLS_BRIDGE_SIZE] = NULL;
+    }
+    if (stack) NtFreeVirtualMemory( NtCurrentProcess(), &stack, &size, MEM_RELEASE );
+}
+
+static void *bridge_stack_top( TEB *teb )
+{
+    ULONG_PTR bridge_low = teb ? (ULONG_PTR)teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK] : 0;
+    SIZE_T bridge_size = teb ? (SIZE_T)teb->TlsSlots[XTAJIT_TLS_BRIDGE_SIZE] : 0;
+
+    if (!bridge_low || bridge_size <= XTAJIT_BRIDGE_STACK_SLACK) return NULL;
+    return (void *)((bridge_low + bridge_size - XTAJIT_BRIDGE_STACK_SLACK) & ~(ULONG_PTR)0xf);
+}
+
+static void *bridge_syscall_call_stack_top( TEB *teb )
+{
+    ULONG_PTR top = (ULONG_PTR)bridge_stack_top( teb );
+    ULONG_PTR bridge_low = teb ? (ULONG_PTR)teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK] : 0;
+
+    if (!top || !bridge_low || top <= bridge_low + 2 * XTAJIT_NESTED_CALLBACK_STACK_SLACK)
+        return NULL;
+    return (void *)((top - XTAJIT_NESTED_CALLBACK_STACK_SLACK) & ~(ULONG_PTR)0xf);
+}
+
+static void *bridge_stack_top_below_current_sp( TEB *teb )
+{
+    ULONG_PTR low = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
+    ULONG_PTR high = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
+    ULONG_PTR sp = current_native_sp();
+
+    if (!low || !high || low >= high || sp <= low + 2 * XTAJIT_NESTED_CALLBACK_STACK_SLACK ||
+        sp >= high)
+        return NULL;
+    return (void *)((sp - 2 * XTAJIT_NESTED_CALLBACK_STACK_SLACK) & ~(ULONG_PTR)0xf);
+}
+
+static void *bridge_stack_top_below_syscall_frame( TEB *teb )
+{
+    ULONG_PTR bridge_low = teb ? (ULONG_PTR)teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK] : 0;
+    ULONG_PTR bridge_size = teb ? (SIZE_T)teb->TlsSlots[XTAJIT_TLS_BRIDGE_SIZE] : 0;
+    ULONG_PTR bridge_high = bridge_low + bridge_size;
+    ULONG_PTR stack_low = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
+    ULONG_PTR stack_high = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
+    ULONG_PTR sp = current_native_sp();
+    ULONG_PTR low = bridge_low;
+    ULONG_PTR high = bridge_high;
+    ULONG_PTR frame;
+    ULONG_PTR anchor;
+    ULONG_PTR prev_frame = 0;
+    BOOL frame_in_bridge;
+    BOOL frame_in_stack;
+
+    if (!teb || !teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE]) return NULL;
+
+    frame = *(ULONG_PTR *)((char *)teb + XTAJIT_TEB_SYSCALL_FRAME_OFFSET);
+    if (!frame) return NULL;
+    anchor = frame;
+    frame_in_bridge = bridge_low && bridge_high > bridge_low && frame >= bridge_low && frame < bridge_high;
+    frame_in_stack = stack_low && stack_high && stack_low < stack_high &&
+                     frame >= stack_low && frame < stack_high;
+    if (frame_in_stack)
+    {
+        prev_frame = *(ULONG_PTR *)(frame + XTAJIT_SYSCALL_FRAME_PREV_OFFSET);
+        if (frame_in_bridge && prev_frame > anchor && prev_frame > stack_low && prev_frame < stack_high)
+            anchor = prev_frame;
+    }
+    if (!frame_in_bridge && prev_frame > bridge_low && prev_frame < bridge_high)
+        anchor = prev_frame;
+    if (!low || bridge_size <= XTAJIT_NESTED_CALLBACK_STACK_SLACK ||
+        high <= low || anchor <= low || anchor >= high)
+    {
+        low = stack_low;
+        high = stack_high;
+    }
+    if (!low || !high || low >= high) return NULL;
+    if (anchor <= low + XTAJIT_NESTED_CALLBACK_STACK_SLACK || anchor >= high) return NULL;
+    if (sp > low && sp < high)
+    {
+        if (sp < anchor && anchor - sp < XTAJIT_NESTED_CALLBACK_REENTER_GUARD) return NULL;
+        if (sp >= anchor - XTAJIT_NESTED_CALLBACK_STACK_SLACK) return NULL;
+    }
+
+    return (void *)((anchor - XTAJIT_NESTED_CALLBACK_STACK_SLACK) & ~(ULONG_PTR)0xf);
+}
+
+static void publish_bridge_stack_bounds( TEB *teb, struct xtajit_stack_bounds *old )
+{
+    ULONG_PTR bridge_low = (ULONG_PTR)teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK];
+    ULONG_PTR bridge_high = bridge_low + (SIZE_T)teb->TlsSlots[XTAJIT_TLS_BRIDGE_SIZE];
+    ULONG_PTR old_low, old_high;
+
+    old->limit = teb->Tib.StackLimit;
+    old->base = teb->Tib.StackBase;
+    old_low = (ULONG_PTR)old->limit;
+    old_high = (ULONG_PTR)old->base;
+    if (old->limit && old->base && old_low < old_high)
+    {
+        teb->Tib.StackLimit = (void *)(old_low < bridge_low ? old_low : bridge_low);
+        teb->Tib.StackBase = (void *)(old_high > bridge_high ? old_high : bridge_high);
+    }
+    else
+    {
+        teb->Tib.StackLimit = (void *)bridge_low;
+        teb->Tib.StackBase = (void *)bridge_high;
+    }
+}
+
+static void restore_stack_bounds( TEB *teb, const struct xtajit_stack_bounds *old )
+{
+    teb->Tib.StackBase = old->base;
+    teb->Tib.StackLimit = old->limit;
+}
+
+static NTSTATUS dispatch_wow64_syscall( UINT service, UINT *args )
+{
+#ifdef __aarch64__
+    TEB *teb = xtajit_current_teb();
+    struct xtajit_stack_bounds old;
+    void *stack_top;
+    void *old_active;
+    NTSTATUS status;
+
+    #define CALL_WOW64_SYSCALL_CURRENT_STACK() \
+        xtajit_arm64_call_wow64_syscall_current_stack( service, args, teb, Wow64SystemServiceEx )
+
+    /* wow64_NtCallbackReturn longjmps to the active Wow64KiUserCallbackDispatcher frame. */
+    if (service == XTAJIT_WOW64_NTCALLBACKRETURN)
+    {
+        if (teb) teb->Tib.ExceptionList = (void *)~(ULONG_PTR)0;
+        if (teb) return CALL_WOW64_SYSCALL_CURRENT_STACK();
+        return Wow64SystemServiceEx( service, args );
+    }
+
+    if (teb && teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE])
+    {
+        if ((stack_top = bridge_stack_top_below_syscall_frame( teb )))
+        {
+            if (trace_native_stack_enabled())
+            {
+                ULONG_PTR frame = *(ULONG_PTR *)((char *)teb + XTAJIT_TEB_SYSCALL_FRAME_OFFSET);
+                MESSAGE( "macrunner-xtajit-stack: active-nested-syscall-switch svc=%08x "
+                         "native_sp=%p syscall_frame=%p nested_top=%p\n",
+                         service, (void *)current_native_sp(), (void *)frame, stack_top );
+            }
+            return xtajit_arm64_call_wow64_syscall( service, args, stack_top, teb, Wow64SystemServiceEx );
+        }
+        if ((stack_top = bridge_stack_top_below_current_sp( teb )))
+        {
+            if (trace_native_stack_enabled())
+            {
+                ULONG_PTR frame = *(ULONG_PTR *)((char *)teb + XTAJIT_TEB_SYSCALL_FRAME_OFFSET);
+                MESSAGE( "macrunner-xtajit-stack: active-current-syscall-switch svc=%08x "
+                         "native_sp=%p syscall_frame=%p nested_top=%p bridge=%p-%p\n",
+                         service, (void *)current_native_sp(), (void *)frame, stack_top,
+                         teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK],
+                         (void *)((ULONG_PTR)teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK] +
+                                  (SIZE_T)teb->TlsSlots[XTAJIT_TLS_BRIDGE_SIZE]) );
+            }
+            return xtajit_arm64_call_wow64_syscall( service, args, stack_top, teb, Wow64SystemServiceEx );
+        }
+        if (trace_native_stack_enabled() && (service == 0x33 || service == 0x133d))
+        {
+            ULONG_PTR bridge_low = (ULONG_PTR)teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK];
+            ULONG_PTR bridge_size = (SIZE_T)teb->TlsSlots[XTAJIT_TLS_BRIDGE_SIZE];
+            ULONG_PTR frame = *(ULONG_PTR *)((char *)teb + XTAJIT_TEB_SYSCALL_FRAME_OFFSET);
+            MESSAGE( "macrunner-xtajit-stack: active-direct-no-switch svc=%08x native_sp=%p "
+                     "syscall_frame=%p bridge=%p-%p teb_stack=%p-%p\n",
+                     service, (void *)current_native_sp(), (void *)frame,
+                     (void *)bridge_low, (void *)(bridge_low + bridge_size),
+                     teb->Tib.StackLimit, teb->Tib.StackBase );
+        }
+        return CALL_WOW64_SYSCALL_CURRENT_STACK();
+    }
+    if (!teb) return Wow64SystemServiceEx( service, args );
+    if (ensure_bridge_stack()) return CALL_WOW64_SYSCALL_CURRENT_STACK();
+
+    publish_bridge_stack_bounds( teb, &old );
+    stack_top = bridge_syscall_call_stack_top( teb );
+    if (!stack_top)
+    {
+        restore_stack_bounds( teb, &old );
+        return CALL_WOW64_SYSCALL_CURRENT_STACK();
+    }
+    old_active = teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE];
+    teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE] = (void *)1;
+    status = xtajit_arm64_call_wow64_syscall( service, args, stack_top, teb, Wow64SystemServiceEx );
+    teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE] = old_active;
+    restore_stack_bounds( teb, &old );
+    return status;
+    #undef CALL_WOW64_SYSCALL_CURRENT_STACK
+#else
+    return Wow64SystemServiceEx( service, args );
+#endif
+}
+
+static void dump_guest_dwords( const char *label, DWORD guest, unsigned int count )
+{
+    DWORD data[8] = { 0 };
+    DWORD *ptr = guest32_host_ptr( guest );
+
+    if (count > ARRAY_SIZE(data)) count = ARRAY_SIZE(data);
+    if (guest32_can_read( guest, count * sizeof(*data) )) memcpy( data, ptr, count * sizeof(*data) );
+
+    MESSAGE( "macrunner-xtajit: %s guest=%08lx host=%p data=%08lx,%08lx,%08lx,%08lx,%08lx,%08lx,%08lx,%08lx\n",
+             label, guest, ptr, data[0], data[1], data[2], data[3],
+             data[4], data[5], data[6], data[7] );
+}
+
+static void dump_guest_bytes( const char *label, DWORD guest, unsigned int count )
+{
+    BYTE data[96] = { 0 };
+    BYTE *ptr = guest32_host_ptr( guest );
+    unsigned int i;
+
+    if (count > ARRAY_SIZE(data)) count = ARRAY_SIZE(data);
+    if (guest32_can_read( guest, count )) memcpy( data, ptr, count );
+
+    MESSAGE( "macrunner-xtajit: %s guest=%08lx host=%p bytes=", label, guest, ptr );
+    for (i = 0; i < count; i++) MESSAGE( "%02x", data[i] );
+    MESSAGE( "\n" );
+}
+
+static void dump_syscall_bop_stack( DWORD service, const struct xtajit_i386_context *ctx,
+                                    DWORD ret_eip, DWORD ret_esp )
+{
+    DWORD raw[10] = { 0 };
+    DWORD sample4[6] = { 0 };
+    DWORD sample8[6] = { 0 };
+    DWORD *stack = guest32_host_ptr( ctx->esp );
+    DWORD *args4 = guest32_host_ptr( ret_esp );
+    DWORD *args8 = guest32_host_ptr( ret_esp + sizeof(DWORD) );
+    static int trace_count;
+
+    if (trace_count >= 128 && service != 0x18 && service != 0x49 && service != 0xcf &&
+        service != 0x1246 &&
+        !trace_all_simulate_enabled())
+        return;
+    trace_count++;
+
+    if (stack) memcpy( raw, stack, sizeof(raw) );
+    if (args4) memcpy( sample4, args4, sizeof(sample4) );
+    if (args8) memcpy( sample8, args8, sizeof(sample8) );
+
+    MESSAGE( "macrunner-xtajit: syscall bop stack svc=%08lx esp=%08lx ret=%08lx ret_esp=%08lx "
+             "raw=%08lx,%08lx,%08lx,%08lx,%08lx,%08lx,%08lx,%08lx,%08lx,%08lx "
+             "args4=%08lx,%08lx,%08lx,%08lx,%08lx,%08lx "
+             "args8=%08lx,%08lx,%08lx,%08lx,%08lx,%08lx\n",
+             service, ctx->esp, ret_eip, ret_esp,
+             raw[0], raw[1], raw[2], raw[3], raw[4],
+             raw[5], raw[6], raw[7], raw[8], raw[9],
+             sample4[0], sample4[1], sample4[2], sample4[3], sample4[4], sample4[5],
+             sample8[0], sample8[1], sample8[2], sample8[3], sample8[4], sample8[5] );
+
+    MESSAGE( "macrunner-xtajit: syscall bop regs svc=%08lx eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx esi=%08lx edi=%08lx ebp=%08lx esp=%08lx eip=%08lx eflags=%08lx\n",
+             service, ctx->eax, ctx->ebx, ctx->ecx, ctx->edx, ctx->esi, ctx->edi,
+             ctx->ebp, ctx->esp, ctx->eip, ctx->eflags );
+    dump_guest_dwords( "bop ebp-40", ctx->ebp - 0x40, 8 );
+    dump_guest_dwords( "bop ebp", ctx->ebp, 8 );
+    if (ctx->ebp)
+    {
+        DWORD *frame = guest32_host_ptr( ctx->ebp );
+        if (frame)
+        {
+            dump_guest_dwords( "bop caller-ebp-40", frame[0] - 0x40, 8 );
+            dump_guest_dwords( "bop caller-ebp", frame[0], 8 );
+        }
+    }
+    dump_guest_dwords( "bop edi", ctx->edi, 4 );
+    dump_guest_dwords( "bop ebx", ctx->ebx, 4 );
+}
+
+static I386_CONTEXT *host_i386_context_ptr( I386_CONTEXT *ctx )
+{
+    ULONG_PTR ptr = (ULONG_PTR)ctx;
+
+    if (ptr && ptr <= 0xffffffff) return guest32_host_ptr( PtrToUlong( ctx ) );
+    return ctx;
+}
+
+static BYTE *ensure_guest_bop( BYTE **slot, const BYTE *opcode )
+{
+    BYTE *ptr = *slot;
+    SIZE_T size = 0x1000;
+    NTSTATUS status;
+
+    if (ptr) return ptr;
+    ptr = NULL;
+    status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&ptr, 0, &size,
+                                      MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE );
+    if (status) return NULL;
+    ptr[0] = opcode[0];
+    ptr[1] = opcode[1];
+    NtFlushInstructionCache( NtCurrentProcess(), ptr, 2 );
+    *slot = ptr;
+    return ptr;
+}
+
+static NTSTATUS xtajit_unix_call( enum xtajit_unix_funcs func, void *params )
+{
+    NTSTATUS status = __wine_init_unix_call();
+    if (status) return status;
+    return WINE_UNIX_CALL( func, params );
+}
+
+static BOOL trace_all_simulate_enabled(void);
+
+static void pack_i386_context( struct xtajit_i386_context *dst, const I386_CONTEXT *src )
+{
+    TEB32 *teb32 = xtajit_current_teb32();
+
+    dst->eax = src->Eax;
+    dst->ebx = src->Ebx;
+    dst->ecx = src->Ecx;
+    dst->edx = src->Edx;
+    dst->esi = src->Esi;
+    dst->edi = src->Edi;
+    dst->esp = src->Esp;
+    dst->ebp = src->Ebp;
+    dst->eip = src->Eip;
+    dst->eflags = src->EFlags;
+    dst->fs_base = PtrToUlong( teb32 );
+    dst->gs_base = src->SegGs;
+    dst->seg_cs = src->SegCs;
+    dst->seg_ds = src->SegDs;
+    dst->seg_es = src->SegEs;
+    dst->seg_fs = src->SegFs;
+    dst->seg_gs = src->SegGs;
+    dst->seg_ss = src->SegSs;
+    dst->teb32_host = (ULONG_PTR)teb32;
+    /*
+     * i386 ntdll keeps per-thread Wine debug buffers immediately after TEB32
+     * (see ntdll/thread.c:get_info()).  Guest fs: accesses must see that
+     * adjacent area too; mirroring only sizeof(TEB32) faults at fs:[0x1000].
+     */
+    dst->teb32_size = sizeof(*teb32) + 0x800;
+    dst->wow32_reserved = teb32 ? teb32->WOW32Reserved : 0;
+    dst->x87_cw = src->FloatSave.ControlWord;
+    dst->x87_sw = src->FloatSave.StatusWord;
+    dst->x87_tw = src->FloatSave.TagWord;
+}
+
+static void unpack_i386_context( I386_CONTEXT *dst, const struct xtajit_i386_context *src )
+{
+    dst->ContextFlags = CONTEXT_I386_ALL;
+    dst->Eax = src->eax;
+    dst->Ebx = src->ebx;
+    dst->Ecx = src->ecx;
+    dst->Edx = src->edx;
+    dst->Esi = src->esi;
+    dst->Edi = src->edi;
+    dst->Esp = src->esp;
+    dst->Ebp = src->ebp;
+    dst->Eip = src->eip;
+    dst->EFlags = src->eflags;
+    dst->SegCs = src->seg_cs;
+    dst->SegDs = src->seg_ds;
+    dst->SegEs = src->seg_es;
+    dst->SegFs = src->seg_fs;
+    dst->SegGs = src->seg_gs;
+    dst->SegSs = src->seg_ss;
+    dst->FloatSave.ControlWord = src->x87_cw;
+    dst->FloatSave.StatusWord = src->x87_sw;
+    dst->FloatSave.TagWord = src->x87_tw;
+}
+
+static NTSTATUS publish_simulated_i386_context( const struct xtajit_i386_context *ctx )
+{
+    I386_CONTEXT host_ctx = { CONTEXT_I386_ALL };
+
+    if (!ctx) return STATUS_INVALID_PARAMETER;
+    unpack_i386_context( &host_ctx, ctx );
+    return write_current_i386_context( &host_ctx, FALSE );
+}
+
+static NTSTATUS publish_simulated_i386_exception_context( const struct xtajit_i386_context *ctx )
+{
+    I386_CONTEXT host_ctx = { CONTEXT_I386_ALL };
+
+    if (!ctx) return STATUS_INVALID_PARAMETER;
+    unpack_i386_context( &host_ctx, ctx );
+    return write_current_i386_context( &host_ctx, TRUE );
+}
+
+static BOOL pass_guest_exception( const struct xtajit_simulate_params *params, NTSTATUS status )
+{
+    const struct xtajit_i386_context *ctx = params ? &params->context : NULL;
+    EXCEPTION_RECORD rec;
+    EXCEPTION_POINTERS ptrs;
+    CONTEXT native_context;
+
+    if (status != STATUS_ACCESS_VIOLATION && status != STATUS_ILLEGAL_INSTRUCTION)
+        return FALSE;
+
+    memset( &rec, 0, sizeof(rec) );
+    memset( &native_context, 0, sizeof(native_context) );
+    RtlCaptureContext( &native_context );
+
+    rec.ExceptionCode = status;
+    rec.ExceptionAddress = ULongToPtr( ctx ? ctx->eip : 0 );
+
+    if (status == STATUS_ACCESS_VIOLATION)
+    {
+        rec.NumberParameters = 2;
+        rec.ExceptionInformation[0] = 0; /* read; HyperBridge does not yet report write faults */
+        rec.ExceptionInformation[1] = 0; /* faulting address is not exported yet */
+
+        if (params && params->hb_result == HB_ERR_MEMORY_FAULT && params->faulted &&
+            !params->steps && !params->blocks && ctx)
+        {
+            rec.ExceptionInformation[0] = 8; /* execute */
+            rec.ExceptionInformation[1] = ctx->eip;
+        }
+    }
+
+    ptrs.ExceptionRecord = &rec;
+    ptrs.ContextRecord = &native_context;
+    Wow64PassExceptionToGuest( &ptrs );
+    return TRUE;
+}
+
+struct xtajit_teb32_stack_base
+{
+    TEB32 *teb32;
+    ULONG old_base;
+};
+
+static void publish_pending_guest_stack_base( const struct xtajit_i386_context *ctx,
+                                              struct xtajit_teb32_stack_base *old )
+{
+    TEB32 *teb32 = xtajit_current_teb32();
+
+    old->teb32 = teb32;
+    old->old_base = teb32 ? teb32->Tib.StackBase : 0;
+    if (teb32 && ctx && ctx->esp) teb32->Tib.StackBase = ctx->esp;
+}
+
+static void restore_pending_guest_stack_base( const struct xtajit_teb32_stack_base *old )
+{
+    if (old->teb32) old->teb32->Tib.StackBase = old->old_base;
+}
+
+BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, void *reserved )
+{
+    if (reason == DLL_PROCESS_ATTACH) LdrDisableThreadCalloutsForDll( inst );
+    return TRUE;
+}
+
+void *WINAPI BTCpuGetBopCode(void)
+{
+    BYTE *ptr = ensure_guest_bop( &syscall_bop_guest, syscall_bop );
+    MESSAGE( "macrunner-xtajit: BTCpuGetBopCode -> %p guest=%08lx\n",
+             ptr ? ptr : syscall_bop, ptr ? PtrToUlong( ptr ) : PtrToUlong( syscall_bop ) );
+    return ptr ? ptr : syscall_bop;
+}
+
+void *WINAPI __wine_get_unix_opcode(void)
+{
+    BYTE *ptr = ensure_guest_bop( &unix_bop_guest, unix_bop );
+    return ptr ? ptr : unix_bop;
+}
+
+BOOLEAN WINAPI BTCpuIsProcessorFeaturePresent( UINT feature )
+{
+    return RtlIsProcessorFeaturePresent( feature );
+}
+
+void WINAPI BTCpuProcessInit(void)
+{
+    NTSTATUS status = xtajit_unix_call( unix_process_init, NULL );
+    MESSAGE( "macrunner-xtajit: BTCpuProcessInit status=%08lx\n", status );
+    if (status) RtlRaiseStatus( status );
+}
+
+void WINAPI BTCpuProcessTerm( HANDLE handle, BOOL is_post, NTSTATUS status )
+{
+    struct xtajit_memory_params params = { handle, 0, 0, 0, is_post, status };
+    if (trace_process_exit_enabled())
+        MESSAGE( "macrunner-xtajit-exit: BTCpuProcessTerm pid=%lu tid=%lu handle=%p is_post=%u status=%08lx\n",
+                 GetCurrentProcessId(), GetCurrentThreadId(), handle, is_post, status );
+    (void)xtajit_unix_call( unix_process_term, &params );
+}
+
+void WINAPI BTCpuThreadInit(void)
+{
+    NTSTATUS status;
+
+    status = xtajit_unix_call( unix_thread_init, NULL );
+    MESSAGE( "macrunner-xtajit: BTCpuThreadInit status=%08lx\n", status );
+    if (status) RtlRaiseStatus( status );
+}
+
+void WINAPI BTCpuThreadTerm( HANDLE handle, LONG exit_code )
+{
+    struct xtajit_memory_params params = { handle, 0, 0, 0, TRUE, exit_code };
+    release_pending_i386_context();
+    release_bridge_stack();
+    (void)xtajit_unix_call( unix_thread_term, &params );
+}
+
+static BOOL handle_bop_context( struct xtajit_i386_context *ctx, NTSTATUS *status )
+{
+    DWORD ret_eip, ret_esp;
+
+    if (!ctx) return FALSE;
+    if (syscall_bop_guest && ctx->eip == PtrToUlong( syscall_bop_guest ))
+    {
+        DWORD *ret = guest32_host_ptr( ctx->esp );
+        DWORD service = ctx->eax;
+        UINT *args;
+
+        if (!ret)
+        {
+            *status = STATUS_ACCESS_VIOLATION;
+            return TRUE;
+        }
+        ret_eip = *ret;
+        ret_esp = ctx->esp + sizeof(DWORD);
+        args = guest32_host_ptr( ret_esp + sizeof(DWORD) );
+        if (trace_syscalls_enabled())
+        {
+            DWORD sample[6] = { 0 };
+            ULONG_PTR native_sp = current_native_sp();
+            if (args) memcpy( sample, args, sizeof(sample) );
+            dump_syscall_bop_stack( service, ctx, ret_eip, ret_esp );
+            MESSAGE( "macrunner-xtajit: syscall bop pre num=%08lx ret=%08lx esp=%08lx args=%08lx native_sp=%p slack=%ld sample=%08lx,%08lx,%08lx,%08lx,%08lx,%08lx\n",
+                     service, ret_eip, ret_esp, (DWORD)(ret_esp + sizeof(DWORD)),
+                     (void *)native_sp, (long)current_native_stack_slack( native_sp ),
+                     sample[0], sample[1], sample[2], sample[3], sample[4], sample[5] );
+        }
+
+        trace_native_stack( "syscall-bop-before-pending", ctx->eip, ctx->esp, service, 0 );
+        *status = STATUS_SUCCESS;
+        {
+            struct xtajit_teb32_stack_base old_teb32_stack;
+            (void)publish_simulated_i386_context( ctx );
+            publish_pending_guest_stack_base( ctx, &old_teb32_stack );
+            prepare_arm64_pe_call();
+            Wow64ProcessPendingCrossProcessItems();
+            restore_pending_guest_stack_base( &old_teb32_stack );
+        }
+        trace_native_stack( "syscall-bop-after-pending", ctx->eip, ctx->esp, service, 0 );
+        prepare_arm64_pe_call();
+        trace_native_stack( "syscall-bop-before-dispatch", ctx->eip, ctx->esp, service, 0 );
+        ctx->eax = dispatch_wow64_syscall( service, args );
+        trace_native_stack( "syscall-bop-after-dispatch", ret_eip, ret_esp, service, ctx->eax );
+        {
+            TEB *teb = xtajit_current_teb();
+            WOW64_CPURESERVED *cpu = teb ? teb->TlsSlots[WOW64_TLS_CPURESERVED] : NULL;
+
+            if (cpu && (cpu->Flags & WOW64_CPURESERVED_FLAG_RESET_STATE))
+            {
+                DWORD result = ctx->eax;
+                I386_CONTEXT reset_ctx = { CONTEXT_I386_ALL };
+                NTSTATUS get_status;
+
+                get_status = consume_reset_i386_context( &reset_ctx );
+                if (get_status == STATUS_NOT_FOUND)
+                    get_status = RtlWow64GetThreadContext( GetCurrentThread(), &reset_ctx );
+                if (get_status)
+                {
+                    *status = get_status;
+                    return TRUE;
+                }
+                pack_i386_context( ctx, &reset_ctx );
+                ctx->eax = result;
+                MESSAGE( "macrunner-xtajit: syscall bop reset-context svc=%08lx eip=%08lx esp=%08lx eax=%08lx\n",
+                         service, ctx->eip, ctx->esp, ctx->eax );
+                return TRUE;
+            }
+        }
+        ctx->esp = ret_esp;
+        ctx->eip = ret_eip;
+        if (trace_syscalls_enabled())
+        {
+            ULONG_PTR native_sp = current_native_sp();
+            MESSAGE( "macrunner-xtajit: syscall bop svc=%08lx ret=%08lx esp=%08lx native_sp=%p slack=%ld result=%08lx status=%08lx\n",
+                     service, ctx->eip, ctx->esp, (void *)native_sp,
+                     (long)current_native_stack_slack( native_sp ), ctx->eax, (NTSTATUS)STATUS_SUCCESS );
+        }
+        return TRUE;
+    }
+    if (unix_bop_guest && ctx->eip == PtrToUlong( unix_bop_guest ))
+    {
+        DWORD *ret = guest32_host_ptr( ctx->esp );
+        struct unix_bop_stack *stack;
+
+        if (!ret)
+        {
+            *status = STATUS_ACCESS_VIOLATION;
+            return TRUE;
+        }
+        ret_eip = *ret;
+        ret_esp = ctx->esp + sizeof(DWORD);
+        stack = guest32_host_ptr( ret_esp );
+        if (!stack)
+        {
+            *status = STATUS_ACCESS_VIOLATION;
+            return TRUE;
+        }
+
+        if (trace_syscalls_enabled())
+        {
+            ULONG_PTR native_sp = current_native_sp();
+            MESSAGE( "macrunner-xtajit: unix bop pre handle=%p id=%u args=%08lx ret=%08lx esp=%08lx native_sp=%p slack=%ld\n",
+                     (void *)(ULONG_PTR)stack->handle, stack->id, stack->args, ret_eip, ret_esp,
+                     (void *)native_sp, (long)current_native_stack_slack( native_sp ) );
+        }
+
+        trace_native_stack( "unix-bop-before-dispatch", ctx->eip, ctx->esp, 0xffffffff, 0 );
+        *status = STATUS_SUCCESS;
+        ctx->eax = __wine_unix_call( stack->handle, stack->id, guest32_host_ptr( stack->args ) );
+        trace_native_stack( "unix-bop-after-dispatch", ret_eip, ret_esp, 0xffffffff, ctx->eax );
+        ctx->esp = ret_esp + sizeof(*stack);
+        ctx->eip = ret_eip;
+        if (trace_syscalls_enabled())
+        {
+            ULONG_PTR native_sp = current_native_sp();
+            MESSAGE( "macrunner-xtajit: unix bop done ret=%08lx esp=%08lx native_sp=%p slack=%ld result=%08lx status=%08lx\n",
+                     ctx->eip, ctx->esp, (void *)native_sp,
+                     (long)current_native_stack_slack( native_sp ), ctx->eax, (NTSTATUS)STATUS_SUCCESS );
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+NTSTATUS WINAPI BTCpuGetContext( HANDLE thread, HANDLE process, void *unknown, I386_CONTEXT *ctx )
+{
+    I386_CONTEXT *host_ctx = host_i386_context_ptr( ctx );
+    NTSTATUS status;
+
+    if (ctx && !host_ctx) return STATUS_ACCESS_VIOLATION;
+    status = RtlWow64GetThreadContext( thread, host_ctx );
+    if (trace_all_simulate_enabled())
+        MESSAGE( "macrunner-xtajit: BTCpuGetContext thread=%p status=%08lx eip=%08lx esp=%08lx\n",
+                 thread, status, host_ctx ? host_ctx->Eip : 0, host_ctx ? host_ctx->Esp : 0 );
+    return status;
+}
+
+NTSTATUS WINAPI BTCpuSetContext( HANDLE thread, HANDLE process, void *unknown, I386_CONTEXT *ctx )
+{
+    I386_CONTEXT *host_ctx = host_i386_context_ptr( ctx );
+    NTSTATUS status;
+
+    if (ctx && !host_ctx) return STATUS_ACCESS_VIOLATION;
+    if (trace_all_simulate_enabled())
+        MESSAGE( "macrunner-xtajit: BTCpuSetContext thread=%p eip=%08lx esp=%08lx\n",
+                 thread, host_ctx ? host_ctx->Eip : 0, host_ctx ? host_ctx->Esp : 0 );
+    if (thread == GetCurrentThread())
+    {
+        publish_pending_i386_context( host_ctx );
+        status = set_current_i386_context( host_ctx );
+    }
+    else
+        status = RtlWow64SetThreadContext( thread, host_ctx );
+    if (trace_all_simulate_enabled())
+        MESSAGE( "macrunner-xtajit: BTCpuSetContext status=%08lx thread=%p eip=%08lx esp=%08lx\n",
+                 status, thread, host_ctx ? host_ctx->Eip : 0, host_ctx ? host_ctx->Esp : 0 );
+    return status;
+}
+
+static void WINAPI BTCpuSimulate_impl( void *arg )
+{
+    struct xtajit_initial_i386_context *initial = arg;
+    struct xtajit_simulate_params params;
+    I386_CONTEXT ctx = { CONTEXT_I386_ALL };
+    NTSTATUS status;
+    BOOL trace;
+    BOOL progress_trace;
+    BOOL trace_all;
+    int current_trace_count;
+    static int trace_count;
+
+    if (initial)
+    {
+        ctx = initial->ctx;
+        status = initial->status;
+    }
+    else
+    {
+        struct xtajit_initial_i386_context captured;
+
+        capture_initial_i386_context( &captured );
+        ctx = captured.ctx;
+        status = captured.status;
+    }
+    trace_native_stack( "simulate-enter", ctx.Eip, ctx.Esp, 0xffffffff, status );
+    trace_all = trace_all_simulate_enabled();
+    current_trace_count = trace_count++;
+    trace = trace_all;
+    progress_trace = trace_syscalls_enabled() && !trace && !(current_trace_count & 0x3ffff);
+    if (trace)
+        MESSAGE( "macrunner-xtajit: BTCpuSimulate getctx status=%08lx eip=%08lx esp=%08lx ebp=%08lx eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx esi=%08lx edi=%08lx eflags=%08lx\n",
+                 status, ctx.Eip, ctx.Esp, ctx.Ebp, ctx.Eax, ctx.Ebx, ctx.Ecx, ctx.Edx,
+                 ctx.Esi, ctx.Edi, ctx.EFlags );
+    else if (progress_trace)
+        MESSAGE( "macrunner-xtajit: BTCpuSimulate progress count=%d eip=%08lx esp=%08lx eax=%08lx ecx=%08lx edx=%08lx eflags=%08lx\n",
+                 trace_count, ctx.Eip, ctx.Esp, ctx.Eax, ctx.Ecx, ctx.Edx, ctx.EFlags );
+    if (status) RtlRaiseStatus( status );
+    if (trace) dump_guest_bytes( "simulate eip-bytes", ctx.Eip, 96 );
+
+    RtlZeroMemory( &params, sizeof(params) );
+    pack_i386_context( &params.context, &ctx );
+    params.max_code_bytes = 4096;
+
+    if (!handle_bop_context( &params.context, &status ))
+    {
+        status = xtajit_unix_call( unix_simulate, &params );
+        if (!status) status = params.status;
+        if (trace)
+            MESSAGE( "macrunner-xtajit: BTCpuSimulate unix status=%08lx exit_status=%08lx hb=%ld faulted=%lu steps=%llu blocks=%llu eip=%08lx esp=%08lx ebp=%08lx eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx esi=%08lx edi=%08lx\n",
+                     status, params.status, params.hb_result, params.faulted,
+                     (unsigned long long)params.steps, (unsigned long long)params.blocks,
+                     params.context.eip, params.context.esp, params.context.ebp,
+                     params.context.eax, params.context.ebx, params.context.ecx,
+                     params.context.edx, params.context.esi, params.context.edi );
+        else if (progress_trace)
+            MESSAGE( "macrunner-xtajit: BTCpuSimulate progress-out status=%08lx hb=%ld faulted=%lu steps=%llu blocks=%llu eip=%08lx esp=%08lx eax=%08lx ecx=%08lx edx=%08lx\n",
+                     status, params.hb_result, params.faulted,
+                     (unsigned long long)params.steps, (unsigned long long)params.blocks,
+                     params.context.eip, params.context.esp, params.context.eax,
+                     params.context.ecx, params.context.edx );
+        if (!status && handle_bop_context( &params.context, &status ) && trace_syscalls_enabled())
+            MESSAGE( "macrunner-xtajit: BTCpuSimulate handled bop eip=%08lx esp=%08lx eax=%08lx status=%08lx\n",
+                     params.context.eip, params.context.esp, params.context.eax, status );
+    }
+    if (status)
+    {
+        NTSTATUS publish_status = publish_simulated_i386_exception_context( &params.context );
+
+        MESSAGE( "macrunner-xtajit: BTCpuSimulate publish-exception-context status=%08lx "
+                 "exception=%08lx eip=%08lx esp=%08lx eax=%08lx\n",
+                 publish_status, status, params.context.eip, params.context.esp,
+                 params.context.eax );
+        dump_guest_bytes( "simulate exception eip-bytes", params.context.eip, 32 );
+        if (publish_status) RtlRaiseStatus( publish_status );
+        if (pass_guest_exception( &params, status ))
+        {
+            return;
+        }
+        RtlRaiseStatus( status );
+    }
+
+    unpack_i386_context( &ctx, &params.context );
+    status = RtlWow64SetThreadContext( GetCurrentThread(), &ctx );
+    clear_wow64_reset_state();
+    trace_native_stack( "simulate-exit", ctx.Eip, ctx.Esp, 0xffffffff, status );
+    if (trace)
+        MESSAGE( "macrunner-xtajit: BTCpuSimulate setctx status=%08lx eip=%08lx esp=%08lx ebp=%08lx eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx esi=%08lx edi=%08lx\n",
+                 status, ctx.Eip, ctx.Esp, ctx.Ebp, ctx.Eax, ctx.Ebx, ctx.Ecx, ctx.Edx,
+                 ctx.Esi, ctx.Edi );
+    if (status) RtlRaiseStatus( status );
+}
+
+void WINAPI BTCpuSimulate(void)
+{
+    struct xtajit_initial_i386_context initial;
+#ifdef __aarch64__
+    TEB *teb;
+    struct xtajit_stack_bounds old;
+    void *stack_top;
+    void *old_active;
+#endif
+
+    capture_initial_i386_context( &initial );
+
+#ifdef __aarch64__
+    teb = xtajit_current_teb();
+    if (teb && (stack_top = bridge_stack_top_below_syscall_frame( teb )))
+    {
+        if (trace_native_stack_enabled())
+        {
+            ULONG_PTR frame = *(ULONG_PTR *)((char *)teb + XTAJIT_TEB_SYSCALL_FRAME_OFFSET);
+            MESSAGE( "macrunner-xtajit-stack: nested-callback-switch native_sp=%p "
+                     "syscall_frame=%p nested_top=%p bridge=%p-%p\n",
+                     (void *)current_native_sp(), (void *)frame, stack_top,
+                     teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK],
+                     (void *)((ULONG_PTR)teb->TlsSlots[XTAJIT_TLS_BRIDGE_STACK] +
+                              (SIZE_T)teb->TlsSlots[XTAJIT_TLS_BRIDGE_SIZE]) );
+        }
+        old_active = teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE];
+        teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE] = (void *)1;
+        xtajit_arm64_call_void( stack_top, teb, BTCpuSimulate_impl, &initial );
+        teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE] = old_active;
+        return;
+    }
+
+    if (teb && !teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE] &&
+        !ensure_bridge_stack() && (stack_top = bridge_stack_top( teb )))
+    {
+        publish_bridge_stack_bounds( teb, &old );
+        teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE] = (void *)1;
+        xtajit_arm64_call_void( stack_top, teb, BTCpuSimulate_impl, &initial );
+        teb->TlsSlots[XTAJIT_TLS_BRIDGE_ACTIVE] = NULL;
+        restore_stack_bounds( teb, &old );
+        return;
+    }
+#endif
+    BTCpuSimulate_impl( &initial );
+}
+
+NTSTATUS WINAPI BTCpuResetToConsistentState( EXCEPTION_POINTERS *ptrs )
+{
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS WINAPI BTCpuTurboThunkControl( ULONG enable )
+{
+    return STATUS_SUCCESS;
+}
+
+void WINAPI BTCpuFlushInstructionCache2( const void *addr, SIZE_T size )
+{
+    (void)xtajit_unix_call( unix_flush_instruction_cache, NULL );
+}
+
+void WINAPI BTCpuFlushInstructionCacheHeavy( const void *addr, SIZE_T size )
+{
+    (void)xtajit_unix_call( unix_flush_instruction_cache, NULL );
+}
+
+NTSTATUS WINAPI BTCpuNotifyMapViewOfSection( void *unk1, void *addr, void *unk2,
+                                             SIZE_T size, ULONG protect, ULONG status_code )
+{
+    struct xtajit_memory_params params = { addr, size, 0, protect, TRUE, status_code };
+    return xtajit_unix_call( unix_notify_map_view, &params );
+}
+
+void WINAPI BTCpuNotifyMemoryAlloc( void *addr, SIZE_T size, ULONG type,
+                                    ULONG protect, BOOL is_post, NTSTATUS status )
+{
+    struct xtajit_memory_params params = { addr, size, type, protect, is_post, status };
+    (void)xtajit_unix_call( unix_notify_memory_alloc, &params );
+}
+
+void WINAPI BTCpuNotifyMemoryDirty( void *addr, SIZE_T size )
+{
+    (void)addr;
+    (void)size;
+}
+
+void WINAPI BTCpuNotifyMemoryFree( void *addr, SIZE_T size, ULONG type,
+                                   BOOL is_post, NTSTATUS status )
+{
+    struct xtajit_memory_params params = { addr, size, type, 0, is_post, status };
+    (void)xtajit_unix_call( unix_notify_memory_free, &params );
+}
+
+void WINAPI BTCpuNotifyMemoryProtect( void *addr, SIZE_T size, ULONG protect,
+                                      BOOL is_post, NTSTATUS status )
+{
+    struct xtajit_memory_params params = { addr, size, 0, protect, is_post, status };
+    (void)xtajit_unix_call( unix_notify_memory_protect, &params );
+}
+
+void WINAPI BTCpuNotifyReadFile( HANDLE handle, void *addr, SIZE_T size,
+                                 BOOL is_post, NTSTATUS status )
+{
+    (void)handle;
+    (void)addr;
+    (void)size;
+    (void)is_post;
+    (void)status;
+}
+
+void WINAPI BTCpuNotifyUnmapViewOfSection( void *addr, BOOL is_post, NTSTATUS status )
+{
+    struct xtajit_memory_params params = { addr, 0, 0, 0, is_post, status };
+    (void)xtajit_unix_call( unix_notify_unmap_view, &params );
+}
+
+void WINAPI BTCpuUpdateProcessorInformation( SYSTEM_CPU_INFORMATION *info )
+{
+    (void)info;
+}

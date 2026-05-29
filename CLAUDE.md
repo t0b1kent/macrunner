@@ -1,0 +1,53 @@
+# MacRunner — standing rules for Claude (read every session)
+
+MacRunner runs x86_64 Windows apps/games on Apple Silicon **without Rosetta**: HyperBridge
+(x86→ARM64 translator) + pure-ARM64 Wine 11 + ARM64EC + DirectX11→Metal (DXMT). Multiple AI
+agents work in parallel (Codex/Opus = engine, Kimi = graphics, Cline = bounded tasks, ChatGPT =
+research). Claude here = strategic coordinator / memory-keeper.
+
+## TOOLING — USE context-mode, NOT raw Bash+grep+Read (operator's explicit standing order)
+For ANY heavy read/search/index work, route through the **context-mode MCP** (`ctx_search`,
+`ctx_index`, `ctx_execute`, `ctx_stats`, etc.) — it exists for token economy. Do NOT default to
+`grep`/`cat`/`tail`/`Read` over large logs or the repo. Specifically:
+- Searching the repo / many files → `ctx_search` (not Bash `grep -r`).
+- Reading/scanning large logs (Wine traces, build logs) → index + `ctx_search`, not `Read`/`tail`.
+- Run `ctx_doctor`/`ctx_stats` if unsure context-mode is healthy; fall back to Bash ONLY if
+  context-mode is genuinely unavailable, and say so explicitly.
+This is a recurring miss — the operator has flagged it repeatedly. Honor it.
+
+## HARD GUARDRAILS (never violate)
+- **NEVER touch `engine/graphics/**`** — Kimi's lane.
+- **NEVER edit the golden x64 snapshot** (read-only oracle) — escalate instead.
+- **Kill Wine ONLY scoped:** `WINEPREFIX=<prefix> <dist>/bin/wineserver -k`. NEVER global
+  `pkill -9 wine` / `killall wine` — Kimi runs Wine in parallel; you'd destroy his work.
+- **NEVER commit unless the operator explicitly asks.**
+- **NEVER `git add -A` / `git add .`** — repo is massively untracked (Half-Life.7z, KeePass.exe,
+  GTA, bottles/, artifacts/, secrets risk). Add only specific named files.
+- **NEVER update git config** (despite the auto-config warning git prints on commit).
+- Baseline build script `scripts/build-wine-pure-arm64-experiment.sh` is untouched. ARM64EC work
+  uses `scripts/build-wine-arm64ec-spike.sh` → `build-arm64ec-spike` / `dist-arm64ec-spike`.
+
+## RUNTIME DISCIPLINE
+- Every Wine / x86_64-PE run goes through `timeout` (e.g. `timeout 90 ...`) — x64 PEs under the
+  half-wired emulator hot-spin/hang; the timeout is mandatory, then scoped `wineserver -k`.
+- `WINEDEBUG=-all` unless a channel is deliberately needed; then scope narrowly.
+- Never read full trace logs; bound output.
+
+## AGENT NOTES
+- **Cline (Codex 5.5) HANGS — and the #1 confirmed cause is HEREDOCS / multi-line shell.**
+  Cline's shell wrapper freezes forever at `cmdand ... heredoc c>` waiting for a terminator.
+  This is the actual freeze seen on screen, NOT a reading problem. So EVERY Cline brief §0 MUST
+  forbid (loudly, never drop this rule again):
+  - NO `cat > file <<EOF ... EOF`, NO `tee <<EOF`, NO any `<<` heredoc in the terminal.
+  - Write/edit files ONLY with Cline's `write_to_file` / `replace_in_file` tools.
+  - git commit multi-line message → write message to a file with the tool, then `git commit -F <file>`.
+  - Every terminal command = a SINGLE line, no embedded newlines, no nested quotes.
+  Other anti-hang rules still apply: background+logfile builds, timeout-wrapped runs, "when you
+  have the answer STOP", no `tail -f`/full-log reads. Cline also reports a green checklist instead
+  of the real verdict — demand pasted evidence, not status.
+- Flash NOT for engine debugging; Opus default for engine.
+- Obsidian vault at `/Users/timurtoby/Documents/MacRunner/` is NOT a git repo (notes just persist).
+
+## VERDICT DISCIPLINE
+Evidence (pasted log line / exported symbol / pixels), NOT agent status. "blocked at X" with the
+exact blocker named is a valid, useful result — do not fake forward progress.

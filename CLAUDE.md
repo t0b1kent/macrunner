@@ -16,7 +16,10 @@ For ANY heavy read/search/index work, route through the **context-mode MCP** (`c
 This is a recurring miss — the operator has flagged it repeatedly. Honor it.
 
 ## HARD GUARDRAILS (never violate)
-- **NEVER touch `engine/graphics/**`** — Kimi's lane.
+- **Lanes (updated 2026-05-30):** Kimi is sidelined; **Codex now owns everything incl. graphics**
+  (`engine/dxmt/**`, `engine/graphics/**`, `engine/vkd3d/**`) + audio + engine. The old "never
+  touch graphics — Kimi's lane" rule is LIFTED. Still: don't reach into Kimi's separate worktree if
+  it exists; work in the canonical tree.
 - **NEVER edit the golden x64 snapshot** (read-only oracle) — escalate instead.
 - **Kill Wine ONLY scoped:** `WINEPREFIX=<prefix> <dist>/bin/wineserver -k`. NEVER global
   `pkill -9 wine` / `killall wine` — Kimi runs Wine in parallel; you'd destroy his work.

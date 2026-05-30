@@ -8,8 +8,13 @@ runs end-to-end through the ARM64EC/xtajit64 path to `run_exit=0`, no Rosetta/FE
 native ARM64, only game x64 emulated by HyperBridge. x87 family 10/10. Spike build green.
 **Where we finish:** the Tier-1 green-list games are playable on MacRunner, fast and stable.
 
-This brief is the engine track. Graphics (DXMT) = Kimi's lane; store/launcher layer = separate;
-both have integration contracts called out below but are NOT your implementation.
+**SCOPE CHANGE (2026-05-30): Codex owns EVERYTHING now.** Kimi is sidelined for this effort, so
+graphics (DXMT/DX11→Metal) is YOUR lane too — you continue and finish it, not just a contract.
+Audio is already largely built (`engine/wine/dlls/xaudio2_*`, `x3daudio*`, `winecoreaudio.drv`,
+`faudio`) → integrate + verify, don't rebuild. DXMT is well-started (`engine/dxmt/` =
+winemetal/nativemetal/airconv; `engine/graphics/` = metal_ir/shader_ingest/runtime_backend;
+`engine/vkd3d` Metal shader runner) → continue it. The store/launcher layer remains separate
+(out of scope here).
 
 ---
 
@@ -20,9 +25,11 @@ both have integration contracts called out below but are NOT your implementation
   and memory/threading patterns. arm64ec entry has no 32-bit analog (use `load_arm64ec_module`,
   `arm64ec_process_init`, `signal_arm64ec.c`).
 - **Golden x64 snapshot = read-only oracle.** Use it for differential correctness; never edit it.
-- **Lane boundaries:** never touch `engine/graphics/**` (Kimi). Don't edit the baseline build
-  script. ntdll/loader/HyperBridge are in-scope. Back up shared untracked files before risky edits
-  (as done for loader.c at `reports/backups/`).
+- **Lane boundaries:** ntdll/loader/HyperBridge/xtajit64 AND graphics (`engine/dxmt/**`,
+  `engine/graphics/**`, `engine/vkd3d/**`) AND audio are ALL in-scope (Kimi sidelined). Don't edit
+  the baseline build script; golden snapshot stays read-only. Back up shared untracked files before
+  risky edits (as done for loader.c at `reports/backups/`). If Kimi's separate worktree exists,
+  don't reach into it — work only in this canonical tree.
 - **MCP 120s ceiling:** builds → `nohup … &` + poll; runs → `timeout … > log` + redirect; kill
   **scoped** (`WINEPREFIX=<p> wineserver -k`), never global. Prefixes under `artifacts/` (not /tmp).
 - **No commits without the operator.** Keep a running result report per phase.
@@ -70,12 +77,17 @@ An interpreter cannot drive a game. This is the make-or-break phase.
 1. **Threading/TLS/sync/timers**: many-thread correctness, QueryPerformanceCounter, fibers, TLS
    under EC.
 2. **Input**: XInput + DirectInput + raw input → macOS HID/GameController.
-3. **Audio**: XAudio2 / WASAPI → CoreAudio (coordinate with the audio lane).
-4. **Graphics integration (contract with Kimi, not your impl)**: define + wire the CPU↔GPU handoff
-   to **DXMT (DX11→Metal)** — DXGI swapchain, present, frame pacing. You own the x64-side calling
-   into the native graphics DLLs across the EC boundary; Kimi owns Metal.
+3. **Audio (already built → integrate + verify)**: `xaudio2_*`, `x3daudio*`, `winecoreaudio.drv`,
+   `faudio` exist. Verify the full path (XAudio2/WASAPI → CoreAudio) works for an x64 game under
+   emulation; fix EC-boundary issues; do NOT rebuild from scratch.
+4. **Graphics — YOU own DXMT now (Kimi sidelined), CONTINUE don't restart**: DXMT is well-started
+   (`engine/dxmt/` winemetal/nativemetal/airconv shader→AIR/metallib; `engine/graphics/` metal_ir/
+   shader_ingest/runtime_backend; `engine/vkd3d` Metal shader runner). Drive DX11→Metal to working:
+   DXGI swapchain + present + frame pacing, shader translation coverage (airconv), the CPU↔GPU
+   handoff across the EC boundary (x64 game → native ARM64 d3d11/dxgi → Metal). Read the existing
+   graphics tests/traces first; extend, don't greenfield.
 - **Gate:** the FIRST Tier-1 game (Hades or Stardew Valley) **boots to its main menu** with input +
-  audio + a rendered frame. Screenshot + log.
+  audio + a rendered frame on screen. Screenshot + log.
 
 ## PHASE 4 — green-list bring-up ladder (≈weeks 18-26)
 Drive the ladder; each game is a fix-loop feeding Phases 1-3.

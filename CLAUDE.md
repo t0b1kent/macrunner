@@ -31,6 +31,9 @@ This is a recurring miss — the operator has flagged it repeatedly. Honor it.
   uses `scripts/build-wine-arm64ec-spike.sh` → `build-arm64ec-spike` / `dist-arm64ec-spike`.
 
 ## RUNTIME DISCIPLINE
+- **Use `scripts/mr-run.sh` for runs and `scripts/mr-clean.sh [--prune]` after each run/phase** —
+  they guarantee no orphaned hot-spinning Wine and no leftover 1.5G prefixes (the recurring "tails"
+  that load CPU + eat disk). Scoped to `dist-arm64ec-spike`; never global `pkill wine`.
 - Every Wine / x86_64-PE run goes through `timeout` (e.g. `timeout 90 ...`) — x64 PEs under the
   half-wired emulator hot-spin/hang; the timeout is mandatory, then scoped `wineserver -k`.
 - `WINEDEBUG=-all` unless a channel is deliberately needed; then scope narrowly.
@@ -50,6 +53,23 @@ This is a recurring miss — the operator has flagged it repeatedly. Honor it.
   of the real verdict — demand pasted evidence, not status.
 - Flash NOT for engine debugging; Opus default for engine.
 - Obsidian vault at `/Users/timurtoby/Documents/MacRunner/` is NOT a git repo (notes just persist).
+
+## DISK HYGIENE (added 2026-05-30 after 238 GB blowup)
+Codex накопил 238 ГБ за 2 недели (79 копий wineprefix + 551 папка `reports/phase-h/*`).
+Не повторять. **Перед длинным циклом / сборкой Wine / любым snapshot — вызови:**
+```bash
+./scripts/disk-guard.sh              # авточистка + проверка
+./scripts/disk-guard.sh --check-only # только проверить
+```
+Exit 2 = меньше 30 GB после чистки → STOP, сказать юзеру. Полные правила в `AGENTS.md` → "Disk hygiene". Кратко:
+- **NEVER `cp -r $WINEPREFIX`** без явного запроса юзера. Полный prefix = 1–2 ГБ × N прогонов = катастрофа.
+- **Snapshots — rolling, max 3 последних.** Перед новым `artifacts/wineprefix-<tag>-*` удалить старые:
+  `ls -dt artifacts/wineprefix-<tag>-* | tail -n +3 | xargs rm -rf`.
+- **Reports в `reports/<phase>/latest/`, перезаписывать.** Версии с таймстемпом — только по явному запросу.
+- **Перед длинными циклами (>10 итераций) — `df -g`.** Если свободно < 30 ГБ — STOP, сказать юзеру.
+- **Запрещённые авто-имена:** `*-backup-*`, `*-snapshots*`, `*-offload-*`, `*codex-session-backup*`.
+- **`reports/phase-h/` старше 7 дней — удалять перед новым прогоном:**
+  `find reports/phase-h -maxdepth 1 -mindepth 1 -type d -mtime +7 -exec rm -rf {} +`
 
 ## VERDICT DISCIPLINE
 Evidence (pasted log line / exported symbol / pixels), NOT agent status. "blocked at X" with the

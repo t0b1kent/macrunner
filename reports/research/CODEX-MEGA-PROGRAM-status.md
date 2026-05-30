@@ -7,12 +7,20 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
-## NEXT → split: (1) operator provides a game asset; (2) MEANWHILE do all game-independent work.
+## NEXT → ✅ GAME ASSET PROVIDED — resume Phase 3/4 now. UNBLOCKED.
 
-**Operator action (the ONE external blocker):** drop a real DRM-free game into the workspace —
-GOG offline-installer / install folder preferred (Stardew Valley, Hollow Knight, Hades), then the
-formal Phase 3/4 gate (boot → main menu w/ input+audio+rendered frame) and the Phase 4 ladder
-resume with NO approval stop.
+**Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
+`/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
+(624M GOG InnoSetup installer + `Bonus/`). It's a sibling of the repo (outside `MacRunner/`) — use
+the absolute path; do NOT copy 600M into the repo.
+- **Get the game files:** either (a) `innoextract` the GOG installer natively (`brew install
+  innoextract` if missing) → `hollow_knight.exe`, then run that x64 exe under the spike build; or
+  (b) run the InnoSetup installer ITSELF under our engine (a real x64 GUI app = a great test too).
+  (a) is the fastest path to gameplay.
+- **Phase 3 formal gate:** Hollow Knight boots → main menu with input + audio + a rendered frame
+  (screenshot/log). Then continue the Phase 4 ladder (more Tier-1) with NO approval stop.
+- **Run hygiene:** use `scripts/mr-run.sh` (auto-cleans prefix, no orphans) and
+  `scripts/mr-clean.sh --prune` after the phase. Do NOT leave 1.5G prefixes or hot-spin Wine.
 
 **Codex — do NOT idle while waiting for the game. A blocked-on-asset state means: do every
 remaining game-INDEPENDENT task first, yield only after those are exhausted.** Specifically:

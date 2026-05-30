@@ -58,15 +58,18 @@ winemetal/nativemetal/airconv; `engine/graphics/` = metal_ir/shader_ingest/runti
 - **MCP 120s ceiling:** builds → `nohup … &` + poll; runs → `timeout … > log` + redirect; kill
   **scoped** (`WINEPREFIX=<p> wineserver -k`), never global. Prefixes under `artifacts/` (not /tmp).
 - **No commits without the operator.** Keep a running result report per phase.
-- **HOUSEKEEPING (mandatory — disk + CPU hygiene).** Every run leaks a ~1.5G throwaway wine prefix
-  + large trace logs, and a timed-out run leaves an ORPHANED wine tree (explorer.exe hot-spins at
-  ~80% CPU forever). So after EVERY run: (1) scoped `WINEPREFIX=<p> <dist>/bin/wineserver -k`, and
-  if a run timed out also kill its orphans scoped to the spike path
-  (`pkill -f 'dist-arm64ec-spike'` / the winetemp dirs — NEVER global `pkill wine`); (2) delete the
-  run's throwaway prefix once its evidence (summary/replay/ppm) is copied to `reports/`; (3) don't
-  keep multi-hundred-MB raw trace logs — keep the small summary, delete the giant `.log`. Prefer a
-  SINGLE reusable prefix per phase over a fresh one per sub-run. Goal: artifacts/ + reports/ do not
-  grow unbounded and no orphan wine survives a run.
+- **HOUSEKEEPING (MANDATORY — use the provided scripts, do not hand-roll).** Every run leaks a
+  ~1.5G throwaway prefix + large trace logs, and a timed-out run leaves an ORPHANED wine tree
+  (explorer.exe hot-spins ~80% CPU forever). To leave NO tails:
+  - **Launch runs via `scripts/mr-run.sh <dist> <exe> [timeout]`** — it runs in a throwaway prefix
+    and ALWAYS scoped-kills + removes that prefix on exit/timeout/Ctrl-C (trap-based). Copy any
+    evidence out during the run.
+  - **After every sub-run / at each gate, run `scripts/mr-clean.sh`** (kills orphan spike wine +
+    winetemp) and **`scripts/mr-clean.sh --prune`** at end of a phase (also deletes throwaway
+    drive_c prefixes + giant >50M logs, keeping summaries/replay/ppm).
+  - NEVER a global `pkill wine` (the scripts are scoped to `dist-arm64ec-spike`). Keep the small
+    summary, delete the giant raw `.log`. Goal: artifacts/ + reports/ do not grow unbounded and no
+    orphan wine survives a run.
 - **Kill-filter:** do NOT spend effort on kernel-anti-cheat / DX12-only titles
   (`reports/research/GAME-TARGET-LADDER-*`). Target the green list.
 

@@ -13,14 +13,23 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
 (624M GOG InnoSetup installer + `Bonus/`). It's a sibling of the repo (outside `MacRunner/`) — use
 the absolute path; do NOT copy 600M into the repo.
-- **Get the game files:** either (a) `innoextract` the GOG installer natively (`brew install
-  innoextract` if missing) → `hollow_knight.exe`, then run that x64 exe under the spike build; or
-  (b) run the InnoSetup installer ITSELF under our engine (a real x64 GUI app = a great test too).
-  (a) is the fastest path to gameplay.
-- **Phase 3 formal gate:** Hollow Knight boots → main menu with input + audio + a rendered frame
-  (screenshot/log). Then continue the Phase 4 ladder (more Tier-1) with NO approval stop.
-- **Run hygiene:** use `scripts/mr-run.sh` (auto-cleans prefix, no orphans) and
-  `scripts/mr-clean.sh --prune` after the phase. Do NOT leave 1.5G prefixes or hot-spin Wine.
+- **DO PATH (a) — it is MANDATORY, not optional. Do NOT run the InnoSetup installer under the
+  engine.** innoextract IS installed (`/opt/homebrew/bin/innoextract`). Extract natively:
+  `innoextract -d <out> "/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe"`
+  → that yields `app/hollow_knight.exe` + `hollow_knight_Data/`. Run THAT x64 exe under the spike
+  build. (Running the installer GUI under an immature graphics stack is the slow path — it already
+  dead-ended you in x64 call-gate debugging + empty screenshots. Skip it.)
+- **EMPTY-SCREENSHOT root cause = OFF-SCREEN Wine window** (known from Kimi: Wine places the window
+  at y≈2022, title-bar only → `screencapture -l` / CGWindowListCreateImage return an empty frame).
+  Before judging "no frame": force the window on-screen (set window position to 0,0 / virtual
+  desktop `explorer /desktop=mr,1280x720`), and capture by WINDOW CONTENT, not by filename. A blank
+  capture is NOT proof of no-render until the window is on-screen.
+- **Phase 3 formal gate:** Hollow Knight `hollow_knight.exe` boots → main menu, with input + audio
+  + a rendered frame whose CONTENT is verified (not a blank off-screen grab). Then continue Phase 4
+  ladder with NO approval stop.
+- **Run hygiene:** use `scripts/mr-run.sh` for runs and `scripts/mr-clean.sh --prune` after the
+  phase. Do NOT leave 1.5G prefixes or hot-spin Wine. (Also delete the empty stray
+  `engine/wine/dlls/ntdll/unix/macrunner_hb_callgate_probe.inc` if it's not used.)
 
 **Codex — do NOT idle while waiting for the game. A blocked-on-asset state means: do every
 remaining game-INDEPENDENT task first, yield only after those are exhausted.** Specifically:

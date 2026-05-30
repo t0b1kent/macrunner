@@ -30,6 +30,13 @@ winemetal/nativemetal/airconv; `engine/graphics/` = metal_ir/shader_ingest/runti
   real attempts (paste what you tried), (b) a decision that changes product direction or needs a
   human/external resource (signing, a paid asset, a legal call), (c) risk of regressing the
   shipped milestone. Everything else: keep working.
+- **"Blocked on an external asset" ≠ stop and idle.** If a gate needs something only the operator
+  can supply (e.g. a licensed game binary), DO NOT yield yet — first exhaust ALL remaining
+  game-INDEPENDENT work (other phases, hardening/fuzz/CI, proxy real-app targets already in the
+  workspace like Notepad++ x64 / KeePass, a bring-up harness). Record the asset need in the status
+  file's NEXT, keep building everything that doesn't require it, and only yield when nothing
+  game-independent is left. Distinguish a CODE blocker (push through it) from an EXTERNAL-ASSET
+  blocker (note it, route around it, keep working).
 - **Work in long autonomous stretches.** Respect the MCP 120s rule (background builds + poll,
   timeout+redirect runs) so a long run never stalls on one blocked call. If you approach a context
   limit, write your state to the living report so you can resume, then continue.

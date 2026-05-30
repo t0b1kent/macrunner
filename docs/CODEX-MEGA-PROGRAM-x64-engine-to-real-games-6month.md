@@ -18,6 +18,24 @@ winemetal/nativemetal/airconv; `engine/graphics/` = metal_ir/shader_ingest/runti
 
 ---
 
+## ⚡ AUTONOMY — RUN CONTINUOUSLY, DO NOT STOP BETWEEN PHASES (read first)
+- **Chain all phases 0 → 5 without pausing for approval.** Do NOT stop to report "Phase N done,
+  may I continue?" — the answer is always YES. Finish a phase, log its evidence, immediately start
+  the next. Keep going until the LAST phase is done or you hit a true hard blocker.
+- **Gates are SELF-CHECKS, not approval stops.** A gate means: prove the milestone with pasted
+  evidence in the living report, then proceed. You do NOT wait for a human reply at a gate.
+- **Update the living report `reports/research/CODEX-MEGA-PROGRAM-status.md` as you pass each gate**
+  — that is how the operator follows along ASYNCHRONOUSLY. Writing the report ≠ stopping.
+- **Only stop / escalate to the operator for:** (a) a genuine hard blocker you cannot resolve after
+  real attempts (paste what you tried), (b) a decision that changes product direction or needs a
+  human/external resource (signing, a paid asset, a legal call), (c) risk of regressing the
+  shipped milestone. Everything else: keep working.
+- **Work in long autonomous stretches.** Respect the MCP 120s rule (background builds + poll,
+  timeout+redirect runs) so a long run never stalls on one blocked call. If you approach a context
+  limit, write your state to the living report so you can resume, then continue.
+- Phase 0 starts with a ready diagnosis:
+  `reports/research/ARM64EC-PHASE0-c000007b-tls-callback-misaddress-diagnosis.md`.
+
 ## CROSS-CUTTING RULES (apply to EVERY phase)
 - **Evidence, not status.** Every milestone = a pasted log / benchmark number / passing test, not
   "done ✅". "Reached X, blocked at Y @ RIP Z" is a valid result.

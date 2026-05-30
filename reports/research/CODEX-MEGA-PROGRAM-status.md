@@ -7,40 +7,41 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
-## NEXT → ✅ GAME ASSET PROVIDED — resume Phase 3/4 now. UNBLOCKED.
+## NEXT → Phase 3 formal Tier-1 gate in progress — Hollow Knight x64 bring-up
 
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
 (624M GOG InnoSetup installer + `Bonus/`). It's a sibling of the repo (outside `MacRunner/`) — use
 the absolute path; do NOT copy 600M into the repo.
-- **STATUS (corrected): Codex IS on the right path.** Game already innoextracted to
+- **Extraction done:** `reports/phase4-hollow-knight/innoextract-20260530-200352.log` extracted to
   `…/game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/Hollow Knight.exe` (Unity engine:
-  `UnityPlayer.dll`, `Hollow Knight_Data`, MonoBleedingEdge). `Hollow Knight.exe` runs under the
-  spike build, all system DLLs init OK, and HyperBridge executes UnityPlayer.dll x64 code.
-- **CURRENT REAL BLOCKER = an x86 opcode gap inside UnityPlayer.dll** →
-  `UNSUPPORTED_OPCODE pc=0x87eff5c0810` (UnityPlayer.dll) → `UnityPlayer.dll failed to initialize`
-  → `c000007b`. This is a normal Phase-1/Phase-4 fix-loop, not a wrong turn. The empty screenshots
-  are just the desktop because the game dies before opening its window — disregard them until init
-  succeeds.
-- **NEXT for Codex (continuous):** decode the byte sequence at the failing RIP (map
-  `0x87eff5c0810` → UnityPlayer.dll RVA, disasm), add that opcode/encoding to
-  `hb_decode_x64`/`hb_lift_x64`/interp/JIT (mirror existing handlers + the golden oracle), rebuild,
-  re-run, advance to the NEXT opcode gap. Loop until UnityPlayer initializes; THEN handle the
-  off-screen-window capture (force on-screen, verify frame CONTENT) for the menu gate. Keep going
-  through the opcode ladder without approval stops.
+  `UnityPlayer.dll`, `Hollow Knight_Data`, MonoBleedingEdge).
+- **2026-05-30/31 bring-up progress:** `scripts/mr-run.sh` now has macOS `timeout` fallback. Hollow
+  Knight reaches and returns successfully from `UnityPlayer.dll` x64 `PROCESS_ATTACH` under
+  HyperBridge. Cleared blockers: API-set target resolution/module map, dynamic guest
+  `GetProcAddress`, ARM64X `.hexpthk` wrapping, localization/fibers/winrt API-set fallbacks,
+  heap/TLS/FLS/LastError, startup/stdout/file type/command line/NLS/LCMap/environment strings,
+  dynamic kernel semantic thunks, local heap ownership tracking, critical-section semantics,
+  time/SystemTime conversions, and UnityPlayer SIMD families (`sqrt`, `rsqrt/rcp`, packed
+  `mul/div`, `shufps/shufpd`, XMM high/low qword lane moves). Additional 2026-05-31 blockers cleared:
+  TEB stack bounds for x64 `__chkstk`, SList, virtual memory, event/error/debug families,
+  WinRT init, `CommandLineToArgvW`, file attributes, local file handles, `GetNativeSystemInfo`,
+  `GlobalMemoryStatusEx`, and x64 `CMPXCHG8B/CMPXCHG16B` (`0F C7 /1`, trigger
+  `f0 48 0f c7 4e 40`). HyperBridge test runner is green at `315 passed, 0 failed`; fast validation
+  `phase1_core` PASS.
+- **Current blocker:** latest validated run
+  `reports/phase4-hollow-knight/run-20260531-032224-cmpxchg16b-family/` no longer hits
+  `0xc000001d` or unsupported opcodes; it reaches Unity memory configuration output and times out
+  (`rc=143`) after 709 successful x64 import handoffs. Screenshots are still desktop-only and no
+  Hollow Knight window/rendered frame is visible. Follow-up probe
+  `reports/phase4-hollow-knight/run-20260531-033055-xtajit64-import-loop-probe/` shows no crash or
+  unsupported opcode; imports repeat around `EnterCriticalSection`/`LeaveCriticalSection`/`WriteFile`
+  /`OutputDebugStringW` after Unity memory config. Hot-path xtajit64 logging is now gated behind
+  `MACRUNNER_HB_TRACE_XTAJIT64=1`; next action is a longer low-noise run to distinguish slow startup
+  from a real import/logging loop.
+- **Phase 3 gate still NOT passed:** no main menu, input, audio, or rendered frame yet; latest
+  screenshots are desktop-only with no game window.
 - **Run hygiene:** `scripts/mr-run.sh` for runs, `scripts/mr-clean.sh --prune` after each batch.
-
-**Codex — do NOT idle while waiting for the game. A blocked-on-asset state means: do every
-remaining game-INDEPENDENT task first, yield only after those are exhausted.** Specifically:
-1. **Real heavy-app gate (proxy for a game, assets already present):** bring up **Notepad++ x64**
-   (`./npp.8.9.5.Installer.x64.exe` → install under a prefix) and/or **KeePass** / Win7 `calc.exe`
-   — real Win32/GUI x64 apps, far beyond hello-world. Drive to: launches, window renders, basic
-   interaction. This shakes out GUI/USER32/GDI/DX paths a game also needs. Log evidence.
-2. **Phase 5 (no game needed):** differential fuzz decoder/lifter vs golden oracle; broaden the
-   ISA torture suite; crash-RIP→module+offset symbolication; perf-regression gate; soak tests.
-3. **Bring-up harness:** a script that, given a game path, sets up the prefix + launches under the
-   spike build with capture, so a dropped-in game runs in one command.
-Only escalate again once 1-3 are done AND no game asset exists.
 
 ---
 
@@ -76,7 +77,7 @@ Gate: expanded torture/fuzz suite passes vs golden oracle; 3+ non-trivial x64 co
 - Verification: `reports/phase2-verify-hyperbridge-20260530-160301.log`:
   `Pass: 17`, `Errors: 0`, `HyperBridge verification PASSED`.
 
-### Phase 3 — runtime/Win32 surface (input/audio/DXMT integration) — ⚠ SURROGATE PASS / FORMAL GATE BLOCKED (2026-05-30)
+### Phase 3 — runtime/Win32 surface (input/audio/DXMT integration) — ⚠ FORMAL GATE IN PROGRESS (2026-05-30)
 - Fixes in this pass:
   `ntdll/unix/macrunner_hb.c` x64 import semantics for `LoadLibraryA/W`,
   `LoadLibraryExA/W`, `FreeLibrary`, `GetProcAddress`, `Get/SetEnvironmentVariableA/W`;
@@ -97,14 +98,13 @@ Gate: expanded torture/fuzz suite passes vs golden oracle; 3+ non-trivial x64 co
   `305 passed, 0 failed`, `FAST VALIDATION: PASS`;
   `reports/phase3-runtime/post-phase3-phase0-20260530-171220-summary.jsonl`:
   `hello_x64` rc=0, `stdout_stderr_x64` rc=0.
-- Formal gate blocker: Phase 3 requires FIRST Tier-1 game (Hades/Stardew) at main menu with input
-  + audio + rendered frame screenshot/log. Local asset scan found only badge SVGs:
-  `reports/compat-public/badges/{hades,stardew-valley,hollow-knight,dead-cells,celeste}.svg`;
-  no game executable/install asset is present in this workspace.
+- Formal gate active on Hollow Knight x64. Current evidence includes successful `UnityPlayer.dll`
+  x64 `PROCESS_ATTACH` under HyperBridge; gate remains open until main menu + input + audio +
+  rendered frame are captured under the spike build.
 
-### Phase 4 — green-list bring-up ladder (Hades/Stardew/…) — ⛔ BLOCKED on same Tier-1 game assets
-Gate requires ≥5 Tier-1 games playable start→gameplay for ≥30 min each. Cannot execute without
-real game assets/install paths.
+### Phase 4 — green-list bring-up ladder — ⏳ PENDING after Phase 3 Hollow Knight gate
+Gate requires ≥5 Tier-1 games playable start→gameplay for ≥30 min each. Start after Hollow Knight
+passes the Phase 3 menu/input/audio/rendered-frame gate.
 
 ### Phase 5 — hardening / fuzz / regression / CI — ⬜ partial continuous checks passed; full gate pending
 Available post-Phase3 regression checks are green (see Phase 3 regression evidence). Formal gate

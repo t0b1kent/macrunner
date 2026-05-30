@@ -764,6 +764,78 @@ ps -axo comm= | awk '/^(wine-preloader|wine64-preloader|winedbg|wineserver)$/{c+
 
 Если не сделать — Dock зарастает старыми debugger/exec окнами, юзер ругается.
 
+## Disk hygiene (обязательно)
+
+### Easy mode — один скрипт делает всё
+
+```bash
+./scripts/disk-guard.sh              # check + auto rolling cleanup
+./scripts/disk-guard.sh --check-only # просто проверить, что свободно >= 30 GB
+```
+
+Скрипт сам: проверяет `df -g`, оставляет 3 последних `wineprefix-<tag>-*` snapshot
+по каждой ветке-тегу, удаляет `reports/phase-h/*` старше 7 дней, удаляет
+`*-backup-*` / `*-snapshots` / `*-offload-*` / `*codex-session-backup*` старше 14 дней.
+Возвращает exit 2, если после чистки всё ещё < 30 GB — в этом случае STOP и
+сообщить юзеру.
+
+**Вызывать ОБЯЗАТЕЛЬНО перед:** любым многоитерационным циклом (>10 прогонов),
+любой сборкой Wine, любым сценарием, который делает snapshot/backup чего-либо.
+
+### Полный rationale и ручные правила
+
+Прецедент 2026-05-30: за ~2 недели агент накопил **238 ГБ** в `~/Documents/MacRunner/`
+(79 копий wineprefix-снапшотов по 1.5 ГБ + 551 папка `reports/phase-h/*` по 1+ ГБ + zip-снапшоты).
+Диск дошёл до 15 ГБ свободно, юзер вручную чистил. **Так больше не делать.**
+
+### Правила
+
+1. **`cp -r $WINEPREFIX` запрещён без явного запроса юзера.**
+   Полная копия prefix = 1–2 ГБ. Если нужен diff состояния — `git -C $WINEPREFIX diff`
+   (если prefix под git) или tar.gz **только нужных** поддиректорий (`drive_c/users/…/AppData`),
+   не всего `$WINEPREFIX`.
+
+2. **Snapshots — rolling, максимум 3 последних.**
+   Перед созданием нового `artifacts/wineprefix-<tag>-*` или `artifacts/<phase>-*`:
+   ```bash
+   ls -dt artifacts/wineprefix-<tag>-* 2>/dev/null | tail -n +3 | xargs rm -rf
+   ```
+   То же для `reports/<phase>/*-<timestamp>` — держать максимум 5 последних, остальные удалять.
+
+3. **Отчёты — в `reports/<phase>/latest/`, перезаписывать.**
+   Версия с таймстемпом (`reports/phase-h/<run>-YYYYMMDD-HHMMSS/`) создаётся
+   **только при явном запросе** ("сохрани этот прогон под датой"). Дефолт — `latest/`.
+
+4. **Перед длинными циклами (>10 итераций) — `df -h`.**
+   ```bash
+   avail_gb=$(df -g /System/Volumes/Data | awk 'NR==2{print $4}')
+   if [ "$avail_gb" -lt 30 ]; then
+     echo "STOP: только ${avail_gb} ГБ свободно. Нужна чистка перед прогоном."
+     exit 1
+   fi
+   ```
+   Если меньше 30 ГБ — STOP, сообщить юзеру, не продолжать.
+
+5. **Перед каждым крупным шагом — оценить размер артефакта.**
+   Если результат шага > 500 МБ — спросить юзера, нужно ли сохранять, или удалить сразу
+   после извлечения нужной информации.
+
+6. **Запрещённые имена для авто-создания:**
+   `*-backup-*`, `*-snapshots*`, `*-offload-*`, `*codex-session-backup*` — только по явному запросу.
+
+7. **`reports/phase-h/` — не плодить более 10 папок одновременно.**
+   Перед новым прогоном фазы H:
+   ```bash
+   find reports/phase-h -maxdepth 1 -mindepth 1 -type d -mtime +7 -exec rm -rf {} +
+   ```
+
+### Что НЕ трогать автоматически (только по запросу юзера)
+
+- `engine/wine`, `engine/wine-vanilla-hq`, `engine/wine-x86_64` — рабочие билды.
+- `bottles/` — установленные игры/приложения.
+- `MacRunner-video/` — записи прогонов.
+- 2 самых свежих `wineprefix-*` snapshot (нужны для отладки текущей фазы).
+
 ## Known traps (не повторяй)
 
 - **`WINEDEBUG=+module` даёт 17MB логов** за секунды и съедает trace budget. Используй `+file`,

@@ -746,6 +746,8 @@ TEB *__wine_get_current_teb_for_x18(void)
 extern int macrunner_hb_pc_is_x64_guest_code( void *pc );
 extern int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc );
 extern ULONG64 macrunner_hb_normalize_x64_callback_pc( ULONG64 pc );
+extern ULONG64 macrunner_hb_normalize_x64_tls_callback_pc( ULONG64 pc, ULONG64 image_base,
+                                                           ULONG64 reason );
 extern ULONG64 macrunner_hb_dispatch_x64_callback( ULONG64 target, const ULONG64 args[8] );
 extern void macrunner_hb_note_x64_guest_fault_handlers_ready(void);
 extern void macrunner_hb_x64_callback_trampoline(void);
@@ -777,6 +779,20 @@ static BOOL macrunner_hb_trace_stack_setup_enabled(void)
 }
 
 static void macrunner_hb_trace_callback_target_module( const char *source, ULONG_PTR pc );
+
+static ULONG_PTR macrunner_hb_normalize_x64_callback_target( ucontext_t *context,
+                                                             ULONG_PTR target )
+{
+    ULONG_PTR tls_target;
+
+    /* TLS callbacks carry the authoritative image base in x0 and reason in x1.
+     * Use the image TLS table before falling back to instruction-boundary
+     * heuristics, otherwise a fault PC in padding can be dispatched as code. */
+    tls_target = macrunner_hb_normalize_x64_tls_callback_pc( target, REGn_sig(0, context),
+                                                             REGn_sig(1, context) );
+    if (tls_target != target) return tls_target;
+    return macrunner_hb_normalize_x64_callback_pc( target );
+}
 
 static void macrunner_signal_copy_bytes( void *dst, const void *src, size_t size )
 {
@@ -869,14 +885,14 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
      * can manufacture a bogus callback from an ordinary ARM64 fault. */
     if (x4_is_guest && (raw_is_guest || fault_is_guest))
     {
-        pc = macrunner_hb_normalize_x64_callback_pc( x4_target );
+        pc = macrunner_hb_normalize_x64_callback_target( context, x4_target );
         TRACE( "MacRunner Phase F using x4 x64 callback target raw_pc=%p x4=%p normalized=%p\n",
                (void *)raw_pc, (void *)x4_target, (void *)pc );
     }
     else if (fault_is_guest)
-        pc = macrunner_hb_normalize_x64_callback_pc( fault_addr );
+        pc = macrunner_hb_normalize_x64_callback_target( context, fault_addr );
     else if (raw_is_guest)
-        pc = macrunner_hb_normalize_x64_callback_pc( raw_pc );
+        pc = macrunner_hb_normalize_x64_callback_target( context, raw_pc );
     else
     {
         if (macrunner_hb_trace_callback_route_enabled() && rejected_trace_count++ < 96)

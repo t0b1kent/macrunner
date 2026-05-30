@@ -261,6 +261,7 @@ extern void     hb_jit_helper_lahf(hb_context_t* ctx);
 extern void     hb_jit_helper_sahf(hb_context_t* ctx);
 extern void     hb_jit_helper_cpuid(hb_context_t* ctx);
 extern void     hb_jit_helper_xgetbv(hb_context_t* ctx);
+extern void     hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* instr);
 
 /* Emit a call to a C helper via BLR */
 static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn) {
@@ -636,6 +637,15 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             return HB_OK;
         }
 
+        case HB_IR_LOOP:
+        case HB_IR_JRCXZ: {
+            emit_mov_reg(buf, 0, 19);
+            emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+            emit_call_helper(buf, (void*)hb_jit_helper_exec_loop_branch);
+            emit_return_if_helper_failed(buf);
+            return HB_OK;
+        }
+
         case HB_IR_SETcc: {
             if (instr->dst.type != HB_OP_REG || instr->dst.reg_offset != 0) {
                 emit_mov_reg(buf, 0, 19);
@@ -813,6 +823,49 @@ uint64_t hb_jit_helper_eval_cond_lazy(hb_context_t* ctx, uint64_t cc) {
     if (ctx) ctx->last_result = r;
     if (r != HB_OK) return 0;
     return value ? 1 : 0;
+}
+
+static uint64_t hb_jit_trunc_to_size(uint64_t value, hb_size_t size) {
+    switch (size) {
+        case HB_SIZE_8: return value & 0xffu;
+        case HB_SIZE_16: return value & 0xffffu;
+        case HB_SIZE_32: return value & 0xffffffffu;
+        case HB_SIZE_64:
+        default: return value;
+    }
+}
+
+void hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    uint64_t count = 0;
+    uint64_t next = 0;
+    bool taken = false;
+    hb_result_t r;
+    hb_size_t size;
+    if (!ctx || !instr) return;
+    size = instr->dst.size ? instr->dst.size : HB_SIZE_64;
+    r = hb_flags_read_operand_value(ctx, &instr->dst, &count);
+    if (r != HB_OK) {
+        ctx->last_result = r;
+        return;
+    }
+    count = hb_jit_trunc_to_size(count, size);
+    if (instr->op == HB_IR_JRCXZ) {
+        taken = count == 0;
+    } else {
+        int kind = (int)instr->src1.imm;
+        next = hb_jit_trunc_to_size(count - 1, size);
+        r = hb_flags_write_operand_value(ctx, &instr->dst, next);
+        if (r != HB_OK) {
+            ctx->last_result = r;
+            return;
+        }
+        taken = next != 0 &&
+                (kind == 2 || (kind == 1 ? ctx->flags.zf : !ctx->flags.zf));
+    }
+    ctx->pc = taken ? instr->target : instr->guest_addr + instr->guest_len;
+    if (ctx->mode == HB_MODE_32BIT) ctx->regs.x86.eip = (uint32_t)ctx->pc;
+    else ctx->regs.x64.rip = ctx->pc;
+    ctx->last_result = HB_OK;
 }
 
 void hb_jit_helper_exec_setcc_lazy(hb_context_t* ctx, uint64_t cc, uint64_t dst_reg) {

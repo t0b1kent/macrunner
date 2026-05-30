@@ -19,10 +19,17 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/time.h>
+#include <unistd.h>
 #ifdef __APPLE__
+#include <malloc/malloc.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #endif
@@ -34,6 +41,8 @@
 #include "winbase.h"
 #include "winuser.h"
 #include "winternl.h"
+#include "winioctl.h"
+#include "winnls.h"
 #include "wine/asm.h"
 #include "unix_private.h"
 #include "unixlib.h"
@@ -59,9 +68,17 @@ struct macrunner_hb_special
 #define MACRUNNER_HB_IMPORT_BASE 0x00006f0000000000ULL
 #define MACRUNNER_HB_IMPORT_STRIDE 0x10ULL
 #define MACRUNNER_HB_IMPORT_ARG_MAX 20
+#define MACRUNNER_HB_APISET_MODULE_MAX 512
+#define MACRUNNER_HB_TLS_SLOT_MAX 128
+#define MACRUNNER_HB_LOCAL_HEAP_MAX 8192
+#define MACRUNNER_HB_LOCAL_FILE_MAX 256
+#define MACRUNNER_HB_LOCAL_FILE_BASE 0x00006f4000000000ULL
 #define MACRUNNER_HB_SEH_STACK_SLACK 0x10000ULL
 #define MACRUNNER_HB_IR_CACHE_SIZE 8192
 #define MACRUNNER_HB_IMPORT_TARGET_MAP_SIZE 8192
+#define MACRUNNER_HB_D3D11_MODULE ((uint64_t)0x00006f2000001100ULL)
+#define MACRUNNER_HB_D3D12_MODULE ((uint64_t)0x00006f2000001200ULL)
+#define MACRUNNER_HB_DXGI_MODULE  ((uint64_t)0x00006f2000001300ULL)
 
 struct macrunner_hb_import_thunk
 {
@@ -73,6 +90,19 @@ struct macrunner_hb_import_thunk
     USHORT target_machine;
     char dll_name[96];
     char import_name[96];
+};
+
+struct macrunner_hb_apiset_module
+{
+    char dll_name[96];
+    uint64_t module_id;
+    USHORT machine;
+};
+
+struct macrunner_hb_local_file
+{
+    uint64_t handle;
+    int fd;
 };
 
 struct macrunner_hb_ir_cache_entry
@@ -91,12 +121,31 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                                       const char *label, void *image_base );
 static BOOL macrunner_hb_pc_is_native_pe_builtin( uint64_t pc, void **module_base );
 static void macrunner_hb_trace_guest_wstr( hb_context_t *ctx, const char *name, uint64_t addr );
+static void macrunner_hb_remember_apiset_module_locked( const char *dll_name, uint64_t module_id,
+                                                        USHORT machine );
 
 static pthread_mutex_t macrunner_hb_import_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct macrunner_hb_import_thunk macrunner_hb_imports[MACRUNNER_HB_IMPORT_MAX];
 static struct macrunner_hb_import_thunk *macrunner_hb_import_target_map[MACRUNNER_HB_IMPORT_TARGET_MAP_SIZE];
+static struct macrunner_hb_apiset_module macrunner_hb_apiset_modules[MACRUNNER_HB_APISET_MODULE_MAX];
 static unsigned int macrunner_hb_import_count;
+static unsigned int macrunner_hb_apiset_module_count;
 static int macrunner_hb_import_target_map_overflow;
+static pthread_mutex_t macrunner_hb_tls_mutex = PTHREAD_MUTEX_INITIALIZER;
+static unsigned char macrunner_hb_tls_slots[MACRUNNER_HB_TLS_SLOT_MAX];
+static unsigned char macrunner_hb_fls_slots[MACRUNNER_HB_TLS_SLOT_MAX];
+static uint64_t macrunner_hb_fls_callbacks[MACRUNNER_HB_TLS_SLOT_MAX];
+static __thread uint64_t macrunner_hb_tls_values[MACRUNNER_HB_TLS_SLOT_MAX];
+static __thread uint64_t macrunner_hb_fls_values[MACRUNNER_HB_TLS_SLOT_MAX];
+static pthread_mutex_t macrunner_hb_error_mode_mutex = PTHREAD_MUTEX_INITIALIZER;
+static DWORD macrunner_hb_error_mode;
+static __thread DWORD macrunner_hb_thread_error_mode;
+static pthread_mutex_t macrunner_hb_slist_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t macrunner_hb_local_heap_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void *macrunner_hb_local_heap_ptrs[MACRUNNER_HB_LOCAL_HEAP_MAX];
+static pthread_mutex_t macrunner_hb_local_file_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct macrunner_hb_local_file macrunner_hb_local_files[MACRUNNER_HB_LOCAL_FILE_MAX];
+static uint64_t macrunner_hb_local_file_next = MACRUNNER_HB_LOCAL_FILE_BASE;
 static __thread void *macrunner_hb_bridge_stack_limit;
 static __thread void *macrunner_hb_bridge_stack_base;
 static __thread size_t macrunner_hb_bridge_stack_size;
@@ -491,6 +540,22 @@ static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc )
         uintptr_t base = (uintptr_t)ldr->DllBase;
 
         if (base && addr >= base && addr < base + ldr->SizeOfImage) return ldr;
+    }
+    return NULL;
+}
+
+static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_module( void *module )
+{
+    PEB *peb = NtCurrentTeb()->Peb;
+    LIST_ENTRY *head, *entry;
+
+    if (!peb || !peb->LdrData || !module) return NULL;
+    head = &peb->LdrData->InMemoryOrderModuleList;
+    for (entry = head->Flink; entry && entry != head; entry = entry->Flink)
+    {
+        LDR_DATA_TABLE_ENTRY *ldr = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks );
+
+        if (ldr->DllBase == module) return ldr;
     }
     return NULL;
 }
@@ -1048,7 +1113,21 @@ static BOOL macrunner_hb_use_callback12_for_thunk( const struct macrunner_hb_imp
         (macrunner_hb_strieq( thunk->import_name, "GetModuleHandleW" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetModuleHandleA" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetModuleHandleExW" ) ||
-         macrunner_hb_strieq( thunk->import_name, "GetModuleHandleExA" )))
+         macrunner_hb_strieq( thunk->import_name, "GetModuleHandleExA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LoadLibraryA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LoadLibraryW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LoadLibraryExA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LoadLibraryExW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FreeLibrary" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetProcAddress" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetEnvironmentStringsA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetEnvironmentStringsW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FreeEnvironmentStringsA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FreeEnvironmentStringsW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetEnvironmentVariableA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetEnvironmentVariableW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetEnvironmentVariableA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetEnvironmentVariableW" )))
         return TRUE;
     if ((macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ) ||
          macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" )) &&
@@ -1116,8 +1195,9 @@ static void macrunner_hb_trace_local_rect( const char *label, uint64_t addr )
     if (!macrunner_hb_read_local_memory( (uintptr_t)addr, &rect, sizeof(rect) )) return;
 
     ERR( "macrunner-hb-geometry-local-rect: %s addr=%p rect=(%ld,%ld)-(%ld,%ld) size=%ldx%ld\n",
-         label ? label : "?", (void *)(uintptr_t)addr, rect.left, rect.top,
-         rect.right, rect.bottom, rect.right - rect.left, rect.bottom - rect.top );
+         label ? label : "?", (void *)(uintptr_t)addr, (long)rect.left, (long)rect.top,
+         (long)rect.right, (long)rect.bottom, (long)(rect.right - rect.left),
+         (long)(rect.bottom - rect.top) );
 }
 
 static void macrunner_hb_trace_x64_callback_abi( const char *phase, uint64_t target,
@@ -1157,12 +1237,14 @@ static void macrunner_hb_trace_x64_callback_abi( const char *phase, uint64_t tar
         {
             for (i = 0; i < ARRAY_SIZE(rects); i++)
                 ERR( "macrunner-hb-callback-abi-nccalc: phase=%s rect%zu=(%ld,%ld)-(%ld,%ld)\n",
-                     phase, i, rects[i].left, rects[i].top, rects[i].right, rects[i].bottom );
+                     phase, i, (long)rects[i].left, (long)rects[i].top,
+                     (long)rects[i].right, (long)rects[i].bottom );
         }
         else if (!args[2] && macrunner_hb_read_local_memory( (uintptr_t)args[3], &rects[0], sizeof(rects[0]) ))
         {
             ERR( "macrunner-hb-callback-abi-nccalc: phase=%s rect=(%ld,%ld)-(%ld,%ld)\n",
-                 phase, rects[0].left, rects[0].top, rects[0].right, rects[0].bottom );
+                 phase, (long)rects[0].left, (long)rects[0].top,
+                 (long)rects[0].right, (long)rects[0].bottom );
         }
     }
     else if ((args[1] == WM_NCCREATE || args[1] == WM_CREATE) && args[3] >= 0x10000 &&
@@ -1171,7 +1253,8 @@ static void macrunner_hb_trace_x64_callback_abi( const char *phase, uint64_t tar
         ERR( "macrunner-hb-callback-abi-create: phase=%s create lpCreateParams=%p hInstance=%p "
              "menu=%p parent=%p cy=%ld cx=%ld y=%ld x=%ld style=%08lx name=%p class=%p ex=%08lx\n",
              phase, cs.lpCreateParams, cs.hInstance, cs.hMenu, cs.hwndParent,
-             cs.cy, cs.cx, cs.y, cs.x, cs.style, cs.lpszName, cs.lpszClass, cs.dwExStyle );
+             (long)cs.cy, (long)cs.cx, (long)cs.y, (long)cs.x, (unsigned long)cs.style,
+             cs.lpszName, cs.lpszClass, (unsigned long)cs.dwExStyle );
     }
     else if (macrunner_hb_trace_geometry_enabled() && args[1] == 0 && args[2] >= 0x10000)
     {
@@ -1308,6 +1391,263 @@ static uint64_t macrunner_hb_register_dynamic_import_thunk( const struct macrunn
     return slot->guest_target;
 }
 
+static BOOL macrunner_hb_kernel_export_has_local_semantic( const char *dll_name, const char *import_name )
+{
+    if (!dll_name || !import_name) return FALSE;
+    if (macrunner_hb_strieq( dll_name, "api-ms-win-core-winrt-l1-1-0.dll" ) ||
+        macrunner_hb_strieq( dll_name, "combase.dll" ))
+        return macrunner_hb_strieq( import_name, "RoInitialize" ) ||
+               macrunner_hb_strieq( import_name, "RoUninitialize" ) ||
+               macrunner_hb_strieq( import_name, "RoGetActivationFactory" ) ||
+               macrunner_hb_strieq( import_name, "RoActivateInstance" );
+    if (macrunner_hb_strieq( dll_name, "ntdll.dll" ))
+        return macrunner_hb_strieq( import_name, "RtlInitializeSRWLock" ) ||
+               macrunner_hb_strieq( import_name, "RtlAcquireSRWLockExclusive" ) ||
+               macrunner_hb_strieq( import_name, "RtlAcquireSRWLockShared" ) ||
+               macrunner_hb_strieq( import_name, "RtlReleaseSRWLockExclusive" ) ||
+               macrunner_hb_strieq( import_name, "RtlReleaseSRWLockShared" ) ||
+               macrunner_hb_strieq( import_name, "RtlTryAcquireSRWLockExclusive" ) ||
+               macrunner_hb_strieq( import_name, "RtlTryAcquireSRWLockShared" ) ||
+               macrunner_hb_strieq( import_name, "RtlSleepConditionVariableSRW" );
+    if (!macrunner_hb_strieq( dll_name, "kernel32.dll" ) &&
+        !macrunner_hb_strieq( dll_name, "kernelbase.dll" ))
+        return FALSE;
+
+    return macrunner_hb_strieq( import_name, "GetModuleHandleW" ) ||
+           macrunner_hb_strieq( import_name, "GetModuleHandleA" ) ||
+           macrunner_hb_strieq( import_name, "GetModuleHandleExW" ) ||
+           macrunner_hb_strieq( import_name, "GetModuleHandleExA" ) ||
+           macrunner_hb_strieq( import_name, "LoadLibraryA" ) ||
+           macrunner_hb_strieq( import_name, "LoadLibraryW" ) ||
+           macrunner_hb_strieq( import_name, "LoadLibraryExA" ) ||
+           macrunner_hb_strieq( import_name, "LoadLibraryExW" ) ||
+           macrunner_hb_strieq( import_name, "FreeLibrary" ) ||
+           macrunner_hb_strieq( import_name, "GetProcAddress" ) ||
+           macrunner_hb_strieq( import_name, "GetEnvironmentStringsA" ) ||
+           macrunner_hb_strieq( import_name, "GetEnvironmentStringsW" ) ||
+           macrunner_hb_strieq( import_name, "FreeEnvironmentStringsA" ) ||
+           macrunner_hb_strieq( import_name, "FreeEnvironmentStringsW" ) ||
+           macrunner_hb_strieq( import_name, "GetCommandLineA" ) ||
+           macrunner_hb_strieq( import_name, "GetCommandLineW" ) ||
+           macrunner_hb_strieq( import_name, "GetModuleFileNameA" ) ||
+           macrunner_hb_strieq( import_name, "GetModuleFileNameW" ) ||
+           macrunner_hb_strieq( import_name, "QueryPerformanceFrequency" ) ||
+           macrunner_hb_strieq( import_name, "QueryPerformanceCounter" ) ||
+           macrunner_hb_strieq( import_name, "GetSystemTimePreciseAsFileTime" ) ||
+           macrunner_hb_strieq( import_name, "GetSystemTimeAsFileTime" ) ||
+           macrunner_hb_strieq( import_name, "GetSystemTime" ) ||
+           macrunner_hb_strieq( import_name, "GetLocalTime" ) ||
+           macrunner_hb_strieq( import_name, "SystemTimeToFileTime" ) ||
+           macrunner_hb_strieq( import_name, "FileTimeToSystemTime" ) ||
+           macrunner_hb_strieq( import_name, "GetTempPathA" ) ||
+           macrunner_hb_strieq( import_name, "GetTempPathW" ) ||
+           macrunner_hb_strieq( import_name, "GetTempPath2A" ) ||
+           macrunner_hb_strieq( import_name, "GetTempPath2W" ) ||
+           macrunner_hb_strieq( import_name, "GetACP" ) ||
+           macrunner_hb_strieq( import_name, "GetOEMCP" ) ||
+           macrunner_hb_strieq( import_name, "AreFileApisANSI" ) ||
+           macrunner_hb_strieq( import_name, "IsValidCodePage" ) ||
+           macrunner_hb_strieq( import_name, "GetCPInfo" ) ||
+           macrunner_hb_strieq( import_name, "MultiByteToWideChar" ) ||
+           macrunner_hb_strieq( import_name, "WideCharToMultiByte" ) ||
+           macrunner_hb_strieq( import_name, "GetStringTypeW" ) ||
+           macrunner_hb_strieq( import_name, "LCMapStringEx" ) ||
+           macrunner_hb_strieq( import_name, "GetStartupInfoA" ) ||
+           macrunner_hb_strieq( import_name, "GetStartupInfoW" ) ||
+           macrunner_hb_strieq( import_name, "GetStdHandle" ) ||
+           macrunner_hb_strieq( import_name, "GetFileType" ) ||
+           macrunner_hb_strieq( import_name, "GetLastError" ) ||
+           macrunner_hb_strieq( import_name, "SetLastError" ) ||
+           macrunner_hb_strieq( import_name, "GetProcessHeap" ) ||
+           macrunner_hb_strieq( import_name, "GetCurrentProcess" ) ||
+           macrunner_hb_strieq( import_name, "GetCurrentThread" ) ||
+           macrunner_hb_strieq( import_name, "InitializeCriticalSection" ) ||
+           macrunner_hb_strieq( import_name, "InitializeCriticalSectionAndSpinCount" ) ||
+           macrunner_hb_strieq( import_name, "InitializeCriticalSectionEx" ) ||
+           macrunner_hb_strieq( import_name, "DeleteCriticalSection" ) ||
+           macrunner_hb_strieq( import_name, "EnterCriticalSection" ) ||
+           macrunner_hb_strieq( import_name, "LeaveCriticalSection" ) ||
+           macrunner_hb_strieq( import_name, "TryEnterCriticalSection" ) ||
+           macrunner_hb_strieq( import_name, "InitializeSRWLock" ) ||
+           macrunner_hb_strieq( import_name, "AcquireSRWLockExclusive" ) ||
+           macrunner_hb_strieq( import_name, "AcquireSRWLockShared" ) ||
+           macrunner_hb_strieq( import_name, "ReleaseSRWLockExclusive" ) ||
+           macrunner_hb_strieq( import_name, "ReleaseSRWLockShared" ) ||
+           macrunner_hb_strieq( import_name, "TryAcquireSRWLockExclusive" ) ||
+           macrunner_hb_strieq( import_name, "TryAcquireSRWLockShared" ) ||
+           macrunner_hb_strieq( import_name, "SleepConditionVariableSRW" ) ||
+           macrunner_hb_strieq( import_name, "InitializeSListHead" ) ||
+           macrunner_hb_strieq( import_name, "InterlockedFlushSList" ) ||
+           macrunner_hb_strieq( import_name, "InterlockedPopEntrySList" ) ||
+           macrunner_hb_strieq( import_name, "InterlockedPushEntrySList" ) ||
+           macrunner_hb_strieq( import_name, "InterlockedPushListSList" ) ||
+           macrunner_hb_strieq( import_name, "InterlockedPushListSListEx" ) ||
+           macrunner_hb_strieq( import_name, "QueryDepthSList" ) ||
+           macrunner_hb_strieq( import_name, "HeapAlloc" ) ||
+           macrunner_hb_strieq( import_name, "HeapReAlloc" ) ||
+           macrunner_hb_strieq( import_name, "HeapFree" ) ||
+           macrunner_hb_strieq( import_name, "HeapSize" ) ||
+           macrunner_hb_strieq( import_name, "VirtualAlloc" ) ||
+           macrunner_hb_strieq( import_name, "VirtualAllocEx" ) ||
+           macrunner_hb_strieq( import_name, "VirtualFree" ) ||
+           macrunner_hb_strieq( import_name, "VirtualFreeEx" ) ||
+           macrunner_hb_strieq( import_name, "VirtualProtect" ) ||
+           macrunner_hb_strieq( import_name, "VirtualProtectEx" ) ||
+           macrunner_hb_strieq( import_name, "VirtualQuery" ) ||
+           macrunner_hb_strieq( import_name, "VirtualQueryEx" ) ||
+           macrunner_hb_strieq( import_name, "TlsAlloc" ) ||
+           macrunner_hb_strieq( import_name, "TlsSetValue" ) ||
+           macrunner_hb_strieq( import_name, "TlsGetValue" ) ||
+           macrunner_hb_strieq( import_name, "TlsFree" ) ||
+           macrunner_hb_strieq( import_name, "FlsAlloc" ) ||
+           macrunner_hb_strieq( import_name, "FlsSetValue" ) ||
+           macrunner_hb_strieq( import_name, "FlsGetValue" ) ||
+           macrunner_hb_strieq( import_name, "FlsFree" ) ||
+           macrunner_hb_strieq( import_name, "CreateEventA" ) ||
+           macrunner_hb_strieq( import_name, "CreateEventW" ) ||
+           macrunner_hb_strieq( import_name, "CreateEventExA" ) ||
+           macrunner_hb_strieq( import_name, "CreateEventExW" ) ||
+           macrunner_hb_strieq( import_name, "OpenEventA" ) ||
+           macrunner_hb_strieq( import_name, "OpenEventW" ) ||
+           macrunner_hb_strieq( import_name, "SetEvent" ) ||
+           macrunner_hb_strieq( import_name, "ResetEvent" ) ||
+           macrunner_hb_strieq( import_name, "PulseEvent" ) ||
+           macrunner_hb_strieq( import_name, "SetErrorMode" ) ||
+           macrunner_hb_strieq( import_name, "GetErrorMode" ) ||
+           macrunner_hb_strieq( import_name, "SetThreadErrorMode" ) ||
+           macrunner_hb_strieq( import_name, "OutputDebugStringA" ) ||
+           macrunner_hb_strieq( import_name, "OutputDebugStringW" );
+}
+
+static void macrunner_hb_synthetic_d3d11_createdevice_target(void) {}
+static void macrunner_hb_synthetic_d3d12_createdevice_target(void) {}
+static void macrunner_hb_synthetic_dxgi_createfactory_target(void) {}
+static void macrunner_hb_synthetic_dxgi_createfactory1_target(void) {}
+
+static BOOL macrunner_hb_synthetic_d3d_enabled(void)
+{
+    const char *backend = getenv( "MACRUNNER_D3D_BACKEND" );
+
+    return macrunner_hb_env_enabled( "MACRUNNER_D3D_TRACE" ) ||
+           (backend && macrunner_hb_strieq( backend, "mock" ));
+}
+
+static const char *macrunner_hb_basename_a( const char *name )
+{
+    const char *base = name;
+
+    if (!name) return "";
+    for (; *name; name++)
+        if (*name == '\\' || *name == '/') base = name + 1;
+    return base;
+}
+
+static uint64_t macrunner_hb_synthetic_d3d_module_handle( const char *name )
+{
+    const char *base;
+
+    if (!macrunner_hb_synthetic_d3d_enabled()) return 0;
+    base = macrunner_hb_basename_a( name );
+    if (macrunner_hb_strieq( base, "d3d11.dll" )) return MACRUNNER_HB_D3D11_MODULE;
+    if (macrunner_hb_strieq( base, "d3d12.dll" )) return MACRUNNER_HB_D3D12_MODULE;
+    if (macrunner_hb_strieq( base, "dxgi.dll" )) return MACRUNNER_HB_DXGI_MODULE;
+    return 0;
+}
+
+static const char *macrunner_hb_synthetic_d3d_module_name( uint64_t handle )
+{
+    switch (handle)
+    {
+    case MACRUNNER_HB_D3D11_MODULE: return "d3d11.dll";
+    case MACRUNNER_HB_D3D12_MODULE: return "d3d12.dll";
+    case MACRUNNER_HB_DXGI_MODULE: return "dxgi.dll";
+    default: return NULL;
+    }
+}
+
+static const char *macrunner_hb_synthetic_d3d_api_for_proc( const char *dll_name,
+                                                            const char *proc_name )
+{
+    if (macrunner_hb_strieq( dll_name, "d3d11.dll" ) &&
+        macrunner_hb_strieq( proc_name, "D3D11CreateDevice" ))
+        return "d3d11";
+    if (macrunner_hb_strieq( dll_name, "d3d12.dll" ) &&
+        macrunner_hb_strieq( proc_name, "D3D12CreateDevice" ))
+        return "d3d12";
+    if (macrunner_hb_strieq( dll_name, "dxgi.dll" ) &&
+        (macrunner_hb_strieq( proc_name, "CreateDXGIFactory" ) ||
+         macrunner_hb_strieq( proc_name, "CreateDXGIFactory1" )))
+        return "dxgi";
+    return NULL;
+}
+
+static void *macrunner_hb_synthetic_d3d_proc_target( const char *dll_name,
+                                                     const char *proc_name )
+{
+    if (macrunner_hb_strieq( dll_name, "d3d11.dll" ) &&
+        macrunner_hb_strieq( proc_name, "D3D11CreateDevice" ))
+        return macrunner_hb_synthetic_d3d11_createdevice_target;
+    if (macrunner_hb_strieq( dll_name, "d3d12.dll" ) &&
+        macrunner_hb_strieq( proc_name, "D3D12CreateDevice" ))
+        return macrunner_hb_synthetic_d3d12_createdevice_target;
+    if (macrunner_hb_strieq( dll_name, "dxgi.dll" ) &&
+        macrunner_hb_strieq( proc_name, "CreateDXGIFactory" ))
+        return macrunner_hb_synthetic_dxgi_createfactory_target;
+    if (macrunner_hb_strieq( dll_name, "dxgi.dll" ) &&
+        macrunner_hb_strieq( proc_name, "CreateDXGIFactory1" ))
+        return macrunner_hb_synthetic_dxgi_createfactory1_target;
+    return NULL;
+}
+
+static uint64_t macrunner_hb_register_synthetic_import_thunk( const struct macrunner_hb_import_thunk *source,
+                                                              uint64_t module_id,
+                                                              const char *dll_name,
+                                                              const char *import_name )
+{
+    struct macrunner_hb_import_thunk *slot;
+    void *target;
+    unsigned int i;
+
+    if (!source || !dll_name || !import_name) return 0;
+    if (!(target = macrunner_hb_synthetic_d3d_proc_target( dll_name, import_name ))) return 0;
+
+    pthread_mutex_lock( &macrunner_hb_import_mutex );
+    for (i = 0; i < macrunner_hb_import_count; i++)
+    {
+        slot = &macrunner_hb_imports[i];
+        if (slot->module_id == module_id &&
+            macrunner_hb_strieq( slot->dll_name, dll_name ) &&
+            macrunner_hb_strieq( slot->import_name, import_name ))
+        {
+            uint64_t guest_target = slot->guest_target;
+            pthread_mutex_unlock( &macrunner_hb_import_mutex );
+            return guest_target;
+        }
+    }
+
+    if (macrunner_hb_import_count >= MACRUNNER_HB_IMPORT_MAX)
+    {
+        pthread_mutex_unlock( &macrunner_hb_import_mutex );
+        return 0;
+    }
+
+    slot = &macrunner_hb_imports[macrunner_hb_import_count++];
+    memset( slot, 0, sizeof(*slot) );
+    slot->guest_target = MACRUNNER_HB_IMPORT_BASE + (uint64_t)macrunner_hb_import_count * MACRUNNER_HB_IMPORT_STRIDE;
+    slot->target = target;
+    slot->pe_call12 = source->pe_call12;
+    slot->pe_callback12 = source->pe_callback12;
+    slot->module_id = module_id;
+    slot->target_machine = current_machine;
+    macrunner_hb_copy_cstr( slot->dll_name, sizeof(slot->dll_name), dll_name );
+    macrunner_hb_copy_cstr( slot->import_name, sizeof(slot->import_name), import_name );
+    macrunner_hb_import_target_map_put( slot );
+    TRACE( "MacRunner HyperBridge registered synthetic proc thunk %s!%s guest=%p\n",
+           slot->dll_name, slot->import_name, (void *)(uintptr_t)slot->guest_target );
+    pthread_mutex_unlock( &macrunner_hb_import_mutex );
+    return slot->guest_target;
+}
+
 NTSTATUS macrunner_hb_register_import_thunk( void *args )
 {
     struct macrunner_hb_register_import_thunk_params *params = args;
@@ -1346,6 +1686,8 @@ NTSTATUS macrunner_hb_register_import_thunk( void *args )
     slot->target_machine = params->target_machine;
     memcpy( slot->dll_name, params->dll_name, sizeof(slot->dll_name) - 1 );
     memcpy( slot->import_name, params->import_name, sizeof(slot->import_name) - 1 );
+    macrunner_hb_remember_apiset_module_locked( params->dll_name, params->target_module_id,
+                                                params->target_module_machine );
     macrunner_hb_import_target_map_put( slot );
     params->guest_target = slot->guest_target;
     TRACE( "MacRunner HyperBridge registered import thunk %s!%s native=%p pe_call12=%p pe_callback12=%p guest=%p machine=%04x\n",
@@ -1708,6 +2050,26 @@ static USHORT macrunner_hb_module_machine( void *module )
     return nt->FileHeader.Machine;
 }
 
+static USHORT macrunner_hb_import_lookup_machine( const struct macrunner_hb_import_thunk *thunk )
+{
+    USHORT machine = IMAGE_FILE_MACHINE_UNKNOWN;
+    TEB *teb = NtCurrentTeb();
+
+    if (thunk && thunk->module_id)
+        machine = macrunner_hb_module_machine( (void *)(uintptr_t)thunk->module_id );
+    if (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_I386)
+        return machine;
+
+    if (teb && teb->Peb)
+    {
+        machine = macrunner_hb_module_machine( teb->Peb->ImageBaseAddress );
+        if (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_I386)
+            return machine;
+    }
+
+    return current_machine;
+}
+
 static uint64_t macrunner_hb_module_size( void *module )
 {
     const IMAGE_DOS_HEADER *dos = module;
@@ -1756,6 +2118,27 @@ static BOOL macrunner_hb_read_guest_wstr( hb_context_t *ctx, uint64_t addr, char
             return FALSE;
         if (!ch) break;
         out[i] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
+    }
+    out[i] = 0;
+    return TRUE;
+}
+
+static BOOL macrunner_hb_read_guest_wstr_buf( hb_context_t *ctx, uint64_t addr, WCHAR *out, size_t out_count )
+{
+    size_t i;
+
+    if (!out || !out_count) return FALSE;
+    out[0] = 0;
+    if (!ctx || !ctx->memory || !addr) return FALSE;
+
+    for (i = 0; i + 1 < out_count; i++)
+    {
+        uint16_t ch;
+
+        if (hb_memory_read_u16( ctx->memory, (hb_gva_t)addr + i * sizeof(uint16_t), &ch ) != HB_OK)
+            return FALSE;
+        out[i] = ch;
+        if (!ch) return TRUE;
     }
     out[i] = 0;
     return TRUE;
@@ -1811,6 +2194,104 @@ static BOOL macrunner_hb_module_name_matches( const char *requested,
     return FALSE;
 }
 
+static BOOL macrunner_hb_ascii_module_names_match( const char *requested, const char *candidate )
+{
+    char req[128], req_dll[132], cand[128];
+    BOOL req_has_dot = FALSE;
+    size_t len, i;
+
+    macrunner_hb_canon_module_name( requested, req, sizeof(req) );
+    macrunner_hb_canon_module_name( candidate, cand, sizeof(cand) );
+    if (!req[0] || !cand[0]) return FALSE;
+    if (macrunner_hb_strieq( req, cand )) return TRUE;
+
+    for (i = 0; req[i]; i++) if (req[i] == '.') req_has_dot = TRUE;
+    len = strlen( req );
+    if (!req_has_dot && len + 4 < sizeof(req_dll))
+    {
+        memcpy( req_dll, req, len );
+        memcpy( req_dll + len, ".dll", 5 );
+        if (macrunner_hb_strieq( req_dll, cand )) return TRUE;
+    }
+    return FALSE;
+}
+
+static void macrunner_hb_remember_apiset_module_locked( const char *dll_name, uint64_t module_id,
+                                                        USHORT machine )
+{
+    char canon[128];
+    unsigned int i;
+
+    if (!dll_name || !module_id || !machine) return;
+    macrunner_hb_canon_module_name( dll_name, canon, sizeof(canon) );
+    if (!macrunner_hb_stristarts( canon, "api-" ) && !macrunner_hb_stristarts( canon, "ext-" ))
+        return;
+
+    for (i = 0; i < macrunner_hb_apiset_module_count; i++)
+    {
+        struct macrunner_hb_apiset_module *entry = &macrunner_hb_apiset_modules[i];
+
+        if (entry->machine == machine && macrunner_hb_ascii_module_names_match( canon, entry->dll_name ))
+        {
+            entry->module_id = module_id;
+            return;
+        }
+    }
+
+    if (macrunner_hb_apiset_module_count >= MACRUNNER_HB_APISET_MODULE_MAX) return;
+    macrunner_hb_copy_cstr( macrunner_hb_apiset_modules[macrunner_hb_apiset_module_count].dll_name,
+                            sizeof(macrunner_hb_apiset_modules[macrunner_hb_apiset_module_count].dll_name),
+                            canon );
+    macrunner_hb_apiset_modules[macrunner_hb_apiset_module_count].module_id = module_id;
+    macrunner_hb_apiset_modules[macrunner_hb_apiset_module_count].machine = machine;
+    macrunner_hb_apiset_module_count++;
+}
+
+static void *macrunner_hb_find_remembered_apiset_module( const char *dll_name, USHORT preferred_machine,
+                                                         char *resolved_name, size_t resolved_name_size )
+{
+    char canon[128];
+    uint64_t first = 0, exact = 0;
+    USHORT first_machine = 0, exact_machine = 0;
+    unsigned int i;
+    void *module;
+
+    macrunner_hb_canon_module_name( dll_name, canon, sizeof(canon) );
+    if (!macrunner_hb_stristarts( canon, "api-" ) && !macrunner_hb_stristarts( canon, "ext-" ))
+        return NULL;
+
+    pthread_mutex_lock( &macrunner_hb_import_mutex );
+    for (i = 0; i < macrunner_hb_apiset_module_count; i++)
+    {
+        const struct macrunner_hb_apiset_module *entry = &macrunner_hb_apiset_modules[i];
+
+        if (!macrunner_hb_ascii_module_names_match( canon, entry->dll_name )) continue;
+        if (!first)
+        {
+            first = entry->module_id;
+            first_machine = entry->machine;
+        }
+        if (!preferred_machine || entry->machine == preferred_machine)
+        {
+            exact = entry->module_id;
+            exact_machine = entry->machine;
+            break;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_import_mutex );
+
+    module = (void *)(uintptr_t)(exact ? exact : first);
+    if (!module) return NULL;
+    if (resolved_name && resolved_name_size)
+    {
+        macrunner_hb_get_export_module_name( module, resolved_name, resolved_name_size );
+        if (!resolved_name[0])
+            snprintf( resolved_name, resolved_name_size, "api-set-target-%04x",
+                      exact ? exact_machine : first_machine );
+    }
+    return module;
+}
+
 static void *macrunner_hb_find_loaded_module_by_name( const char *name, USHORT preferred_machine )
 {
     PEB *peb = NtCurrentTeb()->Peb;
@@ -1850,6 +2331,335 @@ static void *macrunner_hb_find_loaded_module_by_name( const char *name, USHORT p
         }
     }
     return first;
+}
+
+static size_t macrunner_hb_wstrlen_local( const WCHAR *str )
+{
+    size_t len = 0;
+
+    if (!str) return 0;
+    while (str[len]) len++;
+    return len;
+}
+
+static WCHAR macrunner_hb_tolower_wchar( WCHAR ch )
+{
+    if (ch >= 'A' && ch <= 'Z') return ch + 'a' - 'A';
+    return ch;
+}
+
+static WCHAR macrunner_hb_toupper_wchar( WCHAR ch )
+{
+    if (ch >= 'a' && ch <= 'z') return ch + 'A' - 'a';
+    return ch;
+}
+
+static BOOL macrunner_hb_local_heap_remember( void *ptr )
+{
+    unsigned int i;
+
+    if (!ptr) return TRUE;
+    pthread_mutex_lock( &macrunner_hb_local_heap_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_HEAP_MAX; i++)
+    {
+        if (macrunner_hb_local_heap_ptrs[i] == ptr)
+        {
+            pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+            return TRUE;
+        }
+        if (!macrunner_hb_local_heap_ptrs[i])
+        {
+            macrunner_hb_local_heap_ptrs[i] = ptr;
+            pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+            return TRUE;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+    return FALSE;
+}
+
+static BOOL macrunner_hb_local_heap_forget( void *ptr )
+{
+    unsigned int i;
+
+    if (!ptr) return TRUE;
+    pthread_mutex_lock( &macrunner_hb_local_heap_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_HEAP_MAX; i++)
+    {
+        if (macrunner_hb_local_heap_ptrs[i] == ptr)
+        {
+            macrunner_hb_local_heap_ptrs[i] = NULL;
+            pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+            return TRUE;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+    return FALSE;
+}
+
+static BOOL macrunner_hb_local_heap_contains( void *ptr )
+{
+    unsigned int i;
+
+    if (!ptr) return FALSE;
+    pthread_mutex_lock( &macrunner_hb_local_heap_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_HEAP_MAX; i++)
+    {
+        if (macrunner_hb_local_heap_ptrs[i] == ptr)
+        {
+            pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+            return TRUE;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+    return FALSE;
+}
+
+static BOOL macrunner_hb_local_heap_replace( void *old_ptr, void *new_ptr )
+{
+    unsigned int i;
+
+    if (!old_ptr) return macrunner_hb_local_heap_remember( new_ptr );
+    pthread_mutex_lock( &macrunner_hb_local_heap_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_HEAP_MAX; i++)
+    {
+        if (macrunner_hb_local_heap_ptrs[i] == old_ptr)
+        {
+            macrunner_hb_local_heap_ptrs[i] = new_ptr;
+            pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+            return TRUE;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+    return FALSE;
+}
+
+static uint64_t macrunner_hb_local_file_remember( int fd )
+{
+    unsigned int i;
+    uint64_t handle = 0;
+
+    if (fd < 0) return 0;
+    pthread_mutex_lock( &macrunner_hb_local_file_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_FILE_MAX; i++)
+    {
+        if (!macrunner_hb_local_files[i].handle)
+        {
+            handle = macrunner_hb_local_file_next++;
+            macrunner_hb_local_files[i].handle = handle;
+            macrunner_hb_local_files[i].fd = fd;
+            break;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_file_mutex );
+    return handle;
+}
+
+static int macrunner_hb_local_file_fd( uint64_t handle )
+{
+    unsigned int i;
+    int fd = -1;
+
+    pthread_mutex_lock( &macrunner_hb_local_file_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_FILE_MAX; i++)
+    {
+        if (macrunner_hb_local_files[i].handle == handle)
+        {
+            fd = macrunner_hb_local_files[i].fd;
+            break;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_file_mutex );
+    return fd;
+}
+
+static BOOL macrunner_hb_local_file_close( uint64_t handle )
+{
+    unsigned int i;
+    int fd = -1;
+
+    pthread_mutex_lock( &macrunner_hb_local_file_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_FILE_MAX; i++)
+    {
+        if (macrunner_hb_local_files[i].handle == handle)
+        {
+            fd = macrunner_hb_local_files[i].fd;
+            macrunner_hb_local_files[i].handle = 0;
+            macrunner_hb_local_files[i].fd = -1;
+            break;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_file_mutex );
+    if (fd < 0) return FALSE;
+    close( fd );
+    return TRUE;
+}
+
+static int macrunner_hb_wcsnicmp_local( const WCHAR *a, const WCHAR *b, ULONG len )
+{
+    ULONG i;
+
+    for (i = 0; i < len; i++)
+    {
+        WCHAR ca = macrunner_hb_tolower_wchar( a[i] );
+        WCHAR cb = macrunner_hb_tolower_wchar( b[i] );
+
+        if (ca != cb) return ca < cb ? -1 : 1;
+        if (!ca) return 0;
+    }
+    return 0;
+}
+
+static NTSTATUS macrunner_hb_get_apiset_entry( const API_SET_NAMESPACE *map, const WCHAR *name,
+                                               ULONG len, const API_SET_NAMESPACE_ENTRY **entry )
+{
+    static const WCHAR apiW[] = {'a','p','i','-',0};
+    static const WCHAR extW[] = {'e','x','t','-',0};
+    const API_SET_HASH_ENTRY *hash_entry;
+    ULONG hash, i, hash_len;
+    int min, max;
+
+    if (entry) *entry = NULL;
+    if (!entry || len <= 4) return STATUS_INVALID_PARAMETER;
+    if (macrunner_hb_wcsnicmp_local( name, apiW, 4 ) &&
+        macrunner_hb_wcsnicmp_local( name, extW, 4 ))
+        return STATUS_INVALID_PARAMETER;
+    if (!map) return STATUS_APISET_NOT_PRESENT;
+
+    for (i = hash_len = 0; i < len; i++)
+    {
+        if (name[i] == '.') break;
+        if (name[i] == '-') hash_len = i;
+    }
+    for (i = hash = 0; i < hash_len; i++)
+        hash = hash * map->HashFactor + macrunner_hb_tolower_wchar( name[i] );
+
+    hash_entry = (API_SET_HASH_ENTRY *)((char *)map + map->HashOffset);
+    min = 0;
+    max = map->Count - 1;
+    while (min <= max)
+    {
+        int pos = (min + max) / 2;
+
+        if (hash_entry[pos].Hash < hash) min = pos + 1;
+        else if (hash_entry[pos].Hash > hash) max = pos - 1;
+        else
+        {
+            *entry = (API_SET_NAMESPACE_ENTRY *)((char *)map + map->EntryOffset) + hash_entry[pos].Index;
+            if ((*entry)->HashedLength != hash_len * sizeof(WCHAR)) break;
+            if (macrunner_hb_wcsnicmp_local( (WCHAR *)((char *)map + (*entry)->NameOffset),
+                                             name, hash_len ))
+                break;
+            return STATUS_SUCCESS;
+        }
+    }
+    return STATUS_APISET_NOT_PRESENT;
+}
+
+static NTSTATUS macrunner_hb_get_apiset_target( const API_SET_NAMESPACE *map,
+                                                const API_SET_NAMESPACE_ENTRY *entry,
+                                                UNICODE_STRING *ret )
+{
+    const API_SET_VALUE_ENTRY *value;
+
+    if (!map || !entry || !ret || !entry->ValueCount) return STATUS_DLL_NOT_FOUND;
+    value = (API_SET_VALUE_ENTRY *)((char *)map + entry->ValueOffset);
+    if (!value->ValueOffset) return STATUS_DLL_NOT_FOUND;
+    ret->Buffer = (WCHAR *)((char *)map + value->ValueOffset);
+    ret->Length = value->ValueLength;
+    ret->MaximumLength = value->ValueLength;
+    return STATUS_SUCCESS;
+}
+
+static BOOL macrunner_hb_resolve_known_apiset_target_name( const char *canon, char *target,
+                                                           size_t target_size )
+{
+    const char *fallback = NULL;
+
+    if (!canon || !target || !target_size) return FALSE;
+    if (macrunner_hb_stristarts( canon, "api-ms-win-core-fibers-" ))
+        fallback = "kernelbase.dll";
+    else if (macrunner_hb_stristarts( canon, "api-ms-win-core-localization-" ))
+        fallback = "kernelbase.dll";
+    else if (macrunner_hb_stristarts( canon, "api-ms-win-core-winrt-l1-" ) ||
+             macrunner_hb_stristarts( canon, "api-ms-win-core-winrt-string-l1-" ))
+        fallback = "combase.dll";
+
+    if (!fallback) return FALSE;
+    macrunner_hb_copy_cstr( target, target_size, fallback );
+    return TRUE;
+}
+
+static BOOL macrunner_hb_resolve_apiset_target_name( const char *name, char *target, size_t target_size )
+{
+    const API_SET_NAMESPACE *map;
+    const API_SET_NAMESPACE_ENTRY *entry;
+    UNICODE_STRING resolved;
+    WCHAR wname[256];
+    char canon[256];
+    BOOL has_dot = FALSE;
+    size_t i, len, out_len;
+
+    if (!target || !target_size) return FALSE;
+    target[0] = 0;
+    if (!name || !name[0]) return FALSE;
+
+    macrunner_hb_canon_module_name( name, canon, sizeof(canon) );
+    if (macrunner_hb_stristarts( canon, "api-" ) == FALSE &&
+        macrunner_hb_stristarts( canon, "ext-" ) == FALSE)
+        return FALSE;
+
+    for (i = 0; canon[i] && i + 1 < ARRAY_SIZE(wname); i++)
+    {
+        if (canon[i] == '.') has_dot = TRUE;
+        wname[i] = (unsigned char)canon[i];
+    }
+    if (!has_dot && i + 4 < ARRAY_SIZE(wname))
+    {
+        wname[i++] = '.';
+        wname[i++] = 'd';
+        wname[i++] = 'l';
+        wname[i++] = 'l';
+    }
+    wname[i] = 0;
+
+    map = NtCurrentTeb()->Peb ? NtCurrentTeb()->Peb->ApiSetMap : NULL;
+    len = macrunner_hb_wstrlen_local( wname );
+    if (macrunner_hb_get_apiset_entry( map, wname, len, &entry ) ||
+        macrunner_hb_get_apiset_target( map, entry, &resolved ))
+        return macrunner_hb_resolve_known_apiset_target_name( canon, target, target_size );
+
+    out_len = resolved.Length / sizeof(WCHAR);
+    if (out_len >= target_size) out_len = target_size - 1;
+    for (i = 0; i < out_len; i++)
+    {
+        WCHAR ch = resolved.Buffer[i];
+        target[i] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
+    }
+    target[out_len] = 0;
+    return target[0] != 0;
+}
+
+static void *macrunner_hb_find_loaded_module_or_apiset_target( const char *name,
+                                                               USHORT preferred_machine,
+                                                               char *resolved_name,
+                                                               size_t resolved_name_size )
+{
+    void *module;
+    char target[256];
+
+    if (resolved_name && resolved_name_size) resolved_name[0] = 0;
+    module = macrunner_hb_find_loaded_module_by_name( name, preferred_machine );
+    if (module) return module;
+    module = macrunner_hb_find_remembered_apiset_module( name, preferred_machine,
+                                                         resolved_name, resolved_name_size );
+    if (module) return module;
+    if (!macrunner_hb_resolve_apiset_target_name( name, target, sizeof(target) ))
+        return NULL;
+    module = macrunner_hb_find_loaded_module_by_name( target, preferred_machine );
+    if (module && resolved_name && resolved_name_size)
+        macrunner_hb_copy_cstr( resolved_name, resolved_name_size, target );
+    return module;
 }
 
 static size_t macrunner_hb_x64_stack_size( void *module )
@@ -1894,6 +2704,70 @@ static int macrunner_hb_pc_in_executable_section( void *module, uint64_t pc )
     return FALSE;
 }
 
+static BOOL macrunner_hb_address_in_section( void *module, const char *section, uint64_t target )
+{
+    IMAGE_NT_HEADERS *nt = macrunner_hb_image_nt_header( module );
+    IMAGE_SECTION_HEADER *sec;
+    uint64_t base = (uint64_t)(uintptr_t)module;
+    unsigned int i;
+
+    if (!nt || !section || !target) return FALSE;
+    sec = IMAGE_FIRST_SECTION( nt );
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+    {
+        uint64_t start, end, size;
+
+        if (strncmp( (const char *)sec->Name, section, IMAGE_SIZEOF_SHORT_NAME )) continue;
+        size = max( sec->Misc.VirtualSize, sec->SizeOfRawData );
+        start = base + sec->VirtualAddress;
+        end = start + size;
+        return target >= start && target < end;
+    }
+    return FALSE;
+}
+
+static IMAGE_ARM64EC_METADATA *macrunner_hb_get_arm64x_metadata( void *module )
+{
+    IMAGE_DATA_DIRECTORY *dir;
+    IMAGE_LOAD_CONFIG_DIRECTORY *cfg;
+    IMAGE_NT_HEADERS *nt;
+    ULONG size;
+
+    if (!(nt = macrunner_hb_image_nt_header( module ))) return NULL;
+    dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+    if (!dir->VirtualAddress || !dir->Size) return NULL;
+    cfg = (IMAGE_LOAD_CONFIG_DIRECTORY *)((BYTE *)module + dir->VirtualAddress);
+    size = dir->Size;
+    size = min( size, cfg->Size );
+    if (size <= offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, CHPEMetadataPointer )) return NULL;
+    if (cfg->CHPEMetadataPointer <= (ULONG_PTR)module) return NULL;
+    if (cfg->CHPEMetadataPointer >= (ULONG_PTR)module + nt->OptionalHeader.SizeOfImage)
+        return NULL;
+    return (IMAGE_ARM64EC_METADATA *)cfg->CHPEMetadataPointer;
+}
+
+static void *macrunner_hb_redirect_arm64x_thunk_to_native( void *module, void *ptr )
+{
+    IMAGE_ARM64EC_METADATA *metadata = macrunner_hb_get_arm64x_metadata( module );
+    const IMAGE_ARM64EC_REDIRECTION_ENTRY *map;
+    ULONG_PTR rva = (ULONG_PTR)ptr - (ULONG_PTR)module;
+    int min, max;
+
+    if (!metadata || !ptr) return ptr;
+    map = (const IMAGE_ARM64EC_REDIRECTION_ENTRY *)((BYTE *)module + metadata->RedirectionMetadata);
+    min = 0;
+    max = metadata->RedirectionMetadataCount - 1;
+    while (min <= max)
+    {
+        int pos = (min + max) / 2;
+
+        if (map[pos].Source == rva) return (BYTE *)module + map[pos].Destination;
+        if (map[pos].Source < rva) min = pos + 1;
+        else max = pos - 1;
+    }
+    return ptr;
+}
+
 static void *macrunner_hb_export_by_ordinal( void *module, WORD ordinal )
 {
     const IMAGE_DOS_HEADER *dos = module;
@@ -1917,6 +2791,7 @@ static void *macrunner_hb_export_by_ordinal( void *module, WORD ordinal )
     functions = (const DWORD *)((const char *)module + exports->AddressOfFunctions);
     rva = functions[index];
     if (!rva) return NULL;
+    if (rva >= dir->VirtualAddress && rva < dir->VirtualAddress + dir->Size) return NULL;
     return (char *)module + rva;
 }
 
@@ -1939,7 +2814,7 @@ int macrunner_hb_pc_is_x64_guest_code( void *pc )
      * state.  The registered range path covers x64 DLLs and relocated high
      * images; the PEB fallback keeps the main image available during bootstrap. */
     if (macrunner_hb_is_current_x64_guest_exec_address( pc )) return TRUE;
-    if (macrunner_hb_is_registered_x64_guest_address( pc ) &&
+    if (macrunner_hb_is_registered_x64_guest_address( (void *)(uintptr_t)pc ) &&
         (module = macrunner_hb_module_from_pc( pc )) &&
         macrunner_hb_module_machine( module ) == IMAGE_FILE_MACHINE_AMD64)
         return macrunner_hb_pc_in_executable_section( module, (uint64_t)(uintptr_t)pc );
@@ -2067,23 +2942,130 @@ static int macrunner_hb_find_amd64_function_begin( uint64_t pc, void *image_base
     return FALSE;
 }
 
+static uint64_t macrunner_hb_normalize_tls_callback_pc( uint64_t pc, void *image_base_ptr,
+                                                        uint64_t image_size )
+{
+    IMAGE_DATA_DIRECTORY *data_dir;
+    const IMAGE_TLS_DIRECTORY *tls;
+    const PIMAGE_TLS_CALLBACK *callback;
+    IMAGE_NT_HEADERS *nt;
+    uint64_t image_base = (uint64_t)(uintptr_t)image_base_ptr;
+    uint64_t image_end = image_base + image_size;
+    uint64_t best = 0, best_delta = UINT64_MAX;
+    unsigned int i;
+
+    if (!pc || !image_base_ptr || !image_size || pc < image_base || pc >= image_end)
+        return pc;
+    nt = macrunner_hb_image_nt_header( image_base_ptr );
+    if (!nt || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) return pc;
+
+    data_dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+    if (!data_dir->VirtualAddress || data_dir->Size < sizeof(*tls)) return pc;
+    if ((uint64_t)data_dir->VirtualAddress + sizeof(*tls) > image_size) return pc;
+
+    tls = (const IMAGE_TLS_DIRECTORY *)((const char *)image_base_ptr + data_dir->VirtualAddress);
+    callback = (const PIMAGE_TLS_CALLBACK *)(uintptr_t)tls->AddressOfCallBacks;
+    if (!callback || (uint64_t)(uintptr_t)callback < image_base ||
+        (uint64_t)(uintptr_t)callback >= image_end)
+        return pc;
+
+    for (i = 0; i < 256; i++)
+    {
+        uint64_t slot = (uint64_t)(uintptr_t)&callback[i];
+        uint64_t target;
+        uint64_t delta;
+
+        if (slot < image_base || slot + sizeof(*callback) > image_end) break;
+        target = (uint64_t)(uintptr_t)callback[i];
+        if (!target) break;
+        if (target < image_base || target >= image_end) continue;
+        if (!macrunner_hb_pc_in_executable_section( image_base_ptr, target )) continue;
+        if (pc == target) return pc;
+
+        /*
+         * ARM64 execute faults from an x64 callback can report the PC a few
+         * bytes before or after the real x64 target.  Do not guess from local
+         * padding bytes; TLS gives us the authoritative callback entry list.
+         */
+        delta = pc > target ? pc - target : target - pc;
+        if (delta <= 4 && delta < best_delta)
+        {
+            best = target;
+            best_delta = delta;
+        }
+    }
+
+    if (best)
+    {
+        TRACE( "MacRunner HyperBridge normalized x64 TLS callback pc=%p -> %p delta=%s\n",
+               (void *)(uintptr_t)pc, (void *)(uintptr_t)best, wine_dbgstr_longlong(best_delta) );
+        return best;
+    }
+    return pc;
+}
+
+static BOOL macrunner_hb_read_amd64_image_size( uint64_t image_base, uint64_t *image_size )
+{
+    IMAGE_DOS_HEADER dos;
+    IMAGE_NT_HEADERS nt;
+    uint64_t nt_addr;
+
+    if (image_size) *image_size = 0;
+    if (!image_base || !image_size) return FALSE;
+    if (!macrunner_hb_read_local_memory( (uintptr_t)image_base, &dos, sizeof(dos) )) return FALSE;
+    if (dos.e_magic != IMAGE_DOS_SIGNATURE) return FALSE;
+    if (dos.e_lfanew <= 0 || dos.e_lfanew > 0x100000) return FALSE;
+    nt_addr = image_base + (uint64_t)dos.e_lfanew;
+    if (nt_addr < image_base) return FALSE;
+    if (!macrunner_hb_read_local_memory( (uintptr_t)nt_addr, &nt, sizeof(nt) )) return FALSE;
+    if (nt.Signature != IMAGE_NT_SIGNATURE) return FALSE;
+    if (nt.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) return FALSE;
+    if (!nt.OptionalHeader.SizeOfImage) return FALSE;
+    *image_size = nt.OptionalHeader.SizeOfImage;
+    return TRUE;
+}
+
+ULONG64 macrunner_hb_normalize_x64_tls_callback_pc( ULONG64 pc, ULONG64 image_base,
+                                                    ULONG64 reason )
+{
+    void *image_base_ptr = (void *)(uintptr_t)image_base;
+    uint64_t image_size;
+
+    if (!pc || !image_base || reason > DLL_THREAD_DETACH) return pc;
+
+    if (!macrunner_hb_read_amd64_image_size( image_base, &image_size )) return pc;
+    if (!image_size || !macrunner_hb_pc_in_image( pc, image_base, image_size )) return pc;
+    return macrunner_hb_normalize_tls_callback_pc( pc, image_base_ptr, image_size );
+}
+
 ULONG64 macrunner_hb_normalize_x64_callback_pc( ULONG64 pc )
 {
     TEB *teb = NtCurrentTeb();
-    void *image_base_ptr;
+    void *image_base_ptr = NULL;
+    void *module;
     uint64_t image_base, image_size, func_begin = 0, func_end = 0;
     hb_decoded_t decoded, current, best, boundary_best;
-    uint64_t candidate, best_pc = 0;
+    uint64_t candidate, best_pc = 0, tls_pc;
     uint64_t boundary_pc = 0;
     unsigned int current_len = 0;
     unsigned int back;
     size_t len;
 
     if (!pc || !teb || !teb->Peb) return pc;
-    image_base_ptr = teb->Peb->ImageBaseAddress;
-    if (macrunner_hb_module_machine( image_base_ptr ) != IMAGE_FILE_MACHINE_AMD64) return pc;
+    if ((module = macrunner_hb_module_from_pc( (void *)(uintptr_t)pc )) &&
+        macrunner_hb_module_machine( module ) == IMAGE_FILE_MACHINE_AMD64)
+        image_base_ptr = module;
+    else if (macrunner_hb_module_machine( teb->Peb->ImageBaseAddress ) == IMAGE_FILE_MACHINE_AMD64)
+        image_base_ptr = teb->Peb->ImageBaseAddress;
+    if (!image_base_ptr) return pc;
+
     image_base = (uint64_t)(uintptr_t)image_base_ptr;
     image_size = macrunner_hb_module_size( image_base_ptr );
+    if (!macrunner_hb_pc_in_image( pc, image_base, image_size )) return pc;
+
+    tls_pc = macrunner_hb_normalize_tls_callback_pc( pc, image_base_ptr, image_size );
+    if (tls_pc != pc) return tls_pc;
+    pc = tls_pc;
     if (!macrunner_hb_pc_in_image( pc, image_base, image_size )) return pc;
 
     /* macOS reports the ARM64 fault PC after a failed 4-byte instruction
@@ -2502,8 +3484,10 @@ static BOOL macrunner_hb_try_get_module_handle_semantic( hb_context_t *ctx,
     void *module = NULL;
     const char *path = "unknown";
     char name[128] = "";
+    char resolved_name[256];
     DWORD flags = 0;
     BOOL ex_call = FALSE;
+    USHORT lookup_machine;
 
     if (!ctx || !ctx->memory || !thunk || !args || !ret || !is_kernel) return FALSE;
     if (macrunner_hb_strieq( thunk->import_name, "GetModuleHandleExW" ) ||
@@ -2572,7 +3556,10 @@ static BOOL macrunner_hb_try_get_module_handle_semantic( hb_context_t *ctx,
             return TRUE;
         }
         path = "by-name";
-        module = macrunner_hb_find_loaded_module_by_name( name, IMAGE_FILE_MACHINE_AMD64 );
+        lookup_machine = macrunner_hb_import_lookup_machine( thunk );
+        module = macrunner_hb_find_loaded_module_or_apiset_target( name, lookup_machine,
+                                                                   resolved_name, sizeof(resolved_name) );
+        if (module && resolved_name[0]) path = "api-set";
     }
 
     if (ex_call) hb_memory_write_u64( ctx->memory, (hb_gva_t)args[2], (uint64_t)(uintptr_t)module );
@@ -2590,6 +3577,2229 @@ static BOOL macrunner_hb_try_get_module_handle_semantic( hb_context_t *ctx,
     macrunner_hb_trace_module_handle_result( ctx, thunk, path, name, flags, args, module,
                                              *ret, ERROR_SUCCESS );
     return TRUE;
+}
+
+static void macrunner_hb_d3d_trace_append( FILE *file, const char *api,
+                                           const char *command, const char *payload )
+{
+    fprintf( file, "{\"api\":\"%s\",\"command\":\"%s\",\"payload\":%s}\n",
+             api, command, payload );
+}
+
+static BOOL macrunner_hb_d3d_scenario_has( const char *scenario, const char *needle )
+{
+    return scenario && needle && strstr( scenario, needle ) != NULL;
+}
+
+static void macrunner_hb_write_synthetic_d3d_trace( const char *api )
+{
+    const char *path = getenv( "MACRUNNER_D3D_TRACE_PATH" );
+    const char *scenario = getenv( "MACRUNNER_D3D_SCENARIO" );
+    FILE *file;
+
+    if (!path || !path[0]) return;
+    if (!scenario || !scenario[0]) scenario = "triangle";
+    if (!(file = fopen( path, "ab" ))) return;
+
+    macrunner_hb_d3d_trace_append( file, api, "object_create",
+        "{\"object_id\":1,\"object_type\":\"device\",\"refcount\":1}" );
+    macrunner_hb_d3d_trace_append( file, api, "method_call",
+        "{\"object_id\":1,\"method\":\"CreateDevice\",\"hresult\":0}" );
+    macrunner_hb_d3d_trace_append( file, api, "create_render_target",
+        "{\"width\":64,\"height\":64}" );
+    macrunner_hb_d3d_trace_append( file, api, "clear",
+        "{\"color\":[16,24,32,255]}" );
+
+    if (macrunner_hb_d3d_scenario_has( scenario, "create_device" ) ||
+        macrunner_hb_d3d_scenario_has( scenario, "clear" ))
+    {
+        macrunner_hb_d3d_trace_append( file, api, "present", "{}" );
+        fclose( file );
+        return;
+    }
+
+    if (macrunner_hb_d3d_scenario_has( scenario, "viewport_scissor" ))
+    {
+        macrunner_hb_d3d_trace_append( file, api, "set_viewport",
+            "{\"x\":8,\"y\":8,\"width\":40,\"height\":40}" );
+        macrunner_hb_d3d_trace_append( file, api, "set_scissor",
+            "{\"x\":12,\"y\":12,\"width\":32,\"height\":32}" );
+    }
+    else
+    {
+        macrunner_hb_d3d_trace_append( file, api, "set_viewport",
+            "{\"x\":0,\"y\":0,\"width\":64,\"height\":64}" );
+        macrunner_hb_d3d_trace_append( file, api, "set_scissor",
+            "{\"x\":0,\"y\":0,\"width\":64,\"height\":64}" );
+    }
+    macrunner_hb_d3d_trace_append( file, api, "set_topology",
+        "{\"topology\":\"trianglelist\"}" );
+
+    if (macrunner_hb_d3d_scenario_has( scenario, "constant_buffer" ))
+        macrunner_hb_d3d_trace_append( file, api, "set_constant_buffer",
+            "{\"slot\":0,\"bytes\":64,\"color\":[64,160,255,255]}" );
+    else if (macrunner_hb_d3d_scenario_has( scenario, "descriptor_heap" ))
+        macrunner_hb_d3d_trace_append( file, api, "create_descriptor_heap",
+            "{\"type\":\"CBV_SRV_UAV\",\"count\":4}" );
+    else if (macrunner_hb_d3d_scenario_has( scenario, "root_signature" ))
+        macrunner_hb_d3d_trace_append( file, api, "create_root_signature",
+            "{\"parameters\":1}" );
+    else if (macrunner_hb_d3d_scenario_has( scenario, "fence_wait" ))
+    {
+        macrunner_hb_d3d_trace_append( file, api, "create_fence", "{\"initial_value\":0}" );
+        macrunner_hb_d3d_trace_append( file, api, "signal", "{\"value\":1}" );
+        macrunner_hb_d3d_trace_append( file, api, "wait_fence", "{\"value\":1}" );
+    }
+    else if (macrunner_hb_d3d_scenario_has( scenario, "barrier_transitions" ))
+        macrunner_hb_d3d_trace_append( file, api, "resource_barrier",
+            "{\"resource\":\"rt0\",\"before\":\"copy_dest\",\"after\":\"render_target\"}" );
+    else if (macrunner_hb_d3d_scenario_has( scenario, "invalid_barrier_negative_test" ))
+        macrunner_hb_d3d_trace_append( file, api, "resource_barrier",
+            "{\"resource\":\"rt0\",\"before\":\"present\",\"after\":\"present\"}" );
+    else if (macrunner_hb_d3d_scenario_has( scenario, "depth_clear" ))
+    {
+        macrunner_hb_d3d_trace_append( file, api, "create_depth_target", "{\"format\":\"d24s8\"}" );
+        macrunner_hb_d3d_trace_append( file, api, "clear_depth", "{\"depth\":1.0,\"stencil\":0}" );
+    }
+    else if (macrunner_hb_d3d_scenario_has( scenario, "blend_state" ))
+        macrunner_hb_d3d_trace_append( file, api, "set_blend_state", "{\"enabled\":true}" );
+    else if (macrunner_hb_d3d_scenario_has( scenario, "rasterizer_state" ))
+        macrunner_hb_d3d_trace_append( file, api, "set_rasterizer_state", "{\"cull\":\"none\"}" );
+    else if (macrunner_hb_d3d_scenario_has( scenario, "sampler_state" ))
+        macrunner_hb_d3d_trace_append( file, api, "set_sampler", "{\"slot\":0,\"filter\":\"linear\"}" );
+    else if (macrunner_hb_d3d_scenario_has( scenario, "texture" ))
+    {
+        macrunner_hb_d3d_trace_append( file, api, "set_shader", "{\"shader\":\"texture-sample\"}" );
+        macrunner_hb_d3d_trace_append( file, api, "set_texture",
+            "{\"width\":2,\"height\":2,\"pixels\":[[255,255,0,255],[0,255,255,255],[255,0,255,255],[255,255,255,255]]}" );
+    }
+    else
+        macrunner_hb_d3d_trace_append( file, api, "set_shader", "{\"shader\":\"vertex-color\"}" );
+
+    macrunner_hb_d3d_trace_append( file, api, "set_vertex_buffer",
+        "{\"vertices\":[{\"position\":[0.0,0.75,0,1],\"color\":[1,0,0,1],\"uv\":[0.5,0.0]},{\"position\":[-0.75,-0.75,0,1],\"color\":[0,1,0,1],\"uv\":[0.0,1.0]},{\"position\":[0.75,-0.75,0,1],\"color\":[0,0,1,1],\"uv\":[1.0,1.0]}]}" );
+    if (macrunner_hb_d3d_scenario_has( scenario, "copy_resource" ))
+        macrunner_hb_d3d_trace_append( file, api, "copy_resource",
+            "{\"src\":\"texture0\",\"dst\":\"texture1\"}" );
+    if (macrunner_hb_d3d_scenario_has( scenario, "indexed" ))
+    {
+        macrunner_hb_d3d_trace_append( file, api, "set_index_buffer", "{\"indices\":[0,1,2]}" );
+        macrunner_hb_d3d_trace_append( file, api, "draw_indexed", "{\"index_count\":3}" );
+    }
+    else
+        macrunner_hb_d3d_trace_append( file, api, "draw", "{\"vertex_count\":3}" );
+    if (macrunner_hb_d3d_scenario_has( scenario, "resize_swapchain" ))
+        macrunner_hb_d3d_trace_append( file, api, "resize_swapchain",
+            "{\"width\":96,\"height\":96,\"buffer_count\":2}" );
+    macrunner_hb_d3d_trace_append( file, api, "present", "{}" );
+    if (macrunner_hb_d3d_scenario_has( scenario, "present_loop_3_frames" ))
+    {
+        macrunner_hb_d3d_trace_append( file, api, "present", "{}" );
+        macrunner_hb_d3d_trace_append( file, api, "present", "{}" );
+    }
+    fclose( file );
+}
+
+static BOOL macrunner_hb_try_synthetic_d3d_semantic( hb_context_t *ctx,
+                                                     const struct macrunner_hb_import_thunk *thunk,
+                                                     const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                     uint64_t *ret )
+{
+    const char *api;
+
+    (void)ctx;
+    (void)args;
+    if (!thunk || !ret) return FALSE;
+    if (!(api = macrunner_hb_synthetic_d3d_api_for_proc( thunk->dll_name, thunk->import_name )))
+        return FALSE;
+
+    macrunner_hb_write_synthetic_d3d_trace( api );
+    RtlSetLastWin32Error( ERROR_SUCCESS );
+    NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+    *ret = 0;
+    TRACE( "MacRunner HyperBridge synthetic D3D import %s!%s ret=%p\n",
+           thunk->dll_name, thunk->import_name, (void *)(uintptr_t)*ret );
+    return TRUE;
+}
+
+static BOOL macrunner_hb_try_library_loader_semantic( hb_context_t *ctx,
+                                                      const struct macrunner_hb_import_thunk *thunk,
+                                                      const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                      uint64_t *ret )
+{
+    const BOOL is_kernel =
+        thunk && (macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+                  macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ));
+    uint64_t native_args[MACRUNNER_HB_IMPORT_ARG_MAX];
+    WCHAR module_name_w[260];
+    char module_name_a[260];
+    char resolved_name[256];
+    char proc_name_buffer[128];
+    void *module_base = NULL;
+    const char *synthetic_dll_name;
+    BOOL is_wide = FALSE;
+    USHORT lookup_machine;
+    USHORT module_machine;
+
+    if (!ctx || !ctx->memory || !thunk || !args || !ret || !is_kernel) return FALSE;
+    memcpy( native_args, args, sizeof(native_args) );
+
+    if (macrunner_hb_strieq( thunk->import_name, "LoadLibraryA" ) ||
+        macrunner_hb_strieq( thunk->import_name, "LoadLibraryW" ) ||
+        macrunner_hb_strieq( thunk->import_name, "LoadLibraryExA" ) ||
+        macrunner_hb_strieq( thunk->import_name, "LoadLibraryExW" ))
+    {
+        const char *module_name_for_lookup;
+        uint64_t synthetic_module;
+
+        is_wide = macrunner_hb_strieq( thunk->import_name, "LoadLibraryW" ) ||
+                  macrunner_hb_strieq( thunk->import_name, "LoadLibraryExW" );
+        if (macrunner_hb_strieq( thunk->import_name, "LoadLibraryExA" ) ||
+            macrunner_hb_strieq( thunk->import_name, "LoadLibraryExW" ))
+        {
+            if (args[1])
+            {
+                RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+                NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+                *ret = 0;
+                return TRUE;
+            }
+        }
+        if (is_wide)
+        {
+            unsigned int i;
+
+            if (!macrunner_hb_read_guest_wstr_buf( ctx, args[0], module_name_w,
+                                                   ARRAY_SIZE(module_name_w) ))
+            {
+                RtlSetLastWin32Error( ERROR_MOD_NOT_FOUND );
+                NtCurrentTeb()->LastStatusValue = STATUS_DLL_NOT_FOUND;
+                *ret = 0;
+                return TRUE;
+            }
+            native_args[0] = (uint64_t)(uintptr_t)module_name_w;
+            module_name_a[0] = 0;
+            for (i = 0; i + 1 < ARRAY_SIZE(module_name_a) && module_name_w[i]; i++)
+            {
+                WCHAR ch = module_name_w[i];
+                module_name_a[i] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
+                module_name_a[i + 1] = 0;
+            }
+        }
+        else
+        {
+            if (!macrunner_hb_read_guest_astr( ctx, args[0], module_name_a, sizeof(module_name_a) ))
+            {
+                RtlSetLastWin32Error( ERROR_MOD_NOT_FOUND );
+                NtCurrentTeb()->LastStatusValue = STATUS_DLL_NOT_FOUND;
+                *ret = 0;
+                return TRUE;
+            }
+            native_args[0] = (uint64_t)(uintptr_t)module_name_a;
+        }
+        module_name_for_lookup = module_name_a;
+        if ((synthetic_module = macrunner_hb_synthetic_d3d_module_handle( module_name_for_lookup )))
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+            *ret = synthetic_module;
+            TRACE( "MacRunner HyperBridge synthetic LoadLibrary %s ret=%p\n",
+                   module_name_for_lookup, (void *)(uintptr_t)*ret );
+            return TRUE;
+        }
+        lookup_machine = macrunner_hb_import_lookup_machine( thunk );
+        module_base = macrunner_hb_find_loaded_module_or_apiset_target( module_name_for_lookup, lookup_machine,
+                                                                        resolved_name, sizeof(resolved_name) );
+        if (!module_base && lookup_machine != current_machine)
+            module_base = macrunner_hb_find_loaded_module_or_apiset_target( module_name_for_lookup, current_machine,
+                                                                            resolved_name, sizeof(resolved_name) );
+        if (!module_base && current_machine != IMAGE_FILE_MACHINE_ARM64 &&
+            lookup_machine != IMAGE_FILE_MACHINE_ARM64)
+            module_base = macrunner_hb_find_loaded_module_or_apiset_target( module_name_for_lookup,
+                                                                            IMAGE_FILE_MACHINE_ARM64,
+                                                                            resolved_name, sizeof(resolved_name) );
+        if (!module_base)
+        {
+            if (macrunner_hb_strieq( module_name_for_lookup, "winmm.dll" ) ||
+                macrunner_hb_strieq( module_name_for_lookup, "xinput1_4.dll" ) ||
+                macrunner_hb_strieq( module_name_for_lookup, "xinput9_1_0.dll" ))
+            {
+                RtlSetLastWin32Error( ERROR_MOD_NOT_FOUND );
+                NtCurrentTeb()->LastStatusValue = STATUS_DLL_NOT_FOUND;
+                *ret = 0;
+            }
+            else
+            {
+                TRACE( "MacRunner HyperBridge semantic %s!%s fallback-native module=%s flags=%p "
+                       "lookup_machine=%04x current_machine=%04x\n",
+                       thunk->dll_name, thunk->import_name, module_name_for_lookup,
+                       (void *)(uintptr_t)args[2], lookup_machine, current_machine );
+                *ret = macrunner_hb_call_arm64_pe_import12_for_ctx( ctx, thunk, native_args );
+            }
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+            *ret = (uint64_t)(uintptr_t)module_base;
+        }
+        TRACE( "MacRunner HyperBridge semantic %s!%s loaded-only module=%s ret=%p\n",
+               thunk->dll_name, thunk->import_name, resolved_name[0] ? resolved_name : module_name_for_lookup,
+               (void *)(uintptr_t)*ret );
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "FreeLibrary" ))
+    {
+        if (!args[0])
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_HANDLE;
+            *ret = 0;
+            return TRUE;
+        }
+        /*
+         * LoadLibraryA/W above returns an existing native counterpart HMODULE
+         * without incrementing Wine loader refcounts. Do not re-enter the loader
+         * from the x64 import callback just to undo a refcount we did not take.
+         */
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        TRACE( "MacRunner HyperBridge semantic %s!FreeLibrary loaded-only module=%p ret=%p\n",
+               thunk->dll_name, (void *)(uintptr_t)args[0], (void *)(uintptr_t)*ret );
+        return TRUE;
+    }
+
+    if (!macrunner_hb_strieq( thunk->import_name, "GetProcAddress" )) return FALSE;
+    if (!args[0])
+    {
+        RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
+        NtCurrentTeb()->LastStatusValue = STATUS_INVALID_HANDLE;
+        *ret = 0;
+        return TRUE;
+    }
+    if (!(args[1] >> 16))
+    {
+        snprintf( proc_name_buffer, sizeof(proc_name_buffer), "#%lu",
+                  (unsigned long)LOWORD(args[1]) );
+    }
+    else
+    {
+        if (!macrunner_hb_read_guest_astr( ctx, args[1], proc_name_buffer, sizeof(proc_name_buffer) ))
+        {
+            RtlSetLastWin32Error( ERROR_PROC_NOT_FOUND );
+            NtCurrentTeb()->LastStatusValue = STATUS_ENTRYPOINT_NOT_FOUND;
+            *ret = 0;
+            return TRUE;
+        }
+        native_args[1] = (uint64_t)(uintptr_t)proc_name_buffer;
+    }
+    if ((synthetic_dll_name = macrunner_hb_synthetic_d3d_module_name( args[0] )))
+    {
+        if (macrunner_hb_synthetic_d3d_api_for_proc( synthetic_dll_name, proc_name_buffer ))
+        {
+            *ret = macrunner_hb_register_synthetic_import_thunk( thunk, args[0],
+                                                                 synthetic_dll_name, proc_name_buffer );
+            if (!*ret)
+            {
+                RtlSetLastWin32Error( ERROR_NOT_ENOUGH_MEMORY );
+                NtCurrentTeb()->LastStatusValue = STATUS_NO_MEMORY;
+                return TRUE;
+            }
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_PROC_NOT_FOUND );
+            NtCurrentTeb()->LastStatusValue = STATUS_ENTRYPOINT_NOT_FOUND;
+            *ret = 0;
+        }
+        TRACE( "MacRunner HyperBridge synthetic GetProcAddress module=%s name=%s ret=%p\n",
+               synthetic_dll_name, proc_name_buffer, (void *)(uintptr_t)*ret );
+        return TRUE;
+    }
+    module_base = (void *)(uintptr_t)args[0];
+    module_machine = macrunner_hb_module_machine( module_base );
+    if (module_machine == IMAGE_FILE_MACHINE_AMD64 || module_machine == IMAGE_FILE_MACHINE_I386)
+    {
+        void *proc;
+
+        if (!(args[1] >> 16))
+            proc = macrunner_hb_export_by_ordinal( module_base, LOWORD(args[1]) );
+        else
+            proc = macrunner_hb_find_named_export( module_base, proc_name_buffer );
+        if (!proc)
+        {
+            RtlSetLastWin32Error( ERROR_PROC_NOT_FOUND );
+            NtCurrentTeb()->LastStatusValue = STATUS_ENTRYPOINT_NOT_FOUND;
+            *ret = 0;
+        }
+        else if (macrunner_hb_address_in_section( module_base, ".hexpthk", (uint64_t)(uintptr_t)proc ))
+        {
+            void *native_proc = macrunner_hb_redirect_arm64x_thunk_to_native( module_base, proc );
+            uint64_t guest_target = 0;
+
+            if (native_proc && native_proc != proc)
+                guest_target = macrunner_hb_register_dynamic_import_thunk( thunk, native_proc,
+                                                                           module_base, proc_name_buffer );
+            if (!guest_target)
+            {
+                RtlSetLastWin32Error( ERROR_NOT_ENOUGH_MEMORY );
+                NtCurrentTeb()->LastStatusValue = STATUS_NO_MEMORY;
+                *ret = 0;
+                TRACE( "MacRunner HyperBridge semantic guest GetProcAddress rejected .hexpthk "
+                       "module=%p name=%s proc=%p native=%p\n",
+                       module_base, proc_name_buffer, proc, native_proc );
+            }
+            else
+            {
+                RtlSetLastWin32Error( ERROR_SUCCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+                *ret = guest_target;
+            }
+        }
+        else
+        {
+            char export_module_name[96];
+            uint64_t guest_target = 0;
+
+            macrunner_hb_get_export_module_name( module_base, export_module_name,
+                                                 sizeof(export_module_name) );
+            if (macrunner_hb_kernel_export_has_local_semantic( export_module_name, proc_name_buffer ))
+                guest_target = macrunner_hb_register_dynamic_import_thunk( thunk, proc,
+                                                                           module_base,
+                                                                           proc_name_buffer );
+            if (guest_target)
+            {
+                RtlSetLastWin32Error( ERROR_SUCCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+                *ret = guest_target;
+                TRACE( "MacRunner HyperBridge semantic guest GetProcAddress wrapped local "
+                       "semantic %s!%s guest=%p raw=%p\n",
+                       export_module_name, proc_name_buffer, (void *)(uintptr_t)guest_target, proc );
+            }
+            else
+            {
+                RtlSetLastWin32Error( ERROR_SUCCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+                *ret = (uint64_t)(uintptr_t)proc;
+            }
+        }
+        TRACE( "MacRunner HyperBridge semantic guest GetProcAddress module=%p machine=%04x name=%s ret=%p\n",
+               module_base, module_machine, proc_name_buffer, (void *)(uintptr_t)*ret );
+        return TRUE;
+    }
+    *ret = macrunner_hb_call_arm64_pe_import12_for_ctx( ctx, thunk, native_args );
+    if (*ret && macrunner_hb_pc_is_native_pe_builtin( *ret, &module_base ))
+    {
+        uint64_t guest_target = macrunner_hb_register_dynamic_import_thunk( thunk, (void *)(uintptr_t)*ret,
+                                                                            module_base,
+                                                                            proc_name_buffer );
+        if (!guest_target)
+        {
+            RtlSetLastWin32Error( ERROR_NOT_ENOUGH_MEMORY );
+            NtCurrentTeb()->LastStatusValue = STATUS_NO_MEMORY;
+            *ret = 0;
+            return TRUE;
+        }
+        *ret = guest_target;
+    }
+
+    TRACE( "MacRunner HyperBridge semantic %s!GetProcAddress module=%p name=%s ret=%p\n",
+           thunk->dll_name, (void *)(uintptr_t)args[0], proc_name_buffer,
+           (void *)(uintptr_t)*ret );
+    return TRUE;
+}
+
+static BOOL macrunner_hb_try_environment_semantic( hb_context_t *ctx,
+                                                   const struct macrunner_hb_import_thunk *thunk,
+                                                   const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                   uint64_t *ret )
+{
+    char name[128];
+    char value[1024];
+    const char *env;
+    DWORD size = (DWORD)args[2];
+    DWORD len;
+    BOOL wide;
+    BOOL set_call;
+
+    if (!ctx || !ctx->memory || !thunk || !args || !ret) return FALSE;
+    if (macrunner_hb_strieq( thunk->dll_name, "ntdll.dll" ))
+    {
+        if (macrunner_hb_strieq( thunk->import_name, "RtlGetLastWin32Error" ))
+        {
+            *ret = NtCurrentTeb()->LastErrorValue;
+            return TRUE;
+        }
+
+        if (macrunner_hb_strieq( thunk->import_name, "RtlSetLastWin32Error" ))
+        {
+            NtCurrentTeb()->LastErrorValue = (DWORD)args[0];
+            *ret = 0;
+            return TRUE;
+        }
+
+        return FALSE;
+    }
+
+    if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
+        return FALSE;
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetEnvironmentStringsW" ))
+    {
+        RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb->ProcessParameters;
+        static WCHAR empty_environmentW[2];
+
+        *ret = (uint64_t)(uintptr_t)((params && params->Environment) ?
+                                     params->Environment : empty_environmentW);
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetEnvironmentStringsA" ))
+    {
+        static char empty_environmentA[2];
+
+        *ret = (uint64_t)(uintptr_t)empty_environmentA;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "FreeEnvironmentStringsW" ) ||
+        macrunner_hb_strieq( thunk->import_name, "FreeEnvironmentStringsA" ))
+    {
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetCommandLineW" ))
+    {
+        RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb->ProcessParameters;
+        static WCHAR empty_command_lineW;
+
+        *ret = (uint64_t)(uintptr_t)((params && params->CommandLine.Buffer) ?
+                                     params->CommandLine.Buffer : &empty_command_lineW);
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetCommandLineA" ))
+    {
+        RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb->ProcessParameters;
+        static char command_lineA[32768];
+        unsigned int i, len = 0;
+
+        command_lineA[0] = 0;
+        if (params && params->CommandLine.Buffer)
+        {
+            len = params->CommandLine.Length / sizeof(WCHAR);
+            if (len >= sizeof(command_lineA)) len = sizeof(command_lineA) - 1;
+            for (i = 0; i < len; i++) command_lineA[i] = (char)(params->CommandLine.Buffer[i] & 0x7f);
+            command_lineA[len] = 0;
+        }
+        *ret = (uint64_t)(uintptr_t)command_lineA;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetModuleFileNameW" ) ||
+        macrunner_hb_strieq( thunk->import_name, "GetModuleFileNameA" ))
+    {
+        RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb->ProcessParameters;
+        const UNICODE_STRING *module_name = NULL;
+        LDR_DATA_TABLE_ENTRY *ldr = NULL;
+        DWORD cap = (DWORD)args[2];
+        DWORD i, len, to_copy;
+        BOOL is_wide = macrunner_hb_strieq( thunk->import_name, "GetModuleFileNameW" );
+
+        if (!args[1] || !cap)
+        {
+            RtlSetLastWin32Error( ERROR_INSUFFICIENT_BUFFER );
+            NtCurrentTeb()->LastStatusValue = STATUS_BUFFER_TOO_SMALL;
+            *ret = 0;
+            return TRUE;
+        }
+
+        if (args[0])
+        {
+            ldr = macrunner_hb_ldr_entry_from_module( (void *)(uintptr_t)args[0] );
+            if (!ldr)
+            {
+                RtlSetLastWin32Error( ERROR_MOD_NOT_FOUND );
+                NtCurrentTeb()->LastStatusValue = STATUS_DLL_NOT_FOUND;
+                *ret = 0;
+                return TRUE;
+            }
+            module_name = &ldr->FullDllName;
+        }
+        else if (params) module_name = &params->ImagePathName;
+
+        if (!module_name || !module_name->Buffer)
+        {
+            RtlSetLastWin32Error( ERROR_FILE_NOT_FOUND );
+            NtCurrentTeb()->LastStatusValue = STATUS_DLL_NOT_FOUND;
+            *ret = 0;
+            return TRUE;
+        }
+
+        len = module_name->Length / sizeof(WCHAR);
+        to_copy = len < cap - 1 ? len : cap - 1;
+        if (is_wide)
+        {
+            for (i = 0; i < to_copy; i++)
+            {
+                if (hb_memory_write_u16( ctx->memory, (hb_gva_t)args[1] + i * sizeof(WCHAR),
+                                         module_name->Buffer[i] ) != HB_OK)
+                {
+                    RtlSetLastWin32Error( ERROR_NOACCESS );
+                    NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                    *ret = 0;
+                    return TRUE;
+                }
+            }
+            hb_memory_write_u16( ctx->memory, (hb_gva_t)args[1] + to_copy * sizeof(WCHAR), 0 );
+        }
+        else
+        {
+            for (i = 0; i < to_copy; i++)
+            {
+                WCHAR wch = module_name->Buffer[i];
+                uint8_t ch = (wch >= 0x20 && wch < 0x7f) ? (uint8_t)wch : '?';
+
+                if (hb_memory_write_u8( ctx->memory, (hb_gva_t)args[1] + i, ch ) != HB_OK)
+                {
+                    RtlSetLastWin32Error( ERROR_NOACCESS );
+                    NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                    *ret = 0;
+                    return TRUE;
+                }
+            }
+            hb_memory_write_u8( ctx->memory, (hb_gva_t)args[1] + to_copy, 0 );
+        }
+        if (to_copy < len)
+        {
+            RtlSetLastWin32Error( ERROR_INSUFFICIENT_BUFFER );
+            NtCurrentTeb()->LastStatusValue = STATUS_BUFFER_TOO_SMALL;
+            *ret = cap;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+            *ret = len;
+        }
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "QueryPerformanceFrequency" ))
+    {
+        if (!args[0] || hb_memory_write_u64( ctx->memory, (hb_gva_t)args[0], 1000000000ULL ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "QueryPerformanceCounter" ))
+    {
+        struct timeval tv;
+        uint64_t ticks;
+
+        if (!args[0])
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        gettimeofday( &tv, NULL );
+        ticks = (uint64_t)tv.tv_sec * 1000000000ULL + (uint64_t)tv.tv_usec * 1000ULL;
+        if (hb_memory_write_u64( ctx->memory, (hb_gva_t)args[0], ticks ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetSystemTimePreciseAsFileTime" ) ||
+        macrunner_hb_strieq( thunk->import_name, "GetSystemTimeAsFileTime" ))
+    {
+        struct timeval tv;
+        uint64_t filetime;
+
+        if (!args[0])
+        {
+            *ret = 0;
+            return TRUE;
+        }
+        gettimeofday( &tv, NULL );
+        filetime = ((uint64_t)tv.tv_sec + 11644473600ULL) * 10000000ULL +
+                   (uint64_t)tv.tv_usec * 10ULL;
+        hb_memory_write_u32( ctx->memory, (hb_gva_t)args[0], (DWORD)filetime );
+        hb_memory_write_u32( ctx->memory, (hb_gva_t)args[0] + sizeof(DWORD), (DWORD)(filetime >> 32) );
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetSystemTime" ) ||
+        macrunner_hb_strieq( thunk->import_name, "GetLocalTime" ))
+    {
+        struct timeval tv;
+        time_t seconds;
+        struct tm tm_buf;
+        struct tm *tm;
+        SYSTEMTIME st;
+        BOOL local = macrunner_hb_strieq( thunk->import_name, "GetLocalTime" );
+
+        if (!args[0])
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = 0;
+            return TRUE;
+        }
+        gettimeofday( &tv, NULL );
+        seconds = (time_t)tv.tv_sec;
+        tm = local ? localtime_r( &seconds, &tm_buf ) : gmtime_r( &seconds, &tm_buf );
+        if (!tm)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = 0;
+            return TRUE;
+        }
+        st.wYear = tm->tm_year + 1900;
+        st.wMonth = tm->tm_mon + 1;
+        st.wDayOfWeek = tm->tm_wday;
+        st.wDay = tm->tm_mday;
+        st.wHour = tm->tm_hour;
+        st.wMinute = tm->tm_min;
+        st.wSecond = tm->tm_sec;
+        st.wMilliseconds = tv.tv_usec / 1000;
+        if (hb_memory_write( ctx->memory, (hb_gva_t)args[0], &st, sizeof(st) ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = 0;
+            return TRUE;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "SystemTimeToFileTime" ))
+    {
+        SYSTEMTIME st;
+        struct tm tm_buf;
+        time_t seconds;
+        uint64_t filetime;
+
+        if (!args[0] || !args[1] ||
+            hb_memory_read( ctx->memory, (hb_gva_t)args[0], &st, sizeof(st) ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        memset( &tm_buf, 0, sizeof(tm_buf) );
+        tm_buf.tm_year = st.wYear - 1900;
+        tm_buf.tm_mon = st.wMonth - 1;
+        tm_buf.tm_mday = st.wDay;
+        tm_buf.tm_hour = st.wHour;
+        tm_buf.tm_min = st.wMinute;
+        tm_buf.tm_sec = st.wSecond;
+        tm_buf.tm_isdst = -1;
+        seconds = timegm( &tm_buf );
+        if (seconds == (time_t)-1)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = FALSE;
+            return TRUE;
+        }
+        filetime = ((uint64_t)seconds + 11644473600ULL) * 10000000ULL +
+                   (uint64_t)st.wMilliseconds * 10000ULL;
+        if (hb_memory_write_u32( ctx->memory, (hb_gva_t)args[1], (DWORD)filetime ) != HB_OK ||
+            hb_memory_write_u32( ctx->memory, (hb_gva_t)args[1] + sizeof(DWORD),
+                                 (DWORD)(filetime >> 32) ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "FileTimeToSystemTime" ))
+    {
+        DWORD low, high;
+        uint64_t filetime;
+        time_t seconds;
+        struct tm tm_buf;
+        struct tm *tm;
+        SYSTEMTIME st;
+
+        if (!args[0] || !args[1] ||
+            hb_memory_read_u32( ctx->memory, (hb_gva_t)args[0], &low ) != HB_OK ||
+            hb_memory_read_u32( ctx->memory, (hb_gva_t)args[0] + sizeof(DWORD), &high ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        filetime = ((uint64_t)high << 32) | low;
+        seconds = (time_t)(filetime / 10000000ULL - 11644473600ULL);
+        tm = gmtime_r( &seconds, &tm_buf );
+        if (!tm)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = FALSE;
+            return TRUE;
+        }
+        st.wYear = tm->tm_year + 1900;
+        st.wMonth = tm->tm_mon + 1;
+        st.wDayOfWeek = tm->tm_wday;
+        st.wDay = tm->tm_mday;
+        st.wHour = tm->tm_hour;
+        st.wMinute = tm->tm_min;
+        st.wSecond = tm->tm_sec;
+        st.wMilliseconds = (filetime / 10000ULL) % 1000ULL;
+        if (hb_memory_write( ctx->memory, (hb_gva_t)args[1], &st, sizeof(st) ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetTempPathW" ) ||
+        macrunner_hb_strieq( thunk->import_name, "GetTempPath2W" ) ||
+        macrunner_hb_strieq( thunk->import_name, "GetTempPathA" ) ||
+        macrunner_hb_strieq( thunk->import_name, "GetTempPath2A" ))
+    {
+        static const char temp_path[] = "C:\\windows\\temp\\";
+        DWORD cap = (DWORD)args[0];
+        DWORD path_len = sizeof(temp_path) - 1;
+        BOOL is_wide = macrunner_hb_strieq( thunk->import_name, "GetTempPathW" ) ||
+                       macrunner_hb_strieq( thunk->import_name, "GetTempPath2W" );
+        DWORD i;
+
+        if (!args[1] || cap <= path_len)
+        {
+            *ret = path_len + 1;
+            return TRUE;
+        }
+        if (is_wide)
+        {
+            for (i = 0; i <= path_len; i++)
+                hb_memory_write_u16( ctx->memory, (hb_gva_t)args[1] + i * sizeof(WCHAR),
+                                     (WCHAR)temp_path[i] );
+        }
+        else
+        {
+            for (i = 0; i <= path_len; i++)
+                hb_memory_write_u8( ctx->memory, (hb_gva_t)args[1] + i, (uint8_t)temp_path[i] );
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = path_len;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetACP" ))
+    {
+        *ret = 1252;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetOEMCP" ))
+    {
+        *ret = 437;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "AreFileApisANSI" ))
+    {
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "IsValidCodePage" ))
+    {
+        UINT codepage = (UINT)args[0];
+
+        *ret = (codepage == 0 /* CP_ACP */ || codepage == 1 /* CP_OEMCP */ ||
+                codepage == 1252 || codepage == 437 || codepage == 65001 /* CP_UTF8 */);
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetCPInfo" ))
+    {
+        UINT codepage = (UINT)args[0];
+        CPINFO info;
+        hb_result_t write;
+
+        if (codepage == 0) codepage = 1252;
+        else if (codepage == 1) codepage = 437;
+
+        if (!args[1] || (codepage != 1252 && codepage != 437 && codepage != 65001))
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = FALSE;
+            return TRUE;
+        }
+
+        memset( &info, 0, sizeof(info) );
+        info.MaxCharSize = codepage == 65001 ? 4 : 1;
+        info.DefaultChar[0] = '?';
+        write = hb_memory_write( ctx->memory, (hb_gva_t)args[1], &info, sizeof(info) );
+        if (write != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "MultiByteToWideChar" ))
+    {
+        int cb = (int)(int32_t)args[3];
+        int out_cap = (int)(int32_t)args[5];
+        uint64_t src = args[2], dst = args[4];
+        size_t count = 0, i;
+        BOOL nul_terminated = cb == -1;
+
+        if (!src || cb == 0 || cb < -1)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = 0;
+            return TRUE;
+        }
+
+        if (nul_terminated)
+        {
+            for (count = 0; count < 32768; count++)
+            {
+                uint8_t ch = 0;
+                if (hb_memory_read_u8( ctx->memory, (hb_gva_t)src + count, &ch ) != HB_OK)
+                {
+                    RtlSetLastWin32Error( ERROR_NOACCESS );
+                    NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                    *ret = 0;
+                    return TRUE;
+                }
+                if (!ch) { count++; break; }
+            }
+        }
+        else count = (size_t)cb;
+
+        if (!dst || !out_cap)
+        {
+            *ret = count;
+            return TRUE;
+        }
+        if (out_cap < (int)count)
+        {
+            RtlSetLastWin32Error( ERROR_INSUFFICIENT_BUFFER );
+            NtCurrentTeb()->LastStatusValue = STATUS_BUFFER_TOO_SMALL;
+            *ret = 0;
+            return TRUE;
+        }
+        for (i = 0; i < count; i++)
+        {
+            uint8_t ch = 0;
+            WCHAR wch;
+
+            if (hb_memory_read_u8( ctx->memory, (hb_gva_t)src + i, &ch ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = 0;
+                return TRUE;
+            }
+            wch = (ch < 0x80) ? ch : '?';
+            if (hb_memory_write_u16( ctx->memory, (hb_gva_t)dst + i * sizeof(WCHAR), wch ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = 0;
+                return TRUE;
+            }
+            if (nul_terminated && !ch) break;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = count;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "WideCharToMultiByte" ))
+    {
+        int cch = (int)(int32_t)args[3];
+        int out_cap = (int)(int32_t)args[5];
+        uint64_t src = args[2], dst = args[4];
+        size_t count = 0, i;
+        BOOL nul_terminated = cch == -1;
+        BOOL used_default = FALSE;
+
+        if (!src || cch == 0 || cch < -1)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = 0;
+            return TRUE;
+        }
+
+        if (nul_terminated)
+        {
+            for (count = 0; count < 32768; count++)
+            {
+                uint16_t ch = 0;
+                if (hb_memory_read_u16( ctx->memory, (hb_gva_t)src + count * sizeof(WCHAR), &ch ) != HB_OK)
+                {
+                    RtlSetLastWin32Error( ERROR_NOACCESS );
+                    NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                    *ret = 0;
+                    return TRUE;
+                }
+                if (!ch) { count++; break; }
+            }
+        }
+        else count = (size_t)cch;
+
+        if (!dst || !out_cap)
+        {
+            *ret = count;
+            return TRUE;
+        }
+        if (out_cap < (int)count)
+        {
+            RtlSetLastWin32Error( ERROR_INSUFFICIENT_BUFFER );
+            NtCurrentTeb()->LastStatusValue = STATUS_BUFFER_TOO_SMALL;
+            *ret = 0;
+            return TRUE;
+        }
+        for (i = 0; i < count; i++)
+        {
+            uint16_t wch = 0;
+            uint8_t ch;
+
+            if (hb_memory_read_u16( ctx->memory, (hb_gva_t)src + i * sizeof(WCHAR), &wch ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = 0;
+                return TRUE;
+            }
+            if (wch < 0x80) ch = (uint8_t)wch;
+            else
+            {
+                ch = '?';
+                used_default = TRUE;
+            }
+            if (hb_memory_write_u8( ctx->memory, (hb_gva_t)dst + i, ch ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = 0;
+                return TRUE;
+            }
+            if (nul_terminated && !wch) break;
+        }
+        if (args[7]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[7], used_default );
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = count;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetStringTypeW" ))
+    {
+        DWORD type = (DWORD)args[0];
+        uint64_t src = args[1], dst = args[3];
+        int cch = (int)(int32_t)args[2];
+        size_t count = 0, i;
+
+        if (!src || !dst || cch == 0 || cch < -1)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = FALSE;
+            return TRUE;
+        }
+
+        if (cch == -1)
+        {
+            for (count = 0; count < 32768; count++)
+            {
+                uint16_t wch = 0;
+                if (hb_memory_read_u16( ctx->memory, (hb_gva_t)src + count * sizeof(WCHAR), &wch ) != HB_OK)
+                {
+                    RtlSetLastWin32Error( ERROR_NOACCESS );
+                    NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                    *ret = FALSE;
+                    return TRUE;
+                }
+                if (!wch) { count++; break; }
+            }
+        }
+        else count = (size_t)cch;
+
+        for (i = 0; i < count; i++)
+        {
+            uint16_t wch = 0;
+            WORD flags = 0;
+
+            if (hb_memory_read_u16( ctx->memory, (hb_gva_t)src + i * sizeof(WCHAR), &wch ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = FALSE;
+                return TRUE;
+            }
+            if (type == CT_CTYPE1)
+            {
+                if (wch >= 'A' && wch <= 'Z') flags |= C1_UPPER | C1_ALPHA;
+                else if (wch >= 'a' && wch <= 'z') flags |= C1_LOWER | C1_ALPHA;
+                if (wch >= '0' && wch <= '9') flags |= C1_DIGIT;
+                if ((wch >= '0' && wch <= '9') || (wch >= 'A' && wch <= 'F') || (wch >= 'a' && wch <= 'f'))
+                    flags |= C1_XDIGIT;
+                if (wch == ' ' || wch == '\t') flags |= C1_BLANK;
+                if (wch == ' ' || wch == '\t' || wch == '\r' || wch == '\n' || wch == '\f' || wch == '\v')
+                    flags |= C1_SPACE;
+                if (wch < 0x20 || wch == 0x7f) flags |= C1_CNTRL;
+                if (wch < 0x80 && !flags && wch) flags |= C1_PUNCT;
+            }
+            if (hb_memory_write_u16( ctx->memory, (hb_gva_t)dst + i * sizeof(WORD), flags ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = FALSE;
+                return TRUE;
+            }
+            if (cch == -1 && !wch) break;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "LCMapStringEx" ))
+    {
+        DWORD flags = (DWORD)args[1];
+        uint64_t src = args[2], dst = args[4];
+        int cch_src = (int)(int32_t)args[3];
+        int cch_dst = (int)(int32_t)args[5];
+        BOOL sort_key = !!(flags & LCMAP_SORTKEY);
+        size_t count = 0, i;
+
+        if (!src || cch_src == 0 || cch_src < -1 || cch_dst < 0)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = 0;
+            return TRUE;
+        }
+
+        if (cch_src == -1)
+        {
+            for (count = 0; count < 32768; count++)
+            {
+                uint16_t wch = 0;
+                if (hb_memory_read_u16( ctx->memory, (hb_gva_t)src + count * sizeof(WCHAR), &wch ) != HB_OK)
+                {
+                    RtlSetLastWin32Error( ERROR_NOACCESS );
+                    NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                    *ret = 0;
+                    return TRUE;
+                }
+                if (!wch) { count++; break; }
+            }
+        }
+        else count = (size_t)cch_src;
+
+        if (!dst || !cch_dst)
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+            *ret = count;
+            return TRUE;
+        }
+        if ((size_t)cch_dst < count)
+        {
+            RtlSetLastWin32Error( ERROR_INSUFFICIENT_BUFFER );
+            NtCurrentTeb()->LastStatusValue = STATUS_BUFFER_TOO_SMALL;
+            *ret = 0;
+            return TRUE;
+        }
+
+        for (i = 0; i < count; i++)
+        {
+            uint16_t wch = 0;
+            WCHAR mapped;
+
+            if (hb_memory_read_u16( ctx->memory, (hb_gva_t)src + i * sizeof(WCHAR), &wch ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = 0;
+                return TRUE;
+            }
+            mapped = wch;
+            if (flags & LCMAP_LOWERCASE) mapped = macrunner_hb_tolower_wchar( mapped );
+            if (flags & LCMAP_UPPERCASE) mapped = macrunner_hb_toupper_wchar( mapped );
+
+            if (sort_key)
+            {
+                uint8_t ch = mapped < 0x80 ? (uint8_t)mapped : '?';
+                if (hb_memory_write_u8( ctx->memory, (hb_gva_t)dst + i, ch ) != HB_OK)
+                {
+                    RtlSetLastWin32Error( ERROR_NOACCESS );
+                    NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                    *ret = 0;
+                    return TRUE;
+                }
+            }
+            else if (hb_memory_write_u16( ctx->memory, (hb_gva_t)dst + i * sizeof(WCHAR), mapped ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = 0;
+                return TRUE;
+            }
+            if (cch_src == -1 && !wch) break;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = count;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetStartupInfoW" ))
+    {
+        RTL_USER_PROCESS_PARAMETERS *params;
+        STARTUPINFOW info;
+        hb_result_t write;
+
+        memset( &info, 0, sizeof(info) );
+        params = NtCurrentTeb()->Peb->ProcessParameters;
+        if (params)
+        {
+            info.cb              = sizeof(info);
+            info.lpDesktop       = params->Desktop.Buffer;
+            info.lpTitle         = params->WindowTitle.Buffer;
+            info.dwX             = params->dwX;
+            info.dwY             = params->dwY;
+            info.dwXSize         = params->dwXSize;
+            info.dwYSize         = params->dwYSize;
+            info.dwXCountChars   = params->dwXCountChars;
+            info.dwYCountChars   = params->dwYCountChars;
+            info.dwFillAttribute = params->dwFillAttribute;
+            info.dwFlags         = params->dwFlags;
+            info.wShowWindow     = params->wShowWindow;
+            info.cbReserved2     = params->RuntimeInfo.MaximumLength;
+            info.lpReserved2     = params->RuntimeInfo.MaximumLength ? (void *)params->RuntimeInfo.Buffer : NULL;
+            if (params->dwFlags & STARTF_USESTDHANDLES)
+            {
+                info.hStdInput   = params->hStdInput;
+                info.hStdOutput  = params->hStdOutput;
+                info.hStdError   = params->hStdError;
+            }
+        }
+
+        write = hb_memory_write( ctx->memory, (hb_gva_t)args[0], &info, sizeof(info) );
+        if (write != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+        }
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetStartupInfoA" ))
+    {
+        RTL_USER_PROCESS_PARAMETERS *params;
+        STARTUPINFOA info;
+        hb_result_t write;
+
+        memset( &info, 0, sizeof(info) );
+        params = NtCurrentTeb()->Peb->ProcessParameters;
+        if (params)
+        {
+            info.cb              = sizeof(info);
+            info.dwX             = params->dwX;
+            info.dwY             = params->dwY;
+            info.dwXSize         = params->dwXSize;
+            info.dwYSize         = params->dwYSize;
+            info.dwXCountChars   = params->dwXCountChars;
+            info.dwYCountChars   = params->dwYCountChars;
+            info.dwFillAttribute = params->dwFillAttribute;
+            info.dwFlags         = params->dwFlags;
+            info.wShowWindow     = params->wShowWindow;
+            info.cbReserved2     = params->RuntimeInfo.MaximumLength;
+            info.lpReserved2     = params->RuntimeInfo.MaximumLength ? (void *)params->RuntimeInfo.Buffer : NULL;
+            if (params->dwFlags & STARTF_USESTDHANDLES)
+            {
+                info.hStdInput   = params->hStdInput;
+                info.hStdOutput  = params->hStdOutput;
+                info.hStdError   = params->hStdError;
+            }
+            else
+            {
+                info.hStdInput   = INVALID_HANDLE_VALUE;
+                info.hStdOutput  = INVALID_HANDLE_VALUE;
+                info.hStdError   = INVALID_HANDLE_VALUE;
+            }
+        }
+
+        write = hb_memory_write( ctx->memory, (hb_gva_t)args[0], &info, sizeof(info) );
+        if (write != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+        }
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (!macrunner_hb_strieq( thunk->import_name, "GetEnvironmentVariableA" ) &&
+        !macrunner_hb_strieq( thunk->import_name, "GetEnvironmentVariableW" ) &&
+        !macrunner_hb_strieq( thunk->import_name, "SetEnvironmentVariableA" ) &&
+        !macrunner_hb_strieq( thunk->import_name, "SetEnvironmentVariableW" ))
+        return FALSE;
+
+    set_call = macrunner_hb_strieq( thunk->import_name, "SetEnvironmentVariableA" ) ||
+               macrunner_hb_strieq( thunk->import_name, "SetEnvironmentVariableW" );
+    wide = macrunner_hb_strieq( thunk->import_name, "GetEnvironmentVariableW" ) ||
+           macrunner_hb_strieq( thunk->import_name, "SetEnvironmentVariableW" );
+    if (!(wide ? macrunner_hb_read_guest_wstr( ctx, args[0], name, sizeof(name) ) :
+                 macrunner_hb_read_guest_astr( ctx, args[0], name, sizeof(name) )))
+    {
+        RtlSetLastWin32Error( ERROR_ENVVAR_NOT_FOUND );
+        NtCurrentTeb()->LastStatusValue = STATUS_VARIABLE_NOT_FOUND;
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (set_call)
+    {
+        if (!args[1])
+        {
+            unsetenv( name );
+        }
+        else
+        {
+            if (!(wide ? macrunner_hb_read_guest_wstr( ctx, args[1], value, sizeof(value) ) :
+                         macrunner_hb_read_guest_astr( ctx, args[1], value, sizeof(value) )))
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = FALSE;
+                return TRUE;
+            }
+            setenv( name, value, 1 );
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    env = getenv( name );
+    if (!env)
+    {
+        RtlSetLastWin32Error( ERROR_ENVVAR_NOT_FOUND );
+        NtCurrentTeb()->LastStatusValue = STATUS_VARIABLE_NOT_FOUND;
+        *ret = 0;
+        return TRUE;
+    }
+
+    macrunner_hb_copy_cstr( value, sizeof(value), env );
+    len = strlen(value);
+    if (!args[1] || size <= len)
+    {
+        *ret = len + 1;
+        return TRUE;
+    }
+
+    if (wide)
+    {
+        WCHAR wvalue[1024];
+        DWORD i;
+
+        for (i = 0; i <= len && i < ARRAY_SIZE(wvalue); i++) wvalue[i] = (unsigned char)value[i];
+        if (hb_memory_write( ctx->memory, (hb_gva_t)args[1], wvalue, (len + 1) * sizeof(WCHAR) ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = 0;
+            return TRUE;
+        }
+    }
+    else if (hb_memory_write( ctx->memory, (hb_gva_t)args[1], value, len + 1 ) != HB_OK)
+    {
+        RtlSetLastWin32Error( ERROR_NOACCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+        *ret = 0;
+        return TRUE;
+    }
+
+    RtlSetLastWin32Error( ERROR_SUCCESS );
+    NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+    *ret = len;
+    return TRUE;
+}
+
+static size_t macrunner_hb_wcslen_local( const WCHAR *str )
+{
+    const WCHAR *p = str;
+
+    if (!p) return 0;
+    while (*p) p++;
+    return p - str;
+}
+
+static BOOL macrunner_hb_write_int_ptr( const uint64_t ptr, int value )
+{
+    SIZE_T written = 0;
+
+    return NtWriteVirtualMemory( GetCurrentProcess(), (void *)(uintptr_t)ptr,
+                                 &value, sizeof(value), &written ) == STATUS_SUCCESS &&
+           written == sizeof(value);
+}
+
+static WCHAR **macrunner_hb_command_line_to_argvw( const WCHAR *cmdline, int *argc_out )
+{
+    int qcount, bcount;
+    const WCHAR *s;
+    WCHAR **argv;
+    DWORD argc;
+    WCHAR *d;
+
+    if (!cmdline || !argc_out)
+    {
+        NtCurrentTeb()->LastErrorValue = ERROR_INVALID_PARAMETER;
+        return NULL;
+    }
+
+    if (!*cmdline)
+    {
+        RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb->ProcessParameters;
+        static const WCHAR empty_imageW;
+        const WCHAR *image = (params && params->ImagePathName.Buffer) ?
+                             params->ImagePathName.Buffer : &empty_imageW;
+        size_t len = (params && params->ImagePathName.Buffer) ?
+                     params->ImagePathName.Length / sizeof(WCHAR) : 0;
+        size_t size = sizeof(WCHAR *) * 2 + (len + 1) * sizeof(WCHAR);
+        WCHAR *dst;
+        size_t i;
+
+        if (!(argv = malloc( size ))) return NULL;
+        if (!macrunner_hb_local_heap_remember( argv ))
+        {
+            free( argv );
+            return NULL;
+        }
+        dst = (WCHAR *)(argv + 2);
+        argv[0] = dst;
+        argv[1] = NULL;
+        for (i = 0; i < len; i++) dst[i] = image[i];
+        dst[len] = 0;
+        *argc_out = 1;
+        return argv;
+    }
+
+    argc = 1;
+    s = cmdline;
+    if (*s == '"')
+    {
+        s++;
+        while (*s)
+            if (*s++ == '"')
+                break;
+    }
+    else
+    {
+        while (*s && *s != ' ' && *s != '\t')
+            s++;
+    }
+    while (*s == ' ' || *s == '\t')
+        s++;
+    if (*s)
+        argc++;
+
+    qcount = bcount = 0;
+    while (*s)
+    {
+        if ((*s == ' ' || *s == '\t') && qcount == 0)
+        {
+            while (*s == ' ' || *s == '\t')
+                s++;
+            if (*s)
+                argc++;
+            bcount = 0;
+        }
+        else if (*s == '\\')
+        {
+            bcount++;
+            s++;
+        }
+        else if (*s == '"')
+        {
+            if ((bcount & 1) == 0)
+                qcount++;
+            s++;
+            bcount = 0;
+            while (*s == '"')
+            {
+                qcount++;
+                s++;
+            }
+            qcount = qcount % 3;
+            if (qcount == 2)
+                qcount = 0;
+        }
+        else
+        {
+            bcount = 0;
+            s++;
+        }
+    }
+
+    argv = malloc( (argc + 1) * sizeof(WCHAR *) +
+                   (macrunner_hb_wcslen_local( cmdline ) + 1) * sizeof(WCHAR) );
+    if (!argv) return NULL;
+    if (!macrunner_hb_local_heap_remember( argv ))
+    {
+        free( argv );
+        return NULL;
+    }
+
+    argv[0] = d = (WCHAR *)(argv + argc + 1);
+    s = cmdline;
+    while ((*d++ = *s++)) {}
+    d = argv[0];
+    argc = 1;
+    if (*d == '"')
+    {
+        s = d + 1;
+        while (*s)
+        {
+            if (*s == '"')
+            {
+                s++;
+                break;
+            }
+            *d++ = *s++;
+        }
+    }
+    else
+    {
+        while (*d && *d != ' ' && *d != '\t')
+            d++;
+        s = d;
+        if (*s)
+            s++;
+    }
+    *d++ = 0;
+    while (*s == ' ' || *s == '\t')
+        s++;
+    if (!*s)
+    {
+        argv[argc] = NULL;
+        *argc_out = argc;
+        return argv;
+    }
+
+    argv[argc++] = d;
+    qcount = bcount = 0;
+    while (*s)
+    {
+        if ((*s == ' ' || *s == '\t') && qcount == 0)
+        {
+            *d++ = 0;
+            bcount = 0;
+            do {
+                s++;
+            } while (*s == ' ' || *s == '\t');
+            if (*s)
+                argv[argc++] = d;
+        }
+        else if (*s == '\\')
+        {
+            *d++ = *s++;
+            bcount++;
+        }
+        else if (*s == '"')
+        {
+            if ((bcount & 1) == 0)
+            {
+                d -= bcount / 2;
+                qcount++;
+            }
+            else
+            {
+                d = d - bcount / 2 - 1;
+                *d++ = '"';
+            }
+            s++;
+            bcount = 0;
+            while (*s == '"')
+            {
+                if (++qcount == 3)
+                {
+                    *d++ = '"';
+                    qcount = 0;
+                }
+                s++;
+            }
+            if (qcount == 2)
+                qcount = 0;
+        }
+        else
+        {
+            *d++ = *s++;
+            bcount = 0;
+        }
+    }
+    *d = 0;
+    argv[argc] = NULL;
+    *argc_out = argc;
+    return argv;
+}
+
+static BOOL macrunner_hb_try_command_line_semantic( hb_context_t *ctx,
+                                                    const struct macrunner_hb_import_thunk *thunk,
+                                                    const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                    uint64_t *ret )
+{
+    WCHAR **argv;
+    int argc = 0;
+
+    if (!ctx || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_strieq( thunk->import_name, "CommandLineToArgvW" )) return FALSE;
+    if (!macrunner_hb_strieq( thunk->dll_name, "shell32.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "shcore.dll" ))
+        return FALSE;
+
+    argv = macrunner_hb_command_line_to_argvw( (const WCHAR *)(uintptr_t)args[0], &argc );
+    if (argv && args[1] && !macrunner_hb_write_int_ptr( args[1], argc ))
+    {
+        if (macrunner_hb_local_heap_forget( argv )) free( argv );
+        argv = NULL;
+        NtCurrentTeb()->LastErrorValue = ERROR_INVALID_PARAMETER;
+    }
+
+    *ret = (uint64_t)(uintptr_t)argv;
+    TRACE( "MacRunner HyperBridge semantic %s!CommandLineToArgvW cmd=%p argc=%d ret=%p\n",
+           thunk->dll_name, (void *)(uintptr_t)args[0], argc, argv );
+    return TRUE;
+}
+
+static BOOL macrunner_hb_read_guest_path( hb_context_t *ctx, uint64_t addr, BOOL ansi,
+                                          char *out, size_t out_size )
+{
+    return ansi ? macrunner_hb_read_guest_astr( ctx, addr, out, out_size ) :
+                  macrunner_hb_read_guest_wstr( ctx, addr, out, out_size );
+}
+
+static void macrunner_hb_normalize_unix_path( const char *input, char *out, size_t out_size )
+{
+    char tmp[4096];
+    const char *p;
+    size_t i, len;
+
+    if (!out || !out_size) return;
+    out[0] = 0;
+    if (!input) return;
+
+    for (i = 0; i + 1 < sizeof(tmp) && input[i]; i++)
+        tmp[i] = (input[i] == '\\') ? '/' : input[i];
+    tmp[i] = 0;
+
+    p = tmp;
+    if (!strncmp( p, "//??/", 5 )) p += 5;
+    if ((p[0] == 'Z' || p[0] == 'z') && p[1] == ':') p += 2;
+
+    if (p[0] == '/')
+    {
+        macrunner_hb_copy_cstr( out, out_size, p );
+        return;
+    }
+
+    if (p[0] && p[1] == ':') p += 2;
+    while (*p == '/') p++;
+    if (!getcwd( out, out_size ))
+    {
+        out[0] = 0;
+        return;
+    }
+    len = strlen(out);
+    if (len + 1 < out_size && (!len || out[len - 1] != '/')) out[len++] = '/';
+    out[len] = 0;
+    if (len < out_size) macrunner_hb_copy_cstr( out + len, out_size - len, p );
+}
+
+static LARGE_INTEGER macrunner_hb_unix_time_to_filetime( time_t value )
+{
+    LARGE_INTEGER ret;
+    uint64_t ticks = ((uint64_t)value + 11644473600ULL) * 10000000ULL;
+
+    ret.QuadPart = ticks;
+    return ret;
+}
+
+static DWORD macrunner_hb_attributes_from_stat( const struct stat *st )
+{
+    DWORD attrs = FILE_ATTRIBUTE_ARCHIVE;
+
+    if (S_ISDIR( st->st_mode )) attrs = FILE_ATTRIBUTE_DIRECTORY;
+    if (!(st->st_mode & S_IWUSR)) attrs |= FILE_ATTRIBUTE_READONLY;
+    return attrs;
+}
+
+static BOOL macrunner_hb_query_file_attributes_path( const char *path,
+                                                     FILE_BASIC_INFORMATION *basic,
+                                                     FILE_NETWORK_OPEN_INFORMATION *full )
+{
+    struct stat st;
+    char unix_path[4096];
+    DWORD attrs;
+
+    macrunner_hb_normalize_unix_path( path, unix_path, sizeof(unix_path) );
+    if (!unix_path[0] || stat( unix_path, &st ))
+    {
+        DWORD err = (errno == ENOENT || errno == ENOTDIR) ? ERROR_PATH_NOT_FOUND : ERROR_ACCESS_DENIED;
+        NTSTATUS status = (errno == ENOENT || errno == ENOTDIR) ? STATUS_OBJECT_PATH_NOT_FOUND :
+                                                              STATUS_ACCESS_DENIED;
+
+        RtlSetLastWin32Error( err );
+        NtCurrentTeb()->LastStatusValue = status;
+        return FALSE;
+    }
+
+    attrs = macrunner_hb_attributes_from_stat( &st );
+    if (basic)
+    {
+        memset( basic, 0, sizeof(*basic) );
+        basic->CreationTime = macrunner_hb_unix_time_to_filetime( st.st_ctime );
+        basic->LastAccessTime = macrunner_hb_unix_time_to_filetime( st.st_atime );
+        basic->LastWriteTime = macrunner_hb_unix_time_to_filetime( st.st_mtime );
+        basic->ChangeTime = macrunner_hb_unix_time_to_filetime( st.st_ctime );
+        basic->FileAttributes = attrs;
+    }
+    if (full)
+    {
+        memset( full, 0, sizeof(*full) );
+        full->CreationTime = macrunner_hb_unix_time_to_filetime( st.st_ctime );
+        full->LastAccessTime = macrunner_hb_unix_time_to_filetime( st.st_atime );
+        full->LastWriteTime = macrunner_hb_unix_time_to_filetime( st.st_mtime );
+        full->ChangeTime = macrunner_hb_unix_time_to_filetime( st.st_ctime );
+        full->AllocationSize.QuadPart = (LONGLONG)st.st_blocks * 512;
+        full->EndOfFile.QuadPart = st.st_size;
+        full->FileAttributes = attrs;
+    }
+    RtlSetLastWin32Error( ERROR_SUCCESS );
+    NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+    return TRUE;
+}
+
+static BOOL macrunner_hb_try_file_attribute_semantic( hb_context_t *ctx,
+                                                      const struct macrunner_hb_import_thunk *thunk,
+                                                      const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                      uint64_t *ret )
+{
+    char name[4096];
+    BOOL ansi, ex;
+
+    if (!ctx || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
+        return FALSE;
+
+    ansi = macrunner_hb_strieq( thunk->import_name, "GetFileAttributesA" ) ||
+           macrunner_hb_strieq( thunk->import_name, "GetFileAttributesExA" );
+    ex = macrunner_hb_strieq( thunk->import_name, "GetFileAttributesExA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetFileAttributesExW" );
+
+    if (!ansi && !ex && !macrunner_hb_strieq( thunk->import_name, "GetFileAttributesW" ))
+        return FALSE;
+    if (!macrunner_hb_read_guest_path( ctx, args[0], ansi, name, sizeof(name) ))
+    {
+        RtlSetLastWin32Error( ERROR_PATH_NOT_FOUND );
+        NtCurrentTeb()->LastStatusValue = STATUS_OBJECT_PATH_NOT_FOUND;
+        *ret = ex ? FALSE : INVALID_FILE_ATTRIBUTES;
+        return TRUE;
+    }
+
+    if (ex)
+    {
+        FILE_NETWORK_OPEN_INFORMATION info;
+        WIN32_FILE_ATTRIBUTE_DATA data;
+
+        if ((GET_FILEEX_INFO_LEVELS)args[1] != GetFileExInfoStandard || !args[2])
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = FALSE;
+            return TRUE;
+        }
+        if (!macrunner_hb_query_file_attributes_path( name, NULL, &info ))
+        {
+            *ret = FALSE;
+            return TRUE;
+        }
+        memset( &data, 0, sizeof(data) );
+        data.dwFileAttributes = info.FileAttributes;
+        data.ftCreationTime.dwLowDateTime = info.CreationTime.u.LowPart;
+        data.ftCreationTime.dwHighDateTime = info.CreationTime.u.HighPart;
+        data.ftLastAccessTime.dwLowDateTime = info.LastAccessTime.u.LowPart;
+        data.ftLastAccessTime.dwHighDateTime = info.LastAccessTime.u.HighPart;
+        data.ftLastWriteTime.dwLowDateTime = info.LastWriteTime.u.LowPart;
+        data.ftLastWriteTime.dwHighDateTime = info.LastWriteTime.u.HighPart;
+        data.nFileSizeLow = info.EndOfFile.u.LowPart;
+        data.nFileSizeHigh = info.EndOfFile.u.HighPart;
+        if (hb_memory_write( ctx->memory, (hb_gva_t)args[2], &data, sizeof(data) ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        *ret = TRUE;
+        return TRUE;
+    }
+    else
+    {
+        FILE_BASIC_INFORMATION info;
+
+        if (!macrunner_hb_query_file_attributes_path( name, &info, NULL ))
+        {
+            *ret = INVALID_FILE_ATTRIBUTES;
+            return TRUE;
+        }
+        *ret = info.FileAttributes;
+        return TRUE;
+    }
+}
+
+static void macrunner_hb_set_errno_error( void )
+{
+    DWORD err;
+    NTSTATUS status;
+
+    switch (errno)
+    {
+    case ENOENT:
+    case ENOTDIR:
+        err = ERROR_FILE_NOT_FOUND;
+        status = STATUS_OBJECT_NAME_NOT_FOUND;
+        break;
+    case EACCES:
+    case EPERM:
+        err = ERROR_ACCESS_DENIED;
+        status = STATUS_ACCESS_DENIED;
+        break;
+    default:
+        err = ERROR_INVALID_PARAMETER;
+        status = STATUS_INVALID_PARAMETER;
+        break;
+    }
+    RtlSetLastWin32Error( err );
+    NtCurrentTeb()->LastStatusValue = status;
+}
+
+static int macrunner_hb_createfile_open_flags( DWORD access, DWORD disposition )
+{
+    int flags = 0;
+
+    if ((access & GENERIC_WRITE) && (access & GENERIC_READ)) flags |= O_RDWR;
+    else if (access & GENERIC_WRITE) flags |= O_WRONLY;
+    else flags |= O_RDONLY;
+
+    switch (disposition)
+    {
+    case CREATE_NEW:
+        flags |= O_CREAT | O_EXCL;
+        break;
+    case CREATE_ALWAYS:
+        flags |= O_CREAT | O_TRUNC;
+        break;
+    case OPEN_ALWAYS:
+        flags |= O_CREAT;
+        break;
+    case TRUNCATE_EXISTING:
+        flags |= O_TRUNC;
+        break;
+    case OPEN_EXISTING:
+    default:
+        break;
+    }
+    return flags;
+}
+
+static BOOL macrunner_hb_try_local_file_semantic( hb_context_t *ctx,
+                                                  const struct macrunner_hb_import_thunk *thunk,
+                                                  const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                  uint64_t *ret )
+{
+    BOOL ansi;
+
+    if (!ctx || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
+        return FALSE;
+
+    ansi = macrunner_hb_strieq( thunk->import_name, "CreateFileA" );
+    if (ansi || macrunner_hb_strieq( thunk->import_name, "CreateFileW" ))
+    {
+        char path[4096], unix_path[4096];
+        int fd, flags;
+        uint64_t handle;
+
+        if (!macrunner_hb_read_guest_path( ctx, args[0], ansi, path, sizeof(path) ))
+        {
+            RtlSetLastWin32Error( ERROR_PATH_NOT_FOUND );
+            NtCurrentTeb()->LastStatusValue = STATUS_OBJECT_PATH_NOT_FOUND;
+            *ret = (uint64_t)(uintptr_t)INVALID_HANDLE_VALUE;
+            return TRUE;
+        }
+        macrunner_hb_normalize_unix_path( path, unix_path, sizeof(unix_path) );
+        flags = macrunner_hb_createfile_open_flags( (DWORD)args[1], (DWORD)args[4] );
+        fd = open( unix_path, flags, 0666 );
+        if (fd < 0)
+        {
+            macrunner_hb_set_errno_error();
+            *ret = (uint64_t)(uintptr_t)INVALID_HANDLE_VALUE;
+            return TRUE;
+        }
+        if (!(handle = macrunner_hb_local_file_remember( fd )))
+        {
+            close( fd );
+            RtlSetLastWin32Error( ERROR_TOO_MANY_OPEN_FILES );
+            NtCurrentTeb()->LastStatusValue = STATUS_TOO_MANY_OPENED_FILES;
+            *ret = (uint64_t)(uintptr_t)INVALID_HANDLE_VALUE;
+            return TRUE;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = handle;
+        TRACE( "MacRunner HyperBridge semantic %s!%s path=%s unix=%s handle=%p\n",
+               thunk->dll_name, thunk->import_name, path, unix_path, (void *)(uintptr_t)handle );
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "ReadFile" ))
+    {
+        int fd = macrunner_hb_local_file_fd( args[0] );
+        DWORD request = (DWORD)args[2], done32 = 0;
+        char *buffer;
+        ssize_t done;
+
+        if (fd < 0) return FALSE;
+        if (!(buffer = malloc( request ? request : 1 )))
+        {
+            RtlSetLastWin32Error( ERROR_NOT_ENOUGH_MEMORY );
+            NtCurrentTeb()->LastStatusValue = STATUS_NO_MEMORY;
+            *ret = FALSE;
+            return TRUE;
+        }
+        done = read( fd, buffer, request );
+        if (done < 0)
+        {
+            free( buffer );
+            macrunner_hb_set_errno_error();
+            if (args[3]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[3], 0 );
+            *ret = FALSE;
+            return TRUE;
+        }
+        if (done && hb_memory_write( ctx->memory, (hb_gva_t)args[1], buffer, (size_t)done ) != HB_OK)
+        {
+            free( buffer );
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            if (args[3]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[3], 0 );
+            *ret = FALSE;
+            return TRUE;
+        }
+        free( buffer );
+        done32 = (DWORD)done;
+        if (args[3]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[3], done32 );
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetFileSize" ) ||
+        macrunner_hb_strieq( thunk->import_name, "GetFileSizeEx" ))
+    {
+        int fd = macrunner_hb_local_file_fd( args[0] );
+        struct stat st;
+
+        if (fd < 0) return FALSE;
+        if (fstat( fd, &st ))
+        {
+            macrunner_hb_set_errno_error();
+            *ret = macrunner_hb_strieq( thunk->import_name, "GetFileSizeEx" ) ? FALSE : INVALID_FILE_SIZE;
+            return TRUE;
+        }
+        if (macrunner_hb_strieq( thunk->import_name, "GetFileSizeEx" ))
+        {
+            LARGE_INTEGER size;
+
+            size.QuadPart = st.st_size;
+            if (!args[1] || hb_memory_write( ctx->memory, (hb_gva_t)args[1], &size, sizeof(size) ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = FALSE;
+                return TRUE;
+            }
+            *ret = TRUE;
+        }
+        else
+        {
+            if (args[1]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[1], (DWORD)((uint64_t)st.st_size >> 32) );
+            *ret = (DWORD)st.st_size;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "SetFilePointer" ) ||
+        macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" ))
+    {
+        int fd = macrunner_hb_local_file_fd( args[0] );
+        LARGE_INTEGER out;
+        off_t pos;
+        int whence;
+        int64_t distance;
+
+        if (fd < 0) return FALSE;
+        whence = ((DWORD)(macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" ) ? args[3] : args[3]) == FILE_END) ?
+                 SEEK_END : (((DWORD)args[3] == FILE_CURRENT) ? SEEK_CUR : SEEK_SET);
+        if (macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" ))
+            distance = (int64_t)args[1];
+        else
+        {
+            LONG high = 0;
+            if (args[2]) hb_memory_read( ctx->memory, (hb_gva_t)args[2], &high, sizeof(high) );
+            distance = ((int64_t)high << 32) | (DWORD)args[1];
+        }
+        pos = lseek( fd, (off_t)distance, whence );
+        if (pos == (off_t)-1)
+        {
+            macrunner_hb_set_errno_error();
+            *ret = macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" ) ? FALSE : INVALID_SET_FILE_POINTER;
+            return TRUE;
+        }
+        if (macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" ))
+        {
+            out.QuadPart = pos;
+            if (args[2]) hb_memory_write( ctx->memory, (hb_gva_t)args[2], &out, sizeof(out) );
+            *ret = TRUE;
+        }
+        else
+        {
+            if (args[2]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[2], (DWORD)((uint64_t)pos >> 32) );
+            *ret = (DWORD)pos;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOL macrunner_hb_try_system_info_semantic( hb_context_t *ctx,
+                                                   const struct macrunner_hb_import_thunk *thunk,
+                                                   const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                   uint64_t *ret )
+{
+    SYSTEM_INFO info;
+
+    if (!ctx || !ctx->memory || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
+        return FALSE;
+    if (!macrunner_hb_strieq( thunk->import_name, "GetSystemInfo" ) &&
+        !macrunner_hb_strieq( thunk->import_name, "GetNativeSystemInfo" ))
+        return FALSE;
+
+    memset( &info, 0, sizeof(info) );
+    info.wProcessorArchitecture = PROCESSOR_ARCHITECTURE_AMD64;
+    info.dwPageSize = 0x1000;
+    info.lpMinimumApplicationAddress = (void *)0x10000;
+    info.lpMaximumApplicationAddress = (void *)0x00007ffffffeffffULL;
+    info.dwActiveProcessorMask = 1;
+    info.dwNumberOfProcessors = 1;
+    info.dwProcessorType = PROCESSOR_AMD_X8664;
+    info.dwAllocationGranularity = 0x10000;
+    info.wProcessorLevel = 0x8664;
+    info.wProcessorRevision = 0;
+    if (!args[0] || hb_memory_write( ctx->memory, (hb_gva_t)args[0], &info, sizeof(info) ) != HB_OK)
+    {
+        RtlSetLastWin32Error( ERROR_NOACCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+    }
+    else
+    {
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+    }
+    *ret = 0;
+    return TRUE;
+}
+
+static void macrunner_hb_fill_memory_status( MEMORYSTATUSEX *status )
+{
+    uint64_t total = 8ULL * 1024 * 1024 * 1024;
+    uint64_t avail = 4ULL * 1024 * 1024 * 1024;
+    uint64_t total_virtual = 0x00007ffffffeffffULL - 0x10000ULL;
+
+#ifdef __APPLE__
+    mach_port_t host = mach_host_self();
+    host_basic_info_data_t basic_info;
+    vm_statistics64_data_t vm_stat;
+    vm_size_t page_size = 0;
+    mach_msg_type_number_t count;
+
+    count = HOST_BASIC_INFO_COUNT;
+    if (host_info( host, HOST_BASIC_INFO, (host_info_t)&basic_info, &count ) == KERN_SUCCESS &&
+        basic_info.max_mem)
+        total = basic_info.max_mem;
+
+    count = HOST_VM_INFO64_COUNT;
+    if (host_page_size( host, &page_size ) == KERN_SUCCESS &&
+        host_statistics64( host, HOST_VM_INFO64, (host_info64_t)&vm_stat, &count ) == KERN_SUCCESS &&
+        page_size)
+        avail = ((uint64_t)vm_stat.free_count + vm_stat.inactive_count + vm_stat.speculative_count) *
+                (uint64_t)page_size;
+
+    mach_port_deallocate( mach_task_self(), host );
+#endif
+
+    if (!total) total = 8ULL * 1024 * 1024 * 1024;
+    if (avail > total) avail = total;
+
+    memset( status, 0, sizeof(*status) );
+    status->dwLength = sizeof(*status);
+    status->dwMemoryLoad = (DWORD)(((total - avail) * 100) / total);
+    status->ullTotalPhys = total;
+    status->ullAvailPhys = avail;
+    status->ullTotalPageFile = total * 2;
+    status->ullAvailPageFile = avail + total;
+    status->ullTotalVirtual = total_virtual;
+    status->ullAvailVirtual = total_virtual / 2;
+    status->ullAvailExtendedVirtual = 0;
+}
+
+static BOOL macrunner_hb_try_memory_status_semantic( hb_context_t *ctx,
+                                                     const struct macrunner_hb_import_thunk *thunk,
+                                                     const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                     uint64_t *ret )
+{
+    MEMORYSTATUSEX status_ex;
+    DWORD length;
+
+    if (!ctx || !ctx->memory || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
+        return FALSE;
+    if (!macrunner_hb_strieq( thunk->import_name, "GlobalMemoryStatus" ) &&
+        !macrunner_hb_strieq( thunk->import_name, "GlobalMemoryStatusEx" ))
+        return FALSE;
+
+    if (!args[0])
+    {
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+        NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+        *ret = FALSE;
+        return TRUE;
+    }
+
+    macrunner_hb_fill_memory_status( &status_ex );
+
+    if (macrunner_hb_strieq( thunk->import_name, "GlobalMemoryStatusEx" ))
+    {
+        if (hb_memory_read( ctx->memory, (hb_gva_t)args[0], &length, sizeof(length) ) != HB_OK ||
+            length != sizeof(status_ex) ||
+            hb_memory_write( ctx->memory, (hb_gva_t)args[0], &status_ex, sizeof(status_ex) ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = FALSE;
+            return TRUE;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+    else
+    {
+        MEMORYSTATUS status;
+
+        memset( &status, 0, sizeof(status) );
+        status.dwLength = sizeof(status);
+        status.dwMemoryLoad = status_ex.dwMemoryLoad;
+        status.dwTotalPhys = status_ex.ullTotalPhys;
+        status.dwAvailPhys = status_ex.ullAvailPhys;
+        status.dwTotalPageFile = status_ex.ullTotalPageFile;
+        status.dwAvailPageFile = status_ex.ullAvailPageFile;
+        status.dwTotalVirtual = status_ex.ullTotalVirtual;
+        status.dwAvailVirtual = status_ex.ullAvailVirtual;
+        if (hb_memory_write( ctx->memory, (hb_gva_t)args[0], &status, sizeof(status) ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        }
+        *ret = 0;
+        return TRUE;
+    }
 }
 
 static BOOL macrunner_hb_try_msvcrt_time_semantic( hb_context_t *ctx,
@@ -2648,8 +5858,13 @@ static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
                                                    const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
                                                    uint64_t *ret )
 {
+    BOOL is_crt_runtime;
+
     if (!ctx || !thunk || !args || !ret) return FALSE;
-    if (!macrunner_hb_strieq( thunk->dll_name, "msvcrt.dll" )) return FALSE;
+    is_crt_runtime = macrunner_hb_strieq( thunk->dll_name, "msvcrt.dll" ) ||
+                     macrunner_hb_strieq( thunk->dll_name, "ucrtbase.dll" ) ||
+                     macrunner_hb_strieq( thunk->dll_name, "api-ms-win-crt-runtime-l1-1-0.dll" );
+    if (!is_crt_runtime) return FALSE;
 
     if (macrunner_hb_strieq( thunk->import_name, "_onexit" ))
     {
@@ -2674,6 +5889,1881 @@ static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
         TRACE( "MacRunner HyperBridge semantic msvcrt!%s func=%p ret=%p\n",
                thunk->import_name, (void *)(uintptr_t)args[0],
                (void *)(uintptr_t)*ret );
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "_cexit" ) ||
+        macrunner_hb_strieq( thunk->import_name, "_c_exit" ))
+    {
+        *ret = 0;
+        TRACE( "MacRunner HyperBridge semantic msvcrt!%s ret=%p\n",
+               thunk->import_name, (void *)(uintptr_t)*ret );
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "exit" ) ||
+        macrunner_hb_strieq( thunk->import_name, "_exit" ) ||
+        macrunner_hb_strieq( thunk->import_name, "_Exit" ) ||
+        macrunner_hb_strieq( thunk->import_name, "quick_exit" ))
+    {
+        TRACE( "MacRunner HyperBridge semantic msvcrt!%s code=%lu\n",
+               thunk->import_name, (unsigned long)(ULONG)args[0] );
+        NtTerminateProcess( GetCurrentProcess(), (LONG)(ULONG)args[0] );
+        exit( (int)(ULONG)args[0] );
+    }
+
+    return FALSE;
+}
+
+static BOOL macrunner_hb_try_crt_environment_init_semantic( hb_context_t *ctx,
+                                                           const struct macrunner_hb_import_thunk *thunk,
+                                                           const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                           uint64_t *ret )
+{
+    BOOL is_crt_runtime;
+
+    if (!ctx || !thunk || !args || !ret) return FALSE;
+    is_crt_runtime = macrunner_hb_strieq( thunk->dll_name, "msvcrt.dll" ) ||
+                     macrunner_hb_strieq( thunk->dll_name, "ucrtbase.dll" ) ||
+                     macrunner_hb_strieq( thunk->dll_name, "api-ms-win-crt-runtime-l1-1-0.dll" );
+    if (!is_crt_runtime) return FALSE;
+
+    if (!macrunner_hb_strieq( thunk->import_name, "_initialize_narrow_environment" ) &&
+        !macrunner_hb_strieq( thunk->import_name, "_initialize_wide_environment" ))
+        return FALSE;
+
+    *ret = 0;
+    TRACE( "MacRunner HyperBridge semantic crt environment init %s!%s ret=%p\n",
+           thunk->dll_name, thunk->import_name, (void *)(uintptr_t)*ret );
+    return TRUE;
+}
+
+static uint64_t macrunner_hb_unhandled_exception_filter;
+
+static BOOL macrunner_hb_try_unhandled_exception_filter_semantic( hb_context_t *ctx,
+                                                                  const struct macrunner_hb_import_thunk *thunk,
+                                                                  const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                                  uint64_t *ret )
+{
+    uint64_t old_filter;
+
+    if (!ctx || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_strieq( thunk->import_name, "SetUnhandledExceptionFilter" ))
+        return FALSE;
+    if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
+        return FALSE;
+
+    /*
+     * The x64 app registers an x64 callback.  Native ARM64 kernelbase cannot
+     * call it directly, so keep the guest pointer on the x64 side and return
+     * the previous guest filter just like the Win32 API contract requires.
+     */
+    old_filter = macrunner_hb_unhandled_exception_filter;
+    macrunner_hb_unhandled_exception_filter = args[0];
+    *ret = old_filter;
+    TRACE( "MacRunner HyperBridge semantic %s!SetUnhandledExceptionFilter filter=%p old=%p\n",
+           thunk->dll_name, (void *)(uintptr_t)args[0], (void *)(uintptr_t)*ret );
+    return TRUE;
+}
+
+static BOOL macrunner_hb_try_kernel32_stdio_semantic( hb_context_t *ctx,
+                                                     const struct macrunner_hb_import_thunk *thunk,
+                                                     const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                     uint64_t *ret )
+{
+    RTL_USER_PROCESS_PARAMETERS *params;
+    IO_STATUS_BLOCK iosb;
+    SIZE_T written_size = 0;
+    NTSTATUS status;
+    DWORD written = 0;
+
+    if (!ctx || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
+        return FALSE;
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetStdHandle" ))
+    {
+        params = NtCurrentTeb()->Peb->ProcessParameters;
+        switch ((DWORD)args[0])
+        {
+        case STD_INPUT_HANDLE:
+            *ret = (uint64_t)(uintptr_t)(params ? params->hStdInput : NULL);
+            break;
+        case STD_OUTPUT_HANDLE:
+            *ret = (uint64_t)(uintptr_t)(params ? params->hStdOutput : NULL);
+            break;
+        case STD_ERROR_HANDLE:
+            *ret = (uint64_t)(uintptr_t)(params ? params->hStdError : NULL);
+            break;
+        default:
+            RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_HANDLE;
+            *ret = 0;
+            break;
+        }
+        TRACE( "MacRunner HyperBridge semantic %s!GetStdHandle id=%#x ret=%p\n",
+               thunk->dll_name, (unsigned int)(DWORD)args[0], (void *)(uintptr_t)*ret );
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetFileType" ))
+    {
+        FILE_FS_DEVICE_INFORMATION info;
+        HANDLE handle = (HANDLE)(uintptr_t)args[0];
+
+        if (macrunner_hb_local_file_fd( args[0] ) >= 0)
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+            *ret = FILE_TYPE_DISK;
+            return TRUE;
+        }
+
+        params = NtCurrentTeb()->Peb->ProcessParameters;
+        if ((DWORD)args[0] == STD_INPUT_HANDLE)
+            handle = params ? params->hStdInput : NULL;
+        else if ((DWORD)args[0] == STD_OUTPUT_HANDLE)
+            handle = params ? params->hStdOutput : NULL;
+        else if ((DWORD)args[0] == STD_ERROR_HANDLE)
+            handle = params ? params->hStdError : NULL;
+
+        status = NtQueryVolumeInformationFile( handle, &iosb, &info, sizeof(info),
+                                               FileFsDeviceInformation );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status)
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = FILE_TYPE_UNKNOWN;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            switch (info.DeviceType)
+            {
+            case FILE_DEVICE_NULL:
+            case FILE_DEVICE_CONSOLE:
+            case FILE_DEVICE_SERIAL_PORT:
+            case FILE_DEVICE_PARALLEL_PORT:
+            case FILE_DEVICE_TAPE:
+            case FILE_DEVICE_UNKNOWN:
+                *ret = FILE_TYPE_CHAR;
+                break;
+            case FILE_DEVICE_NAMED_PIPE:
+                *ret = FILE_TYPE_PIPE;
+                break;
+            default:
+                *ret = FILE_TYPE_DISK;
+                break;
+            }
+        }
+        TRACE( "MacRunner HyperBridge semantic %s!GetFileType handle=%p ret=%p status=%08lx\n",
+               thunk->dll_name, handle, (void *)(uintptr_t)*ret, (unsigned long)status );
+        return TRUE;
+    }
+
+    if (!macrunner_hb_strieq( thunk->import_name, "WriteFile" )) return FALSE;
+    if (macrunner_hb_local_file_fd( args[0] ) >= 0)
+    {
+        int fd = macrunner_hb_local_file_fd( args[0] );
+        DWORD request = (DWORD)args[2], done32 = 0;
+        char *buffer;
+        ssize_t done;
+
+        if (!(buffer = malloc( request ? request : 1 )))
+        {
+            RtlSetLastWin32Error( ERROR_NOT_ENOUGH_MEMORY );
+            NtCurrentTeb()->LastStatusValue = STATUS_NO_MEMORY;
+            *ret = FALSE;
+            return TRUE;
+        }
+        if (request && hb_memory_read( ctx->memory, (hb_gva_t)args[1], buffer, request ) != HB_OK)
+        {
+            free( buffer );
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        done = write( fd, buffer, request );
+        free( buffer );
+        if (done < 0)
+        {
+            macrunner_hb_set_errno_error();
+            if (args[3]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[3], 0 );
+            *ret = FALSE;
+            return TRUE;
+        }
+        done32 = (DWORD)done;
+        if (args[3]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[3], done32 );
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+    if (!args[0] || args[0] == (uint64_t)(uintptr_t)INVALID_HANDLE_VALUE)
+    {
+        status = STATUS_INVALID_HANDLE;
+        if (args[3])
+            NtWriteVirtualMemory( GetCurrentProcess(), (void *)(uintptr_t)args[3],
+                                  &written, sizeof(written), &written_size );
+        RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
+        NtCurrentTeb()->LastStatusValue = status;
+        *ret = FALSE;
+        TRACE( "MacRunner HyperBridge semantic %s!WriteFile invalid handle=%p bytes=%lu ret=%p written=%lu status=%08lx\n",
+               thunk->dll_name, (void *)(uintptr_t)args[0], (unsigned long)(ULONG)args[2],
+               (void *)(uintptr_t)*ret, (unsigned long)written, (unsigned long)status );
+        return TRUE;
+    }
+    if (args[4])
+    {
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+        NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+        *ret = FALSE;
+        return TRUE;
+    }
+
+    status = NtWriteFile( (HANDLE)(uintptr_t)args[0], NULL, NULL, NULL, &iosb,
+                          (void *)(uintptr_t)args[1], (ULONG)args[2], NULL, NULL );
+    if (!status)
+        written = (DWORD)iosb.Information;
+    else
+        RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+    NtCurrentTeb()->LastStatusValue = status;
+    if (args[3] && (status = NtWriteVirtualMemory( GetCurrentProcess(), (void *)(uintptr_t)args[3],
+                                                   &written, sizeof(written), &written_size )))
+    {
+        RtlSetLastWin32Error( ERROR_NOACCESS );
+        NtCurrentTeb()->LastStatusValue = status;
+        *ret = FALSE;
+        return TRUE;
+    }
+    *ret = !status;
+    TRACE( "MacRunner HyperBridge semantic %s!WriteFile handle=%p bytes=%lu ret=%p written=%lu status=%08lx\n",
+           thunk->dll_name, (void *)(uintptr_t)args[0], (unsigned long)(ULONG)args[2],
+           (void *)(uintptr_t)*ret, (unsigned long)written, (unsigned long)status );
+    return TRUE;
+}
+
+static BOOL macrunner_hb_is_crt_stdio_dll( const char *dll_name )
+{
+    return macrunner_hb_strieq( dll_name, "ucrtbase.dll" ) ||
+           macrunner_hb_strieq( dll_name, "api-ms-win-crt-stdio-l1-1-0.dll" ) ||
+           macrunner_hb_strieq( dll_name, "msvcrt.dll" );
+}
+
+static void macrunner_hb_render_append_char( char *out, size_t out_size,
+                                             size_t *pos, char ch )
+{
+    if (!out || !out_size || !pos) return;
+    if (*pos + 1 < out_size) out[*pos] = ch;
+    (*pos)++;
+}
+
+static void macrunner_hb_render_append_str( char *out, size_t out_size,
+                                            size_t *pos, const char *str )
+{
+    if (!str) str = "";
+    while (*str) macrunner_hb_render_append_char( out, out_size, pos, *str++ );
+}
+
+static BOOL macrunner_hb_read_x64_va_arg( hb_context_t *ctx, uint64_t va_list,
+                                          unsigned int *index, uint64_t *value )
+{
+    if (!ctx || !ctx->memory || !index || !value || !va_list) return FALSE;
+    if (hb_memory_read_u64( ctx->memory, (hb_gva_t)va_list + (uint64_t)(*index) * 8, value ) != HB_OK)
+        return FALSE;
+    (*index)++;
+    return TRUE;
+}
+
+static BOOL macrunner_hb_try_crt_vfprintf_semantic( hb_context_t *ctx,
+                                                    const struct macrunner_hb_import_thunk *thunk,
+                                                    const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                    uint64_t *ret )
+{
+    char format[512];
+    char rendered[2048];
+    size_t pos = 0;
+    unsigned int arg_index = 0;
+    const char *p;
+
+    if (!ctx || !ctx->memory || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_is_crt_stdio_dll( thunk->dll_name ) ||
+        !macrunner_hb_strieq( thunk->import_name, "__stdio_common_vfprintf" ))
+        return FALSE;
+    if (!macrunner_hb_read_guest_astr( ctx, args[2], format, sizeof(format) ))
+    {
+        *ret = -1;
+        return TRUE;
+    }
+
+    for (p = format; *p; p++)
+    {
+        uint64_t raw = 0;
+        char number[64];
+        BOOL long_arg = FALSE;
+
+        if (*p != '%')
+        {
+            macrunner_hb_render_append_char( rendered, sizeof(rendered), &pos, *p );
+            continue;
+        }
+        p++;
+        if (*p == '%')
+        {
+            macrunner_hb_render_append_char( rendered, sizeof(rendered), &pos, '%' );
+            continue;
+        }
+        while (*p == '-' || *p == '+' || *p == ' ' || *p == '#' || *p == '0') p++;
+        if (*p == '*')
+        {
+            macrunner_hb_read_x64_va_arg( ctx, args[4], &arg_index, &raw );
+            p++;
+        }
+        else while (*p >= '0' && *p <= '9') p++;
+        if (*p == '.')
+        {
+            p++;
+            if (*p == '*')
+            {
+                macrunner_hb_read_x64_va_arg( ctx, args[4], &arg_index, &raw );
+                p++;
+            }
+            else while (*p >= '0' && *p <= '9') p++;
+        }
+        if (*p == 'l')
+        {
+            long_arg = TRUE;
+            p++;
+            if (*p == 'l') p++;
+        }
+        else if (*p == 'I' && p[1] == '6' && p[2] == '4')
+        {
+            long_arg = TRUE;
+            p += 3;
+        }
+        else if (*p == 'z' || *p == 't')
+        {
+            long_arg = TRUE;
+            p++;
+        }
+
+        switch (*p)
+        {
+        case 's':
+        {
+            char text[512];
+            if (!macrunner_hb_read_x64_va_arg( ctx, args[4], &arg_index, &raw ) || !raw ||
+                !macrunner_hb_read_guest_astr( ctx, raw, text, sizeof(text) ))
+                macrunner_hb_render_append_str( rendered, sizeof(rendered), &pos, "(null)" );
+            else
+                macrunner_hb_render_append_str( rendered, sizeof(rendered), &pos, text );
+            break;
+        }
+        case 'd':
+        case 'i':
+            if (!macrunner_hb_read_x64_va_arg( ctx, args[4], &arg_index, &raw )) raw = 0;
+            snprintf( number, sizeof(number), "%lld",
+                      long_arg ? (long long)raw : (long long)(int32_t)raw );
+            macrunner_hb_render_append_str( rendered, sizeof(rendered), &pos, number );
+            break;
+        case 'u':
+            if (!macrunner_hb_read_x64_va_arg( ctx, args[4], &arg_index, &raw )) raw = 0;
+            snprintf( number, sizeof(number), "%llu",
+                      long_arg ? (unsigned long long)raw : (unsigned long long)(uint32_t)raw );
+            macrunner_hb_render_append_str( rendered, sizeof(rendered), &pos, number );
+            break;
+        case 'x':
+        case 'X':
+            if (!macrunner_hb_read_x64_va_arg( ctx, args[4], &arg_index, &raw )) raw = 0;
+            snprintf( number, sizeof(number), *p == 'X' ? "%llX" : "%llx",
+                      long_arg ? (unsigned long long)raw : (unsigned long long)(uint32_t)raw );
+            macrunner_hb_render_append_str( rendered, sizeof(rendered), &pos, number );
+            break;
+        case 'p':
+            if (!macrunner_hb_read_x64_va_arg( ctx, args[4], &arg_index, &raw )) raw = 0;
+            snprintf( number, sizeof(number), "%p", (void *)(uintptr_t)raw );
+            macrunner_hb_render_append_str( rendered, sizeof(rendered), &pos, number );
+            break;
+        case 'c':
+            if (!macrunner_hb_read_x64_va_arg( ctx, args[4], &arg_index, &raw )) raw = 0;
+            macrunner_hb_render_append_char( rendered, sizeof(rendered), &pos, (char)raw );
+            break;
+        default:
+            macrunner_hb_render_append_char( rendered, sizeof(rendered), &pos, '%' );
+            if (*p) macrunner_hb_render_append_char( rendered, sizeof(rendered), &pos, *p );
+            break;
+        }
+    }
+
+    if (sizeof(rendered)) rendered[pos < sizeof(rendered) ? pos : sizeof(rendered) - 1] = 0;
+    fwrite( rendered, 1, pos < sizeof(rendered) ? pos : sizeof(rendered) - 1, stdout );
+    fflush( stdout );
+    RtlSetLastWin32Error( ERROR_SUCCESS );
+    NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+    *ret = pos;
+    return TRUE;
+}
+
+static BOOL macrunner_hb_try_thread_creation_semantic( hb_context_t *ctx,
+                                                       const struct macrunner_hb_import_thunk *thunk,
+                                                       const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                       uint64_t *ret )
+{
+    ULONG_PTR buffer[offsetof( PS_ATTRIBUTE_LIST, Attributes[2] ) / sizeof(ULONG_PTR)];
+    PS_ATTRIBUTE_LIST *attr_list = (PS_ATTRIBUTE_LIST *)buffer;
+    SECURITY_ATTRIBUTES sa_copy, *sa = NULL;
+    OBJECT_ATTRIBUTES attr;
+    CLIENT_ID client_id;
+    HANDLE process = GetCurrentProcess();
+    HANDLE handle = NULL;
+    TEB *teb = NULL;
+    uint64_t sa_guest = 0, start = 0, param = 0, id_guest = 0;
+    SIZE_T stack = 0, stack_commit = 0, stack_reserve = 0, written_size = 0;
+    DWORD flags = 0, tid = 0;
+    NTSTATUS status;
+
+    if (!ctx || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
+        return FALSE;
+
+    if (macrunner_hb_strieq( thunk->import_name, "CreateThread" ))
+    {
+        sa_guest = args[0];
+        stack = (SIZE_T)args[1];
+        start = args[2];
+        param = args[3];
+        flags = (DWORD)args[4];
+        id_guest = args[5];
+    }
+    else if (macrunner_hb_strieq( thunk->import_name, "CreateRemoteThread" ))
+    {
+        process = (HANDLE)(uintptr_t)args[0];
+        sa_guest = args[1];
+        stack = (SIZE_T)args[2];
+        start = args[3];
+        param = args[4];
+        flags = (DWORD)args[5];
+        id_guest = args[6];
+    }
+    else if (macrunner_hb_strieq( thunk->import_name, "CreateRemoteThreadEx" ))
+    {
+        if (args[6])
+        {
+            RtlSetLastWin32Error( ERROR_CALL_NOT_IMPLEMENTED );
+            NtCurrentTeb()->LastStatusValue = STATUS_NOT_IMPLEMENTED;
+            *ret = 0;
+            return TRUE;
+        }
+        process = (HANDLE)(uintptr_t)args[0];
+        sa_guest = args[1];
+        stack = (SIZE_T)args[2];
+        start = args[3];
+        param = args[4];
+        flags = (DWORD)args[5];
+        id_guest = args[7];
+    }
+    else return FALSE;
+
+    if (!start)
+    {
+        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+        NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (process != GetCurrentProcess())
+    {
+        RtlSetLastWin32Error( ERROR_CALL_NOT_IMPLEMENTED );
+        NtCurrentTeb()->LastStatusValue = STATUS_NOT_IMPLEMENTED;
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (sa_guest)
+    {
+        if (hb_memory_read( ctx->memory, (hb_gva_t)sa_guest, &sa_copy, sizeof(sa_copy) ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = 0;
+            return TRUE;
+        }
+        sa = &sa_copy;
+    }
+
+    if (flags & STACK_SIZE_PARAM_IS_A_RESERVATION) stack_reserve = stack;
+    else stack_commit = stack;
+
+    attr_list->Attributes[0].Attribute    = PS_ATTRIBUTE_CLIENT_ID;
+    attr_list->Attributes[0].Size         = sizeof(client_id);
+    attr_list->Attributes[0].ValuePtr     = &client_id;
+    attr_list->Attributes[0].ReturnLength = NULL;
+    attr_list->Attributes[1].Attribute    = PS_ATTRIBUTE_TEB_ADDRESS;
+    attr_list->Attributes[1].Size         = sizeof(teb);
+    attr_list->Attributes[1].ValuePtr     = &teb;
+    attr_list->Attributes[1].ReturnLength = NULL;
+    attr_list->TotalLength = offsetof( PS_ATTRIBUTE_LIST, Attributes[2] );
+
+    InitializeObjectAttributes( &attr, NULL, 0, NULL, sa ? sa->lpSecurityDescriptor : NULL );
+    if (sa && sa->bInheritHandle) attr.Attributes |= OBJ_INHERIT;
+
+    status = NtCreateThreadEx( &handle, THREAD_ALL_ACCESS, &attr, process,
+                               (PRTL_THREAD_START_ROUTINE)(uintptr_t)start,
+                               (void *)(uintptr_t)param, THREAD_CREATE_FLAGS_CREATE_SUSPENDED,
+                               0, stack_commit, stack_reserve, attr_list );
+    NtCurrentTeb()->LastStatusValue = status;
+    if (status)
+    {
+        RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (id_guest)
+    {
+        tid = (DWORD)(ULONG_PTR)client_id.UniqueThread;
+        status = NtWriteVirtualMemory( GetCurrentProcess(), (void *)(uintptr_t)id_guest,
+                                       &tid, sizeof(tid), &written_size );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status)
+        {
+            NtClose( handle );
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            *ret = 0;
+            return TRUE;
+        }
+    }
+
+    if (!(flags & CREATE_SUSPENDED))
+    {
+        status = NtResumeThread( handle, NULL );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status)
+        {
+            NtClose( handle );
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = 0;
+            return TRUE;
+        }
+    }
+
+    *ret = (uint64_t)(uintptr_t)handle;
+    TRACE( "MacRunner HyperBridge semantic %s!%s start=%p param=%p flags=%#lx ret=%p tid=%lu\n",
+           thunk->dll_name, thunk->import_name, (void *)(uintptr_t)start,
+           (void *)(uintptr_t)param, (unsigned long)flags, (void *)(uintptr_t)*ret,
+           (unsigned long)tid );
+    return TRUE;
+}
+
+static LARGE_INTEGER *macrunner_hb_get_nt_timeout( LARGE_INTEGER *time, DWORD timeout )
+{
+    if (timeout == INFINITE) return NULL;
+    time->QuadPart = (LONGLONG)timeout * -10000;
+    return time;
+}
+
+static BOOL macrunner_hb_guest_slist_uses_x64_header( const hb_context_t *ctx )
+{
+    return !ctx || ctx->arch != HB_ARCH_X86;
+}
+
+static uint64_t macrunner_hb_guest_slist_sequence( const hb_context_t *ctx, void *list )
+{
+    uint64_t alignment;
+
+    if (!list) return 0;
+    alignment = *(uint64_t *)list;
+    if (macrunner_hb_guest_slist_uses_x64_header( ctx ))
+        return (alignment >> 16) & 0x0000ffffffffffffULL;
+    return (alignment >> 48) & 0xffff;
+}
+
+static WORD macrunner_hb_guest_slist_depth( const hb_context_t *ctx, void *list )
+{
+    uint64_t alignment;
+
+    if (!list) return 0;
+    alignment = *(uint64_t *)list;
+    if (macrunner_hb_guest_slist_uses_x64_header( ctx ))
+        return (WORD)(alignment & 0xffff);
+    return (WORD)((alignment >> 32) & 0xffff);
+}
+
+static uint64_t macrunner_hb_guest_slist_first( const hb_context_t *ctx, void *list )
+{
+    if (!list) return 0;
+    if (macrunner_hb_guest_slist_uses_x64_header( ctx ))
+        return *(uint64_t *)((char *)list + 8) & 0xfffffffffffffff0ULL;
+    return *(uint32_t *)list;
+}
+
+static void macrunner_hb_guest_slist_set_depth_sequence( const hb_context_t *ctx, void *list,
+                                                         WORD depth, uint64_t sequence )
+{
+    if (macrunner_hb_guest_slist_uses_x64_header( ctx ))
+        *(uint64_t *)list = ((sequence & 0x0000ffffffffffffULL) << 16) | depth;
+    else
+    {
+        uint64_t alignment = *(uint64_t *)list;
+        alignment &= 0x00000000ffffffffULL;
+        alignment |= (uint64_t)depth << 32;
+        alignment |= (sequence & 0xffff) << 48;
+        *(uint64_t *)list = alignment;
+    }
+}
+
+static void macrunner_hb_guest_slist_set_first( const hb_context_t *ctx, void *list, uint64_t first )
+{
+    if (macrunner_hb_guest_slist_uses_x64_header( ctx ))
+    {
+        uint64_t *region = (uint64_t *)((char *)list + 8);
+        uint64_t flags = *region & 0xf;
+        if (!(flags & 1)) flags |= 1;
+        *region = (first & 0xfffffffffffffff0ULL) | flags;
+    }
+    else
+    {
+        uint64_t alignment = *(uint64_t *)list;
+        alignment &= 0xffffffff00000000ULL;
+        alignment |= (uint32_t)first;
+        *(uint64_t *)list = alignment;
+    }
+}
+
+static uint64_t macrunner_hb_guest_slist_entry_next( const hb_context_t *ctx, void *entry )
+{
+    if (!entry) return 0;
+    if (macrunner_hb_guest_slist_uses_x64_header( ctx ))
+        return *(uint64_t *)entry;
+    return *(uint32_t *)entry;
+}
+
+static void macrunner_hb_guest_slist_set_entry_next( const hb_context_t *ctx, void *entry,
+                                                     uint64_t next )
+{
+    if (macrunner_hb_guest_slist_uses_x64_header( ctx ))
+        *(uint64_t *)entry = next;
+    else
+        *(uint32_t *)entry = (uint32_t)next;
+}
+
+static void macrunner_hb_guest_slist_initialize( const hb_context_t *ctx, void *list )
+{
+    if (!list) return;
+    pthread_mutex_lock( &macrunner_hb_slist_mutex );
+    *(uint64_t *)list = 0;
+    if (macrunner_hb_guest_slist_uses_x64_header( ctx ))
+        *(uint64_t *)((char *)list + 8) = 1;
+    pthread_mutex_unlock( &macrunner_hb_slist_mutex );
+}
+
+static uint64_t macrunner_hb_guest_slist_flush( const hb_context_t *ctx, void *list )
+{
+    uint64_t old, sequence;
+
+    if (!list) return 0;
+    pthread_mutex_lock( &macrunner_hb_slist_mutex );
+    old = macrunner_hb_guest_slist_first( ctx, list );
+    if (old)
+    {
+        sequence = macrunner_hb_guest_slist_sequence( ctx, list ) + 1;
+        macrunner_hb_guest_slist_set_first( ctx, list, 0 );
+        macrunner_hb_guest_slist_set_depth_sequence( ctx, list, 0, sequence );
+    }
+    pthread_mutex_unlock( &macrunner_hb_slist_mutex );
+    return old;
+}
+
+static uint64_t macrunner_hb_guest_slist_pop( const hb_context_t *ctx, void *list )
+{
+    uint64_t entry, next, sequence;
+    WORD depth;
+
+    if (!list) return 0;
+    pthread_mutex_lock( &macrunner_hb_slist_mutex );
+    entry = macrunner_hb_guest_slist_first( ctx, list );
+    if (entry)
+    {
+        next = macrunner_hb_guest_slist_entry_next( ctx, (void *)(uintptr_t)entry );
+        depth = macrunner_hb_guest_slist_depth( ctx, list );
+        sequence = macrunner_hb_guest_slist_sequence( ctx, list ) + 1;
+        macrunner_hb_guest_slist_set_first( ctx, list, next );
+        macrunner_hb_guest_slist_set_depth_sequence( ctx, list, depth ? depth - 1 : 0, sequence );
+    }
+    pthread_mutex_unlock( &macrunner_hb_slist_mutex );
+    return entry;
+}
+
+static uint64_t macrunner_hb_guest_slist_push( const hb_context_t *ctx, void *list, void *entry )
+{
+    uint64_t old, sequence;
+    WORD depth;
+
+    if (!list || !entry) return 0;
+    pthread_mutex_lock( &macrunner_hb_slist_mutex );
+    old = macrunner_hb_guest_slist_first( ctx, list );
+    depth = macrunner_hb_guest_slist_depth( ctx, list );
+    sequence = macrunner_hb_guest_slist_sequence( ctx, list ) + 1;
+    macrunner_hb_guest_slist_set_entry_next( ctx, entry, old );
+    macrunner_hb_guest_slist_set_first( ctx, list, (uint64_t)(uintptr_t)entry );
+    macrunner_hb_guest_slist_set_depth_sequence( ctx, list, depth + 1, sequence );
+    pthread_mutex_unlock( &macrunner_hb_slist_mutex );
+    return old;
+}
+
+static uint64_t macrunner_hb_guest_slist_push_list( const hb_context_t *ctx, void *list,
+                                                    void *first, void *last, ULONG count )
+{
+    uint64_t old, sequence;
+    WORD depth;
+
+    if (!list || !first || !last) return 0;
+    pthread_mutex_lock( &macrunner_hb_slist_mutex );
+    old = macrunner_hb_guest_slist_first( ctx, list );
+    depth = macrunner_hb_guest_slist_depth( ctx, list );
+    sequence = macrunner_hb_guest_slist_sequence( ctx, list ) + 1;
+    macrunner_hb_guest_slist_set_entry_next( ctx, last, old );
+    macrunner_hb_guest_slist_set_first( ctx, list, (uint64_t)(uintptr_t)first );
+    macrunner_hb_guest_slist_set_depth_sequence( ctx, list, depth + count, sequence );
+    pthread_mutex_unlock( &macrunner_hb_slist_mutex );
+    return old;
+}
+
+static BOOL macrunner_hb_ascii_to_wchar_buffer( const char *src, WCHAR *dst, size_t dst_count )
+{
+    size_t i;
+
+    if (!src || !dst || !dst_count) return FALSE;
+    for (i = 0; i + 1 < dst_count && src[i]; i++) dst[i] = (unsigned char)src[i];
+    if (src[i]) return FALSE;
+    dst[i] = 0;
+    return TRUE;
+}
+
+static void macrunner_hb_init_named_object_attributes( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *nameW,
+                                                       SECURITY_ATTRIBUTES *sa, const WCHAR *name )
+{
+    if (name)
+    {
+        const WCHAR *p = name;
+        while (*p) p++;
+        nameW->Buffer = (WCHAR *)name;
+        nameW->Length = (USHORT)((p - name) * sizeof(WCHAR));
+        nameW->MaximumLength = nameW->Length + sizeof(WCHAR);
+    }
+    InitializeObjectAttributes( attr, name ? nameW : NULL, 0, NULL,
+                                sa ? sa->lpSecurityDescriptor : NULL );
+    if (sa && sa->bInheritHandle) attr->Attributes |= OBJ_INHERIT;
+}
+
+static BOOL macrunner_hb_try_winrt_semantic( hb_context_t *ctx,
+                                             const struct macrunner_hb_import_thunk *thunk,
+                                             const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                             uint64_t *ret )
+{
+    if (!ctx || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_strieq( thunk->dll_name, "api-ms-win-core-winrt-l1-1-0.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "combase.dll" ))
+        return FALSE;
+
+    if (macrunner_hb_strieq( thunk->import_name, "RoInitialize" ))
+    {
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = S_OK;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "RoUninitialize" ))
+    {
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "RoGetActivationFactory" ) ||
+        macrunner_hb_strieq( thunk->import_name, "RoActivateInstance" ))
+    {
+        if (macrunner_hb_strieq( thunk->import_name, "RoGetActivationFactory" ) && args[2])
+            *(void **)(uintptr_t)args[2] = NULL;
+        else if (macrunner_hb_strieq( thunk->import_name, "RoActivateInstance" ) && args[1])
+            *(void **)(uintptr_t)args[1] = NULL;
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = 0x80040154u; /* REGDB_E_CLASSNOTREG */
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
+                                                       const struct macrunner_hb_import_thunk *thunk,
+                                                       const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                       uint64_t *ret )
+{
+    LARGE_INTEGER timeout;
+    NTSTATUS status;
+
+    if (!ctx || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
+        !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
+        return FALSE;
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetLastError" ))
+    {
+        *ret = NtCurrentTeb()->LastErrorValue;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "SetLastError" ))
+    {
+        NtCurrentTeb()->LastErrorValue = (DWORD)args[0];
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "SetErrorMode" ))
+    {
+        DWORD old_mode;
+
+        pthread_mutex_lock( &macrunner_hb_error_mode_mutex );
+        old_mode = macrunner_hb_error_mode;
+        macrunner_hb_error_mode = (DWORD)args[0];
+        pthread_mutex_unlock( &macrunner_hb_error_mode_mutex );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        *ret = old_mode;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetErrorMode" ))
+    {
+        pthread_mutex_lock( &macrunner_hb_error_mode_mutex );
+        *ret = macrunner_hb_error_mode;
+        pthread_mutex_unlock( &macrunner_hb_error_mode_mutex );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "SetThreadErrorMode" ))
+    {
+        DWORD old_mode = macrunner_hb_thread_error_mode;
+
+        macrunner_hb_thread_error_mode = (DWORD)args[0];
+        if (args[1]) *(DWORD *)(uintptr_t)args[1] = old_mode;
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "OutputDebugStringA" ) ||
+        macrunner_hb_strieq( thunk->import_name, "OutputDebugStringW" ))
+    {
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "CreateEventA" ) ||
+        macrunner_hb_strieq( thunk->import_name, "CreateEventW" ) ||
+        macrunner_hb_strieq( thunk->import_name, "CreateEventExA" ) ||
+        macrunner_hb_strieq( thunk->import_name, "CreateEventExW" ))
+    {
+        SECURITY_ATTRIBUTES *sa = (SECURITY_ATTRIBUTES *)(uintptr_t)args[0];
+        OBJECT_ATTRIBUTES attr;
+        OBJECT_ATTRIBUTES *attr_ptr = NULL;
+        UNICODE_STRING nameW;
+        WCHAR name_buffer[MAX_PATH];
+        const WCHAR *name = NULL;
+        HANDLE handle = 0;
+        DWORD flags, access;
+
+        if (macrunner_hb_strieq( thunk->import_name, "CreateEventExA" ) ||
+            macrunner_hb_strieq( thunk->import_name, "CreateEventExW" ))
+        {
+            flags = (DWORD)args[2];
+            access = (DWORD)args[3];
+            if (args[1])
+            {
+                if (macrunner_hb_strieq( thunk->import_name, "CreateEventExA" ))
+                {
+                    if (!macrunner_hb_ascii_to_wchar_buffer( (const char *)(uintptr_t)args[1],
+                                                             name_buffer, ARRAY_SIZE(name_buffer) ))
+                    {
+                        RtlSetLastWin32Error( ERROR_FILENAME_EXCED_RANGE );
+                        NtCurrentTeb()->LastStatusValue = STATUS_NAME_TOO_LONG;
+                        *ret = 0;
+                        return TRUE;
+                    }
+                    name = name_buffer;
+                }
+                else name = (const WCHAR *)(uintptr_t)args[1];
+            }
+        }
+        else
+        {
+            flags = 0;
+            if (args[1]) flags |= CREATE_EVENT_MANUAL_RESET;
+            if (args[2]) flags |= CREATE_EVENT_INITIAL_SET;
+            access = EVENT_ALL_ACCESS;
+            if (args[3])
+            {
+                if (macrunner_hb_strieq( thunk->import_name, "CreateEventA" ))
+                {
+                    if (!macrunner_hb_ascii_to_wchar_buffer( (const char *)(uintptr_t)args[3],
+                                                             name_buffer, ARRAY_SIZE(name_buffer) ))
+                    {
+                        RtlSetLastWin32Error( ERROR_FILENAME_EXCED_RANGE );
+                        NtCurrentTeb()->LastStatusValue = STATUS_NAME_TOO_LONG;
+                        *ret = 0;
+                        return TRUE;
+                    }
+                    name = name_buffer;
+                }
+                else name = (const WCHAR *)(uintptr_t)args[3];
+            }
+        }
+
+        if (sa || name)
+        {
+            macrunner_hb_init_named_object_attributes( &attr, &nameW, sa, name );
+            attr_ptr = &attr;
+        }
+        status = NtCreateEvent( &handle, access, attr_ptr,
+                                (flags & CREATE_EVENT_MANUAL_RESET) ? NotificationEvent : SynchronizationEvent,
+                                (flags & CREATE_EVENT_INITIAL_SET) != 0 );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status == STATUS_OBJECT_NAME_EXISTS)
+        {
+            RtlSetLastWin32Error( ERROR_ALREADY_EXISTS );
+            *ret = (uint64_t)(uintptr_t)handle;
+        }
+        else if (status)
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = 0;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            *ret = (uint64_t)(uintptr_t)handle;
+        }
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "OpenEventA" ) ||
+        macrunner_hb_strieq( thunk->import_name, "OpenEventW" ))
+    {
+        OBJECT_ATTRIBUTES attr;
+        UNICODE_STRING nameW;
+        WCHAR name_buffer[MAX_PATH];
+        const WCHAR *name = NULL;
+        HANDLE handle = 0;
+
+        if (args[2])
+        {
+            if (macrunner_hb_strieq( thunk->import_name, "OpenEventA" ))
+            {
+                if (!macrunner_hb_ascii_to_wchar_buffer( (const char *)(uintptr_t)args[2],
+                                                         name_buffer, ARRAY_SIZE(name_buffer) ))
+                {
+                    RtlSetLastWin32Error( ERROR_FILENAME_EXCED_RANGE );
+                    NtCurrentTeb()->LastStatusValue = STATUS_NAME_TOO_LONG;
+                    *ret = 0;
+                    return TRUE;
+                }
+                name = name_buffer;
+            }
+            else name = (const WCHAR *)(uintptr_t)args[2];
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = 0;
+            return TRUE;
+        }
+
+        macrunner_hb_init_named_object_attributes( &attr, &nameW, NULL, name );
+        if (args[1]) attr.Attributes |= OBJ_INHERIT;
+        status = NtOpenEvent( &handle, (ACCESS_MASK)args[0], &attr );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status)
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = 0;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            *ret = (uint64_t)(uintptr_t)handle;
+        }
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "SetEvent" ) ||
+        macrunner_hb_strieq( thunk->import_name, "ResetEvent" ) ||
+        macrunner_hb_strieq( thunk->import_name, "PulseEvent" ))
+    {
+        if (macrunner_hb_strieq( thunk->import_name, "SetEvent" ))
+            status = NtSetEvent( (HANDLE)(uintptr_t)args[0], NULL );
+        else if (macrunner_hb_strieq( thunk->import_name, "ResetEvent" ))
+            status = NtResetEvent( (HANDLE)(uintptr_t)args[0], NULL );
+        else
+            status = NtPulseEvent( (HANDLE)(uintptr_t)args[0], NULL );
+
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status)
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = FALSE;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            *ret = TRUE;
+        }
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "VirtualAlloc" ) ||
+        macrunner_hb_strieq( thunk->import_name, "VirtualAllocEx" ))
+    {
+        HANDLE process = NtCurrentProcess();
+        void *base;
+        SIZE_T size;
+        ULONG type, protect;
+
+        if (macrunner_hb_strieq( thunk->import_name, "VirtualAllocEx" ))
+        {
+            process = (HANDLE)(uintptr_t)args[0];
+            base = (void *)(uintptr_t)args[1];
+            size = (SIZE_T)args[2];
+            type = (ULONG)args[3];
+            protect = (ULONG)args[4];
+        }
+        else
+        {
+            base = (void *)(uintptr_t)args[0];
+            size = (SIZE_T)args[1];
+            type = (ULONG)args[2];
+            protect = (ULONG)args[3];
+        }
+
+        status = NtAllocateVirtualMemory( process, &base, 0, &size, type, protect );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status)
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = 0;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            *ret = (uint64_t)(uintptr_t)base;
+        }
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "VirtualFree" ) ||
+        macrunner_hb_strieq( thunk->import_name, "VirtualFreeEx" ))
+    {
+        HANDLE process = NtCurrentProcess();
+        void *base;
+        SIZE_T size;
+        ULONG type;
+
+        if (macrunner_hb_strieq( thunk->import_name, "VirtualFreeEx" ))
+        {
+            process = (HANDLE)(uintptr_t)args[0];
+            base = (void *)(uintptr_t)args[1];
+            size = (SIZE_T)args[2];
+            type = (ULONG)args[3];
+        }
+        else
+        {
+            base = (void *)(uintptr_t)args[0];
+            size = (SIZE_T)args[1];
+            type = (ULONG)args[2];
+        }
+
+        status = NtFreeVirtualMemory( process, &base, &size, type );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status)
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = FALSE;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            *ret = TRUE;
+        }
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "VirtualProtect" ) ||
+        macrunner_hb_strieq( thunk->import_name, "VirtualProtectEx" ))
+    {
+        HANDLE process = NtCurrentProcess();
+        void *base;
+        SIZE_T size;
+        ULONG protect, old_protect = 0;
+        uint64_t old_protect_guest;
+
+        if (macrunner_hb_strieq( thunk->import_name, "VirtualProtectEx" ))
+        {
+            process = (HANDLE)(uintptr_t)args[0];
+            base = (void *)(uintptr_t)args[1];
+            size = (SIZE_T)args[2];
+            protect = (ULONG)args[3];
+            old_protect_guest = args[4];
+        }
+        else
+        {
+            base = (void *)(uintptr_t)args[0];
+            size = (SIZE_T)args[1];
+            protect = (ULONG)args[2];
+            old_protect_guest = args[3];
+        }
+
+        status = old_protect_guest ? NtProtectVirtualMemory( process, &base, &size, protect, &old_protect )
+                                   : STATUS_INVALID_PARAMETER;
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status)
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = FALSE;
+        }
+        else
+        {
+            *(DWORD *)(uintptr_t)old_protect_guest = old_protect;
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            *ret = TRUE;
+        }
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "VirtualQuery" ) ||
+        macrunner_hb_strieq( thunk->import_name, "VirtualQueryEx" ))
+    {
+        HANDLE process = NtCurrentProcess();
+        const void *addr;
+        MEMORY_BASIC_INFORMATION *info;
+        SIZE_T length, result = 0;
+
+        if (macrunner_hb_strieq( thunk->import_name, "VirtualQueryEx" ))
+        {
+            process = (HANDLE)(uintptr_t)args[0];
+            addr = (const void *)(uintptr_t)args[1];
+            info = (MEMORY_BASIC_INFORMATION *)(uintptr_t)args[2];
+            length = (SIZE_T)args[3];
+        }
+        else
+        {
+            addr = (const void *)(uintptr_t)args[0];
+            info = (MEMORY_BASIC_INFORMATION *)(uintptr_t)args[1];
+            length = (SIZE_T)args[2];
+        }
+
+        status = NtQueryVirtualMemory( process, addr, MemoryBasicInformation, info, length, &result );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status)
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = 0;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            *ret = result;
+        }
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetProcessHeap" ))
+    {
+        PEB *peb = NtCurrentTeb()->Peb;
+
+        *ret = (uint64_t)(uintptr_t)(peb ? peb->ProcessHeap : NULL);
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetCurrentProcess" ))
+    {
+        *ret = (uint64_t)(uintptr_t)(HANDLE)(intptr_t)-1;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "GetCurrentThread" ))
+    {
+        *ret = (uint64_t)(uintptr_t)(HANDLE)(intptr_t)-2;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "InitializeCriticalSection" ) ||
+        macrunner_hb_strieq( thunk->import_name, "InitializeCriticalSectionAndSpinCount" ) ||
+        macrunner_hb_strieq( thunk->import_name, "InitializeCriticalSectionEx" ))
+    {
+        CRITICAL_SECTION *cs = (CRITICAL_SECTION *)(uintptr_t)args[0];
+        DWORD spin = 0, flags = 0;
+
+        if (macrunner_hb_strieq( thunk->import_name, "InitializeCriticalSectionAndSpinCount" ))
+            spin = (DWORD)args[1];
+        else if (macrunner_hb_strieq( thunk->import_name, "InitializeCriticalSectionEx" ))
+        {
+            spin = (DWORD)args[1];
+            flags = (DWORD)args[2];
+        }
+        if (cs)
+        {
+            cs->DebugInfo = NULL;
+            cs->LockCount = -1;
+            cs->RecursionCount = 0;
+            cs->OwningThread = 0;
+            cs->LockSemaphore = 0;
+            cs->SpinCount = spin & ~0x80000000u;
+        }
+        (void)flags;
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        *ret = macrunner_hb_strieq( thunk->import_name, "InitializeCriticalSection" ) ? 0 : TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "DeleteCriticalSection" ))
+    {
+        CRITICAL_SECTION *cs = (CRITICAL_SECTION *)(uintptr_t)args[0];
+
+        if (cs)
+        {
+            cs->DebugInfo = NULL;
+            cs->LockCount = -1;
+            cs->RecursionCount = 0;
+            cs->OwningThread = 0;
+            cs->LockSemaphore = 0;
+            cs->SpinCount = 0;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "EnterCriticalSection" ))
+    {
+        CRITICAL_SECTION *cs = (CRITICAL_SECTION *)(uintptr_t)args[0];
+        HANDLE tid = NtCurrentTeb()->ClientId.UniqueThread;
+
+        if (cs)
+        {
+            if (cs->OwningThread == tid) cs->RecursionCount++;
+            else
+            {
+                cs->OwningThread = tid;
+                cs->RecursionCount = 1;
+                cs->LockCount = 0;
+            }
+        }
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "LeaveCriticalSection" ))
+    {
+        CRITICAL_SECTION *cs = (CRITICAL_SECTION *)(uintptr_t)args[0];
+
+        if (cs && cs->RecursionCount > 0)
+        {
+            cs->RecursionCount--;
+            if (!cs->RecursionCount)
+            {
+                cs->OwningThread = 0;
+                cs->LockCount = -1;
+            }
+        }
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "TryEnterCriticalSection" ))
+    {
+        CRITICAL_SECTION *cs = (CRITICAL_SECTION *)(uintptr_t)args[0];
+        HANDLE tid = NtCurrentTeb()->ClientId.UniqueThread;
+
+        if (cs)
+        {
+            if (cs->OwningThread == tid) cs->RecursionCount++;
+            else
+            {
+                cs->OwningThread = tid;
+                cs->RecursionCount = 1;
+                cs->LockCount = 0;
+            }
+        }
+        *ret = TRUE;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "InitializeSListHead" ))
+    {
+        macrunner_hb_guest_slist_initialize( ctx, (void *)(uintptr_t)args[0] );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = 0;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "InterlockedFlushSList" ))
+    {
+        *ret = macrunner_hb_guest_slist_flush( ctx, (void *)(uintptr_t)args[0] );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "InterlockedPopEntrySList" ))
+    {
+        *ret = macrunner_hb_guest_slist_pop( ctx, (void *)(uintptr_t)args[0] );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "InterlockedPushEntrySList" ))
+    {
+        *ret = macrunner_hb_guest_slist_push( ctx, (void *)(uintptr_t)args[0],
+                                              (void *)(uintptr_t)args[1] );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "InterlockedPushListSList" ) ||
+        macrunner_hb_strieq( thunk->import_name, "InterlockedPushListSListEx" ))
+    {
+        *ret = macrunner_hb_guest_slist_push_list( ctx, (void *)(uintptr_t)args[0],
+                                                   (void *)(uintptr_t)args[1],
+                                                   (void *)(uintptr_t)args[2],
+                                                   (ULONG)args[3] );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "QueryDepthSList" ))
+    {
+        pthread_mutex_lock( &macrunner_hb_slist_mutex );
+        *ret = macrunner_hb_guest_slist_depth( ctx, (void *)(uintptr_t)args[0] );
+        pthread_mutex_unlock( &macrunner_hb_slist_mutex );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "TlsAlloc" ) ||
+        macrunner_hb_strieq( thunk->import_name, "FlsAlloc" ))
+    {
+        unsigned char *slots = macrunner_hb_strieq( thunk->import_name, "TlsAlloc" ) ?
+                               macrunner_hb_tls_slots : macrunner_hb_fls_slots;
+        uint64_t *callbacks = macrunner_hb_strieq( thunk->import_name, "FlsAlloc" ) ?
+                              macrunner_hb_fls_callbacks : NULL;
+        DWORD index = TLS_OUT_OF_INDEXES;
+        DWORD i;
+
+        pthread_mutex_lock( &macrunner_hb_tls_mutex );
+        for (i = 0; i < MACRUNNER_HB_TLS_SLOT_MAX; i++)
+        {
+            if (slots[i]) continue;
+            slots[i] = 1;
+            if (callbacks) callbacks[i] = args[0];
+            index = i;
+            break;
+        }
+        pthread_mutex_unlock( &macrunner_hb_tls_mutex );
+        *ret = index;
+        RtlSetLastWin32Error( index == TLS_OUT_OF_INDEXES ? ERROR_NOT_ENOUGH_MEMORY : ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = index == TLS_OUT_OF_INDEXES ? STATUS_NO_MEMORY : STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "TlsSetValue" ) ||
+        macrunner_hb_strieq( thunk->import_name, "FlsSetValue" ))
+    {
+        DWORD index = (DWORD)args[0];
+        unsigned char *slots = macrunner_hb_strieq( thunk->import_name, "TlsSetValue" ) ?
+                               macrunner_hb_tls_slots : macrunner_hb_fls_slots;
+        uint64_t *values = macrunner_hb_strieq( thunk->import_name, "TlsSetValue" ) ?
+                           macrunner_hb_tls_values : macrunner_hb_fls_values;
+
+        if (index >= MACRUNNER_HB_TLS_SLOT_MAX || !slots[index])
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = FALSE;
+            return TRUE;
+        }
+        values[index] = args[1];
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "TlsGetValue" ) ||
+        macrunner_hb_strieq( thunk->import_name, "FlsGetValue" ))
+    {
+        DWORD index = (DWORD)args[0];
+        unsigned char *slots = macrunner_hb_strieq( thunk->import_name, "TlsGetValue" ) ?
+                               macrunner_hb_tls_slots : macrunner_hb_fls_slots;
+        uint64_t *values = macrunner_hb_strieq( thunk->import_name, "TlsGetValue" ) ?
+                           macrunner_hb_tls_values : macrunner_hb_fls_values;
+
+        if (index >= MACRUNNER_HB_TLS_SLOT_MAX || !slots[index])
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = 0;
+            return TRUE;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = values[index];
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "TlsFree" ) ||
+        macrunner_hb_strieq( thunk->import_name, "FlsFree" ))
+    {
+        DWORD index = (DWORD)args[0];
+        unsigned char *slots = macrunner_hb_strieq( thunk->import_name, "TlsFree" ) ?
+                               macrunner_hb_tls_slots : macrunner_hb_fls_slots;
+        uint64_t *values = macrunner_hb_strieq( thunk->import_name, "TlsFree" ) ?
+                           macrunner_hb_tls_values : macrunner_hb_fls_values;
+
+        if (index >= MACRUNNER_HB_TLS_SLOT_MAX || !slots[index])
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = FALSE;
+            return TRUE;
+        }
+        pthread_mutex_lock( &macrunner_hb_tls_mutex );
+        slots[index] = 0;
+        macrunner_hb_fls_callbacks[index] = 0;
+        pthread_mutex_unlock( &macrunner_hb_tls_mutex );
+        values[index] = 0;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = TRUE;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "LocalAlloc" ))
+    {
+        UINT flags = (UINT)args[0];
+        SIZE_T size = (SIZE_T)args[1];
+        void *ptr = malloc( size ? size : 1 );
+
+        if (ptr && (flags & LMEM_ZEROINIT)) memset( ptr, 0, size ? size : 1 );
+        if (ptr && !macrunner_hb_local_heap_remember( ptr ))
+        {
+            free( ptr );
+            ptr = NULL;
+        }
+        *ret = (uint64_t)(uintptr_t)ptr;
+        RtlSetLastWin32Error( ptr ? ERROR_SUCCESS : ERROR_NOT_ENOUGH_MEMORY );
+        NtCurrentTeb()->LastStatusValue = ptr ? STATUS_SUCCESS : STATUS_NO_MEMORY;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "LocalReAlloc" ))
+    {
+        void *old_ptr = (void *)(uintptr_t)args[0];
+        SIZE_T old_size = 0;
+        SIZE_T size = (SIZE_T)args[1];
+        UINT flags = (UINT)args[2];
+        void *ptr;
+
+        if (!old_ptr)
+        {
+            ptr = malloc( size ? size : 1 );
+            if (ptr && (flags & LMEM_ZEROINIT)) memset( ptr, 0, size ? size : 1 );
+            if (ptr && !macrunner_hb_local_heap_remember( ptr ))
+            {
+                free( ptr );
+                ptr = NULL;
+            }
+            *ret = (uint64_t)(uintptr_t)ptr;
+            RtlSetLastWin32Error( ptr ? ERROR_SUCCESS : ERROR_NOT_ENOUGH_MEMORY );
+            NtCurrentTeb()->LastStatusValue = ptr ? STATUS_SUCCESS : STATUS_NO_MEMORY;
+            return TRUE;
+        }
+        if (!macrunner_hb_local_heap_contains( old_ptr )) return FALSE;
+#ifdef __APPLE__
+        old_size = malloc_size( old_ptr );
+#endif
+        ptr = realloc( old_ptr, size ? size : 1 );
+        if (ptr && (flags & LMEM_ZEROINIT) && size > old_size)
+            memset( (BYTE *)ptr + old_size, 0, size - old_size );
+        if (ptr && !macrunner_hb_local_heap_replace( old_ptr, ptr ))
+        {
+            free( ptr );
+            ptr = NULL;
+        }
+        *ret = (uint64_t)(uintptr_t)ptr;
+        RtlSetLastWin32Error( ptr ? ERROR_SUCCESS : ERROR_NOT_ENOUGH_MEMORY );
+        NtCurrentTeb()->LastStatusValue = ptr ? STATUS_SUCCESS : STATUS_NO_MEMORY;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "LocalFree" ))
+    {
+        void *ptr = (void *)(uintptr_t)args[0];
+
+        if (!ptr)
+        {
+            *ret = 0;
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+            return TRUE;
+        }
+        if (!macrunner_hb_local_heap_contains( ptr )) return FALSE;
+        if (macrunner_hb_local_heap_forget( ptr )) free( ptr );
+        *ret = 0;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "LocalSize" ))
+    {
+        SIZE_T size = ~(SIZE_T)0;
+
+        if (!args[0] || !macrunner_hb_local_heap_contains( (void *)(uintptr_t)args[0] ))
+            return FALSE;
+#ifdef __APPLE__
+        size = malloc_size( (void *)(uintptr_t)args[0] );
+#endif
+        *ret = size;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "HeapAlloc" ))
+    {
+        void *ptr = malloc( (SIZE_T)args[2] );
+
+        if (ptr && ((ULONG)args[1] & HEAP_ZERO_MEMORY)) memset( ptr, 0, (SIZE_T)args[2] );
+        if (ptr && !macrunner_hb_local_heap_remember( ptr ))
+        {
+            free( ptr );
+            ptr = NULL;
+        }
+
+        *ret = (uint64_t)(uintptr_t)ptr;
+        RtlSetLastWin32Error( ptr ? ERROR_SUCCESS : ERROR_NOT_ENOUGH_MEMORY );
+        NtCurrentTeb()->LastStatusValue = ptr ? STATUS_SUCCESS : STATUS_NO_MEMORY;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "HeapReAlloc" ))
+    {
+        void *old_ptr = (void *)(uintptr_t)args[2];
+        SIZE_T old_size = 0;
+        void *ptr;
+
+        if ((ULONG)args[1] & HEAP_REALLOC_IN_PLACE_ONLY)
+        {
+            RtlSetLastWin32Error( ERROR_NOT_ENOUGH_MEMORY );
+            NtCurrentTeb()->LastStatusValue = STATUS_NO_MEMORY;
+            *ret = 0;
+            return TRUE;
+        }
+#ifdef __APPLE__
+        if (old_ptr) old_size = malloc_size( old_ptr );
+#endif
+        if (old_ptr && !macrunner_hb_local_heap_contains( old_ptr ))
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = 0;
+            return TRUE;
+        }
+        ptr = realloc( old_ptr, (SIZE_T)args[3] );
+        if (ptr && ((ULONG)args[1] & HEAP_ZERO_MEMORY) && (SIZE_T)args[3] > old_size)
+            memset( (BYTE *)ptr + old_size, 0, (SIZE_T)args[3] - old_size );
+        if (ptr && !macrunner_hb_local_heap_replace( old_ptr, ptr ))
+        {
+            free( ptr );
+            ptr = NULL;
+        }
+
+        *ret = (uint64_t)(uintptr_t)ptr;
+        RtlSetLastWin32Error( ptr ? ERROR_SUCCESS : ERROR_NOT_ENOUGH_MEMORY );
+        NtCurrentTeb()->LastStatusValue = ptr ? STATUS_SUCCESS : STATUS_NO_MEMORY;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "HeapFree" ))
+    {
+        void *ptr = (void *)(uintptr_t)args[2];
+
+        if (ptr && macrunner_hb_local_heap_forget( ptr )) free( ptr );
+        *ret = TRUE;
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "HeapSize" ))
+    {
+        SIZE_T size = ~(SIZE_T)0;
+
+#ifdef __APPLE__
+        if (args[2] && macrunner_hb_local_heap_contains( (void *)(uintptr_t)args[2] ))
+            size = malloc_size( (void *)(uintptr_t)args[2] );
+#endif
+        *ret = size;
+        RtlSetLastWin32Error( size != ~(SIZE_T)0 ? ERROR_SUCCESS : ERROR_INVALID_PARAMETER );
+        NtCurrentTeb()->LastStatusValue = size != ~(SIZE_T)0 ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "WaitForSingleObject" ))
+    {
+        status = NtWaitForSingleObject( (HANDLE)(uintptr_t)args[0], FALSE,
+                                        macrunner_hb_get_nt_timeout( &timeout, (DWORD)args[1] ) );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (NT_ERROR( status ))
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = WAIT_FAILED;
+        }
+        else *ret = status;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "WaitForMultipleObjects" ))
+    {
+        HANDLE handles[MAXIMUM_WAIT_OBJECTS];
+        DWORD count = (DWORD)args[0];
+
+        if (!count || count > MAXIMUM_WAIT_OBJECTS ||
+            hb_memory_read( ctx->memory, (hb_gva_t)args[1], handles, count * sizeof(handles[0]) ) != HB_OK)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = WAIT_FAILED;
+            return TRUE;
+        }
+        status = NtWaitForMultipleObjects( count, handles, args[2] ? WaitAll : WaitAny, FALSE,
+                                           macrunner_hb_get_nt_timeout( &timeout, (DWORD)args[3] ) );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (NT_ERROR( status ))
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = WAIT_FAILED;
+        }
+        else *ret = status;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "CloseHandle" ))
+    {
+        if (macrunner_hb_local_file_close( args[0] ))
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+            *ret = TRUE;
+            return TRUE;
+        }
+        status = NtClose( (HANDLE)(uintptr_t)args[0] );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (NT_ERROR( status ))
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = FALSE;
+        }
+        else *ret = TRUE;
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+struct macrunner_hb_vectored_handler
+{
+    uint64_t handle;
+    uint64_t func;
+};
+
+#define MACRUNNER_HB_VECTORED_MAX 32
+
+static pthread_mutex_t macrunner_hb_vectored_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct macrunner_hb_vectored_handler macrunner_hb_vectored_handlers[MACRUNNER_HB_VECTORED_MAX];
+static uint64_t macrunner_hb_vectored_next_handle = 0x6f10000000000000ULL;
+
+static BOOL macrunner_hb_try_vectored_exception_semantic( hb_context_t *ctx,
+                                                          const struct macrunner_hb_import_thunk *thunk,
+                                                          const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                          uint64_t *ret )
+{
+    BOOL is_kernel_exception_api, is_ntdll_exception_api;
+    unsigned int i;
+
+    if (!ctx || !thunk || !args || !ret) return FALSE;
+    is_kernel_exception_api = (macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+                               macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ));
+    is_ntdll_exception_api = macrunner_hb_strieq( thunk->dll_name, "ntdll.dll" );
+    if (!is_kernel_exception_api && !is_ntdll_exception_api) return FALSE;
+
+    if ((is_kernel_exception_api && macrunner_hb_strieq( thunk->import_name, "AddVectoredExceptionHandler" )) ||
+        (is_ntdll_exception_api && macrunner_hb_strieq( thunk->import_name, "RtlAddVectoredExceptionHandler" )))
+    {
+        uint64_t func = args[1];
+        int chosen = -1;
+
+        if (!func)
+        {
+            *ret = 0;
+            return TRUE;
+        }
+
+        pthread_mutex_lock( &macrunner_hb_vectored_mutex );
+        for (i = 0; i < MACRUNNER_HB_VECTORED_MAX; i++)
+        {
+            if (!macrunner_hb_vectored_handlers[i].func)
+            {
+                chosen = i;
+                break;
+            }
+        }
+        if (chosen >= 0)
+        {
+            if (args[0])
+            {
+                memmove( &macrunner_hb_vectored_handlers[1], &macrunner_hb_vectored_handlers[0],
+                         chosen * sizeof(macrunner_hb_vectored_handlers[0]) );
+                chosen = 0;
+            }
+            macrunner_hb_vectored_handlers[chosen].handle = macrunner_hb_vectored_next_handle++;
+            macrunner_hb_vectored_handlers[chosen].func = func;
+            *ret = macrunner_hb_vectored_handlers[chosen].handle;
+        }
+        else *ret = 0;
+        pthread_mutex_unlock( &macrunner_hb_vectored_mutex );
+        return TRUE;
+    }
+
+    if ((is_kernel_exception_api && macrunner_hb_strieq( thunk->import_name, "RemoveVectoredExceptionHandler" )) ||
+        (is_ntdll_exception_api && macrunner_hb_strieq( thunk->import_name, "RtlRemoveVectoredExceptionHandler" )))
+    {
+        BOOL removed = FALSE;
+
+        pthread_mutex_lock( &macrunner_hb_vectored_mutex );
+        for (i = 0; i < MACRUNNER_HB_VECTORED_MAX; i++)
+        {
+            if (macrunner_hb_vectored_handlers[i].handle == args[0])
+            {
+                memset( &macrunner_hb_vectored_handlers[i], 0, sizeof(macrunner_hb_vectored_handlers[i]) );
+                removed = TRUE;
+                break;
+            }
+        }
+        pthread_mutex_unlock( &macrunner_hb_vectored_mutex );
+        *ret = removed;
+        return TRUE;
+    }
+
+    if (is_kernel_exception_api && macrunner_hb_strieq( thunk->import_name, "RaiseException" ))
+    {
+        EXCEPTION_RECORD record;
+        CONTEXT context;
+        EXCEPTION_POINTERS pointers;
+        uint64_t exception_args[EXCEPTION_MAXIMUM_PARAMETERS];
+        uint64_t handlers[MACRUNNER_HB_VECTORED_MAX];
+        ULONG64 handler_ret = EXCEPTION_CONTINUE_SEARCH;
+        unsigned int handler_count = 0;
+
+        memset( &record, 0, sizeof(record) );
+        memset( &context, 0, sizeof(context) );
+        memset( exception_args, 0, sizeof(exception_args) );
+
+        record.ExceptionCode = (DWORD)args[0];
+        record.ExceptionFlags = (DWORD)args[1];
+        record.ExceptionAddress = (void *)(uintptr_t)ctx->pc;
+        if (args[2] > EXCEPTION_MAXIMUM_PARAMETERS)
+        {
+            record.ExceptionFlags |= EXCEPTION_NONCONTINUABLE;
+            record.NumberParameters = EXCEPTION_MAXIMUM_PARAMETERS;
+        }
+        else record.NumberParameters = (DWORD)args[2];
+        if (record.NumberParameters && args[3])
+        {
+            if (hb_memory_read( ctx->memory, (hb_gva_t)args[3], exception_args,
+                                record.NumberParameters * sizeof(exception_args[0]) ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = 0;
+                return TRUE;
+            }
+            for (i = 0; i < record.NumberParameters; i++)
+                record.ExceptionInformation[i] = exception_args[i];
+        }
+
+        pointers.ExceptionRecord = &record;
+        pointers.ContextRecord = &context;
+
+        pthread_mutex_lock( &macrunner_hb_vectored_mutex );
+        for (i = 0; i < MACRUNNER_HB_VECTORED_MAX; i++)
+        {
+            if (macrunner_hb_vectored_handlers[i].func)
+                handlers[handler_count++] = macrunner_hb_vectored_handlers[i].func;
+        }
+        pthread_mutex_unlock( &macrunner_hb_vectored_mutex );
+
+        for (i = 0; i < handler_count; i++)
+        {
+            hb_abi_x64_call_t call;
+            ULONG64 blocks = 0, steps = 0;
+            NTSTATUS status;
+
+            memset( &call, 0, sizeof(call) );
+            call.rcx = (uint64_t)(uintptr_t)&pointers;
+            status = macrunner_hb_run_x64( (void *)(uintptr_t)handlers[i], &call, &handler_ret,
+                                           &blocks, &steps, "x64-vectored-exception",
+                                           NtCurrentTeb()->Peb->ImageBaseAddress );
+            if (status)
+            {
+                NtCurrentTeb()->LastStatusValue = status;
+                *ret = 0;
+                return TRUE;
+            }
+            if ((LONG)handler_ret == EXCEPTION_CONTINUE_EXECUTION)
+            {
+                *ret = 0;
+                return TRUE;
+            }
+        }
+
+        NtCurrentTeb()->LastStatusValue = STATUS_UNHANDLED_EXCEPTION;
+        *ret = 0;
         return TRUE;
     }
 
@@ -2792,6 +7882,292 @@ static BOOL macrunner_hb_try_ntdll_version_semantic( hb_context_t *ctx, void *im
 static unsigned int macrunner_hb_import_arg_count( const struct macrunner_hb_import_thunk *thunk )
 {
     if (!thunk) return 12;
+
+    if ((macrunner_hb_strieq( thunk->dll_name, "api-ms-win-core-winrt-l1-1-0.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "combase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "RoUninitialize" ))
+        return 0;
+    if ((macrunner_hb_strieq( thunk->dll_name, "api-ms-win-core-winrt-l1-1-0.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "combase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "RoInitialize" ))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "api-ms-win-core-winrt-l1-1-0.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "combase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "RoActivateInstance" ))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "api-ms-win-core-winrt-l1-1-0.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "combase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "RoGetActivationFactory" ))
+        return 3;
+    if ((macrunner_hb_strieq( thunk->dll_name, "shell32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "shcore.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "CommandLineToArgvW" ))
+        return 2;
+
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "CreateThread" ))
+        return 6;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "CreateRemoteThread" ))
+        return 7;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "CreateRemoteThreadEx" ))
+        return 8;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "WaitForMultipleObjects" ))
+        return 4;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "WaitForSingleObject" ))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "CloseHandle" ))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "SetEvent" ) ||
+         macrunner_hb_strieq( thunk->import_name, "ResetEvent" ) ||
+         macrunner_hb_strieq( thunk->import_name, "PulseEvent" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetErrorMode" ) ||
+         macrunner_hb_strieq( thunk->import_name, "OutputDebugStringA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "OutputDebugStringW" )))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "GetErrorMode" ))
+        return 0;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "SetThreadErrorMode" ))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "OpenEventA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "OpenEventW" )))
+        return 3;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "CreateEventA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CreateEventW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CreateEventExA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CreateEventExW" )))
+        return 4;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "VirtualFree" ) ||
+         macrunner_hb_strieq( thunk->import_name, "VirtualQuery" )))
+        return 3;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "VirtualAlloc" ) ||
+         macrunner_hb_strieq( thunk->import_name, "VirtualProtect" ) ||
+         macrunner_hb_strieq( thunk->import_name, "VirtualFreeEx" ) ||
+         macrunner_hb_strieq( thunk->import_name, "VirtualQueryEx" )))
+        return 4;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "VirtualAllocEx" ) ||
+         macrunner_hb_strieq( thunk->import_name, "VirtualProtectEx" )))
+        return 5;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "GetLastError" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetProcessHeap" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetCurrentProcess" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetCurrentThread" ) ||
+         macrunner_hb_strieq( thunk->import_name, "TlsAlloc" )))
+        return 0;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "GetSystemInfo" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetNativeSystemInfo" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GlobalMemoryStatus" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GlobalMemoryStatusEx" )))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "GetFileAttributesA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetFileAttributesW" )))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "GetFileAttributesExA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetFileAttributesExW" )))
+        return 3;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "CreateFileA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CreateFileW" )))
+        return 7;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "ReadFile" ))
+        return 5;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "GetFileSize" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetFileSizeEx" )))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "SetFilePointer" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" )))
+        return 4;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "LocalAlloc" ))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "LocalReAlloc" ))
+        return 3;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "SetLastError" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LocalFree" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LocalSize" ) ||
+         macrunner_hb_strieq( thunk->import_name, "TlsGetValue" ) ||
+         macrunner_hb_strieq( thunk->import_name, "TlsFree" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FlsAlloc" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FlsGetValue" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FlsFree" )))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "TlsSetValue" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FlsSetValue" )))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "HeapAlloc" ) ||
+         macrunner_hb_strieq( thunk->import_name, "HeapFree" ) ||
+         macrunner_hb_strieq( thunk->import_name, "HeapSize" )))
+        return 3;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "HeapReAlloc" ))
+        return 4;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "AddVectoredExceptionHandler" ))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "RemoveVectoredExceptionHandler" ))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "RaiseException" ))
+        return 4;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "GetEnvironmentStringsW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetEnvironmentStringsA" )))
+        return 0;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "FreeEnvironmentStringsW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FreeEnvironmentStringsA" )))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "GetModuleFileNameW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetModuleFileNameA" )))
+        return 3;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "QueryPerformanceFrequency" ) ||
+         macrunner_hb_strieq( thunk->import_name, "QueryPerformanceCounter" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetSystemTimePreciseAsFileTime" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetSystemTimeAsFileTime" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetSystemTime" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetLocalTime" )))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "SystemTimeToFileTime" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FileTimeToSystemTime" )))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "InitializeCriticalSection" ) ||
+         macrunner_hb_strieq( thunk->import_name, "DeleteCriticalSection" ) ||
+         macrunner_hb_strieq( thunk->import_name, "EnterCriticalSection" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LeaveCriticalSection" ) ||
+         macrunner_hb_strieq( thunk->import_name, "TryEnterCriticalSection" ) ||
+         macrunner_hb_strieq( thunk->import_name, "InitializeSRWLock" ) ||
+         macrunner_hb_strieq( thunk->import_name, "AcquireSRWLockExclusive" ) ||
+         macrunner_hb_strieq( thunk->import_name, "AcquireSRWLockShared" ) ||
+         macrunner_hb_strieq( thunk->import_name, "ReleaseSRWLockExclusive" ) ||
+         macrunner_hb_strieq( thunk->import_name, "ReleaseSRWLockShared" ) ||
+         macrunner_hb_strieq( thunk->import_name, "TryAcquireSRWLockExclusive" ) ||
+         macrunner_hb_strieq( thunk->import_name, "TryAcquireSRWLockShared" )))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "SleepConditionVariableSRW" ))
+        return 4;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "InitializeCriticalSectionAndSpinCount" ))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "InitializeCriticalSectionEx" ))
+        return 3;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "InitializeSListHead" ) ||
+         macrunner_hb_strieq( thunk->import_name, "InterlockedFlushSList" ) ||
+         macrunner_hb_strieq( thunk->import_name, "InterlockedPopEntrySList" ) ||
+         macrunner_hb_strieq( thunk->import_name, "QueryDepthSList" )))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "InterlockedPushEntrySList" ))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "InterlockedPushListSList" ) ||
+         macrunner_hb_strieq( thunk->import_name, "InterlockedPushListSListEx" )))
+        return 4;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "GetTempPathW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetTempPath2W" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetTempPathA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetTempPath2A" )))
+        return 2;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "LCMapStringEx" ))
+        return 9;
+    if (macrunner_hb_strieq( thunk->dll_name, "ntdll.dll" ) &&
+        macrunner_hb_strieq( thunk->import_name, "RtlAddVectoredExceptionHandler" ))
+        return 2;
+    if (macrunner_hb_strieq( thunk->dll_name, "ntdll.dll" ) &&
+        macrunner_hb_strieq( thunk->import_name, "RtlRemoveVectoredExceptionHandler" ))
+        return 1;
+    if (macrunner_hb_strieq( thunk->dll_name, "ntdll.dll" ) &&
+        (macrunner_hb_strieq( thunk->import_name, "RtlInitializeSRWLock" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RtlAcquireSRWLockExclusive" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RtlAcquireSRWLockShared" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RtlReleaseSRWLockExclusive" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RtlReleaseSRWLockShared" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RtlTryAcquireSRWLockExclusive" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RtlTryAcquireSRWLockShared" )))
+        return 1;
+    if (macrunner_hb_strieq( thunk->dll_name, "ntdll.dll" ) &&
+        macrunner_hb_strieq( thunk->import_name, "RtlSleepConditionVariableSRW" ))
+        return 4;
+    if (macrunner_hb_is_crt_stdio_dll( thunk->dll_name ) &&
+        macrunner_hb_strieq( thunk->import_name, "__stdio_common_vfprintf" ))
+        return 5;
 
     if (macrunner_hb_strieq( thunk->dll_name, "win32u.dll" ))
     {
@@ -2922,9 +8298,25 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     macrunner_hb_trace_image_api( ctx, "before", thunk, ret_addr, 0, args );
     macrunner_hb_trace_geometry_api( "before", thunk, ret_addr, 0, args );
     macrunner_hb_trace_abi_stack( ctx, "before-native", thunk, ret_addr, args );
-    if (macrunner_hb_try_get_module_handle_semantic( ctx, thunk, args, &rc ) ||
+    if (macrunner_hb_try_synthetic_d3d_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_get_module_handle_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_library_loader_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_environment_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_command_line_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_local_file_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_file_attribute_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_system_info_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_memory_status_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_msvcrt_time_semantic( ctx, thunk, args, &rc ) ||
-        macrunner_hb_try_msvcrt_exit_semantic( ctx, thunk, args, &rc ))
+        macrunner_hb_try_msvcrt_exit_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_crt_environment_init_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_unhandled_exception_filter_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_kernel32_stdio_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_crt_vfprintf_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_thread_creation_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_winrt_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_kernel32_handle_semantic( ctx, thunk, args, &rc ) ||
+        macrunner_hb_try_vectored_exception_semantic( ctx, thunk, args, &rc ))
     {
         TRACE( "MacRunner HyperBridge semantic import call %s!%s ret=%p\n",
                thunk->dll_name, thunk->import_name, (void *)(uintptr_t)rc );
@@ -3017,6 +8409,168 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     return HB_OK;
 }
 
+NTSTATUS macrunner_hb_x64_import_context( void *args )
+{
+    struct macrunner_hb_x64_import_context_params *params = args;
+    struct macrunner_hb_import_thunk *thunk;
+    struct macrunner_hb_special special;
+    hb_context_t *ctx = NULL;
+    TEB *teb;
+    CHPE_V2_CPU_AREA_INFO *cpu_area;
+    BOOL trace_import;
+    void *old_bridge_stack_limit = macrunner_hb_bridge_stack_limit;
+    void *old_bridge_stack_base = macrunner_hb_bridge_stack_base;
+    size_t old_bridge_stack_size = macrunner_hb_bridge_stack_size;
+    void *old_original_stack_limit = macrunner_hb_original_stack_limit;
+    void *old_original_stack_base = macrunner_hb_original_stack_base;
+    hb_result_t ret;
+
+    if (!params) return STATUS_INVALID_PARAMETER;
+    params->handled = 0;
+    params->status = STATUS_NOT_FOUND;
+
+#ifndef __aarch64__
+    return STATUS_NOT_IMPLEMENTED;
+#else
+    if (!(ctx = hb_context_create( HB_ARCH_X64, HB_BACKEND_INTERP ))) return STATUS_NO_MEMORY;
+    ctx->memory = hb_memory_create( 0 );
+    if (!ctx->memory)
+    {
+        hb_context_destroy( ctx );
+        return STATUS_NO_MEMORY;
+    }
+
+    memset( &special, 0, sizeof(special) );
+    teb = NtCurrentTeb();
+    cpu_area = teb ? teb->ChpeV2CpuAreaInfo : NULL;
+    if (cpu_area && cpu_area->EmulatorStackBase > cpu_area->EmulatorStackLimit)
+    {
+        macrunner_hb_bridge_stack_limit = (void *)(ULONG_PTR)cpu_area->EmulatorStackLimit;
+        macrunner_hb_bridge_stack_base = (void *)(ULONG_PTR)cpu_area->EmulatorStackLimit;
+        macrunner_hb_bridge_stack_size = cpu_area->EmulatorStackBase - cpu_area->EmulatorStackLimit;
+        macrunner_hb_original_stack_limit = teb->Tib.StackLimit;
+        macrunner_hb_original_stack_base = teb->Tib.StackBase;
+    }
+    special.mem = ctx->memory;
+    special.teb = teb;
+    special.peb = teb ? teb->Peb : NULL;
+    hb_memory_set_special_handlers( ctx->memory, macrunner_hb_special_read,
+                                    macrunner_hb_special_write, &special );
+
+    ret = macrunner_hb_map_live_address_space( ctx->memory );
+    if (ret != HB_OK)
+    {
+        params->status = STATUS_NO_MEMORY;
+        goto done;
+    }
+
+    ctx->regs.x64.rax = params->rax;
+    ctx->regs.x64.rbx = params->rbx;
+    ctx->regs.x64.rcx = params->rcx;
+    ctx->regs.x64.rdx = params->rdx;
+    ctx->regs.x64.rsi = params->rsi;
+    ctx->regs.x64.rdi = params->rdi;
+    ctx->regs.x64.rsp = params->rsp;
+    ctx->regs.x64.rbp = params->rbp;
+    ctx->regs.x64.r8  = params->r8;
+    ctx->regs.x64.r9  = params->r9;
+    ctx->regs.x64.r10 = params->r10;
+    ctx->regs.x64.r11 = params->r11;
+    ctx->regs.x64.r12 = params->r12;
+    ctx->regs.x64.r13 = params->r13;
+    ctx->regs.x64.r14 = params->r14;
+    ctx->regs.x64.r15 = params->r15;
+    ctx->regs.x64.rip = params->rip;
+    ctx->regs.x64.rflags = params->rflags;
+    memcpy( ctx->regs.x64.xmm, params->xmm, sizeof(ctx->regs.x64.xmm) );
+    ctx->pc = params->rip;
+    ctx->fs_base = params->fs_base;
+    ctx->gs_base = params->gs_base;
+    ctx->seg_cs = params->seg_cs;
+    ctx->seg_ds = params->seg_ds;
+    ctx->seg_es = params->seg_es;
+    ctx->seg_fs = params->seg_fs;
+    ctx->seg_gs = params->seg_gs;
+    ctx->seg_ss = params->seg_ss;
+
+    if (!(thunk = macrunner_hb_find_import_thunk( ctx->pc )))
+        goto done;
+
+    trace_import = macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_XTAJIT64_IMPORT" );
+    if (trace_import)
+    {
+        fprintf( stderr, "macrunner-xtajit64-import: before import=%s!%s pc=%p rsp=%p target=%p\n",
+                 thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                 (void *)(uintptr_t)ctx->regs.x64.rsp, thunk->target );
+        fflush( stderr );
+    }
+    ret = macrunner_hb_call_import_thunk( ctx, thunk );
+    if (trace_import)
+    {
+        fprintf( stderr, "macrunner-xtajit64-import: after import=%s!%s result=%s pc=%p rsp=%p rax=%p\n",
+                 thunk->dll_name, thunk->import_name, hb_result_string(ret),
+                 (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)ctx->regs.x64.rsp,
+                 (void *)(uintptr_t)ctx->regs.x64.rax );
+        fflush( stderr );
+    }
+    if (ret != HB_OK)
+    {
+        ERR( "MacRunner xtajit64 import handoff failed pc=%p %s!%s result=%s\n",
+             (void *)(uintptr_t)ctx->pc, thunk->dll_name, thunk->import_name, hb_result_string(ret) );
+        params->status = STATUS_INVALID_IMAGE_FORMAT;
+        goto done;
+    }
+
+    params->rax = ctx->regs.x64.rax;
+    params->rbx = ctx->regs.x64.rbx;
+    params->rcx = ctx->regs.x64.rcx;
+    params->rdx = ctx->regs.x64.rdx;
+    params->rsi = ctx->regs.x64.rsi;
+    params->rdi = ctx->regs.x64.rdi;
+    params->rsp = ctx->regs.x64.rsp;
+    params->rbp = ctx->regs.x64.rbp;
+    params->r8  = ctx->regs.x64.r8;
+    params->r9  = ctx->regs.x64.r9;
+    params->r10 = ctx->regs.x64.r10;
+    params->r11 = ctx->regs.x64.r11;
+    params->r12 = ctx->regs.x64.r12;
+    params->r13 = ctx->regs.x64.r13;
+    params->r14 = ctx->regs.x64.r14;
+    params->r15 = ctx->regs.x64.r15;
+    params->rip = ctx->pc;
+    params->rflags = ctx->regs.x64.rflags;
+    memcpy( params->xmm, ctx->regs.x64.xmm, sizeof(params->xmm) );
+    params->fs_base = ctx->fs_base;
+    params->gs_base = ctx->gs_base;
+    params->seg_cs = ctx->seg_cs;
+    params->seg_ds = ctx->seg_ds;
+    params->seg_es = ctx->seg_es;
+    params->seg_fs = ctx->seg_fs;
+    params->seg_gs = ctx->seg_gs;
+    params->seg_ss = ctx->seg_ss;
+    params->handled = 1;
+    params->status = STATUS_SUCCESS;
+
+    TRACE( "MacRunner xtajit64 import handoff %s!%s next=%p rax=%p rsp=%p\n",
+           thunk->dll_name, thunk->import_name, (void *)(uintptr_t)params->rip,
+           (void *)(uintptr_t)params->rax, (void *)(uintptr_t)params->rsp );
+
+done:
+    macrunner_hb_bridge_stack_limit = old_bridge_stack_limit;
+    macrunner_hb_bridge_stack_base = old_bridge_stack_base;
+    macrunner_hb_bridge_stack_size = old_bridge_stack_size;
+    macrunner_hb_original_stack_limit = old_original_stack_limit;
+    macrunner_hb_original_stack_base = old_original_stack_base;
+    if (ctx)
+    {
+        if (ctx->memory) hb_memory_destroy( ctx->memory );
+        ctx->memory = NULL;
+        hb_context_destroy( ctx );
+    }
+    return STATUS_SUCCESS;
+#endif
+}
+
 static BOOL macrunner_hb_trace_import_interesting( const struct macrunner_hb_import_thunk *thunk )
 {
     if (!thunk) return FALSE;
@@ -3084,6 +8638,40 @@ static BOOL macrunner_hb_trace_import_interesting( const struct macrunner_hb_imp
     if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
          macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
         (macrunner_hb_strieq( thunk->import_name, "GetModuleHandleW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LoadLibraryA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LoadLibraryW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LoadLibraryExA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LoadLibraryExW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FreeLibrary" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetProcAddress" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetEnvironmentVariableA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetEnvironmentVariableW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetEnvironmentVariableA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetEnvironmentVariableW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetCommandLineA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetCommandLineW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetModuleFileNameA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetModuleFileNameW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "QueryPerformanceFrequency" ) ||
+         macrunner_hb_strieq( thunk->import_name, "QueryPerformanceCounter" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetSystemTimePreciseAsFileTime" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetSystemTime" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetLocalTime" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SystemTimeToFileTime" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FileTimeToSystemTime" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetTempPathA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetTempPathW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetTempPath2A" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetTempPath2W" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetACP" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetOEMCP" ) ||
+         macrunner_hb_strieq( thunk->import_name, "AreFileApisANSI" ) ||
+         macrunner_hb_strieq( thunk->import_name, "IsValidCodePage" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetCPInfo" ) ||
+         macrunner_hb_strieq( thunk->import_name, "MultiByteToWideChar" ) ||
+         macrunner_hb_strieq( thunk->import_name, "WideCharToMultiByte" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetStringTypeW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "LCMapStringEx" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetStartupInfoA" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetStartupInfoW" ) ||
          macrunner_hb_strieq( thunk->import_name, "FindResourceW" ) ||
@@ -3100,7 +8688,23 @@ static BOOL macrunner_hb_trace_import_interesting( const struct macrunner_hb_imp
          macrunner_hb_strieq( thunk->import_name, "HeapAlloc" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetSystemTimeAsFileTime" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetTimeZoneInformation" ) ||
-         macrunner_hb_strieq( thunk->import_name, "GetLastError" )))
+         macrunner_hb_strieq( thunk->import_name, "CreateThread" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CreateRemoteThread" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CreateRemoteThreadEx" ) ||
+         macrunner_hb_strieq( thunk->import_name, "WaitForMultipleObjects" ) ||
+         macrunner_hb_strieq( thunk->import_name, "WaitForSingleObject" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CloseHandle" ) ||
+         macrunner_hb_strieq( thunk->import_name, "AddVectoredExceptionHandler" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RemoveVectoredExceptionHandler" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RaiseException" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetLastError" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetLastError" )))
+        return TRUE;
+    if (macrunner_hb_strieq( thunk->dll_name, "ntdll.dll" ) &&
+        (macrunner_hb_strieq( thunk->import_name, "RtlAddVectoredExceptionHandler" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RtlRemoveVectoredExceptionHandler" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RtlGetLastWin32Error" ) ||
+         macrunner_hb_strieq( thunk->import_name, "RtlSetLastWin32Error" )))
         return TRUE;
     if (macrunner_hb_strieq( thunk->dll_name, "ucrtbase.dll" ) &&
         macrunner_hb_strieq( thunk->import_name, "__stdio_common_vswprintf" ))
@@ -3284,8 +8888,9 @@ static void macrunner_hb_trace_guest_rect( hb_context_t *ctx, const char *label,
         return;
     }
     ERR( "macrunner-hb-geometry-rect: %s addr=%p rect=(%ld,%ld)-(%ld,%ld) size=%ldx%ld\n",
-         label ? label : "?", (void *)(uintptr_t)addr, rect.left, rect.top,
-         rect.right, rect.bottom, rect.right - rect.left, rect.bottom - rect.top );
+         label ? label : "?", (void *)(uintptr_t)addr, (long)rect.left, (long)rect.top,
+         (long)rect.right, (long)rect.bottom, (long)(rect.right - rect.left),
+         (long)(rect.bottom - rect.top) );
 }
 
 static void macrunner_hb_trace_guest_monitorinfo( hb_context_t *ctx, const char *label, uint64_t addr )
@@ -3303,12 +8908,14 @@ static void macrunner_hb_trace_guest_monitorinfo( hb_context_t *ctx, const char 
     }
     ERR( "macrunner-hb-geometry-monitor: %s addr=%p cb=%lu monitor=(%ld,%ld)-(%ld,%ld) "
          "work=(%ld,%ld)-(%ld,%ld) flags=0x%lx monitor_size=%ldx%ld work_size=%ldx%ld\n",
-         label ? label : "?", (void *)(uintptr_t)addr, info.cbSize,
-         info.rcMonitor.left, info.rcMonitor.top, info.rcMonitor.right, info.rcMonitor.bottom,
-         info.rcWork.left, info.rcWork.top, info.rcWork.right, info.rcWork.bottom,
-         info.dwFlags, info.rcMonitor.right - info.rcMonitor.left,
-         info.rcMonitor.bottom - info.rcMonitor.top, info.rcWork.right - info.rcWork.left,
-         info.rcWork.bottom - info.rcWork.top );
+         label ? label : "?", (void *)(uintptr_t)addr, (unsigned long)info.cbSize,
+         (long)info.rcMonitor.left, (long)info.rcMonitor.top, (long)info.rcMonitor.right,
+         (long)info.rcMonitor.bottom, (long)info.rcWork.left, (long)info.rcWork.top,
+         (long)info.rcWork.right, (long)info.rcWork.bottom, (unsigned long)info.dwFlags,
+         (long)(info.rcMonitor.right - info.rcMonitor.left),
+         (long)(info.rcMonitor.bottom - info.rcMonitor.top),
+         (long)(info.rcWork.right - info.rcWork.left),
+         (long)(info.rcWork.bottom - info.rcWork.top) );
 }
 
 static void macrunner_hb_trace_geometry_return( hb_context_t *ctx,
@@ -3387,7 +8994,8 @@ static void macrunner_hb_trace_abi_return( hb_context_t *ctx,
          thunk->dll_name, thunk->import_name,
          (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)ctx->regs.x64.rsp,
          (void *)(uintptr_t)ret_addr, (void *)(uintptr_t)value,
-         teb ? teb->LastErrorValue : 0, teb ? teb->LastStatusValue : 0,
+         (unsigned long)(teb ? teb->LastErrorValue : 0),
+         (unsigned long)(teb ? teb->LastStatusValue : 0),
          (void *)(uintptr_t)ctx->regs.x64.rax, (void *)(uintptr_t)ctx->regs.x64.rbx,
          (void *)(uintptr_t)ctx->regs.x64.rcx, (void *)(uintptr_t)ctx->regs.x64.rdx,
          (void *)(uintptr_t)ctx->regs.x64.rsi, (void *)(uintptr_t)ctx->regs.x64.rdi,
@@ -3924,11 +9532,14 @@ uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t arg
 {
     hb_abi_x64_call_t call = {0};
     uint64_t stack_args[4] = {0};
+    uint64_t original_target;
     ULONG64 ret = 0, blocks = 0, steps = 0;
     void *target_module;
     NTSTATUS status;
 
     if (!target || !args) return 0;
+    original_target = target;
+    target = macrunner_hb_normalize_x64_tls_callback_pc( target, args[0], args[1] );
     target_module = macrunner_hb_module_from_pc( (void *)(uintptr_t)target );
 
     if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CALLBACK_ROUTE" ))
@@ -3949,8 +9560,8 @@ uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t arg
                  (void *)(uintptr_t)target, module_name, target_module, rva,
                  ldr_base[0] ? ldr_base : "(none)", ldr_full[0] ? ldr_full : "(none)" );
         fprintf( stderr, "macrunner-hb-callback-dispatch: target=%p "
-                 "x0=%p x1=%p x2=%p x3=%p x4=%p x5=%p x6=%p x7=%p\n",
-                 (void *)(uintptr_t)target,
+                 "original=%p x0=%p x1=%p x2=%p x3=%p x4=%p x5=%p x6=%p x7=%p\n",
+                 (void *)(uintptr_t)target, (void *)(uintptr_t)original_target,
                  (void *)(uintptr_t)args[0], (void *)(uintptr_t)args[1],
                  (void *)(uintptr_t)args[2], (void *)(uintptr_t)args[3],
                  (void *)(uintptr_t)args[4], (void *)(uintptr_t)args[5],
@@ -4151,6 +9762,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         hb_ir_func_t *func = NULL;
         BOOL transient_func = FALSE;
         struct macrunner_hb_import_thunk *import_thunk;
+        uint64_t block_pc;
 
         if (ctx->pc == 0xffff0000)
         {
@@ -4280,7 +9892,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         }
         if (trace_calc_object) macrunner_hb_trace_calc_probe( ctx, image_start, "before-block" );
         if (trace_npp_open_pack) macrunner_hb_trace_npp_open_pack( ctx, image_start, "before-block" );
-        uint64_t block_pc = ctx->pc;
+        block_pc = ctx->pc;
         last_block_pc = block_pc;
         if (heartbeat_enabled)
         {

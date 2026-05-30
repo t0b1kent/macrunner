@@ -126,6 +126,24 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             }
             return HB_OK;
         }
+        case HB_INS_MOVHLPS:
+        case HB_INS_MOVLHPS:
+        case HB_INS_MOVHPS:
+        case HB_INS_MOVHPD: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_XMM_QWORD_LANE_MOV);
+            if (i) {
+                bool store = dec->op1.is_mem;
+                unsigned dst_lane = (dec->opcode == HB_INS_MOVLHPS ||
+                                     (!store && (dec->opcode == HB_INS_MOVHPS || dec->opcode == HB_INS_MOVHPD))) ? 1 : 0;
+                unsigned src_lane = (dec->opcode == HB_INS_MOVHLPS ||
+                                     (store && (dec->opcode == HB_INS_MOVHPS || dec->opcode == HB_INS_MOVHPD))) ? 1 : 0;
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = operand_from_dec(dec, 2);
+                i->target = dst_lane | (src_lane << 8);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_CVTSI2SD: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
@@ -399,6 +417,19 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                 i->src1 = operand_from_dec(dec, 2);
                 i->src2 = operand_from_dec(dec, 3);
                 i->target = dec->opcode == HB_INS_PSHUFD ? 4 : (dec->opcode == HB_INS_PSHUFLW ? 2 : 0x102);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_SHUFPS:
+        case HB_INS_SHUFPD: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_FSHUF);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = operand_from_dec(dec, 1);
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = (dec->opcode == HB_INS_SHUFPD ? 8 : 4) |
+                            (((uint64_t)dec->op3.imm & 0xffu) << 8);
             }
             emit(b, i, dec);
             return HB_OK;
@@ -692,6 +723,17 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, hb_ir_emit_jcc(b, cc, dec->branch_target), dec);
             return HB_OK;
         }
+        case HB_INS_LOOP:
+        case HB_INS_JRCXZ: {
+            hb_ir_instr_t *i = hb_ir_emit(b, dec->opcode == HB_INS_LOOP ? HB_IR_LOOP : HB_IR_JRCXZ);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = operand_from_dec(dec, 2);
+                i->target = dec->branch_target;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_SETcc: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             emit(b, hb_ir_emit_setcc(b, cc_from_dec(dec->cond), dst), dec);
@@ -879,6 +921,60 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, i, dec);
             return HB_OK;
         }
+        case HB_INS_MULPS:
+        case HB_INS_MULPD:
+        case HB_INS_DIVPS:
+        case HB_INS_DIVPD: {
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            bool is_div = (dec->opcode == HB_INS_DIVPS || dec->opcode == HB_INS_DIVPD);
+            hb_ir_instr_t *i = hb_ir_emit(b, is_div ? HB_IR_FDIV : HB_IR_FMUL);
+            if (i) {
+                unsigned lane = (dec->opcode == HB_INS_MULPD || dec->opcode == HB_INS_DIVPD) ? 8 : 4;
+                i->dst = dst;
+                i->src1 = dst;
+                i->src2 = src;
+                i->target = lane;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_SQRTPS:
+        case HB_INS_SQRTPD:
+        case HB_INS_SQRTSS:
+        case HB_INS_SQRTSD: {
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_FSQRT);
+            if (i) {
+                unsigned lane = (dec->opcode == HB_INS_SQRTPD || dec->opcode == HB_INS_SQRTSD) ? 8 : 4;
+                bool scalar = (dec->opcode == HB_INS_SQRTSS || dec->opcode == HB_INS_SQRTSD);
+                i->dst = dst;
+                i->src1 = dst;
+                i->src2 = src;
+                i->target = lane | (scalar ? 0x100 : 0);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_RSQRTPS:
+        case HB_INS_RSQRTSS:
+        case HB_INS_RCPPS:
+        case HB_INS_RCPSS: {
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            bool is_rsqrt = (dec->opcode == HB_INS_RSQRTPS || dec->opcode == HB_INS_RSQRTSS);
+            bool scalar = (dec->opcode == HB_INS_RSQRTSS || dec->opcode == HB_INS_RCPSS);
+            hb_ir_instr_t *i = hb_ir_emit(b, is_rsqrt ? HB_IR_FRSQRT : HB_IR_FRCP);
+            if (i) {
+                i->dst = dst;
+                i->src1 = dst;
+                i->src2 = src;
+                i->target = 4 | (scalar ? 0x100 : 0);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_DIVSD: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
@@ -895,6 +991,10 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, hb_ir_emit(b, HB_IR_XGETBV), dec);
             return HB_OK;
         }
+        case HB_INS_X87_FNCLEX:
+        case HB_INS_X87_FNINIT:
+            emit(b, hb_ir_emit(b, HB_IR_NOP), dec);
+            return HB_OK;
         case HB_INS_NOP: {
             emit(b, hb_ir_emit(b, HB_IR_NOP), dec);
             return HB_OK;

@@ -865,6 +865,18 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         out->branch_target = addr + d->pos + rel;
         return HB_OK;
     }
+    if (opcode >= 0xE0 && opcode <= 0xE3) {
+        if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+        int8_t rel = read_s8(d);
+        out->opcode = opcode == 0xE3 ? HB_INS_JRCXZ : HB_INS_LOOP;
+        out->is_branch = true;
+        out->is_conditional = true;
+        out->branch_target = addr + d->pos + rel;
+        out->reads_flags = opcode == 0xE0 || opcode == 0xE1;
+        set_reg(out, 1, HB_REG_RCX, address32 ? 4 : 8);
+        set_imm(out, 2, opcode - 0xE0, 1);
+        return HB_OK;
+    }
 
     /* Group: CALL */
     if (opcode == 0xE8) {
@@ -1249,6 +1261,48 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             if (out->op2.is_mem) out->op2.size = 8;
             return HB_OK;
         }
+        if (op2 == 0x51) {
+            /* Square-root family:
+             *   0F 51       SQRTPS xmm, xmm/m128
+             *   66 0F 51    SQRTPD xmm, xmm/m128
+             *   F3 0F 51    SQRTSS xmm, xmm/m32
+             *   F2 0F 51    SQRTSD xmm, xmm/m64
+             */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            size_t mem_size = 16;
+            if (prefix_f2) { out->opcode = HB_INS_SQRTSD; mem_size = 8; }
+            else if (prefix_f3) { out->opcode = HB_INS_SQRTSS; mem_size = 4; }
+            else if (operand16) out->opcode = HB_INS_SQRTPD;
+            else out->opcode = HB_INS_SQRTPS;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, mem_size, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            if (out->op2.is_mem) out->op2.size = mem_size;
+            return HB_OK;
+        }
+        if ((op2 == 0x52 || op2 == 0x53) && !operand16 && !prefix_f2) {
+            /* Reciprocal-estimate family:
+             *   0F 52       RSQRTPS xmm, xmm/m128
+             *   F3 0F 52    RSQRTSS xmm, xmm/m32
+             *   0F 53       RCPPS xmm, xmm/m128
+             *   F3 0F 53    RCPSS xmm, xmm/m32
+             */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            size_t mem_size = prefix_f3 ? 4 : 16;
+            if (op2 == 0x52) out->opcode = prefix_f3 ? HB_INS_RSQRTSS : HB_INS_RSQRTPS;
+            else out->opcode = prefix_f3 ? HB_INS_RCPSS : HB_INS_RCPPS;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, mem_size, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            if (out->op2.is_mem) out->op2.size = mem_size;
+            return HB_OK;
+        }
         if (op2 == 0x58 || op2 == 0x5C) {
             /* Floating ADD/SUB family:
              *   0F 58/5C       ADDPS/SUBPS xmm, xmm/m128
@@ -1276,6 +1330,24 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             mark_xmm_operand(out, 1);
             mark_xmm_operand(out, 2);
             if (out->op2.is_mem) out->op2.size = mem_size;
+            return HB_OK;
+        }
+        if ((op2 == 0x59 || op2 == 0x5E) && !prefix_f2 && !prefix_f3) {
+            /* Packed floating MUL/DIV:
+             *   0F 59/5E       MULPS/DIVPS xmm, xmm/m128
+             *   66 0F 59/5E    MULPD/DIVPD xmm, xmm/m128
+             * Scalar F2/F3 forms are handled by the existing MULSD/DIVSD/MULSS/DIVSS paths.
+             */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            if (operand16) out->opcode = (op2 == 0x59) ? HB_INS_MULPD : HB_INS_DIVPD;
+            else out->opcode = (op2 == 0x59) ? HB_INS_MULPS : HB_INS_DIVPS;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            if (out->op2.is_mem) out->op2.size = 16;
             return HB_OK;
         }
         if (prefix_f2 && op2 == 0x59) {
@@ -1533,6 +1605,21 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             set_imm(out, 3, read_u8(d), 1);
             return HB_OK;
         }
+        if (op2 == 0xC6 && !prefix_f2 && !prefix_f3) {
+            /* SHUFPS/SHUFPD xmm, xmm/m128, imm8. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = operand16 ? HB_INS_SHUFPD : HB_INS_SHUFPS;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            if (out->op2.is_mem) out->op2.size = 16;
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            set_imm(out, 3, read_u8(d), 1);
+            return HB_OK;
+        }
         if (operand16 && (op2 == 0x71 || op2 == 0x72 || op2 == 0x73)) {
             /* SSE2 XMM immediate shifts. 0F 71/72 use /2,/4,/6; 0F 73 also has byte shifts. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
@@ -1660,13 +1747,32 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             out->op2.size = src_size;
             return HB_OK;
         }
-        if (!prefix_f2 && !prefix_f3 && (op2 == 0x12 || op2 == 0x13)) {
-            /* MOVLPS/MOVLPD memory forms: low qword load/store.  The ModRM
-             * register form aliases MOVHLPS and needs lane-specific IR, so keep
-             * that sibling out until the high-lane family is implemented. */
+        if (!prefix_f2 && !prefix_f3 && (op2 == 0x12 || op2 == 0x13 || op2 == 0x16 || op2 == 0x17)) {
+            /* MOVLPS/MOVLPD and MOVHPS/MOVHPD memory forms move one qword lane.
+             * Register 0F 12/16 aliases MOVHLPS/MOVLHPS.
+             */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
-            if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+            if ((modrm >> 6) == 3) {
+                if (operand16 || op2 == 0x13 || op2 == 0x17) return HB_ERR_UNSUPPORTED_OPCODE;
+                out->opcode = op2 == 0x12 ? HB_INS_MOVHLPS : HB_INS_MOVLHPS;
+                out->writes_flags = false;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                mark_xmm_operand(out, 1);
+                mark_xmm_operand(out, 2);
+                return HB_OK;
+            }
+            if (op2 == 0x16 || op2 == 0x17) {
+                out->opcode = operand16 ? HB_INS_MOVHPD : HB_INS_MOVHPS;
+                out->writes_flags = false;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 8, out, 1, 2, op2 == 0x17);
+                if (r != HB_OK) return r;
+                mark_xmm_operand(out, op2 == 0x17 ? 2 : 1);
+                if (op2 == 0x17) out->op1.size = 8;
+                else out->op2.size = 8;
+                return HB_OK;
+            }
             out->opcode = HB_INS_SSE_MOV;
             out->writes_flags = false;
             hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 8, out, 1, 2, op2 == 0x13);
@@ -1727,13 +1833,14 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             return HB_OK;
         }
         if (op2 == 0xC7) {
+            /* CMPXCHG8B m64 / CMPXCHG16B m128 (REX.W). */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
-            if (((modrm >> 3) & 7) != 1 || (modrm >> 6) == 3 || rex_w)
+            if (((modrm >> 3) & 7) != 1 || (modrm >> 6) == 3)
                 return HB_ERR_UNSUPPORTED_OPCODE;
             out->opcode = HB_INS_CMPXCHG8B;
             out->writes_flags = true;
-            hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 8, out, 1);
+            hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, rex_w ? 16 : 8, out, 1);
             if (r != HB_OK) return r;
             refresh_rip_targets(d, out);
             return HB_OK;
@@ -1762,6 +1869,22 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 2, out, 1);
             if (r != HB_OK) return r;
             set_imm(out, 2, HB_X87_DEFAULT_CONTROL_WORD, 2);
+            return HB_OK;
+        }
+        return HB_ERR_UNSUPPORTED_OPCODE;
+    }
+
+    if (opcode == 0xDB) {
+        /* x87 environment control.  x64 HyperBridge does not model x87 state,
+           so clearing/resetting pending x87 exception state is a no-op. */
+        if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+        uint8_t modrm = read_u8(d);
+        if (modrm == 0xE2) {
+            out->opcode = HB_INS_X87_FNCLEX;
+            return HB_OK;
+        }
+        if (modrm == 0xE3) {
+            out->opcode = HB_INS_X87_FNINIT;
             return HB_OK;
         }
         return HB_ERR_UNSUPPORTED_OPCODE;
@@ -2247,6 +2370,8 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_RET: return "RET";
         case HB_INS_JMP: return "JMP";
         case HB_INS_Jcc: return "Jcc";
+        case HB_INS_LOOP: return "LOOP";
+        case HB_INS_JRCXZ: return "JRCXZ";
         case HB_INS_SETcc: return "SETcc";
         case HB_INS_CMOVcc: return "CMOVcc";
         case HB_INS_MOVZX: return "MOVZX";
@@ -2270,6 +2395,10 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_BSR: return "BSR";
         case HB_INS_BSWAP: return "BSWAP";
         case HB_INS_SSE_MOV: return "SSE_MOV";
+        case HB_INS_MOVHLPS: return "MOVHLPS";
+        case HB_INS_MOVLHPS: return "MOVLHPS";
+        case HB_INS_MOVHPS: return "MOVHPS";
+        case HB_INS_MOVHPD: return "MOVHPD";
         case HB_INS_XMM_AND: return "XMM_AND";
         case HB_INS_XMM_ANDN: return "XMM_ANDN";
         case HB_INS_XMM_OR: return "XMM_OR";
@@ -2315,6 +2444,8 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_PSHUFD: return "PSHUFD";
         case HB_INS_PSHUFLW: return "PSHUFLW";
         case HB_INS_PSHUFHW: return "PSHUFHW";
+        case HB_INS_SHUFPS: return "SHUFPS";
+        case HB_INS_SHUFPD: return "SHUFPD";
         case HB_INS_PSRLW: return "PSRLW";
         case HB_INS_PSRAW: return "PSRAW";
         case HB_INS_PSLLW: return "PSLLW";
@@ -2336,6 +2467,14 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_CVTSD2SS: return "CVTSD2SS";
         case HB_INS_CVTSI2SD: return "CVTSI2SD";
         case HB_INS_CVTSI2SS: return "CVTSI2SS";
+        case HB_INS_SQRTPS: return "SQRTPS";
+        case HB_INS_SQRTPD: return "SQRTPD";
+        case HB_INS_SQRTSS: return "SQRTSS";
+        case HB_INS_SQRTSD: return "SQRTSD";
+        case HB_INS_RSQRTPS: return "RSQRTPS";
+        case HB_INS_RSQRTSS: return "RSQRTSS";
+        case HB_INS_RCPPS: return "RCPPS";
+        case HB_INS_RCPSS: return "RCPSS";
         case HB_INS_ADDPS: return "ADDPS";
         case HB_INS_ADDPD: return "ADDPD";
         case HB_INS_ADDSS: return "ADDSS";
@@ -2344,6 +2483,10 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_SUBPD: return "SUBPD";
         case HB_INS_SUBSS: return "SUBSS";
         case HB_INS_SUBSD: return "SUBSD";
+        case HB_INS_MULPS: return "MULPS";
+        case HB_INS_MULPD: return "MULPD";
+        case HB_INS_DIVPS: return "DIVPS";
+        case HB_INS_DIVPD: return "DIVPD";
         case HB_INS_DIVSD: return "DIVSD";
         case HB_INS_MULSD: return "MULSD";
         case HB_INS_DIVSS: return "DIVSS";

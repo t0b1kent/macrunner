@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <math.h>
 
 static const char* ir_op_name(hb_ir_op_t op);
 
@@ -1114,6 +1115,8 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_RET: return "RET";
         case HB_IR_JMP: return "JMP";
         case HB_IR_Jcc: return "Jcc";
+        case HB_IR_LOOP: return "LOOP";
+        case HB_IR_JRCXZ: return "JRCXZ";
         case HB_IR_SIGN_EXTEND: return "SIGN_EXTEND";
         case HB_IR_CWD: return "CWD";
         case HB_IR_MOVS: return "MOVS";
@@ -1128,6 +1131,7 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_BSR: return "BSR";
         case HB_IR_BSWAP: return "BSWAP";
         case HB_IR_XMM_AND: return "XMM_AND";
+        case HB_IR_XMM_QWORD_LANE_MOV: return "XMM_QWORD_LANE_MOV";
         case HB_IR_XMM_ANDN: return "XMM_ANDN";
         case HB_IR_XMM_OR: return "XMM_OR";
         case HB_IR_XORPS: return "XORPS";
@@ -1157,6 +1161,7 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_PINSRW: return "PINSRW";
         case HB_IR_PEXTRW: return "PEXTRW";
         case HB_IR_PSHUF: return "PSHUF";
+        case HB_IR_FSHUF: return "FSHUF";
         case HB_IR_PSRL: return "PSRL";
         case HB_IR_PSRA: return "PSRA";
         case HB_IR_PSLL: return "PSLL";
@@ -1175,8 +1180,13 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_CVTSD2SS: return "CVTSD2SS";
         case HB_IR_CVTSI2SD: return "CVTSI2SD";
         case HB_IR_CVTSI2SS: return "CVTSI2SS";
+        case HB_IR_FSQRT: return "FSQRT";
+        case HB_IR_FRSQRT: return "FRSQRT";
+        case HB_IR_FRCP: return "FRCP";
         case HB_IR_FADD: return "FADD";
         case HB_IR_FSUB: return "FSUB";
+        case HB_IR_FMUL: return "FMUL";
+        case HB_IR_FDIV: return "FDIV";
         case HB_IR_ADDSD: return "ADDSD";
         case HB_IR_SUBSD: return "SUBSD";
         case HB_IR_DIVSD: return "DIVSD";
@@ -1582,6 +1592,8 @@ static bool trace_simd_op_selected(const hb_ir_instr_t* instr) {
         case HB_IR_PINSRW:
         case HB_IR_PEXTRW:
         case HB_IR_PSHUF:
+        case HB_IR_FSHUF:
+        case HB_IR_XMM_QWORD_LANE_MOV:
         case HB_IR_PSRL:
         case HB_IR_PSRA:
         case HB_IR_PSLL:
@@ -1600,8 +1612,13 @@ static bool trace_simd_op_selected(const hb_ir_instr_t* instr) {
         case HB_IR_CVTSD2SS:
         case HB_IR_CVTSI2SD:
         case HB_IR_CVTSI2SS:
+        case HB_IR_FSQRT:
+        case HB_IR_FRSQRT:
+        case HB_IR_FRCP:
         case HB_IR_FADD:
         case HB_IR_FSUB:
+        case HB_IR_FMUL:
+        case HB_IR_FDIV:
         case HB_IR_ADDSD:
         case HB_IR_SUBSD:
         case HB_IR_DIVSD:
@@ -2112,6 +2129,31 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         }
 
         case HB_IR_CMPXCHG8B: {
+            if (instr->dst.size == HB_SIZE_128) {
+                uint64_t mem[2] = {0, 0};
+                uint64_t acc[2] = {read_reg(ctx, HB_REG_RAX), read_reg(ctx, HB_REG_RDX)};
+                uint64_t src[2] = {read_reg(ctx, HB_REG_RBX), read_reg(ctx, HB_REG_RCX)};
+                uint64_t addr;
+                bool equal;
+
+                if (ctx->mode != HB_MODE_64BIT || instr->dst.type != HB_OP_MEM)
+                    return HB_ERR_INTERNAL;
+                addr = resolve_addr(ctx, &instr->dst);
+                r = hb_memory_read(ctx->memory, addr, mem, sizeof(mem));
+                if (r != HB_OK) return r;
+                equal = mem[0] == acc[0] && mem[1] == acc[1];
+                hb_lazy_flags_clear(ctx);
+                ctx->flags.zf = equal;
+                if (equal) {
+                    r = hb_memory_write(ctx->memory, addr, src, sizeof(src));
+                    if (r != HB_OK) return r;
+                } else {
+                    write_reg_sized(ctx, HB_REG_RAX, mem[0], HB_SIZE_64);
+                    write_reg_sized(ctx, HB_REG_RDX, mem[1], HB_SIZE_64);
+                }
+                return HB_OK;
+            }
+
             uint64_t mem = 0;
             uint64_t acc = ((uint64_t)(uint32_t)read_reg(ctx, HB_REG_RDX) << 32) |
                            (uint32_t)read_reg(ctx, HB_REG_RAX);
@@ -2250,6 +2292,39 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             r = mem_write(ctx, addr, val, instr->src2.size);
             if (r != HB_OK) return r;
             return HB_OK;
+        }
+
+        case HB_IR_XMM_QWORD_LANE_MOV: {
+            unsigned dst_lane = (unsigned)(instr->target & 0xff);
+            unsigned src_lane = (unsigned)((instr->target >> 8) & 0xff);
+            if (dst_lane > 1 || src_lane > 1) return HB_ERR_INTERNAL;
+            if (instr->dst.type == HB_OP_MEM) {
+                if (instr->src1.type != HB_OP_REG || !is_xmm_reg(instr->src1.reg)) return HB_ERR_INTERNAL;
+                uint64_t src[2];
+                r = read_xmm_reg(ctx, instr->src1.reg, src);
+                if (r != HB_OK) return r;
+                uint64_t addr = resolve_addr(ctx, &instr->dst);
+                return hb_memory_write(ctx->memory, addr, &src[src_lane], sizeof(uint64_t));
+            }
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t dst[2];
+            r = read_xmm_reg(ctx, instr->dst.reg, dst);
+            if (r != HB_OK) return r;
+            if (instr->src1.type == HB_OP_REG && is_xmm_reg(instr->src1.reg)) {
+                uint64_t src[2];
+                r = read_xmm_reg(ctx, instr->src1.reg, src);
+                if (r != HB_OK) return r;
+                dst[dst_lane] = src[src_lane];
+            } else if (instr->src1.type == HB_OP_MEM) {
+                uint64_t lane = 0;
+                uint64_t addr = resolve_addr(ctx, &instr->src1);
+                r = hb_memory_read(ctx->memory, addr, &lane, sizeof(lane));
+                if (r != HB_OK) return r;
+                dst[dst_lane] = lane;
+            } else {
+                return HB_ERR_INTERNAL;
+            }
+            return write_xmm_reg(ctx, instr->dst.reg, dst);
         }
 
         case HB_IR_X87_FLD:
@@ -2525,6 +2600,35 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             sync_arch_pc(ctx);
             trace_branch_event(ctx, instr, taken ? "jcc-taken" : "jcc-fallthrough",
                                rsp_before, instr->cc, ctx->pc);
+            return HB_OK;
+        }
+
+        case HB_IR_LOOP:
+        case HB_IR_JRCXZ: {
+            uint64_t count = 0;
+            uint64_t next = 0;
+            bool taken = false;
+            uint64_t rsp_before = ctx->mode == HB_MODE_32BIT ? ctx->regs.x86.esp : ctx->regs.x64.rsp;
+            hb_size_t size = instr->dst.size ? instr->dst.size : HB_SIZE_64;
+            r = read_operand_value(ctx, &instr->dst, &count);
+            if (r != HB_OK) return r;
+            count = trunc_to_size(count, size);
+            if (instr->op == HB_IR_JRCXZ) {
+                taken = count == 0;
+            } else {
+                int kind = (int)instr->src1.imm; /* E0 LOOPNE, E1 LOOPE, E2 LOOP. */
+                next = trunc_to_size(count - 1, size);
+                r = write_operand_value(ctx, &instr->dst, next);
+                if (r != HB_OK) return r;
+                taken = next != 0 &&
+                        (kind == 2 || (kind == 1 ? ctx->flags.zf : !ctx->flags.zf));
+            }
+            ctx->pc = taken ? instr->target : instr->guest_addr + instr->guest_len;
+            sync_arch_pc(ctx);
+            trace_branch_event(ctx, instr,
+                               taken ? (instr->op == HB_IR_JRCXZ ? "jrcxz-taken" : "loop-taken")
+                                     : (instr->op == HB_IR_JRCXZ ? "jrcxz-fallthrough" : "loop-fallthrough"),
+                               rsp_before, count, ctx->pc);
             return HB_OK;
         }
 
@@ -3371,6 +3475,36 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
+        case HB_IR_FSHUF: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t lhs[16], rhs[16], out_bytes[16];
+            uint64_t out[2];
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            unsigned imm = (unsigned)((instr->target >> 8) & 0xff);
+            if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            if (lane == 4) {
+                unsigned s0 = (imm >> 0) & 3;
+                unsigned s1 = (imm >> 2) & 3;
+                unsigned s2 = (imm >> 4) & 3;
+                unsigned s3 = (imm >> 6) & 3;
+                memcpy(out_bytes + 0, lhs + s0 * 4, 4);
+                memcpy(out_bytes + 4, lhs + s1 * 4, 4);
+                memcpy(out_bytes + 8, rhs + s2 * 4, 4);
+                memcpy(out_bytes + 12, rhs + s3 * 4, 4);
+            } else {
+                unsigned s0 = imm & 1;
+                unsigned s1 = (imm >> 1) & 1;
+                memcpy(out_bytes + 0, lhs + s0 * 8, 8);
+                memcpy(out_bytes + 8, rhs + s1 * 8, 8);
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
         case HB_IR_PSRL:
         case HB_IR_PSRA:
         case HB_IR_PSLL: {
@@ -3748,10 +3882,49 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             return write_scalar_float(ctx, &instr->dst, lhs / rhs);
         }
 
+        case HB_IR_FSQRT:
+        case HB_IR_FRSQRT:
+        case HB_IR_FRCP: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            bool scalar = (instr->target & 0x100) != 0;
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            uint8_t src[16], out_bytes[16];
+            uint64_t out[2];
+            if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
+            if (instr->op != HB_IR_FSQRT && lane != 4) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, out_bytes, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, src, scalar ? lane : 16);
+            if (r != HB_OK) return r;
+            for (unsigned i = 0; i < (scalar ? 1U : 16U / lane); i++) {
+                if (lane == 4) {
+                    uint32_t bits, result_bits;
+                    memcpy(&bits, src + i * 4, sizeof(bits));
+                    float value = hb_bits_to_float(bits);
+                    float result = sqrtf(value);
+                    if (instr->op == HB_IR_FRSQRT) result = 1.0f / result;
+                    else if (instr->op == HB_IR_FRCP) result = 1.0f / value;
+                    result_bits = hb_float_to_bits(result);
+                    memcpy(out_bytes + i * 4, &result_bits, sizeof(result_bits));
+                } else {
+                    uint64_t bits, result_bits;
+                    memcpy(&bits, src + i * 8, sizeof(bits));
+                    result_bits = hb_double_to_bits(sqrt(hb_bits_to_double(bits)));
+                    memcpy(out_bytes + i * 8, &result_bits, sizeof(result_bits));
+                }
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
         case HB_IR_FADD:
-        case HB_IR_FSUB: {
+        case HB_IR_FSUB:
+        case HB_IR_FMUL:
+        case HB_IR_FDIV: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
             bool is_sub = instr->op == HB_IR_FSUB;
+            bool is_mul = instr->op == HB_IR_FMUL;
+            bool is_div = instr->op == HB_IR_FDIV;
             bool scalar = (instr->target & 0x100) != 0;
             unsigned lane = (unsigned)(instr->target & 0xff);
             uint8_t lhs[16], rhs[16], out_bytes[16];
@@ -3769,7 +3942,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     memcpy(&bbits, rhs + i * 4, sizeof(bbits));
                     float aval = hb_bits_to_float(abits);
                     float bval = hb_bits_to_float(bbits);
-                    cbits = hb_float_to_bits(is_sub ? (aval - bval) : (aval + bval));
+                    float cval = is_div ? (aval / bval) : (is_mul ? (aval * bval) : (is_sub ? (aval - bval) : (aval + bval)));
+                    cbits = hb_float_to_bits(cval);
                     memcpy(out_bytes + i * 4, &cbits, sizeof(cbits));
                 } else {
                     uint64_t abits, bbits, cbits;
@@ -3777,7 +3951,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     memcpy(&bbits, rhs + i * 8, sizeof(bbits));
                     double aval = hb_bits_to_double(abits);
                     double bval = hb_bits_to_double(bbits);
-                    cbits = hb_double_to_bits(is_sub ? (aval - bval) : (aval + bval));
+                    double cval = is_div ? (aval / bval) : (is_mul ? (aval * bval) : (is_sub ? (aval - bval) : (aval + bval)));
+                    cbits = hb_double_to_bits(cval);
                     memcpy(out_bytes + i * 8, &cbits, sizeof(cbits));
                 }
             }
@@ -3944,7 +4119,8 @@ hb_result_t hb_interpreter_run(hb_interpreter_t* interp, const hb_ir_func_t* fun
                 return HB_OK;
             }
 
-            if (instr->op == HB_IR_JMP || instr->op == HB_IR_Jcc || instr->op == HB_IR_CALL || instr->op == HB_IR_RET) {
+            if (instr->op == HB_IR_JMP || instr->op == HB_IR_Jcc || instr->op == HB_IR_LOOP ||
+                instr->op == HB_IR_JRCXZ || instr->op == HB_IR_CALL || instr->op == HB_IR_RET) {
                 hb_ir_block_t* next = find_block(func->cfg, ctx->pc);
                 if (!next) {
                     if (func->truncated) {
@@ -3957,7 +4133,8 @@ hb_result_t hb_interpreter_run(hb_interpreter_t* interp, const hb_ir_func_t* fun
                         return HB_ERR_TRANSLATION_TRUNCATED;
                     }
                     if (instr->op == HB_IR_CALL || instr->op == HB_IR_RET ||
-                        instr->op == HB_IR_JMP || instr->op == HB_IR_Jcc) {
+                        instr->op == HB_IR_JMP || instr->op == HB_IR_Jcc ||
+                        instr->op == HB_IR_LOOP || instr->op == HB_IR_JRCXZ) {
                         out->result = HB_OK;
                         out->steps_executed = steps;
                         out->blocks_executed = blocks_executed;

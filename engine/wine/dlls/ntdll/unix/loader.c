@@ -1432,6 +1432,7 @@ static NTSTATUS pe_module_loaded( void *args ) { return STATUS_NOT_IMPLEMENTED; 
 extern NTSTATUS macrunner_hb_register_import_thunk( void *args );
 extern NTSTATUS macrunner_hb_x64_dll_entry( void *args );
 extern NTSTATUS macrunner_hb_x64_thread_entry( void *args );
+extern NTSTATUS macrunner_hb_x64_import_context( void *args );
 
 static const unixlib_entry_t unix_call_funcs[] =
 {
@@ -1446,6 +1447,7 @@ static const unixlib_entry_t unix_call_funcs[] =
     macrunner_hb_register_import_thunk,
     macrunner_hb_x64_dll_entry,
     macrunner_hb_x64_thread_entry,
+    macrunner_hb_x64_import_context,
 #if defined(__x86_64__)
     pe_module_loaded,
 #endif
@@ -1470,6 +1472,7 @@ static NTSTATUS wow64_unwind_builtin_dll( void *args ) { return STATUS_UNSUCCESS
 static NTSTATUS wow64_macrunner_hb_register_import_thunk( void *args ) { return STATUS_NOT_IMPLEMENTED; }
 static NTSTATUS wow64_macrunner_hb_x64_dll_entry( void *args ) { return STATUS_NOT_IMPLEMENTED; }
 static NTSTATUS wow64_macrunner_hb_x64_thread_entry( void *args ) { return STATUS_NOT_IMPLEMENTED; }
+static NTSTATUS wow64_macrunner_hb_x64_import_context( void *args ) { return STATUS_NOT_IMPLEMENTED; }
 #if defined(__x86_64__)
 static NTSTATUS wow64_pe_module_loaded( void *args ) { return STATUS_NOT_IMPLEMENTED; }
 #endif
@@ -1487,6 +1490,7 @@ const unixlib_entry_t unix_call_wow64_funcs[] =
     wow64_macrunner_hb_register_import_thunk,
     wow64_macrunner_hb_x64_dll_entry,
     wow64_macrunner_hb_x64_thread_entry,
+    wow64_macrunner_hb_x64_import_context,
 #if defined(__x86_64__)
     wow64_pe_module_loaded,
 #endif
@@ -1743,6 +1747,17 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
 
 #if defined(__APPLE__) && defined(__aarch64__)
     if (macrunner_hb_x64_loader &&
+        current_machine == IMAGE_FILE_MACHINE_ARM64 &&
+        image_info->machine == IMAGE_FILE_MACHINE_AMD64 &&
+        macrunner_hb_builtin_name_matches( nt_name, exp_name, "xtajit64.dll" ))
+    {
+        TRACE( "MacRunner x64-on-ARM64 using current-machine xtajit64 builtin for %s\n",
+               debugstr_us(nt_name) );
+        search_machine = current_machine;
+        machine = current_machine;
+        force_current_machine_builtin = TRUE;
+    }
+    else if (macrunner_hb_x64_loader &&
         current_machine == IMAGE_FILE_MACHINE_ARM64 &&
         main_image_info.Machine == IMAGE_FILE_MACHINE_ARM64 &&
         image_info->machine == IMAGE_FILE_MACHINE_AMD64 &&

@@ -4757,6 +4757,92 @@ TEST(jit_x64_native_bswap_family) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_bit_scan_family) {
+    struct {
+        hb_ir_op_t op;
+        hb_size_t size;
+        uint64_t src;
+        uint64_t dst_before;
+        uint64_t dst_after;
+        bool zf;
+        bool cf;
+        bool check_cf;
+        bool use_mem;
+    } cases[] = {
+        {HB_IR_BSF,   HB_SIZE_64, 0x1000, 0xaaaaaaaaaaaaaaaaULL, 12, false, true,  false, false},
+        {HB_IR_BSF,   HB_SIZE_64, 0,      0x123456789abcdef0ULL, 0x123456789abcdef0ULL, true, true, true, false},
+        {HB_IR_TZCNT, HB_SIZE_16, 0,      0x123456789abc0000ULL, 0x123456789abc0010ULL, false, true, true, false},
+        {HB_IR_LZCNT, HB_SIZE_32, 0x80000000ULL, 0xffffffffffffffffULL, 0, true, false, true, false},
+        {HB_IR_BSR,   HB_SIZE_64, 0x8000000000000000ULL, 0, 63, false, true, false, true},
+    };
+
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uint64_t base = 0x5100 + (uint64_t)i * 0x20;
+        uint64_t mem_src = cases[i].src;
+        hb_ir_func_t* func = hb_ir_func_create(base, 0);
+        ASSERT(func != NULL);
+        hb_ir_block_t* blk = hb_ir_block_create(0, base);
+        ASSERT(blk != NULL);
+        hb_ir_cfg_add_block(func->cfg, blk);
+        func->cfg->entry = blk;
+
+        hb_ir_builder_t* b = hb_ir_builder_create(func);
+        ASSERT(b != NULL);
+        hb_ir_builder_set_block(b, blk);
+        hb_ir_instr_t* scan = hb_ir_emit(b, cases[i].op);
+        ASSERT(scan != NULL);
+        scan->dst = hb_ir_reg(HB_REG_RAX, cases[i].size);
+        scan->src1 = cases[i].use_mem
+            ? hb_ir_mem(HB_REG_RBX, HB_REG_COUNT, 1, 0, cases[i].size)
+            : hb_ir_reg(HB_REG_RCX, cases[i].size);
+        scan->guest_addr = base;
+        scan->guest_len = 3;
+        hb_ir_builder_destroy(b);
+
+        hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+        ASSERT(ctx != NULL);
+        ctx->memory = hb_memory_create(0);
+        ASSERT(ctx->memory != NULL);
+        if (cases[i].use_mem) {
+            ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&mem_src, sizeof(mem_src),
+                                 HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+            ctx->regs.x64.rbx = (uint64_t)(uintptr_t)&mem_src;
+        }
+        ctx->pc = base;
+        ctx->regs.x64.rax = cases[i].dst_before;
+        ctx->regs.x64.rcx = cases[i].src;
+        ctx->flags.zf = !cases[i].zf;
+        ctx->flags.cf = true;
+        ctx->lazy_flags.pending = true;
+
+        hb_exec_result_t out;
+        ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+        ASSERT(out.result == HB_OK);
+        ASSERT(ctx->regs.x64.rax == cases[i].dst_after);
+        ASSERT(ctx->flags.zf == cases[i].zf);
+        if (cases[i].check_cf)
+            ASSERT(ctx->flags.cf == cases[i].cf);
+        ASSERT(ctx->lazy_flags.pending == false);
+
+        hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(256);
+        hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+        ASSERT(code_buf != NULL && cg != NULL);
+        ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+        ASSERT(code_buf->size <= 160);
+        hb_arm64_codegen_destroy(cg);
+        hb_codegen_buffer_destroy(code_buf);
+
+        hb_context_destroy(ctx);
+        hb_ir_func_destroy(func);
+    }
+
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    tests_passed++;
+}
+
 TEST(jit_commit_verify_failure_not_marked_executable) {
     hb_jit_buffer_t* buf = hb_jit_buffer_create(4096);
     ASSERT(buf != NULL);
@@ -16956,6 +17042,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_indirect_branch_operand_family();
     test_jit_x64_native_epilogue_restore_ret_block();
     test_jit_x64_native_bswap_family();
+    test_jit_x64_native_bit_scan_family();
     test_jit_commit_verify_failure_not_marked_executable();
     test_jit_load_unmapped_faults();
     test_jit_store_unmapped_faults();

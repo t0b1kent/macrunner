@@ -106,6 +106,17 @@ and 64-bit register siblings and confirms flags remain unchanged. `hb_test_runne
 not in the sampled hot loop; NEXT remains branch/fallthrough CFG fusion plus native promotion of the
 remaining finite helper-backed IR families against interpreter/oracle parity.
 
+**Follow-up batch:** `run-20260601-032018-phase3-bitscan-jit` preserves fallback/fault/
+unsupported/runtime zero with cleanup/prune `0`; `HB_IR_BSF/TZCNT/LZCNT/BSR` now have native ARM64
+`RBIT/CLZ/CSEL` codegen for 8/16/32/64-bit GPR destinations with register, immediate, and
+direct-memory sources. The path clears pending lazy flags and matches interpreter concrete ZF/CF
+behavior, including BSF/BSR zero-source destination preservation. Regression
+`jit_x64_native_bit_scan_family` covers nonzero, zero, 16-bit, 32-bit, 64-bit, and direct-memory
+siblings. `hb_test_runner` is now `379 passed, 0 failed`, fast validation PASS. The final 90s Mono
+top-12 is unchanged because bit-scan is not in the sampled hot loop; NEXT remains branch/fallthrough
+CFG fusion plus native promotion of remaining finite helper-backed IR families against
+interpreter/oracle parity.
+
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
 (624M GOG InnoSetup installer + `Bonus/`). It's a sibling of the repo (outside `MacRunner/`) — use

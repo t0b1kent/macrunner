@@ -236,6 +236,18 @@ static void __attribute__((unused)) emit_asrv(hb_codegen_buffer_t* buf, int rd, 
     emit_u32(buf, 0x9ac02800 | (rm << 16) | (rn << 5) | rd);
 }
 
+static void emit_rbit_x(hb_codegen_buffer_t* buf, int rd, int rn) {
+    emit_u32(buf, 0xdac00000 | (rn << 5) | rd);
+}
+
+static void emit_clz_x(hb_codegen_buffer_t* buf, int rd, int rn) {
+    emit_u32(buf, 0xdac01000 | (rn << 5) | rd);
+}
+
+static void emit_csel_x(hb_codegen_buffer_t* buf, int rd, int rn, int rm, int cond) {
+    emit_u32(buf, 0x9a800000 | (rm << 16) | ((cond & 0xf) << 12) | (rn << 5) | rd);
+}
+
 static void emit_sbfm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imms) {
     emit_u32(buf, 0x93400000 | ((imms & 0x3f) << 10) | (rn << 5) | rd);
 }
@@ -1034,6 +1046,94 @@ static bool emit_native_bswap(hb_codegen_buffer_t* buf, const hb_ir_instr_t* ins
         emit_rev_x(buf, 20, 20);
     else
         emit_rev_w(buf, 20, 20);
+    emit_store_x20_to_gpr_sized(buf, &dst);
+    return true;
+}
+
+static void emit_clear_lazy_flags_pending(hb_codegen_buffer_t* buf) {
+    emit_strb_w(buf, 31, 19, (uint32_t)(offsetof(hb_context_t, lazy_flags) +
+                                        offsetof(hb_lazy_flags_t, pending)));
+}
+
+static void emit_store_flag_bool_from_w(hb_codegen_buffer_t* buf, int wreg, size_t flag_off) {
+    emit_strb_w(buf, wreg, 19, (uint32_t)(offsetof(hb_context_t, flags) + flag_off));
+}
+
+static bool emit_load_bit_scan_source_to_x20(hb_codegen_buffer_t* buf,
+                                             const hb_ir_instr_t* instr,
+                                             hb_size_t size) {
+    if (is_gpr_reg_operand(&instr->src1)) {
+        if (!emit_load_gpr_sized_to_x20(buf, &instr->src1))
+            return false;
+    } else if (instr->src1.type == HB_OP_IMM) {
+        emit_mov_imm_compact(buf, 20, (uint64_t)instr->src1.imm);
+    } else if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1)) {
+        uint32_t off = emit_direct_mem_addr_with_offset(buf, &instr->src1);
+        emit_direct_mem_load_to_x20_off(buf, instr->src1.size ? instr->src1.size : size, off);
+    } else {
+        return false;
+    }
+    emit_mask_x_reg_to_size(buf, 20, 23, size);
+    return true;
+}
+
+static bool emit_native_bit_scan(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    hb_ir_operand_t dst;
+    hb_size_t size;
+    uint64_t width;
+    size_t zero_branch = 0;
+
+    if (!instr || !is_plain_gpr_reg_operand(&instr->dst))
+        return false;
+    if (instr->op != HB_IR_BSF && instr->op != HB_IR_TZCNT &&
+        instr->op != HB_IR_LZCNT && instr->op != HB_IR_BSR)
+        return false;
+
+    dst = instr->dst;
+    size = dst.size ? dst.size : HB_SIZE_64;
+    if (size != HB_SIZE_8 && size != HB_SIZE_16 && size != HB_SIZE_32 && size != HB_SIZE_64)
+        return false;
+    dst.size = size;
+    width = (size == HB_SIZE_8) ? 8 : (size == HB_SIZE_16) ? 16 :
+            (size == HB_SIZE_32) ? 32 : 64;
+
+    if (!emit_load_bit_scan_source_to_x20(buf, instr, size))
+        return false;
+
+    emit_clear_lazy_flags_pending(buf);
+    emit_cmp_imm(buf, 20, 0);
+    emit_cset_w(buf, 22, 0); /* EQ: input was zero */
+
+    if (instr->op == HB_IR_BSF || instr->op == HB_IR_BSR) {
+        emit_store_flag_bool_from_w(buf, 22, offsetof(hb_flags_t, zf));
+        zero_branch = emit_bcond_deferred(buf, 0); /* EQ: destination unchanged */
+        if (instr->op == HB_IR_BSF) {
+            emit_rbit_x(buf, 20, 20);
+            emit_clz_x(buf, 20, 20);
+        } else {
+            emit_clz_x(buf, 20, 20);
+            emit_mov_imm_compact(buf, 21, 63);
+            emit_sub_reg(buf, 20, 21, 20);
+        }
+        emit_store_x20_to_gpr_sized(buf, &dst);
+        patch_bcond(buf, zero_branch, 0, buf->size);
+        return true;
+    }
+
+    emit_store_flag_bool_from_w(buf, 22, offsetof(hb_flags_t, cf));
+    if (instr->op == HB_IR_TZCNT) {
+        emit_mov_imm_compact(buf, 21, width);
+        emit_rbit_x(buf, 20, 20);
+        emit_clz_x(buf, 20, 20);
+        emit_csel_x(buf, 20, 20, 21, 1); /* NE: count, else operand width */
+    } else {
+        emit_clz_x(buf, 20, 20);
+        if (width != 64)
+            emit_sub_imm(buf, 20, 20, (uint32_t)(64 - width));
+    }
+    emit_cmp_imm(buf, 20, 0);
+    emit_cset_w(buf, 22, 0); /* ZF = result == 0 */
+    emit_store_flag_bool_from_w(buf, 22, offsetof(hb_flags_t, zf));
     emit_store_x20_to_gpr_sized(buf, &dst);
     return true;
 }
@@ -2838,6 +2938,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_TZCNT:
         case HB_IR_LZCNT:
         case HB_IR_BSR: {
+            if (emit_native_bit_scan(buf, instr))
+                return HB_OK;
             emit_mov_reg(buf, 0, 19);
             emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
             emit_call_helper(buf, (void*)hb_jit_helper_exec_bit_scan);

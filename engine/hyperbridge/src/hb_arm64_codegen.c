@@ -498,6 +498,16 @@ static void emit_mask_x_reg_to_size(hb_codegen_buffer_t* buf, int reg, int scrat
     }
 }
 
+static bool imm_fits_size(uint64_t value, hb_size_t size) {
+    switch (size) {
+        case HB_SIZE_8:  return (value & ~0xffULL) == 0;
+        case HB_SIZE_16: return (value & ~0xffffULL) == 0;
+        case HB_SIZE_32: return (value & ~0xffffffffULL) == 0;
+        case HB_SIZE_64:
+        default: return true;
+    }
+}
+
 static bool emit_load_gpr_sized_to_reg(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op,
                                        int arm_reg) {
     size_t off;
@@ -663,8 +673,10 @@ static bool emit_native_scalar_mov(hb_codegen_buffer_t* buf, const hb_ir_instr_t
             if (!is_gpr_reg_operand(&instr->src1)) return false;
             if (!emit_load_gpr_sized_to_x20(buf, &instr->src1)) return false;
         } else if (instr->src1.type == HB_OP_IMM) {
-            emit_mov_imm64(buf, 20, (uint64_t)instr->src1.imm);
-            emit_mask_x_reg_to_size(buf, 20, 23, instr->dst.size);
+            uint64_t imm = (uint64_t)instr->src1.imm;
+            emit_mov_imm_compact(buf, 20, imm);
+            if (!imm_fits_size(imm, instr->dst.size))
+                emit_mask_x_reg_to_size(buf, 20, 23, instr->dst.size);
         } else if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1)) {
             emit_direct_mem_addr(buf, &instr->src1);
             emit_direct_mem_load_to_x20(buf, instr->src1.size);
@@ -681,8 +693,7 @@ static bool emit_native_scalar_mov(hb_codegen_buffer_t* buf, const hb_ir_instr_t
             if (!is_gpr_reg_operand(&instr->src1)) return false;
             if (!emit_load_gpr_sized_to_x20(buf, &instr->src1)) return false;
         } else {
-            emit_mov_imm64(buf, 20, (uint64_t)instr->src1.imm);
-            emit_mask_x_reg_to_size(buf, 20, 23, instr->dst.size);
+            emit_mov_imm_compact(buf, 20, (uint64_t)instr->src1.imm);
         }
         emit_direct_mem_addr(buf, &instr->dst);
         emit_direct_mem_store_from_x20(buf, instr->dst.size);
@@ -1834,7 +1845,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
                     if (!emit_load_gpr_sized_to_x20(buf, &instr->src2))
                         return HB_ERR_INTERNAL;
                 } else {
-                    emit_mov_imm64(buf, 20, (uint64_t)instr->src2.imm);
+                    emit_mov_imm_compact(buf, 20, (uint64_t)instr->src2.imm);
                 }
                 emit_direct_mem_addr(buf, &instr->src1);
                 emit_direct_mem_store_from_x20(buf, instr->src1.size);

@@ -9,14 +9,17 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-05-31 22:54 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-05-31 23:08 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
-conditional-PC, zero-test Jcc, lazy-flag record, and adjacent mem64 pair native promotion. Current
-blocker is still throughput/no-window in hot Mono/Unity code. Scalar small-immediate compaction also
-landed for native arithmetic/logical ops. Hot-byte trace length is now configurable; latest 64-byte
-trace shows rank3 is prologue/local init/`LEA`/`TEST`, while rank1 is a multi-branch bit/RMW loop.
-Next evidence-backed finite target: optimize rank3 `LEA`/local init/test path or design rank1
-multi-block bit/RMW fusion. Do not keep widening immediate/pair paths without new hot evidence. Keep
+conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
+immediate, and direct `STORE`/`MOV` immediate compaction. Current blocker is still throughput/no-window
+in hot Mono/Unity code. Evidence correction: UnityPlayer `c6 41 18 00` lifts through `HB_IR_STORE`,
+not scalar `HB_IR_MOV`; the direct STORE immediate fix is the hot path. `hb_test_runner` now reports
+`351 passed, 0 failed`, fast validation passes, and Hollow Knight
+`run-20260531-230612-phase3-store-imm-compact-jit/` preserves fallback/fault/unsupported-zero with
+cleanup/prune `0`; rank3 `0x87ef2ba32d4` shrank `328 -> 316`. NEXT: continue from 64-byte hot evidence,
+favoring rank3 `LEA`/local-init/test optimization or rank1 multi-block bit/RMW fusion. Do not keep
+widening immediate/pair paths without new hot evidence. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

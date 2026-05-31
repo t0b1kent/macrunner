@@ -168,13 +168,15 @@ memory-test/control code (`TEST byte [rdx],imm; JE`, RIP-relative `CMP/Jcc`, and
 epilogue blocks), so continue with evidence-backed native promotion for finite memory-test/Jcc and
 small branch/control families rather than widening speculative patches.
 
-### ★ ALSO ACTIVE (parallel) — BULK ISA COVERAGE (operator-directed 2026-05-31)
-Stop chasing one opcode per game-run. Proactively cover the whole x86-64 ISA using the
-ALREADY-vendored `engine/wine/libs/capstone` as the decode reference + golden oracle for semantics.
-See the "★ PRIORITY INSERT — BULK ISA COVERAGE" section in
-`docs/CODEX-MEGA-PROGRAM-x64-engine-to-real-games-6month.md`. Deliverable:
-`reports/research/HB-X64-ISA-COVERAGE-matrix.md` + capstone-diff/oracle-diff fuzz wired into CI.
-Run in parallel with Hollow Knight bring-up.
+### ★ BULK ISA COVERAGE — MOVED TO LANE B (MacBook Air M1, separate machine) 2026-05-31
+**This main-mac Codex (Lane A) no longer does bulk-ISA — it's on the Air now.** Lane A stays on
+JIT perf / Hollow Knight window. To avoid a cross-machine merge collision, FILE-LEVEL split:
+- **Lane A (this mac) MUST NOT edit** the decoder/lifter: `hb_decode_x64.c`, `hb_lift_x64.c`,
+  `hb_decode_x86.c`, `hb_lift_x86.c` — those are Lane B's files on the Air.
+- **Lane B (Air) owns** decode/lift + ISA matrix; it MUST NOT touch `hb_arm64_codegen.c`/`hb_jit*`
+  (Lane A's files). Kit lives at `_air-bulk-isa-kit/` (see README-AIR-LANE-B.md).
+- Lane B returns a patch via external disk; operator (Claude) reconciles it into main. If Lane A
+  needs a decoder change for JIT work, flag it for the operator instead of editing the decoder.
 
 ---
 

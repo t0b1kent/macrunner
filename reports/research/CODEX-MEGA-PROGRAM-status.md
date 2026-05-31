@@ -18,7 +18,7 @@ the absolute path; do NOT copy 600M into the repo.
   `UnityPlayer.dll`, `Hollow Knight_Data`, MonoBleedingEdge).
 - **2026-05-30/31 bring-up progress:** `scripts/mr-run.sh` now has macOS `timeout` fallback. Hollow
   Knight reaches and returns successfully from `UnityPlayer.dll` x64 `PROCESS_ATTACH` under
-  HyperBridge. Cleared blockers: API-set target resolution/module map, dynamic guest
+  HyperBridge and continues past Unity allocator startup. Cleared blockers: API-set target resolution/module map, dynamic guest
   `GetProcAddress`, ARM64X `.hexpthk` wrapping, localization/fibers/winrt API-set fallbacks,
   heap/TLS/FLS/LastError, startup/stdout/file type/command line/NLS/LCMap/environment strings,
   dynamic kernel semantic thunks, local heap ownership tracking, critical-section semantics,
@@ -26,22 +26,32 @@ the absolute path; do NOT copy 600M into the repo.
   `mul/div`, `shufps/shufpd`, XMM high/low qword lane moves). Additional 2026-05-31 blockers cleared:
   TEB stack bounds for x64 `__chkstk`, SList, virtual memory, event/error/debug families,
   WinRT init, `CommandLineToArgvW`, file attributes, local file handles, `GetNativeSystemInfo`,
-  `GlobalMemoryStatusEx`, and x64 `CMPXCHG8B/CMPXCHG16B` (`0F C7 /1`, trigger
-  `f0 48 0f c7 4e 40`). HyperBridge test runner is green at `315 passed, 0 failed`; fast validation
-  `phase1_core` PASS.
-- **Current blocker:** latest validated run
-  `reports/phase4-hollow-knight/run-20260531-032224-cmpxchg16b-family/` no longer hits
-  `0xc000001d` or unsupported opcodes; it reaches Unity memory configuration output and times out
-  (`rc=143`) after 709 successful x64 import handoffs. Screenshots are still desktop-only and no
-  Hollow Knight window/rendered frame is visible. Follow-up probe
-  `reports/phase4-hollow-knight/run-20260531-033055-xtajit64-import-loop-probe/` shows no crash or
-  unsupported opcode; imports repeat around `EnterCriticalSection`/`LeaveCriticalSection`/`WriteFile`
-  /`OutputDebugStringW` after Unity memory config. Hot-path xtajit64 logging is now gated behind
-  `MACRUNNER_HB_TRACE_XTAJIT64=1`; next action is a longer low-noise run to distinguish slow startup
-  from a real import/logging loop.
+  `GlobalMemoryStatusEx`, x64 `CMPXCHG8B/CMPXCHG16B` (`0F C7 /1`, trigger `f0 48 0f c7 4e 40`),
+  chunked x64 code fetch, SRW-lock and condition-variable host-boundary leaks, native fallback
+  for ordinary `Heap*` imports, and the bit-scan family decoder bug where bare `0F BC` (BSF) was
+  incorrectly treated as `F3 0F BC` (TZCNT). That BSF/TZCNT fix cleared the Unity small-allocator
+  sentinel-bucket crash at `UnityPlayer.dll` RVAs `0x2afe1b`/`0x2b0069`; HyperBridge tests and
+  `tools/hb_oracle/fast_validate_family.sh phase1_core` pass after the fix.
+- **Current blocker (2026-05-31 09:28 local):** Phase 3 is still no-fault/no-window, but the stall
+  has advanced past the earlier media/wait suspects. Cleared since `run-20260531-071007-bsf-fix-no-tail/`:
+  `winegstreamer`, `CreatePipe`, `BCryptGenRandom`, processor-info queries, semaphore/mutex/thread
+  control, `WaitFor*Ex`, `SetThreadDescription`, COM init, USER32 message/desktop/object queries,
+  `SHGetKnownFolderPath`, and `CoTaskMemAlloc/Realloc/Free` PE-loader thunking. Latest evidence:
+  `reports/phase4-hollow-knight/run-20260531-092812-cotaskmem-fix-phase3-probe/` has `faults=0`,
+  no `CreateWindow*` call yet, successful `SHGetKnownFolderPath` + `CoTaskMemFree`, and the next
+  unmatched import boundary is `KERNEL32.dll!CreateDirectoryW` while Unity creates its LocalLow
+  profile/save directory.
 - **Phase 3 gate still NOT passed:** no main menu, input, audio, or rendered frame yet; latest
   screenshots are desktop-only with no game window.
 - **Run hygiene:** `scripts/mr-run.sh` for runs, `scripts/mr-clean.sh --prune` after each batch.
+
+### ★ ALSO ACTIVE (parallel) — BULK ISA COVERAGE (operator-directed 2026-05-31)
+Stop chasing one opcode per game-run. Proactively cover the whole x86-64 ISA using the
+ALREADY-vendored `engine/wine/libs/capstone` as the decode reference + golden oracle for semantics.
+See the "★ PRIORITY INSERT — BULK ISA COVERAGE" section in
+`docs/CODEX-MEGA-PROGRAM-x64-engine-to-real-games-6month.md`. Deliverable:
+`reports/research/HB-X64-ISA-COVERAGE-matrix.md` + capstone-diff/oracle-diff fuzz wired into CI.
+Run in parallel with Hollow Knight bring-up.
 
 ---
 
@@ -99,8 +109,8 @@ Gate: expanded torture/fuzz suite passes vs golden oracle; 3+ non-trivial x64 co
   `reports/phase3-runtime/post-phase3-phase0-20260530-171220-summary.jsonl`:
   `hello_x64` rc=0, `stdout_stderr_x64` rc=0.
 - Formal gate active on Hollow Knight x64. Current evidence includes successful `UnityPlayer.dll`
-  x64 `PROCESS_ATTACH` under HyperBridge; gate remains open until main menu + input + audio +
-  rendered frame are captured under the spike build.
+  x64 `PROCESS_ATTACH`, Unity memory configuration, and allocator entry under HyperBridge; gate
+  remains open until main menu + input + audio + rendered frame are captured under the spike build.
 
 ### Phase 4 — green-list bring-up ladder — ⏳ PENDING after Phase 3 Hollow Knight gate
 Gate requires ≥5 Tier-1 games playable start→gameplay for ≥30 min each. Start after Hollow Knight

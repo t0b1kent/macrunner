@@ -43,6 +43,37 @@ winemetal/nativemetal/airconv; `engine/graphics/` = metal_ir/shader_ingest/runti
 - Phase 0 starts with a ready diagnosis:
   `reports/research/ARM64EC-PHASE0-c000007b-tls-callback-misaddress-diagnosis.md`.
 
+## ★ PRIORITY INSERT — BULK ISA COVERAGE (do this proactively, alongside Hollow Knight)
+**Rationale:** chasing one missing/mis-decoded opcode per game-run is slow. The full x86-64
+instruction set is finite and externally specified — cover it in bulk instead of reactively.
+This kills the *opcode* failure class up front. (It does NOT remove Win32-API or correctness
+failures — those still surface only by running real software; see Phase 3/5.)
+
+**Reference material (use, don't reinvent):**
+- **capstone is ALREADY vendored** at `engine/wine/libs/capstone` — use it as the authoritative
+  x86-64 decode reference (mnemonic, operands, length) to diff our `hb_decode_x64` against.
+- Intel SDM Vol.2 / AMD APM Vol.3 opcode maps; open tables from Zydis/XED/iced as cross-checks.
+- Our golden oracle + `tools/hb_oracle/` (compare.py, fast_validate_family.sh) for *semantic*
+  correctness, not just decode.
+
+**Task (engine lane):**
+1. **Decode coverage:** enumerate the x86-64 opcode map (1-byte, 0F, 0F38, 0F3A, VEX, EVEX,
+   prefixes/REX/operand-size, ModRM/SIB) and make `hb_decode_x64` decode every defined encoding —
+   diff each against capstone over a large random + manual corpus. Any encoding capstone decodes
+   that we don't (or decode differently, e.g. the BSF-vs-TZCNT bug) is a finding to fix.
+2. **Lift+execute coverage:** for each decoded op, ensure `hb_lift_x64`/interp/JIT implement it,
+   and **diff semantics (regs+flags+memory) against the golden oracle** — flags correctness is the
+   usual killer. Prioritize families real games use: full integer ISA, SSE/SSE2/SSE3/SSSE3/
+   SSE4.1/4.2, AVX/AVX2, BMI1/2, atomics (lock/cmpxchg8b/16b), x87.
+3. **Coverage matrix:** produce `reports/research/HB-X64-ISA-COVERAGE-matrix.md` — per opcode
+   group: decoded? lifted? interp? jit? oracle-verified? — so the gap is visible, not guessed.
+4. **Wire into CI (Phase 5):** the capstone-diff + oracle-diff fuzz becomes a permanent gate so
+   coverage can't regress.
+**Gate:** decoder matches capstone across the corpus (0 unexplained mismatches); oracle-diff green
+for all implemented families; coverage matrix published. After this, game runs should hit far
+fewer opcode stalls — remaining failures will be Win32-API/correctness/ABI, which is expected.
+**Do this in parallel with the Hollow Knight bring-up — both feed each other.**
+
 ## CROSS-CUTTING RULES (apply to EVERY phase)
 - **Evidence, not status.** Every milestone = a pasted log / benchmark number / passing test, not
   "done ✅". "Reached X, blocked at Y @ RIP Z" is a valid result.

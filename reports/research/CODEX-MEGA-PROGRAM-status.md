@@ -7,7 +7,16 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
-## NEXT → Phase 3 formal Tier-1 gate in progress — loader-gated explicit-JIT fallback-zero; UnityPlayer post-Mono CPU/no-window blocker
+## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
+
+**Resume checkpoint (2026-05-31 21:55 local):** Hollow Knight remains loader-gated explicit-JIT
+fallback/fault/unsupported-zero after scalar `MOV` and stack-control native promotion. Current blocker
+is still throughput/no-window in hot Mono/Unity code. Next evidence-backed finite JIT family:
+`HB_IR_ZERO_EXTEND` / `HB_IR_SIGN_EXTEND` native codegen for GPR and direct-memory operands, because
+the latest hot tail contains `MOVZX` shapes (`0f b6 d3`, `0f b7 04 51`) in blocks
+`0x87ef2bf98d8`/`0x87ef2bf98e7`. Keep `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
+`reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per
+family, run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.
 
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
@@ -179,6 +188,20 @@ sizes improved for the evidenced memory branch family: `TEST byte [rdx],1; JE` `
 RIP/absolute `CMP dword [abs],0; JNE` `276 -> 264`; total dispatch remains around 10k. NEXT:
 continue from the still-hot branch/prologue bodies (`0x87ef2ba32d4`, `0x87ef2bf98b4`) and only
 promote finite families that reduce helper calls or dispatch count without growing the common path.
+
+Status 2026-05-31 21:55: scalar `MOV` and stack-control hot families promoted. Native JIT now covers
+8/16/32/64-bit scalar `HB_IR_MOV` for GPR reg/imm plus gated direct-memory load/store siblings, and
+gated direct-stack `PUSH`, `POP`, direct `CALL` return pushes, and `RET`/`RET imm16` while retaining
+helper fallback outside `MACRUNNER_HB_JIT_DIRECT_MEM`. Coverage:
+`engine/hyperbridge/tests/hb_test_runner` => `346 passed, 0 failed`;
+`tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; spike `ntdll.so` relinked. Hollow Knight
+`run-20260531-214111-phase3-scalar-mov-jit/` and
+`run-20260531-214911-phase3-stack-control-jit/` timed out cleanly (`MR_RUN_RC=143`) with cleanup/prune
+`0`, zero JIT fallback/fault/unsupported counters, and Mono paths reached. Hot prologue/epilogue
+native bodies shrank: `0x87ef2bf98b4` `500 -> 404 -> 304`, `0x87ef2ba32d4` `440 -> 388`,
+`0x87ef2ba335c` `336 -> 284`, `0x87ef2bf9919` `328 -> 276`. NEXT: native
+`HB_IR_ZERO_EXTEND`/`HB_IR_SIGN_EXTEND` for hot `MOVZX` blocks (`0f b6 d3`, `0f b7 04 51`), then
+rerun the same fallback-zero Hollow Knight gate.
 
 ### ★ BULK ISA COVERAGE — MOVED TO LANE B (MacBook Air M1, separate machine) 2026-05-31
 **This main-mac Codex (Lane A) no longer does bulk-ISA — it's on the Air now.** Lane A stays on

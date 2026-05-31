@@ -6,9 +6,9 @@ Reference: interpreter semantics in `engine/hyperbridge/src/hb_interpreter.c`. C
 
 ## Summary
 
-- C-helper-primary codegen: 25
-- interp-helper codegen: 126
-- native emit: 11
+- C-helper-primary codegen: 23
+- interp-helper codegen: 123
+- native or native-hot-path emit: 15
 - terminal fault: 2
 
 Current rule: no generic success default. Every interpreter-supported IR op has an explicit codegen case. Helper-backed cases are correctness-first JIT codegen coverage and must be promoted to native emit on hot paths after JIT-vs-interpreter tests.
@@ -33,13 +33,14 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - Bounded scan/store-loop promotion: persistent-cache fusion now covers `CMP rax,rdx; JE exit` + `INC rax; CMP byte [rax+rcx],0; JNE guard`; block-local native emit covers `STORE byte [ptr],src; INC counter; INC ptr; CMP counter,limit; JB self` for immediate and register limits. `run-20260531-205913-phase3-bounded-scan-jit/` and `run-20260531-210549-phase3-store-count-loop-jit/` preserve fallback-zero/fault-zero behavior and move the hot dispatch sample `23k -> 12k -> 11k -> 10k`. Tests cover bounded-cache promotion, immediate-limit byte fill, register-limit byte fill, and source-byte-from-counter semantics.
 - Longer post-hotloop validation: committed as `a41565b`; `run-20260531-211135-phase3-post-hotloop-300s-jit/` preserves fallback-zero/fault-zero behavior for 300s and reaches Unity memory config plus Mono paths. No window yet. Remaining hot list is no longer dominated by the fused loop families; next candidates are finite memory-test/Jcc and small branch/control blocks such as `TEST byte [rdx],imm; JE` and RIP-relative `CMP/Jcc`.
 - Memory branch/RMW promotion: direct-memory logical RMW (`AND/OR/XOR r/m,reg-or-imm`) now emits native read/modify/write and records lazy logical flags; direct-memory immediate `TEST/CMP + E/NE Jcc` has a smaller native pair path. `run-20260531-212945-phase3-memimm-jcc-jit/` preserves fallback-zero/fault-zero behavior, reaches Mono paths, and shrinks observed hot branch blocks (`TEST byte [rdx],1; JE` `220 -> 200`, RIP/absolute `CMP dword [abs],0; JNE` `276 -> 264`). Tests cover OR/AND/XOR memory siblings plus TEST and CMP branch siblings.
+- Scalar MOV + stack-control promotion: scalar `HB_IR_MOV` now emits native ARM64 for 8/16/32/64-bit GPR reg/imm moves plus gated direct-memory load/store siblings; gated direct-stack emit covers hot x64 `PUSH`, `POP`, direct `CALL` return pushes, and `RET`/`RET imm16` while retaining helper fallback outside `MACRUNNER_HB_JIT_DIRECT_MEM`. Tests: `engine/hyperbridge/tests/hb_test_runner` => `346 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight runs `run-20260531-214111-phase3-scalar-mov-jit/` and `run-20260531-214911-phase3-stack-control-jit/` both preserve fallback/fault/unsupported-zero with cleanup/prune `0`. Hot prologue/epilogue bodies improved: `0x87ef2bf98b4` `500 -> 404 -> 304`, `0x87ef2ba32d4` `440 -> 388`, `0x87ef2ba335c` `336 -> 284`, `0x87ef2bf9919` `328 -> 276`.
 
 ## Matrix
 
 | IR op | Interpreter | Codegen case | Status | Hot path |
 |---|---:|---:|---|---:|
 | HB_IR_NOP | yes | yes | native emit |  |
-| HB_IR_MOV | yes | yes | interp-helper codegen | yes |
+| HB_IR_MOV | yes | yes | native scalar/direct-memory emit + helper fallback | yes |
 | HB_IR_MOV_SEG | yes | yes | interp-helper codegen |  |
 | HB_IR_LEA | yes | yes | native emit |  |
 | HB_IR_ADD | yes | yes | native emit + helper fallback | yes |
@@ -78,12 +79,12 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_XGETBV | yes | yes | C-helper codegen |  |
 | HB_IR_LOAD | yes | yes | native emit | yes |
 | HB_IR_STORE | yes | yes | native emit | yes |
-| HB_IR_PUSH | yes | yes | interp-helper codegen |  |
-| HB_IR_POP | yes | yes | interp-helper codegen |  |
+| HB_IR_PUSH | yes | yes | native direct-stack emit + helper fallback | yes |
+| HB_IR_POP | yes | yes | native direct-stack emit + helper fallback | yes |
 | HB_IR_PUSHF | yes | yes | interp-helper codegen |  |
 | HB_IR_POPF | yes | yes | interp-helper codegen |  |
-| HB_IR_CALL | yes | yes | C-helper codegen |  |
-| HB_IR_RET | yes | yes | C-helper codegen |  |
+| HB_IR_CALL | yes | yes | native direct-call stack push + helper fallback | yes |
+| HB_IR_RET | yes | yes | native direct-stack emit + helper fallback | yes |
 | HB_IR_JMP | yes | yes | C-helper codegen |  |
 | HB_IR_LOOP | yes | yes | C-helper codegen |  |
 | HB_IR_JRCXZ | yes | yes | C-helper codegen |  |

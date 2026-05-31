@@ -583,6 +583,109 @@ static void emit_store_x20_to_gpr_sized(hb_codegen_buffer_t* buf, const hb_ir_op
     }
 }
 
+static bool operand_is_xmm_or_vecmem(const hb_ir_operand_t* op);
+static void emit_set_pc_imm64(hb_codegen_buffer_t* buf, uint64_t pc);
+
+static bool emit_native_scalar_mov(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    if (!instr || instr->op != HB_IR_MOV) return false;
+    if (operand_is_xmm_or_vecmem(&instr->dst) || operand_is_xmm_or_vecmem(&instr->src1))
+        return false;
+
+    if (is_gpr_reg_operand(&instr->dst)) {
+        if (instr->src1.type == HB_OP_REG) {
+            if (!is_gpr_reg_operand(&instr->src1)) return false;
+            if (!emit_load_gpr_sized_to_x20(buf, &instr->src1)) return false;
+        } else if (instr->src1.type == HB_OP_IMM) {
+            emit_mov_imm64(buf, 20, (uint64_t)instr->src1.imm);
+            emit_mask_x_reg_to_size(buf, 20, 23, instr->dst.size);
+        } else if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1)) {
+            emit_direct_mem_addr(buf, &instr->src1);
+            emit_direct_mem_load_to_x20(buf, instr->src1.size);
+        } else {
+            return false;
+        }
+        emit_store_x20_to_gpr_sized(buf, &instr->dst);
+        return true;
+    }
+
+    if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->dst) &&
+        (instr->src1.type == HB_OP_REG || instr->src1.type == HB_OP_IMM)) {
+        if (instr->src1.type == HB_OP_REG) {
+            if (!is_gpr_reg_operand(&instr->src1)) return false;
+            if (!emit_load_gpr_sized_to_x20(buf, &instr->src1)) return false;
+        } else {
+            emit_mov_imm64(buf, 20, (uint64_t)instr->src1.imm);
+            emit_mask_x_reg_to_size(buf, 20, 23, instr->dst.size);
+        }
+        emit_direct_mem_addr(buf, &instr->dst);
+        emit_direct_mem_store_from_x20(buf, instr->dst.size);
+        return true;
+    }
+
+    return false;
+}
+
+static void emit_native_stack_push_x20(hb_codegen_buffer_t* buf) {
+    emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+    emit_sub_imm(buf, 21, 21, 8);
+    emit_str_x(buf, 20, 21, 0);
+    emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+}
+
+static bool emit_native_push(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    if (!jit_direct_mem_enabled() || !instr || instr->op != HB_IR_PUSH) return false;
+    if (instr->src1.type == HB_OP_REG) {
+        if (!is_plain_gpr_reg_operand(&instr->src1) || instr->src1.size != HB_SIZE_64)
+            return false;
+        if (!emit_load_gpr_sized_to_x20(buf, &instr->src1)) return false;
+    } else if (instr->src1.type == HB_OP_IMM) {
+        emit_mov_imm64(buf, 20, (uint64_t)instr->src1.imm);
+    } else {
+        return false;
+    }
+    emit_native_stack_push_x20(buf);
+    return true;
+}
+
+static bool emit_native_pop(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    if (!jit_direct_mem_enabled() || !instr || instr->op != HB_IR_POP) return false;
+    if (!is_plain_gpr_reg_operand(&instr->dst) || instr->dst.size != HB_SIZE_64)
+        return false;
+    emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+    emit_ldr_x(buf, 20, 21, 0);
+    emit_add_imm(buf, 21, 21, 8);
+    emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+    emit_store_x20_to_gpr_sized(buf, &instr->dst);
+    return true;
+}
+
+static bool emit_native_ret(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    uint64_t adjust = 0;
+    if (!jit_direct_mem_enabled() || !instr || instr->op != HB_IR_RET) return false;
+    if (instr->src1.type == HB_OP_IMM) {
+        adjust = (uint64_t)instr->src1.imm;
+        if (adjust > 4095) return false;
+    } else if (instr->src1.type != HB_OP_NONE) {
+        return false;
+    }
+    emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+    emit_ldr_x(buf, 20, 21, 0);
+    emit_add_imm(buf, 21, 21, 8);
+    if (adjust) emit_add_imm(buf, 21, 21, (uint32_t)adjust);
+    emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+    emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, pc));
+    return true;
+}
+
+static bool emit_native_direct_call(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    if (!jit_direct_mem_enabled() || !instr || instr->op != HB_IR_CALL) return false;
+    if (instr->src1.type != HB_OP_NONE) return false;
+    emit_mov_imm64(buf, 20, instr->guest_addr + instr->guest_len);
+    emit_native_stack_push_x20(buf);
+    emit_set_pc_imm64(buf, instr->target);
+    return true;
+}
+
 static bool emit_hot_scalar_scan_loop(hb_codegen_buffer_t* buf, const hb_ir_block_t* block) {
     const hb_ir_instr_t* add;
     const hb_ir_instr_t* cmp;
@@ -1256,6 +1359,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_MOV:
             if (operand_is_xmm_or_vecmem(&instr->dst) || operand_is_xmm_or_vecmem(&instr->src1))
                 return emit_interp_ir_helper(buf, instr);
+            if (emit_native_scalar_mov(buf, instr))
+                return HB_OK;
             if (!is_gpr_reg_operand(&instr->dst) ||
                 (instr->src1.type == HB_OP_REG && !is_gpr_reg_operand(&instr->src1)) ||
                 instr->dst.size != HB_SIZE_64 ||
@@ -1537,6 +1642,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         }
 
         case HB_IR_PUSH: {
+            if (emit_native_push(buf, instr))
+                return HB_OK;
             if (instr->src1.type != HB_OP_REG && instr->src1.type != HB_OP_IMM)
                 return emit_interp_ir_helper(buf, instr);
             emit_load_operand(buf, &instr->src1);
@@ -1548,6 +1655,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         }
 
         case HB_IR_POP: {
+            if (emit_native_pop(buf, instr))
+                return HB_OK;
             if (instr->dst.type != HB_OP_REG)
                 return emit_interp_ir_helper(buf, instr);
             emit_mov_reg(buf, 0, 19);
@@ -1566,6 +1675,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
                 emit_return_if_helper_failed(buf);
                 return HB_OK;
             }
+            if (emit_native_direct_call(buf, instr))
+                return HB_OK;
             /* Push first so stack faults do not commit the branch target. */
             emit_mov_imm64(buf, 1, instr->guest_addr + instr->guest_len); /* ret addr */
             emit_mov_reg(buf, 0, 19);
@@ -1577,6 +1688,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         }
 
         case HB_IR_RET: {
+            if (emit_native_ret(buf, instr))
+                return HB_OK;
             emit_mov_reg(buf, 0, 19);
             emit_call_helper(buf, (void*)hb_jit_helper_pop);
             emit_return_if_helper_failed(buf);

@@ -9,7 +9,7 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-05-31 23:49 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-05-31 23:55 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
 immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CMP imm + Jcc` immediate
@@ -17,11 +17,12 @@ mask compaction, base+small-displacement direct-memory offset folding, and adjac
 offset folding, MSVC stack-spill/push/sub prologue fusion, and same-base `MOV`+`LEA` pairing.
 The rank3 local-init triple `STORE imm; MOV same-base; LEA same-base` now also pairs. Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
-`365 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
-Mono/Unity code. Latest top-moving run `run-20260531-234740-phase3-store-movlea-jit/` preserves
-fallback/fault/unsupported-zero with cleanup/prune `0`; rank3 `292 -> 288`. NEXT: continue from
-64-byte hot evidence, favoring the remaining rank3 `TEST/Jcc`/XMM tail or rank1 multi-block bit/RMW
-fusion. Do
+`366 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+Mono/Unity code. Latest run `run-20260531-235316-phase3-test-same-jcc-jit/` preserves
+fallback/fault/unsupported-zero with cleanup/prune `0`; same-register `TEST/Jcc` did not move rank3
+but did shrink rank6 `168 -> 160` and rank9 `180 -> 160`. Last rank3-moving run remains
+`run-20260531-234740-phase3-store-movlea-jit/` with rank3 `292 -> 288`. NEXT: continue from 64-byte
+hot evidence, favoring the remaining rank3 `XMM`/branch tail or rank1 multi-block bit/RMW fusion. Do
 not keep widening immediate/pair paths without new hot evidence. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,

@@ -12184,6 +12184,52 @@ TEST(jit_x64_native_store_imm_mov_lea_same_base) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_test_same_reg_jcc_pair) {
+    hb_ir_func_t* func = hb_ir_func_create(0x5340, 0);
+    ASSERT(func != NULL);
+    hb_ir_block_t* blk = hb_ir_block_create(0, 0x5340);
+    ASSERT(blk != NULL);
+    hb_ir_cfg_add_block(func->cfg, blk);
+    func->cfg->entry = blk;
+
+    hb_ir_builder_t* b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, blk);
+    hb_ir_instr_t* test = hb_ir_emit_test(b, hb_ir_reg(HB_REG_RDX, HB_SIZE_64),
+                                          hb_ir_reg(HB_REG_RDX, HB_SIZE_64));
+    hb_ir_instr_t* jcc = hb_ir_emit_jcc(b, HB_CC_E, 0x5350);
+    ASSERT(test && jcc);
+    test->guest_addr = 0x5340; test->guest_len = 3;
+    jcc->guest_addr = 0x5343; jcc->guest_len = 2;
+    hb_ir_builder_destroy(b);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->pc = 0x5340;
+    ctx->regs.x64.rdx = 0;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->pc == 0x5350);
+    bool equal = false;
+    ASSERT(hb_flags_eval_cond(ctx, HB_CC_E, &equal) == HB_OK);
+    ASSERT(equal);
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(512);
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+    ASSERT(code_buf->size <= 160);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(jit_x64_hot_word_scan_loop_native) {
     uint16_t text[] = {'o', 'k', 0};
     hb_ir_func_t* func = hb_ir_func_create(0x2000, 0);
@@ -16084,6 +16130,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_stack_spill_push_sub_prologue();
     test_jit_x64_native_mov_lea_same_base_pair();
     test_jit_x64_native_store_imm_mov_lea_same_base();
+    test_jit_x64_native_test_same_reg_jcc_pair();
     test_jit_x64_hot_word_scan_loop_native();
     test_jit_x64_cmp_mem_operand_routes_to_helper();
     test_jit_x64_mul_div_family_routes_to_helper();

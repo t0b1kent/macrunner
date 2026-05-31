@@ -1062,6 +1062,23 @@ static bool emit_scalar_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_ins
     return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
 }
 
+static bool emit_test_same_reg_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
+                                        const hb_ir_instr_t* jcc) {
+    hb_size_t size;
+    if (!op || !jcc || op->op != HB_IR_TEST || jcc->op != HB_IR_Jcc) return false;
+    if (jcc->cc != HB_CC_E && jcc->cc != HB_CC_NE) return false;
+    if (!same_plain_gpr_operand(&op->src1, &op->src2)) return false;
+    size = op->src1.size;
+    if (size != HB_SIZE_8 && size != HB_SIZE_16 && size != HB_SIZE_32 && size != HB_SIZE_64)
+        return false;
+
+    if (!emit_load_gpr_sized_to_reg(buf, &op->src1, 20)) return false;
+    emit_mov_reg(buf, 21, 20);
+    emit_mov_reg(buf, 22, 20);
+    emit_note_lazy_from_x20_x21_x22(buf, HB_LAZY_FLAGS_TEST, size);
+    return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+}
+
 static bool emit_mem_imm_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
                                          const hb_ir_instr_t* jcc) {
     hb_lazy_flags_kind_t kind;
@@ -3278,6 +3295,11 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         }
         if (i + 1 < block->instr_count &&
             emit_mem_imm_flags_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
+            i++;
+            continue;
+        }
+        if (i + 1 < block->instr_count &&
+            emit_test_same_reg_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }

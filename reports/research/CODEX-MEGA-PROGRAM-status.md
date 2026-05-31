@@ -9,12 +9,12 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-05-31 22:36 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-05-31 22:42 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
-conditional-PC, zero-test Jcc, and lazy-flag record native promotion. Current blocker is still
-throughput/no-window in hot Mono/Unity code. Next evidence-backed finite target: inspect rank3
-prologue/local-store block `0x87ef2ba32d4` or rank1 memory-test/RMW loop fusion after shared lazy-flag
-store compaction. Do not keep widening zero-test/lazy-record paths without new hot evidence. Keep
+conditional-PC, zero-test Jcc, lazy-flag record, and adjacent mem64 pair native promotion. Current
+blocker is still throughput/no-window in hot Mono/Unity code. Next evidence-backed finite target:
+deeper rank1 memory-test/RMW loop fusion or full-block visibility for remaining rank3 local-store work.
+Do not keep widening adjacent mem-pair paths without new hot evidence. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.
@@ -255,6 +255,17 @@ zero JIT fallback/fault/unsupported counters, and Mono paths reached. Hot block 
 rank1 `180 -> 172`, rank2 `244 -> 236`, rank3 `368 -> 352`, rank8 `160 -> 152`, rank10 `224 -> 216`.
 NEXT: inspect rank3 full prologue/local-store shape or rank1 RMW fusion; continue preserving
 fallback-zero gate.
+
+Status 2026-05-31 22:42: adjacent 64-bit direct-memory spill/restore pairs promoted. Native JIT now
+combines adjacent `STORE+STORE` and `LOAD+LOAD` direct-memory pairs into ARM64 `STP`/`LDP`, targeting
+stack spill/restore shapes in the remaining hot prologue/epilogue blocks. Coverage:
+`engine/hyperbridge/tests/hb_test_runner` => `350 passed, 0 failed`;
+`tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; spike `ntdll.so` relinked. Hollow Knight
+`run-20260531-223838-phase3-mem64-pair-jit/` timed out cleanly (`MR_RUN_RC=143`) with cleanup/prune
+`0`, zero JIT fallback/fault/unsupported counters, and Mono paths reached. Hot prologue/epilogue blocks
+shrunk: rank3 `0x87ef2ba32d4` `352 -> 340`, rank11 `0x87ef2bf98b4` `296 -> 284`, rank12
+`0x87ef2bf9919` `268 -> 260`. NEXT: rank1 memory-test/RMW loop fusion or add full-block diagnostic
+visibility for rank3 before further specialization.
 
 ### ★ BULK ISA COVERAGE — MOVED TO LANE B (MacBook Air M1, separate machine) 2026-05-31
 **This main-mac Codex (Lane A) no longer does bulk-ISA — it's on the Air now.** Lane A stays on

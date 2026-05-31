@@ -114,6 +114,12 @@ static void emit_stp_x(hb_codegen_buffer_t* buf, int rt, int rt2, int rn, uint32
     emit_u32(buf, 0xa9000000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt);
 }
 
+static void emit_ldp_x(hb_codegen_buffer_t* buf, int rt, int rt2, int rn, uint32_t off) {
+    /* LDP Xt1, Xt2, [Xn, #off] — off must be multiple of 8 and fit imm7. */
+    uint32_t imm7 = (off / 8) & 0x7f;
+    emit_u32(buf, 0xa9400000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt);
+}
+
 static void emit_strb_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
     /* STRB Wt, [Xn, #off] */
     emit_u32(buf, 0x39000000 | ((off & 0xfff) << 10) | (rn << 5) | rt);
@@ -391,6 +397,18 @@ static bool same_mem_operand(const hb_ir_operand_t* a, const hb_ir_operand_t* b)
            a->mem.disp == b->mem.disp &&
            a->mem.segment == b->mem.segment &&
            a->mem.addr32 == b->mem.addr32;
+}
+
+static bool adjacent_mem64_operands(const hb_ir_operand_t* a, const hb_ir_operand_t* b) {
+    return a && b && a->type == HB_OP_MEM && b->type == HB_OP_MEM &&
+           a->size == HB_SIZE_64 && b->size == HB_SIZE_64 &&
+           is_direct_user_mem_operand(a) && is_direct_user_mem_operand(b) &&
+           a->mem.base == b->mem.base &&
+           a->mem.index == b->mem.index &&
+           a->mem.scale == b->mem.scale &&
+           a->mem.segment == b->mem.segment &&
+           a->mem.addr32 == b->mem.addr32 &&
+           b->mem.disp == a->mem.disp + 8;
 }
 
 static bool emit_direct_mem_addr_with_override(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op,
@@ -984,6 +1002,36 @@ static bool emit_mem_imm_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_in
     }
     emit_note_lazy_from_x20_x21_x22(buf, kind, size);
     return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+}
+
+static bool emit_adjacent_mem64_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* first,
+                                     const hb_ir_instr_t* second) {
+    if (!jit_direct_mem_enabled() || !first || !second) return false;
+
+    if (first->op == HB_IR_STORE && second->op == HB_IR_STORE &&
+        adjacent_mem64_operands(&first->src1, &second->src1) &&
+        is_plain_gpr_reg_operand(&first->src2) && first->src2.size == HB_SIZE_64 &&
+        is_plain_gpr_reg_operand(&second->src2) && second->src2.size == HB_SIZE_64) {
+        emit_direct_mem_addr(buf, &first->src1);
+        emit_ldr_x(buf, 20, 19, (uint32_t)x64_reg_off(first->src2.reg));
+        emit_ldr_x(buf, 22, 19, (uint32_t)x64_reg_off(second->src2.reg));
+        emit_stp_x(buf, 20, 22, 21, 0);
+        return true;
+    }
+
+    if (first->op == HB_IR_LOAD && second->op == HB_IR_LOAD &&
+        adjacent_mem64_operands(&first->src1, &second->src1) &&
+        is_plain_gpr_reg_operand(&first->dst) && first->dst.size == HB_SIZE_64 &&
+        is_plain_gpr_reg_operand(&second->dst) && second->dst.size == HB_SIZE_64) {
+        emit_direct_mem_addr(buf, &first->src1);
+        emit_ldp_x(buf, 20, 22, 21, 0);
+        emit_store_x20_to_gpr_sized(buf, &first->dst);
+        emit_mov_reg(buf, 20, 22);
+        emit_store_x20_to_gpr_sized(buf, &second->dst);
+        return true;
+    }
+
+    return false;
 }
 
 static bool emit_zero_test_jcc_block(hb_codegen_buffer_t* buf, const hb_ir_block_t* block) {
@@ -3015,6 +3063,11 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         return HB_OK;
     }
     for (size_t i = 0; i < block->instr_count; i++) {
+        if (i + 1 < block->instr_count &&
+            emit_adjacent_mem64_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
+            i++;
+            continue;
+        }
         if (i + 1 < block->instr_count &&
             emit_mem_imm_flags_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;

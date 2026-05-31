@@ -74,6 +74,43 @@ for all implemented families; coverage matrix published. After this, game runs s
 fewer opcode stalls — remaining failures will be Win32-API/correctness/ABI, which is expected.
 **Do this in parallel with the Hollow Knight bring-up — both feed each other.**
 
+## ★ PRIORITY INSERT #2 — BULK JIT CODEGEN COVERAGE (do proactively, like bulk-ISA)
+**Rationale:** Hollow Knight no longer crashes — it is throughput-bound because the JIT falls back
+to the interpreter on uncovered IR ops (`macrunner-hb-jit-fallback: ... JIT codegen failed`).
+Chasing one fallback PC per run is slow. The IR-op set is **finite and externally known** (enum in
+`engine/hyperbridge/include/hb_ir.h`, **163 ops**), and the **interpreter already implements ALL of
+them** — so JIT codegen needs no new semantics, only an ARM64 emit per op mirroring the interpreter.
+Current state: JIT codegen references only ~65 of 163 IR ops → the rest fall back. Close the gap in
+bulk.
+
+**Reference (already in tree, don't reinvent):**
+- `engine/hyperbridge/include/hb_ir.h` — the authoritative 163-op checklist.
+- `engine/hyperbridge/src/hb_interpreter.c` — the correctness reference for EACH op (it covers all).
+- `engine/hyperbridge/src/hb_arm64_codegen.c` — where the ARM64 emit lives (extend it).
+- Golden oracle + `tools/hb_oracle/` — diff JIT result vs interpreter/oracle per op.
+
+**Task (engine lane):**
+1. Enumerate all 163 `HB_IR_*` ops; mark which the JIT codegen already emits vs which fall back.
+2. For every op the interpreter handles but JIT doesn't, add an ARM64 codegen pattern (mirror the
+   interpreter's semantics: regs + **flags** + memory width + addressing). Flags are the usual bug.
+3. **Diff-test each JIT op against the interpreter and the golden oracle** — JIT result MUST equal
+   interpreter result. A wrong-but-fast codegen is worse than a fallback.
+4. Coverage matrix `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md`: per IR op →
+   jit-emitted? oracle-verified? Goal: **zero JIT fallbacks on the Hollow Knight hot path**.
+5. Keep interpreter fallback as a SAFETY net for genuinely hard ops (don't remove it), but it
+   should stop firing on the common path.
+**Gate:** JIT covers all interpreter-supported IR ops used by Hollow Knight (no fallback spam in
+the run log); JIT-vs-interpreter diff green across the corpus; matrix published; Hollow Knight
+throughput high enough that the window/menu can appear within the run timeout.
+
+## GENERAL PRINCIPLE — PREFER BULK/EXHAUSTIVE OVER REACTIVE (applies to any finite, specified set)
+When a failure class is driven by a **finite, externally-specified set** with a **reference
+implementation already available**, cover the whole set ONCE against that reference instead of
+adding one item per failing run. This already applies to: x86-64 opcodes (ref = capstone), JIT IR
+codegen (ref = interpreter). It does NOT apply to Win32-API behavior or memory/ABI correctness —
+those have no finite checklist and surface only by running real software; handle those reactively.
+Whenever you spot a new finite+referenced set, do it in bulk and publish a coverage matrix.
+
 ## CROSS-CUTTING RULES (apply to EVERY phase)
 - **Evidence, not status.** Every milestone = a pasted log / benchmark number / passing test, not
   "done ✅". "Reached X, blocked at Y @ RIP Z" is a valid result.

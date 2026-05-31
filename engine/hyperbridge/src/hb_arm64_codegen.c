@@ -1004,7 +1004,8 @@ static bool emit_mem_imm_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_in
     emit_direct_mem_addr(buf, &op->src1);
     emit_direct_mem_load_to_x20(buf, size);
     emit_mov_imm_compact(buf, 21, (uint64_t)op->src2.imm);
-    emit_mask_x_reg_to_size(buf, 21, 23, size);
+    if (!imm_fits_size((uint64_t)op->src2.imm, size))
+        emit_mask_x_reg_to_size(buf, 21, 23, size);
     if (op->op == HB_IR_TEST) {
         emit_and_reg(buf, 22, 20, 21);
     } else {

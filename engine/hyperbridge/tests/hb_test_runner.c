@@ -9493,6 +9493,79 @@ TEST(jit_x64_native_extend_family) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_xmm_move_family) {
+    uint64_t src[2] = {0x1122334455667788ULL, 0x99aabbccddeeff00ULL};
+    uint64_t dst_store[2] = {0, 0};
+    uint64_t dst_mov[2] = {0, 0};
+    hb_ir_func_t* func = hb_ir_func_create(0x4600, 0);
+    ASSERT(func != NULL);
+    hb_ir_block_t* blk = hb_ir_block_create(0, 0x4600);
+    ASSERT(blk != NULL);
+    hb_ir_cfg_add_block(func->cfg, blk);
+    func->cfg->entry = blk;
+
+    hb_ir_builder_t* b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, blk);
+    hb_ir_instr_t* load = hb_ir_emit_load(b, hb_ir_reg(HB_REG_XMM1, HB_SIZE_128),
+                                          hb_ir_mem(HB_REG_R8, HB_REG_COUNT, 1, 0, HB_SIZE_128));
+    hb_ir_instr_t* mov_reg = hb_ir_emit_mov(b, hb_ir_reg(HB_REG_XMM2, HB_SIZE_128),
+                                            hb_ir_reg(HB_REG_XMM1, HB_SIZE_128));
+    hb_ir_instr_t* store = hb_ir_emit_store(b, hb_ir_mem(HB_REG_R9, HB_REG_COUNT, 1, 0, HB_SIZE_128),
+                                            hb_ir_reg(HB_REG_XMM2, HB_SIZE_128));
+    hb_ir_instr_t* mov_load = hb_ir_emit_mov(b, hb_ir_reg(HB_REG_XMM3, HB_SIZE_128),
+                                             hb_ir_mem(HB_REG_R8, HB_REG_COUNT, 1, 0, HB_SIZE_128));
+    hb_ir_instr_t* mov_store = hb_ir_emit_mov(b, hb_ir_mem(HB_REG_R10, HB_REG_COUNT, 1, 0, HB_SIZE_128),
+                                              hb_ir_reg(HB_REG_XMM3, HB_SIZE_128));
+    ASSERT(load && mov_reg && store && mov_load && mov_store);
+    load->guest_addr = 0x4600; load->guest_len = 7;
+    mov_reg->guest_addr = 0x4607; mov_reg->guest_len = 3;
+    store->guest_addr = 0x460a; store->guest_len = 7;
+    mov_load->guest_addr = 0x4611; mov_load->guest_len = 7;
+    mov_store->guest_addr = 0x4618; mov_store->guest_len = 7;
+    hb_ir_builder_destroy(b);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)src, sizeof(src),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)dst_store, sizeof(dst_store),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)dst_mov, sizeof(dst_mov),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = 0x4600;
+    ctx->regs.x64.r8 = (uint64_t)(uintptr_t)src;
+    ctx->regs.x64.r9 = (uint64_t)(uintptr_t)dst_store;
+    ctx->regs.x64.r10 = (uint64_t)(uintptr_t)dst_mov;
+
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->regs.x64.xmm[1][0] == src[0] && ctx->regs.x64.xmm[1][1] == src[1]);
+    ASSERT(ctx->regs.x64.xmm[2][0] == src[0] && ctx->regs.x64.xmm[2][1] == src[1]);
+    ASSERT(ctx->regs.x64.xmm[3][0] == src[0] && ctx->regs.x64.xmm[3][1] == src[1]);
+    ASSERT(dst_store[0] == src[0] && dst_store[1] == src[1]);
+    ASSERT(dst_mov[0] == src[0] && dst_mov[1] == src[1]);
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(512);
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    ASSERT(code_buf->size <= 220);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(jit_neg_al_sbb_mask_notepadpp_mode_parser) {
     for (int input = 0; input <= 1; input++) {
         hb_ir_func_t* func = hb_ir_func_create(0x1000, 0);
@@ -15267,6 +15340,7 @@ int main(int argc, char** argv) {
     test_jit_partial_mov_preserves_upper_bits();
     test_jit_x64_native_scalar_mov_family();
     test_jit_x64_native_extend_family();
+    test_jit_x64_native_xmm_move_family();
     test_jit_neg_al_sbb_mask_notepadpp_mode_parser();
     test_jit_lahf_sahf_roundtrip();
     test_jit_setcc_cmovcc_memory_operands();

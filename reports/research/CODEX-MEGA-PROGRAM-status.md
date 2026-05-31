@@ -9,15 +9,15 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-05-31 22:01 local):** Hollow Knight remains loader-gated explicit-JIT
-fallback/fault/unsupported-zero after scalar `MOV`, stack-control, and extend native promotion. Current
-blocker is still throughput/no-window in hot Mono/Unity code. Next evidence-backed finite JIT target is
-either the packed XMM move load/store block (`0x87ef2ba3301`, bytes `0f 10 ... f3 0f 7f ...`) if a
-safe NEON/XMM direct-memory emit can be added against interpreter semantics, or tighter fusion for the
-rank1 memory-test/RMW loop. Do not keep widening scalar extend: `MOVZX` rank10 improved, rank9 was
-size-neutral. Keep `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
-`reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per
-family, run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.
+**Resume checkpoint (2026-05-31 22:09 local):** Hollow Knight remains loader-gated explicit-JIT
+fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, and packed XMM move native
+promotion. Current blocker is still throughput/no-window in hot Mono/Unity code. Next evidence-backed
+finite JIT target: rank1 memory-test/RMW loop fusion or smaller branch/control code for
+`0x87ef2bf915f` (`TEST byte [rdx],1; JE; OR byte [rax+rbx+0x18],0x10; MOV cl,[rbp+rax+0x6f]...`).
+Do not keep widening scalar extend or XMM move without new hot evidence. Keep
+`reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
+`reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
+run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.
 
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
@@ -214,6 +214,16 @@ with cleanup/prune `0`, zero JIT fallback/fault/unsupported counters, and Mono p
 `MOVZX` block `0x87ef2bf98d8` shrank `268 -> 244`; `0x87ef2bf98e7` remained size-neutral. NEXT:
 inspect packed XMM move/direct-memory feasibility for `0x87ef2ba3301` or fuse the rank1
 memory-test/RMW loop; do not broaden scalar extend without new evidence.
+
+Status 2026-05-31 22:09: packed XMM move hot family promoted. Native JIT now covers 128-bit XMM
+`HB_IR_LOAD`/`HB_IR_STORE` plus XMM reg-reg/direct-memory `HB_IR_MOV` using paired 64-bit ARM loads and
+stores against `ctx->regs.x64.xmm[n][2]`; direct memory remains gated by `MACRUNNER_HB_JIT_DIRECT_MEM`.
+Coverage: `engine/hyperbridge/tests/hb_test_runner` => `348 passed, 0 failed`;
+`tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; spike `ntdll.so` relinked. Hollow Knight
+`run-20260531-220527-phase3-xmm-move-jit/` timed out cleanly (`MR_RUN_RC=143`) with cleanup/prune `0`,
+zero JIT fallback/fault/unsupported counters, and Mono paths reached. Hot packed move block
+`0x87ef2ba3301` shrank `236 -> 148`. NEXT: rank1 memory-test/RMW loop fusion or smaller branch/control
+code for `0x87ef2bf915f`; keep fallback-zero gate.
 
 ### ★ BULK ISA COVERAGE — MOVED TO LANE B (MacBook Air M1, separate machine) 2026-05-31
 **This main-mac Codex (Lane A) no longer does bulk-ISA — it's on the Air now.** Lane A stays on

@@ -210,6 +210,12 @@ static bool is_plain_gpr_reg_operand(const hb_ir_operand_t* op) {
     return is_gpr_reg_operand(op) && op->reg_offset == 0;
 }
 
+static bool is_xmm_reg_operand(const hb_ir_operand_t* op) {
+    return op && op->type == HB_OP_REG &&
+           op->reg >= HB_REG_XMM0 && op->reg <= HB_REG_XMM15 &&
+           op->size == HB_SIZE_128;
+}
+
 static bool jit_direct_mem_enabled(void) {
     const char* val = getenv("MACRUNNER_HB_JIT_DIRECT_MEM");
     return val && val[0] && val[0] != '0';
@@ -319,6 +325,21 @@ static bool is_direct_user_mem_operand(const hb_ir_operand_t* op) {
     if (op->mem.base != HB_REG_COUNT && op->mem.base >= HB_REG_XMM0) return false;
     if (op->mem.index != HB_REG_COUNT && op->mem.index >= HB_REG_XMM0) return false;
     return true;
+}
+
+static bool is_direct_user_xmm_mem_operand(const hb_ir_operand_t* op) {
+    if (!op || op->type != HB_OP_MEM || op->size != HB_SIZE_128) return false;
+    if (op->mem.segment != 0 || op->mem.addr32) return false;
+    if (op->mem.scale != 1 && op->mem.scale != 2 &&
+        op->mem.scale != 4 && op->mem.scale != 8) return false;
+    if (op->mem.base != HB_REG_COUNT && op->mem.base >= HB_REG_XMM0) return false;
+    if (op->mem.index != HB_REG_COUNT && op->mem.index >= HB_REG_XMM0) return false;
+    return true;
+}
+
+static uint32_t x64_xmm_reg_off(hb_reg_t reg) {
+    return (uint32_t)(offsetof(hb_context_t, regs.x64.xmm) +
+                      (size_t)(reg - HB_REG_XMM0) * sizeof(((hb_regs_x64_t*)0)->xmm[0]));
 }
 
 static void emit_direct_mem_addr(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
@@ -566,6 +587,28 @@ static void emit_direct_mem_store_from_x20(hb_codegen_buffer_t* buf, hb_size_t s
     }
 }
 
+static void emit_load_xmm_to_x20_x22(hb_codegen_buffer_t* buf, hb_reg_t reg) {
+    uint32_t off = x64_xmm_reg_off(reg);
+    emit_ldr_x(buf, 20, 19, off);
+    emit_ldr_x(buf, 22, 19, off + 8);
+}
+
+static void emit_store_x20_x22_to_xmm(hb_codegen_buffer_t* buf, hb_reg_t reg) {
+    uint32_t off = x64_xmm_reg_off(reg);
+    emit_str_x(buf, 20, 19, off);
+    emit_str_x(buf, 22, 19, off + 8);
+}
+
+static void emit_direct_mem128_load_to_x20_x22(hb_codegen_buffer_t* buf) {
+    emit_ldr_x(buf, 20, 21, 0);
+    emit_ldr_x(buf, 22, 21, 8);
+}
+
+static void emit_direct_mem128_store_from_x20_x22(hb_codegen_buffer_t* buf) {
+    emit_str_x(buf, 20, 21, 0);
+    emit_str_x(buf, 22, 21, 8);
+}
+
 static bool emit_load_gpr_sized_to_x20(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
     return emit_load_gpr_sized_to_reg(buf, op, 20);
 }
@@ -626,6 +669,30 @@ static bool emit_native_scalar_mov(hb_codegen_buffer_t* buf, const hb_ir_instr_t
         return true;
     }
 
+    return false;
+}
+
+static bool emit_native_xmm_mov(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    if (!instr || instr->op != HB_IR_MOV) return false;
+    if (is_xmm_reg_operand(&instr->dst) && is_xmm_reg_operand(&instr->src1)) {
+        emit_load_xmm_to_x20_x22(buf, instr->src1.reg);
+        emit_store_x20_x22_to_xmm(buf, instr->dst.reg);
+        return true;
+    }
+    if (is_xmm_reg_operand(&instr->dst) && jit_direct_mem_enabled() &&
+        is_direct_user_xmm_mem_operand(&instr->src1)) {
+        emit_direct_mem_addr(buf, &instr->src1);
+        emit_direct_mem128_load_to_x20_x22(buf);
+        emit_store_x20_x22_to_xmm(buf, instr->dst.reg);
+        return true;
+    }
+    if (jit_direct_mem_enabled() && is_direct_user_xmm_mem_operand(&instr->dst) &&
+        is_xmm_reg_operand(&instr->src1)) {
+        emit_load_xmm_to_x20_x22(buf, instr->src1.reg);
+        emit_direct_mem_addr(buf, &instr->dst);
+        emit_direct_mem128_store_from_x20_x22(buf);
+        return true;
+    }
     return false;
 }
 
@@ -1390,6 +1457,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             return HB_OK;
 
         case HB_IR_MOV:
+            if (emit_native_xmm_mov(buf, instr))
+                return HB_OK;
             if (operand_is_xmm_or_vecmem(&instr->dst) || operand_is_xmm_or_vecmem(&instr->src1))
                 return emit_interp_ir_helper(buf, instr);
             if (emit_native_scalar_mov(buf, instr))
@@ -1638,6 +1707,13 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
 
         case HB_IR_LOAD: {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            if (is_xmm_reg_operand(&instr->dst) && jit_direct_mem_enabled() &&
+                is_direct_user_xmm_mem_operand(&instr->src1)) {
+                emit_direct_mem_addr(buf, &instr->src1);
+                emit_direct_mem128_load_to_x20_x22(buf);
+                emit_store_x20_x22_to_xmm(buf, instr->dst.reg);
+                return HB_OK;
+            }
             if (!is_gpr_reg_operand(&instr->dst))
                 return emit_interp_ir_helper(buf, instr);
             if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1)) {
@@ -1655,6 +1731,13 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
 
         case HB_IR_STORE: {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            if (jit_direct_mem_enabled() && is_direct_user_xmm_mem_operand(&instr->src1) &&
+                is_xmm_reg_operand(&instr->src2)) {
+                emit_load_xmm_to_x20_x22(buf, instr->src2.reg);
+                emit_direct_mem_addr(buf, &instr->src1);
+                emit_direct_mem128_store_from_x20_x22(buf);
+                return HB_OK;
+            }
             if (instr->src2.type == HB_OP_REG && !is_gpr_reg_operand(&instr->src2))
                 return emit_interp_ir_helper(buf, instr);
             if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1) &&

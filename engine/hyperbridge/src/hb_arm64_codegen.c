@@ -1192,6 +1192,38 @@ static bool emit_mov_lea_same_base_pair(hb_codegen_buffer_t* buf,
     return true;
 }
 
+static bool emit_store_imm_mov_lea_same_base(hb_codegen_buffer_t* buf,
+                                             const hb_ir_instr_t* store,
+                                             const hb_ir_instr_t* mov,
+                                             const hb_ir_instr_t* lea) {
+    uint32_t store_off;
+    if (!store || !mov || !lea || store->op != HB_IR_STORE || mov->op != HB_IR_MOV ||
+        lea->op != HB_IR_LEA)
+        return false;
+    if (store->src1.type != HB_OP_MEM || store->src2.type != HB_OP_IMM)
+        return false;
+    if (!direct_mem_unsigned_offset(&store->src1, &store_off))
+        return false;
+    if (!is_plain_gpr_reg_operand(&mov->dst) || !is_plain_gpr_reg_operand(&mov->src1) ||
+        mov->dst.size != HB_SIZE_64 || mov->src1.size != HB_SIZE_64 ||
+        store->src1.mem.base != mov->src1.reg)
+        return false;
+    if (!is_plain_gpr_reg_operand(&lea->dst) || lea->dst.size != HB_SIZE_64)
+        return false;
+    if (lea->src1.type != HB_OP_MEM || lea->src1.mem.base != mov->src1.reg ||
+        lea->src1.mem.index != HB_REG_COUNT || lea->src1.mem.segment != 0 ||
+        lea->src1.mem.addr32 || lea->src1.mem.disp < 0 || lea->src1.mem.disp >= 4096)
+        return false;
+
+    emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(mov->src1.reg));
+    emit_mov_imm_compact(buf, 20, (uint64_t)store->src2.imm);
+    emit_direct_mem_store_from_x20_off(buf, store->src1.size, store_off);
+    emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(mov->dst.reg));
+    if (lea->src1.mem.disp) emit_add_imm(buf, 21, 21, (uint32_t)lea->src1.mem.disp);
+    emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(lea->dst.reg));
+    return true;
+}
+
 static bool emit_zero_test_jcc_block(hb_codegen_buffer_t* buf, const hb_ir_block_t* block) {
     const hb_ir_instr_t *xor_i, *test_i, *jcc;
     uint64_t next_pc;
@@ -3226,6 +3258,12 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
             emit_stack_spill_push_sub_prologue(out, &block->instrs[i], &block->instrs[i + 1],
                                                &block->instrs[i + 2], &block->instrs[i + 3])) {
             i += 3;
+            continue;
+        }
+        if (i + 2 < block->instr_count &&
+            emit_store_imm_mov_lea_same_base(out, &block->instrs[i], &block->instrs[i + 1],
+                                             &block->instrs[i + 2])) {
+            i += 2;
             continue;
         }
         if (i + 1 < block->instr_count &&

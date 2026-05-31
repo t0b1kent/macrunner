@@ -9,17 +9,18 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-05-31 23:43 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-05-31 23:49 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
 immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CMP imm + Jcc` immediate
 mask compaction, base+small-displacement direct-memory offset folding, and adjacent mem64 pair
 offset folding, MSVC stack-spill/push/sub prologue fusion, and same-base `MOV`+`LEA` pairing.
-Parallel Lane B ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this
-batch is `364 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window
-in hot Mono/Unity code. Latest top-moving run `run-20260531-234133-phase3-movlea-pair-jit/` preserves
-fallback/fault/unsupported-zero with cleanup/prune `0`; rank3 `296 -> 292`. NEXT: continue from
-64-byte hot evidence, favoring the remaining rank3 local-init/TEST tail or rank1 multi-block bit/RMW
+The rank3 local-init triple `STORE imm; MOV same-base; LEA same-base` now also pairs. Parallel Lane B
+ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
+`365 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+Mono/Unity code. Latest top-moving run `run-20260531-234740-phase3-store-movlea-jit/` preserves
+fallback/fault/unsupported-zero with cleanup/prune `0`; rank3 `292 -> 288`. NEXT: continue from
+64-byte hot evidence, favoring the remaining rank3 `TEST/Jcc`/XMM tail or rank1 multi-block bit/RMW
 fusion. Do
 not keep widening immediate/pair paths without new hot evidence. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and

@@ -30,7 +30,8 @@ static hb_block_cache_entry_t* block_cache_find(hb_block_cache_t* cache, uint64_
 }
 
 static hb_block_cache_entry_t* block_cache_put(hb_block_cache_t* cache, uint64_t addr, uint8_t* code,
-                                               size_t size, uint32_t steps) {
+                                               size_t size, uint32_t steps,
+                                               const hb_ir_block_t* block, bool fused) {
     if (!cache) return NULL;
     size_t idx = block_cache_hash(addr);
     for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++) {
@@ -41,6 +42,8 @@ static hb_block_cache_entry_t* block_cache_put(hb_block_cache_t* cache, uint64_t
             cache->entries[probe].native_size = size;
             cache->entries[probe].steps = steps;
             cache->entries[probe].hit_count = 0;
+            cache->entries[probe].block = block;
+            cache->entries[probe].fused = fused;
             cache->entries[probe].valid = true;
             return &cache->entries[probe];
         }
@@ -49,6 +52,8 @@ static hb_block_cache_entry_t* block_cache_put(hb_block_cache_t* cache, uint64_t
             cache->entries[probe].native_code = code;
             cache->entries[probe].native_size = size;
             cache->entries[probe].steps = steps;
+            cache->entries[probe].block = block;
+            cache->entries[probe].fused = fused;
             return &cache->entries[probe];
         }
     }
@@ -265,6 +270,147 @@ static hb_result_t set_runtime_fault_result(hb_exec_result_t* out, hb_context_t*
     return result;
 }
 
+static void try_promote_copy_scan_counted_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
+                                               const hb_ir_block_t* block) {
+    const hb_ir_block_t* body = NULL;
+    const hb_ir_block_t* guard = NULL;
+    hb_block_cache_entry_t* body_entry = NULL;
+
+    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !block || !block->instr_count)
+        return;
+
+    const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
+    if (block->instr_count == 2 && last->op == HB_IR_Jcc) {
+        body_entry = block_cache_find(rt->block_cache, last->target);
+        if (!body_entry || !body_entry->block || body_entry->fused) return;
+        body = body_entry->block;
+        guard = block;
+    } else if (block->instr_count == 5 && last->op == HB_IR_Jcc) {
+        hb_block_cache_entry_t* guard_entry =
+            block_cache_find(rt->block_cache, last->guest_addr + last->guest_len);
+        if (!guard_entry || !guard_entry->block) return;
+        body_entry = block_cache_find(rt->block_cache, block->guest_addr);
+        if (!body_entry || body_entry->fused) return;
+        body = block;
+        guard = guard_entry->block;
+    } else {
+        return;
+    }
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(1024);
+    if (!code_buf) return;
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    if (!cg) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    hb_result_t r = hb_arm64_codegen_copy_scan_counted_loop(cg, body, guard, code_buf);
+    hb_arm64_codegen_destroy(cg);
+    if (r != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    size_t needed = code_buf->size;
+    if (rt->jit_mem->used + needed > rt->jit_mem->size) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    size_t emitted_size = code_buf->size;
+    uint8_t* dest = rt->jit_mem->writable + rt->jit_mem->used;
+    memcpy(dest, code_buf->code, emitted_size);
+    rt->jit_mem->used += emitted_size;
+    rt->jit_mem->used = (rt->jit_mem->used + 15) & ~15;
+    hb_codegen_buffer_destroy(code_buf);
+
+    if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    block_cache_put(rt->block_cache, body->guest_addr, dest, emitted_size,
+                    (uint32_t)(body->instr_count + guard->instr_count), body, true);
+    if (trace_jit_blocks_enabled()) {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=copy-scan-counted body=%p guard=%p "
+                "native=%p-%p size=%zu\n",
+                (void*)(uintptr_t)body->guest_addr, (void*)(uintptr_t)guard->guest_addr,
+                dest, dest + emitted_size, emitted_size);
+        fflush(stderr);
+    }
+}
+
+static void try_promote_bounded_scan_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
+                                          const hb_ir_block_t* block) {
+    const hb_ir_block_t* guard = NULL;
+    const hb_ir_block_t* body = NULL;
+    hb_block_cache_entry_t* guard_entry = NULL;
+
+    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !block || !block->instr_count)
+        return;
+
+    const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
+    if (block->instr_count == 2 && last->op == HB_IR_Jcc) {
+        hb_block_cache_entry_t* body_entry =
+            block_cache_find(rt->block_cache, last->guest_addr + last->guest_len);
+        guard_entry = block_cache_find(rt->block_cache, block->guest_addr);
+        if (!body_entry || !body_entry->block || !guard_entry || guard_entry->fused) return;
+        guard = block;
+        body = body_entry->block;
+    } else if (block->instr_count == 3 && last->op == HB_IR_Jcc) {
+        guard_entry = block_cache_find(rt->block_cache, last->target);
+        if (!guard_entry || !guard_entry->block || guard_entry->fused) return;
+        guard = guard_entry->block;
+        body = block;
+    } else {
+        return;
+    }
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(1024);
+    if (!code_buf) return;
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    if (!cg) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    hb_result_t r = hb_arm64_codegen_bounded_scan_loop(cg, guard, body, code_buf);
+    hb_arm64_codegen_destroy(cg);
+    if (r != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    size_t needed = code_buf->size;
+    if (rt->jit_mem->used + needed > rt->jit_mem->size) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    size_t emitted_size = code_buf->size;
+    uint8_t* dest = rt->jit_mem->writable + rt->jit_mem->used;
+    memcpy(dest, code_buf->code, emitted_size);
+    rt->jit_mem->used += emitted_size;
+    rt->jit_mem->used = (rt->jit_mem->used + 15) & ~15;
+    hb_codegen_buffer_destroy(code_buf);
+
+    if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    block_cache_put(rt->block_cache, guard->guest_addr, dest, emitted_size,
+                    (uint32_t)(guard->instr_count + body->instr_count), guard, true);
+    if (trace_jit_blocks_enabled()) {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=bounded-byte-scan guard=%p body=%p "
+                "native=%p-%p size=%zu\n",
+                (void*)(uintptr_t)guard->guest_addr, (void*)(uintptr_t)body->guest_addr,
+                dest, dest + emitted_size, emitted_size);
+        fflush(stderr);
+    }
+}
+
 hb_result_t hb_jit_runtime_compile(hb_jit_runtime_t* rt, const hb_ir_func_t* func) {
     (void)rt; (void)func;
     /* Compilation is done on-demand per-block in hb_jit_runtime_run for MVP */
@@ -323,7 +469,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
             if (!cg) { hb_codegen_buffer_destroy(code_buf); return HB_ERR_OUT_OF_MEMORY; }
 
-            hb_result_t r = hb_arm64_codegen_block(cg, block, code_buf);
+            hb_result_t r = hb_arm64_codegen_block_with_cfg(cg, block, func->cfg, code_buf);
             hb_arm64_codegen_destroy(cg);
             if (r != HB_OK) {
                 hb_codegen_buffer_destroy(code_buf);
@@ -362,8 +508,10 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
 
             /* Store in block cache */
             cached = block_cache_put(rt->block_cache, ctx->pc, dest, emitted_size,
-                                     (uint32_t)block->instr_count);
+                                     (uint32_t)block->instr_count, block, false);
             trace_jit_block(ctx->pc, dest, emitted_size, block);
+            try_promote_copy_scan_counted_loop(rt, ctx, block);
+            try_promote_bounded_scan_loop(rt, ctx, block);
 
             /* Execute */
             typedef void (*jit_block_t)(hb_context_t*);

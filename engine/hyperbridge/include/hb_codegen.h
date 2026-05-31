@@ -24,6 +24,16 @@ void hb_arm64_codegen_destroy(hb_arm64_codegen_t* cg);
 
 hb_result_t hb_arm64_codegen_func(hb_arm64_codegen_t* cg, const hb_ir_func_t* func, hb_codegen_buffer_t* out);
 hb_result_t hb_arm64_codegen_block(hb_arm64_codegen_t* cg, const hb_ir_block_t* block, hb_codegen_buffer_t* out);
+hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_block_t* block,
+                                            const hb_ir_cfg_t* cfg, hb_codegen_buffer_t* out);
+hb_result_t hb_arm64_codegen_copy_scan_counted_loop(hb_arm64_codegen_t* cg,
+                                                    const hb_ir_block_t* body,
+                                                    const hb_ir_block_t* guard,
+                                                    hb_codegen_buffer_t* out);
+hb_result_t hb_arm64_codegen_bounded_scan_loop(hb_arm64_codegen_t* cg,
+                                               const hb_ir_block_t* guard,
+                                               const hb_ir_block_t* body,
+                                               hb_codegen_buffer_t* out);
 hb_result_t hb_arm64_codegen_instr(hb_arm64_codegen_t* cg, const hb_ir_instr_t* instr, hb_codegen_buffer_t* out);
 
 /* JIT buffer management */

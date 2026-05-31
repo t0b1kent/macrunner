@@ -36,6 +36,8 @@ typedef struct {
     size_t native_size;
     uint32_t steps;
     uint64_t hit_count;
+    const hb_ir_block_t* block;
+    bool fused;
     bool valid;
 } hb_block_cache_entry_t;
 

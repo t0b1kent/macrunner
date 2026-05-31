@@ -6,9 +6,9 @@ Reference: interpreter semantics in `engine/hyperbridge/src/hb_interpreter.c`. C
 
 ## Summary
 
-- C-helper codegen: 32
+- C-helper-primary codegen: 25
 - interp-helper codegen: 126
-- native emit: 4
+- native emit: 11
 - terminal fault: 2
 
 Current rule: no generic success default. Every interpreter-supported IR op has an explicit codegen case. Helper-backed cases are correctness-first JIT codegen coverage and must be promoted to native emit on hot paths after JIT-vs-interpreter tests.
@@ -18,14 +18,19 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - Backend correction: this lane needs both gates: `MACRUNNER_HB_X64_LOADER=1` routes the AMD64 PE through HyperBridge, and `MACRUNNER_HB_BACKEND=jit` selects the JIT. Runs missing the loader gate exit early in ARM64/ARM64EC loader startup; runs missing the backend gate are interpreter-path evidence, not JIT-backend proof.
 - Explicit-JIT throughput root cause: `run-20260531-181656-phase3-explicit-jit-hot-sample/` sampled the JIT hot path in `hb_jit_buffer_commit` / `hb_jit_buffer_make_writable` -> `__mprotect`, showing per-block whole-buffer W^X flips were the throughput blocker after codegen fallbacks reached zero.
 - Fix: MAP_JIT buffers now use `pthread_jit_write_protect_np` on Apple arm64 plus dirty-range icache flushes; the mprotect path remains the non-MAP_JIT fallback.
-- Validation: `engine/hyperbridge/tests/hb_test_runner` => `325 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS; spike `ntdll.so` relinked.
+- Validation: `engine/hyperbridge/tests/hb_test_runner` => `332 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS; spike `ntdll.so` relinked after scalar native and scalar-flags/Jcc pair promotion.
 - Run: `reports/phase4-hollow-knight/run-20260531-190238-phase3-loader-jit-blockmap-sampled/`
 - Result: 300s timeout (`rc=143`) with `MACRUNNER_HB_X64_LOADER=1 MACRUNNER_HB_BACKEND=jit` via `scripts/mr-run.sh`; cleanup/prune `0`.
 - JIT fallback evidence: `macrunner-hb-jit-fallback=0`, `JIT codegen failed=0`, `JIT helper fault=0`, `UNSUPPORTED_OPCODE=0`, `MEMORY_FAULT=0`, `runtime-fail=0`, `JIT buffer exhausted=0`.
 - Progress: Unity memory setup and Mono paths reached; 7,955 JIT blocks traced; no game window yet.
 - Sample evidence: main macOS thread is in `CFRunLoop`; seven `AssetGarbageCollectorHelper` workers are in `NtWaitForSingleObject`; the active x64 guest stack is dominated by UnityPlayer guest PC `0x7ffd07cc548` (module base `0x7ffd0340000`, RVA `0x48c548`, epilogue of a UnityPlayer helper). Sampled PCs did not map to JIT native block ranges, so the next probe should focus on guest-stack/UnityPlayer ownership rather than missing codegen fallback.
 - Hot-block probe: `run-20260531-192827-phase3-loader-jit-hotbytes/` preserved fallback-zero and emitted top dynamic Mono code heap blocks around `0x87ef...`. Decoded bytes show helper-heavy string-scan loops, e.g. `inc rax; cmp byte/word [base+index], 0/value; jne self`, plus small `jmp rax` thunks.
-- Next blocker: preserve loader-gated explicit-JIT fallback-zero and promote the hot scalar loop family (`ADD/CMP-or-TEST/Jcc`, byte/word memory compare, self-branch) from helper-heavy codegen to native ARM64. Wait semantics are not the current evidence-backed fix target: `run-20260531-175000-phase3-wait-resume-trace/` showed suspended workers resume successfully and then wait on companion handles.
+- Current hot-path promotion: native ARM64 peephole for `ADD reg,1; CMP mem8/mem16,reg-or-imm; Jcc self`, native scalar plain-GPR/imm `ADD/SUB/AND/OR/XOR`, native `CMP/TEST`, and adjacent scalar-flags `E/NE Jcc` pairs. Tests cover byte/word scan loops, 8-bit partial ADD flags, 64-bit SUB borrow, 32-bit TEST zero flags, and `SUB/Jcc` + `TEST/Jcc` pair branches.
+- Hollow Knight validation after promotion: `run-20260531-195003-phase3-scanloop-jit/`, `run-20260531-200058-phase3-scalar-native-jit/`, and `run-20260531-200447-phase3-scalar-jcc-pair-jit/` all timeout cleanly with cleanup/prune `0` and zero JIT fallbacks/faults/unsupported opcodes. Pair path improves the counted-loop guard blocks (`SUB/JNE` 372→292, `CMP/Jcc` 352→272 versus scalar-native-only). Remaining hot bodies are the two-block copy/scan family (`LOAD/STORE/INC/TEST/JE` plus `SUB/JNE`) and need loop fusion or smaller lazy-flag recording. Wait semantics remain outside the evidence-backed fix target.
+- Compact lazy-flag/mask record path: small constants now use one ARM64 `MOVZ` instead of unconditional 4-instruction materialization. `run-20260531-201543-phase3-compact-lazy-jit/` preserves fallback-zero and clean timeout behavior, while reducing 23k-sample JIT buffer use `260384 -> 203664`; rank hot blocks shrink `292 -> 208`, `508 -> 328`, `272 -> 188`, `520 -> 328`. Tests assert size caps for scan-loop and scalar-branch peepholes.
+- Copy-scan body promotion: `LOAD byte; STORE byte; INC index; TEST byte; JE/JNE` emits as one native block-local peephole and skips dead `INC` lazy flags. `run-20260531-202253-phase3-copy-scan-jit/` preserves fallback-zero and clean timeout behavior; the rank-2 body shrinks `328 -> 220` versus compact-lazy-only. Tests cover fallthrough and zero-terminator taken paths. Remaining high-value work is rank1/rank2 backedge fusion or direct block chaining.
+- Copy-scan counted-loop promotion: the real x64 loader emits one-block functions, so CFG-only fusion did not trigger. Persistent JIT block-cache promotion now regenerates the cached body once the `LOAD/STORE/INC/TEST/JE` body and `SUB/JNE` guard are both present. `run-20260531-204546-phase3-cache-promote-copy-scan-jit/` preserves fallback-zero/fault-zero behavior, records 2 `macrunner-hb-jit-fusion` events including body `0x87ef2bdf604` + guard `0x87ef2bdf612`, and drops the hot dispatch sample from 23k to 12k at the same cap. Tests now cover direct CFG fusion, single-block copy-scan partial-register correctness, and persistent-cache promotion. Next hot finite family: bounded byte scan `CMP rax,rdx; JE exit` + `INC rax; CMP byte [rax+rcx],0; JNE guard`.
+- Bounded scan/store-loop promotion: persistent-cache fusion now covers `CMP rax,rdx; JE exit` + `INC rax; CMP byte [rax+rcx],0; JNE guard`; block-local native emit covers `STORE byte [ptr],src; INC counter; INC ptr; CMP counter,limit; JB self` for immediate and register limits. `run-20260531-205913-phase3-bounded-scan-jit/` and `run-20260531-210549-phase3-store-count-loop-jit/` preserve fallback-zero/fault-zero behavior and move the hot dispatch sample `23k -> 12k -> 11k -> 10k`. Tests cover bounded-cache promotion, immediate-limit byte fill, register-limit byte fill, and source-byte-from-counter semantics.
 
 ## Matrix
 
@@ -35,9 +40,9 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_MOV | yes | yes | interp-helper codegen | yes |
 | HB_IR_MOV_SEG | yes | yes | interp-helper codegen |  |
 | HB_IR_LEA | yes | yes | native emit |  |
-| HB_IR_ADD | yes | yes | C-helper codegen |  |
+| HB_IR_ADD | yes | yes | native emit + helper fallback | yes |
 | HB_IR_ADC | yes | yes | C-helper codegen |  |
-| HB_IR_SUB | yes | yes | C-helper codegen |  |
+| HB_IR_SUB | yes | yes | native emit + helper fallback | yes |
 | HB_IR_SBB | yes | yes | C-helper codegen |  |
 | HB_IR_MUL | yes | yes | C-helper codegen |  |
 | HB_IR_IMUL | yes | yes | C-helper codegen |  |
@@ -47,9 +52,9 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_BTS | yes | yes | interp-helper codegen | yes |
 | HB_IR_BTR | yes | yes | interp-helper codegen | yes |
 | HB_IR_BTC | yes | yes | interp-helper codegen | yes |
-| HB_IR_AND | yes | yes | C-helper codegen |  |
-| HB_IR_OR | yes | yes | C-helper codegen |  |
-| HB_IR_XOR | yes | yes | C-helper codegen |  |
+| HB_IR_AND | yes | yes | native emit + helper fallback | yes |
+| HB_IR_OR | yes | yes | native emit + helper fallback | yes |
+| HB_IR_XOR | yes | yes | native emit + helper fallback | yes |
 | HB_IR_NOT | yes | yes | C-helper codegen |  |
 | HB_IR_NEG | yes | yes | C-helper codegen |  |
 | HB_IR_SHL | yes | yes | interp-helper codegen |  |
@@ -59,8 +64,8 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_ROR | yes | yes | interp-helper codegen |  |
 | HB_IR_SHLD | yes | yes | C-helper codegen |  |
 | HB_IR_SHRD | yes | yes | C-helper codegen |  |
-| HB_IR_CMP | yes | yes | C-helper codegen |  |
-| HB_IR_TEST | yes | yes | C-helper codegen |  |
+| HB_IR_CMP | yes | yes | native emit + helper fallback | yes |
+| HB_IR_TEST | yes | yes | native emit + helper fallback | yes |
 | HB_IR_CMPXCHG | yes | yes | interp-helper codegen |  |
 | HB_IR_CMPXCHG8B | yes | yes | interp-helper codegen |  |
 | HB_IR_XCHG | yes | yes | interp-helper codegen | yes |

@@ -65,7 +65,7 @@ the absolute path; do NOT copy 600M into the repo.
   byte/word string-scan loops such as `inc rax; cmp byte/word [base+index], 0/value; jne self`.
   No game window yet. Do not patch wait semantics speculatively:
   `run-20260531-175000-phase3-wait-resume-trace/` showed suspended workers resume successfully and
-  then idle on companion waits. Next codegen pass should promote the hot scalar loop family
+  then idle on companion waits. Current codegen pass is promoting the hot scalar loop family
   (`ADD/CMP-or-TEST/Jcc`, byte/word memory compare, self-branch) away from helper-heavy codegen
   while preserving loader-gated explicit-JIT fallback-zero.
 - **Phase 3 gate still NOT passed:** no main menu, input, audio, or rendered frame yet; latest
@@ -88,6 +88,76 @@ Status 2026-05-31 19:30: first bulk pass published in
 and identifies hot dynamic Mono string-scan loops. Promote helper-backed scalar `ADD/CMP/Jcc`
 loop blocks to native emit first; do not regress the
 `MACRUNNER_HB_X64_LOADER=1 MACRUNNER_HB_BACKEND=jit` fallback-zero gate.
+
+Status 2026-05-31 19:48: native ARM64 peephole for the hot scalar scan-loop family
+(`ADD reg,1; CMP mem8/mem16,reg-or-imm; Jcc self`) is under validation. Unit coverage now has byte
+and word scan-loop JIT-vs-runtime checks; `engine/hyperbridge/tests/hb_test_runner` => `327 passed,
+0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Next: rebuild/relink the
+spike `ntdll.so`, run loader-gated Hollow Knight, and compare hot-block/fallback counters.
+
+Status 2026-05-31 20:08: scalar native JIT family expanded beyond the first scan-loop peephole:
+plain-GPR/imm `ADD/SUB/AND/OR/XOR`, `CMP/TEST`, and adjacent `E/NE Jcc` pairs now emit native
+ARM64 and record lazy flags without condition-helper fallback. Coverage:
+`engine/hyperbridge/tests/hb_test_runner` => `332 passed, 0 failed`;
+`tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS; spike `ntdll.so` relinked. Hollow
+Knight probes:
+`run-20260531-195003-phase3-scanloop-jit/`,
+`run-20260531-200058-phase3-scalar-native-jit/`, and
+`run-20260531-200447-phase3-scalar-jcc-pair-jit/` all timeout cleanly with cleanup/prune `0` and
+zero `macrunner-hb-jit-fallback`, `JIT codegen failed`, `JIT helper fault`, `UNSUPPORTED_OPCODE`,
+`MEMORY_FAULT`, `runtime-fail`, or `JIT buffer exhausted`. Pair path improves the top counted-loop
+guard blocks (`SUB/JNE` 372→292, `CMP/Jcc` 352→272 versus scalar-native-only) but remaining hot
+copy/scan bodies are still large; next target is loop fusion or a smaller lazy-flag record path for
+the `LOAD/STORE/INC/TEST/JE` + `SUB/JNE` two-block copy-loop family.
+
+Status 2026-05-31 20:19: compact immediate emission added for JIT mask/lazy-flag recording so hot
+native scalar blocks no longer materialize every small constant with four ARM64 instructions.
+Coverage remains `engine/hyperbridge/tests/hb_test_runner` => `332 passed, 0 failed` plus
+`tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; tests now assert code-size caps for the
+scan-loop and scalar-branch peepholes. Spike `ntdll.so` relinked. Hollow Knight
+`run-20260531-201543-phase3-compact-lazy-jit/` timed out cleanly (`MR_RUN_RC=143`) with
+cleanup/prune `0` and zero JIT fallback/fault/unsupported counters. At the same 23k hot-block
+sample, JIT buffer use improved `260384 -> 203664`; top hot blocks shrank: rank1 `292 -> 208`,
+rank2 `508 -> 328`, rank3 `272 -> 188`, rank4 `520 -> 328`. Next evidence-backed target remains
+real loop fusion for the two-block byte copy/scan family (`LOAD/STORE/INC/TEST/JE` plus `SUB/JNE`).
+
+Status 2026-05-31 20:26: block-local native copy-scan body peephole added for
+`LOAD byte; STORE byte; INC index; TEST byte; JE/JNE`, skipping dead `INC` lazy-flag recording that
+is immediately overwritten by `TEST`. Coverage: `engine/hyperbridge/tests/hb_test_runner` =>
+`334 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; spike
+`ntdll.so` relinked. Hollow Knight `run-20260531-202253-phase3-copy-scan-jit/` timed out cleanly
+(`MR_RUN_RC=143`) with cleanup/prune `0` and zero JIT fallback/fault/unsupported counters. Rank-2
+copy-scan body shrank `328 -> 220` versus compact-lazy-only at the same 23k hot-block sample. JIT
+buffer used is roughly flat (`203664 -> 203552`) because this optimized one hot compiled body, not
+block count; remaining throughput work should fuse the rank1 `SUB/JNE` guard with the rank2 body or
+add direct block chaining for the backedge.
+
+Status 2026-05-31 20:45: persistent JIT block-cache promotion now fuses the real one-block-at-a-time
+x64 loader shape for `LOAD/STORE/INC/TEST/JE` body + `SUB/JNE` count guard. The first CFG-only
+attempt validated locally but did not trigger in Hollow Knight because `hb_lift_func_x64` still emits
+single-block functions; the cache promotion regenerates the body cache entry once the guard and body
+are both present. Correctness fix included: the copy-scan peephole now writes the loaded `AL/AX` back
+to the guest register file. Coverage: `engine/hyperbridge/tests/hb_test_runner` => `337 passed, 0
+failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; spike `ntdll.so` relinked.
+Hollow Knight `run-20260531-204546-phase3-cache-promote-copy-scan-jit/` timed out cleanly
+(`MR_RUN_RC=143`) with cleanup/prune `0`, zero JIT fallback/fault/unsupported counters, and 2
+`macrunner-hb-jit-fusion` events including body `0x87ef2bdf604` + guard `0x87ef2bdf612`. Hot-block
+dispatch sample dropped from 23k to 12k at the same cap; the old rank1/rank2 copy loop disappeared.
+NEXT: apply the same two-block promotion to the new top bounded byte-scan family:
+`CMP rax,rdx; JE exit` guard plus `INC rax; CMP byte [rax+rcx],0; JNE guard` body.
+
+Status 2026-05-31 21:05: bounded byte-scan and store/count-loop hot families promoted. Added
+persistent-cache two-block fusion for `CMP rax,rdx; JE exit` + `INC rax; CMP byte [rax+rcx],0; JNE
+guard`, plus block-local native emit for `STORE byte [ptr],src; INC counter; INC ptr; CMP
+counter,limit; JB self` (both immediate and register limits, including source byte = counter low
+byte). Coverage: `engine/hyperbridge/tests/hb_test_runner` => `340 passed, 0 failed`;
+`tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; spike `ntdll.so` relinked. Hollow
+Knight `run-20260531-205913-phase3-bounded-scan-jit/` and
+`run-20260531-210549-phase3-store-count-loop-jit/` both timed out cleanly (`MR_RUN_RC=143`) with
+cleanup/prune `0`, zero JIT fallback/fault/unsupported counters, and 4 fusion events. Hot dispatch
+sample moved `23k -> 12k -> 11k -> 10k`; top copy/bounded/store loops are no longer dominant. NEXT:
+inspect the remaining top branchy memory-test/prologue blocks (`0x87ef2bf915f`,
+`0x87ef2ba32f8`, `0x87ef2ba32d4`) and promote only evidence-backed finite families.
 
 ### ★ ALSO ACTIVE (parallel) — BULK ISA COVERAGE (operator-directed 2026-05-31)
 Stop chasing one opcode per game-run. Proactively cover the whole x86-64 ISA using the

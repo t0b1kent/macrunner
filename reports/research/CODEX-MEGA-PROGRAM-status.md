@@ -20,14 +20,16 @@ direct-memory scalar/XMM `LOAD+STORE` same-register pairs now keep loaded values
 following store.
 Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
-`368 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
-Mono/Unity code. Latest run `run-20260601-001957-phase3-compact-pc-imm-jit/` preserves
-fallback/fault/unsupported-zero with cleanup/prune `0`; compact safe PC/immediate materialization
-shrinks branch-heavy top blocks: rank1 `164 -> 160`, rank2 `216 -> 212`, rank3 `288 -> 284`, rank5
-`140 -> 136`, rank6 `160 -> 156`, rank7 `172 -> 168`, rank8 `152 -> 148`, rank9 `160 -> 156`,
-rank10 `212 -> 208`, rank11 `256 -> 248`. NEXT: continue from executed 64-byte hot evidence,
-favoring rank3 prologue/XMM/branch tail or rank1/rank2 multi-block bit/RMW fusion; do not chase scalar
-load/store tails that sit behind the hot branch unless new execution evidence shows them active. Keep
+`369 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+Mono/Unity code. Latest run `run-20260601-002629-phase3-zero-store-backedge-jit/` preserves
+fallback/fault/unsupported-zero with cleanup/prune `0`; final top-12 stayed size-neutral versus the
+compact-PC run, but the targeted bit-loop zero-store/update block `0x87ef2bf9182` is present in the log
+and shrank `448 -> 212`. Previous compact safe PC/immediate run
+`run-20260601-001957-phase3-compact-pc-imm-jit/` shrank branch-heavy top blocks: rank1 `164 -> 160`,
+rank2 `216 -> 212`, rank3 `288 -> 284`, rank5 `140 -> 136`, rank6 `160 -> 156`, rank7 `172 -> 168`,
+rank8 `152 -> 148`, rank9 `160 -> 156`, rank10 `212 -> 208`, rank11 `256 -> 248`. NEXT: continue from
+executed 64-byte hot evidence, favoring the remaining rank1/rank2 bit-test/RMW arms and rank3
+prologue/XMM/branch tail. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

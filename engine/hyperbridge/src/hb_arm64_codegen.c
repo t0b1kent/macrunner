@@ -1688,6 +1688,67 @@ static bool emit_store_count_loop_block(hb_codegen_buffer_t* buf, const hb_ir_bl
     return true;
 }
 
+static bool emit_zero_store_update_backedge_block(hb_codegen_buffer_t* buf,
+                                                  const hb_ir_block_t* block) {
+    const hb_ir_instr_t *zero, *store, *add_ptr2, *add_index, *sub_count, *jcc;
+    if (!jit_direct_mem_enabled() || !block || block->instr_count != 6) return false;
+
+    zero = &block->instrs[0];
+    store = &block->instrs[1];
+    add_ptr2 = &block->instrs[2];
+    add_index = &block->instrs[3];
+    sub_count = &block->instrs[4];
+    jcc = &block->instrs[5];
+
+    if (zero->op != HB_IR_XOR || store->op != HB_IR_STORE ||
+        add_ptr2->op != HB_IR_ADD || add_index->op != HB_IR_ADD ||
+        sub_count->op != HB_IR_SUB || jcc->op != HB_IR_Jcc)
+        return false;
+    if (jcc->cc != HB_CC_E && jcc->cc != HB_CC_NE) return false;
+    if (!same_plain_gpr_operand(&zero->dst, &zero->src1) ||
+        !same_plain_gpr_operand(&zero->dst, &zero->src2) ||
+        zero->dst.size != HB_SIZE_8)
+        return false;
+    if (!is_direct_user_mem_operand(&store->src1) || store->src1.size != HB_SIZE_8 ||
+        !same_plain_gpr_operand(&zero->dst, &store->src2))
+        return false;
+    if (!is_plain_gpr_reg_operand(&add_ptr2->dst) ||
+        !same_plain_gpr_operand(&add_ptr2->dst, &add_ptr2->src1) ||
+        add_ptr2->dst.size != HB_SIZE_64 ||
+        add_ptr2->src2.type != HB_OP_IMM || add_ptr2->src2.imm != 2)
+        return false;
+    if (!is_plain_gpr_reg_operand(&add_index->dst) ||
+        !same_plain_gpr_operand(&add_index->dst, &add_index->src1) ||
+        add_index->dst.size != HB_SIZE_64 ||
+        add_index->src2.type != HB_OP_IMM || add_index->src2.imm != 1)
+        return false;
+    if (!is_plain_gpr_reg_operand(&sub_count->dst) ||
+        !same_plain_gpr_operand(&sub_count->dst, &sub_count->src1) ||
+        sub_count->dst.size != HB_SIZE_64 ||
+        sub_count->src2.type != HB_OP_IMM || sub_count->src2.imm != 1)
+        return false;
+
+    emit_mov_imm_compact(buf, 20, 0);
+    emit_store_x20_to_gpr_sized(buf, &zero->dst);
+    uint32_t store_off = emit_direct_mem_addr_with_offset(buf, &store->src1);
+    emit_direct_mem_store_from_x20_off(buf, store->src1.size, store_off);
+
+    emit_ldr_x(buf, 23, 19, (uint32_t)x64_reg_off(add_ptr2->dst.reg));
+    emit_add_imm(buf, 23, 23, 2);
+    emit_str_x(buf, 23, 19, (uint32_t)x64_reg_off(add_ptr2->dst.reg));
+
+    emit_ldr_x(buf, 23, 19, (uint32_t)x64_reg_off(add_index->dst.reg));
+    emit_add_imm(buf, 23, 23, 1);
+    emit_str_x(buf, 23, 19, (uint32_t)x64_reg_off(add_index->dst.reg));
+
+    emit_ldr_x(buf, 20, 19, (uint32_t)x64_reg_off(sub_count->dst.reg));
+    emit_mov_imm_compact(buf, 21, 1);
+    emit_sub_imm(buf, 22, 20, 1);
+    emit_str_x(buf, 22, 19, (uint32_t)x64_reg_off(sub_count->dst.reg));
+    emit_note_lazy_from_x20_x21_x22(buf, HB_LAZY_FLAGS_SUB, sub_count->dst.size);
+    return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+}
+
 static bool emit_direct_logic_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
     hb_lazy_flags_kind_t kind;
     if (!instr || (instr->op != HB_IR_AND && instr->op != HB_IR_OR && instr->op != HB_IR_XOR))
@@ -3317,6 +3378,10 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         }
     }
     if (emit_store_count_loop_block(out, block)) {
+        emit_epilogue(out);
+        return HB_OK;
+    }
+    if (emit_zero_store_update_backedge_block(out, block)) {
         emit_epilogue(out);
         return HB_OK;
     }

@@ -113,12 +113,6 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             }
             return HB_OK;
         }
-        case HB_INS_MOV_SEG: {
-            hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src = operand_from_dec(dec, 2);
-            emit(b, hb_ir_emit_unop(b, HB_IR_MOV_SEG, dst, src), dec);
-            return HB_OK;
-        }
         case HB_INS_SSE_MOV: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
@@ -706,29 +700,6 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, hb_ir_emit_pop(b, dst), dec);
             return HB_OK;
         }
-        case HB_INS_PUSHF: {
-            hb_ir_operand_t size_op = operand_from_dec(dec, 1);
-            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PUSHF);
-            if (i) i->src1 = size_op;
-            emit(b, i, dec);
-            return HB_OK;
-        }
-        case HB_INS_POPF: {
-            hb_ir_operand_t size_op = operand_from_dec(dec, 1);
-            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_POPF);
-            if (i) i->src1 = size_op;
-            emit(b, i, dec);
-            return HB_OK;
-        }
-        case HB_INS_LEAVE: {
-            hb_size_t sz = size_from_dec(dec->op1.size);
-            hb_ir_operand_t sp = hb_ir_reg(HB_REG_RSP, sz);
-            hb_ir_operand_t bp_same_size = hb_ir_reg(HB_REG_RBP, sz);
-            hb_ir_operand_t bp = operand_from_dec(dec, 1);
-            emit(b, hb_ir_emit_mov(b, sp, bp_same_size), dec);
-            emit(b, hb_ir_emit_pop(b, bp), dec);
-            return HB_OK;
-        }
         case HB_INS_CALL: {
             hb_ir_instr_t *i = hb_ir_emit_call(b, dec->branch_target);
             if (i && dec->op1.present) i->src1 = operand_from_dec(dec, 1);
@@ -1024,75 +995,6 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_X87_FNCLEX:
         case HB_INS_X87_FNINIT:
             emit(b, hb_ir_emit(b, HB_IR_NOP), dec);
-            return HB_OK;
-        case HB_INS_X87_FLD:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FLD, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FST:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FST, operand_from_dec(dec, 1), hb_ir_none()), dec);
-            return HB_OK;
-        case HB_INS_X87_FSTP:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FSTP, operand_from_dec(dec, 1), hb_ir_none()), dec);
-            return HB_OK;
-        case HB_INS_X87_FILD:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FILD, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FISTP:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FISTP, operand_from_dec(dec, 1), hb_ir_none()), dec);
-            return HB_OK;
-        case HB_INS_X87_FNSTSW:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FNSTSW, operand_from_dec(dec, 1), hb_ir_none()), dec);
-            return HB_OK;
-        case HB_INS_X87_FADD:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FADD, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FMUL:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FMUL, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FCOM:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FCOM, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FCOMP:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FCOMP, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FSUB:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FSUB, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FSUBR:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FSUBR, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FDIV:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FDIV, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FDIVR:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FDIVR, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FADDP:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FADDP, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FMULP:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FMULP, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FCOMPP:
-            emit(b, hb_ir_emit(b, HB_IR_X87_FCOMPP), dec);
-            return HB_OK;
-        case HB_INS_X87_FSUBP:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FSUBP, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FSUBRP:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FSUBRP, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FDIVP:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FDIVP, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FDIVRP:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FDIVRP, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FXCH:
-            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FXCH, hb_ir_none(), operand_from_dec(dec, 1)), dec);
-            return HB_OK;
-        case HB_INS_X87_FRNDINT:
-            emit(b, hb_ir_emit(b, HB_IR_X87_FRNDINT), dec);
             return HB_OK;
         case HB_INS_NOP: {
             emit(b, hb_ir_emit(b, HB_IR_NOP), dec);

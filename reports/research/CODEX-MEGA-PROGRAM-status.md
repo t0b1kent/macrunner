@@ -117,6 +117,17 @@ top-12 is unchanged because bit-scan is not in the sampled hot loop; NEXT remain
 CFG fusion plus native promotion of remaining finite helper-backed IR families against
 interpreter/oracle parity.
 
+**Follow-up batch:** `run-20260601-032811-phase3-cwd-jit` preserves fallback/fault/
+unsupported/runtime zero with cleanup/prune `0`; `HB_IR_CWD` now has native ARM64 CWD/CDQ/CQO
+codegen for 16/32/64-bit high-half sign extension. The CDQ path explicitly masks the native all-ones
+value to `0xffffffff` before the generic 32-bit GPR store so the x64 `EDX` zero-extension semantics
+match the interpreter. Regression `jit_x64_native_cwd_family` compares JIT vs interpreter for
+positive/negative 16-bit, 32-bit, and 64-bit siblings and verifies flags/lazy flags remain unchanged.
+`hb_test_runner` is now `380 passed, 0 failed`, fast validation PASS. The final 90s Mono top-12 is
+unchanged because this finite helper-backed family is not in the sampled hot loop; NEXT remains
+branch/fallthrough CFG fusion plus native promotion of remaining finite helper-backed IR families
+against interpreter/oracle parity while keeping the bulk ISA matrix live.
+
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
 (624M GOG InnoSetup installer + `Bonus/`). It's a sibling of the repo (outside `MacRunner/`) — use

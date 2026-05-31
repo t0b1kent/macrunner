@@ -4843,6 +4843,84 @@ TEST(jit_x64_native_bit_scan_family) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_cwd_family) {
+    struct {
+        hb_size_t size;
+        uint64_t rax;
+        uint64_t rdx_before;
+        uint64_t rdx_after;
+    } cases[] = {
+        {HB_SIZE_16, 0x8001ULL, 0x123456789abc0000ULL, 0x123456789abcffffULL},
+        {HB_SIZE_16, 0x7fffULL, 0xffffffffffffffffULL, 0xffffffffffff0000ULL},
+        {HB_SIZE_32, 0x7fffffffULL, 0xffffffffffffffffULL, 0},
+        {HB_SIZE_32, 0x80000013ULL, 0, 0xffffffffULL},
+        {HB_SIZE_64, 0x8000000000000000ULL, 0, UINT64_MAX},
+        {HB_SIZE_64, 0x7fffffffffffffffULL, UINT64_MAX, 0},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uint64_t base = 0x5200 + (uint64_t)i * 0x10;
+        hb_ir_func_t* func = hb_ir_func_create(base, 0);
+        ASSERT(func != NULL);
+        hb_ir_block_t* blk = hb_ir_block_create(0, base);
+        ASSERT(blk != NULL);
+        hb_ir_cfg_add_block(func->cfg, blk);
+        func->cfg->entry = blk;
+
+        hb_ir_builder_t* b = hb_ir_builder_create(func);
+        ASSERT(b != NULL);
+        hb_ir_builder_set_block(b, blk);
+        hb_ir_instr_t* cwd = hb_ir_emit(b, HB_IR_CWD);
+        ASSERT(cwd != NULL);
+        cwd->src1 = hb_ir_reg(HB_REG_RAX, cases[i].size);
+        cwd->guest_addr = base;
+        cwd->guest_len = 1;
+        hb_ir_builder_destroy(b);
+
+        hb_context_t* interp = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+        hb_context_t* jit = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+        ASSERT(interp != NULL && jit != NULL);
+        interp->pc = base;
+        jit->pc = base;
+        interp->regs.x64.rax = cases[i].rax;
+        jit->regs.x64.rax = cases[i].rax;
+        interp->regs.x64.rdx = cases[i].rdx_before;
+        jit->regs.x64.rdx = cases[i].rdx_before;
+        interp->flags.cf = true;
+        jit->flags.cf = true;
+        interp->flags.zf = true;
+        jit->flags.zf = true;
+        interp->lazy_flags.pending = true;
+        jit->lazy_flags.pending = true;
+
+        hb_exec_result_t interp_out;
+        hb_exec_result_t jit_out;
+        ASSERT(hb_runtime_run(interp, func, HB_BACKEND_INTERP, &interp_out) == HB_OK);
+        ASSERT(hb_runtime_run(jit, func, HB_BACKEND_JIT, &jit_out) == HB_OK);
+        ASSERT(interp_out.result == HB_OK);
+        ASSERT(jit_out.result == HB_OK);
+        ASSERT(jit->regs.x64.rdx == interp->regs.x64.rdx);
+        ASSERT(jit->regs.x64.rdx == cases[i].rdx_after);
+        ASSERT(jit->flags.cf == interp->flags.cf);
+        ASSERT(jit->flags.zf == interp->flags.zf);
+        ASSERT(jit->lazy_flags.pending == interp->lazy_flags.pending);
+
+        hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(256);
+        hb_arm64_codegen_t* cg = hb_arm64_codegen_create(jit);
+        ASSERT(code_buf != NULL && cg != NULL);
+        ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+        ASSERT(code_buf->size <= 128);
+        hb_arm64_codegen_destroy(cg);
+        hb_codegen_buffer_destroy(code_buf);
+
+        hb_context_destroy(interp);
+        hb_context_destroy(jit);
+        hb_ir_func_destroy(func);
+    }
+
+    tests_passed++;
+}
+
 TEST(jit_commit_verify_failure_not_marked_executable) {
     hb_jit_buffer_t* buf = hb_jit_buffer_create(4096);
     ASSERT(buf != NULL);
@@ -17043,6 +17121,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_epilogue_restore_ret_block();
     test_jit_x64_native_bswap_family();
     test_jit_x64_native_bit_scan_family();
+    test_jit_x64_native_cwd_family();
     test_jit_commit_verify_failure_not_marked_executable();
     test_jit_load_unmapped_faults();
     test_jit_store_unmapped_faults();

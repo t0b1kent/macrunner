@@ -1138,6 +1138,35 @@ static bool emit_native_bit_scan(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
     return true;
 }
 
+static bool emit_native_cwd(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    hb_size_t size;
+    uint64_t sign_bit;
+    hb_ir_operand_t dst;
+
+    if (!instr || instr->op != HB_IR_CWD)
+        return false;
+
+    size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
+    if (size != HB_SIZE_16 && size != HB_SIZE_32 && size != HB_SIZE_64)
+        return false;
+
+    sign_bit = (size == HB_SIZE_16) ? 0x8000ULL :
+               (size == HB_SIZE_32) ? 0x80000000ULL :
+                                      0x8000000000000000ULL;
+    emit_ldr_x(buf, 20, 19, (uint32_t)x64_reg_off(HB_REG_RAX));
+    emit_mov_imm_compact(buf, 21, sign_bit);
+    emit_and_reg(buf, 20, 20, 21);
+    emit_cmp_imm(buf, 20, 0);
+    emit_cset_w(buf, 20, 1); /* NE: sign bit was set */
+    emit_neg(buf, 20, 20);   /* 0 -> 0, 1 -> all ones */
+    if (size == HB_SIZE_32)
+        emit_mask_x_reg_to_size(buf, 20, 21, HB_SIZE_32);
+
+    dst = hb_ir_reg(HB_REG_RDX, size);
+    emit_store_x20_to_gpr_sized(buf, &dst);
+    return true;
+}
+
 static bool emit_hot_scalar_scan_loop(hb_codegen_buffer_t* buf, const hb_ir_block_t* block) {
     const hb_ir_instr_t* add;
     const hb_ir_instr_t* cmp;
@@ -2963,7 +2992,6 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_XADD:
         case HB_IR_PUSHF:
         case HB_IR_POPF:
-        case HB_IR_CWD:
         case HB_IR_MOVS:
         case HB_IR_CMPS:
         case HB_IR_LODS:
@@ -3070,6 +3098,12 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_X87_FNINIT:
         case HB_IR_HOST_CALL:
             return emit_interp_ir_helper(buf, instr);
+
+        case HB_IR_CWD: {
+            if (emit_native_cwd(buf, instr))
+                return HB_OK;
+            return emit_interp_ir_helper(buf, instr);
+        }
 
         case HB_IR_UNSUPPORTED:
         case HB_IR_FAULT:

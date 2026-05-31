@@ -9,7 +9,7 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-06-01 00:58 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-06-01 01:06 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
 immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CMP imm + Jcc` immediate
@@ -20,7 +20,7 @@ direct-memory scalar/XMM `LOAD+STORE` same-register pairs now keep loaded values
 following store.
 Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
-`370 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+`371 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
 Mono/Unity code. Latest run `run-20260601-004957-phase3-rank3-prologue-init-test-jit/` preserves
 fallback/fault/unsupported-zero with cleanup/prune `0`; the full rank3
 `STORE/STORE/PUSH/SUB; STORE0/MOV/LEA; TEST/Jcc` block now fuses and shrinks `264 -> 200`. Previous
@@ -30,9 +30,12 @@ rank8 `144 -> 136`, rank9 `152 -> 144`, rank10 `204 -> 196`, rank11 `248 -> 240`
 `244 -> 236`. Latest run `run-20260601-005649-phase3-cmp-mem-zero-jcc-jit/` preserves
 fallback/fault/unsupported-zero with cleanup/prune `0`; rank2 `CMP direct-memory, 0` feeding `Jcc`
 now branches directly from the loaded value while preserving exact lazy CMP flags, shrinking
-`0x87ef2ba32f8` `204 -> 172`. NEXT: continue the bulk JIT-codegen coverage lane from executed
-64-byte hot evidence, favoring the remaining rank1 bit-test/RMW arms and post-rank3
-XMM/default-copy tail. Keep
+`0x87ef2ba32f8` `204 -> 172`. Latest run
+`run-20260601-010437-phase3-testimm-flags-jcc-jit/` preserves fallback/fault/unsupported-zero with
+cleanup/prune `0`; rank1 `TEST direct-memory, imm + Jcc` now branches from the ARM64 `ANDS` Z flag
+while preserving exact lazy TEST flags, shrinking `0x87ef2bf915f` `148 -> 144`. NEXT: continue the
+bulk JIT-codegen coverage lane from executed 64-byte hot evidence, favoring the remaining rank1
+OR/load/store/update tail fusion and post-rank3 XMM/default-copy tail. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

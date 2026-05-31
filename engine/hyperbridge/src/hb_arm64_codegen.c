@@ -42,6 +42,10 @@ static void __attribute__((unused)) emit_and_reg(hb_codegen_buffer_t* buf, int r
     emit_u32(buf, 0x8a000000 | (rm << 16) | (rn << 5) | rd);
 }
 
+static void __attribute__((unused)) emit_ands_reg(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
+    emit_u32(buf, 0xea000000 | (rm << 16) | (rn << 5) | rd);
+}
+
 static void __attribute__((unused)) emit_orr_reg(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
     emit_u32(buf, 0xaa000000 | (rm << 16) | (rn << 5) | rd);
 }
@@ -1009,11 +1013,10 @@ static bool emit_native_extend(hb_codegen_buffer_t* buf, const hb_ir_instr_t* in
     return true;
 }
 
-static bool emit_reg_zero_set_pc(hb_codegen_buffer_t* buf, int cmp_reg, hb_cc_t cc,
-                                 uint64_t target, uint64_t fallthrough) {
+static bool emit_flags_set_pc(hb_codegen_buffer_t* buf, hb_cc_t cc,
+                              uint64_t target, uint64_t fallthrough) {
     int64_t delta = (int64_t)target - (int64_t)fallthrough;
     if (cc != HB_CC_E && cc != HB_CC_NE) return false;
-    emit_cmp_imm(buf, cmp_reg, 0);
     if (delta >= -4095 && delta <= 4095) {
         emit_mov_imm_compact(buf, 21, fallthrough);
         emit_bcond(buf, arm64_cond(cc) ^ 1, 8);
@@ -1029,6 +1032,12 @@ static bool emit_reg_zero_set_pc(hb_codegen_buffer_t* buf, int cmp_reg, hb_cc_t 
     emit_mov_imm64(buf, 20, target);
     emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, pc));
     return true;
+}
+
+static bool emit_reg_zero_set_pc(hb_codegen_buffer_t* buf, int cmp_reg, hb_cc_t cc,
+                                 uint64_t target, uint64_t fallthrough) {
+    emit_cmp_imm(buf, cmp_reg, 0);
+    return emit_flags_set_pc(buf, cc, target, fallthrough);
 }
 
 static bool emit_cmp_zero_set_pc(hb_codegen_buffer_t* buf, hb_cc_t cc,
@@ -1145,7 +1154,9 @@ static bool emit_mem_imm_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_in
     if (!imm_fits_size((uint64_t)op->src2.imm, size))
         emit_mask_x_reg_to_size(buf, 21, 23, size);
     if (op->op == HB_IR_TEST) {
-        emit_and_reg(buf, 22, 20, 21);
+        emit_ands_reg(buf, 22, 20, 21);
+        emit_note_lazy_from_x20_x21_x22(buf, kind, size);
+        return emit_flags_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
     } else {
         emit_sub_reg(buf, 22, 20, 21);
         emit_mask_x_reg_to_size(buf, 22, 23, size);

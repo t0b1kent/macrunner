@@ -7,7 +7,22 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
-## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
+## NEXT (operator-directed 2026-06-01) → SHIFT TO GRAPHICS / DXMT — graphics never starts
+**Latest Hollow Knight runs show NO `GfxDevice`/`d3d11`/`dxgi`/`Direct3D` markers — the renderer
+never starts, so the missing window is NOT just throughput.** JIT perf is fallback-zero + hot blocks
+native (good, KEEP it as the permanent speed foundation — not wasted), but it's at diminishing
+returns for the window. PRIMARY GOAL now = the DX11→Metal (DXMT) path. Full brief:
+`docs/CODEX-LANE-A-graphics-dxmt-to-window-brief.md`.
+1. FIRST diagnose why graphics doesn't start (does Unity even reach d3d11/dxgi CreateDevice, or die
+   earlier in Mono/CPU init?) → `reports/research/HB-GRAPHICS-bringup-diagnosis-20260601.md`.
+2. THEN drive DXMT: device→swapchain→on-screen window→present→first frame; use `engine/dxmt/tests`
+   fixtures where possible. Graphics lane is yours (`engine/dxmt`, `engine/graphics`, `engine/vkd3d`).
+3. BOUNDARY: decoder/lifter (`hb_decode_x64.c`, `hb_lift_x64.c`) belong to Lane B (the Air) now —
+   **do NOT edit them.** JIT codegen stays yours.
+
+---
+
+## (prior focus, now secondary) Phase 3 Hollow Knight — bulk JIT codegen coverage
 
 **Resume checkpoint (2026-06-01 02:46 local, base HEAD `a697b4c`):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near

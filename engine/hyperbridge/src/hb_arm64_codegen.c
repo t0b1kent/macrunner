@@ -1180,6 +1180,26 @@ static bool emit_xmm_load_store_pair(hb_codegen_buffer_t* buf, const hb_ir_instr
     return true;
 }
 
+static bool emit_scalar_load_store_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* load,
+                                        const hb_ir_instr_t* store) {
+    if (!jit_direct_mem_enabled() || !load || !store) return false;
+    if (load->op != HB_IR_LOAD || store->op != HB_IR_STORE) return false;
+    if (!is_plain_gpr_reg_operand(&load->dst) || !is_plain_gpr_reg_operand(&store->src2) ||
+        load->dst.reg != store->src2.reg || load->dst.size != store->src2.size)
+        return false;
+    if (!is_direct_user_mem_operand(&load->src1) || !is_direct_user_mem_operand(&store->src1))
+        return false;
+    if (load->src1.size != load->dst.size || store->src1.size != store->src2.size)
+        return false;
+
+    uint32_t load_off = emit_direct_mem_addr_with_offset(buf, &load->src1);
+    emit_direct_mem_load_to_x20_off(buf, load->src1.size, load_off);
+    emit_store_x20_to_gpr_sized(buf, &load->dst);
+    uint32_t store_off = emit_direct_mem_addr_with_offset(buf, &store->src1);
+    emit_direct_mem_store_from_x20_off(buf, store->src1.size, store_off);
+    return true;
+}
+
 static bool emit_stack_spill_push_sub_prologue(hb_codegen_buffer_t* buf,
                                                const hb_ir_instr_t* store1,
                                                const hb_ir_instr_t* store2,
@@ -3322,6 +3342,11 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         }
         if (i + 1 < block->instr_count &&
             emit_xmm_load_store_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
+            i++;
+            continue;
+        }
+        if (i + 1 < block->instr_count &&
+            emit_scalar_load_store_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }

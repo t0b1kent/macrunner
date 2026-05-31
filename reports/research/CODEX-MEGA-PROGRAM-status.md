@@ -16,15 +16,18 @@ immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CM
 mask compaction, base+small-displacement direct-memory offset folding, and adjacent mem64 pair
 offset folding, MSVC stack-spill/push/sub prologue fusion, and same-base `MOV`+`LEA` pairing.
 The rank3 local-init triple `STORE imm; MOV same-base; LEA same-base` now also pairs, and adjacent
-direct-memory XMM `LOAD+STORE` now keeps the loaded lanes live for simple destination addresses.
+direct-memory scalar/XMM `LOAD+STORE` same-register pairs now keep loaded values live for the
+following store.
 Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
-`367 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
-Mono/Unity code. Latest run `run-20260601-000430-phase3-xmm-load-store-livepair-jit/` preserves
-fallback/fault/unsupported-zero with cleanup/prune `0`; packed XMM copy block rank5
-`0x87ef2ba3301` shrank `148 -> 140`, while rank1/rank2/rank3 stayed unchanged. NEXT: continue from
-64-byte hot evidence, favoring rank3 prologue/XMM/branch tail or rank1/rank2 multi-block bit/RMW
-fusion. Do not keep widening immediate/pair paths without new hot evidence. Keep
+`368 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+Mono/Unity code. Latest run `run-20260601-001241-phase3-scalar-load-store-pair-jit/` preserves
+fallback/fault/unsupported-zero with cleanup/prune `0` but did not move the top-12 hot sizes; the
+preceding XMM run `run-20260601-000430-phase3-xmm-load-store-livepair-jit/` remains the latest
+measured improvement with packed XMM copy block rank5 `0x87ef2ba3301` shrinking `148 -> 140`. NEXT:
+continue from executed 64-byte hot evidence, favoring rank3 prologue/XMM/branch tail or rank1/rank2
+multi-block bit/RMW fusion; do not chase scalar load/store tails that sit behind the hot branch unless
+new execution evidence shows them active. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

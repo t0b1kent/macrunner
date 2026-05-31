@@ -9,12 +9,13 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-05-31 22:42 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-05-31 22:49 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, and adjacent mem64 pair native promotion. Current
-blocker is still throughput/no-window in hot Mono/Unity code. Next evidence-backed finite target:
-deeper rank1 memory-test/RMW loop fusion or full-block visibility for remaining rank3 local-store work.
-Do not keep widening adjacent mem-pair paths without new hot evidence. Keep
+blocker is still throughput/no-window in hot Mono/Unity code. Scalar small-immediate compaction also
+landed for native arithmetic/logical ops. Next evidence-backed finite target: deeper rank1
+memory-test/RMW loop fusion or add full-block visibility for remaining rank3 local-store work. Do not
+keep widening immediate/pair paths without new hot evidence. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.
@@ -266,6 +267,16 @@ stack spill/restore shapes in the remaining hot prologue/epilogue blocks. Covera
 shrunk: rank3 `0x87ef2ba32d4` `352 -> 340`, rank11 `0x87ef2bf98b4` `296 -> 284`, rank12
 `0x87ef2bf9919` `268 -> 260`. NEXT: rank1 memory-test/RMW loop fusion or add full-block diagnostic
 visibility for rank3 before further specialization.
+
+Status 2026-05-31 22:49: generic native scalar small-immediate materialization compacted. The
+`ADD/SUB/AND/OR/XOR` native path now uses compact immediate emission for small immediates instead of
+unconditional 64-bit MOVZ/MOVK sequences, preserving the same lazy flag record semantics. Coverage:
+`engine/hyperbridge/tests/hb_test_runner` => `350 passed, 0 failed`;
+`tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; spike `ntdll.so` relinked. Hollow Knight
+`run-20260531-224514-phase3-scalar-imm-compact-jit/` timed out cleanly (`MR_RUN_RC=143`) with
+cleanup/prune `0`, zero JIT fallback/fault/unsupported counters, and Mono paths reached. Hot
+prologue/epilogue blocks shrank again: rank3 `340 -> 328`, rank4 `276 -> 264`, rank11 `284 -> 272`,
+rank12 `260 -> 248`. NEXT: rank1 memory-test/RMW loop fusion or full-block diagnostics for rank3.
 
 ### ★ BULK ISA COVERAGE — MOVED TO LANE B (MacBook Air M1, separate machine) 2026-05-31
 **This main-mac Codex (Lane A) no longer does bulk-ISA — it's on the Air now.** Lane A stays on

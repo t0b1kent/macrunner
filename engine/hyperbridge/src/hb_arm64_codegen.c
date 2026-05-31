@@ -1648,7 +1648,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             if (instr->src2.type == HB_OP_REG) {
                 if (!emit_load_gpr_sized_to_reg(buf, &instr->src2, 21)) return HB_ERR_INTERNAL;
             } else {
-                emit_mov_imm64(buf, 21, (uint64_t)instr->src2.imm);
+                emit_mov_imm_compact(buf, 21, (uint64_t)instr->src2.imm);
                 emit_mask_x_reg_to_size(buf, 21, 23, instr->dst.size);
             }
             switch (instr->op) {

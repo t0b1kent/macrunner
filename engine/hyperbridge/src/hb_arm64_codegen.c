@@ -400,6 +400,24 @@ extern void     hb_jit_helper_sahf(hb_context_t* ctx);
 extern void     hb_jit_helper_cpuid(hb_context_t* ctx);
 extern void     hb_jit_helper_xgetbv(hb_context_t* ctx);
 extern void     hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern hb_result_t hb_interpreter_exec_one_for_jit(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_interp_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
+
+static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn);
+
+static bool operand_is_xmm_or_vecmem(const hb_ir_operand_t* op) {
+    if (!op) return false;
+    if (op->type == HB_OP_REG) return op->reg >= HB_REG_XMM0 && op->reg <= HB_REG_XMM15;
+    return op->type == HB_OP_MEM && op->size == HB_SIZE_128;
+}
+
+static hb_result_t emit_interp_ir_helper(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_interp_ir);
+    emit_return_if_helper_failed(buf);
+    return HB_OK;
+}
 
 /* Emit a call to a C helper via BLR */
 static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn) {
@@ -415,6 +433,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             return HB_OK;
 
         case HB_IR_MOV:
+            if (operand_is_xmm_or_vecmem(&instr->dst) || operand_is_xmm_or_vecmem(&instr->src1))
+                return emit_interp_ir_helper(buf, instr);
             if (!is_gpr_reg_operand(&instr->dst) ||
                 (instr->src1.type == HB_OP_REG && !is_gpr_reg_operand(&instr->src1)) ||
                 instr->dst.size != HB_SIZE_64 ||
@@ -519,7 +539,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_SAR:
         case HB_IR_ROL:
         case HB_IR_ROR: {
-            if (instr->dst.type != HB_OP_REG || instr->src1.type != HB_OP_REG) return HB_ERR_INTERNAL;
+            if (instr->dst.type != HB_OP_REG || instr->src1.type != HB_OP_REG)
+                return emit_interp_ir_helper(buf, instr);
             if (!is_plain_gpr_reg_operand(&instr->dst) ||
                 !is_plain_gpr_reg_operand(&instr->src1) ||
                 (instr->src2.type == HB_OP_REG && !is_plain_gpr_reg_operand(&instr->src2))) {
@@ -621,7 +642,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
 
         case HB_IR_LOAD: {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
-            if (!is_gpr_reg_operand(&instr->dst)) return HB_ERR_INTERNAL;
+            if (!is_gpr_reg_operand(&instr->dst))
+                return emit_interp_ir_helper(buf, instr);
             if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1)) {
                 emit_direct_mem_addr(buf, &instr->src1);
                 emit_direct_mem_load_to_x20(buf, instr->src1.size);
@@ -638,7 +660,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_STORE: {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             if (instr->src2.type == HB_OP_REG && !is_gpr_reg_operand(&instr->src2))
-                return HB_ERR_INTERNAL;
+                return emit_interp_ir_helper(buf, instr);
             if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1) &&
                 (instr->src2.type == HB_OP_REG || instr->src2.type == HB_OP_IMM)) {
                 if (instr->src2.type == HB_OP_REG) {
@@ -659,6 +681,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         }
 
         case HB_IR_PUSH: {
+            if (instr->src1.type != HB_OP_REG && instr->src1.type != HB_OP_IMM)
+                return emit_interp_ir_helper(buf, instr);
             emit_load_operand(buf, &instr->src1);
             emit_mov_reg(buf, 1, 20); /* X1 = value */
             emit_mov_reg(buf, 0, 19); /* X0 = ctx */
@@ -668,6 +692,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         }
 
         case HB_IR_POP: {
+            if (instr->dst.type != HB_OP_REG)
+                return emit_interp_ir_helper(buf, instr);
             emit_mov_reg(buf, 0, 19);
             emit_call_helper(buf, (void*)hb_jit_helper_pop);
             emit_return_if_helper_failed(buf);
@@ -800,6 +826,126 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             emit_call_helper(buf, (void*)hb_jit_helper_exec_bit_scan);
             return HB_OK;
         }
+
+        case HB_IR_MOV_SEG:
+        case HB_IR_BT:
+        case HB_IR_BTS:
+        case HB_IR_BTR:
+        case HB_IR_BTC:
+        case HB_IR_CMPXCHG:
+        case HB_IR_CMPXCHG8B:
+        case HB_IR_XCHG:
+        case HB_IR_XADD:
+        case HB_IR_PUSHF:
+        case HB_IR_POPF:
+        case HB_IR_CWD:
+        case HB_IR_MOVS:
+        case HB_IR_CMPS:
+        case HB_IR_LODS:
+        case HB_IR_SCAS:
+        case HB_IR_STOS:
+        case HB_IR_TRUNC:
+        case HB_IR_BSWAP:
+        case HB_IR_XMM_AND:
+        case HB_IR_XMM_QWORD_LANE_MOV:
+        case HB_IR_XMM_ANDN:
+        case HB_IR_XMM_OR:
+        case HB_IR_XORPS:
+        case HB_IR_PCMPEQB:
+        case HB_IR_PCMPEQW:
+        case HB_IR_PCMPEQD:
+        case HB_IR_PCMPGTB:
+        case HB_IR_PCMPGTW:
+        case HB_IR_PCMPGTD:
+        case HB_IR_PMOVMSKB:
+        case HB_IR_MOVMSK:
+        case HB_IR_PUNPCK:
+        case HB_IR_PACKSSWB:
+        case HB_IR_PACKUSWB:
+        case HB_IR_PACKSSDW:
+        case HB_IR_PMULLW:
+        case HB_IR_PMULHW:
+        case HB_IR_PMULHUW:
+        case HB_IR_PMADDWD:
+        case HB_IR_PADDSB:
+        case HB_IR_PADDSW:
+        case HB_IR_PADDUSB:
+        case HB_IR_PADDUSW:
+        case HB_IR_PAVGB:
+        case HB_IR_PAVGW:
+        case HB_IR_PSHUFB:
+        case HB_IR_PINSRW:
+        case HB_IR_PEXTRW:
+        case HB_IR_PSHUF:
+        case HB_IR_FSHUF:
+        case HB_IR_PSRL:
+        case HB_IR_PSRA:
+        case HB_IR_PSLL:
+        case HB_IR_PSRLQ:
+        case HB_IR_PSLLQ:
+        case HB_IR_PSRLDQ:
+        case HB_IR_PSLLDQ:
+        case HB_IR_MOVD:
+        case HB_IR_CVTDQ2PD:
+        case HB_IR_CVTDQ2PS:
+        case HB_IR_CVTPS2DQ:
+        case HB_IR_CVTTPS2DQ:
+        case HB_IR_CVTPS2PD:
+        case HB_IR_CVTPD2PS:
+        case HB_IR_CVTSS2SD:
+        case HB_IR_CVTSD2SS:
+        case HB_IR_CVTSI2SD:
+        case HB_IR_CVTSI2SS:
+        case HB_IR_FSQRT:
+        case HB_IR_FRSQRT:
+        case HB_IR_FRCP:
+        case HB_IR_FADD:
+        case HB_IR_FSUB:
+        case HB_IR_FMUL:
+        case HB_IR_FDIV:
+        case HB_IR_ADDSD:
+        case HB_IR_SUBSD:
+        case HB_IR_DIVSD:
+        case HB_IR_MULSD:
+        case HB_IR_DIVSS:
+        case HB_IR_MULSS:
+        case HB_IR_FMIN:
+        case HB_IR_FMAX:
+        case HB_IR_COMISS:
+        case HB_IR_COMISD:
+        case HB_IR_CVTTSD2SI:
+        case HB_IR_CVTTSS2SI:
+        case HB_IR_PADD:
+        case HB_IR_PSUB:
+        case HB_IR_X87_FLD:
+        case HB_IR_X87_FST:
+        case HB_IR_X87_FSTP:
+        case HB_IR_X87_FILD:
+        case HB_IR_X87_FISTP:
+        case HB_IR_X87_FLDCW:
+        case HB_IR_X87_FNSTCW:
+        case HB_IR_X87_FNSTSW:
+        case HB_IR_X87_FADD:
+        case HB_IR_X87_FMUL:
+        case HB_IR_X87_FCOM:
+        case HB_IR_X87_FCOMP:
+        case HB_IR_X87_FSUB:
+        case HB_IR_X87_FSUBR:
+        case HB_IR_X87_FDIV:
+        case HB_IR_X87_FDIVR:
+        case HB_IR_X87_FADDP:
+        case HB_IR_X87_FMULP:
+        case HB_IR_X87_FCOMPP:
+        case HB_IR_X87_FSUBP:
+        case HB_IR_X87_FSUBRP:
+        case HB_IR_X87_FDIVP:
+        case HB_IR_X87_FDIVRP:
+        case HB_IR_X87_FXCH:
+        case HB_IR_X87_FRNDINT:
+        case HB_IR_X87_FNCLEX:
+        case HB_IR_X87_FNINIT:
+        case HB_IR_HOST_CALL:
+            return emit_interp_ir_helper(buf, instr);
 
         case HB_IR_UNSUPPORTED:
         case HB_IR_FAULT:
@@ -1292,6 +1438,14 @@ void hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* inst
     if (ctx->mode == HB_MODE_32BIT) ctx->regs.x86.eip = (uint32_t)ctx->pc;
     else ctx->regs.x64.rip = ctx->pc;
     ctx->last_result = HB_OK;
+}
+
+void hb_jit_helper_exec_interp_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    if (!ctx || !instr) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    ctx->last_result = hb_interpreter_exec_one_for_jit(ctx, instr);
 }
 
 void hb_jit_helper_exec_setcc_lazy(hb_context_t* ctx, uint64_t cc, uint64_t dst_reg) {

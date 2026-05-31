@@ -7,7 +7,7 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
-## NEXT → Phase 3 formal Tier-1 gate in progress — Hollow Knight JIT-codegen coverage
+## NEXT → Phase 3 formal Tier-1 gate in progress — Hollow Knight fallback-zero JIT baseline, then wait/event unblock
 
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
@@ -32,23 +32,28 @@ the absolute path; do NOT copy 600M into the repo.
   incorrectly treated as `F3 0F BC` (TZCNT). That BSF/TZCNT fix cleared the Unity small-allocator
   sentinel-bucket crash at `UnityPlayer.dll` RVAs `0x2afe1b`/`0x2b0069`; HyperBridge tests and
   `tools/hb_oracle/fast_validate_family.sh phase1_core` pass after the fix.
-- **Current blocker (2026-05-31 15:53 local):** Phase 3 is still no-window/no-menu, but Hollow
-  Knight is now throughput-bound, not crash-bound. The active route is expanding JIT backend
-  coverage so UnityPlayer fallback PCs compile instead of dropping into the interpreter. Cleared since
+- **Current blocker (2026-05-31 17:32 local):** Phase 3 is still no-window/no-menu, but the
+  Hollow Knight JIT codegen-fallback class is cleared on the latest 600s run. The active route is
+  now (1) promote helper-backed hot IR ops to native ARM64 emit where profiling proves they matter
+  and (2) debug the post-Mono wait/event path. Cleared since
   `run-20260531-092812-cotaskmem-fix-phase3-probe/`: `CreateDirectoryW`, advapi/EventProvider ETW
   no-op semantics, current-process `VirtualAlloc/VirtualProtect/VirtualFree` replay into imported
   x64 contexts, xtajit64 Unix-side memory notifications, live VM write fallback for writable guest
   regions backed by RX Mach pages, `mr-run.sh` internal `config/env.sh` sourcing, JIT scalar load
   width/register semantics, FS/GS/RIP-relative scalar memory operand resolution, indirect
-  `CALL/JMP` operand targets, and persistent per-run JIT runtime fallback-to-interpreter handling.
-  HyperBridge tests: `321 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core`
-  passes after the JIT fixes and spike `ntdll.so` relink. Latest evidence:
-  `reports/phase4-hollow-knight/run-20260531-155333-phase3-long-noheartbeat-muldiv/` ran for 1800s
-  with Unity/Mono stdout (`MonoBleedingEdge` paths), no `runtime-fail`, no `MEMORY_FAULT`, and no
-  game window. Stderr shows `macrunner-hb-jit-fallback: ... reason=JIT codegen failed` at multiple
-  UnityPlayer PCs, so next action is to decode those failing bytes, add missing JIT codegen patterns
-  with family tests, rerun Hollow Knight under `scripts/mr-run.sh`, and keep Phase 3 open until main
-  menu + input + audio + rendered frame are captured.
+  `CALL/JMP` operand targets, persistent per-run JIT runtime fallback-to-interpreter handling, and
+  explicit JIT codegen cases for every interpreter-supported `HB_IR_*` op (correctness-first helper
+  route where native emit is not yet promoted). HyperBridge tests: `325 passed, 0 failed`;
+  `tools/hb_oracle/fast_validate_family.sh phase1_core` passes after the JIT fixes and spike
+  `ntdll.so` relink. Latest evidence:
+  `reports/phase4-hollow-knight/run-20260531-172144-phase3-bulk-jit-codegen-stabletmp/` ran for
+  600s with Unity/Mono stdout (`MonoBleedingEdge` paths), no `macrunner-hb-jit-fallback`, no
+  `JIT codegen failed`, no `runtime-fail`, no `MEMORY_FAULT`, no `UNSUPPORTED_OPCODE`, and no JIT
+  buffer exhaustion. The game still did not create a window; a 3s/5s macOS sample puts the hot stack
+  under `macrunner_hb_x64_import_context` → `macrunner_hb_try_kernel32_handle_semantic` →
+  `NtWaitForSingleObject`. A bounded `MACRUNNER_HB_TRACE_ABI=1` rerun did not emit these semantic
+  imports, so the next evidence pass should add a bounded wait-semantic trace for
+  handle/timeout/set-event state while preserving the fallback-zero JIT baseline.
 - **Phase 3 gate still NOT passed:** no main menu, input, audio, or rendered frame yet; latest
   screenshots are desktop-only with no game window.
 - **Run hygiene:** `scripts/mr-run.sh` for runs, `scripts/mr-clean.sh --prune` after each batch.
@@ -62,6 +67,10 @@ implements ALL of them; JIT codegen covers only ~65 → the rest fall back to th
 fallbacks on the Hollow Knight hot path to zero. Deliverable:
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md`. See "★ PRIORITY INSERT #2 — BULK JIT CODEGEN
 COVERAGE" in the program doc.
+
+Status 2026-05-31 17:32: first bulk pass published in
+`reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md`; Hollow Knight 600s run shows fallback-zero.
+Keep promoting helper-backed hot IR to native emit, but do not regress the fallback-zero gate.
 
 ### ★ ALSO ACTIVE (parallel) — BULK ISA COVERAGE (operator-directed 2026-05-31)
 Stop chasing one opcode per game-run. Proactively cover the whole x86-64 ISA using the

@@ -793,6 +793,43 @@ static int macrunner_hb_trace_thread_lifecycle_enabled(void)
     return value;
 }
 
+static int macrunner_hb_trace_wait_semantic_enabled(void)
+{
+    static int cache = -1;
+    int value = __atomic_load_n( &cache, __ATOMIC_RELAXED );
+
+    if (value < 0)
+    {
+        value = macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_WAIT_SEMANTIC" ) ||
+                macrunner_hb_env_flag( "MACRUNNER_TRACE_UI_WAIT" );
+        __atomic_store_n( &cache, value, __ATOMIC_RELAXED );
+    }
+    return value;
+}
+
+static int macrunner_hb_trace_wait_semantic_budget_allows(void)
+{
+    static int count;
+    const char *val = getenv( "MACRUNNER_HB_TRACE_WAIT_SEMANTIC_BUDGET" );
+    int limit = val && val[0] ? atoi( val ) : 400;
+
+    if (!macrunner_hb_trace_wait_semantic_enabled()) return 0;
+    if (limit <= 0) return 1;
+    if (count < limit)
+    {
+        count++;
+        return 1;
+    }
+    if (count == limit)
+    {
+        count++;
+        fprintf( stderr, "macrunner-hb-wait-semantic: trace budget exhausted at %d entries, silencing\n",
+                 limit );
+        fflush( stderr );
+    }
+    return 0;
+}
+
 static void macrunner_hb_trace_special_vm_fault( const char *op, hb_gva_t original,
                                                  mach_vm_address_t cur, size_t remaining,
                                                  kern_return_t kr, mach_vm_address_t region,
@@ -7953,6 +7990,16 @@ static BOOL macrunner_hb_try_thread_creation_semantic( hb_context_t *ctx,
     }
 
     *ret = (uint64_t)(uintptr_t)handle;
+    if (macrunner_hb_trace_wait_semantic_budget_allows())
+    {
+        fprintf( stderr, "macrunner-hb-wait-semantic: thread import=%s!%s pc=%p rsp=%p "
+                 "handle=%p tid=%lu start=%p param=%p flags=%#lx suspended=%u\n",
+                 thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                 (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)*ret,
+                 (unsigned long)tid, (void *)(uintptr_t)start, (void *)(uintptr_t)param,
+                 (unsigned long)flags, (unsigned int)((flags & CREATE_SUSPENDED) != 0) );
+        fflush( stderr );
+    }
     TRACE( "MacRunner HyperBridge semantic %s!%s start=%p param=%p flags=%#lx ret=%p tid=%lu\n",
            thunk->dll_name, thunk->import_name, (void *)(uintptr_t)start,
            (void *)(uintptr_t)param, (unsigned long)flags, (void *)(uintptr_t)*ret,
@@ -8673,6 +8720,18 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             RtlSetLastWin32Error( ERROR_SUCCESS );
             *ret = (uint64_t)(uintptr_t)handle;
         }
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            fprintf( stderr, "macrunner-hb-wait-semantic: event-create import=%s!%s pc=%p rsp=%p "
+                     "handle=%p manual=%u initial=%u access=%#lx status=%08lx ret=%p last_error=%lu\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)handle,
+                     (unsigned int)((flags & CREATE_EVENT_MANUAL_RESET) != 0),
+                     (unsigned int)((flags & CREATE_EVENT_INITIAL_SET) != 0),
+                     (unsigned long)access, (unsigned long)status, (void *)(uintptr_t)*ret,
+                     (unsigned long)NtCurrentTeb()->LastErrorValue );
+            fflush( stderr );
+        }
         return TRUE;
     }
 
@@ -8872,6 +8931,16 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
         {
             RtlSetLastWin32Error( ERROR_SUCCESS );
             *ret = TRUE;
+        }
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            fprintf( stderr, "macrunner-hb-wait-semantic: event-signal import=%s!%s pc=%p rsp=%p "
+                     "handle=%p status=%08lx ret=%p last_error=%lu\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)args[0],
+                     (unsigned long)status, (void *)(uintptr_t)*ret,
+                     (unsigned long)NtCurrentTeb()->LastErrorValue );
+            fflush( stderr );
         }
         return TRUE;
     }
@@ -9664,6 +9733,17 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
     if (macrunner_hb_strieq( thunk->import_name, "WaitForSingleObject" ) ||
         macrunner_hb_strieq( thunk->import_name, "WaitForSingleObjectEx" ))
     {
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            fprintf( stderr, "macrunner-hb-wait-semantic: before import=%s!%s pc=%p rsp=%p "
+                     "handle=%p timeout_ms=%lu alertable=%u\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)args[0],
+                     (unsigned long)(DWORD)args[1],
+                     (unsigned int)(macrunner_hb_strieq( thunk->import_name,
+                                                         "WaitForSingleObjectEx" ) && args[2]) );
+            fflush( stderr );
+        }
         status = NtWaitForSingleObject( (HANDLE)(uintptr_t)args[0],
                                         macrunner_hb_strieq( thunk->import_name, "WaitForSingleObjectEx" ) &&
                                         args[2],
@@ -9675,6 +9755,16 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             *ret = WAIT_FAILED;
         }
         else *ret = status;
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            fprintf( stderr, "macrunner-hb-wait-semantic: after import=%s!%s pc=%p rsp=%p "
+                     "handle=%p timeout_ms=%lu status=%08lx ret=%p last_error=%lu\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)args[0],
+                     (unsigned long)(DWORD)args[1], (unsigned long)status,
+                     (void *)(uintptr_t)*ret, (unsigned long)NtCurrentTeb()->LastErrorValue );
+            fflush( stderr );
+        }
         return TRUE;
     }
 
@@ -9687,10 +9777,34 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
         if (!count || count > MAXIMUM_WAIT_OBJECTS ||
             hb_memory_read( ctx->memory, (hb_gva_t)args[1], handles, count * sizeof(handles[0]) ) != HB_OK)
         {
+            if (macrunner_hb_trace_wait_semantic_budget_allows())
+            {
+                fprintf( stderr, "macrunner-hb-wait-semantic: invalid import=%s!%s pc=%p rsp=%p "
+                         "count=%lu handles_gva=%p wait_all=%u timeout_ms=%lu\n",
+                         thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                         (void *)(uintptr_t)ctx->regs.x64.rsp, (unsigned long)count,
+                         (void *)(uintptr_t)args[1], (unsigned int)args[2],
+                         (unsigned long)(DWORD)args[3] );
+                fflush( stderr );
+            }
             RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
             NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
             *ret = WAIT_FAILED;
             return TRUE;
+        }
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            fprintf( stderr, "macrunner-hb-wait-semantic: before import=%s!%s pc=%p rsp=%p "
+                     "count=%lu handles_gva=%p handles=%p,%p,%p,%p wait_all=%u timeout_ms=%lu alertable=%u\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (unsigned long)count,
+                     (void *)(uintptr_t)args[1], count > 0 ? handles[0] : NULL,
+                     count > 1 ? handles[1] : NULL, count > 2 ? handles[2] : NULL,
+                     count > 3 ? handles[3] : NULL, (unsigned int)args[2],
+                     (unsigned long)(DWORD)args[3],
+                     (unsigned int)(macrunner_hb_strieq( thunk->import_name,
+                                                         "WaitForMultipleObjectsEx" ) && args[4]) );
+            fflush( stderr );
         }
         status = NtWaitForMultipleObjects( count, handles, args[2] ? WaitAll : WaitAny,
                                            macrunner_hb_strieq( thunk->import_name, "WaitForMultipleObjectsEx" ) &&
@@ -9703,6 +9817,16 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             *ret = WAIT_FAILED;
         }
         else *ret = status;
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            fprintf( stderr, "macrunner-hb-wait-semantic: after import=%s!%s pc=%p rsp=%p "
+                     "count=%lu wait_all=%u timeout_ms=%lu status=%08lx ret=%p last_error=%lu\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (unsigned long)count,
+                     (unsigned int)args[2], (unsigned long)(DWORD)args[3], (unsigned long)status,
+                     (void *)(uintptr_t)*ret, (unsigned long)NtCurrentTeb()->LastErrorValue );
+            fflush( stderr );
+        }
         return TRUE;
     }
 
@@ -9723,6 +9847,16 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             *ret = FALSE;
         }
         else *ret = TRUE;
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            fprintf( stderr, "macrunner-hb-wait-semantic: close import=%s!%s pc=%p rsp=%p "
+                     "handle=%p status=%08lx ret=%p last_error=%lu\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)args[0],
+                     (unsigned long)status, (void *)(uintptr_t)*ret,
+                     (unsigned long)NtCurrentTeb()->LastErrorValue );
+            fflush( stderr );
+        }
         return TRUE;
     }
 

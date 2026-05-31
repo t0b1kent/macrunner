@@ -4138,6 +4138,10 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     }
 }
 
+hb_result_t hb_interpreter_exec_one_for_jit(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    return exec_instr(ctx, instr);
+}
+
 hb_result_t hb_interpreter_run(hb_interpreter_t* interp, const hb_ir_func_t* func, hb_exec_result_t* out) {
     if (!interp || !func || !out) return HB_ERR_INVALID_ARG;
     if (!func->cfg || !func->cfg->entry) return HB_ERR_INVALID_ARG;

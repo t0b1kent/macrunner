@@ -10215,6 +10215,103 @@ TEST(jit_x64_mul_div_family_routes_to_helper) {
     tests_passed++;
 }
 
+TEST(jit_x64_interp_helper_covers_unity_mono_fallback_families) {
+    uint8_t bt_code[] = {
+        0x0f, 0xba, 0xe3, 0x09        /* btl $9, %ebx */
+    };
+    uint8_t xchg_code[] = {
+        0x48, 0x87, 0x03              /* xchgq %rax, (%rbx) */
+    };
+    uint8_t xmm_code[] = {
+        0x0f, 0x10, 0x03,             /* movups (%rbx), %xmm0 */
+        0xf3, 0x0f, 0x7f, 0x01,       /* movdqu %xmm0, (%rcx) */
+        0x66, 0x0f, 0x7f, 0x41, 0x10  /* movdqa %xmm0, 0x10(%rcx) */
+    };
+    uint8_t src[16] __attribute__((aligned(16))) = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+        0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f
+    };
+    uint8_t dst[32] __attribute__((aligned(16))) = {0};
+    uint64_t slot = 0x8877665544332211ULL;
+    hb_exec_result_t out;
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, bt_code, sizeof(bt_code),
+                                          (uint64_t)(uintptr_t)bt_code);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)bt_code, sizeof(bt_code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ctx->pc = (uint64_t)(uintptr_t)bt_code;
+    ctx->regs.x64.rbx = 1ULL << 9;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->flags.cf == true);
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+
+    dec = hb_decoder_create(HB_ARCH_X64, xchg_code, sizeof(xchg_code),
+                            (uint64_t)(uintptr_t)xchg_code);
+    func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)xchg_code, sizeof(xchg_code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&slot, sizeof(slot),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = (uint64_t)(uintptr_t)xchg_code;
+    ctx->regs.x64.rax = 0x1122334455667788ULL;
+    ctx->regs.x64.rbx = (uint64_t)(uintptr_t)&slot;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->regs.x64.rax == 0x8877665544332211ULL);
+    ASSERT(slot == 0x1122334455667788ULL);
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+
+    dec = hb_decoder_create(HB_ARCH_X64, xmm_code, sizeof(xmm_code),
+                            (uint64_t)(uintptr_t)xmm_code);
+    func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)xmm_code, sizeof(xmm_code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)src, sizeof(src),
+                         HB_PERM_READ) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)dst, sizeof(dst),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = (uint64_t)(uintptr_t)xmm_code;
+    ctx->regs.x64.rbx = (uint64_t)(uintptr_t)src;
+    ctx->regs.x64.rcx = (uint64_t)(uintptr_t)dst;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(memcmp(dst, src, sizeof(src)) == 0);
+    ASSERT(memcmp(dst + 16, src, sizeof(src)) == 0);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(interp_x64_bswap_family_notepadpp_message_path) {
     uint8_t code[] = {
         0x48, 0x0f, 0xc8, /* bswap %rax */
@@ -13837,6 +13934,7 @@ int main(int argc, char** argv) {
     test_jit_x64_direct_user_memory_fast_path_family();
     test_jit_x64_cmp_mem_operand_routes_to_helper();
     test_jit_x64_mul_div_family_routes_to_helper();
+    test_jit_x64_interp_helper_covers_unity_mono_fallback_families();
     test_interp_x64_bswap_family_notepadpp_message_path();
     test_interp_x64_legacy_high8_register_family_strlen_tail();
     test_interp_x64_byte_offset_propagates_through_flag_helpers();

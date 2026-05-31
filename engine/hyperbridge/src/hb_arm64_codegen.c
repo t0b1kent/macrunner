@@ -675,6 +675,14 @@ static uint32_t emit_direct_mem_addr_with_offset(hb_codegen_buffer_t* buf, const
     return 0;
 }
 
+static bool adjacent_mem64_pair_offset(const hb_ir_operand_t* op, uint32_t* off) {
+    uint32_t folded = 0;
+    if (!direct_mem_unsigned_offset(op, &folded)) return false;
+    if (folded >= 512) return false;
+    if (off) *off = folded;
+    return true;
+}
+
 static void emit_load_xmm_to_x20_x22(hb_codegen_buffer_t* buf, hb_reg_t reg) {
     uint32_t off = x64_xmm_reg_off(reg);
     emit_ldr_x(buf, 20, 19, off);
@@ -1082,10 +1090,15 @@ static bool emit_adjacent_mem64_pair(hb_codegen_buffer_t* buf, const hb_ir_instr
         adjacent_mem64_operands(&first->src1, &second->src1) &&
         is_plain_gpr_reg_operand(&first->src2) && first->src2.size == HB_SIZE_64 &&
         is_plain_gpr_reg_operand(&second->src2) && second->src2.size == HB_SIZE_64) {
-        emit_direct_mem_addr(buf, &first->src1);
+        uint32_t off = 0;
+        if (adjacent_mem64_pair_offset(&first->src1, &off)) {
+            emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(first->src1.mem.base));
+        } else {
+            emit_direct_mem_addr(buf, &first->src1);
+        }
         emit_ldr_x(buf, 20, 19, (uint32_t)x64_reg_off(first->src2.reg));
         emit_ldr_x(buf, 22, 19, (uint32_t)x64_reg_off(second->src2.reg));
-        emit_stp_x(buf, 20, 22, 21, 0);
+        emit_stp_x(buf, 20, 22, 21, off);
         return true;
     }
 
@@ -1093,8 +1106,13 @@ static bool emit_adjacent_mem64_pair(hb_codegen_buffer_t* buf, const hb_ir_instr
         adjacent_mem64_operands(&first->src1, &second->src1) &&
         is_plain_gpr_reg_operand(&first->dst) && first->dst.size == HB_SIZE_64 &&
         is_plain_gpr_reg_operand(&second->dst) && second->dst.size == HB_SIZE_64) {
-        emit_direct_mem_addr(buf, &first->src1);
-        emit_ldp_x(buf, 20, 22, 21, 0);
+        uint32_t off = 0;
+        if (adjacent_mem64_pair_offset(&first->src1, &off)) {
+            emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(first->src1.mem.base));
+        } else {
+            emit_direct_mem_addr(buf, &first->src1);
+        }
+        emit_ldp_x(buf, 20, 22, 21, off);
         emit_store_x20_to_gpr_sized(buf, &first->dst);
         emit_mov_reg(buf, 20, 22);
         emit_store_x20_to_gpr_sized(buf, &second->dst);

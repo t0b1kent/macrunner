@@ -9,16 +9,17 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-05-31 23:20 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-05-31 23:25 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
 immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CMP imm + Jcc` immediate
-mask compaction, and base+small-displacement direct-memory offset folding. Current blocker is still
-throughput/no-window in hot Mono/Unity code. Latest Hollow Knight run
-`run-20260531-231903-phase3-memoff-compact-jit/` preserves fallback/fault/unsupported-zero with
-cleanup/prune `0`; hot blocks moved rank3 `316 -> 312`, rank4 `264 -> 256`, rank10 `216 -> 212`.
-NEXT: continue from 64-byte hot evidence, favoring rank3 prologue/local-init or rank1 multi-block
-bit/RMW fusion. Do not keep widening immediate/pair paths without new hot evidence. Keep
+mask compaction, base+small-displacement direct-memory offset folding, and adjacent mem64 pair
+offset folding. Current blocker is still throughput/no-window in hot Mono/Unity code. Latest Hollow
+Knight run `run-20260531-232323-phase3-pair-off-compact-jit/` preserves
+fallback/fault/unsupported-zero with cleanup/prune `0`; hot blocks moved rank3 `312 -> 308`, rank11
+`272 -> 268`, rank12 `248 -> 244`. NEXT: continue from 64-byte hot evidence, favoring rank3
+prologue/local-init or rank1 multi-block bit/RMW fusion. Do not keep widening immediate/pair paths
+without new hot evidence. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

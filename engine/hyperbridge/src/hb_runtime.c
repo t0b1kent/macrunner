@@ -157,11 +157,26 @@ static int trace_jit_hot_bytes_enabled(void) {
     return cached;
 }
 
+static size_t trace_jit_hot_bytes_len(void) {
+    static int parsed;
+    static size_t len;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_HOT_BYTES_LEN");
+        len = env && *env ? (size_t)strtoull(env, NULL, 0) : 16;
+        if (len < 1) len = 16;
+        if (len > 128) len = 128;
+        parsed = 1;
+    }
+    return len;
+}
+
 static void trace_jit_hot_guest_bytes(hb_context_t* ctx, uint64_t guest_addr) {
     uint8_t byte;
+    size_t len;
     if (!trace_jit_hot_bytes_enabled() || !ctx || !ctx->memory) return;
+    len = trace_jit_hot_bytes_len();
     fprintf(stderr, " bytes=");
-    for (size_t i = 0; i < 16; i++) {
+    for (size_t i = 0; i < len; i++) {
         if (hb_memory_read_u8(ctx->memory, (hb_gva_t)(guest_addr + i), &byte) != HB_OK) {
             fprintf(stderr, "%s??", i ? " " : "");
             break;

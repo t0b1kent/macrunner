@@ -9,13 +9,14 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-05-31 22:49 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-05-31 22:54 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, and adjacent mem64 pair native promotion. Current
 blocker is still throughput/no-window in hot Mono/Unity code. Scalar small-immediate compaction also
-landed for native arithmetic/logical ops. Next evidence-backed finite target: deeper rank1
-memory-test/RMW loop fusion or add full-block visibility for remaining rank3 local-store work. Do not
-keep widening immediate/pair paths without new hot evidence. Keep
+landed for native arithmetic/logical ops. Hot-byte trace length is now configurable; latest 64-byte
+trace shows rank3 is prologue/local init/`LEA`/`TEST`, while rank1 is a multi-branch bit/RMW loop.
+Next evidence-backed finite target: optimize rank3 `LEA`/local init/test path or design rank1
+multi-block bit/RMW fusion. Do not keep widening immediate/pair paths without new hot evidence. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.
@@ -277,6 +278,17 @@ unconditional 64-bit MOVZ/MOVK sequences, preserving the same lazy flag record s
 cleanup/prune `0`, zero JIT fallback/fault/unsupported counters, and Mono paths reached. Hot
 prologue/epilogue blocks shrank again: rank3 `340 -> 328`, rank4 `276 -> 264`, rank11 `284 -> 272`,
 rank12 `260 -> 248`. NEXT: rank1 memory-test/RMW loop fusion or full-block diagnostics for rank3.
+
+Status 2026-05-31 22:54: hot-block byte trace length made configurable with
+`MACRUNNER_HB_TRACE_JIT_HOT_BYTES_LEN` (default 16, cap 128) and validated in
+`run-20260531-225035-phase3-hotbytes64-jit/`. Coverage: `engine/hyperbridge/tests/hb_test_runner` =>
+`350 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; spike `ntdll.so`
+relinked. Hollow Knight timed out cleanly (`MR_RUN_RC=143`) with cleanup/prune `0`, zero JIT
+fallback/fault/unsupported counters, and Mono paths reached. New 64-byte evidence: rank3
+`0x87ef2ba32d4` = stack spills, `push rdi`, `sub rsp,0x20`, `mov byte [rcx+0x18],0`, `mov rdi,rcx`,
+`lea rsi,[rcx+8]`, `test rdx,rdx`, `je`; rank1 `0x87ef2bf915f` = repeated `TEST byte [rdx],bit; JE;
+OR byte [rax+rbx+0x18],mask; MOV/load; ...` bit/RMW loop. NEXT: optimize rank3 `LEA`/local-init/test
+path or rank1 bit/RMW fusion.
 
 ### ★ BULK ISA COVERAGE — MOVED TO LANE B (MacBook Air M1, separate machine) 2026-05-31
 **This main-mac Codex (Lane A) no longer does bulk-ISA — it's on the Air now.** Lane A stays on

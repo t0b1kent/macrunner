@@ -2201,6 +2201,55 @@ static bool emit_direct_logic_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t*
     return true;
 }
 
+static bool emit_direct_arith_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    hb_lazy_flags_kind_t kind;
+    if (!instr || (instr->op != HB_IR_ADD && instr->op != HB_IR_SUB))
+        return false;
+    if (!same_mem_operand(&instr->dst, &instr->src1)) return false;
+    if (!is_direct_user_mem_operand(&instr->dst)) return false;
+    if (instr->dst.size != HB_SIZE_8 && instr->dst.size != HB_SIZE_16 &&
+        instr->dst.size != HB_SIZE_32 && instr->dst.size != HB_SIZE_64)
+        return false;
+    if (instr->src2.type == HB_OP_REG) {
+        if (!is_gpr_reg_operand(&instr->src2)) return false;
+    } else if (instr->src2.type != HB_OP_IMM) {
+        return false;
+    }
+    if (!lazy_kind_for_scalar_op(instr->op, &kind)) return false;
+
+    emit_direct_mem_addr(buf, &instr->dst);
+    emit_mov_reg(buf, 0, 21);
+    emit_direct_mem_load_to_x20(buf, instr->dst.size);
+
+    if (instr->src2.type == HB_OP_REG) {
+        hb_ir_operand_t sized = instr->src2;
+        sized.size = instr->dst.size;
+        if (!emit_load_gpr_sized_to_reg(buf, &sized, 21)) return false;
+    } else {
+        emit_mov_imm_compact(buf, 21, (uint64_t)instr->src2.imm);
+        if (!imm_fits_size((uint64_t)instr->src2.imm, instr->dst.size))
+            emit_mask_x_reg_to_size(buf, 21, 23, instr->dst.size);
+    }
+
+    switch (instr->op) {
+        case HB_IR_ADD: emit_add_reg(buf, 22, 20, 21); break;
+        case HB_IR_SUB: emit_sub_reg(buf, 22, 20, 21); break;
+        default: return false;
+    }
+    emit_mask_x_reg_to_size(buf, 22, 23, instr->dst.size);
+
+    emit_mov_reg(buf, 9, 20);
+    emit_mov_reg(buf, 10, 21);
+    emit_mov_reg(buf, 21, 0);
+    emit_mov_reg(buf, 20, 22);
+    emit_direct_mem_store_from_x20(buf, instr->dst.size);
+    emit_mov_reg(buf, 20, 9);
+    emit_mov_reg(buf, 21, 10);
+
+    emit_note_lazy_from_x20_x21_x22(buf, kind, instr->dst.size);
+    return true;
+}
+
 /* JIT helper declarations (implemented below) */
 extern uint64_t hb_jit_helper_load_u64(hb_context_t* ctx, uint64_t addr);
 extern void     hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr,
@@ -2355,6 +2404,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_OR:
         case HB_IR_XOR: {
             hb_lazy_flags_kind_t kind;
+            if (emit_direct_arith_rmw(buf, instr)) return HB_OK;
             if (emit_direct_logic_rmw(buf, instr)) return HB_OK;
             if (!is_plain_gpr_reg_operand(&instr->dst) ||
                 !is_plain_gpr_reg_operand(&instr->src1) ||

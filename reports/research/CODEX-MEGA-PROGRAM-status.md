@@ -9,7 +9,7 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-06-01 02:31 local, base HEAD `ba1a74e`):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-06-01 02:40 local, base HEAD `b270e89`):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
 immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CMP imm + Jcc` immediate
@@ -20,7 +20,7 @@ direct-memory scalar/XMM `LOAD+STORE` same-register pairs now keep loaded values
 following store.
 Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline at this checkpoint is
-`375 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+`376 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
 Mono/Unity code. Latest run `run-20260601-004957-phase3-rank3-prologue-init-test-jit/` preserves
 fallback/fault/unsupported-zero with cleanup/prune `0`; the full rank3
 `STORE/STORE/PUSH/SUB; STORE0/MOV/LEA; TEST/Jcc` block now fuses and shrinks `264 -> 200`. Previous
@@ -61,6 +61,14 @@ materialization blocks behind hot branches compile as one native path. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.
+
+**Latest batch after this checkpoint:** direct-memory `HB_IR_ADD/SUB` RMW now emits native
+load/modify/store for `dst == src1`, covering lifted memory `INC/DEC` shapes. Validation:
+`hb_test_runner` `376 passed, 0 failed`, fast validation PASS, and Hollow Knight
+`run-20260601-023806-phase3-arith-rmw-jit` preserved fallback/fault/unsupported/runtime zero with
+cleanup/prune `0`. Targeted `0x87ef2bda428` is helper-free but grows `184 -> 244` because ADD/SUB
+must retain full lazy flag operands; keep the next pass focused on branch/fallthrough CFG fusion and
+lazy-record compaction rather than claiming a size win for arithmetic RMW.
 
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`

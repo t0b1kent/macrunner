@@ -66,6 +66,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - Indirect branch operand promotion: `HB_IR_JMP` and `HB_IR_CALL` now emit native ARM64 for 64-bit register and gated direct-memory targets, preserving interpreter order by reading the target before `CALL` pushes the return address and faulting null targets before committing `pc`. Tests: `engine/hyperbridge/tests/hb_test_runner` => `373 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-015918-phase3-indirect-branch-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; hot `jmp rax` thunks shrink `136 -> 112`, while RIP-memory `jmp [rip+disp]` thunks become helper-free at `148` bytes with the inline null guard.
 - Memory-register branch specialization: direct-memory `HB_IR_TEST/CMP` with a register RHS feeding `E/NE Jcc` now emits the same branch-pair path as the immediate sibling; `TEST` branches directly from ARM64 `ANDS` while preserving exact lazy TEST/CMP records. Tests: `engine/hyperbridge/tests/hb_test_runner` => `374 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-020700-phase3-memreg-test-jcc-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; post-call boolean block `0x87ef2bf98d8` shrinks `196 -> 184`.
 - SETcc condition materialization: `HB_IR_SETcc` now has a native hot path for `E/NE` conditions fed by scalar flag producers, including the hot `TEST; MOV; SETE` shape while preserving the same lazy flag record for later materialization. Register and direct-memory byte destinations are covered; generic/parity/complex operands keep the helper fallback. Tests: `engine/hyperbridge/tests/hb_test_runner` => `375 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-022903-phase3-setcc-sequence-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; no top-12 movement is claimed because the observed `SETE` fallthrough is behind a branch boundary in this 90s sample.
+- Direct-memory arithmetic RMW: direct-memory `HB_IR_ADD/SUB` where `dst == src1` now emits native ARM64 load/modify/store and records exact full lazy ADD/SUB operands, covering lifted `INC/DEC` memory shapes such as `inc qword [r15]`. Tests: `engine/hyperbridge/tests/hb_test_runner` => `376 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-023806-phase3-arith-rmw-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; targeted block `0x87ef2bda428` is helper-free but grows `184 -> 244` because ADD/SUB must retain full lazy flag operands.
 
 ## Matrix
 
@@ -75,9 +76,9 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_MOV | yes | yes | native scalar/XMM/direct-memory emit + helper fallback | yes |
 | HB_IR_MOV_SEG | yes | yes | interp-helper codegen |  |
 | HB_IR_LEA | yes | yes | native emit |  |
-| HB_IR_ADD | yes | yes | native emit + helper fallback | yes |
+| HB_IR_ADD | yes | yes | native GPR/direct-memory RMW emit + helper fallback | yes |
 | HB_IR_ADC | yes | yes | C-helper codegen |  |
-| HB_IR_SUB | yes | yes | native emit + helper fallback | yes |
+| HB_IR_SUB | yes | yes | native GPR/direct-memory RMW emit + helper fallback | yes |
 | HB_IR_SBB | yes | yes | C-helper codegen |  |
 | HB_IR_MUL | yes | yes | C-helper codegen |  |
 | HB_IR_IMUL | yes | yes | C-helper codegen |  |

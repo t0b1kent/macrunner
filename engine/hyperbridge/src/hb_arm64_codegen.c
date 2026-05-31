@@ -1914,7 +1914,6 @@ static bool emit_direct_logic_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t*
     emit_direct_mem_addr(buf, &instr->dst);
     emit_mov_reg(buf, 0, 21);
     emit_direct_mem_load_to_x20(buf, instr->dst.size);
-    emit_mov_reg(buf, 1, 20);
 
     if (instr->src2.type == HB_OP_REG) {
         hb_ir_operand_t sized = instr->src2;
@@ -1925,7 +1924,6 @@ static bool emit_direct_logic_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t*
         if (!imm_fits_size((uint64_t)instr->src2.imm, instr->dst.size))
             emit_mask_x_reg_to_size(buf, 21, 23, instr->dst.size);
     }
-    emit_mov_reg(buf, 2, 21);
 
     switch (instr->op) {
         case HB_IR_AND: emit_and_reg(buf, 22, 20, 21); break;
@@ -1934,15 +1932,11 @@ static bool emit_direct_logic_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t*
         default: return false;
     }
     emit_mask_x_reg_to_size(buf, 22, 23, instr->dst.size);
-    emit_mov_reg(buf, 3, 22);
 
     emit_mov_reg(buf, 21, 0);
-    emit_mov_reg(buf, 20, 3);
+    emit_mov_reg(buf, 20, 22);
     emit_direct_mem_store_from_x20(buf, instr->dst.size);
 
-    emit_mov_reg(buf, 20, 1);
-    emit_mov_reg(buf, 21, 2);
-    emit_mov_reg(buf, 22, 3);
     emit_note_lazy_from_x20_x21_x22(buf, kind, instr->dst.size);
     return true;
 }

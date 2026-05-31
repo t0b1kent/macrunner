@@ -7,6 +7,17 @@
 #include <stddef.h>
 #include <limits.h>
 
+_Static_assert(offsetof(hb_lazy_flags_t, kind) == offsetof(hb_lazy_flags_t, pending) + 4,
+               "hb_lazy_flags_t pending/kind layout changed");
+_Static_assert(offsetof(hb_lazy_flags_t, width) == offsetof(hb_lazy_flags_t, pending) + 8,
+               "hb_lazy_flags_t pending/width layout changed");
+_Static_assert(offsetof(hb_lazy_flags_t, lhs) == offsetof(hb_lazy_flags_t, pending) + 16,
+               "hb_lazy_flags_t header padding layout changed");
+_Static_assert(offsetof(hb_lazy_flags_t, unsupported_mask) == offsetof(hb_lazy_flags_t, valid_mask) + 4,
+               "hb_lazy_flags_t valid/unsupported mask layout changed");
+_Static_assert(offsetof(hb_lazy_flags_t, materialized_mask) == offsetof(hb_lazy_flags_t, valid_mask) + 8,
+               "hb_lazy_flags_t materialized mask layout changed");
+
 /* --- ARM64 instruction encoding helpers --- */
 static void emit_u32(hb_codegen_buffer_t* buf, uint32_t insn) {
     uint8_t b[4] = { insn & 0xFF, (insn >> 8) & 0xFF, (insn >> 16) & 0xFF, (insn >> 24) & 0xFF };
@@ -600,41 +611,43 @@ static bool lazy_kind_for_scalar_op(hb_ir_op_t op, hb_lazy_flags_kind_t* out) {
     }
 }
 
+static void emit_note_lazy_header(hb_codegen_buffer_t* buf, int header_reg, int width_reg,
+                                  hb_lazy_flags_kind_t kind, hb_size_t width) {
+    uint32_t lazy_off = (uint32_t)offsetof(hb_context_t, lazy_flags);
+    uint64_t header = 1u | ((uint64_t)(uint32_t)kind << 32);
+    emit_mov_imm_compact(buf, header_reg, header);
+    emit_mov_imm_compact(buf, width_reg, (uint64_t)width);
+    emit_stp_x(buf, header_reg, width_reg, 19,
+               lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, pending));
+}
+
+static void emit_note_lazy_masks(hb_codegen_buffer_t* buf, int scratch_reg, uint32_t valid) {
+    uint32_t lazy_off = (uint32_t)offsetof(hb_context_t, lazy_flags);
+    uint32_t unsupported = HB_FLAG_BIT_ALL & ~valid;
+    uint64_t masks = ((uint64_t)unsupported << 32) | (uint64_t)valid;
+    emit_mov_imm_compact(buf, scratch_reg, masks);
+    emit_str_x(buf, scratch_reg, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, valid_mask));
+    emit_str_w(buf, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, materialized_mask));
+}
+
 static void emit_note_lazy_from_x20_x21_x22(hb_codegen_buffer_t* buf,
                                             hb_lazy_flags_kind_t kind,
                                             hb_size_t width) {
     uint32_t lazy_off = (uint32_t)offsetof(hb_context_t, lazy_flags);
     uint32_t valid = lazy_valid_mask_for_kind(kind);
-    emit_mov_imm_compact(buf, 23, 1);
-    emit_strb_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, pending));
-    emit_mov_imm_compact(buf, 23, (uint64_t)kind);
-    emit_str_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, kind));
-    emit_mov_imm_compact(buf, 23, (uint64_t)width);
-    emit_strb_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, width));
     if (!lazy_kind_result_only(kind))
         emit_stp_x(buf, 20, 21, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, lhs));
     emit_stp_x(buf, 22, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, result));
-    emit_mov_imm_compact(buf, 23, valid);
-    emit_str_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, valid_mask));
-    emit_mov_imm_compact(buf, 23, HB_FLAG_BIT_ALL & ~valid);
-    emit_str_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, unsupported_mask));
-    emit_str_w(buf, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, materialized_mask));
+    emit_note_lazy_header(buf, 16, 17, kind, width);
+    emit_note_lazy_masks(buf, 16, valid);
 }
 
 static void emit_note_lazy_cmp_from_x23_x22_x21(hb_codegen_buffer_t* buf, hb_size_t width) {
     uint32_t lazy_off = (uint32_t)offsetof(hb_context_t, lazy_flags);
-    emit_mov_imm_compact(buf, 20, 1);
-    emit_strb_w(buf, 20, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, pending));
-    emit_mov_imm_compact(buf, 20, HB_LAZY_FLAGS_CMP);
-    emit_str_w(buf, 20, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, kind));
-    emit_mov_imm_compact(buf, 20, (uint64_t)width);
-    emit_strb_w(buf, 20, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, width));
     emit_stp_x(buf, 23, 22, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, lhs));
     emit_stp_x(buf, 21, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, result));
-    emit_mov_imm_compact(buf, 20, HB_FLAG_BIT_ALL);
-    emit_str_w(buf, 20, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, valid_mask));
-    emit_str_w(buf, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, unsupported_mask));
-    emit_str_w(buf, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, materialized_mask));
+    emit_note_lazy_header(buf, 16, 17, HB_LAZY_FLAGS_CMP, width);
+    emit_note_lazy_masks(buf, 16, HB_FLAG_BIT_ALL);
 }
 
 static void emit_direct_mem_load_to_x20(hb_codegen_buffer_t* buf, hb_size_t size) {
@@ -1159,18 +1172,10 @@ static void emit_set_pc_imm64(hb_codegen_buffer_t* buf, uint64_t pc) {
 
 static void emit_note_lazy_cmp_zero_from_x20(hb_codegen_buffer_t* buf, hb_size_t width) {
     uint32_t lazy_off = (uint32_t)offsetof(hb_context_t, lazy_flags);
-    emit_mov_imm_compact(buf, 23, 1);
-    emit_strb_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, pending));
-    emit_mov_imm_compact(buf, 23, HB_LAZY_FLAGS_CMP);
-    emit_str_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, kind));
-    emit_mov_imm_compact(buf, 23, (uint64_t)width);
-    emit_strb_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, width));
     emit_stp_x(buf, 20, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, lhs));
     emit_stp_x(buf, 20, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, result));
-    emit_mov_imm_compact(buf, 23, HB_FLAG_BIT_ALL);
-    emit_str_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, valid_mask));
-    emit_str_w(buf, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, unsupported_mask));
-    emit_str_w(buf, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, materialized_mask));
+    emit_note_lazy_header(buf, 16, 17, HB_LAZY_FLAGS_CMP, width);
+    emit_note_lazy_masks(buf, 16, HB_FLAG_BIT_ALL);
 }
 
 static bool emit_scalar_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,

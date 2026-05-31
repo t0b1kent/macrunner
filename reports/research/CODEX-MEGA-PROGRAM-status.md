@@ -77,6 +77,16 @@ Targeted `0x87ef2bda428` shrinks `244 -> 176` and is now smaller than the origin
 `184`. NEXT remains branch/fallthrough CFG fusion and lazy-record compaction on the 64-byte hot
 evidence, while keeping the bulk ISA matrix live.
 
+**Follow-up batch:** `run-20260601-025552-phase3-lazy-pack-jit2` preserves fallback/fault/
+unsupported/runtime zero with cleanup/prune `0`; lazy-flag metadata now uses packed ARM64 stores for
+the fixed `hb_lazy_flags_t` header and mask layout while preserving old `x20`-`x23` live-value
+behavior via `x16/x17` scratch registers. This is a bulk native-codegen compaction for every native
+flag-producing IR path: hot blocks shrink rank1 `144 -> 132`, rank2 `172 -> 160`, rank3 `200 -> 188`,
+rank6 `144 -> 132`, rank7 `160 -> 144`, rank8 `136 -> 124`, rank9 `144 -> 132`, rank10 `184 -> 172`,
+and rank11 `240 -> 224`. NEXT: continue the bulk JIT-codegen coverage lane from executed 64-byte hot
+evidence, prioritizing branch/fallthrough CFG fusion and helper-backed IR-family native promotion
+only with JIT-vs-interpreter/oracle coverage; keep the parallel bulk ISA matrix live.
+
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
 (624M GOG InnoSetup installer + `Bonus/`). It's a sibling of the repo (outside `MacRunner/`) — use

@@ -791,10 +791,14 @@ static bool stack_load_reg64(const hb_ir_instr_t* instr, hb_reg_t* dst, uint32_t
     return true;
 }
 
-static void emit_load_xmm_to_x20_x22(hb_codegen_buffer_t* buf, hb_reg_t reg) {
+static void emit_load_xmm_to_pair(hb_codegen_buffer_t* buf, hb_reg_t reg, int lo, int hi) {
     uint32_t off = x64_xmm_reg_off(reg);
-    emit_ldr_x(buf, 20, 19, off);
-    emit_ldr_x(buf, 22, 19, off + 8);
+    emit_ldr_x(buf, lo, 19, off);
+    emit_ldr_x(buf, hi, 19, off + 8);
+}
+
+static void emit_load_xmm_to_x20_x22(hb_codegen_buffer_t* buf, hb_reg_t reg) {
+    emit_load_xmm_to_pair(buf, reg, 20, 22);
 }
 
 static void emit_store_x20_x22_to_xmm(hb_codegen_buffer_t* buf, hb_reg_t reg) {
@@ -811,6 +815,26 @@ static void emit_direct_mem128_load_to_x20_x22(hb_codegen_buffer_t* buf) {
 static void emit_direct_mem128_store_from_x20_x22(hb_codegen_buffer_t* buf) {
     emit_str_x(buf, 20, 21, 0);
     emit_str_x(buf, 22, 21, 8);
+}
+
+static bool emit_load_xmm_operand_to_pair(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op,
+                                          int lo, int hi) {
+    if (is_xmm_reg_operand(op)) {
+        emit_load_xmm_to_pair(buf, op->reg, lo, hi);
+        return true;
+    }
+    if (jit_direct_mem_enabled() && is_direct_user_xmm_mem_operand(op)) {
+        emit_direct_mem_addr(buf, op);
+        if (lo == 21) {
+            emit_ldr_x(buf, hi, 21, 8);
+            emit_ldr_x(buf, lo, 21, 0);
+        } else {
+            emit_ldr_x(buf, lo, 21, 0);
+            emit_ldr_x(buf, hi, 21, 8);
+        }
+        return true;
+    }
+    return false;
 }
 
 static bool emit_load_gpr_sized_to_x20(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
@@ -918,6 +942,43 @@ static bool emit_native_xmm_mov(hb_codegen_buffer_t* buf, const hb_ir_instr_t* i
         return true;
     }
     return false;
+}
+
+static bool emit_native_xmm_logic(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    if (!instr || (instr->op != HB_IR_XMM_AND && instr->op != HB_IR_XMM_ANDN &&
+                   instr->op != HB_IR_XMM_OR && instr->op != HB_IR_XORPS))
+        return false;
+    if (!is_xmm_reg_operand(&instr->dst))
+        return false;
+    if (!emit_load_xmm_operand_to_pair(buf, &instr->src1, 20, 22))
+        return false;
+    if (!emit_load_xmm_operand_to_pair(buf, &instr->src2, 21, 23))
+        return false;
+
+    switch (instr->op) {
+        case HB_IR_XMM_AND:
+            emit_and_reg(buf, 20, 20, 21);
+            emit_and_reg(buf, 22, 22, 23);
+            break;
+        case HB_IR_XMM_ANDN:
+            emit_mvn(buf, 20, 20);
+            emit_mvn(buf, 22, 22);
+            emit_and_reg(buf, 20, 20, 21);
+            emit_and_reg(buf, 22, 22, 23);
+            break;
+        case HB_IR_XMM_OR:
+            emit_orr_reg(buf, 20, 20, 21);
+            emit_orr_reg(buf, 22, 22, 23);
+            break;
+        case HB_IR_XORPS:
+            emit_eor_reg(buf, 20, 20, 21);
+            emit_eor_reg(buf, 22, 22, 23);
+            break;
+        default:
+            return false;
+    }
+    emit_store_x20_x22_to_xmm(buf, instr->dst.reg);
+    return true;
 }
 
 static void emit_native_stack_push_x20(hb_codegen_buffer_t* buf) {
@@ -2998,11 +3059,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_SCAS:
         case HB_IR_STOS:
         case HB_IR_TRUNC:
-        case HB_IR_XMM_AND:
         case HB_IR_XMM_QWORD_LANE_MOV:
-        case HB_IR_XMM_ANDN:
-        case HB_IR_XMM_OR:
-        case HB_IR_XORPS:
         case HB_IR_PCMPEQB:
         case HB_IR_PCMPEQW:
         case HB_IR_PCMPEQD:
@@ -3098,6 +3155,15 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_X87_FNINIT:
         case HB_IR_HOST_CALL:
             return emit_interp_ir_helper(buf, instr);
+
+        case HB_IR_XMM_AND:
+        case HB_IR_XMM_ANDN:
+        case HB_IR_XMM_OR:
+        case HB_IR_XORPS: {
+            if (emit_native_xmm_logic(buf, instr))
+                return HB_OK;
+            return emit_interp_ir_helper(buf, instr);
+        }
 
         case HB_IR_CWD: {
             if (emit_native_cwd(buf, instr))

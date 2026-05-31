@@ -7,8 +7,8 @@ Reference: interpreter semantics in `engine/hyperbridge/src/hb_interpreter.c`. C
 ## Summary
 
 - C-helper-primary codegen: 17
-- interp-helper codegen: 121
-- native or native-hot-path emit: 27
+- interp-helper codegen: 117
+- native or native-hot-path emit: 31
 - terminal fault: 2
 
 Current rule: no generic success default. Every interpreter-supported IR op has an explicit codegen case. Helper-backed cases are correctness-first JIT codegen coverage and must be promoted to native emit on hot paths after JIT-vs-interpreter tests.
@@ -73,6 +73,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - BSWAP register promotion: `HB_IR_BSWAP` now emits native ARM64 `REV` for 32-bit and 64-bit GPR destinations, preserving BSWAP's no-flags side effect and keeping the interpreter helper fallback for invalid widths/operands. Tests: `engine/hyperbridge/tests/hb_test_runner` => `378 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-031147-phase3-bswap-jit/` preserves fallback/fault/unsupported/runtime-zero with cleanup/prune `0`; steady-state Mono top-12 is unchanged because BSWAP is not in the sampled hot loop.
 - Bit-scan family promotion: `HB_IR_BSF/TZCNT/LZCNT/BSR` now emits native ARM64 `RBIT/CLZ/CSEL` for 8/16/32/64-bit GPR destinations with register/immediate/direct-memory sources, clearing pending lazy flags and matching interpreter concrete ZF/CF behavior including BSF/BSR zero-source destination preservation. Tests: `engine/hyperbridge/tests/hb_test_runner` => `379 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-032018-phase3-bitscan-jit/` preserves fallback/fault/unsupported/runtime-zero with cleanup/prune `0`; steady-state Mono top-12 is unchanged because this family is not in the sampled hot loop.
 - CWD/CDQ/CQO promotion: `HB_IR_CWD` now emits native ARM64 sign-extension high-half writes for 16/32/64-bit forms, including CDQ's zero-extending 32-bit `EDX` result and no flag/lazy-flag side effects. Tests: `engine/hyperbridge/tests/hb_test_runner` => `380 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-032811-phase3-cwd-jit/` preserves fallback/fault/unsupported/runtime-zero with cleanup/prune `0`; steady-state Mono top-12 is unchanged because this family is not in the sampled hot loop.
+- XMM logical promotion: `HB_IR_XMM_AND/XMM_ANDN/XMM_OR/XORPS` now emits native two-lane ARM64 integer bit operations for XMM register operands and gated direct-memory 128-bit operands, preserving the interpreter's no-flag/no-lazy side effects. Tests: `engine/hyperbridge/tests/hb_test_runner` => `381 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-033442-phase3-xmmlogic-jit/` preserves fallback/fault/unsupported/runtime-zero with cleanup/prune `0`; steady-state Mono top-12 is unchanged because this family is not in the sampled hot loop.
 
 ## Matrix
 
@@ -144,11 +145,11 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_LZCNT | yes | yes | native reg/imm/direct-memory emit + C-helper fallback |  |
 | HB_IR_BSR | yes | yes | native reg/imm/direct-memory emit + C-helper fallback |  |
 | HB_IR_BSWAP | yes | yes | native 32/64-bit GPR emit + helper fallback |  |
-| HB_IR_XMM_AND | yes | yes | interp-helper codegen | yes |
+| HB_IR_XMM_AND | yes | yes | native XMM reg/direct-memory lane emit + helper fallback | yes |
 | HB_IR_XMM_QWORD_LANE_MOV | yes | yes | interp-helper codegen | yes |
-| HB_IR_XMM_ANDN | yes | yes | interp-helper codegen | yes |
-| HB_IR_XMM_OR | yes | yes | interp-helper codegen | yes |
-| HB_IR_XORPS | yes | yes | interp-helper codegen | yes |
+| HB_IR_XMM_ANDN | yes | yes | native XMM reg/direct-memory lane emit + helper fallback | yes |
+| HB_IR_XMM_OR | yes | yes | native XMM reg/direct-memory lane emit + helper fallback | yes |
+| HB_IR_XORPS | yes | yes | native XMM reg/direct-memory lane emit + helper fallback | yes |
 | HB_IR_PCMPEQB | yes | yes | interp-helper codegen |  |
 | HB_IR_PCMPEQW | yes | yes | interp-helper codegen |  |
 | HB_IR_PCMPEQD | yes | yes | interp-helper codegen |  |

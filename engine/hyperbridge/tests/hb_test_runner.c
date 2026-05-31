@@ -10441,6 +10441,120 @@ TEST(jit_x64_native_xmm_move_family) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_xmm_logic_family) {
+    struct {
+        hb_ir_op_t op;
+        bool src1_mem;
+        bool src2_mem;
+        uint64_t lhs[2];
+        uint64_t rhs[2];
+    } cases[] = {
+        {HB_IR_XMM_AND, false, false,
+         {0xff00ff00ff00ff00ULL, 0x0f0f0f0f0f0f0f0fULL},
+         {0x00ff00ff00ff00ffULL, 0xf0f0f0f0f0f0f0f0ULL}},
+        {HB_IR_XMM_ANDN, false, false,
+         {0xffff0000ffff0000ULL, 0x3333333333333333ULL},
+         {0x00ff00ff00ff00ffULL, 0x5555555555555555ULL}},
+        {HB_IR_XMM_OR, false, true,
+         {0x1111000011110000ULL, 0x0000aaaa0000aaaaULL},
+         {0x0000222200002222ULL, 0xbbbb0000bbbb0000ULL}},
+        {HB_IR_XORPS, true, false,
+         {0x0123456789abcdefULL, 0xfedcba9876543210ULL},
+         {0xffff0000ffff0000ULL, 0x0000ffff0000ffffULL}},
+    };
+
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uint64_t base = 0x4620 + (uint64_t)i * 0x10;
+        uint64_t mem_src[2] = {
+            cases[i].src1_mem ? cases[i].lhs[0] : cases[i].rhs[0],
+            cases[i].src1_mem ? cases[i].lhs[1] : cases[i].rhs[1],
+        };
+        hb_ir_func_t* func = hb_ir_func_create(base, 0);
+        ASSERT(func != NULL);
+        hb_ir_block_t* blk = hb_ir_block_create(0, base);
+        ASSERT(blk != NULL);
+        hb_ir_cfg_add_block(func->cfg, blk);
+        func->cfg->entry = blk;
+
+        hb_ir_builder_t* b = hb_ir_builder_create(func);
+        ASSERT(b != NULL);
+        hb_ir_builder_set_block(b, blk);
+        hb_ir_instr_t* logic = hb_ir_emit(b, cases[i].op);
+        ASSERT(logic != NULL);
+        logic->dst = hb_ir_reg(HB_REG_XMM0, HB_SIZE_128);
+        logic->src1 = cases[i].src1_mem
+            ? hb_ir_mem(HB_REG_RBX, HB_REG_COUNT, 1, 0, HB_SIZE_128)
+            : hb_ir_reg(HB_REG_XMM1, HB_SIZE_128);
+        logic->src2 = cases[i].src2_mem
+            ? hb_ir_mem(HB_REG_RBX, HB_REG_COUNT, 1, 0, HB_SIZE_128)
+            : hb_ir_reg(HB_REG_XMM2, HB_SIZE_128);
+        logic->guest_addr = base;
+        logic->guest_len = 4;
+        hb_ir_builder_destroy(b);
+
+        hb_context_t* interp = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+        hb_context_t* jit = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+        ASSERT(interp != NULL && jit != NULL);
+        interp->memory = hb_memory_create(0);
+        jit->memory = hb_memory_create(0);
+        ASSERT(interp->memory != NULL && jit->memory != NULL);
+        if (cases[i].src1_mem || cases[i].src2_mem) {
+            ASSERT(hb_memory_map(interp->memory, (hb_gva_t)(uintptr_t)mem_src, sizeof(mem_src),
+                                 HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+            ASSERT(hb_memory_map(jit->memory, (hb_gva_t)(uintptr_t)mem_src, sizeof(mem_src),
+                                 HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+            interp->regs.x64.rbx = (uint64_t)(uintptr_t)mem_src;
+            jit->regs.x64.rbx = (uint64_t)(uintptr_t)mem_src;
+        }
+        interp->pc = base;
+        jit->pc = base;
+        for (int lane = 0; lane < 2; lane++) {
+            interp->regs.x64.xmm[0][lane] = 0xdeadbeefcafebabeULL;
+            jit->regs.x64.xmm[0][lane] = 0xdeadbeefcafebabeULL;
+            interp->regs.x64.xmm[1][lane] = cases[i].lhs[lane];
+            jit->regs.x64.xmm[1][lane] = cases[i].lhs[lane];
+            interp->regs.x64.xmm[2][lane] = cases[i].rhs[lane];
+            jit->regs.x64.xmm[2][lane] = cases[i].rhs[lane];
+        }
+        interp->flags.cf = true;
+        jit->flags.cf = true;
+        interp->flags.zf = true;
+        jit->flags.zf = true;
+        interp->lazy_flags.pending = true;
+        jit->lazy_flags.pending = true;
+
+        hb_exec_result_t interp_out;
+        hb_exec_result_t jit_out;
+        ASSERT(hb_runtime_run(interp, func, HB_BACKEND_INTERP, &interp_out) == HB_OK);
+        ASSERT(hb_runtime_run(jit, func, HB_BACKEND_JIT, &jit_out) == HB_OK);
+        ASSERT(interp_out.result == HB_OK);
+        ASSERT(jit_out.result == HB_OK);
+        ASSERT(jit->regs.x64.xmm[0][0] == interp->regs.x64.xmm[0][0]);
+        ASSERT(jit->regs.x64.xmm[0][1] == interp->regs.x64.xmm[0][1]);
+        ASSERT(jit->flags.cf == interp->flags.cf);
+        ASSERT(jit->flags.zf == interp->flags.zf);
+        ASSERT(jit->lazy_flags.pending == interp->lazy_flags.pending);
+
+        hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(256);
+        hb_arm64_codegen_t* cg = hb_arm64_codegen_create(jit);
+        ASSERT(code_buf != NULL && cg != NULL);
+        ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+        ASSERT(code_buf->size <= 160);
+        hb_arm64_codegen_destroy(cg);
+        hb_codegen_buffer_destroy(code_buf);
+
+        hb_context_destroy(interp);
+        hb_context_destroy(jit);
+        hb_ir_func_destroy(func);
+    }
+
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    tests_passed++;
+}
+
 TEST(jit_neg_al_sbb_mask_notepadpp_mode_parser) {
     for (int input = 0; input <= 1; input++) {
         hb_ir_func_t* func = hb_ir_func_create(0x1000, 0);
@@ -17283,6 +17397,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_store_imm_compact_family();
     test_jit_x64_native_extend_family();
     test_jit_x64_native_xmm_move_family();
+    test_jit_x64_native_xmm_logic_family();
     test_jit_neg_al_sbb_mask_notepadpp_mode_parser();
     test_jit_lahf_sahf_roundtrip();
     test_jit_setcc_cmovcc_memory_operands();

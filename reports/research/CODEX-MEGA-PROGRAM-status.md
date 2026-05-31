@@ -143,6 +143,16 @@ unchanged because this finite helper-backed family is not in the sampled hot loo
 branch/fallthrough CFG fusion plus native promotion of remaining finite helper-backed IR families
 against interpreter/oracle parity while keeping the bulk ISA matrix live.
 
+**Follow-up batch:** `run-20260601-033442-phase3-xmmlogic-jit` preserves fallback/fault/
+unsupported/runtime zero with cleanup/prune `0`; hot-marked `HB_IR_XMM_AND/XMM_ANDN/XMM_OR/XORPS`
+now emit native two-lane ARM64 bit operations for XMM register operands plus gated direct-memory
+128-bit operands, while preserving no flag/lazy side effects. Regression
+`jit_x64_native_xmm_logic_family` compares JIT vs interpreter for AND, ANDN, OR, and XORPS with
+register, src1-memory, and src2-memory siblings. `hb_test_runner` is now `381 passed, 0 failed`,
+fast validation PASS. The final 90s Mono top-12 is unchanged because this family is not in the
+sampled loop; NEXT remains branch/fallthrough CFG fusion plus native promotion of remaining finite
+helper-backed IR families against interpreter/oracle parity while keeping the bulk ISA matrix live.
+
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
 (624M GOG InnoSetup installer + `Bonus/`). It's a sibling of the repo (outside `MacRunner/`) — use

@@ -51,6 +51,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - MOV+LEA same-base pairing: adjacent `HB_IR_MOV reg,base` + `HB_IR_LEA reg,[base+small-disp]` now loads the base register once and emits both destination writes from it. Tests: `engine/hyperbridge/tests/hb_test_runner` => `364 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260531-234133-phase3-movlea-pair-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank3 `0x87ef2ba32d4` shrinks `296 -> 292`.
 - STORE+MOV+LEA same-base triple: `HB_IR_STORE mem(base+small-disp),imm` followed by `HB_IR_MOV reg,base` and `HB_IR_LEA reg,[base+small-disp]` now shares one base load while preserving store-before-register-write order. Tests: `engine/hyperbridge/tests/hb_test_runner` => `365 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260531-234740-phase3-store-movlea-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank3 `0x87ef2ba32d4` shrinks `292 -> 288`.
 - TEST same-register Jcc pairing: `HB_IR_TEST reg,reg + Jcc` now records the same lazy TEST flags without loading the same GPR twice. Tests: `engine/hyperbridge/tests/hb_test_runner` => `366 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260531-235316-phase3-test-same-jcc-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank6 shrinks `168 -> 160`, rank9 `180 -> 160` (rank3 unchanged in this sample).
+- XMM load/store live-lane pairing: adjacent direct-memory `HB_IR_LOAD xmm,[mem128]` + `HB_IR_STORE [mem128],xmm` now keeps the loaded 128-bit lanes live for simple destination addresses while still writing the architectural XMM register before the destination store. Tests: `engine/hyperbridge/tests/hb_test_runner` => `367 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-000430-phase3-xmm-load-store-livepair-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; packed XMM copy block rank5 `0x87ef2ba3301` shrinks `148 -> 140` (rank1/rank2/rank3 unchanged).
 
 ## Matrix
 
@@ -94,8 +95,8 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_SAHF | yes | yes | C-helper codegen |  |
 | HB_IR_CPUID | yes | yes | C-helper codegen |  |
 | HB_IR_XGETBV | yes | yes | C-helper codegen |  |
-| HB_IR_LOAD | yes | yes | native scalar/XMM direct-memory emit + helper fallback | yes |
-| HB_IR_STORE | yes | yes | native scalar/XMM direct-memory emit + helper fallback | yes |
+| HB_IR_LOAD | yes | yes | native scalar/XMM direct-memory emit + adjacent XMM pair + helper fallback | yes |
+| HB_IR_STORE | yes | yes | native scalar/XMM direct-memory emit + adjacent XMM pair + helper fallback | yes |
 | HB_IR_PUSH | yes | yes | native direct-stack emit + helper fallback | yes |
 | HB_IR_POP | yes | yes | native direct-stack emit + helper fallback | yes |
 | HB_IR_PUSHF | yes | yes | interp-helper codegen |  |

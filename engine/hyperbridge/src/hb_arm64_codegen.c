@@ -379,6 +379,13 @@ static void emit_direct_mem_addr(hb_codegen_buffer_t* buf, const hb_ir_operand_t
     }
 }
 
+static bool direct_mem_addr_preserves_x22(const hb_ir_operand_t* op) {
+    if (!op || op->type != HB_OP_MEM) return false;
+    if (op->mem.index < HB_REG_XMM0) return false;
+    return op->mem.disp == 0 || (op->mem.disp > 0 && op->mem.disp < 4096) ||
+           (op->mem.disp < 0 && op->mem.disp > -4096);
+}
+
 static bool mem_operand_uses_reg(const hb_ir_operand_t* op, hb_reg_t reg) {
     return op && op->type == HB_OP_MEM && (op->mem.base == reg || op->mem.index == reg);
 }
@@ -1146,6 +1153,31 @@ static bool emit_adjacent_mem64_pair(hb_codegen_buffer_t* buf, const hb_ir_instr
     }
 
     return false;
+}
+
+static bool emit_xmm_load_store_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* load,
+                                     const hb_ir_instr_t* store) {
+    if (!jit_direct_mem_enabled() || !load || !store) return false;
+    if (load->op != HB_IR_LOAD || store->op != HB_IR_STORE) return false;
+    if (!is_xmm_reg_operand(&load->dst) || !is_xmm_reg_operand(&store->src2) ||
+        load->dst.reg != store->src2.reg)
+        return false;
+    if (!is_direct_user_xmm_mem_operand(&load->src1) ||
+        !is_direct_user_xmm_mem_operand(&store->src1))
+        return false;
+
+    emit_direct_mem_addr(buf, &load->src1);
+    emit_direct_mem128_load_to_x20_x22(buf);
+    emit_store_x20_x22_to_xmm(buf, load->dst.reg);
+    if (direct_mem_addr_preserves_x22(&store->src1)) {
+        emit_direct_mem_addr(buf, &store->src1);
+    } else {
+        emit_mov_reg(buf, 23, 22);
+        emit_direct_mem_addr(buf, &store->src1);
+        emit_mov_reg(buf, 22, 23);
+    }
+    emit_direct_mem128_store_from_x20_x22(buf);
+    return true;
 }
 
 static bool emit_stack_spill_push_sub_prologue(hb_codegen_buffer_t* buf,
@@ -3285,6 +3317,11 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         }
         if (i + 1 < block->instr_count &&
             emit_mov_lea_same_base_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
+            i++;
+            continue;
+        }
+        if (i + 1 < block->instr_count &&
+            emit_xmm_load_store_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }

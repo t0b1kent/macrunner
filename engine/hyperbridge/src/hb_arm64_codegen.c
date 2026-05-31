@@ -188,6 +188,10 @@ static void __attribute__((unused)) emit_asrv(hb_codegen_buffer_t* buf, int rd, 
     emit_u32(buf, 0x9ac02800 | (rm << 16) | (rn << 5) | rd);
 }
 
+static void emit_sbfm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imms) {
+    emit_u32(buf, 0x93400000 | ((imms & 0x3f) << 10) | (rn << 5) | rd);
+}
+
 static void __attribute__((unused)) emit_mvn(hb_codegen_buffer_t* buf, int rd, int rn) {
     /* ORN Xd, XZR, Xn */
     emit_u32(buf, 0xaa2003e0 | (rn << 16) | rd);
@@ -767,7 +771,7 @@ static bool emit_scalar_operand_to_x20(hb_codegen_buffer_t* buf, const hb_ir_ope
 }
 
 static bool emit_scalar_operand_to_x21(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op,
-                                       hb_size_t size) {
+                                        hb_size_t size) {
     if (!op) return false;
     if (op->type == HB_OP_REG) {
         hb_ir_operand_t sized = *op;
@@ -782,8 +786,37 @@ static bool emit_scalar_operand_to_x21(hb_codegen_buffer_t* buf, const hb_ir_ope
     return false;
 }
 
+static bool emit_native_extend(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    if (!instr || (instr->op != HB_IR_ZERO_EXTEND && instr->op != HB_IR_SIGN_EXTEND))
+        return false;
+    if (!is_gpr_reg_operand(&instr->dst)) return false;
+    if (instr->src1.type == HB_OP_REG && !is_gpr_reg_operand(&instr->src1)) return false;
+    if (instr->src1.type == HB_OP_MEM &&
+        (!jit_direct_mem_enabled() || !is_direct_user_mem_operand(&instr->src1)))
+        return false;
+    if (instr->src1.type != HB_OP_REG && instr->src1.type != HB_OP_MEM &&
+        instr->src1.type != HB_OP_IMM)
+        return false;
+    if (!emit_scalar_operand_to_x20(buf, &instr->src1, instr->src1.size)) return false;
+
+    if (instr->op == HB_IR_SIGN_EXTEND) {
+        switch (instr->src1.size) {
+            case HB_SIZE_8:  emit_sbfm(buf, 20, 20, 7); break;
+            case HB_SIZE_16: emit_sbfm(buf, 20, 20, 15); break;
+            case HB_SIZE_32: emit_sbfm(buf, 20, 20, 31); break;
+            case HB_SIZE_64: break;
+            default: return false;
+        }
+        emit_mask_x_reg_to_size(buf, 20, 23, instr->dst.size);
+    } else {
+        emit_mask_x_reg_to_size(buf, 20, 23, instr->src1.size);
+    }
+    emit_store_x20_to_gpr_sized(buf, &instr->dst);
+    return true;
+}
+
 static bool emit_cmp_zero_set_pc(hb_codegen_buffer_t* buf, hb_cc_t cc,
-                                 uint64_t target, uint64_t fallthrough) {
+                                  uint64_t target, uint64_t fallthrough) {
     if (cc != HB_CC_E && cc != HB_CC_NE) return false;
     emit_cmp_imm(buf, 22, 0);
     emit_bcond(buf, arm64_cond(cc), 28);
@@ -1376,6 +1409,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
 
         case HB_IR_ZERO_EXTEND:
         case HB_IR_SIGN_EXTEND:
+            if (emit_native_extend(buf, instr))
+                return HB_OK;
             emit_mov_reg(buf, 0, 19);
             emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
             emit_call_helper(buf, (void*)hb_jit_helper_exec_extend_operand_lazy);

@@ -9,12 +9,13 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-05-31 21:55 local):** Hollow Knight remains loader-gated explicit-JIT
-fallback/fault/unsupported-zero after scalar `MOV` and stack-control native promotion. Current blocker
-is still throughput/no-window in hot Mono/Unity code. Next evidence-backed finite JIT family:
-`HB_IR_ZERO_EXTEND` / `HB_IR_SIGN_EXTEND` native codegen for GPR and direct-memory operands, because
-the latest hot tail contains `MOVZX` shapes (`0f b6 d3`, `0f b7 04 51`) in blocks
-`0x87ef2bf98d8`/`0x87ef2bf98e7`. Keep `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
+**Resume checkpoint (2026-05-31 22:01 local):** Hollow Knight remains loader-gated explicit-JIT
+fallback/fault/unsupported-zero after scalar `MOV`, stack-control, and extend native promotion. Current
+blocker is still throughput/no-window in hot Mono/Unity code. Next evidence-backed finite JIT target is
+either the packed XMM move load/store block (`0x87ef2ba3301`, bytes `0f 10 ... f3 0f 7f ...`) if a
+safe NEON/XMM direct-memory emit can be added against interpreter semantics, or tighter fusion for the
+rank1 memory-test/RMW loop. Do not keep widening scalar extend: `MOVZX` rank10 improved, rank9 was
+size-neutral. Keep `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per
 family, run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.
 
@@ -202,6 +203,17 @@ native bodies shrank: `0x87ef2bf98b4` `500 -> 404 -> 304`, `0x87ef2ba32d4` `440 
 `0x87ef2ba335c` `336 -> 284`, `0x87ef2bf9919` `328 -> 276`. NEXT: native
 `HB_IR_ZERO_EXTEND`/`HB_IR_SIGN_EXTEND` for hot `MOVZX` blocks (`0f b6 d3`, `0f b7 04 51`), then
 rerun the same fallback-zero Hollow Knight gate.
+
+Status 2026-05-31 22:01: `HB_IR_ZERO_EXTEND`/`HB_IR_SIGN_EXTEND` promoted for GPR and gated
+direct-memory operands. A first test run caught and fixed a native sign-extend bug where 32-bit
+destinations wrote a full 64-bit negative value instead of truncating through destination width like
+`hb_context_write_reg_value_sized`. Coverage: `engine/hyperbridge/tests/hb_test_runner` =>
+`347 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; spike `ntdll.so`
+relinked. Hollow Knight `run-20260531-215737-phase3-extend-jit/` timed out cleanly (`MR_RUN_RC=143`)
+with cleanup/prune `0`, zero JIT fallback/fault/unsupported counters, and Mono paths reached. Hot
+`MOVZX` block `0x87ef2bf98d8` shrank `268 -> 244`; `0x87ef2bf98e7` remained size-neutral. NEXT:
+inspect packed XMM move/direct-memory feasibility for `0x87ef2ba3301` or fuse the rank1
+memory-test/RMW loop; do not broaden scalar extend without new evidence.
 
 ### ★ BULK ISA COVERAGE — MOVED TO LANE B (MacBook Air M1, separate machine) 2026-05-31
 **This main-mac Codex (Lane A) no longer does bulk-ISA — it's on the Air now.** Lane A stays on

@@ -1,5 +1,6 @@
 #include "hb_runtime.h"
 #include "hb_codegen.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,6 +49,73 @@ static void block_cache_put(hb_block_cache_t* cache, uint64_t addr, uint8_t* cod
             return;
         }
     }
+}
+
+static int trace_jit_blocks_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+        cached = env && *env && *env != '0';
+    }
+    return cached;
+}
+
+static uint64_t trace_jit_native_addr(void) {
+    static int parsed = 0;
+    static uint64_t addr = 0;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_NATIVE_ADDR");
+        if (env && *env) addr = strtoull(env, NULL, 0);
+        parsed = 1;
+    }
+    return addr;
+}
+
+static int trace_jit_blocks_budget_allows(int force) {
+    static int count;
+    static int exhausted;
+    const char* env = getenv("MACRUNNER_HB_TRACE_JIT_BLOCK_BUDGET");
+    int limit = env && *env ? atoi(env) : 2000;
+    if (!trace_jit_blocks_enabled()) return 0;
+    if (force || limit <= 0) return 1;
+    if (count < limit) {
+        count++;
+        return 1;
+    }
+    if (!exhausted) {
+        exhausted = 1;
+        fprintf(stderr, "macrunner-hb-jit-block: trace budget exhausted at %d entries, silencing\n", limit);
+        fflush(stderr);
+    }
+    return 0;
+}
+
+static void trace_jit_block(uint64_t guest_pc, const uint8_t* native, size_t native_size,
+                            const hb_ir_block_t* block) {
+    uint64_t watch = trace_jit_native_addr();
+    int matched = watch && (uintptr_t)native <= (uintptr_t)watch &&
+                  (uintptr_t)watch < (uintptr_t)native + native_size;
+    const hb_ir_instr_t* first = (block && block->instr_count) ? &block->instrs[0] : NULL;
+    const hb_ir_instr_t* last = (block && block->instr_count) ?
+                                &block->instrs[block->instr_count - 1] : NULL;
+
+    if (!trace_jit_blocks_budget_allows(matched)) return;
+    fprintf(stderr, "macrunner-hb-jit-block: guest=%p native=%p-%p size=%zu instrs=%zu "
+            "first_op=%u first_guest=%p last_op=%u last_guest=%p last_target=%p%s\n",
+            (void*)(uintptr_t)guest_pc, native, native + native_size, native_size,
+            block ? block->instr_count : 0,
+            first ? (unsigned)first->op : 0, first ? (void*)(uintptr_t)first->guest_addr : NULL,
+            last ? (unsigned)last->op : 0, last ? (void*)(uintptr_t)last->guest_addr : NULL,
+            last ? (void*)(uintptr_t)last->target : NULL, matched ? " match=1" : "");
+    if (matched && block) {
+        for (size_t i = 0; i < block->instr_count; i++) {
+            const hb_ir_instr_t* instr = &block->instrs[i];
+            fprintf(stderr, "macrunner-hb-jit-block-ir: guest=%p op=%u target=%p len=%u\n",
+                    (void*)(uintptr_t)instr->guest_addr, (unsigned)instr->op,
+                    (void*)(uintptr_t)instr->target, (unsigned)instr->guest_len);
+        }
+    }
+    fflush(stderr);
 }
 
 hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
@@ -206,6 +274,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
 
             /* Store in block cache */
             block_cache_put(rt->block_cache, ctx->pc, dest, emitted_size, (uint32_t)block->instr_count);
+            trace_jit_block(ctx->pc, dest, emitted_size, block);
 
             /* Execute */
             typedef void (*jit_block_t)(hb_context_t*);

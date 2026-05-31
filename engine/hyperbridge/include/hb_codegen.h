@@ -32,7 +32,9 @@ typedef struct {
     uint8_t* executable;
     size_t size;
     size_t used;
+    size_t dirty_start;
     bool is_executable;
+    bool thread_jit_write_protect;
 } hb_jit_buffer_t;
 
 hb_jit_buffer_t* hb_jit_buffer_create(size_t size);

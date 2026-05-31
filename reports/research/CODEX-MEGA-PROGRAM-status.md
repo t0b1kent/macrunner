@@ -20,15 +20,15 @@ direct-memory scalar/XMM `LOAD+STORE` same-register pairs now keep loaded values
 following store.
 Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
-`369 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
-Mono/Unity code. Latest run `run-20260601-004401-phase3-lazy-xzr-zero-jit/` preserves
-fallback/fault/unsupported-zero with cleanup/prune `0`; lazy-flag records now use ARM64 zero-register
-stores for zero `count`/`materialized_mask` fields, shrinking rank1 `156 -> 148`, rank2 `212 -> 204`,
-rank3 `280 -> 264`, rank4 `256 -> 248`, rank6 `152 -> 144`, rank7 `168 -> 160`, rank8 `144 -> 136`,
-rank9 `152 -> 144`, rank10 `204 -> 196`, rank11 `248 -> 240`, and rank12 `244 -> 236`. Previous
-zero-store/update run `run-20260601-002629-phase3-zero-store-backedge-jit/` moved targeted bit-loop
-block `0x87ef2bf9182` `448 -> 212`. NEXT: continue from executed 64-byte hot evidence, favoring the
-remaining rank1/rank2 bit-test/RMW arms and rank3 prologue/XMM/branch tail. Keep
+`370 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+Mono/Unity code. Latest run `run-20260601-004957-phase3-rank3-prologue-init-test-jit/` preserves
+fallback/fault/unsupported-zero with cleanup/prune `0`; the full rank3
+`STORE/STORE/PUSH/SUB; STORE0/MOV/LEA; TEST/Jcc` block now fuses and shrinks `264 -> 200`. Previous
+lazy zero-register run `run-20260601-004401-phase3-lazy-xzr-zero-jit/` shrank rank1 `156 -> 148`,
+rank2 `212 -> 204`, rank3 `280 -> 264`, rank4 `256 -> 248`, rank6 `152 -> 144`, rank7 `168 -> 160`,
+rank8 `144 -> 136`, rank9 `152 -> 144`, rank10 `204 -> 196`, rank11 `248 -> 240`, and rank12
+`244 -> 236`. NEXT: continue from executed 64-byte hot evidence, favoring the remaining rank1/rank2
+bit-test/RMW arms and post-rank3 XMM/default-copy tail. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

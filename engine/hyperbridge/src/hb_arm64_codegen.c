@@ -1254,6 +1254,83 @@ static bool emit_stack_spill_push_sub_prologue(hb_codegen_buffer_t* buf,
     return true;
 }
 
+static bool emit_prologue_local_init_test_block(hb_codegen_buffer_t* buf,
+                                                const hb_ir_block_t* block) {
+    const hb_ir_instr_t *store1, *store2, *push, *sub, *store_zero, *mov, *lea, *test, *jcc;
+    uint64_t frame;
+    uint32_t store_off, push_off, pair_off;
+    if (!jit_direct_mem_enabled() || !block || block->instr_count != 9) return false;
+
+    store1 = &block->instrs[0];
+    store2 = &block->instrs[1];
+    push = &block->instrs[2];
+    sub = &block->instrs[3];
+    store_zero = &block->instrs[4];
+    mov = &block->instrs[5];
+    lea = &block->instrs[6];
+    test = &block->instrs[7];
+    jcc = &block->instrs[8];
+
+    if (!stack_store_reg64_at(store1, 8) || !stack_store_reg64_at(store2, 16))
+        return false;
+    if (push->op != HB_IR_PUSH || push->src1.type != HB_OP_REG ||
+        !is_plain_gpr_reg_operand(&push->src1) || push->src1.size != HB_SIZE_64)
+        return false;
+    if (sub->op != HB_IR_SUB ||
+        !is_plain_gpr_reg_operand(&sub->dst) || !is_plain_gpr_reg_operand(&sub->src1) ||
+        sub->dst.reg != HB_REG_RSP || sub->src1.reg != HB_REG_RSP ||
+        sub->dst.size != HB_SIZE_64 || sub->src1.size != HB_SIZE_64 ||
+        sub->src2.type != HB_OP_IMM || sub->src2.imm < 0)
+        return false;
+    frame = (uint64_t)sub->src2.imm;
+    if (frame > 480 || (frame & 7)) return false;
+    if (store_zero->op != HB_IR_STORE || store_zero->src1.type != HB_OP_MEM ||
+        store_zero->src1.size != HB_SIZE_8 || store_zero->src2.type != HB_OP_IMM ||
+        store_zero->src2.imm != 0)
+        return false;
+    if (!direct_mem_unsigned_offset(&store_zero->src1, &store_off))
+        return false;
+    if (!is_plain_gpr_reg_operand(&mov->dst) || !is_plain_gpr_reg_operand(&mov->src1) ||
+        mov->op != HB_IR_MOV || mov->dst.size != HB_SIZE_64 || mov->src1.size != HB_SIZE_64)
+        return false;
+    if (store_zero->src1.mem.base != mov->src1.reg)
+        return false;
+    if (!is_plain_gpr_reg_operand(&lea->dst) || lea->op != HB_IR_LEA ||
+        lea->dst.size != HB_SIZE_64 || lea->src1.type != HB_OP_MEM ||
+        lea->src1.mem.base != mov->src1.reg || lea->src1.mem.index != HB_REG_COUNT ||
+        lea->src1.mem.segment != 0 || lea->src1.mem.addr32 ||
+        lea->src1.mem.disp < 0 || lea->src1.mem.disp >= 4096)
+        return false;
+    if (test->op != HB_IR_TEST || !same_plain_gpr_operand(&test->src1, &test->src2) ||
+        test->src1.size != HB_SIZE_64 || jcc->op != HB_IR_Jcc ||
+        (jcc->cc != HB_CC_E && jcc->cc != HB_CC_NE))
+        return false;
+
+    push_off = (uint32_t)frame;
+    pair_off = (uint32_t)frame + 16;
+    emit_ldr_x(buf, 20, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+    emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(store1->src2.reg));
+    emit_ldr_x(buf, 22, 19, (uint32_t)x64_reg_off(store2->src2.reg));
+    emit_ldr_x(buf, 23, 19, (uint32_t)x64_reg_off(push->src1.reg));
+    emit_sub_imm(buf, 20, 20, (uint32_t)(frame + 8));
+    emit_str_x(buf, 23, 20, push_off);
+    emit_stp_x(buf, 21, 22, 20, pair_off);
+    emit_str_x(buf, 20, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+
+    emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(mov->src1.reg));
+    emit_mov_imm_compact(buf, 20, 0);
+    emit_direct_mem_store_from_x20_off(buf, store_zero->src1.size, store_off);
+    emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(mov->dst.reg));
+    if (lea->src1.mem.disp) emit_add_imm(buf, 21, 21, (uint32_t)lea->src1.mem.disp);
+    emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(lea->dst.reg));
+
+    if (!emit_load_gpr_sized_to_reg(buf, &test->src1, 20)) return false;
+    emit_mov_reg(buf, 21, 20);
+    emit_mov_reg(buf, 22, 20);
+    emit_note_lazy_from_x20_x21_x22(buf, HB_LAZY_FLAGS_TEST, test->src1.size);
+    return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+}
+
 static bool emit_mov_lea_same_base_pair(hb_codegen_buffer_t* buf,
                                         const hb_ir_instr_t* mov,
                                         const hb_ir_instr_t* lea) {
@@ -3380,6 +3457,10 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         }
     }
     if (emit_store_count_loop_block(out, block)) {
+        emit_epilogue(out);
+        return HB_OK;
+    }
+    if (emit_prologue_local_init_test_block(out, block)) {
         emit_epilogue(out);
         return HB_OK;
     }

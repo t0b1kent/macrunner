@@ -250,6 +250,14 @@ static void __attribute__((unused)) emit_neg(hb_codegen_buffer_t* buf, int rd, i
     emit_u32(buf, 0xcb0003e0 | (rn << 16) | rd);
 }
 
+static void emit_rev_x(hb_codegen_buffer_t* buf, int rd, int rn) {
+    emit_u32(buf, 0xdac00c00 | (rn << 5) | rd);
+}
+
+static void emit_rev_w(hb_codegen_buffer_t* buf, int rd, int rn) {
+    emit_u32(buf, 0x5ac00800 | (rn << 5) | rd);
+}
+
 static bool is_gpr_reg_operand(const hb_ir_operand_t* op) {
     return op && op->type == HB_OP_REG && op->reg < HB_REG_XMM0;
 }
@@ -1004,6 +1012,29 @@ static bool emit_native_indirect_call(hb_codegen_buffer_t* buf, const hb_ir_inst
     emit_native_stack_push_x20(buf);
     emit_str_x(buf, 23, 19, (uint32_t)offsetof(hb_context_t, pc));
     patch_b(buf, done_branch, buf->size);
+    return true;
+}
+
+static bool emit_native_bswap(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    hb_ir_operand_t dst;
+    hb_size_t size;
+
+    if (!instr || instr->op != HB_IR_BSWAP || !is_plain_gpr_reg_operand(&instr->dst))
+        return false;
+
+    dst = instr->dst;
+    size = dst.size ? dst.size : HB_SIZE_32;
+    if (size != HB_SIZE_32 && size != HB_SIZE_64)
+        return false;
+
+    dst.size = size;
+    if (!emit_load_gpr_sized_to_x20(buf, &dst))
+        return false;
+    if (size == HB_SIZE_64)
+        emit_rev_x(buf, 20, 20);
+    else
+        emit_rev_w(buf, 20, 20);
+    emit_store_x20_to_gpr_sized(buf, &dst);
     return true;
 }
 
@@ -2813,6 +2844,12 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             return HB_OK;
         }
 
+        case HB_IR_BSWAP: {
+            if (emit_native_bswap(buf, instr))
+                return HB_OK;
+            return emit_interp_ir_helper(buf, instr);
+        }
+
         case HB_IR_MOV_SEG:
         case HB_IR_BT:
         case HB_IR_BTS:
@@ -2831,7 +2868,6 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_SCAS:
         case HB_IR_STOS:
         case HB_IR_TRUNC:
-        case HB_IR_BSWAP:
         case HB_IR_XMM_AND:
         case HB_IR_XMM_QWORD_LANE_MOV:
         case HB_IR_XMM_ANDN:

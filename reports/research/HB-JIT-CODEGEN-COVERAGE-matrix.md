@@ -7,8 +7,8 @@ Reference: interpreter semantics in `engine/hyperbridge/src/hb_interpreter.c`. C
 ## Summary
 
 - C-helper-primary codegen: 21
-- interp-helper codegen: 123
-- native or native-hot-path emit: 21
+- interp-helper codegen: 122
+- native or native-hot-path emit: 22
 - terminal fault: 2
 
 Current rule: no generic success default. Every interpreter-supported IR op has an explicit codegen case. Helper-backed cases are correctness-first JIT codegen coverage and must be promoted to native emit on hot paths after JIT-vs-interpreter tests.
@@ -70,6 +70,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - Dead arithmetic-RMW flags before TEST/Jcc: block-local direct-memory `HB_IR_ADD/SUB` followed by `TEST same-reg; E/NE Jcc` now omits the arithmetic lazy record because TEST overwrites the flags before branch consumption. Tests: `engine/hyperbridge/tests/hb_test_runner` => `377 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-024322-phase3-arith-rmw-deadflags-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; targeted `0x87ef2bda428` shrinks `244 -> 176`, now below the original helper-backed `184`.
 - Lazy metadata packing: native lazy-flag records now pack the `pending/kind/width` header and `valid_mask/unsupported_mask` pair into fixed-layout ARM64 stores, guarded by compile-time `hb_lazy_flags_t` offset asserts and using `x16/x17` scratch registers so old `x20`-`x23` live-value behavior is preserved. Tests: `engine/hyperbridge/tests/hb_test_runner` => `377 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-025552-phase3-lazy-pack-jit2/` preserves fallback/fault/unsupported/runtime-zero with cleanup/prune `0`; lazy-heavy top blocks shrink by 12-16 bytes each (`rank1 144 -> 132`, `rank2 172 -> 160`, `rank3 200 -> 188`, `rank7 160 -> 144`, `rank11 240 -> 224`).
 - Indirect branch null-guard compaction: native `HB_IR_JMP/CALL` register and direct-memory targets now set `last_result=HB_ERR_EXEC_FAULT` and branch to the normal block epilogue on null targets, avoiding a duplicate inline fault epilogue while preserving `CALL` target-read-before-push ordering. Tests tighten code-size gates for `jmp reg`, `call reg`, `jmp mem`, and `call mem`; `engine/hyperbridge/tests/hb_test_runner` => `377 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-030521-phase3-indirect-guard-jit/` preserves fallback/fault/unsupported/runtime-zero with cleanup/prune `0`; steady-state Mono top-12 is unchanged, but startup-hot indirect thunk blocks use the smaller family path.
+- BSWAP register promotion: `HB_IR_BSWAP` now emits native ARM64 `REV` for 32-bit and 64-bit GPR destinations, preserving BSWAP's no-flags side effect and keeping the interpreter helper fallback for invalid widths/operands. Tests: `engine/hyperbridge/tests/hb_test_runner` => `378 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-031147-phase3-bswap-jit/` preserves fallback/fault/unsupported/runtime-zero with cleanup/prune `0`; steady-state Mono top-12 is unchanged because BSWAP is not in the sampled hot loop.
 
 ## Matrix
 
@@ -140,7 +141,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_TZCNT | yes | yes | C-helper codegen |  |
 | HB_IR_LZCNT | yes | yes | C-helper codegen |  |
 | HB_IR_BSR | yes | yes | C-helper codegen |  |
-| HB_IR_BSWAP | yes | yes | interp-helper codegen |  |
+| HB_IR_BSWAP | yes | yes | native 32/64-bit GPR emit + helper fallback |  |
 | HB_IR_XMM_AND | yes | yes | interp-helper codegen | yes |
 | HB_IR_XMM_QWORD_LANE_MOV | yes | yes | interp-helper codegen | yes |
 | HB_IR_XMM_ANDN | yes | yes | interp-helper codegen | yes |

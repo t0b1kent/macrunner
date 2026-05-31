@@ -97,6 +97,15 @@ gates for the full indirect branch family (`jmp reg`, `call reg`, `jmp mem`, `ca
 NEXT remains CFG/fallthrough fusion for the branch-split Mono blocks plus native promotion of
 helper-backed IR families only with oracle parity coverage.
 
+**Follow-up batch:** `run-20260601-031147-phase3-bswap-jit` preserves fallback/fault/
+unsupported/runtime zero with cleanup/prune `0`; `HB_IR_BSWAP` now has native ARM64 `REV` codegen for
+32-bit and 64-bit GPR destinations with no flag side effects, and helper fallback retained for
+invalid widths/operands. Regression `jit_x64_native_bswap_family` covers the 32-bit zero-extending
+and 64-bit register siblings and confirms flags remain unchanged. `hb_test_runner` is now
+`378 passed, 0 failed`, fast validation PASS. The final 90s Mono top-12 is unchanged because BSWAP is
+not in the sampled hot loop; NEXT remains branch/fallthrough CFG fusion plus native promotion of the
+remaining finite helper-backed IR families against interpreter/oracle parity.
+
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
 (624M GOG InnoSetup installer + `Bonus/`). It's a sibling of the repo (outside `MacRunner/`) — use

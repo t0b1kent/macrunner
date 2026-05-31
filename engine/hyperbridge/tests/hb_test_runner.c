@@ -4712,6 +4712,51 @@ TEST(jit_x64_native_epilogue_restore_ret_block) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_bswap_family) {
+    uint8_t code[] = {
+        0x0f, 0xc8,       /* bswap eax */
+        0x48, 0x0f, 0xcb  /* bswap rbx */
+    };
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rax = 0x11223344aabbccddULL;
+    ctx->regs.x64.rbx = 0x1122334455667788ULL;
+    ctx->flags.zf = true;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->regs.x64.rax == 0xddccbbaaULL);
+    ASSERT(ctx->regs.x64.rbx == 0x8877665544332211ULL);
+    ASSERT(ctx->flags.zf == true);
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(256);
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, func->cfg->entry, code_buf) == HB_OK);
+    ASSERT(code_buf->size <= 80);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(jit_commit_verify_failure_not_marked_executable) {
     hb_jit_buffer_t* buf = hb_jit_buffer_create(4096);
     ASSERT(buf != NULL);
@@ -16910,6 +16955,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_ret_stack_family();
     test_jit_x64_native_indirect_branch_operand_family();
     test_jit_x64_native_epilogue_restore_ret_block();
+    test_jit_x64_native_bswap_family();
     test_jit_commit_verify_failure_not_marked_executable();
     test_jit_load_unmapped_faults();
     test_jit_store_unmapped_faults();

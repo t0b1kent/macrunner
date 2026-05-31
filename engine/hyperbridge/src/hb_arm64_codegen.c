@@ -1171,6 +1171,27 @@ static bool emit_stack_spill_push_sub_prologue(hb_codegen_buffer_t* buf,
     return true;
 }
 
+static bool emit_mov_lea_same_base_pair(hb_codegen_buffer_t* buf,
+                                        const hb_ir_instr_t* mov,
+                                        const hb_ir_instr_t* lea) {
+    if (!mov || !lea || mov->op != HB_IR_MOV || lea->op != HB_IR_LEA) return false;
+    if (!is_plain_gpr_reg_operand(&mov->dst) || !is_plain_gpr_reg_operand(&mov->src1) ||
+        mov->dst.size != HB_SIZE_64 || mov->src1.size != HB_SIZE_64)
+        return false;
+    if (!is_plain_gpr_reg_operand(&lea->dst) || lea->dst.size != HB_SIZE_64)
+        return false;
+    if (lea->src1.type != HB_OP_MEM || lea->src1.mem.base != mov->src1.reg ||
+        lea->src1.mem.index != HB_REG_COUNT || lea->src1.mem.segment != 0 ||
+        lea->src1.mem.addr32 || lea->src1.mem.disp < 0 || lea->src1.mem.disp >= 4096)
+        return false;
+
+    emit_ldr_x(buf, 20, 19, (uint32_t)x64_reg_off(mov->src1.reg));
+    emit_str_x(buf, 20, 19, (uint32_t)x64_reg_off(mov->dst.reg));
+    if (lea->src1.mem.disp) emit_add_imm(buf, 20, 20, (uint32_t)lea->src1.mem.disp);
+    emit_str_x(buf, 20, 19, (uint32_t)x64_reg_off(lea->dst.reg));
+    return true;
+}
+
 static bool emit_zero_test_jcc_block(hb_codegen_buffer_t* buf, const hb_ir_block_t* block) {
     const hb_ir_instr_t *xor_i, *test_i, *jcc;
     uint64_t next_pc;
@@ -3205,6 +3226,11 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
             emit_stack_spill_push_sub_prologue(out, &block->instrs[i], &block->instrs[i + 1],
                                                &block->instrs[i + 2], &block->instrs[i + 3])) {
             i += 3;
+            continue;
+        }
+        if (i + 1 < block->instr_count &&
+            emit_mov_lea_same_base_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
+            i++;
             continue;
         }
         if (i + 1 < block->instr_count &&

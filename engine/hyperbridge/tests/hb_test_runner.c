@@ -12081,6 +12081,51 @@ TEST(jit_x64_native_stack_spill_push_sub_prologue) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_mov_lea_same_base_pair) {
+    hb_ir_func_t* func = hb_ir_func_create(0x5300, 0);
+    ASSERT(func != NULL);
+    hb_ir_block_t* blk = hb_ir_block_create(0, 0x5300);
+    ASSERT(blk != NULL);
+    hb_ir_cfg_add_block(func->cfg, blk);
+    func->cfg->entry = blk;
+
+    hb_ir_builder_t* b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, blk);
+    hb_ir_instr_t* mov = hb_ir_emit_mov(b, hb_ir_reg(HB_REG_RDI, HB_SIZE_64),
+                                        hb_ir_reg(HB_REG_RCX, HB_SIZE_64));
+    hb_ir_instr_t* lea = hb_ir_emit_lea(b, hb_ir_reg(HB_REG_RSI, HB_SIZE_64),
+                                        hb_ir_mem(HB_REG_RCX, HB_REG_COUNT, 1, 8, HB_SIZE_64));
+    ASSERT(mov && lea);
+    mov->guest_addr = 0x5300; mov->guest_len = 3;
+    lea->guest_addr = 0x5303; lea->guest_len = 4;
+    hb_ir_builder_destroy(b);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->pc = 0x5300;
+    ctx->regs.x64.rcx = 0x1122334455667700ULL;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->regs.x64.rdi == 0x1122334455667700ULL);
+    ASSERT(ctx->regs.x64.rsi == 0x1122334455667708ULL);
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(512);
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+    ASSERT(code_buf->size <= 72);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(jit_x64_hot_word_scan_loop_native) {
     uint16_t text[] = {'o', 'k', 0};
     hb_ir_func_t* func = hb_ir_func_create(0x2000, 0);
@@ -15979,6 +16024,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_zero_test_jcc_block_family();
     test_jit_x64_native_adjacent_mem64_pair_family();
     test_jit_x64_native_stack_spill_push_sub_prologue();
+    test_jit_x64_native_mov_lea_same_base_pair();
     test_jit_x64_hot_word_scan_loop_native();
     test_jit_x64_cmp_mem_operand_routes_to_helper();
     test_jit_x64_mul_div_family_routes_to_helper();

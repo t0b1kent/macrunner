@@ -351,6 +351,17 @@ static bool same_plain_gpr_operand(const hb_ir_operand_t* a, const hb_ir_operand
            a->reg == b->reg && a->size == b->size;
 }
 
+static bool same_mem_operand(const hb_ir_operand_t* a, const hb_ir_operand_t* b) {
+    return a && b && a->type == HB_OP_MEM && b->type == HB_OP_MEM &&
+           a->size == b->size &&
+           a->mem.base == b->mem.base &&
+           a->mem.index == b->mem.index &&
+           a->mem.scale == b->mem.scale &&
+           a->mem.disp == b->mem.disp &&
+           a->mem.segment == b->mem.segment &&
+           a->mem.addr32 == b->mem.addr32;
+}
+
 static bool emit_direct_mem_addr_with_override(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op,
                                                hb_reg_t override_reg, int override_arm_reg) {
     if (!is_direct_user_mem_operand(op)) return false;
@@ -733,6 +744,34 @@ static bool emit_scalar_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_ins
     return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
 }
 
+static bool emit_mem_imm_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
+                                        const hb_ir_instr_t* jcc) {
+    hb_lazy_flags_kind_t kind;
+    hb_size_t size;
+    if (!op || !jcc || jcc->op != HB_IR_Jcc) return false;
+    if (op->op != HB_IR_TEST && op->op != HB_IR_CMP) return false;
+    if (jcc->cc != HB_CC_E && jcc->cc != HB_CC_NE) return false;
+    if (op->src1.type != HB_OP_MEM || !is_direct_user_mem_operand(&op->src1)) return false;
+    if (op->src2.type != HB_OP_IMM) return false;
+    size = op->src1.size;
+    if (size != HB_SIZE_8 && size != HB_SIZE_16 && size != HB_SIZE_32 && size != HB_SIZE_64)
+        return false;
+    if (!lazy_kind_for_scalar_op(op->op, &kind)) return false;
+
+    emit_direct_mem_addr(buf, &op->src1);
+    emit_direct_mem_load_to_x20(buf, size);
+    emit_mov_imm_compact(buf, 21, (uint64_t)op->src2.imm);
+    emit_mask_x_reg_to_size(buf, 21, 23, size);
+    if (op->op == HB_IR_TEST) {
+        emit_and_reg(buf, 22, 20, 21);
+    } else {
+        emit_sub_reg(buf, 22, 20, 21);
+        emit_mask_x_reg_to_size(buf, 22, 23, size);
+    }
+    emit_note_lazy_from_x20_x21_x22(buf, kind, size);
+    return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+}
+
 static bool emit_copy_scan_body_block(hb_codegen_buffer_t* buf, const hb_ir_block_t* block) {
     const hb_ir_instr_t *load, *store, *add, *test, *jcc;
     hb_ir_operand_t inc_reg_operand;
@@ -1087,6 +1126,57 @@ static bool emit_store_count_loop_block(hb_codegen_buffer_t* buf, const hb_ir_bl
     return true;
 }
 
+static bool emit_direct_logic_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    hb_lazy_flags_kind_t kind;
+    if (!instr || (instr->op != HB_IR_AND && instr->op != HB_IR_OR && instr->op != HB_IR_XOR))
+        return false;
+    if (!same_mem_operand(&instr->dst, &instr->src1)) return false;
+    if (!is_direct_user_mem_operand(&instr->dst)) return false;
+    if (instr->dst.size != HB_SIZE_8 && instr->dst.size != HB_SIZE_16 &&
+        instr->dst.size != HB_SIZE_32 && instr->dst.size != HB_SIZE_64)
+        return false;
+    if (instr->src2.type == HB_OP_REG) {
+        if (!is_gpr_reg_operand(&instr->src2)) return false;
+    } else if (instr->src2.type != HB_OP_IMM) {
+        return false;
+    }
+    if (!lazy_kind_for_scalar_op(instr->op, &kind)) return false;
+
+    emit_direct_mem_addr(buf, &instr->dst);
+    emit_mov_reg(buf, 0, 21);
+    emit_direct_mem_load_to_x20(buf, instr->dst.size);
+    emit_mov_reg(buf, 1, 20);
+
+    if (instr->src2.type == HB_OP_REG) {
+        hb_ir_operand_t sized = instr->src2;
+        sized.size = instr->dst.size;
+        if (!emit_load_gpr_sized_to_reg(buf, &sized, 21)) return false;
+    } else {
+        emit_mov_imm64(buf, 21, (uint64_t)instr->src2.imm);
+        emit_mask_x_reg_to_size(buf, 21, 23, instr->dst.size);
+    }
+    emit_mov_reg(buf, 2, 21);
+
+    switch (instr->op) {
+        case HB_IR_AND: emit_and_reg(buf, 22, 20, 21); break;
+        case HB_IR_OR:  emit_orr_reg(buf, 22, 20, 21); break;
+        case HB_IR_XOR: emit_eor_reg(buf, 22, 20, 21); break;
+        default: return false;
+    }
+    emit_mask_x_reg_to_size(buf, 22, 23, instr->dst.size);
+    emit_mov_reg(buf, 3, 22);
+
+    emit_mov_reg(buf, 21, 0);
+    emit_mov_reg(buf, 20, 3);
+    emit_direct_mem_store_from_x20(buf, instr->dst.size);
+
+    emit_mov_reg(buf, 20, 1);
+    emit_mov_reg(buf, 21, 2);
+    emit_mov_reg(buf, 22, 3);
+    emit_note_lazy_from_x20_x21_x22(buf, kind, instr->dst.size);
+    return true;
+}
+
 /* JIT helper declarations (implemented below) */
 extern uint64_t hb_jit_helper_load_u64(hb_context_t* ctx, uint64_t addr);
 extern void     hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr,
@@ -1235,6 +1325,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_OR:
         case HB_IR_XOR: {
             hb_lazy_flags_kind_t kind;
+            if (emit_direct_logic_rmw(buf, instr)) return HB_OK;
             if (!is_plain_gpr_reg_operand(&instr->dst) ||
                 !is_plain_gpr_reg_operand(&instr->src1) ||
                 (instr->src2.type == HB_OP_REG && !is_plain_gpr_reg_operand(&instr->src2)) ||
@@ -2649,6 +2740,11 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         return HB_OK;
     }
     for (size_t i = 0; i < block->instr_count; i++) {
+        if (i + 1 < block->instr_count &&
+            emit_mem_imm_flags_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
+            i++;
+            continue;
+        }
         if (i + 1 < block->instr_count &&
             emit_scalar_flags_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;

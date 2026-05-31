@@ -168,6 +168,18 @@ memory-test/control code (`TEST byte [rdx],imm; JE`, RIP-relative `CMP/Jcc`, and
 epilogue blocks), so continue with evidence-backed native promotion for finite memory-test/Jcc and
 small branch/control families rather than widening speculative patches.
 
+Status 2026-05-31 21:29: direct-memory logical RMW and memory-immediate branch pairs promoted.
+Native JIT now covers `AND/OR/XOR r/m,reg-or-imm` direct-memory read/modify/write and the hot
+`TEST/CMP direct-mem,imm; E/NE Jcc` pair. Coverage:
+`engine/hyperbridge/tests/hb_test_runner` => `343 passed, 0 failed`;
+`tools/hb_oracle/fast_validate_family.sh phase1_core` PASS; spike `ntdll.so` relinked. Hollow
+Knight `run-20260531-212945-phase3-memimm-jcc-jit/` timed out cleanly (`MR_RUN_RC=143`) with
+cleanup/prune `0`, zero JIT fallback/fault/unsupported counters, and Mono paths reached. Hot block
+sizes improved for the evidenced memory branch family: `TEST byte [rdx],1; JE` `220 -> 200`, and
+RIP/absolute `CMP dword [abs],0; JNE` `276 -> 264`; total dispatch remains around 10k. NEXT:
+continue from the still-hot branch/prologue bodies (`0x87ef2ba32d4`, `0x87ef2bf98b4`) and only
+promote finite families that reduce helper calls or dispatch count without growing the common path.
+
 ### ★ BULK ISA COVERAGE — MOVED TO LANE B (MacBook Air M1, separate machine) 2026-05-31
 **This main-mac Codex (Lane A) no longer does bulk-ISA — it's on the Air now.** Lane A stays on
 JIT perf / Hollow Knight window. To avoid a cross-machine merge collision, FILE-LEVEL split:

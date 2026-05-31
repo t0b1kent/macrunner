@@ -10989,6 +10989,182 @@ TEST(jit_x64_native_store_count_loop_reg_limit_src_count) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_logic_rmw_memory_family) {
+    uint8_t bytes[64] = {0};
+    uint16_t word = 0xf0f0;
+    uint32_t dword = 0x00ff00ff;
+    bytes[0x1a] = 0x01;
+
+    hb_ir_func_t* func = hb_ir_func_create(0x3f00, 0);
+    ASSERT(func != NULL);
+    hb_ir_block_t* blk = hb_ir_block_create(0, 0x3f00);
+    ASSERT(blk != NULL);
+    hb_ir_cfg_add_block(func->cfg, blk);
+    func->cfg->entry = blk;
+
+    hb_ir_builder_t* b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, blk);
+    hb_ir_operand_t or_mem = hb_ir_mem(HB_REG_RBX, HB_REG_RAX, 1, 0x18, HB_SIZE_8);
+    hb_ir_operand_t and_mem = hb_ir_mem(HB_REG_RDI, HB_REG_COUNT, 1, 0, HB_SIZE_16);
+    hb_ir_operand_t xor_mem = hb_ir_mem(HB_REG_RSI, HB_REG_COUNT, 1, 0, HB_SIZE_32);
+    hb_ir_instr_t* or_i = hb_ir_emit_binop(b, HB_IR_OR, or_mem, or_mem,
+                                           hb_ir_imm(0x10, HB_SIZE_8));
+    hb_ir_instr_t* and_i = hb_ir_emit_binop(b, HB_IR_AND, and_mem, and_mem,
+                                            hb_ir_reg(HB_REG_RDX, HB_SIZE_16));
+    hb_ir_instr_t* xor_i = hb_ir_emit_binop(b, HB_IR_XOR, xor_mem, xor_mem,
+                                            hb_ir_imm(0x00ff00ff, HB_SIZE_32));
+    ASSERT(or_i && and_i && xor_i);
+    or_i->guest_addr = 0x3f00; or_i->guest_len = 5;
+    and_i->guest_addr = 0x3f05; and_i->guest_len = 3;
+    xor_i->guest_addr = 0x3f08; xor_i->guest_len = 6;
+    hb_ir_builder_destroy(b);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)bytes, sizeof(bytes),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&word, sizeof(word),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&dword, sizeof(dword),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = 0x3f00;
+    ctx->regs.x64.rbx = (uint64_t)(uintptr_t)bytes;
+    ctx->regs.x64.rax = 2;
+    ctx->regs.x64.rdi = (uint64_t)(uintptr_t)&word;
+    ctx->regs.x64.rsi = (uint64_t)(uintptr_t)&dword;
+    ctx->regs.x64.rdx = 0x00ff;
+
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(bytes[0x1a] == 0x11);
+    ASSERT(word == 0x00f0);
+    ASSERT(dword == 0);
+    ASSERT(ctx->pc == 0x3f0e);
+    bool equal = false;
+    ASSERT(hb_flags_eval_cond(ctx, HB_CC_E, &equal) == HB_OK);
+    ASSERT(equal);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_native_mem_imm_test_jcc_pair) {
+    uint8_t byte = 0x02;
+    hb_ir_func_t* func = hb_ir_func_create(0x4000, 0);
+    ASSERT(func != NULL);
+    hb_ir_block_t* blk = hb_ir_block_create(0, 0x4000);
+    ASSERT(blk != NULL);
+    hb_ir_cfg_add_block(func->cfg, blk);
+    func->cfg->entry = blk;
+
+    hb_ir_builder_t* b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, blk);
+    hb_ir_instr_t* test = hb_ir_emit_test(b, hb_ir_mem(HB_REG_RDX, HB_REG_COUNT, 1, 0, HB_SIZE_8),
+                                          hb_ir_imm(0x01, HB_SIZE_8));
+    hb_ir_instr_t* jcc = hb_ir_emit_jcc(b, HB_CC_E, 0x4010);
+    ASSERT(test && jcc);
+    test->guest_addr = 0x4000; test->guest_len = 3;
+    jcc->guest_addr = 0x4003; jcc->guest_len = 2;
+    hb_ir_builder_destroy(b);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&byte, sizeof(byte),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = 0x4000;
+    ctx->regs.x64.rdx = (uint64_t)(uintptr_t)&byte;
+
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->pc == 0x4010);
+    bool equal = false;
+    ASSERT(hb_flags_eval_cond(ctx, HB_CC_E, &equal) == HB_OK);
+    ASSERT(equal);
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(512);
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    ASSERT(code_buf->size <= 200);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_native_mem_imm_cmp_jcc_pair) {
+    uint32_t value = 7;
+    hb_ir_func_t* func = hb_ir_func_create(0x4100, 0);
+    ASSERT(func != NULL);
+    hb_ir_block_t* blk = hb_ir_block_create(0, 0x4100);
+    ASSERT(blk != NULL);
+    hb_ir_cfg_add_block(func->cfg, blk);
+    func->cfg->entry = blk;
+
+    hb_ir_builder_t* b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, blk);
+    hb_ir_instr_t* cmp = hb_ir_emit_cmp(b, hb_ir_mem(HB_REG_RBX, HB_REG_COUNT, 1, 0, HB_SIZE_32),
+                                        hb_ir_imm(0, HB_SIZE_32));
+    hb_ir_instr_t* jcc = hb_ir_emit_jcc(b, HB_CC_NE, 0x4110);
+    ASSERT(cmp && jcc);
+    cmp->guest_addr = 0x4100; cmp->guest_len = 7;
+    jcc->guest_addr = 0x4107; jcc->guest_len = 2;
+    hb_ir_builder_destroy(b);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&value, sizeof(value),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = 0x4100;
+    ctx->regs.x64.rbx = (uint64_t)(uintptr_t)&value;
+
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->pc == 0x4110);
+    bool equal = true;
+    ASSERT(hb_flags_eval_cond(ctx, HB_CC_E, &equal) == HB_OK);
+    ASSERT(!equal);
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(512);
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    ASSERT(code_buf->size <= 260);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(jit_x64_hot_word_scan_loop_native) {
     uint16_t text[] = {'o', 'k', 0};
     hb_ir_func_t* func = hb_ir_func_create(0x2000, 0);
@@ -14864,6 +15040,9 @@ int main(int argc, char** argv) {
     test_jit_x64_native_bounded_scan_loop_promotes_cache_pair();
     test_jit_x64_native_store_count_loop_imm_limit();
     test_jit_x64_native_store_count_loop_reg_limit_src_count();
+    test_jit_x64_native_logic_rmw_memory_family();
+    test_jit_x64_native_mem_imm_test_jcc_pair();
+    test_jit_x64_native_mem_imm_cmp_jcc_pair();
     test_jit_x64_hot_word_scan_loop_native();
     test_jit_x64_cmp_mem_operand_routes_to_helper();
     test_jit_x64_mul_div_family_routes_to_helper();

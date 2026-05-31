@@ -9,7 +9,7 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-06-01 00:07 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-06-01 00:58 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
 immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CMP imm + Jcc` immediate
@@ -27,8 +27,12 @@ fallback/fault/unsupported-zero with cleanup/prune `0`; the full rank3
 lazy zero-register run `run-20260601-004401-phase3-lazy-xzr-zero-jit/` shrank rank1 `156 -> 148`,
 rank2 `212 -> 204`, rank3 `280 -> 264`, rank4 `256 -> 248`, rank6 `152 -> 144`, rank7 `168 -> 160`,
 rank8 `144 -> 136`, rank9 `152 -> 144`, rank10 `204 -> 196`, rank11 `248 -> 240`, and rank12
-`244 -> 236`. NEXT: continue from executed 64-byte hot evidence, favoring the remaining rank1/rank2
-bit-test/RMW arms and post-rank3 XMM/default-copy tail. Keep
+`244 -> 236`. Latest run `run-20260601-005649-phase3-cmp-mem-zero-jcc-jit/` preserves
+fallback/fault/unsupported-zero with cleanup/prune `0`; rank2 `CMP direct-memory, 0` feeding `Jcc`
+now branches directly from the loaded value while preserving exact lazy CMP flags, shrinking
+`0x87ef2ba32f8` `204 -> 172`. NEXT: continue the bulk JIT-codegen coverage lane from executed
+64-byte hot evidence, favoring the remaining rank1 bit-test/RMW arms and post-rank3
+XMM/default-copy tail. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

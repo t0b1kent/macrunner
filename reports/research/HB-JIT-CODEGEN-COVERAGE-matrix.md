@@ -1,6 +1,6 @@
 # HB JIT Codegen Coverage Matrix
 
-Generated: 2026-05-31
+Generated: 2026-06-01
 
 Reference: interpreter semantics in `engine/hyperbridge/src/hb_interpreter.c`. Codegen target: `engine/hyperbridge/src/hb_arm64_codegen.c`.
 
@@ -58,6 +58,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - Logical lazy-flag result-only records: `HB_LAZY_FLAGS_AND/OR/XOR/TEST` JIT records now skip dead lhs/rhs stores because materialization uses only `result` for ZF/SF/PF and hardcodes CF/OF false; ADD/SUB/CMP records are unchanged. Tests: `engine/hyperbridge/tests/hb_test_runner` => `369 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-003120-phase3-logic-result-only-flags-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; bit guards `0x87ef2bf915f/916f` shrink `160 -> 156`, with 4-byte drops across rank3/rank6/rank8/rank9/rank10 logical/test blocks.
 - Lazy record zero-register stores: JIT lazy-flag records now store zero `count`, `unsupported_mask` where applicable, and `materialized_mask` with ARM64 `XZR/WZR` instead of materializing a scratch zero register. Tests: `engine/hyperbridge/tests/hb_test_runner` => `369 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-004401-phase3-lazy-xzr-zero-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; broad lazy-heavy hot blocks shrink, including rank1 `156 -> 148`, rank3 `280 -> 264`, rank8 `144 -> 136`, and rank11 `248 -> 240`.
 - Prologue/local-init/test block fusion: the hot rank3 `HB_IR_STORE/HB_IR_STORE/HB_IR_PUSH/HB_IR_SUB` prologue plus `STORE0/MOV/LEA` local init plus final `TEST reg,reg; Jcc` now emits as one block-level native path, omitting the dead intermediate SUB lazy record because the following TEST overwrites flags before block exit. Tests: `engine/hyperbridge/tests/hb_test_runner` => `370 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-004957-phase3-rank3-prologue-init-test-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank3 `0x87ef2ba32d4` shrinks `264 -> 200`.
+- CMP-zero memory branch specialization: direct-memory `HB_IR_CMP` with immediate zero feeding `E/NE Jcc` now records exact CMP lazy flags from the loaded value and branches from that loaded value directly, avoiding redundant zero materialization, subtract, and result masking. Tests: `engine/hyperbridge/tests/hb_test_runner` => `370 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-005649-phase3-cmp-mem-zero-jcc-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank2 `0x87ef2ba32f8` shrinks `204 -> 172`.
 
 ## Matrix
 
@@ -91,7 +92,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_ROR | yes | yes | interp-helper codegen |  |
 | HB_IR_SHLD | yes | yes | C-helper codegen |  |
 | HB_IR_SHRD | yes | yes | C-helper codegen |  |
-| HB_IR_CMP | yes | yes | native emit + helper fallback | yes |
+| HB_IR_CMP | yes | yes | native emit + direct-memory zero/Jcc specialization + helper fallback | yes |
 | HB_IR_TEST | yes | yes | native emit + helper fallback | yes |
 | HB_IR_CMPXCHG | yes | yes | interp-helper codegen |  |
 | HB_IR_CMPXCHG8B | yes | yes | interp-helper codegen |  |

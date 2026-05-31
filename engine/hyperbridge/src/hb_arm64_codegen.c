@@ -1009,11 +1009,11 @@ static bool emit_native_extend(hb_codegen_buffer_t* buf, const hb_ir_instr_t* in
     return true;
 }
 
-static bool emit_cmp_zero_set_pc(hb_codegen_buffer_t* buf, hb_cc_t cc,
+static bool emit_reg_zero_set_pc(hb_codegen_buffer_t* buf, int cmp_reg, hb_cc_t cc,
                                  uint64_t target, uint64_t fallthrough) {
     int64_t delta = (int64_t)target - (int64_t)fallthrough;
     if (cc != HB_CC_E && cc != HB_CC_NE) return false;
-    emit_cmp_imm(buf, 22, 0);
+    emit_cmp_imm(buf, cmp_reg, 0);
     if (delta >= -4095 && delta <= 4095) {
         emit_mov_imm_compact(buf, 21, fallthrough);
         emit_bcond(buf, arm64_cond(cc) ^ 1, 8);
@@ -1031,9 +1031,30 @@ static bool emit_cmp_zero_set_pc(hb_codegen_buffer_t* buf, hb_cc_t cc,
     return true;
 }
 
+static bool emit_cmp_zero_set_pc(hb_codegen_buffer_t* buf, hb_cc_t cc,
+                                 uint64_t target, uint64_t fallthrough) {
+    return emit_reg_zero_set_pc(buf, 22, cc, target, fallthrough);
+}
+
 static void emit_set_pc_imm64(hb_codegen_buffer_t* buf, uint64_t pc) {
     emit_mov_imm_compact(buf, 21, pc);
     emit_str_x(buf, 21, 19, (uint32_t)offsetof(hb_context_t, pc));
+}
+
+static void emit_note_lazy_cmp_zero_from_x20(hb_codegen_buffer_t* buf, hb_size_t width) {
+    uint32_t lazy_off = (uint32_t)offsetof(hb_context_t, lazy_flags);
+    emit_mov_imm_compact(buf, 23, 1);
+    emit_strb_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, pending));
+    emit_mov_imm_compact(buf, 23, HB_LAZY_FLAGS_CMP);
+    emit_str_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, kind));
+    emit_mov_imm_compact(buf, 23, (uint64_t)width);
+    emit_strb_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, width));
+    emit_stp_x(buf, 20, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, lhs));
+    emit_stp_x(buf, 20, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, result));
+    emit_mov_imm_compact(buf, 23, HB_FLAG_BIT_ALL);
+    emit_str_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, valid_mask));
+    emit_str_w(buf, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, unsupported_mask));
+    emit_str_w(buf, 31, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, materialized_mask));
 }
 
 static bool emit_scalar_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
@@ -1116,6 +1137,10 @@ static bool emit_mem_imm_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_in
 
     uint32_t off = emit_direct_mem_addr_with_offset(buf, &op->src1);
     emit_direct_mem_load_to_x20_off(buf, size, off);
+    if (op->op == HB_IR_CMP && op->src2.imm == 0) {
+        emit_note_lazy_cmp_zero_from_x20(buf, size);
+        return emit_reg_zero_set_pc(buf, 20, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+    }
     emit_mov_imm_compact(buf, 21, (uint64_t)op->src2.imm);
     if (!imm_fits_size((uint64_t)op->src2.imm, size))
         emit_mask_x_reg_to_size(buf, 21, 23, size);

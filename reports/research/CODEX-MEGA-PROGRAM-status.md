@@ -21,13 +21,13 @@ following store.
 Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
 `368 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
-Mono/Unity code. Latest run `run-20260601-001241-phase3-scalar-load-store-pair-jit/` preserves
-fallback/fault/unsupported-zero with cleanup/prune `0` but did not move the top-12 hot sizes; the
-preceding XMM run `run-20260601-000430-phase3-xmm-load-store-livepair-jit/` remains the latest
-measured improvement with packed XMM copy block rank5 `0x87ef2ba3301` shrinking `148 -> 140`. NEXT:
-continue from executed 64-byte hot evidence, favoring rank3 prologue/XMM/branch tail or rank1/rank2
-multi-block bit/RMW fusion; do not chase scalar load/store tails that sit behind the hot branch unless
-new execution evidence shows them active. Keep
+Mono/Unity code. Latest run `run-20260601-001957-phase3-compact-pc-imm-jit/` preserves
+fallback/fault/unsupported-zero with cleanup/prune `0`; compact safe PC/immediate materialization
+shrinks branch-heavy top blocks: rank1 `164 -> 160`, rank2 `216 -> 212`, rank3 `288 -> 284`, rank5
+`140 -> 136`, rank6 `160 -> 156`, rank7 `172 -> 168`, rank8 `152 -> 148`, rank9 `160 -> 156`,
+rank10 `212 -> 208`, rank11 `256 -> 248`. NEXT: continue from executed 64-byte hot evidence,
+favoring rank3 prologue/XMM/branch tail or rank1/rank2 multi-block bit/RMW fusion; do not chase scalar
+load/store tails that sit behind the hot branch unless new execution evidence shows them active. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

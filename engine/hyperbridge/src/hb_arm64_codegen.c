@@ -139,12 +139,24 @@ static void emit_mov_imm64(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
     emit_u32(buf, 0xf2e00000 | (((val >> 48) & 0xFFFF) << 5) | rd);
 }
 
-static void emit_mov_imm_compact(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
-    if (val <= 0xffffu) {
-        emit_u32(buf, 0xd2800000 | ((uint32_t)val << 5) | rd);
-        return;
+static void emit_mov_imm64_compact(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
+    bool seeded = false;
+    for (unsigned hw = 0; hw < 4; hw++) {
+        uint32_t part = (uint32_t)((val >> (hw * 16)) & 0xffffu);
+        if (!part) continue;
+        if (!seeded) {
+            emit_u32(buf, 0xd2800000 | (hw << 21) | (part << 5) | rd);
+            seeded = true;
+        } else {
+            emit_u32(buf, 0xf2800000 | (hw << 21) | (part << 5) | rd);
+        }
     }
-    emit_mov_imm64(buf, rd, val);
+    if (!seeded)
+        emit_u32(buf, 0xd2800000 | rd);
+}
+
+static void emit_mov_imm_compact(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
+    emit_mov_imm64_compact(buf, rd, val);
 }
 
 static void emit_blr(hb_codegen_buffer_t* buf, int rn) {
@@ -864,7 +876,7 @@ static bool emit_native_ret(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr
 static bool emit_native_direct_call(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
     if (!jit_direct_mem_enabled() || !instr || instr->op != HB_IR_CALL) return false;
     if (instr->src1.type != HB_OP_NONE) return false;
-    emit_mov_imm64(buf, 20, instr->guest_addr + instr->guest_len);
+    emit_mov_imm_compact(buf, 20, instr->guest_addr + instr->guest_len);
     emit_native_stack_push_x20(buf);
     emit_set_pc_imm64(buf, instr->target);
     return true;
@@ -1001,7 +1013,7 @@ static bool emit_cmp_zero_set_pc(hb_codegen_buffer_t* buf, hb_cc_t cc,
     if (cc != HB_CC_E && cc != HB_CC_NE) return false;
     emit_cmp_imm(buf, 22, 0);
     if (delta >= -4095 && delta <= 4095) {
-        emit_mov_imm64(buf, 21, fallthrough);
+        emit_mov_imm_compact(buf, 21, fallthrough);
         emit_bcond(buf, arm64_cond(cc) ^ 1, 8);
         if (delta >= 0) emit_add_imm(buf, 21, 21, (uint32_t)delta);
         else emit_sub_imm(buf, 21, 21, (uint32_t)(-delta));
@@ -1018,7 +1030,7 @@ static bool emit_cmp_zero_set_pc(hb_codegen_buffer_t* buf, hb_cc_t cc,
 }
 
 static void emit_set_pc_imm64(hb_codegen_buffer_t* buf, uint64_t pc) {
-    emit_mov_imm64(buf, 21, pc);
+    emit_mov_imm_compact(buf, 21, pc);
     emit_str_x(buf, 21, 19, (uint32_t)offsetof(hb_context_t, pc));
 }
 
@@ -2148,8 +2160,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             emit_mov_reg(buf, 0, 19);
             emit_call_helper(buf, (void*)hb_jit_helper_push);
             emit_return_if_helper_failed(buf);
-            emit_mov_imm64(buf, 20, instr->target);
-            emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, pc));
+            emit_set_pc_imm64(buf, instr->target);
             return HB_OK;
         }
 
@@ -2177,8 +2188,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
                 emit_return_if_helper_failed(buf);
                 return HB_OK;
             }
-            emit_mov_imm64(buf, 20, instr->target);
-            emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, pc));
+            emit_set_pc_imm64(buf, instr->target);
             return HB_OK;
         }
 

@@ -9,7 +9,7 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-06-01 01:06 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-06-01 01:12 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
 immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CMP imm + Jcc` immediate
@@ -33,9 +33,12 @@ now branches directly from the loaded value while preserving exact lazy CMP flag
 `0x87ef2ba32f8` `204 -> 172`. Latest run
 `run-20260601-010437-phase3-testimm-flags-jcc-jit/` preserves fallback/fault/unsupported-zero with
 cleanup/prune `0`; rank1 `TEST direct-memory, imm + Jcc` now branches from the ARM64 `ANDS` Z flag
-while preserving exact lazy TEST flags, shrinking `0x87ef2bf915f` `148 -> 144`. NEXT: continue the
-bulk JIT-codegen coverage lane from executed 64-byte hot evidence, favoring the remaining rank1
-OR/load/store/update tail fusion and post-rank3 XMM/default-copy tail. Keep
+while preserving exact lazy TEST flags, shrinking `0x87ef2bf915f` `148 -> 144`. Latest run
+`run-20260601-011102-phase3-zero-tail-subs-jit/` preserves fallback/fault/unsupported-zero with
+cleanup/prune `0`; the rank1 zero-arm tail now uses XZR/WZR zero stores and branches from `SUBS`,
+shrinking `0x87ef2bf9182` `204 -> 196`. NEXT: continue the bulk JIT-codegen coverage lane from
+executed 64-byte hot evidence, favoring the remaining rank1 OR/load/store/update tail fusion and
+post-rank3 XMM/default-copy tail. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

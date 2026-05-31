@@ -9,7 +9,7 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-06-01 01:16 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-06-01 01:35 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
 immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CMP imm + Jcc` immediate
@@ -20,7 +20,7 @@ direct-memory scalar/XMM `LOAD+STORE` same-register pairs now keep loaded values
 following store.
 Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
-`371 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+`372 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
 Mono/Unity code. Latest run `run-20260601-004957-phase3-rank3-prologue-init-test-jit/` preserves
 fallback/fault/unsupported-zero with cleanup/prune `0`; the full rank3
 `STORE/STORE/PUSH/SUB; STORE0/MOV/LEA; TEST/Jcc` block now fuses and shrinks `264 -> 200`. Previous
@@ -40,8 +40,12 @@ shrinking `0x87ef2bf9182` `204 -> 196`. Latest run
 `run-20260601-011514-phase3-rmw-resultonly-jit/` preserves fallback/fault/unsupported-zero with
 cleanup/prune `0`; direct-memory logical RMW now drops dead lhs/rhs scratch preservation for
 result-only lazy flags, but the rank1 OR arms stayed below the hot-entry cutoff so there is no
-top-12 movement to claim. NEXT: continue the bulk JIT-codegen coverage lane from executed 64-byte
-hot evidence, favoring rank1 branch-arm/tail CFG fusion and post-rank3 XMM/default-copy tail. Keep
+top-12 movement to claim. Latest run `run-20260601-013402-phase3-epilogue-ret-unset-jit/` preserves
+fallback/fault/unsupported-zero with cleanup/prune `0`; MSVC epilogue restore/return blocks now
+fuse for real lifted `MOV reg,[rsp+disp]` restores and unset no-imm `RET`, shrinking rank4
+`0x87ef2ba335c` `248 -> 108` and rank12 `0x87ef2bf9919` `236 -> 100`. NEXT: continue the bulk
+JIT-codegen coverage lane from executed 64-byte hot evidence, favoring rank1 branch-arm/tail CFG
+fusion and post-rank3 XMM/default-copy tail. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

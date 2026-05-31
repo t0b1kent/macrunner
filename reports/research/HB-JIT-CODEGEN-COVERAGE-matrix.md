@@ -62,6 +62,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - TEST-immediate memory branch specialization: direct-memory `HB_IR_TEST` with immediate feeding `E/NE Jcc` now uses ARM64 `ANDS` to produce the branch Z flag directly while still recording the exact lazy TEST result for later flag materialization. Tests: `engine/hyperbridge/tests/hb_test_runner` => `371 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-010437-phase3-testimm-flags-jcc-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank1 `0x87ef2bf915f` shrinks `148 -> 144`.
 - Zero-store count-down tail compaction: fused zero-store/update backedges now write zero through ARM64 `XZR/WZR` and use `SUBS` to feed the E/NE backedge branch while keeping the exact lazy SUB record. The same `SUBS` compaction applies to the copy-scan counted-loop guard. Tests: `engine/hyperbridge/tests/hb_test_runner` => `371 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-011102-phase3-zero-tail-subs-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank1 zero arm `0x87ef2bf9182` shrinks `204 -> 196`.
 - Direct logical RMW result-only compaction: direct-memory `HB_IR_AND/OR/XOR` now keeps only the memory address and result live for result-only lazy flag records, dropping dead lhs/rhs scratch preservation. Tests: `engine/hyperbridge/tests/hb_test_runner` => `371 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-011514-phase3-rmw-resultonly-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; the rank1 OR arms remained below the hot-entry cutoff, so no top-12 size movement is claimed.
+- Epilogue restore/return fusion: MSVC-style stack epilogues with two saved-reg restores, optional return-value `MOV`, `ADD rsp,frame`, `POP`, and no-imm `RET` now emit as one native block; no-imm `RET` accepts both explicit `HB_OP_NONE` and the zero-initialized unset operand shape produced by some builders. Tests: `engine/hyperbridge/tests/hb_test_runner` => `372 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-013402-phase3-epilogue-ret-unset-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank4 `0x87ef2ba335c` shrinks `248 -> 108` and rank12 `0x87ef2bf9919` shrinks `236 -> 100`.
 
 ## Matrix
 
@@ -108,11 +109,11 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_LOAD | yes | yes | native scalar/XMM direct-memory emit + adjacent scalar/XMM pair + helper fallback | yes |
 | HB_IR_STORE | yes | yes | native scalar/XMM direct-memory emit + adjacent scalar/XMM pair + helper fallback | yes |
 | HB_IR_PUSH | yes | yes | native direct-stack emit + helper fallback | yes |
-| HB_IR_POP | yes | yes | native direct-stack emit + helper fallback | yes |
+| HB_IR_POP | yes | yes | native direct-stack emit + epilogue restore fusion + helper fallback | yes |
 | HB_IR_PUSHF | yes | yes | interp-helper codegen |  |
 | HB_IR_POPF | yes | yes | interp-helper codegen |  |
 | HB_IR_CALL | yes | yes | native direct-call stack push + helper fallback | yes |
-| HB_IR_RET | yes | yes | native direct-stack emit + helper fallback | yes |
+| HB_IR_RET | yes | yes | native direct-stack emit + no-imm unset operand support + epilogue fusion + helper fallback | yes |
 | HB_IR_JMP | yes | yes | C-helper codegen |  |
 | HB_IR_LOOP | yes | yes | C-helper codegen |  |
 | HB_IR_JRCXZ | yes | yes | C-helper codegen |  |

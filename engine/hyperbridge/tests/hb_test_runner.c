@@ -4451,6 +4451,80 @@ TEST(jit_x64_native_ret_stack_family) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_epilogue_restore_ret_block) {
+    uint64_t stack[8] = {0};
+    stack[4] = 0x1111222233334444ULL; /* saved rdi */
+    stack[5] = 0x777788889999aaa0ULL; /* return pc */
+    stack[6] = 0xaaaabbbbccccddddULL; /* saved rbx */
+    stack[7] = 0x123456789abcdef0ULL; /* saved rsi */
+
+    hb_ir_func_t* func = hb_ir_func_create(0x4500, 0);
+    ASSERT(func != NULL);
+    hb_ir_block_t* blk = hb_ir_block_create(0, 0x4500);
+    ASSERT(blk != NULL);
+    hb_ir_cfg_add_block(func->cfg, blk);
+    func->cfg->entry = blk;
+
+    hb_ir_builder_t* b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, blk);
+    hb_ir_instr_t* load_rbx = hb_ir_emit_mov(b, hb_ir_reg(HB_REG_RBX, HB_SIZE_64),
+                                             hb_ir_mem(HB_REG_RSP, HB_REG_COUNT, 1, 0x30, HB_SIZE_64));
+    hb_ir_instr_t* mov_rax = hb_ir_emit_mov(b, hb_ir_reg(HB_REG_RAX, HB_SIZE_64),
+                                            hb_ir_reg(HB_REG_RDI, HB_SIZE_64));
+    hb_ir_instr_t* load_rsi = hb_ir_emit_mov(b, hb_ir_reg(HB_REG_RSI, HB_SIZE_64),
+                                             hb_ir_mem(HB_REG_RSP, HB_REG_COUNT, 1, 0x38, HB_SIZE_64));
+    hb_ir_instr_t* add_rsp = hb_ir_emit_binop(b, HB_IR_ADD, hb_ir_reg(HB_REG_RSP, HB_SIZE_64),
+                                              hb_ir_reg(HB_REG_RSP, HB_SIZE_64),
+                                              hb_ir_imm(0x20, HB_SIZE_64));
+    hb_ir_instr_t* pop_rdi = hb_ir_emit_pop(b, hb_ir_reg(HB_REG_RDI, HB_SIZE_64));
+    hb_ir_instr_t* ret = hb_ir_emit_ret(b);
+    ASSERT(load_rbx && mov_rax && load_rsi && add_rsp && pop_rdi && ret);
+    load_rbx->guest_addr = 0x4500; load_rbx->guest_len = 5;
+    mov_rax->guest_addr = 0x4505; mov_rax->guest_len = 3;
+    load_rsi->guest_addr = 0x4508; load_rsi->guest_len = 5;
+    add_rsp->guest_addr = 0x450d; add_rsp->guest_len = 4;
+    pop_rdi->guest_addr = 0x4511; pop_rdi->guest_len = 1;
+    ret->guest_addr = 0x4512; ret->guest_len = 1;
+    hb_ir_builder_destroy(b);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)stack, sizeof(stack),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = 0x4500;
+    ctx->regs.x64.rsp = (uint64_t)(uintptr_t)&stack[0];
+    ctx->regs.x64.rdi = 0x0ddc0ffeec0ffee0ULL;
+
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->pc == stack[5]);
+    ASSERT(ctx->regs.x64.rsp == (uint64_t)(uintptr_t)&stack[6]);
+    ASSERT(ctx->regs.x64.rbx == stack[6]);
+    ASSERT(ctx->regs.x64.rsi == stack[7]);
+    ASSERT(ctx->regs.x64.rdi == stack[4]);
+    ASSERT(ctx->regs.x64.rax == 0x0ddc0ffeec0ffee0ULL);
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(512);
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    ASSERT(code_buf->size <= 180);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(jit_commit_verify_failure_not_marked_executable) {
     hb_jit_buffer_t* buf = hb_jit_buffer_create(4096);
     ASSERT(buf != NULL);
@@ -16284,6 +16358,7 @@ int main(int argc, char** argv) {
     test_jit_push_pop();
     test_jit_x64_native_stack_push_pop_family();
     test_jit_x64_native_ret_stack_family();
+    test_jit_x64_native_epilogue_restore_ret_block();
     test_jit_commit_verify_failure_not_marked_executable();
     test_jit_load_unmapped_faults();
     test_jit_store_unmapped_faults();

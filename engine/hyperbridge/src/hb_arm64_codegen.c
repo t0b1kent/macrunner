@@ -248,6 +248,12 @@ static bool is_xmm_reg_operand(const hb_ir_operand_t* op) {
            op->size == HB_SIZE_128;
 }
 
+static bool operand_is_none_or_unset(const hb_ir_operand_t* op) {
+    return op && (op->type == HB_OP_NONE ||
+                  (op->type == HB_OP_REG && op->size == 0 &&
+                   op->reg == 0 && op->reg_offset == 0));
+}
+
 static bool jit_direct_mem_enabled(void) {
     const char* val = getenv("MACRUNNER_HB_JIT_DIRECT_MEM");
     return val && val[0] && val[0] != '0';
@@ -731,6 +737,22 @@ static bool stack_store_reg64_at(const hb_ir_instr_t* instr, int64_t disp) {
            instr->src2.type == HB_OP_REG && instr->src2.size == HB_SIZE_64;
 }
 
+static bool stack_load_reg64(const hb_ir_instr_t* instr, hb_reg_t* dst, uint32_t* disp) {
+    int64_t d;
+    if (!instr || (instr->op != HB_IR_LOAD && instr->op != HB_IR_MOV) ||
+        !is_plain_gpr_reg_operand(&instr->dst) || instr->dst.size != HB_SIZE_64 ||
+        instr->src1.type != HB_OP_MEM || instr->src1.size != HB_SIZE_64 ||
+        instr->src1.mem.base != HB_REG_RSP || instr->src1.mem.index != HB_REG_COUNT ||
+        instr->src1.mem.scale != 1 || instr->src1.mem.segment != 0 ||
+        instr->src1.mem.addr32)
+        return false;
+    d = instr->src1.mem.disp;
+    if (d < 0 || d > 32760 || (d & 7)) return false;
+    if (dst) *dst = instr->dst.reg;
+    if (disp) *disp = (uint32_t)d;
+    return true;
+}
+
 static void emit_load_xmm_to_x20_x22(hb_codegen_buffer_t* buf, hb_reg_t reg) {
     uint32_t off = x64_xmm_reg_off(reg);
     emit_ldr_x(buf, 20, 19, off);
@@ -900,7 +922,7 @@ static bool emit_native_ret(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr
     if (instr->src1.type == HB_OP_IMM) {
         adjust = (uint64_t)instr->src1.imm;
         if (adjust > 4095) return false;
-    } else if (instr->src1.type != HB_OP_NONE) {
+    } else if (!operand_is_none_or_unset(&instr->src1)) {
         return false;
     }
     emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
@@ -1398,6 +1420,76 @@ static bool emit_prologue_local_init_test_block(hb_codegen_buffer_t* buf,
     emit_mov_reg(buf, 22, 20);
     emit_note_lazy_from_x20_x21_x22(buf, HB_LAZY_FLAGS_TEST, test->src1.size);
     return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+}
+
+static bool emit_epilogue_restore_ret_block(hb_codegen_buffer_t* buf,
+                                            const hb_ir_block_t* block) {
+    const hb_ir_instr_t *load1, *maybe_mov, *load2, *add_rsp, *pop, *ret;
+    hb_reg_t load1_reg, load2_reg;
+    uint32_t load1_disp, load2_disp;
+    uint64_t frame, ret_adjust = 0, final_adjust;
+    size_t idx = 0;
+    if (!jit_direct_mem_enabled() || !block ||
+        (block->instr_count != 5 && block->instr_count != 6))
+        return false;
+
+    load1 = &block->instrs[idx++];
+    if (!stack_load_reg64(load1, &load1_reg, &load1_disp)) return false;
+
+    maybe_mov = NULL;
+    load2 = &block->instrs[idx++];
+    if (block->instr_count == 6) {
+        maybe_mov = load2;
+        load2 = &block->instrs[idx++];
+        if (maybe_mov->op != HB_IR_MOV ||
+            !is_plain_gpr_reg_operand(&maybe_mov->dst) ||
+            !is_plain_gpr_reg_operand(&maybe_mov->src1) ||
+            maybe_mov->dst.size != HB_SIZE_64 || maybe_mov->src1.size != HB_SIZE_64)
+            return false;
+    }
+    if (!stack_load_reg64(load2, &load2_reg, &load2_disp)) return false;
+
+    add_rsp = &block->instrs[idx++];
+    pop = &block->instrs[idx++];
+    ret = &block->instrs[idx++];
+    if (add_rsp->op != HB_IR_ADD ||
+        !is_plain_gpr_reg_operand(&add_rsp->dst) ||
+        !is_plain_gpr_reg_operand(&add_rsp->src1) ||
+        add_rsp->dst.reg != HB_REG_RSP || add_rsp->src1.reg != HB_REG_RSP ||
+        add_rsp->dst.size != HB_SIZE_64 || add_rsp->src1.size != HB_SIZE_64 ||
+        add_rsp->src2.type != HB_OP_IMM || add_rsp->src2.imm < 0)
+        return false;
+    frame = (uint64_t)add_rsp->src2.imm;
+    if (frame > 4095 || (frame & 7)) return false;
+    if (pop->op != HB_IR_POP || !is_plain_gpr_reg_operand(&pop->dst) ||
+        pop->dst.size != HB_SIZE_64)
+        return false;
+    if (ret->op != HB_IR_RET) return false;
+    if (ret->src1.type == HB_OP_IMM) {
+        if (ret->src1.imm < 0) return false;
+        ret_adjust = (uint64_t)ret->src1.imm;
+    } else if (!operand_is_none_or_unset(&ret->src1)) {
+        return false;
+    }
+    final_adjust = frame + 16 + ret_adjust;
+    if (final_adjust > 4095) return false;
+
+    emit_ldr_x(buf, 20, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+    emit_ldr_x(buf, 21, 20, load1_disp);
+    emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(load1_reg));
+    if (maybe_mov) {
+        emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(maybe_mov->src1.reg));
+        emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(maybe_mov->dst.reg));
+    }
+    emit_ldr_x(buf, 21, 20, load2_disp);
+    emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(load2_reg));
+    emit_ldr_x(buf, 21, 20, (uint32_t)frame);
+    emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(pop->dst.reg));
+    emit_ldr_x(buf, 22, 20, (uint32_t)(frame + 8));
+    emit_add_imm(buf, 20, 20, (uint32_t)final_adjust);
+    emit_str_x(buf, 20, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+    emit_str_x(buf, 22, 19, (uint32_t)offsetof(hb_context_t, pc));
+    return true;
 }
 
 static bool emit_mov_lea_same_base_pair(hb_codegen_buffer_t* buf,
@@ -3522,6 +3614,10 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         return HB_OK;
     }
     if (emit_prologue_local_init_test_block(out, block)) {
+        emit_epilogue(out);
+        return HB_OK;
+    }
+    if (emit_epilogue_restore_ret_block(out, block)) {
         emit_epilogue(out);
         return HB_OK;
     }

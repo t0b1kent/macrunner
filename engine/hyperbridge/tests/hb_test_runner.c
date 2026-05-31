@@ -9412,7 +9412,7 @@ TEST(jit_x64_native_scalar_mov_family) {
     ASSERT(code_buf != NULL && cg != NULL);
     ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
     restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
-    ASSERT(code_buf->size <= 232);
+    ASSERT(code_buf->size <= 220);
     hb_arm64_codegen_destroy(cg);
     hb_codegen_buffer_destroy(code_buf);
 
@@ -9470,7 +9470,7 @@ TEST(jit_x64_native_store_imm_compact_family) {
     ASSERT(code_buf != NULL && cg != NULL);
     ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
     restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
-    ASSERT(code_buf->size <= 120);
+    ASSERT(code_buf->size <= 112);
     hb_arm64_codegen_destroy(cg);
     hb_codegen_buffer_destroy(code_buf);
 

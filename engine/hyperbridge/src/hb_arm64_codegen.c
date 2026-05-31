@@ -108,6 +108,12 @@ static void emit_str_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
     emit_u32(buf, 0xb9000000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
+static void emit_stp_x(hb_codegen_buffer_t* buf, int rt, int rt2, int rn, uint32_t off) {
+    /* STP Xt1, Xt2, [Xn, #off] — off must be multiple of 8 and fit imm7. */
+    uint32_t imm7 = (off / 8) & 0x7f;
+    emit_u32(buf, 0xa9000000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt);
+}
+
 static void emit_strb_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
     /* STRB Wt, [Xn, #off] */
     emit_u32(buf, 0x39000000 | ((off & 0xfff) << 10) | (rn << 5) | rt);
@@ -534,11 +540,9 @@ static void emit_note_lazy_from_x20_x21_x22(hb_codegen_buffer_t* buf,
     emit_str_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, kind));
     emit_mov_imm_compact(buf, 23, (uint64_t)width);
     emit_strb_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, width));
-    emit_str_x(buf, 20, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, lhs));
-    emit_str_x(buf, 21, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, rhs));
-    emit_str_x(buf, 22, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, result));
+    emit_stp_x(buf, 20, 21, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, lhs));
     emit_mov_imm_compact(buf, 23, 0);
-    emit_str_x(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, count));
+    emit_stp_x(buf, 22, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, result));
     emit_mov_imm_compact(buf, 23, valid);
     emit_str_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, valid_mask));
     emit_mov_imm_compact(buf, 23, HB_FLAG_BIT_ALL & ~valid);
@@ -555,11 +559,9 @@ static void emit_note_lazy_cmp_from_x23_x22_x21(hb_codegen_buffer_t* buf, hb_siz
     emit_str_w(buf, 20, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, kind));
     emit_mov_imm_compact(buf, 20, (uint64_t)width);
     emit_strb_w(buf, 20, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, width));
-    emit_str_x(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, lhs));
-    emit_str_x(buf, 22, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, rhs));
-    emit_str_x(buf, 21, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, result));
+    emit_stp_x(buf, 23, 22, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, lhs));
     emit_mov_imm_compact(buf, 20, 0);
-    emit_str_x(buf, 20, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, count));
+    emit_stp_x(buf, 21, 20, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, result));
     emit_mov_imm_compact(buf, 20, HB_FLAG_BIT_ALL);
     emit_str_w(buf, 20, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, valid_mask));
     emit_mov_imm_compact(buf, 20, 0);

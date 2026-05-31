@@ -562,6 +562,11 @@ static uint32_t lazy_valid_mask_for_kind(hb_lazy_flags_kind_t kind) {
     }
 }
 
+static bool lazy_kind_result_only(hb_lazy_flags_kind_t kind) {
+    return kind == HB_LAZY_FLAGS_AND || kind == HB_LAZY_FLAGS_OR ||
+           kind == HB_LAZY_FLAGS_XOR || kind == HB_LAZY_FLAGS_TEST;
+}
+
 static bool lazy_kind_for_scalar_op(hb_ir_op_t op, hb_lazy_flags_kind_t* out) {
     if (!out) return false;
     switch (op) {
@@ -587,7 +592,8 @@ static void emit_note_lazy_from_x20_x21_x22(hb_codegen_buffer_t* buf,
     emit_str_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, kind));
     emit_mov_imm_compact(buf, 23, (uint64_t)width);
     emit_strb_w(buf, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, width));
-    emit_stp_x(buf, 20, 21, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, lhs));
+    if (!lazy_kind_result_only(kind))
+        emit_stp_x(buf, 20, 21, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, lhs));
     emit_mov_imm_compact(buf, 23, 0);
     emit_stp_x(buf, 22, 23, 19, lazy_off + (uint32_t)offsetof(hb_lazy_flags_t, result));
     emit_mov_imm_compact(buf, 23, valid);

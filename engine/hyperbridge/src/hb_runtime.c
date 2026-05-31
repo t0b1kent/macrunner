@@ -1,5 +1,6 @@
 #include "hb_runtime.h"
 #include "hb_codegen.h"
+#include "hb_memory.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,8 +29,9 @@ static hb_block_cache_entry_t* block_cache_find(hb_block_cache_t* cache, uint64_
     return NULL;
 }
 
-static void block_cache_put(hb_block_cache_t* cache, uint64_t addr, uint8_t* code, size_t size, uint32_t steps) {
-    if (!cache) return;
+static hb_block_cache_entry_t* block_cache_put(hb_block_cache_t* cache, uint64_t addr, uint8_t* code,
+                                               size_t size, uint32_t steps) {
+    if (!cache) return NULL;
     size_t idx = block_cache_hash(addr);
     for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++) {
         size_t probe = (idx + i) & (HB_BLOCK_CACHE_SIZE - 1);
@@ -38,17 +40,19 @@ static void block_cache_put(hb_block_cache_t* cache, uint64_t addr, uint8_t* cod
             cache->entries[probe].native_code = code;
             cache->entries[probe].native_size = size;
             cache->entries[probe].steps = steps;
+            cache->entries[probe].hit_count = 0;
             cache->entries[probe].valid = true;
-            return;
+            return &cache->entries[probe];
         }
         if (cache->entries[probe].guest_addr == addr) {
             /* Update existing entry */
             cache->entries[probe].native_code = code;
             cache->entries[probe].native_size = size;
             cache->entries[probe].steps = steps;
-            return;
+            return &cache->entries[probe];
         }
     }
+    return NULL;
 }
 
 static int trace_jit_blocks_enabled(void) {
@@ -114,6 +118,89 @@ static void trace_jit_block(uint64_t guest_pc, const uint8_t* native, size_t nat
                     (void*)(uintptr_t)instr->guest_addr, (unsigned)instr->op,
                     (void*)(uintptr_t)instr->target, (unsigned)instr->guest_len);
         }
+    }
+    fflush(stderr);
+}
+
+static int trace_jit_hot_blocks_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_HOT_BLOCKS");
+        cached = env && *env && *env != '0';
+    }
+    return cached;
+}
+
+static uint64_t trace_jit_hot_interval(void) {
+    static int parsed;
+    static uint64_t interval;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_HOT_BLOCK_INTERVAL");
+        interval = env && *env ? strtoull(env, NULL, 0) : 500000ULL;
+        if (interval < 1000ULL) interval = 1000ULL;
+        parsed = 1;
+    }
+    return interval;
+}
+
+static int trace_jit_hot_bytes_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_HOT_BYTES");
+        cached = env && *env && *env != '0';
+    }
+    return cached;
+}
+
+static void trace_jit_hot_guest_bytes(hb_context_t* ctx, uint64_t guest_addr) {
+    uint8_t byte;
+    if (!trace_jit_hot_bytes_enabled() || !ctx || !ctx->memory) return;
+    fprintf(stderr, " bytes=");
+    for (size_t i = 0; i < 16; i++) {
+        if (hb_memory_read_u8(ctx->memory, (hb_gva_t)(guest_addr + i), &byte) != HB_OK) {
+            fprintf(stderr, "%s??", i ? " " : "");
+            break;
+        }
+        fprintf(stderr, "%s%02x", i ? " " : "", byte);
+    }
+}
+
+static void trace_jit_hot_block_tick(hb_jit_runtime_t* rt, hb_block_cache_entry_t* entry) {
+    const size_t top_count = 12;
+    hb_block_cache_entry_t* top[12] = {0};
+
+    if (!rt || !entry || !trace_jit_hot_blocks_enabled()) return;
+    entry->hit_count++;
+    rt->hot_trace_blocks++;
+    if (!rt->hot_trace_next)
+        rt->hot_trace_next = trace_jit_hot_interval();
+    if (rt->hot_trace_blocks < rt->hot_trace_next) return;
+    rt->hot_trace_next += trace_jit_hot_interval();
+
+    for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++) {
+        hb_block_cache_entry_t* candidate = &rt->block_cache->entries[i];
+        if (!candidate->valid || !candidate->hit_count) continue;
+        for (size_t j = 0; j < top_count; j++) {
+            if (!top[j] || candidate->hit_count > top[j]->hit_count) {
+                for (size_t k = top_count - 1; k > j; k--) top[k] = top[k - 1];
+                top[j] = candidate;
+                break;
+            }
+        }
+    }
+
+    fprintf(stderr, "macrunner-hb-jit-hot-blocks: total=%llu interval=%llu used=%zu\n",
+            (unsigned long long)rt->hot_trace_blocks,
+            (unsigned long long)trace_jit_hot_interval(),
+            rt->jit_mem ? rt->jit_mem->used : 0);
+    for (size_t i = 0; i < top_count && top[i]; i++) {
+        fprintf(stderr, "macrunner-hb-jit-hot-block: rank=%zu guest=%p hits=%llu native=%p "
+                "size=%zu steps=%u",
+                i + 1, (void*)(uintptr_t)top[i]->guest_addr,
+                (unsigned long long)top[i]->hit_count,
+                top[i]->native_code, top[i]->native_size, top[i]->steps);
+        trace_jit_hot_guest_bytes(rt->ctx, top[i]->guest_addr);
+        fprintf(stderr, "\n");
     }
     fflush(stderr);
 }
@@ -226,6 +313,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             typedef void (*jit_block_t)(hb_context_t*);
             jit_block_t exec = (jit_block_t)(void*)cached->native_code;
             exec(ctx);
+            trace_jit_hot_block_tick(rt, cached);
             steps += cached->steps;
         } else {
             /* Compile block into codegen buffer */
@@ -273,13 +361,15 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             if (r != HB_OK) return r;
 
             /* Store in block cache */
-            block_cache_put(rt->block_cache, ctx->pc, dest, emitted_size, (uint32_t)block->instr_count);
+            cached = block_cache_put(rt->block_cache, ctx->pc, dest, emitted_size,
+                                     (uint32_t)block->instr_count);
             trace_jit_block(ctx->pc, dest, emitted_size, block);
 
             /* Execute */
             typedef void (*jit_block_t)(hb_context_t*);
             jit_block_t exec = (jit_block_t)(void*)dest;
             exec(ctx);
+            trace_jit_hot_block_tick(rt, cached);
             steps += block->instr_count;
         }
         if (ctx->last_result != HB_OK) {

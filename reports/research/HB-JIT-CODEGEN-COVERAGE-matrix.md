@@ -24,7 +24,8 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - JIT fallback evidence: `macrunner-hb-jit-fallback=0`, `JIT codegen failed=0`, `JIT helper fault=0`, `UNSUPPORTED_OPCODE=0`, `MEMORY_FAULT=0`, `runtime-fail=0`, `JIT buffer exhausted=0`.
 - Progress: Unity memory setup and Mono paths reached; 7,955 JIT blocks traced; no game window yet.
 - Sample evidence: main macOS thread is in `CFRunLoop`; seven `AssetGarbageCollectorHelper` workers are in `NtWaitForSingleObject`; the active x64 guest stack is dominated by UnityPlayer guest PC `0x7ffd07cc548` (module base `0x7ffd0340000`, RVA `0x48c548`, epilogue of a UnityPlayer helper). Sampled PCs did not map to JIT native block ranges, so the next probe should focus on guest-stack/UnityPlayer ownership rather than missing codegen fallback.
-- Next blocker: preserve loader-gated explicit-JIT fallback-zero and identify UnityPlayer/Mono post-bootstrap CPU ownership. Wait semantics are not the current evidence-backed fix target: `run-20260531-175000-phase3-wait-resume-trace/` showed suspended workers resume successfully and then wait on companion handles.
+- Hot-block probe: `run-20260531-192827-phase3-loader-jit-hotbytes/` preserved fallback-zero and emitted top dynamic Mono code heap blocks around `0x87ef...`. Decoded bytes show helper-heavy string-scan loops, e.g. `inc rax; cmp byte/word [base+index], 0/value; jne self`, plus small `jmp rax` thunks.
+- Next blocker: preserve loader-gated explicit-JIT fallback-zero and promote the hot scalar loop family (`ADD/CMP-or-TEST/Jcc`, byte/word memory compare, self-branch) from helper-heavy codegen to native ARM64. Wait semantics are not the current evidence-backed fix target: `run-20260531-175000-phase3-wait-resume-trace/` showed suspended workers resume successfully and then wait on companion handles.
 
 ## Matrix
 

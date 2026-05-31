@@ -35,6 +35,7 @@ typedef struct {
     uint8_t* native_code;
     size_t native_size;
     uint32_t steps;
+    uint64_t hit_count;
     bool valid;
 } hb_block_cache_entry_t;
 
@@ -50,6 +51,8 @@ typedef struct {
     hb_context_t* ctx;
     hb_jit_buffer_t* jit_mem;
     hb_block_cache_t* block_cache;
+    uint64_t hot_trace_blocks;
+    uint64_t hot_trace_next;
 } hb_jit_runtime_t;
 
 hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx);

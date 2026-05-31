@@ -59,10 +59,15 @@ the absolute path; do NOT copy 600M into the repo.
   `runtime-fail`. Samples show the main macOS thread in `CFRunLoop`, seven
   `AssetGarbageCollectorHelper` workers in `NtWaitForSingleObject`, and the active x64 guest stack
   dominated by UnityPlayer guest PC `0x7ffd07cc548` (module base `0x7ffd0340000`, RVA `0x48c548`,
-  epilogue of a UnityPlayer helper). No game window yet. Do not patch wait semantics
-  speculatively: `run-20260531-175000-phase3-wait-resume-trace/` showed suspended workers resume
-  successfully and then idle on companion waits. Next evidence pass should identify the
-  UnityPlayer/Mono post-bootstrap CPU path while preserving loader-gated explicit-JIT fallback-zero.
+  epilogue of a UnityPlayer helper). A follow-up hot-block probe
+  (`run-20260531-192827-phase3-loader-jit-hotbytes/`) kept fallback-zero and identified the actual
+  helper-heavy throughput pattern: dynamic Mono code heap blocks around `0x87ef...` running
+  byte/word string-scan loops such as `inc rax; cmp byte/word [base+index], 0/value; jne self`.
+  No game window yet. Do not patch wait semantics speculatively:
+  `run-20260531-175000-phase3-wait-resume-trace/` showed suspended workers resume successfully and
+  then idle on companion waits. Next codegen pass should promote the hot scalar loop family
+  (`ADD/CMP-or-TEST/Jcc`, byte/word memory compare, self-branch) away from helper-heavy codegen
+  while preserving loader-gated explicit-JIT fallback-zero.
 - **Phase 3 gate still NOT passed:** no main menu, input, audio, or rendered frame yet; latest
   screenshots are desktop-only with no game window.
 - **Run hygiene:** `scripts/mr-run.sh` for runs, `scripts/mr-clean.sh --prune` after each batch.
@@ -77,11 +82,12 @@ fallbacks on the Hollow Knight hot path to zero. Deliverable:
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md`. See "★ PRIORITY INSERT #2 — BULK JIT CODEGEN
 COVERAGE" in the program doc.
 
-Status 2026-05-31 19:10: first bulk pass published in
+Status 2026-05-31 19:30: first bulk pass published in
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md`; loader-gated explicit-JIT Hollow Knight run
-(`run-20260531-190238-phase3-loader-jit-blockmap-sampled/`) shows fallback-zero after the MAP_JIT
-W^X fix. Keep promoting helper-backed hot IR to native emit when profiling proves a hot path, but
-do not regress the `MACRUNNER_HB_X64_LOADER=1 MACRUNNER_HB_BACKEND=jit` fallback-zero gate.
+(`run-20260531-192827-phase3-loader-jit-hotbytes/`) shows fallback-zero after the MAP_JIT W^X fix
+and identifies hot dynamic Mono string-scan loops. Promote helper-backed scalar `ADD/CMP/Jcc`
+loop blocks to native emit first; do not regress the
+`MACRUNNER_HB_X64_LOADER=1 MACRUNNER_HB_BACKEND=jit` fallback-zero gate.
 
 ### ★ ALSO ACTIVE (parallel) — BULK ISA COVERAGE (operator-directed 2026-05-31)
 Stop chasing one opcode per game-run. Proactively cover the whole x86-64 ISA using the

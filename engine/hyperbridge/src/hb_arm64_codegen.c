@@ -2201,8 +2201,9 @@ static bool emit_direct_logic_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t*
     return true;
 }
 
-static bool emit_direct_arith_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
-    hb_lazy_flags_kind_t kind;
+static bool emit_direct_arith_rmw_impl(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr,
+                                       bool record_flags) {
+    hb_lazy_flags_kind_t kind = HB_LAZY_FLAGS_ADD;
     if (!instr || (instr->op != HB_IR_ADD && instr->op != HB_IR_SUB))
         return false;
     if (!same_mem_operand(&instr->dst, &instr->src1)) return false;
@@ -2215,7 +2216,7 @@ static bool emit_direct_arith_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t*
     } else if (instr->src2.type != HB_OP_IMM) {
         return false;
     }
-    if (!lazy_kind_for_scalar_op(instr->op, &kind)) return false;
+    if (record_flags && !lazy_kind_for_scalar_op(instr->op, &kind)) return false;
 
     emit_direct_mem_addr(buf, &instr->dst);
     emit_mov_reg(buf, 0, 21);
@@ -2238,16 +2239,37 @@ static bool emit_direct_arith_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t*
     }
     emit_mask_x_reg_to_size(buf, 22, 23, instr->dst.size);
 
-    emit_mov_reg(buf, 9, 20);
-    emit_mov_reg(buf, 10, 21);
-    emit_mov_reg(buf, 21, 0);
-    emit_mov_reg(buf, 20, 22);
-    emit_direct_mem_store_from_x20(buf, instr->dst.size);
-    emit_mov_reg(buf, 20, 9);
-    emit_mov_reg(buf, 21, 10);
-
-    emit_note_lazy_from_x20_x21_x22(buf, kind, instr->dst.size);
+    if (record_flags) {
+        emit_mov_reg(buf, 9, 20);
+        emit_mov_reg(buf, 10, 21);
+        emit_mov_reg(buf, 21, 0);
+        emit_mov_reg(buf, 20, 22);
+        emit_direct_mem_store_from_x20(buf, instr->dst.size);
+        emit_mov_reg(buf, 20, 9);
+        emit_mov_reg(buf, 21, 10);
+        emit_note_lazy_from_x20_x21_x22(buf, kind, instr->dst.size);
+    } else {
+        emit_mov_reg(buf, 21, 0);
+        emit_mov_reg(buf, 20, 22);
+        emit_direct_mem_store_from_x20(buf, instr->dst.size);
+    }
     return true;
+}
+
+static bool emit_direct_arith_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    return emit_direct_arith_rmw_impl(buf, instr, true);
+}
+
+static bool emit_arith_rmw_dead_flags_test_jcc(hb_codegen_buffer_t* buf, const hb_ir_instr_t* rmw,
+                                               const hb_ir_instr_t* test,
+                                               const hb_ir_instr_t* jcc) {
+    if (!rmw || (rmw->op != HB_IR_ADD && rmw->op != HB_IR_SUB)) return false;
+    if (!test || test->op != HB_IR_TEST || !same_plain_gpr_operand(&test->src1, &test->src2))
+        return false;
+    if (!jcc || jcc->op != HB_IR_Jcc || (jcc->cc != HB_CC_E && jcc->cc != HB_CC_NE))
+        return false;
+    if (!emit_direct_arith_rmw_impl(buf, rmw, false)) return false;
+    return emit_test_same_reg_jcc_pair(buf, test, jcc);
 }
 
 /* JIT helper declarations (implemented below) */
@@ -3860,6 +3882,12 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         return HB_OK;
     }
     for (size_t i = 0; i < block->instr_count; i++) {
+        if (i + 2 < block->instr_count &&
+            emit_arith_rmw_dead_flags_test_jcc(out, &block->instrs[i], &block->instrs[i + 1],
+                                               &block->instrs[i + 2])) {
+            i += 2;
+            continue;
+        }
         if (i + 3 < block->instr_count &&
             emit_stack_spill_push_sub_prologue(out, &block->instrs[i], &block->instrs[i + 1],
                                                &block->instrs[i + 2], &block->instrs[i + 3])) {

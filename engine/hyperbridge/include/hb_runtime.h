@@ -38,7 +38,7 @@ typedef struct {
     bool valid;
 } hb_block_cache_entry_t;
 
-#define HB_BLOCK_CACHE_SIZE 256
+#define HB_BLOCK_CACHE_SIZE 16384
 
 /* In-memory block cache */
 typedef struct {

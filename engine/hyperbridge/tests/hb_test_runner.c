@@ -2588,7 +2588,7 @@ TEST(decode_x86_bit_scan_family) {
     ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RDI && d.op2.size == 4);
 
     ASSERT(hb_decode_x86(bsf_sibling, sizeof(bsf_sibling), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_TZCNT);
+    ASSERT(d.opcode == HB_INS_BSF);
     ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 4);
     ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RAX && d.op2.size == 4);
 
@@ -2621,7 +2621,7 @@ TEST(interp_x86_bit_scan_family) {
     const uint32_t code_base = 0x00407500u;
     uint8_t code[] = {
         0x0f, 0xbd, 0xd7, /* bsr edi, edx */
-        0x0f, 0xbc, 0xc8, /* bsf eax, ecx, normalized through TZCNT */
+        0x0f, 0xbc, 0xc8, /* bsf eax, ecx */
         0xf3, 0x0f, 0xbc, 0xc8, /* tzcnt eax, ecx */
         0xf3, 0x0f, 0xbd, 0xc3  /* lzcnt ebx, eax */
     };
@@ -4214,6 +4214,80 @@ TEST(jit_call_push_fault_preserves_pc) {
     ASSERT(out.faulted);
     ASSERT(ctx->pc == 0x1000);
     ASSERT(ctx->regs.x64.rsp == 0x70000000);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_indirect_call_memory_reads_target) {
+    uint8_t code[16] = {
+        0xff, 0x15, 0x02, 0x00, 0x00, 0x00, /* callq *0x2(%rip) */
+        0x90, 0x90
+    };
+    uint64_t target = 0x123456789abcdef0ULL;
+    uint8_t stack_buf[64] __attribute__((aligned(16)));
+    uint64_t ret_addr = 0;
+    uint64_t base = (uint64_t)(uintptr_t)code;
+    memcpy(code + 8, &target, sizeof(target));
+    memset(stack_buf, 0, sizeof(stack_buf));
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)stack_buf, sizeof(stack_buf),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rsp = (uint64_t)(uintptr_t)(stack_buf + 32);
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->pc == target);
+    ASSERT(ctx->regs.x64.rsp == (uint64_t)(uintptr_t)(stack_buf + 24));
+    ASSERT(hb_memory_read_u64(ctx->memory, ctx->regs.x64.rsp, &ret_addr) == HB_OK);
+    ASSERT(ret_addr == base + 6);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_indirect_jmp_register_reads_target) {
+    uint8_t code[] = {0xff, 0xe0}; /* jmpq *%rax */
+    uint64_t base = (uint64_t)(uintptr_t)code;
+    uint64_t target = 0x20000000ULL;
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rax = target;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->pc == target);
 
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
@@ -9812,6 +9886,13 @@ TEST(interp_x64_bsr_r64_notepadpp) {
     ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 8);
     ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RAX && d.op2.size == 8);
 
+    uint8_t bsf_code[] = {0x0f, 0xbc, 0xc8}; /* bsf %eax, %ecx */
+    ASSERT(hb_decode_x64(bsf_code, sizeof(bsf_code), (uint64_t)(uintptr_t)bsf_code, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_BSF);
+    ASSERT(d.len == 3);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 4);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RAX && d.op2.size == 4);
+
     hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
     hb_ir_func_t* func = NULL;
     ASSERT(dec != NULL);
@@ -9836,6 +9917,298 @@ TEST(interp_x64_bsr_r64_notepadpp) {
     ASSERT(ctx->regs.x64.rcx == 12);
     ASSERT(ctx->regs.x64.rdx == 0xfeedface);
     ASSERT(ctx->flags.zf == true);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(interp_x64_bsf_zero_preserves_cmovne_guard) {
+    uint8_t code[] = {
+        0x0f, 0xbc, 0xc8, /* bsf %eax, %ecx */
+        0x0f, 0x45, 0xd1  /* cmovne %ecx, %edx */
+    };
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rax = 0;
+    ctx->regs.x64.rcx = 0x12345678;
+    ctx->regs.x64.rdx = 0x55;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->regs.x64.rdx == 0x55);
+    ASSERT(ctx->flags.zf == true);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_bsf_zero_preserves_cmovne_guard) {
+    uint8_t code[] = {
+        0x0f, 0xbc, 0xc8, /* bsf %eax, %ecx */
+        0x0f, 0x45, 0xd1  /* cmovne %ecx, %edx */
+    };
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rax = 0;
+    ctx->regs.x64.rcx = 0x12345678;
+    ctx->regs.x64.rdx = 0x55;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->regs.x64.rdx == 0x55);
+    ASSERT(ctx->flags.zf == true);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_scalar_load_width_family) {
+    uint8_t code[] = {
+        0x8a, 0x03,             /* movb (%rbx), %al */
+        0x66, 0x8b, 0x11,       /* movw (%rcx), %dx */
+        0x8b, 0x75, 0x00        /* movl 0(%rbp), %esi */
+    };
+    uint8_t byte_value = 0xab;
+    uint16_t word_value = 0xcdef;
+    uint32_t dword_value = 0x12345678;
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&byte_value, sizeof(byte_value),
+                         HB_PERM_READ) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&word_value, sizeof(word_value),
+                         HB_PERM_READ) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&dword_value, sizeof(dword_value),
+                         HB_PERM_READ) == HB_OK);
+
+    ctx->pc = base;
+    ctx->regs.x64.rax = 0x1122334455667700ULL;
+    ctx->regs.x64.rdx = 0x8877665544330000ULL;
+    ctx->regs.x64.rsi = 0xffffffffffffffffULL;
+    ctx->regs.x64.rbx = (uint64_t)(uintptr_t)&byte_value;
+    ctx->regs.x64.rcx = (uint64_t)(uintptr_t)&word_value;
+    ctx->regs.x64.rbp = (uint64_t)(uintptr_t)&dword_value;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->regs.x64.rax == 0x11223344556677abULL);
+    ASSERT(ctx->regs.x64.rdx == 0x887766554433cdefULL);
+    ASSERT(ctx->regs.x64.rsi == 0x12345678ULL);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_scalar_memory_segment_family) {
+    uint8_t code[] = {
+        0x65, 0x48, 0x8b, 0x04, 0x25, 0x58, 0x00, 0x00, 0x00, /* movq %gs:0x58, %rax */
+        0x65, 0x89, 0x0c, 0x25, 0x60, 0x00, 0x00, 0x00        /* movl %ecx, %gs:0x60 */
+    };
+    uint8_t teb_area[0x80] = {0};
+    uint64_t loaded = 0x0123456789abcdefULL;
+    uint32_t stored = 0;
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    memcpy(teb_area + 0x58, &loaded, sizeof(loaded));
+    memcpy(teb_area + 0x60, &stored, sizeof(stored));
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)teb_area, sizeof(teb_area),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+
+    ctx->pc = base;
+    ctx->gs_base = (uint64_t)(uintptr_t)teb_area;
+    ctx->regs.x64.rax = 0;
+    ctx->regs.x64.rcx = 0xaabbccddULL;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->regs.x64.rax == loaded);
+    memcpy(&stored, teb_area + 0x60, sizeof(stored));
+    ASSERT(stored == 0xaabbccddu);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_direct_user_memory_fast_path_family) {
+    uint8_t code[] = {
+        0x43, 0x8a, 0x04, 0x08, /* movb (%r8,%r9), %al */
+        0x41, 0x88, 0x01        /* movb %al, (%r9) */
+    };
+    uint8_t src[4] = {0x10, 0x20, 0x7b, 0x40};
+    uint8_t dst[4] = {0xaa, 0xbb, 0xcc, 0xdd};
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+
+    ctx->pc = base;
+    ctx->regs.x64.rax = 0x1122334455667700ULL;
+    ctx->regs.x64.r9 = (uint64_t)(uintptr_t)&dst[1];
+    ctx->regs.x64.r8 = (uint64_t)(uintptr_t)&src[2] - ctx->regs.x64.r9;
+
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    hb_exec_result_t out;
+    hb_result_t r = hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+
+    ASSERT(r == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->regs.x64.rax == 0x112233445566777bULL);
+    ASSERT(dst[1] == 0x7b);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_cmp_mem_operand_routes_to_helper) {
+    uint8_t code[] = {
+        0x48, 0x39, 0x0b,             /* cmpq %rcx, (%rbx) */
+        0x75, 0x07,                   /* jne target */
+        0xba, 0x01, 0x00, 0x00, 0x00, /* movl $1, %edx */
+        0xeb, 0x05,                   /* jmp done */
+        0xba, 0x02, 0x00, 0x00, 0x00, /* target: movl $2, %edx */
+        0xc3                          /* done: ret */
+    };
+    uint64_t value = 0x1122334455667788ULL;
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&value, sizeof(value),
+                         HB_PERM_READ) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rbx = (uint64_t)(uintptr_t)&value;
+    ctx->regs.x64.rcx = value;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(ctx->pc, base + 5);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_mul_div_family_routes_to_helper) {
+    uint8_t code[] = {
+        0x48, 0xf7, 0xf3,       /* divq %rbx */
+        0x49, 0x0f, 0xaf, 0xd8  /* imulq %r8, %rbx */
+    };
+    uint64_t base = (uint64_t)(uintptr_t)code;
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rax = 0x100;
+    ctx->regs.x64.rdx = 0;
+    ctx->regs.x64.rbx = 0x10;
+    ctx->regs.x64.r8 = 3;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(ctx->regs.x64.rax, 0x10);
+    ASSERT_EQ(ctx->regs.x64.rdx, 0);
+    ASSERT_EQ(ctx->regs.x64.rbx, 0x30);
 
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
@@ -13292,6 +13665,8 @@ int main(int argc, char** argv) {
     test_jit_pop_unmapped_faults();
     test_jit_push_guard_page_faults();
     test_jit_call_push_fault_preserves_pc();
+    test_jit_x64_indirect_call_memory_reads_target();
+    test_jit_x64_indirect_jmp_register_reads_target();
     test_interp_call_push_fault_preserves_pc_and_rsp();
     test_jit_jcc_helper_fault_stops_before_pc_update();
     test_legitimate_zero_read_is_not_fault();
@@ -13455,6 +13830,13 @@ int main(int argc, char** argv) {
     test_interp_x64_movabs_r11_imm64_notepadpp_strcmp();
     test_interp_x64_addr32_lea_notepadpp_strcmp();
     test_interp_x64_bsr_r64_notepadpp();
+    test_interp_x64_bsf_zero_preserves_cmovne_guard();
+    test_jit_x64_bsf_zero_preserves_cmovne_guard();
+    test_jit_x64_scalar_load_width_family();
+    test_jit_x64_scalar_memory_segment_family();
+    test_jit_x64_direct_user_memory_fast_path_family();
+    test_jit_x64_cmp_mem_operand_routes_to_helper();
+    test_jit_x64_mul_div_family_routes_to_helper();
     test_interp_x64_bswap_family_notepadpp_message_path();
     test_interp_x64_legacy_high8_register_family_strlen_tail();
     test_interp_x64_byte_offset_propagates_through_flag_helpers();

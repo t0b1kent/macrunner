@@ -136,6 +136,7 @@ typedef enum {
     HB_IR_STOS,
     HB_IR_ZERO_EXTEND,
     HB_IR_TRUNC,
+    HB_IR_BSF,
     HB_IR_TZCNT,
     HB_IR_LZCNT,
     HB_IR_BSR,

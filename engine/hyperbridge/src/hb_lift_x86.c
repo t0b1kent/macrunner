@@ -678,10 +678,11 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, i, dec);
             return HB_OK;
         }
+        case HB_INS_BSF:
         case HB_INS_TZCNT: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
-            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_TZCNT);
+            hb_ir_instr_t *i = hb_ir_emit(b, dec->opcode == HB_INS_BSF ? HB_IR_BSF : HB_IR_TZCNT);
             if (i) { i->dst = dst; i->src1 = src; }
             emit(b, i, dec);
             return HB_OK;

@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
+#include <limits.h>
 
 /* --- ARM64 instruction encoding helpers --- */
 static void emit_u32(hb_codegen_buffer_t* buf, uint32_t insn) {
@@ -27,6 +28,10 @@ static void emit_mov_reg(hb_codegen_buffer_t* buf, int rd, int rn) {
 
 static void emit_add_reg(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
     emit_u32(buf, 0x8b000000 | (rm << 16) | (rn << 5) | rd);
+}
+
+static void emit_add_reg_lsl(hb_codegen_buffer_t* buf, int rd, int rn, int rm, uint32_t shift) {
+    emit_u32(buf, 0x8b000000 | (rm << 16) | ((shift & 0x3f) << 10) | (rn << 5) | rd);
 }
 
 static void __attribute__((unused)) emit_sub_reg(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
@@ -80,10 +85,38 @@ static void emit_ldr_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
     emit_u32(buf, 0xb9400000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
+static void emit_ldrb_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    /* LDRB Wt, [Xn, #off] */
+    emit_u32(buf, 0x39400000 | ((off & 0xfff) << 10) | (rn << 5) | rt);
+}
+
+static void emit_ldrh_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    /* LDRH Wt, [Xn, #off] — off must be multiple of 2 */
+    uint32_t imm12 = (off / 2) & 0xFFF;
+    emit_u32(buf, 0x79400000 | (imm12 << 10) | (rn << 5) | rt);
+}
+
 static void emit_str_x(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
     /* STR Xt, [Xn, #off] */
     uint32_t imm12 = (off / 8) & 0xFFF;
     emit_u32(buf, 0xf9000000 | (imm12 << 10) | (rn << 5) | rt);
+}
+
+static void emit_str_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    /* STR Wt, [Xn, #off] — off must be multiple of 4 */
+    uint32_t imm12 = (off / 4) & 0xFFF;
+    emit_u32(buf, 0xb9000000 | (imm12 << 10) | (rn << 5) | rt);
+}
+
+static void emit_strb_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    /* STRB Wt, [Xn, #off] */
+    emit_u32(buf, 0x39000000 | ((off & 0xfff) << 10) | (rn << 5) | rt);
+}
+
+static void emit_strh_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    /* STRH Wt, [Xn, #off] — off must be multiple of 2 */
+    uint32_t imm12 = (off / 2) & 0xFFF;
+    emit_u32(buf, 0x79000000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 static void emit_mov_imm64(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
@@ -131,6 +164,11 @@ static bool is_gpr_reg_operand(const hb_ir_operand_t* op) {
 
 static bool is_plain_gpr_reg_operand(const hb_ir_operand_t* op) {
     return is_gpr_reg_operand(op) && op->reg_offset == 0;
+}
+
+static bool jit_direct_mem_enabled(void) {
+    const char* val = getenv("MACRUNNER_HB_JIT_DIRECT_MEM");
+    return val && val[0] && val[0] != '0';
 }
 
 /* Prologue: save x19-x23, lr; x19 = ctx */
@@ -227,14 +265,112 @@ static void emit_store_operand(hb_codegen_buffer_t* buf, const hb_ir_operand_t* 
     }
 }
 
+static bool is_direct_user_mem_operand(const hb_ir_operand_t* op) {
+    if (!op || op->type != HB_OP_MEM) return false;
+    if (op->mem.segment != 0 || op->mem.addr32) return false;
+    if (op->size != HB_SIZE_8 && op->size != HB_SIZE_16 &&
+        op->size != HB_SIZE_32 && op->size != HB_SIZE_64) return false;
+    if (op->mem.scale != 1 && op->mem.scale != 2 &&
+        op->mem.scale != 4 && op->mem.scale != 8) return false;
+    if (op->mem.base != HB_REG_COUNT && op->mem.base >= HB_REG_XMM0) return false;
+    if (op->mem.index != HB_REG_COUNT && op->mem.index >= HB_REG_XMM0) return false;
+    return true;
+}
+
+static void emit_direct_mem_addr(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
+    if (op->mem.base < HB_REG_XMM0) {
+        emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(op->mem.base));
+    } else {
+        emit_mov_imm64(buf, 21, 0);
+    }
+    if (op->mem.index < HB_REG_XMM0) {
+        uint32_t shift = (op->mem.scale == 1) ? 0 :
+                         (op->mem.scale == 2) ? 1 :
+                         (op->mem.scale == 4) ? 2 : 3;
+        emit_ldr_x(buf, 22, 19, (uint32_t)x64_reg_off(op->mem.index));
+        emit_add_reg_lsl(buf, 21, 21, 22, shift);
+    }
+    if (op->mem.disp != 0) {
+        if (op->mem.disp > 0 && op->mem.disp < 4096) {
+            emit_add_imm(buf, 21, 21, (uint32_t)op->mem.disp);
+        } else if (op->mem.disp < 0 && -op->mem.disp < 4096) {
+            emit_sub_imm(buf, 21, 21, (uint32_t)(-op->mem.disp));
+        } else {
+            emit_mov_imm64(buf, 22, (uint64_t)op->mem.disp);
+            emit_add_reg(buf, 21, 21, 22);
+        }
+    }
+}
+
+static void emit_direct_mem_load_to_x20(hb_codegen_buffer_t* buf, hb_size_t size) {
+    switch (size) {
+        case HB_SIZE_8:  emit_ldrb_w(buf, 20, 21, 0); break;
+        case HB_SIZE_16: emit_ldrh_w(buf, 20, 21, 0); break;
+        case HB_SIZE_32: emit_ldr_w(buf, 20, 21, 0); break;
+        case HB_SIZE_64:
+        default:         emit_ldr_x(buf, 20, 21, 0); break;
+    }
+}
+
+static void emit_direct_mem_store_from_x20(hb_codegen_buffer_t* buf, hb_size_t size) {
+    switch (size) {
+        case HB_SIZE_8:  emit_strb_w(buf, 20, 21, 0); break;
+        case HB_SIZE_16: emit_strh_w(buf, 20, 21, 0); break;
+        case HB_SIZE_32: emit_str_w(buf, 20, 21, 0); break;
+        case HB_SIZE_64:
+        default:         emit_str_x(buf, 20, 21, 0); break;
+    }
+}
+
+static bool emit_load_gpr_sized_to_x20(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
+    size_t off;
+    if (!is_gpr_reg_operand(op)) return false;
+    off = x64_reg_off(op->reg) + op->reg_offset;
+    switch (op->size) {
+        case HB_SIZE_8:  emit_ldrb_w(buf, 20, 19, (uint32_t)off); return true;
+        case HB_SIZE_16: emit_ldrh_w(buf, 20, 19, (uint32_t)off); return true;
+        case HB_SIZE_32: emit_ldr_w(buf, 20, 19, (uint32_t)off); return true;
+        case HB_SIZE_64:
+            if (op->reg_offset != 0) return false;
+            emit_ldr_x(buf, 20, 19, (uint32_t)off);
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void emit_store_x20_to_gpr_sized(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
+    size_t off = x64_reg_off(op->reg) + op->reg_offset;
+    switch (op->size) {
+        case HB_SIZE_8:
+            emit_strb_w(buf, 20, 19, (uint32_t)off);
+            break;
+        case HB_SIZE_16:
+            emit_strh_w(buf, 20, 19, (uint32_t)off);
+            break;
+        case HB_SIZE_32:
+        case HB_SIZE_64:
+        default:
+            emit_str_x(buf, 20, 19, (uint32_t)x64_reg_off(op->reg));
+            break;
+    }
+}
+
 /* JIT helper declarations (implemented below) */
 extern uint64_t hb_jit_helper_load_u64(hb_context_t* ctx, uint64_t addr);
+extern void     hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr,
+                                                 uint64_t dst_reg, uint64_t dst_size,
+                                                 uint64_t dst_reg_offset);
 extern void     hb_jit_helper_store_u64(hb_context_t* ctx, uint64_t addr, uint64_t val);
 extern void     hb_jit_helper_store_sized(hb_context_t* ctx, uint64_t addr, uint64_t val, uint64_t size);
+extern void     hb_jit_helper_exec_load_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_store_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern uint64_t hb_jit_helper_pop(hb_context_t* ctx);
 extern void     hb_jit_helper_push(hb_context_t* ctx, uint64_t val);
 extern void     hb_jit_helper_adjust_stack(hb_context_t* ctx, uint64_t delta);
 extern uint64_t hb_jit_helper_call(hb_context_t* ctx, uint64_t target, uint64_t ret_addr);
+extern void     hb_jit_helper_exec_call_operand(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_jmp_operand(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern uint64_t hb_jit_helper_exec_binop_lazy(hb_context_t* ctx, uint64_t op, uint64_t dst_reg,
                                               uint64_t src1_reg, uint64_t src2_is_reg,
                                               uint64_t src2_value, uint64_t size);
@@ -250,6 +386,7 @@ extern void     hb_jit_helper_exec_cmovcc_lazy(hb_context_t* ctx, uint64_t cc,
                                                uint64_t dst_reg, uint64_t src_is_reg,
                                                uint64_t src_value, uint64_t size);
 extern void     hb_jit_helper_exec_binop_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_mul_div_operand(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_double_shift_operand(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_setcc_operand_lazy(hb_context_t* ctx, uint64_t cc, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_cmovcc_operand_lazy(hb_context_t* ctx, uint64_t cc, const hb_ir_instr_t* instr);
@@ -257,6 +394,7 @@ extern void     hb_jit_helper_exec_extend_operand_lazy(hb_context_t* ctx, const 
 extern void     hb_jit_helper_exec_mov_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_not_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_neg_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_bit_scan(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_lahf(hb_context_t* ctx);
 extern void     hb_jit_helper_sahf(hb_context_t* ctx);
 extern void     hb_jit_helper_cpuid(hb_context_t* ctx);
@@ -365,6 +503,17 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             return HB_OK;
         }
 
+        case HB_IR_MUL:
+        case HB_IR_IMUL:
+        case HB_IR_DIV:
+        case HB_IR_IDIV: {
+            emit_mov_reg(buf, 0, 19);
+            emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+            emit_call_helper(buf, (void*)hb_jit_helper_exec_mul_div_operand);
+            emit_return_if_helper_failed(buf);
+            return HB_OK;
+        }
+
         case HB_IR_SHL:
         case HB_IR_SHR:
         case HB_IR_SAR:
@@ -450,12 +599,13 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_CMP:
         case HB_IR_TEST: {
             if ((instr->src1.type != HB_OP_REG && instr->src1.type != HB_OP_IMM) ||
-                (instr->src2.type != HB_OP_REG && instr->src2.type != HB_OP_IMM)) return HB_ERR_INTERNAL;
-            if ((instr->src1.type == HB_OP_REG && instr->src1.reg_offset != 0) ||
+                (instr->src2.type != HB_OP_REG && instr->src2.type != HB_OP_IMM) ||
+                (instr->src1.type == HB_OP_REG && instr->src1.reg_offset != 0) ||
                 (instr->src2.type == HB_OP_REG && instr->src2.reg_offset != 0)) {
                 emit_mov_reg(buf, 0, 19);
                 emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
                 emit_call_helper(buf, (void*)hb_jit_helper_exec_cmp_test_operand_lazy);
+                emit_return_if_helper_failed(buf);
                 return HB_OK;
             }
             emit_mov_reg(buf, 0, 19);
@@ -471,92 +621,39 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
 
         case HB_IR_LOAD: {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
-            /* Compute address into X0, call helper, result in X0 */
-            uint64_t addr = 0;
-            if (instr->src1.mem.base < HB_REG_COUNT) {
-                if (instr->src1.mem.base == HB_REG_RIP) {
-                    addr = instr->guest_addr + instr->guest_len;
-                } else {
-                    size_t off = x64_reg_off(instr->src1.mem.base);
-                    emit_ldr_x(buf, 20, 19, (uint32_t)off);
-                }
-            } else {
-                emit_mov_imm64(buf, 20, 0);
+            if (!is_gpr_reg_operand(&instr->dst)) return HB_ERR_INTERNAL;
+            if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1)) {
+                emit_direct_mem_addr(buf, &instr->src1);
+                emit_direct_mem_load_to_x20(buf, instr->src1.size);
+                emit_store_x20_to_gpr_sized(buf, &instr->dst);
+                return HB_OK;
             }
-            if (instr->src1.mem.base == HB_REG_RIP) {
-                emit_mov_imm64(buf, 20, addr);
-            }
-            if (instr->src1.mem.index < HB_REG_COUNT) {
-                size_t off = x64_reg_off(instr->src1.mem.index);
-                emit_ldr_x(buf, 21, 19, (uint32_t)off);
-                uint32_t shift = (instr->src1.mem.scale == 1) ? 0 :
-                                 (instr->src1.mem.scale == 2) ? 1 :
-                                 (instr->src1.mem.scale == 4) ? 2 :
-                                 (instr->src1.mem.scale == 8) ? 3 : 0;
-                emit_u32(buf, 0x8b000000 | (21 << 16) | (shift << 10) | (20 << 5) | 20);
-            }
-            if (instr->src1.mem.disp != 0) {
-                if (instr->src1.mem.disp >= 0 && instr->src1.mem.disp < 4096) {
-                    emit_add_imm(buf, 20, 20, (uint32_t)instr->src1.mem.disp);
-                } else if (instr->src1.mem.disp < 0 && -instr->src1.mem.disp < 4096) {
-                    emit_sub_imm(buf, 20, 20, (uint32_t)(-instr->src1.mem.disp));
-                } else {
-                    emit_mov_imm64(buf, 21, (uint64_t)instr->src1.mem.disp);
-                    emit_add_reg(buf, 20, 20, 21);
-                }
-            }
-            /* X0 = ctx, X1 = addr */
             emit_mov_reg(buf, 0, 19);
-            emit_mov_reg(buf, 1, 20);
-            emit_call_helper(buf, (void*)hb_jit_helper_load_u64);
+            emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+            emit_call_helper(buf, (void*)hb_jit_helper_exec_load_operand_lazy);
             emit_return_if_helper_failed(buf);
-            emit_mov_reg(buf, 20, 0); /* helper result in X0 */
-            emit_store_operand(buf, &instr->dst);
             return HB_OK;
         }
 
         case HB_IR_STORE: {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
-            /* Compute address into X1, value into X2 */
-            uint64_t addr = 0;
-            if (instr->src1.mem.base < HB_REG_COUNT) {
-                if (instr->src1.mem.base == HB_REG_RIP) {
-                    addr = instr->guest_addr + instr->guest_len;
+            if (instr->src2.type == HB_OP_REG && !is_gpr_reg_operand(&instr->src2))
+                return HB_ERR_INTERNAL;
+            if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1) &&
+                (instr->src2.type == HB_OP_REG || instr->src2.type == HB_OP_IMM)) {
+                if (instr->src2.type == HB_OP_REG) {
+                    if (!emit_load_gpr_sized_to_x20(buf, &instr->src2))
+                        return HB_ERR_INTERNAL;
                 } else {
-                    size_t off = x64_reg_off(instr->src1.mem.base);
-                    emit_ldr_x(buf, 20, 19, (uint32_t)off);
+                    emit_mov_imm64(buf, 20, (uint64_t)instr->src2.imm);
                 }
-            } else {
-                emit_mov_imm64(buf, 20, 0);
+                emit_direct_mem_addr(buf, &instr->src1);
+                emit_direct_mem_store_from_x20(buf, instr->src1.size);
+                return HB_OK;
             }
-            if (instr->src1.mem.base == HB_REG_RIP) {
-                emit_mov_imm64(buf, 20, addr);
-            }
-            if (instr->src1.mem.index < HB_REG_COUNT) {
-                size_t off = x64_reg_off(instr->src1.mem.index);
-                emit_ldr_x(buf, 21, 19, (uint32_t)off);
-                uint32_t shift = (instr->src1.mem.scale == 1) ? 0 :
-                                 (instr->src1.mem.scale == 2) ? 1 :
-                                 (instr->src1.mem.scale == 4) ? 2 :
-                                 (instr->src1.mem.scale == 8) ? 3 : 0;
-                emit_u32(buf, 0x8b000000 | (21 << 16) | (shift << 10) | (20 << 5) | 20);
-            }
-            if (instr->src1.mem.disp != 0) {
-                if (instr->src1.mem.disp >= 0 && instr->src1.mem.disp < 4096) {
-                    emit_add_imm(buf, 20, 20, (uint32_t)instr->src1.mem.disp);
-                } else if (instr->src1.mem.disp < 0 && -instr->src1.mem.disp < 4096) {
-                    emit_sub_imm(buf, 20, 20, (uint32_t)(-instr->src1.mem.disp));
-                } else {
-                    emit_mov_imm64(buf, 21, (uint64_t)instr->src1.mem.disp);
-                    emit_add_reg(buf, 20, 20, 21);
-                }
-            }
-            emit_mov_reg(buf, 1, 20); /* X1 = addr */
-            emit_load_operand(buf, &instr->src2);
-            emit_mov_reg(buf, 2, 20); /* X2 = value */
-            emit_mov_imm64(buf, 3, (uint64_t)instr->src1.size); /* X3 = size */
-            emit_mov_reg(buf, 0, 19); /* X0 = ctx */
-            emit_call_helper(buf, (void*)hb_jit_helper_store_sized);
+            emit_mov_reg(buf, 0, 19);
+            emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+            emit_call_helper(buf, (void*)hb_jit_helper_exec_store_operand_lazy);
             emit_return_if_helper_failed(buf);
             return HB_OK;
         }
@@ -580,6 +677,13 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         }
 
         case HB_IR_CALL: {
+            if (instr->src1.type != HB_OP_NONE) {
+                emit_mov_reg(buf, 0, 19);
+                emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+                emit_call_helper(buf, (void*)hb_jit_helper_exec_call_operand);
+                emit_return_if_helper_failed(buf);
+                return HB_OK;
+            }
             /* Push first so stack faults do not commit the branch target. */
             emit_mov_imm64(buf, 1, instr->guest_addr + instr->guest_len); /* ret addr */
             emit_mov_reg(buf, 0, 19);
@@ -605,6 +709,13 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         }
 
         case HB_IR_JMP: {
+            if (instr->src1.type != HB_OP_NONE) {
+                emit_mov_reg(buf, 0, 19);
+                emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+                emit_call_helper(buf, (void*)hb_jit_helper_exec_jmp_operand);
+                emit_return_if_helper_failed(buf);
+                return HB_OK;
+            }
             emit_mov_imm64(buf, 20, instr->target);
             emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, pc));
             return HB_OK;
@@ -680,6 +791,16 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             return HB_OK;
         }
 
+        case HB_IR_BSF:
+        case HB_IR_TZCNT:
+        case HB_IR_LZCNT:
+        case HB_IR_BSR: {
+            emit_mov_reg(buf, 0, 19);
+            emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+            emit_call_helper(buf, (void*)hb_jit_helper_exec_bit_scan);
+            return HB_OK;
+        }
+
         case HB_IR_UNSUPPORTED:
         case HB_IR_FAULT:
             return HB_ERR_UNSUPPORTED_OPCODE;
@@ -700,6 +821,76 @@ uint64_t hb_jit_helper_load_u64(hb_context_t* ctx, uint64_t addr) {
     hb_result_t r = hb_memory_read_u64(ctx->memory, addr, &val);
     ctx->last_result = r;
     return val;
+}
+
+static uint64_t hb_jit_helper_load_sized_value(hb_context_t* ctx, uint64_t addr, hb_size_t size) {
+    uint64_t val = 0;
+    hb_result_t r = HB_OK;
+    if (!ctx) return 0;
+    if (!ctx->memory) {
+        ctx->last_result = HB_ERR_MEMORY_FAULT;
+        return 0;
+    }
+    switch (size) {
+        case HB_SIZE_8: {
+            uint8_t v = 0;
+            r = hb_memory_read_u8(ctx->memory, addr, &v);
+            val = v;
+            break;
+        }
+        case HB_SIZE_16: {
+            uint16_t v = 0;
+            r = hb_memory_read_u16(ctx->memory, addr, &v);
+            val = v;
+            break;
+        }
+        case HB_SIZE_32: {
+            uint32_t v = 0;
+            r = hb_memory_read_u32(ctx->memory, addr, &v);
+            val = v;
+            break;
+        }
+        case HB_SIZE_64:
+        default:
+            r = hb_memory_read_u64(ctx->memory, addr, &val);
+            break;
+    }
+    ctx->last_result = r;
+    return val;
+}
+
+void hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr,
+                                     uint64_t dst_reg, uint64_t dst_size,
+                                     uint64_t dst_reg_offset) {
+    hb_ir_operand_t dst;
+    hb_size_t size = dst_size ? (hb_size_t)dst_size : HB_SIZE_64;
+    uint64_t val = hb_jit_helper_load_sized_value(ctx, addr, size);
+    if (!ctx || ctx->last_result != HB_OK) return;
+
+    memset(&dst, 0, sizeof(dst));
+    dst.type = HB_OP_REG;
+    dst.reg = (uint8_t)dst_reg;
+    dst.size = size;
+    dst.reg_offset = (uint8_t)dst_reg_offset;
+    ctx->last_result = hb_flags_write_operand_value(ctx, &dst, val);
+}
+
+void hb_jit_helper_exec_load_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    uint64_t val = 0;
+    hb_result_t r;
+    if (!ctx || !instr) return;
+    r = hb_flags_read_operand_value(ctx, &instr->src1, &val);
+    if (r == HB_OK) r = hb_flags_write_operand_value(ctx, &instr->dst, val);
+    ctx->last_result = r;
+}
+
+void hb_jit_helper_exec_store_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    uint64_t val = 0;
+    hb_result_t r;
+    if (!ctx || !instr) return;
+    r = hb_flags_read_operand_value(ctx, &instr->src2, &val);
+    if (r == HB_OK) r = hb_flags_write_operand_value(ctx, &instr->src1, val);
+    ctx->last_result = r;
 }
 
 void hb_jit_helper_store_u64(hb_context_t* ctx, uint64_t addr, uint64_t val) {
@@ -777,6 +968,63 @@ void hb_jit_helper_push(hb_context_t* ctx, uint64_t val) {
     ctx->last_result = r;
 }
 
+void hb_jit_helper_exec_call_operand(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    uint64_t target = instr ? instr->target : 0;
+    uint64_t ret_addr;
+    hb_result_t r;
+    if (!ctx || !instr) return;
+    if (instr->src1.type != HB_OP_NONE) {
+        r = hb_flags_read_operand_value(ctx, &instr->src1, &target);
+        if (r != HB_OK) {
+            ctx->last_result = r;
+            return;
+        }
+    }
+    if (!target) {
+        ctx->last_result = HB_ERR_EXEC_FAULT;
+        return;
+    }
+    ret_addr = instr->guest_addr + instr->guest_len;
+    if (ctx->mode == HB_MODE_32BIT) {
+        uint32_t new_esp = ctx->regs.x86.esp - 4;
+        r = hb_memory_write_u32(ctx->memory, new_esp, (uint32_t)ret_addr);
+        if (r == HB_OK) ctx->regs.x86.esp = new_esp;
+    } else {
+        uint64_t new_rsp = ctx->regs.x64.rsp - 8;
+        r = hb_memory_write_u64(ctx->memory, new_rsp, ret_addr);
+        if (r == HB_OK) ctx->regs.x64.rsp = new_rsp;
+    }
+    if (r != HB_OK) {
+        ctx->last_result = r;
+        return;
+    }
+    ctx->pc = target;
+    if (ctx->mode == HB_MODE_64BIT) ctx->regs.x64.rip = target;
+    else ctx->regs.x86.eip = (uint32_t)target;
+    ctx->last_result = HB_OK;
+}
+
+void hb_jit_helper_exec_jmp_operand(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    uint64_t target = instr ? instr->target : 0;
+    hb_result_t r;
+    if (!ctx || !instr) return;
+    if (instr->src1.type != HB_OP_NONE) {
+        r = hb_flags_read_operand_value(ctx, &instr->src1, &target);
+        if (r != HB_OK) {
+            ctx->last_result = r;
+            return;
+        }
+    }
+    if (!target) {
+        ctx->last_result = HB_ERR_EXEC_FAULT;
+        return;
+    }
+    ctx->pc = target;
+    if (ctx->mode == HB_MODE_64BIT) ctx->regs.x64.rip = target;
+    else ctx->regs.x86.eip = (uint32_t)target;
+    ctx->last_result = HB_OK;
+}
+
 void hb_jit_helper_adjust_stack(hb_context_t* ctx, uint64_t delta) {
     if (!ctx) return;
     if (ctx->mode == HB_MODE_32BIT)
@@ -809,12 +1057,16 @@ void hb_jit_helper_exec_cmp_test_lazy(hb_context_t* ctx, uint64_t op,
 void hb_jit_helper_exec_cmp_test_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     uint64_t lhs = 0, rhs = 0;
     uint64_t result = 0;
+    hb_result_t r;
     if (!ctx || !instr) return;
-    if (hb_flags_read_operand_value(ctx, &instr->src1, &lhs) != HB_OK) return;
-    if (hb_flags_read_operand_value(ctx, &instr->src2, &rhs) != HB_OK) return;
+    r = hb_flags_read_operand_value(ctx, &instr->src1, &lhs);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_flags_read_operand_value(ctx, &instr->src2, &rhs);
+    if (r != HB_OK) { ctx->last_result = r; return; }
     result = (instr->op == HB_IR_TEST) ? (lhs & rhs) : (lhs - rhs);
     hb_lazy_flags_note(ctx, instr->op == HB_IR_TEST ? HB_LAZY_FLAGS_TEST : HB_LAZY_FLAGS_CMP,
                        instr->src1.size, lhs, rhs, result, 0);
+    ctx->last_result = HB_OK;
 }
 
 uint64_t hb_jit_helper_eval_cond_lazy(hb_context_t* ctx, uint64_t cc) {
@@ -833,6 +1085,180 @@ static uint64_t hb_jit_trunc_to_size(uint64_t value, hb_size_t size) {
         case HB_SIZE_64:
         default: return value;
     }
+}
+
+static int64_t hb_jit_sign_extend_from_size(uint64_t value, hb_size_t size) {
+    switch (size) {
+        case HB_SIZE_8:  return (int8_t)value;
+        case HB_SIZE_16: return (int16_t)value;
+        case HB_SIZE_32: return (int32_t)value;
+        case HB_SIZE_64:
+        default:         return (int64_t)value;
+    }
+}
+
+void hb_jit_helper_exec_mul_div_operand(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_result_t r = HB_OK;
+    uint64_t lhs = 0, rhs = 0;
+    hb_size_t size;
+    if (!ctx || !instr) return;
+
+    switch (instr->op) {
+        case HB_IR_IMUL:
+            if (instr->dst.type == HB_OP_NONE) {
+                r = hb_flags_read_operand_value(ctx, &instr->src1, &rhs);
+                if (r != HB_OK) break;
+                size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
+                if (size == HB_SIZE_8) {
+                    int16_t result = (int16_t)((int8_t)hb_context_read_reg_value(ctx, HB_REG_RAX) * (int8_t)rhs);
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint16_t)result, HB_SIZE_16);
+                    ctx->flags.cf = ctx->flags.of = (result < INT8_MIN || result > INT8_MAX);
+                } else if (size == HB_SIZE_16) {
+                    int32_t result = (int32_t)((int16_t)hb_context_read_reg_value(ctx, HB_REG_RAX) * (int16_t)rhs);
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint16_t)result, HB_SIZE_16);
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint16_t)(result >> 16), HB_SIZE_16);
+                    ctx->flags.cf = ctx->flags.of = (result < INT16_MIN || result > INT16_MAX);
+                } else if (size == HB_SIZE_32) {
+                    int64_t result = (int64_t)(int32_t)hb_context_read_reg_value(ctx, HB_REG_RAX) * (int64_t)(int32_t)rhs;
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint32_t)result, HB_SIZE_32);
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint32_t)(result >> 32), HB_SIZE_32);
+                    ctx->flags.cf = ctx->flags.of = (result < INT32_MIN || result > INT32_MAX);
+                } else if (size == HB_SIZE_64) {
+                    __int128 result = (__int128)(int64_t)hb_context_read_reg_value(ctx, HB_REG_RAX) * (__int128)(int64_t)rhs;
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint64_t)result, HB_SIZE_64);
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint64_t)(result >> 64), HB_SIZE_64);
+                    ctx->flags.cf = ctx->flags.of = (result < (__int128)INT64_MIN || result > (__int128)INT64_MAX);
+                } else r = HB_ERR_UNSUPPORTED_OPCODE;
+                hb_lazy_flags_clear(ctx);
+                break;
+            }
+            r = hb_flags_read_operand_value(ctx, &instr->src1, &lhs);
+            if (r != HB_OK) break;
+            r = hb_flags_read_operand_value(ctx, &instr->src2, &rhs);
+            if (r != HB_OK) break;
+            size = instr->dst.size ? instr->dst.size : HB_SIZE_64;
+            hb_context_write_reg_value_sized(ctx, instr->dst.reg, hb_jit_trunc_to_size(lhs * rhs, size), size);
+            hb_lazy_flags_clear(ctx);
+            break;
+
+        case HB_IR_MUL:
+            r = hb_flags_read_operand_value(ctx, &instr->src1, &rhs);
+            if (r != HB_OK) break;
+            size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
+            rhs = hb_jit_trunc_to_size(rhs, size);
+            if (size == HB_SIZE_8) {
+                uint16_t result = (uint16_t)(uint8_t)hb_context_read_reg_value(ctx, HB_REG_RAX) * (uint16_t)(uint8_t)rhs;
+                hb_context_write_reg_value_sized(ctx, HB_REG_RAX, result, HB_SIZE_16);
+                ctx->flags.cf = ctx->flags.of = ((result >> 8) != 0);
+            } else if (size == HB_SIZE_16) {
+                uint32_t result = (uint32_t)(uint16_t)hb_context_read_reg_value(ctx, HB_REG_RAX) * (uint32_t)(uint16_t)rhs;
+                hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint16_t)result, HB_SIZE_16);
+                hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint16_t)(result >> 16), HB_SIZE_16);
+                ctx->flags.cf = ctx->flags.of = ((result >> 16) != 0);
+            } else if (size == HB_SIZE_32) {
+                uint64_t result = (uint64_t)(uint32_t)hb_context_read_reg_value(ctx, HB_REG_RAX) * (uint64_t)(uint32_t)rhs;
+                hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint32_t)result, HB_SIZE_32);
+                hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint32_t)(result >> 32), HB_SIZE_32);
+                ctx->flags.cf = ctx->flags.of = ((result >> 32) != 0);
+            } else if (size == HB_SIZE_64) {
+                unsigned __int128 result = (unsigned __int128)hb_context_read_reg_value(ctx, HB_REG_RAX) * (unsigned __int128)rhs;
+                hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint64_t)result, HB_SIZE_64);
+                hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint64_t)(result >> 64), HB_SIZE_64);
+                ctx->flags.cf = ctx->flags.of = ((uint64_t)(result >> 64) != 0);
+            } else r = HB_ERR_UNSUPPORTED_OPCODE;
+            hb_lazy_flags_clear(ctx);
+            break;
+
+        case HB_IR_DIV:
+            r = hb_flags_read_operand_value(ctx, &instr->src1, &rhs);
+            if (r != HB_OK) break;
+            size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
+            rhs = hb_jit_trunc_to_size(rhs, size);
+            if (!rhs) { r = HB_ERR_EXEC_FAULT; break; }
+            if (size == HB_SIZE_8) {
+                uint16_t dividend = (uint16_t)(hb_context_read_reg_value(ctx, HB_REG_RAX) & 0xffffu);
+                uint16_t quotient = dividend / (uint8_t)rhs;
+                uint16_t remainder = dividend % (uint8_t)rhs;
+                if (quotient > UINT8_MAX) { r = HB_ERR_EXEC_FAULT; break; }
+                hb_context_write_reg_value_sized(ctx, HB_REG_RAX, ((uint16_t)(uint8_t)remainder << 8) | (uint8_t)quotient, HB_SIZE_16);
+            } else if (size == HB_SIZE_16) {
+                uint32_t dividend = ((uint32_t)(uint16_t)hb_context_read_reg_value(ctx, HB_REG_RDX) << 16) |
+                                    (uint32_t)(uint16_t)hb_context_read_reg_value(ctx, HB_REG_RAX);
+                uint32_t quotient = dividend / (uint16_t)rhs;
+                uint32_t remainder = dividend % (uint16_t)rhs;
+                if (quotient > UINT16_MAX) { r = HB_ERR_EXEC_FAULT; break; }
+                hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint16_t)quotient, HB_SIZE_16);
+                hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint16_t)remainder, HB_SIZE_16);
+            } else if (size == HB_SIZE_32) {
+                uint64_t dividend = ((uint64_t)(uint32_t)hb_context_read_reg_value(ctx, HB_REG_RDX) << 32) |
+                                    (uint64_t)(uint32_t)hb_context_read_reg_value(ctx, HB_REG_RAX);
+                uint64_t quotient = dividend / (uint32_t)rhs;
+                uint64_t remainder = dividend % (uint32_t)rhs;
+                if (quotient > UINT32_MAX) { r = HB_ERR_EXEC_FAULT; break; }
+                hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint32_t)quotient, HB_SIZE_32);
+                hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint32_t)remainder, HB_SIZE_32);
+            } else if (size == HB_SIZE_64) {
+                unsigned __int128 dividend = ((unsigned __int128)hb_context_read_reg_value(ctx, HB_REG_RDX) << 64) |
+                                             (unsigned __int128)hb_context_read_reg_value(ctx, HB_REG_RAX);
+                unsigned __int128 quotient = dividend / rhs;
+                unsigned __int128 remainder = dividend % rhs;
+                if (quotient > UINT64_MAX) { r = HB_ERR_EXEC_FAULT; break; }
+                hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint64_t)quotient, HB_SIZE_64);
+                hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint64_t)remainder, HB_SIZE_64);
+            } else r = HB_ERR_UNSUPPORTED_OPCODE;
+            hb_lazy_flags_clear(ctx);
+            break;
+
+        case HB_IR_IDIV:
+            r = hb_flags_read_operand_value(ctx, &instr->src1, &rhs);
+            if (r != HB_OK) break;
+            size = instr->src1.size ? instr->src1.size : HB_SIZE_32;
+            rhs = hb_jit_trunc_to_size(rhs, size);
+            if (!rhs) { r = HB_ERR_EXEC_FAULT; break; }
+            {
+                int64_t divisor = hb_jit_sign_extend_from_size(rhs, size);
+                if (!divisor) { r = HB_ERR_EXEC_FAULT; break; }
+                if (size == HB_SIZE_8) {
+                    int16_t dividend = (int16_t)(hb_context_read_reg_value(ctx, HB_REG_RAX) & 0xffffu);
+                    int64_t quotient = dividend / (int8_t)divisor;
+                    int64_t remainder = dividend % (int8_t)divisor;
+                    if (quotient < INT8_MIN || quotient > INT8_MAX) { r = HB_ERR_EXEC_FAULT; break; }
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RAX, ((uint16_t)(uint8_t)remainder << 8) | (uint8_t)quotient, HB_SIZE_16);
+                } else if (size == HB_SIZE_16) {
+                    int32_t dividend = (int32_t)(((uint32_t)(uint16_t)hb_context_read_reg_value(ctx, HB_REG_RDX) << 16) |
+                                                 (uint32_t)(uint16_t)hb_context_read_reg_value(ctx, HB_REG_RAX));
+                    int64_t quotient = dividend / (int16_t)divisor;
+                    int64_t remainder = dividend % (int16_t)divisor;
+                    if (quotient < INT16_MIN || quotient > INT16_MAX) { r = HB_ERR_EXEC_FAULT; break; }
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint16_t)quotient, HB_SIZE_16);
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint16_t)remainder, HB_SIZE_16);
+                } else if (size == HB_SIZE_32) {
+                    int64_t dividend = ((int64_t)(int32_t)hb_context_read_reg_value(ctx, HB_REG_RDX) << 32) |
+                                       (uint32_t)hb_context_read_reg_value(ctx, HB_REG_RAX);
+                    int64_t quotient = dividend / (int32_t)divisor;
+                    int64_t remainder = dividend % (int32_t)divisor;
+                    if (quotient < INT32_MIN || quotient > INT32_MAX) { r = HB_ERR_EXEC_FAULT; break; }
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint32_t)quotient, HB_SIZE_32);
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint32_t)remainder, HB_SIZE_32);
+                } else if (size == HB_SIZE_64) {
+                    unsigned __int128 bits = ((unsigned __int128)hb_context_read_reg_value(ctx, HB_REG_RDX) << 64) |
+                                             (unsigned __int128)hb_context_read_reg_value(ctx, HB_REG_RAX);
+                    __int128 dividend = (__int128)bits;
+                    __int128 quotient = dividend / (int64_t)divisor;
+                    __int128 remainder = dividend % (int64_t)divisor;
+                    if (quotient < (__int128)INT64_MIN || quotient > (__int128)INT64_MAX) { r = HB_ERR_EXEC_FAULT; break; }
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint64_t)quotient, HB_SIZE_64);
+                    hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint64_t)remainder, HB_SIZE_64);
+                } else r = HB_ERR_UNSUPPORTED_OPCODE;
+            }
+            hb_lazy_flags_clear(ctx);
+            break;
+
+        default:
+            r = HB_ERR_UNSUPPORTED_OPCODE;
+            break;
+    }
+    ctx->last_result = r;
 }
 
 void hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* instr) {
@@ -936,6 +1362,61 @@ void hb_jit_helper_exec_neg_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t*
     uint64_t result = (0 - rhs) & mask;
     if (hb_flags_write_operand_value(ctx, &instr->dst, result) != HB_OK) return;
     hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_SUB, size, lhs, rhs, result, 0);
+}
+
+void hb_jit_helper_exec_bit_scan(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    uint64_t val = 0;
+    uint64_t result = 0;
+    uint64_t width;
+    hb_size_t size;
+    hb_result_t r;
+
+    if (!ctx || !instr || instr->dst.type != HB_OP_REG) return;
+    r = hb_flags_read_operand_value(ctx, &instr->src1, &val);
+    if (r != HB_OK) {
+        ctx->last_result = r;
+        return;
+    }
+    size = instr->dst.size ? instr->dst.size : HB_SIZE_64;
+    val = hb_jit_trunc_to_size(val, size);
+    width = (size == HB_SIZE_32) ? 32 : (size == HB_SIZE_16) ? 16 :
+            (size == HB_SIZE_8) ? 8 : 64;
+
+    hb_lazy_flags_clear(ctx);
+    if (instr->op == HB_IR_BSF) {
+        ctx->flags.zf = (val == 0);
+        if (val) {
+            while (((val >> result) & 1ULL) == 0) result++;
+            hb_context_write_reg_value_sized(ctx, instr->dst.reg, result, size);
+        }
+    } else if (instr->op == HB_IR_TZCNT) {
+        result = width;
+        if (val) {
+            result = 0;
+            while (((val >> result) & 1ULL) == 0) result++;
+        }
+        hb_context_write_reg_value_sized(ctx, instr->dst.reg, result, size);
+        ctx->flags.zf = (result == 0);
+        ctx->flags.cf = (val == 0);
+    } else if (instr->op == HB_IR_LZCNT) {
+        result = width;
+        if (val) {
+            result = 0;
+            for (int64_t bit = (int64_t)width - 1; bit >= 0 && ((val >> bit) & 1ULL) == 0; bit--)
+                result++;
+        }
+        hb_context_write_reg_value_sized(ctx, instr->dst.reg, result, size);
+        ctx->flags.zf = (result == 0);
+        ctx->flags.cf = (val == 0);
+    } else if (instr->op == HB_IR_BSR) {
+        ctx->flags.zf = (val == 0);
+        if (val) {
+            result = width - 1;
+            while (((val >> result) & 1ULL) == 0) result--;
+            hb_context_write_reg_value_sized(ctx, instr->dst.reg, result, size);
+        }
+    }
+    ctx->last_result = HB_OK;
 }
 
 void hb_jit_helper_exec_extend_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {

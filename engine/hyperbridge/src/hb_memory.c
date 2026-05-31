@@ -322,6 +322,94 @@ static bool direct_live_memory_enabled(void) {
     return value;
 }
 
+#ifdef __APPLE__
+static bool trace_live_vm_access_fail_enabled(void) {
+    static int cache = -1;
+    int value = __atomic_load_n(&cache, __ATOMIC_RELAXED);
+
+    if (value < 0) {
+        const char* val = getenv("MACRUNNER_HB_TRACE_LIVE_VM_ACCESS_FAIL");
+        if (!val || !val[0]) val = getenv("MACRUNNER_HB_TRACE_LIVE_VM_WRITE_FAIL");
+        value = val && val[0] && val[0] != '0';
+        __atomic_store_n(&cache, value, __ATOMIC_RELAXED);
+    }
+    return value;
+}
+
+static void trace_live_vm_access_fail(const char* op, hb_gva_t addr, size_t size,
+                                      kern_return_t access_kr, const hb_region_t* cached) {
+    mach_vm_address_t region = (mach_vm_address_t)addr;
+    mach_vm_size_t region_size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    kern_return_t region_kr;
+
+    if (!trace_live_vm_access_fail_enabled()) return;
+
+    memset(&info, 0, sizeof(info));
+    region_kr = mach_vm_region(mach_task_self(), &region, &region_size,
+                               VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info,
+                               &count, &object);
+    if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+    fprintf(stderr,
+            "macrunner-hb-live-vm-access-fail: op=%s addr=0x%llx size=%zu access_kr=%d "
+            "mach_kr=%d mach_region=0x%llx mach_end=0x%llx mach_prot=0x%x "
+            "cached_base=0x%llx cached_end=0x%llx cached_perm=0x%x\n",
+            op, (unsigned long long)addr, size, access_kr, region_kr,
+            (unsigned long long)region, (unsigned long long)(region + region_size),
+            info.protection,
+            cached ? (unsigned long long)cached->base : 0,
+            cached ? (unsigned long long)(cached->base + cached->size) : 0,
+            cached ? cached->perm : 0);
+}
+
+static hb_result_t write_live_vm_region(hb_gva_t addr, const void* in, size_t size,
+                                        const hb_region_t* region) {
+    mach_port_t task = mach_task_self();
+    kern_return_t kr = mach_vm_write(task, (mach_vm_address_t)addr,
+                                     (vm_offset_t)(uintptr_t)in,
+                                     (mach_msg_type_number_t)size);
+
+    if (kr == KERN_SUCCESS) return HB_OK;
+    trace_live_vm_access_fail("write", addr, size, kr, region);
+
+    if (region && (region->perm & HB_PERM_WRITE)) {
+        mach_vm_address_t protect_base = (mach_vm_address_t)host_page_floor((uintptr_t)addr);
+        mach_vm_address_t protect_top = (mach_vm_address_t)host_page_ceil((uintptr_t)addr + size);
+        mach_vm_size_t protect_size = protect_top - protect_base;
+        mach_vm_address_t query_addr = (mach_vm_address_t)addr;
+        mach_vm_size_t query_size = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object = MACH_PORT_NULL;
+        vm_prot_t restore_prot = VM_PROT_READ;
+        kern_return_t query_kr;
+
+        memset(&info, 0, sizeof(info));
+        query_kr = mach_vm_region(task, &query_addr, &query_size, VM_REGION_BASIC_INFO_64,
+                                  (vm_region_info_t)&info, &count, &object);
+        if (object != MACH_PORT_NULL) mach_port_deallocate(task, object);
+        if (query_kr == KERN_SUCCESS && query_addr <= addr &&
+            query_addr + query_size >= addr + size)
+            restore_prot = info.protection;
+
+        kr = mach_vm_protect(task, protect_base, protect_size, FALSE, VM_PROT_READ | VM_PROT_WRITE);
+        if (kr == KERN_SUCCESS) {
+            kr = mach_vm_write(task, (mach_vm_address_t)addr, (vm_offset_t)(uintptr_t)in,
+                               (mach_msg_type_number_t)size);
+            if (restore_prot)
+                (void)mach_vm_protect(task, protect_base, protect_size, FALSE, restore_prot);
+            if (kr == KERN_SUCCESS) return HB_OK;
+            trace_live_vm_access_fail("write-after-protect", addr, size, kr, region);
+        } else {
+            trace_live_vm_access_fail("write-protect", addr, size, kr, region);
+        }
+    }
+    return HB_ERR_MEMORY_FAULT;
+}
+#endif
+
 static void trace_bad_native_write(const char* path, hb_gva_t addr, const void* in, size_t size) {
     uint64_t sample = 0;
     size_t copy = size < sizeof(sample) ? size : sizeof(sample);
@@ -675,6 +763,7 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
         kern_return_t kr = mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)addr,
                                                   (mach_vm_size_t)size,
                                                   (mach_vm_address_t)(uintptr_t)out, &copied);
+        if (kr != KERN_SUCCESS || copied != size) trace_live_vm_access_fail("read", addr, size, kr, region);
         return (kr == KERN_SUCCESS && copied == size) ? HB_OK : HB_ERR_MEMORY_FAULT;
     }
 #endif
@@ -734,10 +823,7 @@ hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, siz
             memcpy((void*)(uintptr_t)addr, in, size);
             return HB_OK;
         }
-        kern_return_t kr = mach_vm_write(mach_task_self(), (mach_vm_address_t)addr,
-                                         (vm_offset_t)(uintptr_t)in,
-                                         (mach_msg_type_number_t)size);
-        return kr == KERN_SUCCESS ? HB_OK : HB_ERR_MEMORY_FAULT;
+        return write_live_vm_region(addr, in, size, region);
     }
 #endif
     if (region && region->host_base) {

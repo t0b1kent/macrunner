@@ -1692,11 +1692,10 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             return HB_OK;
         }
         if (op2 == 0xBC) {
-            /* TZCNT/BSF r32/64, r/m32/64. We normalize this path to TZCNT;
-               Wine uses the F3-prefixed form in ntdll's wait primitives. */
+            /* BSF or F3-prefixed TZCNT r32/64, r/m32/64. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
-            out->opcode = HB_INS_TZCNT;
+            out->opcode = prefix_f3 ? HB_INS_TZCNT : HB_INS_BSF;
             out->writes_flags = true;
             hb_result_t r = parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b, 4, out, 1, 2, false);
             if (r != HB_OK) return r;
@@ -2390,6 +2389,7 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_LODS: return "LODS";
         case HB_INS_SCAS: return "SCAS";
         case HB_INS_STOS: return "STOS";
+        case HB_INS_BSF: return "BSF";
         case HB_INS_TZCNT: return "TZCNT";
         case HB_INS_LZCNT: return "LZCNT";
         case HB_INS_BSR: return "BSR";

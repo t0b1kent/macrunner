@@ -1836,11 +1836,10 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             return HB_OK;
         }
         if (op2 == 0xBC || op2 == 0xBD) {
-            /* BSF/BSR r16/32, r/m16/32. Match the x64 decoder and normalize
-               BSF through the existing TZCNT IR for non-zero sources. */
+            /* BSF/BSR r16/32, r/m16/32. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
-            out->opcode = (op2 == 0xBC) ? HB_INS_TZCNT : HB_INS_BSR;
+            out->opcode = (op2 == 0xBC) ? HB_INS_BSF : HB_INS_BSR;
             out->writes_flags = true;
             hb_result_t r = parse_modrm(d, modrm, operand16 ? 2 : 4, out, 1, 2, false);
             if (r != HB_OK) return r;

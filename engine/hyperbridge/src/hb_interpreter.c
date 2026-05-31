@@ -24,6 +24,7 @@ enum {
     TRACE_FLAG_BRANCHES      = 1u << 7,
     TRACE_FLAG_SIMD          = 1u << 8,
     TRACE_FLAG_SIMD_DATA     = 1u << 9,
+    TRACE_FLAG_BITOPS        = 1u << 10,
 };
 
 static inline void sync_arch_pc(hb_context_t* ctx) {
@@ -51,6 +52,7 @@ static void trace_refresh_runtime_flags(void) {
     if (trace_env_enabled("MACRUNNER_HB_TRACE_BRANCHES")) flags |= TRACE_FLAG_BRANCHES;
     if (trace_env_enabled("MACRUNNER_HB_TRACE_SIMD")) flags |= TRACE_FLAG_SIMD;
     if (trace_env_enabled("MACRUNNER_HB_TRACE_SIMD_DATA")) flags |= TRACE_FLAG_SIMD_DATA;
+    if (trace_env_enabled("MACRUNNER_HB_TRACE_BITOPS")) flags |= TRACE_FLAG_BITOPS;
     trace_runtime_flags = flags;
 }
 
@@ -1063,6 +1065,29 @@ static bool trace_atomics_enabled(void) {
     return (trace_runtime_flags & TRACE_FLAG_ATOMICS) != 0;
 }
 
+static int trace_bitops_selected(const hb_ir_instr_t* instr) {
+    const char* start_env = getenv("MACRUNNER_HB_TRACE_BITOPS_START");
+    const char* end_env = getenv("MACRUNNER_HB_TRACE_BITOPS_END");
+    uint64_t start, end;
+
+    if (!(trace_runtime_flags & TRACE_FLAG_BITOPS)) return 0;
+    if (!start_env || !start_env[0]) return 1;
+    if (!instr) return 0;
+    start = strtoull(start_env, NULL, 0);
+    end = (end_env && end_env[0]) ? strtoull(end_env, NULL, 0) : start;
+    if (end < start) end = start;
+    return instr->guest_addr >= start && instr->guest_addr <= end;
+}
+
+static unsigned int trace_bitops_budget(void) {
+    const char* budget_env = getenv("MACRUNNER_HB_TRACE_BITOPS_BUDGET");
+    unsigned long parsed;
+
+    if (!budget_env || !budget_env[0]) return 400;
+    parsed = strtoul(budget_env, NULL, 0);
+    return parsed ? (unsigned int)parsed : 400;
+}
+
 static const char* ir_op_name(hb_ir_op_t op) {
     switch (op) {
         case HB_IR_NOP: return "NOP";
@@ -1126,6 +1151,7 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_STOS: return "STOS";
         case HB_IR_ZERO_EXTEND: return "ZERO_EXTEND";
         case HB_IR_TRUNC: return "TRUNC";
+        case HB_IR_BSF: return "BSF";
         case HB_IR_TZCNT: return "TZCNT";
         case HB_IR_LZCNT: return "LZCNT";
         case HB_IR_BSR: return "BSR";
@@ -1521,13 +1547,36 @@ static int trace_branches_enabled(void) {
     return (trace_runtime_flags & TRACE_FLAG_BRANCHES) != 0;
 }
 
+static int trace_branch_selected(const hb_ir_instr_t* instr) {
+    const char* start_env = getenv("MACRUNNER_HB_TRACE_BRANCH_START");
+    const char* end_env = getenv("MACRUNNER_HB_TRACE_BRANCH_END");
+    uint64_t start, end;
+
+    if (!start_env || !start_env[0]) return 1;
+    if (!instr) return 0;
+    start = strtoull(start_env, NULL, 0);
+    end = (end_env && end_env[0]) ? strtoull(end_env, NULL, 0) : start;
+    if (end < start) end = start;
+    return instr->guest_addr >= start && instr->guest_addr <= end;
+}
+
+static unsigned int trace_branch_budget(void) {
+    const char* budget_env = getenv("MACRUNNER_HB_TRACE_BRANCH_BUDGET");
+    unsigned long parsed;
+
+    if (!budget_env || !budget_env[0]) return 300;
+    parsed = strtoul(budget_env, NULL, 0);
+    return parsed ? (unsigned int)parsed : 300;
+}
+
 static void trace_branch_event(hb_context_t* ctx, const hb_ir_instr_t* instr,
                                const char* phase, uint64_t rsp_before,
                                uint64_t stack_qword, uint64_t target) {
     static unsigned int branch_count;
     if (!trace_branches_enabled()) return;
-    if (++branch_count > 300) {
-        if (branch_count == 301)
+    if (!trace_branch_selected(instr)) return;
+    if (++branch_count > trace_branch_budget()) {
+        if (branch_count == trace_branch_budget() + 1)
             fprintf(stderr, "macrunner-hb-branch: budget exhausted, silencing\n");
         return;
     }
@@ -2056,18 +2105,38 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
 
             uint64_t mask = 1ULL << bit;
             uint64_t value = trunc_to_size(base, size);
+            uint64_t new_value = value;
             ctx->flags.cf = (value & mask) != 0;
             hb_lazy_flags_clear(ctx);
 
             if (instr->op == HB_IR_BTS) {
-                r = write_operand_value(ctx, &target, value | mask);
+                new_value = value | mask;
+                r = write_operand_value(ctx, &target, new_value);
                 if (r != HB_OK) return r;
             } else if (instr->op == HB_IR_BTR) {
-                r = write_operand_value(ctx, &target, value & ~mask);
+                new_value = value & ~mask;
+                r = write_operand_value(ctx, &target, new_value);
                 if (r != HB_OK) return r;
             } else if (instr->op == HB_IR_BTC) {
-                r = write_operand_value(ctx, &target, value ^ mask);
+                new_value = value ^ mask;
+                r = write_operand_value(ctx, &target, new_value);
                 if (r != HB_OK) return r;
+            }
+            if (trace_bitops_selected(instr)) {
+                static unsigned int bitop_count;
+                if (++bitop_count <= trace_bitops_budget()) {
+                    uint64_t addr = 0;
+                    if (target.type == HB_OP_MEM) addr = resolve_addr(ctx, &target);
+                    fprintf(stderr,
+                            "macrunner-hb-bitop: pc=0x%llx op=%s count=%u target_type=%d "
+                            "addr=0x%llx size=%d bit_raw=0x%llx bit=%llu mask=0x%llx "
+                            "old=0x%llx new=0x%llx cf=%u\n",
+                            (unsigned long long)instr->guest_addr, ir_op_name(instr->op), bitop_count,
+                            target.type, (unsigned long long)addr, target.size,
+                            (unsigned long long)bit_raw, (unsigned long long)bit,
+                            (unsigned long long)mask, (unsigned long long)value,
+                            (unsigned long long)trunc_to_size(new_value, size), ctx->flags.cf);
+                }
             }
             return HB_OK;
         }
@@ -3018,6 +3087,23 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             } else {
                 ctx->regs.x64.rdi = rdi;
                 if (repeated) ctx->regs.x64.rcx = count;
+            }
+            return HB_OK;
+        }
+
+        case HB_IR_BSF: {
+            if (instr->dst.type != HB_OP_REG) return HB_ERR_INTERNAL;
+            uint64_t val = 0;
+            r = read_operand_value(ctx, &instr->src1, &val);
+            if (r != HB_OK) return r;
+            hb_size_t size = instr->dst.size ? instr->dst.size : HB_SIZE_64;
+            uint64_t result = 0;
+            val = trunc_to_size(val, size);
+            hb_lazy_flags_clear(ctx);
+            ctx->flags.zf = (val == 0);
+            if (val) {
+                while (((val >> result) & 1ULL) == 0) result++;
+                write_reg_sized(ctx, instr->dst.reg, result, size);
             }
             return HB_OK;
         }

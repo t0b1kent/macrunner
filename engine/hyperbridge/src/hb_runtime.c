@@ -52,9 +52,17 @@ static void block_cache_put(hb_block_cache_t* cache, uint64_t addr, uint8_t* cod
 
 hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
     hb_jit_runtime_t* rt = calloc(1, sizeof(hb_jit_runtime_t));
+    const char* size_env;
+    size_t jit_size = 128u * 1024u * 1024u;
     if (!rt) return NULL;
     rt->ctx = ctx;
-    rt->jit_mem = hb_jit_buffer_create(65536);
+    size_env = getenv("MACRUNNER_HB_JIT_BUFFER_SIZE");
+    if (size_env && *size_env) {
+        unsigned long long parsed = strtoull(size_env, NULL, 0);
+        if (parsed >= 65536ULL && parsed <= 512ULL * 1024ULL * 1024ULL)
+            jit_size = (size_t)parsed;
+    }
+    rt->jit_mem = hb_jit_buffer_create(jit_size);
     if (!rt->jit_mem) { free(rt); return NULL; }
     rt->block_cache = block_cache_create();
     if (!rt->block_cache) {

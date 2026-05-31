@@ -32,15 +32,21 @@ the absolute path; do NOT copy 600M into the repo.
   incorrectly treated as `F3 0F BC` (TZCNT). That BSF/TZCNT fix cleared the Unity small-allocator
   sentinel-bucket crash at `UnityPlayer.dll` RVAs `0x2afe1b`/`0x2b0069`; HyperBridge tests and
   `tools/hb_oracle/fast_validate_family.sh phase1_core` pass after the fix.
-- **Current blocker (2026-05-31 09:28 local):** Phase 3 is still no-fault/no-window, but the stall
-  has advanced past the earlier media/wait suspects. Cleared since `run-20260531-071007-bsf-fix-no-tail/`:
-  `winegstreamer`, `CreatePipe`, `BCryptGenRandom`, processor-info queries, semaphore/mutex/thread
-  control, `WaitFor*Ex`, `SetThreadDescription`, COM init, USER32 message/desktop/object queries,
-  `SHGetKnownFolderPath`, and `CoTaskMemAlloc/Realloc/Free` PE-loader thunking. Latest evidence:
-  `reports/phase4-hollow-knight/run-20260531-092812-cotaskmem-fix-phase3-probe/` has `faults=0`,
-  no `CreateWindow*` call yet, successful `SHGetKnownFolderPath` + `CoTaskMemFree`, and the next
-  unmatched import boundary is `KERNEL32.dll!CreateDirectoryW` while Unity creates its LocalLow
-  profile/save directory.
+- **Current blocker (2026-05-31 14:10 local):** Phase 3 is still no-window/no-menu, but the active
+  route moved from interpreter hot-spin to hardened JIT. Cleared since
+  `run-20260531-092812-cotaskmem-fix-phase3-probe/`: `CreateDirectoryW`, advapi/EventProvider ETW
+  no-op semantics, current-process `VirtualAlloc/VirtualProtect/VirtualFree` replay into imported
+  x64 contexts, xtajit64 Unix-side memory notifications, live VM write fallback for writable guest
+  regions backed by RX Mach pages, `mr-run.sh` internal `config/env.sh` sourcing, JIT scalar load
+  width/register semantics, FS/GS/RIP-relative scalar memory operand resolution, indirect
+  `CALL/JMP` operand targets, and persistent per-run JIT runtime fallback-to-interpreter handling.
+  HyperBridge tests: `321 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core`
+  passes after the JIT fixes and spike `ntdll.so` relink. Latest evidence:
+  `reports/phase4-hollow-knight/run-20260531-140505-phase3-jit-buffer-long/` advanced with 160
+  heartbeats and no semantic/API crash until JIT buffer exhaustion at `blocks=0xb370`,
+  `steps=0x43ed9`, before Unity stdout/window. Next action: raise/evict JIT code capacity, rerun
+  Hollow Knight under the spike build, and keep Phase 3 open until main menu + input + audio +
+  rendered frame are captured.
 - **Phase 3 gate still NOT passed:** no main menu, input, audio, or rendered frame yet; latest
   screenshots are desktop-only with no game window.
 - **Run hygiene:** `scripts/mr-run.sh` for runs, `scripts/mr-clean.sh --prune` after each batch.
@@ -109,8 +115,11 @@ Gate: expanded torture/fuzz suite passes vs golden oracle; 3+ non-trivial x64 co
   `reports/phase3-runtime/post-phase3-phase0-20260530-171220-summary.jsonl`:
   `hello_x64` rc=0, `stdout_stderr_x64` rc=0.
 - Formal gate active on Hollow Knight x64. Current evidence includes successful `UnityPlayer.dll`
-  x64 `PROCESS_ATTACH`, Unity memory configuration, and allocator entry under HyperBridge; gate
-  remains open until main menu + input + audio + rendered frame are captured under the spike build.
+  x64 `PROCESS_ATTACH`, Unity memory configuration, Mono path/config startup, D3D module loads,
+  cleared Mono code-heap memory writes, and a hardened JIT route through scalar memory and indirect
+  branch families. The active blocker is now JIT code-capacity exhaustion before visible Unity
+  graphics/audio init. Gate remains open until main menu + input + audio + rendered frame are
+  captured under the spike build.
 
 ### Phase 4 — green-list bring-up ladder — ⏳ PENDING after Phase 3 Hollow Knight gate
 Gate requires ≥5 Tier-1 games playable start→gameplay for ≥30 min each. Start after Hollow Knight

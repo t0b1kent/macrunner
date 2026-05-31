@@ -159,6 +159,15 @@ sample moved `23k -> 12k -> 11k -> 10k`; top copy/bounded/store loops are no lon
 inspect the remaining top branchy memory-test/prologue blocks (`0x87ef2bf915f`,
 `0x87ef2ba32f8`, `0x87ef2ba32d4`) and promote only evidence-backed finite families.
 
+Status 2026-05-31 21:16: committed hot-loop promotion batch at `a41565b` and ran longer
+post-hotloop validation: `run-20260531-211135-phase3-post-hotloop-300s-jit/` (`MR_RUN_RC=143`,
+cleanup/prune `0`). Fallback/fault counters remain zero; log reaches Unity memory config and Mono
+paths (`Hollow Knight_Data/Managed`, `MonoBleedingEdge/etc`) but still no game window. With lower
+hot-block tracing overhead the sample remains around 10k dispatches; current top is branchy
+memory-test/control code (`TEST byte [rdx],imm; JE`, RIP-relative `CMP/Jcc`, and nearby prologue /
+epilogue blocks), so continue with evidence-backed native promotion for finite memory-test/Jcc and
+small branch/control families rather than widening speculative patches.
+
 ### ★ ALSO ACTIVE (parallel) — BULK ISA COVERAGE (operator-directed 2026-05-31)
 Stop chasing one opcode per game-run. Proactively cover the whole x86-64 ISA using the
 ALREADY-vendored `engine/wine/libs/capstone` as the decode reference + golden oracle for semantics.

@@ -883,9 +883,18 @@ static bool emit_native_extend(hb_codegen_buffer_t* buf, const hb_ir_instr_t* in
 }
 
 static bool emit_cmp_zero_set_pc(hb_codegen_buffer_t* buf, hb_cc_t cc,
-                                  uint64_t target, uint64_t fallthrough) {
+                                 uint64_t target, uint64_t fallthrough) {
+    int64_t delta = (int64_t)target - (int64_t)fallthrough;
     if (cc != HB_CC_E && cc != HB_CC_NE) return false;
     emit_cmp_imm(buf, 22, 0);
+    if (delta >= -4095 && delta <= 4095) {
+        emit_mov_imm64(buf, 21, fallthrough);
+        emit_bcond(buf, arm64_cond(cc) ^ 1, 8);
+        if (delta >= 0) emit_add_imm(buf, 21, 21, (uint32_t)delta);
+        else emit_sub_imm(buf, 21, 21, (uint32_t)(-delta));
+        emit_str_x(buf, 21, 19, (uint32_t)offsetof(hb_context_t, pc));
+        return true;
+    }
     emit_bcond(buf, arm64_cond(cc), 28);
     emit_mov_imm64(buf, 21, fallthrough);
     emit_str_x(buf, 21, 19, (uint32_t)offsetof(hb_context_t, pc));

@@ -47,7 +47,6 @@ void hb_context_destroy(hb_context_t* ctx) {
 hb_result_t hb_context_reset(hb_context_t* ctx) {
     if (!ctx) return HB_ERR_INVALID_ARG;
     memset(&ctx->regs, 0, sizeof(ctx->regs));
-    memset(ctx->x64_ymm_hi, 0, sizeof(ctx->x64_ymm_hi));
     if (ctx->arch == HB_ARCH_X86) hb_x87_reset(&ctx->regs.x86.x87);
     memset(&ctx->flags, 0, sizeof(ctx->flags));
     memset(&ctx->lazy_flags, 0, sizeof(ctx->lazy_flags));

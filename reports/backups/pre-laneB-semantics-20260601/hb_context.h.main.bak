@@ -183,9 +183,6 @@ struct hb_context {
 
     /* User data */
     void* user_data;
-
-    /* AVX YMM upper 128 bits for x64. Appended to preserve existing field offsets. */
-    uint64_t x64_ymm_hi[16][2];
 };
 
 hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend);

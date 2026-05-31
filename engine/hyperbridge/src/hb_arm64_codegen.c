@@ -957,7 +957,7 @@ static bool emit_scalar_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_ins
 }
 
 static bool emit_mem_imm_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
-                                        const hb_ir_instr_t* jcc) {
+                                         const hb_ir_instr_t* jcc) {
     hb_lazy_flags_kind_t kind;
     hb_size_t size;
     if (!op || !jcc || jcc->op != HB_IR_Jcc) return false;
@@ -982,6 +982,35 @@ static bool emit_mem_imm_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_in
     }
     emit_note_lazy_from_x20_x21_x22(buf, kind, size);
     return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+}
+
+static bool emit_zero_test_jcc_block(hb_codegen_buffer_t* buf, const hb_ir_block_t* block) {
+    const hb_ir_instr_t *xor_i, *test_i, *jcc;
+    uint64_t next_pc;
+
+    if (!block || block->instr_count != 3) return false;
+    xor_i = &block->instrs[0];
+    test_i = &block->instrs[1];
+    jcc = &block->instrs[2];
+    if (xor_i->op != HB_IR_XOR || test_i->op != HB_IR_TEST || jcc->op != HB_IR_Jcc)
+        return false;
+    if (jcc->cc != HB_CC_E && jcc->cc != HB_CC_NE) return false;
+    if (!same_plain_gpr_operand(&xor_i->dst, &xor_i->src1) ||
+        !same_plain_gpr_operand(&xor_i->dst, &xor_i->src2))
+        return false;
+    if (!same_plain_gpr_operand(&xor_i->dst, &test_i->src1) ||
+        !same_plain_gpr_operand(&xor_i->dst, &test_i->src2))
+        return false;
+
+    emit_mov_imm_compact(buf, 20, 0);
+    emit_store_x20_to_gpr_sized(buf, &xor_i->dst);
+    emit_mov_reg(buf, 21, 20);
+    emit_mov_reg(buf, 22, 20);
+    emit_note_lazy_from_x20_x21_x22(buf, HB_LAZY_FLAGS_TEST, test_i->src1.size);
+
+    next_pc = (jcc->cc == HB_CC_E) ? jcc->target : (jcc->guest_addr + jcc->guest_len);
+    emit_set_pc_imm64(buf, next_pc);
+    return true;
 }
 
 static bool emit_copy_scan_body_block(hb_codegen_buffer_t* buf, const hb_ir_block_t* block) {
@@ -2976,6 +3005,10 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         return HB_OK;
     }
     if (emit_hot_scalar_scan_loop(out, block)) {
+        emit_epilogue(out);
+        return HB_OK;
+    }
+    if (emit_zero_test_jcc_block(out, block)) {
         emit_epilogue(out);
         return HB_OK;
     }

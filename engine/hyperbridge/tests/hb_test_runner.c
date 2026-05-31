@@ -11495,6 +11495,60 @@ TEST(jit_x64_native_mem_imm_cmp_jcc_pair) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_zero_test_jcc_block_family) {
+    for (int use_byte = 0; use_byte <= 1; use_byte++) {
+        hb_size_t size = use_byte ? HB_SIZE_8 : HB_SIZE_32;
+        hb_cc_t cc = use_byte ? HB_CC_NE : HB_CC_E;
+        uint64_t target = use_byte ? 0x5010 : 0x5018;
+        uint64_t fallthrough = 0x5006;
+        hb_ir_func_t* func = hb_ir_func_create(0x5000, 0);
+        ASSERT(func != NULL);
+        hb_ir_block_t* blk = hb_ir_block_create(0, 0x5000);
+        ASSERT(blk != NULL);
+        hb_ir_cfg_add_block(func->cfg, blk);
+        func->cfg->entry = blk;
+
+        hb_ir_builder_t* b = hb_ir_builder_create(func);
+        ASSERT(b != NULL);
+        hb_ir_builder_set_block(b, blk);
+        hb_ir_operand_t reg = hb_ir_reg(HB_REG_RAX, size);
+        hb_ir_instr_t* xor_i = hb_ir_emit_binop(b, HB_IR_XOR, reg, reg, reg);
+        hb_ir_instr_t* test_i = hb_ir_emit_test(b, reg, reg);
+        hb_ir_instr_t* jcc = hb_ir_emit_jcc(b, cc, target);
+        ASSERT(xor_i && test_i && jcc);
+        xor_i->guest_addr = 0x5000; xor_i->guest_len = 2;
+        test_i->guest_addr = 0x5002; test_i->guest_len = 2;
+        jcc->guest_addr = 0x5004; jcc->guest_len = 2;
+        hb_ir_builder_destroy(b);
+
+        hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+        ASSERT(ctx != NULL);
+        ctx->pc = 0x5000;
+        ctx->regs.x64.rax = use_byte ? 0xdeadbeefcafeba77ULL : UINT64_MAX;
+        hb_exec_result_t out;
+        ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+        ASSERT(out.result == HB_OK);
+        ASSERT_EQ(out.blocks_executed, 1);
+        ASSERT(ctx->pc == (use_byte ? fallthrough : target));
+        ASSERT(ctx->regs.x64.rax == (use_byte ? 0xdeadbeefcafeba00ULL : 0));
+        bool equal = false;
+        ASSERT(hb_flags_eval_cond(ctx, HB_CC_E, &equal) == HB_OK);
+        ASSERT(equal);
+
+        hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(512);
+        hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+        ASSERT(code_buf != NULL && cg != NULL);
+        ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+        ASSERT(code_buf->size <= 180);
+        hb_arm64_codegen_destroy(cg);
+        hb_codegen_buffer_destroy(code_buf);
+
+        hb_context_destroy(ctx);
+        hb_ir_func_destroy(func);
+    }
+    tests_passed++;
+}
+
 TEST(jit_x64_hot_word_scan_loop_native) {
     uint16_t text[] = {'o', 'k', 0};
     hb_ir_func_t* func = hb_ir_func_create(0x2000, 0);
@@ -15378,6 +15432,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_logic_rmw_memory_family();
     test_jit_x64_native_mem_imm_test_jcc_pair();
     test_jit_x64_native_mem_imm_cmp_jcc_pair();
+    test_jit_x64_native_zero_test_jcc_block_family();
     test_jit_x64_hot_word_scan_loop_native();
     test_jit_x64_cmp_mem_operand_routes_to_helper();
     test_jit_x64_mul_div_family_routes_to_helper();

@@ -6,9 +6,9 @@ Reference: interpreter semantics in `engine/hyperbridge/src/hb_interpreter.c`. C
 
 ## Summary
 
-- C-helper-primary codegen: 21
+- C-helper-primary codegen: 20
 - interp-helper codegen: 123
-- native or native-hot-path emit: 17
+- native or native-hot-path emit: 18
 - terminal fault: 2
 
 Current rule: no generic success default. Every interpreter-supported IR op has an explicit codegen case. Helper-backed cases are correctness-first JIT codegen coverage and must be promoted to native emit on hot paths after JIT-vs-interpreter tests.
@@ -63,6 +63,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - Zero-store count-down tail compaction: fused zero-store/update backedges now write zero through ARM64 `XZR/WZR` and use `SUBS` to feed the E/NE backedge branch while keeping the exact lazy SUB record. The same `SUBS` compaction applies to the copy-scan counted-loop guard. Tests: `engine/hyperbridge/tests/hb_test_runner` => `371 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-011102-phase3-zero-tail-subs-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank1 zero arm `0x87ef2bf9182` shrinks `204 -> 196`.
 - Direct logical RMW result-only compaction: direct-memory `HB_IR_AND/OR/XOR` now keeps only the memory address and result live for result-only lazy flag records, dropping dead lhs/rhs scratch preservation. Tests: `engine/hyperbridge/tests/hb_test_runner` => `371 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-011514-phase3-rmw-resultonly-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; the rank1 OR arms remained below the hot-entry cutoff, so no top-12 size movement is claimed.
 - Epilogue restore/return fusion: MSVC-style stack epilogues with two saved-reg restores, optional return-value `MOV`, `ADD rsp,frame`, `POP`, and no-imm `RET` now emit as one native block; no-imm `RET` accepts both explicit `HB_OP_NONE` and the zero-initialized unset operand shape produced by some builders. Tests: `engine/hyperbridge/tests/hb_test_runner` => `372 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-013402-phase3-epilogue-ret-unset-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank4 `0x87ef2ba335c` shrinks `248 -> 108` and rank12 `0x87ef2bf9919` shrinks `236 -> 100`.
+- Indirect branch operand promotion: `HB_IR_JMP` and `HB_IR_CALL` now emit native ARM64 for 64-bit register and gated direct-memory targets, preserving interpreter order by reading the target before `CALL` pushes the return address and faulting null targets before committing `pc`. Tests: `engine/hyperbridge/tests/hb_test_runner` => `373 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-015918-phase3-indirect-branch-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; hot `jmp rax` thunks shrink `136 -> 112`, while RIP-memory `jmp [rip+disp]` thunks become helper-free at `148` bytes with the inline null guard.
 
 ## Matrix
 
@@ -112,9 +113,9 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_POP | yes | yes | native direct-stack emit + epilogue restore fusion + helper fallback | yes |
 | HB_IR_PUSHF | yes | yes | interp-helper codegen |  |
 | HB_IR_POPF | yes | yes | interp-helper codegen |  |
-| HB_IR_CALL | yes | yes | native direct-call stack push + helper fallback | yes |
+| HB_IR_CALL | yes | yes | native direct/indirect register+direct-memory stack push + helper fallback | yes |
 | HB_IR_RET | yes | yes | native direct-stack emit + no-imm unset operand support + epilogue fusion + helper fallback | yes |
-| HB_IR_JMP | yes | yes | C-helper codegen |  |
+| HB_IR_JMP | yes | yes | native direct/indirect register+direct-memory emit + helper fallback | yes |
 | HB_IR_LOOP | yes | yes | C-helper codegen |  |
 | HB_IR_JRCXZ | yes | yes | C-helper codegen |  |
 | HB_IR_SIGN_EXTEND | yes | yes | native scalar/direct-memory emit + helper fallback | yes |

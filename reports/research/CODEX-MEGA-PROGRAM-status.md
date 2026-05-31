@@ -9,7 +9,7 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-06-01 01:35 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-06-01 02:01 local):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
 immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CMP imm + Jcc` immediate
@@ -20,7 +20,7 @@ direct-memory scalar/XMM `LOAD+STORE` same-register pairs now keep loaded values
 following store.
 Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
-`372 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+`373 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
 Mono/Unity code. Latest run `run-20260601-004957-phase3-rank3-prologue-init-test-jit/` preserves
 fallback/fault/unsupported-zero with cleanup/prune `0`; the full rank3
 `STORE/STORE/PUSH/SUB; STORE0/MOV/LEA; TEST/Jcc` block now fuses and shrinks `264 -> 200`. Previous
@@ -43,9 +43,14 @@ result-only lazy flags, but the rank1 OR arms stayed below the hot-entry cutoff 
 top-12 movement to claim. Latest run `run-20260601-013402-phase3-epilogue-ret-unset-jit/` preserves
 fallback/fault/unsupported-zero with cleanup/prune `0`; MSVC epilogue restore/return blocks now
 fuse for real lifted `MOV reg,[rsp+disp]` restores and unset no-imm `RET`, shrinking rank4
-`0x87ef2ba335c` `248 -> 108` and rank12 `0x87ef2bf9919` `236 -> 100`. NEXT: continue the bulk
-JIT-codegen coverage lane from executed 64-byte hot evidence, favoring rank1 branch-arm/tail CFG
-fusion and post-rank3 XMM/default-copy tail. Keep
+`0x87ef2ba335c` `248 -> 108` and rank12 `0x87ef2bf9919` `236 -> 100`. Latest run
+`run-20260601-015918-phase3-indirect-branch-jit/` preserves fallback/fault/unsupported-zero with
+cleanup/prune `0`; `HB_IR_JMP`/`HB_IR_CALL` now have native 64-bit register/direct-memory indirect
+operand codegen with interpreter-order null-target guards. Hot `jmp rax` thunks shrink `136 -> 112`;
+RIP-memory `jmp [rip+disp]` thunks are now helper-free (`136 -> 148` bytes because the null guard is
+inline). NEXT: continue the bulk JIT-codegen coverage lane from executed 64-byte hot evidence,
+favoring post-call boolean tail fusion (`0x87ef2bf98d8` family) and branch/tail CFG fusion after the
+indirect thunk helper removal. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

@@ -4451,6 +4451,193 @@ TEST(jit_x64_native_ret_stack_family) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_indirect_branch_operand_family) {
+    uint64_t stack[8] = {0};
+    uint64_t mem_target = 0x8800;
+
+    hb_ir_func_t* jmp_reg_func = hb_ir_func_create(0x4600, 0);
+    ASSERT(jmp_reg_func != NULL);
+    hb_ir_block_t* jmp_reg_blk = hb_ir_block_create(0, 0x4600);
+    ASSERT(jmp_reg_blk != NULL);
+    hb_ir_cfg_add_block(jmp_reg_func->cfg, jmp_reg_blk);
+    jmp_reg_func->cfg->entry = jmp_reg_blk;
+    hb_ir_builder_t* b = hb_ir_builder_create(jmp_reg_func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, jmp_reg_blk);
+    hb_ir_instr_t* jmp_reg = hb_ir_emit_jmp(b, 0);
+    ASSERT(jmp_reg != NULL);
+    jmp_reg->src1 = hb_ir_reg(HB_REG_RAX, HB_SIZE_64);
+    jmp_reg->guest_addr = 0x4600; jmp_reg->guest_len = 2;
+    hb_ir_builder_destroy(b);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ctx->pc = 0x4600;
+    ctx->regs.x64.rax = 0x7700;
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, jmp_reg_func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->pc == 0x7700);
+
+    ctx->pc = 0x4600;
+    ctx->regs.x64.rax = 0;
+    ASSERT(hb_runtime_run(ctx, jmp_reg_func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_ERR_EXEC_FAULT);
+    ASSERT(out.faulted);
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(256);
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, jmp_reg_blk, code_buf) == HB_OK);
+    ASSERT(code_buf->size <= 120);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(jmp_reg_func);
+
+    hb_ir_func_t* call_reg_func = hb_ir_func_create(0x4700, 0);
+    ASSERT(call_reg_func != NULL);
+    hb_ir_block_t* call_reg_blk = hb_ir_block_create(0, 0x4700);
+    ASSERT(call_reg_blk != NULL);
+    hb_ir_cfg_add_block(call_reg_func->cfg, call_reg_blk);
+    call_reg_func->cfg->entry = call_reg_blk;
+    b = hb_ir_builder_create(call_reg_func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, call_reg_blk);
+    hb_ir_instr_t* call_reg = hb_ir_emit_call(b, 0);
+    ASSERT(call_reg != NULL);
+    call_reg->src1 = hb_ir_reg(HB_REG_RAX, HB_SIZE_64);
+    call_reg->guest_addr = 0x4700; call_reg->guest_len = 2;
+    hb_ir_builder_destroy(b);
+
+    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)stack, sizeof(stack),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = 0x4700;
+    ctx->regs.x64.rax = 0x9900;
+    ctx->regs.x64.rsp = (uint64_t)(uintptr_t)&stack[4];
+    ASSERT(hb_runtime_run(ctx, call_reg_func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->pc == 0x9900);
+    ASSERT(ctx->regs.x64.rsp == (uint64_t)(uintptr_t)&stack[3]);
+    ASSERT(stack[3] == 0x4702);
+
+    ctx->pc = 0x4700;
+    ctx->regs.x64.rax = 0;
+    ctx->regs.x64.rsp = (uint64_t)(uintptr_t)&stack[4];
+    stack[3] = 0;
+    ASSERT(hb_runtime_run(ctx, call_reg_func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_ERR_EXEC_FAULT);
+    ASSERT(ctx->regs.x64.rsp == (uint64_t)(uintptr_t)&stack[4]);
+    ASSERT(stack[3] == 0);
+
+    code_buf = hb_codegen_buffer_create(256);
+    cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, call_reg_blk, code_buf) == HB_OK);
+    ASSERT(code_buf->size <= 152);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(call_reg_func);
+
+    hb_ir_func_t* jmp_mem_func = hb_ir_func_create(0x4800, 0);
+    ASSERT(jmp_mem_func != NULL);
+    hb_ir_block_t* jmp_mem_blk = hb_ir_block_create(0, 0x4800);
+    ASSERT(jmp_mem_blk != NULL);
+    hb_ir_cfg_add_block(jmp_mem_func->cfg, jmp_mem_blk);
+    jmp_mem_func->cfg->entry = jmp_mem_blk;
+    b = hb_ir_builder_create(jmp_mem_func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, jmp_mem_blk);
+    hb_ir_instr_t* jmp_mem = hb_ir_emit_jmp(b, 0);
+    ASSERT(jmp_mem != NULL);
+    jmp_mem->src1 = hb_ir_mem(HB_REG_RBX, HB_REG_COUNT, 1, 0, HB_SIZE_64);
+    jmp_mem->guest_addr = 0x4800; jmp_mem->guest_len = 6;
+    hb_ir_builder_destroy(b);
+
+    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&mem_target, sizeof(mem_target),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = 0x4800;
+    ctx->regs.x64.rbx = (uint64_t)(uintptr_t)&mem_target;
+    ASSERT(hb_runtime_run(ctx, jmp_mem_func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->pc == mem_target);
+
+    code_buf = hb_codegen_buffer_create(256);
+    cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    ASSERT(hb_arm64_codegen_block(cg, jmp_mem_blk, code_buf) == HB_OK);
+    ASSERT(code_buf->size <= 140);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(jmp_mem_func);
+
+    hb_ir_func_t* call_mem_func = hb_ir_func_create(0x4900, 0);
+    ASSERT(call_mem_func != NULL);
+    hb_ir_block_t* call_mem_blk = hb_ir_block_create(0, 0x4900);
+    ASSERT(call_mem_blk != NULL);
+    hb_ir_cfg_add_block(call_mem_func->cfg, call_mem_blk);
+    call_mem_func->cfg->entry = call_mem_blk;
+    b = hb_ir_builder_create(call_mem_func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, call_mem_blk);
+    hb_ir_instr_t* call_mem = hb_ir_emit_call(b, 0);
+    ASSERT(call_mem != NULL);
+    call_mem->src1 = hb_ir_mem(HB_REG_RBX, HB_REG_COUNT, 1, 0, HB_SIZE_64);
+    call_mem->guest_addr = 0x4900; call_mem->guest_len = 6;
+    hb_ir_builder_destroy(b);
+
+    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    memset(stack, 0, sizeof(stack));
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)stack, sizeof(stack),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&mem_target, sizeof(mem_target),
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ctx->pc = 0x4900;
+    ctx->regs.x64.rbx = (uint64_t)(uintptr_t)&mem_target;
+    ctx->regs.x64.rsp = (uint64_t)(uintptr_t)&stack[4];
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    ASSERT(hb_runtime_run(ctx, call_mem_func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->pc == mem_target);
+    ASSERT(ctx->regs.x64.rsp == (uint64_t)(uintptr_t)&stack[3]);
+    ASSERT(stack[3] == 0x4906);
+
+    code_buf = hb_codegen_buffer_create(256);
+    cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, call_mem_blk, code_buf) == HB_OK);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    ASSERT(code_buf->size <= 168);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(call_mem_func);
+
+    tests_passed++;
+}
+
 TEST(jit_x64_native_epilogue_restore_ret_block) {
     uint64_t stack[8] = {0};
     stack[4] = 0x1111222233334444ULL; /* saved rdi */
@@ -16358,6 +16545,7 @@ int main(int argc, char** argv) {
     test_jit_push_pop();
     test_jit_x64_native_stack_push_pop_family();
     test_jit_x64_native_ret_stack_family();
+    test_jit_x64_native_indirect_branch_operand_family();
     test_jit_x64_native_epilogue_restore_ret_block();
     test_jit_commit_verify_failure_not_marked_executable();
     test_jit_load_unmapped_faults();

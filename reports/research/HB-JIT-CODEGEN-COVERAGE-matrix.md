@@ -64,6 +64,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - Direct logical RMW result-only compaction: direct-memory `HB_IR_AND/OR/XOR` now keeps only the memory address and result live for result-only lazy flag records, dropping dead lhs/rhs scratch preservation. Tests: `engine/hyperbridge/tests/hb_test_runner` => `371 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-011514-phase3-rmw-resultonly-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; the rank1 OR arms remained below the hot-entry cutoff, so no top-12 size movement is claimed.
 - Epilogue restore/return fusion: MSVC-style stack epilogues with two saved-reg restores, optional return-value `MOV`, `ADD rsp,frame`, `POP`, and no-imm `RET` now emit as one native block; no-imm `RET` accepts both explicit `HB_OP_NONE` and the zero-initialized unset operand shape produced by some builders. Tests: `engine/hyperbridge/tests/hb_test_runner` => `372 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-013402-phase3-epilogue-ret-unset-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank4 `0x87ef2ba335c` shrinks `248 -> 108` and rank12 `0x87ef2bf9919` shrinks `236 -> 100`.
 - Indirect branch operand promotion: `HB_IR_JMP` and `HB_IR_CALL` now emit native ARM64 for 64-bit register and gated direct-memory targets, preserving interpreter order by reading the target before `CALL` pushes the return address and faulting null targets before committing `pc`. Tests: `engine/hyperbridge/tests/hb_test_runner` => `373 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-015918-phase3-indirect-branch-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; hot `jmp rax` thunks shrink `136 -> 112`, while RIP-memory `jmp [rip+disp]` thunks become helper-free at `148` bytes with the inline null guard.
+- Memory-register branch specialization: direct-memory `HB_IR_TEST/CMP` with a register RHS feeding `E/NE Jcc` now emits the same branch-pair path as the immediate sibling; `TEST` branches directly from ARM64 `ANDS` while preserving exact lazy TEST/CMP records. Tests: `engine/hyperbridge/tests/hb_test_runner` => `374 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-020700-phase3-memreg-test-jcc-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; post-call boolean block `0x87ef2bf98d8` shrinks `196 -> 184`.
 
 ## Matrix
 
@@ -97,8 +98,8 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_ROR | yes | yes | interp-helper codegen |  |
 | HB_IR_SHLD | yes | yes | C-helper codegen |  |
 | HB_IR_SHRD | yes | yes | C-helper codegen |  |
-| HB_IR_CMP | yes | yes | native emit + direct-memory zero/Jcc specialization + helper fallback | yes |
-| HB_IR_TEST | yes | yes | native emit + direct-memory imm/Jcc ANDS specialization + helper fallback | yes |
+| HB_IR_CMP | yes | yes | native emit + direct-memory imm/reg Jcc specialization + helper fallback | yes |
+| HB_IR_TEST | yes | yes | native emit + direct-memory imm/reg Jcc ANDS specialization + helper fallback | yes |
 | HB_IR_CMPXCHG | yes | yes | interp-helper codegen |  |
 | HB_IR_CMPXCHG8B | yes | yes | interp-helper codegen |  |
 | HB_IR_XCHG | yes | yes | interp-helper codegen | yes |

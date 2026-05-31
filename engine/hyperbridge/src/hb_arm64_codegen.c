@@ -1267,6 +1267,36 @@ static bool emit_mem_imm_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_in
     return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
 }
 
+static bool emit_mem_reg_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
+                                         const hb_ir_instr_t* jcc) {
+    hb_lazy_flags_kind_t kind;
+    hb_size_t size;
+    if (!op || !jcc || jcc->op != HB_IR_Jcc) return false;
+    if (op->op != HB_IR_TEST && op->op != HB_IR_CMP) return false;
+    if (jcc->cc != HB_CC_E && jcc->cc != HB_CC_NE) return false;
+    if (op->src1.type != HB_OP_MEM || !is_direct_user_mem_operand(&op->src1)) return false;
+    if (!is_plain_gpr_reg_operand(&op->src2)) return false;
+    size = op->src1.size;
+    if (op->src2.size != size) return false;
+    if (size != HB_SIZE_8 && size != HB_SIZE_16 && size != HB_SIZE_32 && size != HB_SIZE_64)
+        return false;
+    if (!lazy_kind_for_scalar_op(op->op, &kind)) return false;
+
+    uint32_t off = emit_direct_mem_addr_with_offset(buf, &op->src1);
+    emit_direct_mem_load_to_x20_off(buf, size, off);
+    if (!emit_load_gpr_sized_to_reg(buf, &op->src2, 21)) return false;
+    if (op->op == HB_IR_TEST) {
+        emit_ands_reg(buf, 22, 20, 21);
+        emit_note_lazy_from_x20_x21_x22(buf, kind, size);
+        return emit_flags_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+    }
+
+    emit_sub_reg(buf, 22, 20, 21);
+    emit_mask_x_reg_to_size(buf, 22, 23, size);
+    emit_note_lazy_from_x20_x21_x22(buf, kind, size);
+    return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+}
+
 static bool emit_adjacent_mem64_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* first,
                                      const hb_ir_instr_t* second) {
     if (!jit_direct_mem_enabled() || !first || !second) return false;
@@ -3718,6 +3748,11 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         }
         if (i + 1 < block->instr_count &&
             emit_adjacent_mem64_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
+            i++;
+            continue;
+        }
+        if (i + 1 < block->instr_count &&
+            emit_mem_reg_flags_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }

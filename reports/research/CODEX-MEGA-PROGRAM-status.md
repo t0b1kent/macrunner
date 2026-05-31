@@ -20,7 +20,7 @@ direct-memory scalar/XMM `LOAD+STORE` same-register pairs now keep loaded values
 following store.
 Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
-`373 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+`374 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
 Mono/Unity code. Latest run `run-20260601-004957-phase3-rank3-prologue-init-test-jit/` preserves
 fallback/fault/unsupported-zero with cleanup/prune `0`; the full rank3
 `STORE/STORE/PUSH/SUB; STORE0/MOV/LEA; TEST/Jcc` block now fuses and shrinks `264 -> 200`. Previous
@@ -48,9 +48,11 @@ fuse for real lifted `MOV reg,[rsp+disp]` restores and unset no-imm `RET`, shrin
 cleanup/prune `0`; `HB_IR_JMP`/`HB_IR_CALL` now have native 64-bit register/direct-memory indirect
 operand codegen with interpreter-order null-target guards. Hot `jmp rax` thunks shrink `136 -> 112`;
 RIP-memory `jmp [rip+disp]` thunks are now helper-free (`136 -> 148` bytes because the null guard is
-inline). NEXT: continue the bulk JIT-codegen coverage lane from executed 64-byte hot evidence,
-favoring post-call boolean tail fusion (`0x87ef2bf98d8` family) and branch/tail CFG fusion after the
-indirect thunk helper removal. Keep
+inline). Latest run `run-20260601-020700-phase3-memreg-test-jcc-jit/` preserves fallback/fault/
+unsupported-zero with cleanup/prune `0`; direct-memory `TEST/CMP` with register RHS now shares the
+branch-pair path, and the post-call boolean block `0x87ef2bf98d8` shrinks `196 -> 184`. NEXT:
+continue the bulk JIT-codegen coverage lane from executed 64-byte hot evidence, favoring full
+post-call boolean tail fusion and branch/tail CFG fusion after the indirect thunk helper removal. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

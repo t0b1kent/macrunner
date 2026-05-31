@@ -15,15 +15,16 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 
 ## Hollow Knight Validation
 
-- Backend correction: `macrunner_hb_run_x64` only selects the JIT when `MACRUNNER_HB_BACKEND=jit`; earlier no-backend fallback-zero runs were interpreter-path evidence, not JIT-backend proof.
+- Backend correction: this lane needs both gates: `MACRUNNER_HB_X64_LOADER=1` routes the AMD64 PE through HyperBridge, and `MACRUNNER_HB_BACKEND=jit` selects the JIT. Runs missing the loader gate exit early in ARM64/ARM64EC loader startup; runs missing the backend gate are interpreter-path evidence, not JIT-backend proof.
 - Explicit-JIT throughput root cause: `run-20260531-181656-phase3-explicit-jit-hot-sample/` sampled the JIT hot path in `hb_jit_buffer_commit` / `hb_jit_buffer_make_writable` -> `__mprotect`, showing per-block whole-buffer W^X flips were the throughput blocker after codegen fallbacks reached zero.
 - Fix: MAP_JIT buffers now use `pthread_jit_write_protect_np` on Apple arm64 plus dirty-range icache flushes; the mprotect path remains the non-MAP_JIT fallback.
 - Validation: `engine/hyperbridge/tests/hb_test_runner` => `325 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS; spike `ntdll.so` relinked.
-- Run: `reports/phase4-hollow-knight/run-20260531-182453-phase3-explicit-jit-wx-600s/`
-- Result: 600s timeout (`rc=143`) with `MACRUNNER_HB_BACKEND=jit` via `scripts/mr-run.sh`; cleanup/prune `0`.
+- Run: `reports/phase4-hollow-knight/run-20260531-190238-phase3-loader-jit-blockmap-sampled/`
+- Result: 300s timeout (`rc=143`) with `MACRUNNER_HB_X64_LOADER=1 MACRUNNER_HB_BACKEND=jit` via `scripts/mr-run.sh`; cleanup/prune `0`.
 - JIT fallback evidence: `macrunner-hb-jit-fallback=0`, `JIT codegen failed=0`, `JIT helper fault=0`, `UNSUPPORTED_OPCODE=0`, `MEMORY_FAULT=0`, `runtime-fail=0`, `JIT buffer exhausted=0`.
-- Progress: Unity memory setup and Mono paths reached; no game window yet (`windows=0` at 180/360/590s).
-- Next blocker: preserve explicit-JIT fallback-zero and identify post-Mono main/UI/graphics progress and idle-state ownership. Wait semantics are not the current evidence-backed fix target: `run-20260531-175000-phase3-wait-resume-trace/` showed suspended workers resume successfully and then wait on companion handles.
+- Progress: Unity memory setup and Mono paths reached; 7,955 JIT blocks traced; no game window yet.
+- Sample evidence: main macOS thread is in `CFRunLoop`; seven `AssetGarbageCollectorHelper` workers are in `NtWaitForSingleObject`; the active x64 guest stack is dominated by UnityPlayer guest PC `0x7ffd07cc548` (module base `0x7ffd0340000`, RVA `0x48c548`, epilogue of a UnityPlayer helper). Sampled PCs did not map to JIT native block ranges, so the next probe should focus on guest-stack/UnityPlayer ownership rather than missing codegen fallback.
+- Next blocker: preserve loader-gated explicit-JIT fallback-zero and identify UnityPlayer/Mono post-bootstrap CPU ownership. Wait semantics are not the current evidence-backed fix target: `run-20260531-175000-phase3-wait-resume-trace/` showed suspended workers resume successfully and then wait on companion handles.
 
 ## Matrix
 

@@ -7,7 +7,7 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
-## NEXT → Phase 3 formal Tier-1 gate in progress — explicit-JIT fallback-zero verified; post-Mono no-window/idle blocker
+## NEXT → Phase 3 formal Tier-1 gate in progress — loader-gated explicit-JIT fallback-zero; UnityPlayer post-Mono CPU/no-window blocker
 
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
@@ -33,10 +33,12 @@ the absolute path; do NOT copy 600M into the repo.
   sentinel-bucket crash at `UnityPlayer.dll` RVAs `0x2afe1b`/`0x2b0069`; HyperBridge tests and
   `tools/hb_oracle/fast_validate_family.sh phase1_core` pass after the fix.
 - **Current blocker (2026-05-31 18:35 local):** Phase 3 is still no-window/no-menu. Important
-  evidence correction: `macrunner_hb_run_x64` only selects the JIT when
-  `MACRUNNER_HB_BACKEND=jit`; earlier 17:21/17:50 fallback-zero runs without that env were
-  interpreter-path evidence, not proof of the JIT backend. Explicit-JIT probes then showed zero
-  codegen fallbacks but severe startup throughput loss from per-block whole-buffer W^X flips
+  evidence correction: this lane needs both gates: `MACRUNNER_HB_X64_LOADER=1` to route the AMD64
+  PE through HyperBridge and `MACRUNNER_HB_BACKEND=jit` to select the JIT. Runs missing the loader
+  gate exit early in ARM64/ARM64EC loader startup (`load_ntdll_functions` reports missing
+  ARM64EC-only exports); runs missing the backend gate are interpreter-path evidence, not proof of
+  the JIT backend. Loader-gated explicit-JIT probes showed zero codegen fallbacks but severe
+  startup throughput loss from per-block whole-buffer W^X flips
   (`hb_jit_buffer_commit`/`hb_jit_buffer_make_writable` -> `__mprotect`). The current fix uses the
   macOS MAP_JIT thread write-protect API (`pthread_jit_write_protect_np`) plus dirty-range icache
   flushing, preserving the fallback safety net while removing the mprotect hot path. Cleared since
@@ -49,16 +51,18 @@ the absolute path; do NOT copy 600M into the repo.
   explicit JIT codegen cases for every interpreter-supported `HB_IR_*` op (correctness-first helper
   route where native emit is not yet promoted), plus the MAP_JIT W^X fix. HyperBridge tests:
   `325 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` PASS after the
-  JIT fixes and spike `ntdll.so` relink. Latest explicit-JIT evidence:
-  `reports/phase4-hollow-knight/run-20260531-182453-phase3-explicit-jit-wx-600s/` ran 600s with
-  `MACRUNNER_HB_BACKEND=jit`, reached Unity memory setup and Mono paths, and had zero
-  `macrunner-hb-jit-fallback`, `JIT codegen failed`, `JIT helper fault`, `JIT buffer exhausted`,
-  `MEMORY_FAULT`, `UNSUPPORTED_OPCODE`, or `runtime-fail`. No game window appeared and all window
-  captures reported `windows=0`. Do not patch wait semantics speculatively: the latest
-  wait-semantic trace (`run-20260531-175000-phase3-wait-resume-trace/`) showed suspended workers
-  are resumed successfully and then idle on companion waits. Next evidence pass should identify
-  post-Mono main/UI/graphics progress and idle-state ownership while preserving explicit-JIT
-  fallback-zero.
+  JIT fixes and spike `ntdll.so` relink. Latest loader-gated explicit-JIT evidence:
+  `reports/phase4-hollow-knight/run-20260531-190238-phase3-loader-jit-blockmap-sampled/` ran 300s
+  with `MACRUNNER_HB_X64_LOADER=1 MACRUNNER_HB_BACKEND=jit`, reached Unity memory setup and Mono
+  paths, traced 7,955 JIT blocks, and had zero `macrunner-hb-jit-fallback`, `JIT codegen failed`,
+  `JIT helper fault`, `JIT buffer exhausted`, `MEMORY_FAULT`, `UNSUPPORTED_OPCODE`, or
+  `runtime-fail`. Samples show the main macOS thread in `CFRunLoop`, seven
+  `AssetGarbageCollectorHelper` workers in `NtWaitForSingleObject`, and the active x64 guest stack
+  dominated by UnityPlayer guest PC `0x7ffd07cc548` (module base `0x7ffd0340000`, RVA `0x48c548`,
+  epilogue of a UnityPlayer helper). No game window yet. Do not patch wait semantics
+  speculatively: `run-20260531-175000-phase3-wait-resume-trace/` showed suspended workers resume
+  successfully and then idle on companion waits. Next evidence pass should identify the
+  UnityPlayer/Mono post-bootstrap CPU path while preserving loader-gated explicit-JIT fallback-zero.
 - **Phase 3 gate still NOT passed:** no main menu, input, audio, or rendered frame yet; latest
   screenshots are desktop-only with no game window.
 - **Run hygiene:** `scripts/mr-run.sh` for runs, `scripts/mr-clean.sh --prune` after each batch.
@@ -73,11 +77,11 @@ fallbacks on the Hollow Knight hot path to zero. Deliverable:
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md`. See "★ PRIORITY INSERT #2 — BULK JIT CODEGEN
 COVERAGE" in the program doc.
 
-Status 2026-05-31 18:35: first bulk pass published in
-`reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md`; explicit-JIT Hollow Knight 600s run
-(`run-20260531-182453-phase3-explicit-jit-wx-600s/`) shows fallback-zero after the MAP_JIT W^X
-fix. Keep promoting helper-backed hot IR to native emit when profiling proves a hot path, but do
-not regress the explicit-JIT fallback-zero gate.
+Status 2026-05-31 19:10: first bulk pass published in
+`reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md`; loader-gated explicit-JIT Hollow Knight run
+(`run-20260531-190238-phase3-loader-jit-blockmap-sampled/`) shows fallback-zero after the MAP_JIT
+W^X fix. Keep promoting helper-backed hot IR to native emit when profiling proves a hot path, but
+do not regress the `MACRUNNER_HB_X64_LOADER=1 MACRUNNER_HB_BACKEND=jit` fallback-zero gate.
 
 ### ★ ALSO ACTIVE (parallel) — BULK ISA COVERAGE (operator-directed 2026-05-31)
 Stop chasing one opcode per game-run. Proactively cover the whole x86-64 ISA using the
@@ -149,13 +153,14 @@ Gate: expanded torture/fuzz suite passes vs golden oracle; 3+ non-trivial x64 co
   MAP_JIT W^X fix for explicit-JIT throughput. HyperBridge tests: `325 passed, 0 failed`;
   `tools/hb_oracle/fast_validate_family.sh phase1_core` PASS after the W^X fix and spike
   `ntdll.so` relink. Latest explicit-JIT evidence:
-  `reports/phase4-hollow-knight/run-20260531-182453-phase3-explicit-jit-wx-600s/` ran 600s with
-  `MACRUNNER_HB_BACKEND=jit`, reached Unity memory setup and Mono paths, and had zero
+  `reports/phase4-hollow-knight/run-20260531-190238-phase3-loader-jit-blockmap-sampled/` ran 300s
+  with `MACRUNNER_HB_X64_LOADER=1 MACRUNNER_HB_BACKEND=jit`, reached Unity memory setup and Mono
+  paths, traced 7,955 JIT blocks, and had zero
   `macrunner-hb-jit-fallback`, `JIT codegen failed`, `JIT helper fault`, `JIT buffer exhausted`,
   `MEMORY_FAULT`, `UNSUPPORTED_OPCODE`, or `runtime-fail`. No game window appeared and all window
-  captures reported `windows=0`; next evidence pass is post-Mono main/UI/graphics progress and
-  idle-state ownership while preserving explicit-JIT fallback-zero. Gate remains open until main
-  menu + input + audio + rendered frame are captured under the spike build.
+  captures remain absent; next evidence pass is UnityPlayer/Mono post-bootstrap CPU ownership while
+  preserving loader-gated explicit-JIT fallback-zero. Gate remains open until main menu + input +
+  audio + rendered frame are captured under the spike build.
 
 ### Phase 4 — green-list bring-up ladder — ⏳ PENDING after Phase 3 Hollow Knight gate
 Gate requires ≥5 Tier-1 games playable start→gameplay for ≥30 min each. Start after Hollow Knight

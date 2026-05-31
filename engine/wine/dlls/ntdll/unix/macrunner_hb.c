@@ -7864,6 +7864,16 @@ static BOOL macrunner_hb_try_thread_creation_semantic( hb_context_t *ctx,
             RtlSetLastWin32Error( ERROR_SUCCESS );
             *ret = previous;
         }
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            fprintf( stderr, "macrunner-hb-wait-semantic: thread-state import=%s!%s pc=%p rsp=%p "
+                     "handle=%p status=%08lx previous=%lu ret=%p last_error=%lu\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)args[0],
+                     (unsigned long)status, (unsigned long)previous, (void *)(uintptr_t)*ret,
+                     (unsigned long)NtCurrentTeb()->LastErrorValue );
+            fflush( stderr );
+        }
         return TRUE;
     }
 

@@ -19,7 +19,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - Result: 600s timeout (`rc=143`) with `scripts/mr-run.sh`; cleanup/prune `0`.
 - JIT fallback evidence: `macrunner-hb-jit-fallback=0`, `JIT codegen failed=0`, `UNSUPPORTED_OPCODE=0`, `MEMORY_FAULT=0`, `runtime-fail=0`, `JIT buffer exhausted=0`.
 - Progress: Unity/Mono setup reached (`MonoBleedingEdge` paths present); no game window yet.
-- Next blocker: sample shows `macrunner_hb_x64_import_context` -> `macrunner_hb_try_kernel32_handle_semantic` -> `NtWaitForSingleObject`; bounded ABI import trace does not cover this semantic path, so add wait-semantic tracing while preserving fallback-zero and promoting helper-backed hot IR ops.
+- Next blocker: sample shows `macrunner_hb_x64_import_context` -> `macrunner_hb_try_kernel32_handle_semantic` -> `NtWaitForSingleObject`; bounded ABI import trace does not cover this semantic path, so a narrow wait-semantic trace was added. `run-20260531-175000-phase3-wait-resume-trace/` shows suspended workers are resumed successfully and then idle on companion waits, so do not patch wait semantics without new evidence. Preserve fallback-zero and continue main-thread post-Mono progress tracing plus helper-backed hot-IR promotion.
 
 ## Matrix
 

@@ -52,8 +52,13 @@ the absolute path; do NOT copy 600M into the repo.
   buffer exhaustion. The game still did not create a window; a 3s/5s macOS sample puts the hot stack
   under `macrunner_hb_x64_import_context` → `macrunner_hb_try_kernel32_handle_semantic` →
   `NtWaitForSingleObject`. A bounded `MACRUNNER_HB_TRACE_ABI=1` rerun did not emit these semantic
-  imports, so the next evidence pass should add a bounded wait-semantic trace for
-  handle/timeout/set-event state while preserving the fallback-zero JIT baseline.
+  imports, so a narrow `MACRUNNER_HB_TRACE_WAIT_SEMANTIC=1` trace was added at the semantic layer.
+  Latest trace:
+  `reports/phase4-hollow-knight/run-20260531-175000-phase3-wait-resume-trace/` shows seven
+  suspended `CreateThread` calls followed by matching successful `ResumeThread` calls
+  (`previous=1`), ready semaphore waits that return, then worker-side infinite waits on companion
+  handles. Do not patch wait semantics speculatively; next evidence pass should identify the
+  main-thread progress blocker after Mono/worker bootstrap while preserving fallback-zero.
 - **Phase 3 gate still NOT passed:** no main menu, input, audio, or rendered frame yet; latest
   screenshots are desktop-only with no game window.
 - **Run hygiene:** `scripts/mr-run.sh` for runs, `scripts/mr-clean.sh --prune` after each batch.

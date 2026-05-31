@@ -21,10 +21,11 @@ following store.
 Parallel Lane B
 ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
 `369 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
-Mono/Unity code. Latest run `run-20260601-003120-phase3-logic-result-only-flags-jit/` preserves
-fallback/fault/unsupported-zero with cleanup/prune `0`; logical lazy flags now skip dead lhs/rhs stores,
-shrinking bit guards `0x87ef2bf915f` and `0x87ef2bf916f` `160 -> 156`, rank3 `284 -> 280`, rank6
-`156 -> 152`, rank8 `148 -> 144`, rank9 `156 -> 152`, and rank10 `208 -> 204`. Previous
+Mono/Unity code. Latest run `run-20260601-004401-phase3-lazy-xzr-zero-jit/` preserves
+fallback/fault/unsupported-zero with cleanup/prune `0`; lazy-flag records now use ARM64 zero-register
+stores for zero `count`/`materialized_mask` fields, shrinking rank1 `156 -> 148`, rank2 `212 -> 204`,
+rank3 `280 -> 264`, rank4 `256 -> 248`, rank6 `152 -> 144`, rank7 `168 -> 160`, rank8 `144 -> 136`,
+rank9 `152 -> 144`, rank10 `204 -> 196`, rank11 `248 -> 240`, and rank12 `244 -> 236`. Previous
 zero-store/update run `run-20260601-002629-phase3-zero-store-backedge-jit/` moved targeted bit-loop
 block `0x87ef2bf9182` `448 -> 212`. NEXT: continue from executed 64-byte hot evidence, favoring the
 remaining rank1/rank2 bit-test/RMW arms and rank3 prologue/XMM/branch tail. Keep

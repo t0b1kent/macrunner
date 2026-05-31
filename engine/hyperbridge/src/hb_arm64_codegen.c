@@ -1531,8 +1531,9 @@ static bool emit_direct_logic_rmw(hb_codegen_buffer_t* buf, const hb_ir_instr_t*
         sized.size = instr->dst.size;
         if (!emit_load_gpr_sized_to_reg(buf, &sized, 21)) return false;
     } else {
-        emit_mov_imm64(buf, 21, (uint64_t)instr->src2.imm);
-        emit_mask_x_reg_to_size(buf, 21, 23, instr->dst.size);
+        emit_mov_imm_compact(buf, 21, (uint64_t)instr->src2.imm);
+        if (!imm_fits_size((uint64_t)instr->src2.imm, instr->dst.size))
+            emit_mask_x_reg_to_size(buf, 21, 23, instr->dst.size);
     }
     emit_mov_reg(buf, 2, 21);
 

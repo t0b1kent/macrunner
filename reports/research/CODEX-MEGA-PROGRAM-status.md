@@ -9,7 +9,7 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ## NEXT → Phase 3 Hollow Knight — bulk JIT codegen coverage / hot Mono-Unity helper elimination
 
-**Resume checkpoint (2026-06-01 02:01 local):** Hollow Knight remains loader-gated explicit-JIT
+**Resume checkpoint (2026-06-01 02:31 local, base HEAD `ba1a74e`):** Hollow Knight remains loader-gated explicit-JIT
 fallback/fault/unsupported-zero after scalar `MOV`, stack-control, extend, packed XMM move, near
 conditional-PC, zero-test Jcc, lazy-flag record, adjacent mem64 pair, arithmetic/logical small
 immediate, direct `STORE`/`MOV` immediate compaction, and direct-memory `TEST/CMP imm + Jcc` immediate
@@ -19,8 +19,8 @@ The rank3 local-init triple `STORE imm; MOV same-base; LEA same-base` now also p
 direct-memory scalar/XMM `LOAD+STORE` same-register pairs now keep loaded values live for the
 following store.
 Parallel Lane B
-ISA merge is included in HEAD history; merged `hb_test_runner` baseline after this batch is
-`374 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
+ISA merge is included in HEAD history; merged `hb_test_runner` baseline at this checkpoint is
+`375 passed, 0 failed`, fast validation PASS. Current blocker is still throughput/no-window in hot
 Mono/Unity code. Latest run `run-20260601-004957-phase3-rank3-prologue-init-test-jit/` preserves
 fallback/fault/unsupported-zero with cleanup/prune `0`; the full rank3
 `STORE/STORE/PUSH/SUB; STORE0/MOV/LEA; TEST/Jcc` block now fuses and shrinks `264 -> 200`. Previous
@@ -50,9 +50,14 @@ operand codegen with interpreter-order null-target guards. Hot `jmp rax` thunks 
 RIP-memory `jmp [rip+disp]` thunks are now helper-free (`136 -> 148` bytes because the null guard is
 inline). Latest run `run-20260601-020700-phase3-memreg-test-jcc-jit/` preserves fallback/fault/
 unsupported-zero with cleanup/prune `0`; direct-memory `TEST/CMP` with register RHS now shares the
-branch-pair path, and the post-call boolean block `0x87ef2bf98d8` shrinks `196 -> 184`. NEXT:
-continue the bulk JIT-codegen coverage lane from executed 64-byte hot evidence, favoring full
-post-call boolean tail fusion and branch/tail CFG fusion after the indirect thunk helper removal. Keep
+branch-pair path, and the post-call boolean block `0x87ef2bf98d8` shrinks `196 -> 184`. Latest run
+`run-20260601-022903-phase3-setcc-sequence-jit/` preserves fallback/fault/unsupported-zero with
+cleanup/prune `0`; `HB_IR_SETcc` now has native E/NE scalar-flags materialization for adjacent and
+one-`MOV`-intervened sequences, with register and direct-memory byte destinations covered. No
+top-12 movement is claimed because the observed `SETE` fallthrough is behind a branch boundary in
+this sample. NEXT: continue the bulk JIT-codegen coverage lane from executed 64-byte hot evidence,
+favoring full post-call boolean tail fusion plus branch/fallthrough CFG fusion so the condition
+materialization blocks behind hot branches compile as one native path. Keep
 `reports/research/HB-JIT-CODEGEN-COVERAGE-matrix.md` and
 `reports/research/HB-X64-ISA-COVERAGE-matrix.md` current, validate JIT-vs-interpreter/oracle per family,
 run Hollow Knight with `scripts/mr-run.sh`, and prune with `scripts/mr-clean.sh --prune`.

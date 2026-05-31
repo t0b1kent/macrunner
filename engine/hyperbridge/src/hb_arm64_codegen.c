@@ -176,6 +176,11 @@ static void emit_bcond(hb_codegen_buffer_t* buf, int cond, int32_t off) {
     emit_u32(buf, 0x54000000 | (imm19 << 5) | (cond & 0xF));
 }
 
+static void emit_cset_w(hb_codegen_buffer_t* buf, int rd, int cond) {
+    /* CSET Wd, cond == CSINC Wd, WZR, WZR, invert(cond). */
+    emit_u32(buf, 0x1a9f07e0 | (((cond ^ 1) & 0xf) << 12) | (rd & 31));
+}
+
 static void patch_u32(hb_codegen_buffer_t* buf, size_t pos, uint32_t insn) {
     if (!buf || !buf->code || pos + 4 > buf->size) return;
     buf->code[pos] = (uint8_t)(insn & 0xff);
@@ -1213,6 +1218,92 @@ static bool emit_scalar_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_ins
         emit_store_x20_to_gpr_sized(buf, &op->dst);
     }
     return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
+}
+
+static bool emit_scalar_flags_result_to_x22(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op) {
+    hb_lazy_flags_kind_t kind;
+    hb_size_t size;
+    bool writes_dst = false;
+    if (!op || !lazy_kind_for_scalar_op(op->op, &kind)) return false;
+
+    if (op->op == HB_IR_ADD || op->op == HB_IR_SUB ||
+        op->op == HB_IR_AND || op->op == HB_IR_OR || op->op == HB_IR_XOR) {
+        if (!is_plain_gpr_reg_operand(&op->dst) || !is_plain_gpr_reg_operand(&op->src1) ||
+            (op->src2.type == HB_OP_REG && !is_plain_gpr_reg_operand(&op->src2)) ||
+            (op->src2.type != HB_OP_REG && op->src2.type != HB_OP_IMM))
+            return false;
+        size = op->dst.size;
+        writes_dst = true;
+    } else if (op->op == HB_IR_CMP || op->op == HB_IR_TEST) {
+        if (op->src1.type == HB_OP_REG && op->src1.reg_offset != 0) return false;
+        if (op->src2.type == HB_OP_REG && op->src2.reg_offset != 0) return false;
+        if (op->src2.type != HB_OP_REG && op->src2.type != HB_OP_IMM) return false;
+        size = op->src1.size;
+    } else {
+        return false;
+    }
+    if (size != HB_SIZE_8 && size != HB_SIZE_16 && size != HB_SIZE_32 && size != HB_SIZE_64)
+        return false;
+
+    if (!emit_scalar_operand_to_x20(buf, &op->src1, size)) return false;
+    if (!emit_scalar_operand_to_x21(buf, &op->src2, size)) return false;
+    switch (op->op) {
+        case HB_IR_ADD: emit_add_reg(buf, 22, 20, 21); break;
+        case HB_IR_SUB:
+        case HB_IR_CMP: emit_sub_reg(buf, 22, 20, 21); break;
+        case HB_IR_AND:
+        case HB_IR_TEST: emit_and_reg(buf, 22, 20, 21); break;
+        case HB_IR_OR:  emit_orr_reg(buf, 22, 20, 21); break;
+        case HB_IR_XOR: emit_eor_reg(buf, 22, 20, 21); break;
+        default: return false;
+    }
+    emit_mask_x_reg_to_size(buf, 22, 23, size);
+    emit_note_lazy_from_x20_x21_x22(buf, kind, size);
+    if (writes_dst) {
+        emit_mov_reg(buf, 20, 22);
+        emit_store_x20_to_gpr_sized(buf, &op->dst);
+    }
+    return true;
+}
+
+static bool can_emit_flags_safe_scalar_mov(const hb_ir_instr_t* instr) {
+    if (!instr || instr->op != HB_IR_MOV) return false;
+    if (!is_gpr_reg_operand(&instr->dst)) return false;
+    if (instr->src1.type == HB_OP_REG) return is_gpr_reg_operand(&instr->src1);
+    return instr->src1.type == HB_OP_IMM;
+}
+
+static bool emit_store_setcc_w20(hb_codegen_buffer_t* buf, const hb_ir_operand_t* dst) {
+    if (!dst || dst->size != HB_SIZE_8) return false;
+    if (dst->type == HB_OP_REG && is_gpr_reg_operand(dst)) {
+        emit_store_x20_to_gpr_sized(buf, dst);
+        return true;
+    }
+    if (dst->type == HB_OP_MEM && jit_direct_mem_enabled() && is_direct_user_mem_operand(dst)) {
+        uint32_t off = emit_direct_mem_addr_with_offset(buf, dst);
+        emit_direct_mem_store_from_x20_off(buf, HB_SIZE_8, off);
+        return true;
+    }
+    return false;
+}
+
+static bool emit_scalar_flags_setcc_sequence(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
+                                             const hb_ir_instr_t* maybe_mov,
+                                             const hb_ir_instr_t* setcc) {
+    if (!setcc || setcc->op != HB_IR_SETcc) return false;
+    if (setcc->cc != HB_CC_E && setcc->cc != HB_CC_NE) return false;
+    if (!((setcc->dst.type == HB_OP_REG && is_gpr_reg_operand(&setcc->dst)) ||
+          (setcc->dst.type == HB_OP_MEM && jit_direct_mem_enabled() &&
+           is_direct_user_mem_operand(&setcc->dst))))
+        return false;
+    if (setcc->dst.size != HB_SIZE_8) return false;
+    if (maybe_mov && !can_emit_flags_safe_scalar_mov(maybe_mov)) return false;
+
+    if (!emit_scalar_flags_result_to_x22(buf, op)) return false;
+    if (maybe_mov && !emit_native_scalar_mov(buf, maybe_mov)) return false;
+    emit_cmp_imm(buf, 22, 0);
+    emit_cset_w(buf, 20, arm64_cond(setcc->cc));
+    return emit_store_setcc_w20(buf, &setcc->dst);
 }
 
 static bool emit_test_same_reg_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
@@ -3729,6 +3820,17 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
             emit_store_imm_mov_lea_same_base(out, &block->instrs[i], &block->instrs[i + 1],
                                              &block->instrs[i + 2])) {
             i += 2;
+            continue;
+        }
+        if (i + 2 < block->instr_count &&
+            emit_scalar_flags_setcc_sequence(out, &block->instrs[i], &block->instrs[i + 1],
+                                             &block->instrs[i + 2])) {
+            i += 2;
+            continue;
+        }
+        if (i + 1 < block->instr_count &&
+            emit_scalar_flags_setcc_sequence(out, &block->instrs[i], NULL, &block->instrs[i + 1])) {
+            i++;
             continue;
         }
         if (i + 1 < block->instr_count &&

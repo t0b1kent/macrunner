@@ -6,9 +6,9 @@ Reference: interpreter semantics in `engine/hyperbridge/src/hb_interpreter.c`. C
 
 ## Summary
 
-- C-helper-primary codegen: 20
+- C-helper-primary codegen: 21
 - interp-helper codegen: 123
-- native or native-hot-path emit: 18
+- native or native-hot-path emit: 21
 - terminal fault: 2
 
 Current rule: no generic success default. Every interpreter-supported IR op has an explicit codegen case. Helper-backed cases are correctness-first JIT codegen coverage and must be promoted to native emit on hot paths after JIT-vs-interpreter tests.
@@ -65,6 +65,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 - Epilogue restore/return fusion: MSVC-style stack epilogues with two saved-reg restores, optional return-value `MOV`, `ADD rsp,frame`, `POP`, and no-imm `RET` now emit as one native block; no-imm `RET` accepts both explicit `HB_OP_NONE` and the zero-initialized unset operand shape produced by some builders. Tests: `engine/hyperbridge/tests/hb_test_runner` => `372 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-013402-phase3-epilogue-ret-unset-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; rank4 `0x87ef2ba335c` shrinks `248 -> 108` and rank12 `0x87ef2bf9919` shrinks `236 -> 100`.
 - Indirect branch operand promotion: `HB_IR_JMP` and `HB_IR_CALL` now emit native ARM64 for 64-bit register and gated direct-memory targets, preserving interpreter order by reading the target before `CALL` pushes the return address and faulting null targets before committing `pc`. Tests: `engine/hyperbridge/tests/hb_test_runner` => `373 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-015918-phase3-indirect-branch-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; hot `jmp rax` thunks shrink `136 -> 112`, while RIP-memory `jmp [rip+disp]` thunks become helper-free at `148` bytes with the inline null guard.
 - Memory-register branch specialization: direct-memory `HB_IR_TEST/CMP` with a register RHS feeding `E/NE Jcc` now emits the same branch-pair path as the immediate sibling; `TEST` branches directly from ARM64 `ANDS` while preserving exact lazy TEST/CMP records. Tests: `engine/hyperbridge/tests/hb_test_runner` => `374 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-020700-phase3-memreg-test-jcc-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; post-call boolean block `0x87ef2bf98d8` shrinks `196 -> 184`.
+- SETcc condition materialization: `HB_IR_SETcc` now has a native hot path for `E/NE` conditions fed by scalar flag producers, including the hot `TEST; MOV; SETE` shape while preserving the same lazy flag record for later materialization. Register and direct-memory byte destinations are covered; generic/parity/complex operands keep the helper fallback. Tests: `engine/hyperbridge/tests/hb_test_runner` => `375 passed, 0 failed`; `tools/hb_oracle/fast_validate_family.sh phase1_core` => PASS. Hollow Knight `run-20260601-022903-phase3-setcc-sequence-jit/` preserves fallback/fault/unsupported-zero with cleanup/prune `0`; no top-12 movement is claimed because the observed `SETE` fallthrough is behind a branch boundary in this 90s sample.
 
 ## Matrix
 
@@ -108,6 +109,8 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_SAHF | yes | yes | C-helper codegen |  |
 | HB_IR_CPUID | yes | yes | C-helper codegen |  |
 | HB_IR_XGETBV | yes | yes | C-helper codegen |  |
+| HB_IR_SETcc | yes | yes | native E/NE scalar-flags SETcc sequence + C-helper fallback | yes |
+| HB_IR_CMOVcc | yes | yes | C-helper codegen |  |
 | HB_IR_LOAD | yes | yes | native scalar/XMM direct-memory emit + adjacent scalar/XMM pair + helper fallback | yes |
 | HB_IR_STORE | yes | yes | native scalar/XMM direct-memory emit + adjacent scalar/XMM pair + helper fallback | yes |
 | HB_IR_PUSH | yes | yes | native direct-stack emit + helper fallback | yes |
@@ -117,6 +120,7 @@ Current rule: no generic success default. Every interpreter-supported IR op has 
 | HB_IR_CALL | yes | yes | native direct/indirect register+direct-memory stack push + helper fallback | yes |
 | HB_IR_RET | yes | yes | native direct-stack emit + no-imm unset operand support + epilogue fusion + helper fallback | yes |
 | HB_IR_JMP | yes | yes | native direct/indirect register+direct-memory emit + helper fallback | yes |
+| HB_IR_Jcc | yes | yes | native scalar/direct-memory E/NE branch pairs + helper fallback | yes |
 | HB_IR_LOOP | yes | yes | C-helper codegen |  |
 | HB_IR_JRCXZ | yes | yes | C-helper codegen |  |
 | HB_IR_SIGN_EXTEND | yes | yes | native scalar/direct-memory emit + helper fallback | yes |

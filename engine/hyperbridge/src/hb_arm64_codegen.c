@@ -683,6 +683,15 @@ static bool adjacent_mem64_pair_offset(const hb_ir_operand_t* op, uint32_t* off)
     return true;
 }
 
+static bool stack_store_reg64_at(const hb_ir_instr_t* instr, int64_t disp) {
+    return instr && instr->op == HB_IR_STORE &&
+           instr->src1.type == HB_OP_MEM && instr->src1.size == HB_SIZE_64 &&
+           instr->src1.mem.base == HB_REG_RSP && instr->src1.mem.index == HB_REG_COUNT &&
+           instr->src1.mem.scale == 1 && instr->src1.mem.disp == disp &&
+           instr->src1.mem.segment == 0 && !instr->src1.mem.addr32 &&
+           instr->src2.type == HB_OP_REG && instr->src2.size == HB_SIZE_64;
+}
+
 static void emit_load_xmm_to_x20_x22(hb_codegen_buffer_t* buf, hb_reg_t reg) {
     uint32_t off = x64_xmm_reg_off(reg);
     emit_ldr_x(buf, 20, 19, off);
@@ -1120,6 +1129,46 @@ static bool emit_adjacent_mem64_pair(hb_codegen_buffer_t* buf, const hb_ir_instr
     }
 
     return false;
+}
+
+static bool emit_stack_spill_push_sub_prologue(hb_codegen_buffer_t* buf,
+                                               const hb_ir_instr_t* store1,
+                                               const hb_ir_instr_t* store2,
+                                               const hb_ir_instr_t* push,
+                                               const hb_ir_instr_t* sub) {
+    uint64_t frame;
+    uint32_t push_off, pair_off;
+    if (!jit_direct_mem_enabled() || !store1 || !store2 || !push || !sub) return false;
+    if (!stack_store_reg64_at(store1, 8) || !stack_store_reg64_at(store2, 16))
+        return false;
+    if (push->op != HB_IR_PUSH || push->src1.type != HB_OP_REG ||
+        !is_plain_gpr_reg_operand(&push->src1) || push->src1.size != HB_SIZE_64)
+        return false;
+    if (sub->op != HB_IR_SUB ||
+        !is_plain_gpr_reg_operand(&sub->dst) || !is_plain_gpr_reg_operand(&sub->src1) ||
+        sub->dst.reg != HB_REG_RSP || sub->src1.reg != HB_REG_RSP ||
+        sub->dst.size != HB_SIZE_64 || sub->src1.size != HB_SIZE_64 ||
+        sub->src2.type != HB_OP_IMM || sub->src2.imm < 0)
+        return false;
+    frame = (uint64_t)sub->src2.imm;
+    if (frame > 480 || (frame & 7)) return false;
+    push_off = (uint32_t)frame;
+    pair_off = (uint32_t)frame + 16;
+
+    emit_ldr_x(buf, 20, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+    emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(store1->src2.reg));
+    emit_ldr_x(buf, 22, 19, (uint32_t)x64_reg_off(store2->src2.reg));
+    emit_ldr_x(buf, 23, 19, (uint32_t)x64_reg_off(push->src1.reg));
+    emit_sub_imm(buf, 20, 20, (uint32_t)(frame + 8));
+    emit_str_x(buf, 23, 20, push_off);
+    emit_stp_x(buf, 21, 22, 20, pair_off);
+    emit_str_x(buf, 20, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
+
+    emit_mov_reg(buf, 22, 20);
+    emit_add_imm(buf, 20, 22, (uint32_t)frame);
+    emit_mov_imm_compact(buf, 21, frame);
+    emit_note_lazy_from_x20_x21_x22(buf, HB_LAZY_FLAGS_SUB, HB_SIZE_64);
+    return true;
 }
 
 static bool emit_zero_test_jcc_block(hb_codegen_buffer_t* buf, const hb_ir_block_t* block) {
@@ -3152,6 +3201,12 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         return HB_OK;
     }
     for (size_t i = 0; i < block->instr_count; i++) {
+        if (i + 3 < block->instr_count &&
+            emit_stack_spill_push_sub_prologue(out, &block->instrs[i], &block->instrs[i + 1],
+                                               &block->instrs[i + 2], &block->instrs[i + 3])) {
+            i += 3;
+            continue;
+        }
         if (i + 1 < block->instr_count &&
             emit_adjacent_mem64_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;

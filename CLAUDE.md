@@ -15,6 +15,22 @@ For ANY heavy read/search/index work, route through the **context-mode MCP** (`c
   context-mode is genuinely unavailable, and say so explicitly.
 This is a recurring miss — the operator has flagged it repeatedly. Honor it.
 
+## ★ BULK-OVER-REACTIVE — default reflex (operator's standing order 2026-05-31)
+Whenever a failure class is driven by a **finite, externally-specified set** AND a **reference
+implementation already exists**, cover the WHOLE set ONCE against that reference — never add one
+item per failing run. Always also publish a coverage matrix so the gap is visible.
+- Known bulk sets so far: **x86-64 opcodes** (ref = vendored `engine/wine/libs/capstone`),
+  **JIT IR codegen** (163 ops in `hb_ir.h`, ref = the interpreter which implements all).
+- When I (Claude) see Codex grinding one-item-per-run on something that has a finite list + a
+  reference, I proactively flag it and convert it to a bulk task in the program + status — without
+  waiting for the operator to notice. New such sets get the same treatment + a matrix.
+- Does NOT apply to Win32-API behavior or memory/ABI correctness — no finite checklist, surface
+  only by running real software → those stay reactive.
+- Engine fundamentals (opcodes, JIT, ISA correctness) are built ONCE and reused by ALL games.
+  Per-game work = Win32-API surface + graphics path + game-specific bugs, and it shrinks per
+  ENGINE: first Unity game is costly, later Unity games are nearly free; cover by game-ENGINE
+  (Unity → Unreal → GameMaker), not by individual title.
+
 ## HARD GUARDRAILS (never violate)
 - **Lanes (updated 2026-05-30):** Kimi is sidelined; **Codex now owns everything incl. graphics**
   (`engine/dxmt/**`, `engine/graphics/**`, `engine/vkd3d/**`) + audio + engine. The old "never

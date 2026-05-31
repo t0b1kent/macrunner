@@ -103,13 +103,26 @@ bulk.
 the run log); JIT-vs-interpreter diff green across the corpus; matrix published; Hollow Knight
 throughput high enough that the window/menu can appear within the run timeout.
 
-## GENERAL PRINCIPLE — PREFER BULK/EXHAUSTIVE OVER REACTIVE (applies to any finite, specified set)
-When a failure class is driven by a **finite, externally-specified set** with a **reference
-implementation already available**, cover the whole set ONCE against that reference instead of
-adding one item per failing run. This already applies to: x86-64 opcodes (ref = capstone), JIT IR
-codegen (ref = interpreter). It does NOT apply to Win32-API behavior or memory/ABI correctness —
-those have no finite checklist and surface only by running real software; handle those reactively.
-Whenever you spot a new finite+referenced set, do it in bulk and publish a coverage matrix.
+## GENERAL PRINCIPLE — BULK/EXHAUSTIVE FIRST, REACTIVE ONLY WHEN UNAVOIDABLE (MANDATORY REFLEX)
+**Before grinding one-item-per-run on ANY failure class, STOP and ask: is this a finite,
+externally-specified set with a reference implementation already available?** If yes → cover the
+WHOLE set ONCE against that reference, publish a coverage matrix, and move on. Do NOT discover the
+set one failing run at a time. This is mandatory, not optional — it is the single biggest speed
+lever in this program.
+
+Decision test (apply at the start of every new blocker):
+1. Is the failure class enumerable from an external spec or an existing list? (e.g. an enum, an ISA
+   manual, a header) → likely BULK.
+2. Is there already a reference that handles the whole set correctly? (capstone for decode, the
+   interpreter for IR semantics, an OS header for an API table) → definitely BULK: mirror it
+   exhaustively + diff-test against it.
+3. If NO finite list and NO reference (Win32-API *behavior*, memory/ABI correctness, game-specific
+   bugs) → only then go reactive (run real software, fix what surfaces).
+
+Established BULK sets: x86-64 opcodes (ref = vendored `engine/wine/libs/capstone`); JIT IR codegen
+(163 ops in `hb_ir.h`, ref = interpreter). **Whenever you hit a new blocker, run the decision test
+first; if it's BULK, do it in bulk + matrix BEFORE the next game run.** Reactive grind on a
+bulk-able set is a process error — call it out in the status file and convert it.
 
 ## CROSS-CUTTING RULES (apply to EVERY phase)
 - **Evidence, not status.** Every milestone = a pasted log / benchmark number / passing test, not

@@ -4494,7 +4494,7 @@ TEST(jit_x64_native_indirect_branch_operand_family) {
     hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
     ASSERT(code_buf != NULL && cg != NULL);
     ASSERT(hb_arm64_codegen_block(cg, jmp_reg_blk, code_buf) == HB_OK);
-    ASSERT(code_buf->size <= 120);
+    ASSERT(code_buf->size <= 100);
     hb_arm64_codegen_destroy(cg);
     hb_codegen_buffer_destroy(code_buf);
     hb_context_destroy(ctx);
@@ -4544,7 +4544,7 @@ TEST(jit_x64_native_indirect_branch_operand_family) {
     cg = hb_arm64_codegen_create(ctx);
     ASSERT(code_buf != NULL && cg != NULL);
     ASSERT(hb_arm64_codegen_block(cg, call_reg_blk, code_buf) == HB_OK);
-    ASSERT(code_buf->size <= 152);
+    ASSERT(code_buf->size <= 136);
     hb_arm64_codegen_destroy(cg);
     hb_codegen_buffer_destroy(code_buf);
     hb_context_destroy(ctx);
@@ -4583,7 +4583,7 @@ TEST(jit_x64_native_indirect_branch_operand_family) {
     ASSERT(code_buf != NULL && cg != NULL);
     setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
     ASSERT(hb_arm64_codegen_block(cg, jmp_mem_blk, code_buf) == HB_OK);
-    ASSERT(code_buf->size <= 140);
+    ASSERT(code_buf->size <= 124);
     hb_arm64_codegen_destroy(cg);
     hb_codegen_buffer_destroy(code_buf);
     hb_context_destroy(ctx);
@@ -4629,7 +4629,7 @@ TEST(jit_x64_native_indirect_branch_operand_family) {
     ASSERT(code_buf != NULL && cg != NULL);
     ASSERT(hb_arm64_codegen_block(cg, call_mem_blk, code_buf) == HB_OK);
     restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
-    ASSERT(code_buf->size <= 168);
+    ASSERT(code_buf->size <= 152);
     hb_arm64_codegen_destroy(cg);
     hb_codegen_buffer_destroy(code_buf);
     hb_context_destroy(ctx);

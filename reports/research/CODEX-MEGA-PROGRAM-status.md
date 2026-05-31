@@ -87,6 +87,16 @@ and rank11 `240 -> 224`. NEXT: continue the bulk JIT-codegen coverage lane from 
 evidence, prioritizing branch/fallthrough CFG fusion and helper-backed IR-family native promotion
 only with JIT-vs-interpreter/oracle coverage; keep the parallel bulk ISA matrix live.
 
+**Follow-up batch:** `run-20260601-030521-phase3-indirect-guard-jit` preserves fallback/fault/
+unsupported/runtime zero with cleanup/prune `0`; native indirect `HB_IR_JMP/CALL` register and
+direct-memory targets now use a shared null-target guard that sets `last_result=HB_ERR_EXEC_FAULT`
+and skips to the normal block epilogue, instead of embedding a duplicate fault epilogue in every
+branch thunk. Regression coverage keeps the null `CALL` no-push ordering and tightens native code-size
+gates for the full indirect branch family (`jmp reg`, `call reg`, `jmp mem`, `call mem`). The final
+90s steady-state top-12 is unchanged because these thunks are startup-hot rather than Mono-loop hot;
+NEXT remains CFG/fallthrough fusion for the branch-split Mono blocks plus native promotion of
+helper-backed IR families only with oracle parity coverage.
+
 **Tier-1 game present (GOG, DRM-free):** Hollow Knight 1.5.12620 (64-bit) at
 `/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/setup_hollow_knight_1.5.12620_(64bit)_(89718).exe`
 (624M GOG InnoSetup installer + `Bonus/`). It's a sibling of the repo (outside `MacRunner/`) — use

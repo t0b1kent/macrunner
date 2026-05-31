@@ -975,36 +975,35 @@ static bool emit_native_branch_target_to_x20(hb_codegen_buffer_t* buf,
     return false;
 }
 
-static void emit_exec_fault_and_return(hb_codegen_buffer_t* buf) {
-    emit_mov_imm_compact(buf, 21, (uint32_t)HB_ERR_EXEC_FAULT);
-    emit_str_w(buf, 21, 19, (uint32_t)offsetof(hb_context_t, last_result));
-    emit_epilogue(buf);
-}
-
-static void emit_zero_target_fault_guard(hb_codegen_buffer_t* buf, int target_reg) {
+static size_t emit_zero_target_fault_skip_to_done(hb_codegen_buffer_t* buf, int target_reg) {
     size_t ok_branch;
     emit_cmp_imm(buf, target_reg, 0);
     ok_branch = emit_bcond_deferred(buf, 1); /* NE -> non-zero target */
-    emit_exec_fault_and_return(buf);
+    emit_mov_imm_compact(buf, 21, (uint32_t)HB_ERR_EXEC_FAULT);
+    emit_str_w(buf, 21, 19, (uint32_t)offsetof(hb_context_t, last_result));
+    size_t done_branch = emit_b_deferred(buf);
     patch_bcond(buf, ok_branch, 1, buf->size);
+    return done_branch;
 }
 
 static bool emit_native_indirect_jmp(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
     if (!instr || instr->op != HB_IR_JMP || instr->src1.type == HB_OP_NONE) return false;
     if (!emit_native_branch_target_to_x20(buf, &instr->src1)) return false;
-    emit_zero_target_fault_guard(buf, 20);
+    size_t done_branch = emit_zero_target_fault_skip_to_done(buf, 20);
     emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, pc));
+    patch_b(buf, done_branch, buf->size);
     return true;
 }
 
 static bool emit_native_indirect_call(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
     if (!instr || instr->op != HB_IR_CALL || instr->src1.type == HB_OP_NONE) return false;
     if (!emit_native_branch_target_to_x20(buf, &instr->src1)) return false;
-    emit_zero_target_fault_guard(buf, 20);
+    size_t done_branch = emit_zero_target_fault_skip_to_done(buf, 20);
     emit_mov_reg(buf, 23, 20);
     emit_mov_imm_compact(buf, 20, instr->guest_addr + instr->guest_len);
     emit_native_stack_push_x20(buf);
     emit_str_x(buf, 23, 19, (uint32_t)offsetof(hb_context_t, pc));
+    patch_b(buf, done_branch, buf->size);
     return true;
 }
 

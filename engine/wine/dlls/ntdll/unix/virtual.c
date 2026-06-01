@@ -3621,15 +3621,30 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
 
     /* relocate to dynamic base */
 
-    if (image_info->map_addr && (delta = image_info->map_addr - image_info->base))
+    if (image_info->map_addr)
     {
+        ULONG_PTR reloc_base = image_info->map_addr;
+
+#if defined(__APPLE__) && defined(__aarch64__)
+        if (macrunner_hb_is_x64_guest_image( image_info ) && reloc_base != (ULONG_PTR)ptr)
+        {
+            if (macrunner_hb_trace_host_exec())
+                fprintf( stderr, "macrunner-host-exec-x64-relocate-host-base: pid=%d %s server_base=%#lx host_base=%p preferred=%#lx\n",
+                         getpid(), debugstr_us(nt_name), (ULONG_PTR)image_info->map_addr,
+                         ptr, (ULONG_PTR)image_info->base );
+            reloc_base = (ULONG_PTR)ptr;
+        }
+#endif
+
+        if (!(delta = reloc_base - image_info->base)) goto no_dynamic_reloc;
+
         TRACE_(module)( "relocating %s dynamic base %lx -> %lx mapped at %p\n", debugstr_us(nt_name),
-                        (ULONG_PTR)image_info->base, (ULONG_PTR)image_info->map_addr, ptr );
+                        (ULONG_PTR)image_info->base, reloc_base, ptr );
 
         if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
-            ((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.ImageBase = image_info->map_addr;
+            ((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.ImageBase = reloc_base;
         else
-            ((IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.ImageBase = image_info->map_addr;
+            ((IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.ImageBase = reloc_base;
 
         if ((dir = get_data_dir( nt, total_size, IMAGE_DIRECTORY_ENTRY_BASERELOC )))
         {
@@ -3640,6 +3655,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
                 rel = process_relocation_block( ptr + rel->VirtualAddress, rel, delta );
         }
     }
+no_dynamic_reloc:
 
     /* set the image protections */
 
@@ -4406,6 +4422,12 @@ NTSTATUS virtual_relocate_module( void *module )
 
 
     if (!(delta = (ULONG_PTR)module - image_base)) return STATUS_SUCCESS;
+
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (macrunner_hb_trace_host_exec())
+        fprintf( stderr, "macrunner-host-exec-virtual-relocate: pid=%d module=%p image_base=%#lx delta=%#lx machine=%#x\n",
+                 getpid(), module, image_base, (ULONG_PTR)delta, nt->FileHeader.Machine );
+#endif
 
     if (nt->FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED)
     {

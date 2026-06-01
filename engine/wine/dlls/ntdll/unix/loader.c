@@ -2440,9 +2440,12 @@ static void start_main_thread(void)
         asprintf( &name, "%s/cxcompatdb.so", ntdll_dir );
         if (name)
         {
-            cxcompatdb = dlopen( name, RTLD_LOCAL | RTLD_LAZY );
-            if (!cxcompatdb)
-                WARN( "error loading cxcompatdb.so: %s\n", dlerror() );
+            if (!access( name, R_OK ))
+            {
+                cxcompatdb = dlopen( name, RTLD_LOCAL | RTLD_LAZY );
+                if (!cxcompatdb)
+                    WARN( "error loading cxcompatdb.so: %s\n", dlerror() );
+            }
             free(name);
         }
     }

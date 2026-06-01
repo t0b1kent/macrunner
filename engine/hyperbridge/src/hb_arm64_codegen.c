@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stddef.h>
 #include <limits.h>
+#include <stdio.h>
 
 _Static_assert(offsetof(hb_lazy_flags_t, kind) == offsetof(hb_lazy_flags_t, pending) + 4,
                "hb_lazy_flags_t pending/kind layout changed");
@@ -2742,6 +2743,12 @@ static bool unity_string_bsearch_loop_candidate(const hb_ir_block_t* block) {
 static bool emit_unity_string_bsearch_loop(hb_codegen_buffer_t* buf,
                                            const hb_ir_block_t* block) {
     if (!unity_string_bsearch_loop_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=unity-string-bsearch block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
     emit_mov_reg(buf, 0, 19);
     emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
     emit_call_helper(buf, (void*)hb_jit_helper_exec_unity_string_bsearch_loop);

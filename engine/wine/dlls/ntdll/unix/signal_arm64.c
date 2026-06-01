@@ -330,7 +330,7 @@ NTSTATUS signal_set_full_context( CONTEXT *context )
     if (!status && (context->ContextFlags & CONTEXT_INTEGER) == CONTEXT_INTEGER)
         frame->restore_flags |= CONTEXT_INTEGER;
 
-    if (is_arm64ec() && !is_ec_code( frame->pc ))
+    if (is_arm64ec() && !is_ec_code( frame->pc ) && pKiUserEmulationDispatcher )
     {
         CONTEXT *user_context = (CONTEXT *)((frame->sp - sizeof(CONTEXT)) & ~15);
 
@@ -794,6 +794,17 @@ static ULONG_PTR macrunner_hb_normalize_x64_callback_target( ucontext_t *context
     return macrunner_hb_normalize_x64_callback_pc( target );
 }
 
+static ULONG_PTR macrunner_hb_normalize_explicit_x64_callback_target( ucontext_t *context,
+                                                                      ULONG_PTR target )
+{
+    /* x4 is the native caller's explicit indirect-call target, not a macOS
+     * fault PC sampled from an ARM64 fetch.  Keep the instruction-boundary
+     * heuristics for raw/fault PCs only; they can move valid MinGW TLS callback
+     * entries such as __dyn_tls_dtor one byte backwards into padding. */
+    return macrunner_hb_normalize_x64_tls_callback_pc( target, REGn_sig(0, context),
+                                                       REGn_sig(1, context) );
+}
+
 static void macrunner_signal_copy_bytes( void *dst, const void *src, size_t size )
 {
     volatile unsigned char *d = dst;
@@ -885,7 +896,7 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
      * can manufacture a bogus callback from an ordinary ARM64 fault. */
     if (x4_is_guest && (raw_is_guest || fault_is_guest))
     {
-        pc = macrunner_hb_normalize_x64_callback_target( context, x4_target );
+        pc = macrunner_hb_normalize_explicit_x64_callback_target( context, x4_target );
         TRACE( "MacRunner Phase F using x4 x64 callback target raw_pc=%p x4=%p normalized=%p\n",
                (void *)raw_pc, (void *)x4_target, (void *)pc );
     }

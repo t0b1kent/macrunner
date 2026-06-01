@@ -82,119 +82,13 @@ def generate_cases(random_count: int) -> list[Case]:
         "vex/vzeroupper": "c5 f8 77",
         "vex/vpxor": "c5 f9 ef c0",
         "vex/vaddps": "c5 fc 58 c0",
-        "vex/vaddpd": "c5 f5 58 c0",
         "vex/vsubps": "c5 fc 5c c0",
-        "vex/vsubpd": "c5 f5 5c c2",
         "vex/vmulps": "c5 fc 59 c0",
-        "vex/vmulpd": "c5 f5 59 da",
         "vex/vdivps": "c5 fc 5e c0",
-        "vex/vdivpd": "c5 f5 5e e2",
-        "vex/vminps": "c5 fc 5d c0",
-        "vex/vminpd": "c5 f5 5d ea",
-        "vex/vmaxps": "c5 fc 5f c0",
-        "vex/vmaxpd": "c5 f5 5f f2",
-        "vex/vsqrtps": "c5 fc 51 c1",
-        "vex/vsqrtpd": "c5 fd 51 d1",
-        "vex/vsqrtss": "c5 f2 51 c2",
-        "vex/vsqrtsd": "c5 db 51 dd",
-        "vex/vaddss": "c5 f2 58 c2",
-        "vex/vaddsd": "c5 f3 58 c2",
-        "vex/vsubss": "c5 f2 5c da",
-        "vex/vsubsd": "c5 f3 5c da",
-        "vex/vmulss": "c5 f2 59 e2",
-        "vex/vmulsd": "c5 f3 59 e2",
-        "vex/vdivss": "c5 f2 5e ea",
-        "vex/vdivsd": "c5 f3 5e ea",
-        "vex/vminss": "c5 f2 5d f2",
-        "vex/vminsd": "c5 f3 5d f2",
-        "vex/vmaxss": "c5 f2 5f fa",
-        "vex/vmaxsd": "c5 f3 5f fa",
         "vex/vandps": "c5 fc 54 c0",
-        "vex/vandpd": "c5 f5 54 c2",
         "vex/vandnps": "c5 fc 55 c0",
-        "vex/vandnpd": "c5 f5 55 c2",
         "vex/vorps": "c5 fc 56 c0",
-        "vex/vorpd": "c5 f5 56 c2",
         "vex/vxorps": "c5 fc 57 c0",
-        "vex/vxorpd": "c5 fd 57 c0",
-        "vex/vpand": "c5 f5 db c2",
-        "vex/vpandn": "c5 f5 df c2",
-        "vex/vpor": "c5 f5 eb c2",
-        "vex/vpaddd": "c5 f5 fe c0",
-        "vex/vpaddb": "c5 f5 fc c2",
-        "vex/vpaddw": "c5 f5 fd c2",
-        "vex/vpaddq": "c5 f5 d4 c2",
-        "vex/vpsubb": "c5 f5 f8 c2",
-        "vex/vpsubw": "c5 f5 f9 c2",
-        "vex/vpsubd": "c5 f5 fa c0",
-        "vex/vpsubq": "c5 f5 fb c2",
-        "vex/vpsrlw": "c5 f5 d1 c2",
-        "vex/vpsrld": "c5 f5 d2 c2",
-        "vex/vpsrlq": "c5 f5 d3 c2",
-        "vex/vpsrad": "c5 dd e2 dd",
-        "vex/vpsllw": "c5 f5 f1 c2",
-        "vex/vpslld": "c5 f5 f2 c2",
-        "vex/vpsllq": "c5 f5 f3 f2",
-        "vex/vpaddusb": "c5 f5 dc c2",
-        "vex/vpaddusw": "c5 f5 dd c2",
-        "vex/vpaddsb": "c5 f5 ec c2",
-        "vex/vpaddsw": "c5 dd ed dd",
-        "vex/vpavgb": "c5 f5 e0 f2",
-        "vex/vpavgw": "c5 f5 e3 c2",
-        "vex/vpmullw": "c5 f5 d5 c2",
-        "vex/vpmulhw": "c5 f5 e5 c2",
-        "vex/vpmulhuw": "c5 dd e4 dd",
-        "vex/vpmaddwd": "c5 f5 f5 f2",
-        "vex/vpmaddubsw": "c4 e2 75 04 c2",
-        "vex/vpmuldq": "c4 e2 75 28 c2",
-        "vex/vpmulld": "c4 e2 75 40 c2",
-        "vex/vpcmpeqb": "c5 f5 74 c2",
-        "vex/vpcmpeqw": "c5 f5 75 c2",
-        "vex/vpcmpgtw": "c5 dd 65 dd",
-        "vex/vpcmpeqd": "c5 f5 76 f2",
-        "vex/vpcmpeqq": "c4 e2 75 29 c2",
-        "vex/vpcmpgtb": "c5 f5 64 c2",
-        "vex/vpcmpgtd": "c5 f5 66 c2",
-        "vex/vpcmpgtq": "c4 e2 75 37 c2",
-        "vex/vpunpcklbw": "c5 f1 60 c2",
-        "vex/vpunpckhwd": "c5 f5 69 c2",
-        "vex/vpunpckldq_mem": "c5 f5 62 05 00 00 00 00",
-        "vex/vpacksswb": "c5 d1 63 de",
-        "vex/vpackuswb": "c5 dd 67 dd",
-        "vex/vpackssdw_mem": "c5 dd 6b 1d 00 00 00 00",
-        "vex/vmovdqu": "c5 fa 6f c1",
-        "vex/vmovdqa": "c5 fd 6f d1",
-        "vex/vmovdqa_load": "c5 fd 6f 05 00 00 00 00",
-        "vex/vmovdqa_store": "c5 fd 7f 05 00 00 00 00",
-        "vex/vmovups": "c5 fc 10 c1",
-        "vex/vmovaps_load": "c5 fc 28 05 00 00 00 00",
-        "vex/vmovaps_store": "c5 fc 29 05 00 00 00 00",
-        "vex/vmovupd": "c5 fd 10 d1",
-        "vex/vmovapd": "c5 fd 28 d1",
-        "vex/vmovss": "c5 f2 10 c2",
-        "vex/vmovsd": "c5 f3 10 c2",
-        "vex/vmovss_load": "c5 fa 10 05 00 00 00 00",
-        "vex/vmovss_store": "c5 fa 11 05 00 00 00 00",
-        "vex/vmovsd_load": "c5 fb 10 05 00 00 00 00",
-        "vex/vmovsd_store": "c5 fb 11 05 00 00 00 00",
-        "vex/vpsubusb": "c5 f5 d8 c0",
-        "vex/vpsubusw": "c5 f5 d9 c2",
-        "vex/vpsubsb": "c5 f5 e8 c2",
-        "vex/vpsubsw": "c5 f5 e9 c2",
-        "vex/vpminub": "c5 f5 da c0",
-        "vex/vpminsw": "c5 f5 ea c2",
-        "vex/vpmaxub": "c5 f5 de c2",
-        "vex/vpmaxsw": "c5 f5 ee c2",
-        "vex/vpminsb": "c4 e2 75 38 c2",
-        "vex/vpminsd": "c4 e2 75 39 c2",
-        "vex/vpminuw": "c4 e2 75 3a c2",
-        "vex/vpminud": "c4 e2 75 3b c2",
-        "vex/vpmaxsb": "c4 e2 75 3c c2",
-        "vex/vpmaxsd": "c4 e2 75 3d c2",
-        "vex/vpmaxuw": "c4 e2 75 3e c2",
-        "vex/vpmaxud": "c4 e2 75 3f c2",
-        "vex/vpmuludq": "c5 f5 f4 c0",
-        "vex/vpsadbw": "c5 f5 f6 c0",
         "vex/vmovq": "c4 e1 f9 6e c0",
         "evex/vaddps": "62 f1 7c 48 58 c0",
         "evex/vmovdqa32": "62 f1 7d 48 6f c0",
@@ -256,63 +150,9 @@ def normalize_capstone(mnemonic: str) -> str:
              "pmaxub", "pandn", "pavgb", "psraw", "psrad", "pavgw", "pmulhuw",
              "pmulhw", "psubsb", "psubsw", "pminsw", "por", "paddsb", "paddsw",
              "pmaxsw", "pxor", "psllw", "pslld", "psllq", "pmuludq", "pmaddwd",
-              "psadbw", "maskmovq", "psubb", "psubw", "psubd", "psubq", "paddb",
+             "psadbw", "maskmovq", "psubb", "psubw", "psubd", "psubq", "paddb",
              "paddw", "paddd"}:
         return "mmx"
-    implemented_vec = {
-        "phaddw", "phaddd", "phaddsw", "phsubw", "phsubd", "phsubsw",
-        "pmaddubsw", "pshufb", "psignb", "psignw", "psignd", "pmulhrsw",
-        "pabsb", "pabsw", "pabsd", "ptest", "pmovsxbw", "pmovsxbd",
-        "pmovsxbq", "pmovsxwd", "pmovsxwq", "pmovsxdq", "pmuldq",
-        "pcmpeqq", "packusdw", "pmovzxbw", "pmovzxbd", "pmovzxbq",
-        "pmovzxwd", "pmovzxwq", "pmovzxdq", "pcmpgtq", "pminsb",
-        "pminsd", "pminuw", "pminud", "pmaxsb", "pmaxsd", "pmaxuw",
-        "pmaxud", "pmulld", "phminposuw", "palignr", "pblendw",
-        "blendps", "blendpd", "pblendvb", "blendvps", "blendvpd",
-        "psubusb", "psubusw", "psubsb", "psubsw", "pminub", "pminsw",
-        "pmaxub", "pmaxsw", "pmuludq", "psadbw",
-    }
-    if m in implemented_vec:
-        return m
-    if m == "vzeroupper":
-        return "vzeroupper"
-    if m in {"vandps", "vandpd"}:
-        return "xmm_and"
-    if m in {"vandnps", "vandnpd"}:
-        return "xmm_andn"
-    if m in {"vorps", "vorpd"}:
-        return "xmm_or"
-    if m == "vxorpd":
-        return "xorps"
-    if m == "vpand":
-        return "xmm_and"
-    if m == "vpandn":
-        return "xmm_andn"
-    if m == "vpor":
-        return "xmm_or"
-    implemented_vex = {
-        "addps", "addpd", "subps", "subpd", "mulps", "mulpd", "divps", "divpd",
-        "addss", "addsd", "subss", "subsd", "mulss", "mulsd", "divss", "divsd",
-        "minps", "minpd", "minss", "minsd", "maxps", "maxpd", "maxss", "maxsd",
-        "sqrtps", "sqrtpd", "sqrtss", "sqrtsd",
-        "andps", "andnps", "orps", "xorps", "pxor",
-        "paddb", "paddw", "paddd", "paddq", "psubb", "psubw", "psubd", "psubq",
-        "psrlw", "psrld", "psrlq", "psrad", "psllw", "pslld", "psllq",
-        "paddusb", "paddusw", "paddsb", "paddsw", "pavgb", "pavgw",
-        "pmullw", "pmulhw", "pmulhuw", "pmaddwd", "pmaddubsw", "pmuldq", "pmulld",
-        "pcmpeqb", "pcmpeqw", "pcmpeqd", "pcmpeqq", "pcmpgtb", "pcmpgtw", "pcmpgtd", "pcmpgtq",
-        "punpcklbw", "punpckhwd", "punpckldq", "packsswb", "packuswb", "packssdw",
-        "psubusb", "psubusw", "psubsb", "psubsw",
-        "pminub", "pminsw", "pminsb", "pminsd", "pminuw", "pminud",
-        "pmaxub", "pmaxsw", "pmaxsb", "pmaxsd", "pmaxuw", "pmaxud",
-        "pmuludq", "psadbw",
-    }
-    if m.startswith("v") and m[1:] in implemented_vex:
-        return m[1:]
-    if m == "vmovq":
-        return "movd"
-    if m in {"vmovaps", "vmovups", "vmovapd", "vmovupd", "vmovss", "vmovsd", "vmovdqa", "vmovdqu"}:
-        return "sse_mov"
     if (m.startswith("sha") or m.startswith("phadd") or m.startswith("phsub") or
             m.startswith("round") or m.startswith("blend") or
             (m.startswith("v") and m not in {"vmread", "vmwrite"}) or
@@ -387,6 +227,8 @@ def normalize_hb(op: str) -> str:
         return "pop"
     if low.startswith("x87_"):
         return low[4:]
+    if low.startswith("v") and low not in {"vmread", "vmwrite"}:
+        return "vec"
     return low
 
 
@@ -429,8 +271,7 @@ def summarize(cases: list[Case], rows: list[dict]) -> dict:
             if row["len"] == insn.size:
                 group["length_match"] += 1
             hb_norm = normalize_hb(row["op"])
-            legacy_66_vec = case.name.startswith("0f/66/") and hb_norm == insn.mnemonic.lower()
-            if hb_norm == cap_norm or legacy_66_vec:
+            if hb_norm == cap_norm:
                 group["mnemonic_match"] += 1
             else:
                 group["mismatch"][f"{insn.mnemonic}->{row['op']}"] += 1

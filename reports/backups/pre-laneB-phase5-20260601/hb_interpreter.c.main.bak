@@ -307,42 +307,49 @@ static hb_result_t write_xmm_reg(hb_context_t* ctx, int idx, const uint64_t in[2
     return HB_OK;
 }
 
-static hb_result_t read_vec_reg_bytes(hb_context_t* ctx, int idx, uint8_t* out, size_t bytes) {
-    if (!ctx || !out || !is_xmm_reg(idx) || bytes > 32) return HB_ERR_INVALID_ARG;
-    memset(out, 0, bytes);
-    if (ctx->mode == HB_MODE_32BIT) {
-        unsigned n = (unsigned)(idx - HB_REG_XMM0);
-        if (n >= 8) return HB_ERR_INVALID_ARG;
-        memcpy(out, ctx->regs.x86.xmm[n], bytes < 16 ? bytes : 16);
-        if (bytes > 16) memcpy(out + 16, ctx->ymm_hi[n], bytes - 16);
+static uint64_t resolve_addr(hb_context_t* ctx, const hb_ir_operand_t* op);
+
+static hb_result_t read_ymm_operand(hb_context_t* ctx, const hb_ir_operand_t* op,
+                                    uint64_t out[4], size_t bytes) {
+    if (!ctx || !op || !out || bytes > 32) return HB_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(uint64_t) * 4);
+    if (op->type == HB_OP_REG && is_xmm_reg(op->reg)) {
+        hb_result_t r = read_xmm_reg(ctx, op->reg, out);
+        if (r != HB_OK) return r;
+        if (ctx->mode == HB_MODE_64BIT) {
+            unsigned n = (unsigned)(op->reg - HB_REG_XMM0);
+            out[2] = ctx->x64_ymm_hi[n][0];
+            out[3] = ctx->x64_ymm_hi[n][1];
+        }
         return HB_OK;
     }
-    unsigned n = (unsigned)(idx - HB_REG_XMM0);
-    memcpy(out, ctx->regs.x64.xmm[n], bytes < 16 ? bytes : 16);
-    if (bytes > 16) memcpy(out + 16, ctx->ymm_hi[n], bytes - 16);
+    if (op->type == HB_OP_MEM) {
+        uint64_t addr = resolve_addr(ctx, op);
+        return hb_memory_read(ctx->memory, addr, out, bytes);
+    }
+    return HB_ERR_INTERNAL;
+}
+
+static hb_result_t write_ymm_reg(hb_context_t* ctx, int idx, const uint64_t in[4], size_t bytes) {
+    if (!ctx || !in || !is_xmm_reg(idx) || bytes > 32) return HB_ERR_INVALID_ARG;
+    uint64_t lo[2] = { in[0], in[1] };
+    hb_result_t r = write_xmm_reg(ctx, idx, lo);
+    if (r != HB_OK) return r;
+    if (ctx->mode == HB_MODE_64BIT) {
+        unsigned n = (unsigned)(idx - HB_REG_XMM0);
+        if (bytes > 16) {
+            ctx->x64_ymm_hi[n][0] = in[2];
+            ctx->x64_ymm_hi[n][1] = in[3];
+        } else {
+            ctx->x64_ymm_hi[n][0] = 0;
+            ctx->x64_ymm_hi[n][1] = 0;
+        }
+    }
     return HB_OK;
 }
 
-static hb_result_t write_vec_reg_bytes(hb_context_t* ctx, int idx, const uint8_t* in, size_t bytes) {
-    if (!ctx || !in || !is_xmm_reg(idx) || bytes > 32) return HB_ERR_INVALID_ARG;
-    uint8_t tmp[32] = {0};
-    bool zero_ymm_upper = trace_current_instr && trace_current_instr->zero_ymm_upper && bytes <= 16;
-    memcpy(tmp, in, bytes);
-    if (ctx->mode == HB_MODE_32BIT) {
-        unsigned n = (unsigned)(idx - HB_REG_XMM0);
-        if (n >= 8) return HB_ERR_INVALID_ARG;
-        if (bytes < 16) memcpy(ctx->regs.x86.xmm[n], tmp, bytes);
-        else memcpy(ctx->regs.x86.xmm[n], tmp, 16);
-        if (bytes > 16) memcpy(ctx->ymm_hi[n], tmp + 16, bytes - 16);
-        else if (zero_ymm_upper) memset(ctx->ymm_hi[n], 0, sizeof(ctx->ymm_hi[n]));
-        return HB_OK;
-    }
-    unsigned n = (unsigned)(idx - HB_REG_XMM0);
-    if (bytes < 16) memcpy(ctx->regs.x64.xmm[n], tmp, bytes);
-    else memcpy(ctx->regs.x64.xmm[n], tmp, 16);
-    if (bytes > 16) memcpy(ctx->ymm_hi[n], tmp + 16, bytes - 16);
-    else if (zero_ymm_upper) memset(ctx->ymm_hi[n], 0, sizeof(ctx->ymm_hi[n]));
-    return HB_OK;
+static void zero_ymm_upper(hb_context_t* ctx) {
+    if (ctx && ctx->mode == HB_MODE_64BIT) memset(ctx->x64_ymm_hi, 0, sizeof(ctx->x64_ymm_hi));
 }
 
 static size_t bytes_for_size(hb_size_t size) {
@@ -351,7 +358,6 @@ static size_t bytes_for_size(hb_size_t size) {
         case HB_SIZE_16: return 2;
         case HB_SIZE_32: return 4;
         case HB_SIZE_64: return 8;
-        case HB_SIZE_80: return 10;
         case HB_SIZE_128: return 16;
         case HB_SIZE_256: return 32;
         default: return 0;
@@ -469,43 +475,32 @@ static double select_sse_minmax_double(double lhs, double rhs, bool is_max) {
     return is_max ? (lhs > rhs ? lhs : rhs) : (lhs < rhs ? lhs : rhs);
 }
 
-static int16_t sat_i16(int32_t v) {
-    if (v > 32767) return 32767;
-    if (v < -32768) return -32768;
-    return (int16_t)v;
+static int16_t sat_i16(int value) {
+    if (value > INT16_MAX) return INT16_MAX;
+    if (value < INT16_MIN) return INT16_MIN;
+    return (int16_t)value;
 }
 
-static int8_t sat_i8(int32_t v) {
-    if (v > 127) return 127;
-    if (v < -128) return -128;
-    return (int8_t)v;
+static uint16_t sat_u16_from_i32(int32_t value) {
+    if (value < 0) return 0;
+    if (value > UINT16_MAX) return UINT16_MAX;
+    return (uint16_t)value;
 }
 
-static uint16_t sat_u16_from_i32(int32_t v) {
-    if (v < 0) return 0;
-    if (v > 65535) return 65535;
-    return (uint16_t)v;
+static double round_sse_value(double value, unsigned imm) {
+    switch (imm & 3u) {
+        case 1: return floor(value);
+        case 2: return ceil(value);
+        case 3: return trunc(value);
+        default: return nearbyint(value);
+    }
 }
 
-static int64_t load_lane_signed(const uint8_t* p, unsigned lane) {
-    if (lane == 1) return (int8_t)p[0];
-    if (lane == 2) { int16_t v; memcpy(&v, p, sizeof(v)); return v; }
-    if (lane == 4) { int32_t v; memcpy(&v, p, sizeof(v)); return v; }
-    int64_t v; memcpy(&v, p, sizeof(v)); return v;
-}
-
-static uint64_t load_lane_unsigned(const uint8_t* p, unsigned lane) {
-    if (lane == 1) return p[0];
-    if (lane == 2) { uint16_t v; memcpy(&v, p, sizeof(v)); return v; }
-    if (lane == 4) { uint32_t v; memcpy(&v, p, sizeof(v)); return v; }
-    uint64_t v; memcpy(&v, p, sizeof(v)); return v;
-}
-
-static void store_lane(uint8_t* p, unsigned lane, uint64_t v) {
-    if (lane == 1) p[0] = (uint8_t)v;
-    else if (lane == 2) { uint16_t w = (uint16_t)v; memcpy(p, &w, sizeof(w)); }
-    else if (lane == 4) { uint32_t d = (uint32_t)v; memcpy(p, &d, sizeof(d)); }
-    else { uint64_t q = v; memcpy(p, &q, sizeof(q)); }
+static uint32_t crc32c_update(uint32_t crc, uint8_t byte) {
+    crc ^= byte;
+    for (unsigned i = 0; i < 8; i++)
+        crc = (crc >> 1) ^ (0x82f63b78u & (0u - (crc & 1u)));
+    return crc;
 }
 
 static hb_result_t read_xmm_operand(hb_context_t* ctx, const hb_ir_operand_t* op, uint64_t out[2]) {
@@ -520,32 +515,20 @@ static hb_result_t read_xmm_operand(hb_context_t* ctx, const hb_ir_operand_t* op
 
 static hb_result_t read_xmm_operand_bytes(hb_context_t* ctx, const hb_ir_operand_t* op,
                                           uint8_t* out, size_t bytes) {
-    if (!ctx || !op || !out || bytes > 32) return HB_ERR_INVALID_ARG;
-    memset(out, 0, bytes);
+    if (!ctx || !op || !out || bytes > 16) return HB_ERR_INVALID_ARG;
+    memset(out, 0, 16);
     if (op->type == HB_OP_REG && is_xmm_reg(op->reg)) {
-        return read_vec_reg_bytes(ctx, op->reg, out, bytes);
+        uint64_t xmm[2];
+        hb_result_t r = read_xmm_reg(ctx, op->reg, xmm);
+        if (r != HB_OK) return r;
+        memcpy(out, xmm, sizeof(xmm));
+        return HB_OK;
     }
     if (op->type == HB_OP_MEM) {
         uint64_t addr = resolve_addr(ctx, op);
         return hb_memory_read(ctx->memory, addr, out, bytes);
     }
     return HB_ERR_INTERNAL;
-}
-
-static hb_result_t read_packed_shift_count(hb_context_t* ctx, const hb_ir_operand_t* op,
-                                           unsigned* out_count) {
-    if (!ctx || !op || !out_count) return HB_ERR_INVALID_ARG;
-    if (op->type == HB_OP_IMM) {
-        *out_count = (unsigned)(op->imm & 0xff);
-        return HB_OK;
-    }
-    uint8_t bytes[16];
-    hb_result_t r = read_xmm_operand_bytes(ctx, op, bytes, sizeof(bytes));
-    if (r != HB_OK) return r;
-    uint64_t raw = 0;
-    memcpy(&raw, bytes, sizeof(raw));
-    *out_count = (unsigned)(raw & 0xff);
-    return HB_OK;
 }
 
 static void write_reg(hb_context_t* ctx, int idx, uint64_t val) {
@@ -784,26 +767,6 @@ static hb_result_t x87_read_real_mem(hb_context_t* ctx, const hb_ir_operand_t* o
     } else if (op->size == HB_SIZE_64) {
         hb_result_t r = hb_memory_read(ctx->memory, addr, out, sizeof(*out));
         if (r != HB_OK) return r;
-    } else if (op->size == HB_SIZE_80) {
-        uint8_t bytes[10];
-        hb_result_t r = hb_memory_read(ctx->memory, addr, bytes, sizeof(bytes));
-        if (r != HB_OK) return r;
-        uint64_t sig;
-        uint16_t se;
-        memcpy(&sig, bytes, sizeof(sig));
-        memcpy(&se, bytes + 8, sizeof(se));
-        bool neg = (se & 0x8000u) != 0;
-        unsigned exp = se & 0x7fffu;
-        if (exp == 0 && sig == 0) {
-            *out = neg ? -0.0 : 0.0;
-        } else if (exp == 0x7fffu) {
-            *out = (sig == 0x8000000000000000ULL) ? (neg ? -INFINITY : INFINITY) : NAN;
-        } else {
-            double frac = (double)sig / 9223372036854775808.0;
-            int unbiased = (int)(exp ? exp : 1) - 16383;
-            *out = ldexp(frac, unbiased);
-            if (neg) *out = -*out;
-        }
     } else {
         return HB_ERR_UNSUPPORTED_FEATURE;
     }
@@ -1268,7 +1231,6 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_BSR: return "BSR";
         case HB_IR_BSWAP: return "BSWAP";
         case HB_IR_XMM_AND: return "XMM_AND";
-        case HB_IR_XMM_SCALAR_MOV: return "XMM_SCALAR_MOV";
         case HB_IR_XMM_QWORD_LANE_MOV: return "XMM_QWORD_LANE_MOV";
         case HB_IR_XMM_ANDN: return "XMM_ANDN";
         case HB_IR_XMM_OR: return "XMM_OR";
@@ -1298,6 +1260,42 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_PSHUFB: return "PSHUFB";
         case HB_IR_PINSRW: return "PINSRW";
         case HB_IR_PEXTRW: return "PEXTRW";
+        case HB_IR_PHADD: return "PHADD";
+        case HB_IR_PHSUB: return "PHSUB";
+        case HB_IR_PSIGN: return "PSIGN";
+        case HB_IR_PMADDUBSW: return "PMADDUBSW";
+        case HB_IR_PMULHRSW: return "PMULHRSW";
+        case HB_IR_PBLEND: return "PBLEND";
+        case HB_IR_PBLENDV: return "PBLENDV";
+        case HB_IR_PTEST: return "PTEST";
+        case HB_IR_PABS: return "PABS";
+        case HB_IR_PMOVX: return "PMOVX";
+        case HB_IR_PCMPEQQ: return "PCMPEQQ";
+        case HB_IR_PCMPGTQ: return "PCMPGTQ";
+        case HB_IR_PACKUSDW: return "PACKUSDW";
+        case HB_IR_PMULDQ: return "PMULDQ";
+        case HB_IR_PMULLD: return "PMULLD";
+        case HB_IR_PMIN: return "PMIN";
+        case HB_IR_PMAX: return "PMAX";
+        case HB_IR_PHMINPOSUW: return "PHMINPOSUW";
+        case HB_IR_CRC32: return "CRC32";
+        case HB_IR_ROUND: return "ROUND";
+        case HB_IR_PALIGNR: return "PALIGNR";
+        case HB_IR_PEXTR: return "PEXTR";
+        case HB_IR_PINSR: return "PINSR";
+        case HB_IR_INSERTPS: return "INSERTPS";
+        case HB_IR_DP: return "DP";
+        case HB_IR_MPSADBW: return "MPSADBW";
+        case HB_IR_VZEROUPPER: return "VZEROUPPER";
+        case HB_IR_VPXOR: return "VPXOR";
+        case HB_IR_VADDPS: return "VADDPS";
+        case HB_IR_VSUBPS: return "VSUBPS";
+        case HB_IR_VMULPS: return "VMULPS";
+        case HB_IR_VDIVPS: return "VDIVPS";
+        case HB_IR_VAND: return "VAND";
+        case HB_IR_VANDN: return "VANDN";
+        case HB_IR_VOR: return "VOR";
+        case HB_IR_VMOVQ: return "VMOVQ";
         case HB_IR_PSHUF: return "PSHUF";
         case HB_IR_FSHUF: return "FSHUF";
         case HB_IR_PSRL: return "PSRL";
@@ -1339,8 +1337,6 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_CVTTSS2SI: return "CVTTSS2SI";
         case HB_IR_PADD: return "PADD";
         case HB_IR_PSUB: return "PSUB";
-        case HB_IR_VEC_PACKED: return "VEC_PACKED";
-        case HB_IR_VZEROUPPER: return "VZEROUPPER";
         case HB_IR_X87_FLD: return "X87_FLD";
         case HB_IR_X87_FST: return "X87_FST";
         case HB_IR_X87_FSTP: return "X87_FSTP";
@@ -1719,7 +1715,7 @@ static void trace_branch_event(hb_context_t* ctx, const hb_ir_instr_t* instr,
 static bool operand_is_xmm_or_vecmem(const hb_ir_operand_t* op) {
     if (!op) return false;
     if (op->type == HB_OP_REG) return is_xmm_reg(op->reg);
-    return op->type == HB_OP_MEM && (op->size == 16 || op->size == 32);
+    return op->type == HB_OP_MEM && op->size == 16;
 }
 
 static bool trace_simd_op_selected(const hb_ir_instr_t* instr) {
@@ -1754,6 +1750,32 @@ static bool trace_simd_op_selected(const hb_ir_instr_t* instr) {
         case HB_IR_PSHUFB:
         case HB_IR_PINSRW:
         case HB_IR_PEXTRW:
+        case HB_IR_PHADD:
+        case HB_IR_PHSUB:
+        case HB_IR_PSIGN:
+        case HB_IR_PMADDUBSW:
+        case HB_IR_PMULHRSW:
+        case HB_IR_PBLEND:
+        case HB_IR_PBLENDV:
+        case HB_IR_PTEST:
+        case HB_IR_PABS:
+        case HB_IR_PMOVX:
+        case HB_IR_PCMPEQQ:
+        case HB_IR_PCMPGTQ:
+        case HB_IR_PACKUSDW:
+        case HB_IR_PMULDQ:
+        case HB_IR_PMULLD:
+        case HB_IR_PMIN:
+        case HB_IR_PMAX:
+        case HB_IR_PHMINPOSUW:
+        case HB_IR_CRC32:
+        case HB_IR_ROUND:
+        case HB_IR_PALIGNR:
+        case HB_IR_PEXTR:
+        case HB_IR_PINSR:
+        case HB_IR_INSERTPS:
+        case HB_IR_DP:
+        case HB_IR_MPSADBW:
         case HB_IR_PSHUF:
         case HB_IR_FSHUF:
         case HB_IR_XMM_QWORD_LANE_MOV:
@@ -1796,8 +1818,6 @@ static bool trace_simd_op_selected(const hb_ir_instr_t* instr) {
         case HB_IR_CVTTSS2SI:
         case HB_IR_PADD:
         case HB_IR_PSUB:
-        case HB_IR_VEC_PACKED:
-        case HB_IR_VZEROUPPER:
             return true;
         case HB_IR_LOAD:
             return operand_is_xmm_or_vecmem(&instr->dst) || operand_is_xmm_or_vecmem(&instr->src1);
@@ -1962,16 +1982,17 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_MOV: {
             if (instr->dst.type == HB_OP_REG && instr->src1.type == HB_OP_REG &&
                 is_xmm_reg(instr->dst.reg) && is_xmm_reg(instr->src1.reg)) {
+                uint64_t src[2];
+                uint64_t dst[2];
                 size_t bytes = bytes_for_size(instr->dst.size);
                 if (bytes == 0) bytes = 16;
-                uint8_t src[32], dst[32];
-                r = read_vec_reg_bytes(ctx, instr->src1.reg, src, bytes);
+                r = read_xmm_reg(ctx, instr->src1.reg, src);
                 if (r != HB_OK) return r;
-                if (bytes >= 16) return write_vec_reg_bytes(ctx, instr->dst.reg, src, bytes);
-                r = read_vec_reg_bytes(ctx, instr->dst.reg, dst, 16);
+                if (bytes >= 16) return write_xmm_reg(ctx, instr->dst.reg, src);
+                r = read_xmm_reg(ctx, instr->dst.reg, dst);
                 if (r != HB_OK) return r;
                 memcpy(dst, src, bytes);
-                return write_vec_reg_bytes(ctx, instr->dst.reg, dst, 16);
+                return write_xmm_reg(ctx, instr->dst.reg, dst);
             }
             uint64_t val = 0;
             if (instr->src1.type == HB_OP_REG)
@@ -2428,17 +2449,17 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             uint64_t addr = resolve_addr(ctx, &instr->src1);
             if (instr->dst.type == HB_OP_REG && is_xmm_reg(instr->dst.reg)) {
-                uint8_t xmm[32] = {0};
+                uint64_t xmm[2] = {0, 0};
                 size_t bytes = bytes_for_size(instr->src1.size);
                 if (bytes == 0) bytes = 16;
                 if (bytes < 16 && !instr->zero_upper) {
-                    r = read_vec_reg_bytes(ctx, instr->dst.reg, xmm, 16);
+                    r = read_xmm_reg(ctx, instr->dst.reg, xmm);
                     if (r != HB_OK) return r;
                 }
                 r = hb_memory_read(ctx->memory, addr, xmm, bytes);
                 if (r != HB_OK) return r;
                 trace_mem_watch_bytes(ctx, "read", addr, xmm, bytes, NULL);
-                return write_vec_reg_bytes(ctx, instr->dst.reg, xmm, bytes < 16 ? 16 : bytes);
+                return write_xmm_reg(ctx, instr->dst.reg, xmm);
             }
             uint64_t val = 0;
             r = mem_read(ctx, addr, &val, instr->dst.size);
@@ -2453,20 +2474,18 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             uint64_t addr = resolve_addr(ctx, &instr->src1);
             if (instr->src2.type == HB_OP_REG && is_xmm_reg(instr->src2.reg)) {
-                uint8_t xmm[32];
+                uint64_t xmm[2];
                 size_t bytes = bytes_for_size(instr->src1.size);
                 if (bytes == 0) bytes = bytes_for_size(instr->src2.size);
                 if (bytes == 0) bytes = 16;
-                r = read_vec_reg_bytes(ctx, instr->src2.reg, xmm, bytes);
+                r = read_xmm_reg(ctx, instr->src2.reg, xmm);
                 if (r != HB_OK) return r;
-                uint64_t first_qword = 0;
-                memcpy(&first_qword, xmm, sizeof(first_qword));
-                trace_guest_native_write(ctx, "interp_xmm_store", addr, first_qword, (hb_size_t)bytes);
+                trace_guest_native_write(ctx, "interp_xmm_store", addr, xmm[0], (hb_size_t)bytes);
                 uint8_t before[16] = {0};
                 if (trace_mem_watch_enabled())
                     (void)hb_memory_read(ctx->memory, addr, before, bytes > sizeof(before) ? sizeof(before) : bytes);
                 r = hb_memory_write(ctx->memory, addr, xmm, bytes);
-                if (r != HB_OK) trace_stack_write_fault(ctx, addr, first_qword, (hb_size_t)bytes, r);
+                if (r != HB_OK) trace_stack_write_fault(ctx, addr, xmm[0], (hb_size_t)bytes, r);
                 else trace_mem_watch_bytes(ctx, "write", addr, xmm, bytes, before);
                 return r;
             }
@@ -3315,70 +3334,122 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_XMM_OR:
         case HB_IR_XORPS: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lhs[32], rhs[32], out[32];
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
+            uint64_t lhs[2], rhs[2], out[2];
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, bytes);
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
             if (r != HB_OK) return r;
-            for (size_t n = 0; n < bytes; n++) {
-                if (instr->op == HB_IR_XMM_AND) out[n] = lhs[n] & rhs[n];
-                else if (instr->op == HB_IR_XMM_ANDN) out[n] = (uint8_t)(~lhs[n] & rhs[n]);
-                else if (instr->op == HB_IR_XMM_OR) out[n] = lhs[n] | rhs[n];
-                else out[n] = lhs[n] ^ rhs[n];
+            if (instr->op == HB_IR_XMM_AND) {
+                out[0] = lhs[0] & rhs[0];
+                out[1] = lhs[1] & rhs[1];
+            } else if (instr->op == HB_IR_XMM_ANDN) {
+                out[0] = ~lhs[0] & rhs[0];
+                out[1] = ~lhs[1] & rhs[1];
+            } else if (instr->op == HB_IR_XMM_OR) {
+                out[0] = lhs[0] | rhs[0];
+                out[1] = lhs[1] | rhs[1];
+            } else {
+                out[0] = lhs[0] ^ rhs[0];
+                out[1] = lhs[1] ^ rhs[1];
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
-        case HB_IR_XMM_SCALAR_MOV: {
+        case HB_IR_VZEROUPPER: {
+            zero_ymm_upper(ctx);
+            return HB_OK;
+        }
+
+        case HB_IR_VPXOR:
+        case HB_IR_VAND:
+        case HB_IR_VANDN:
+        case HB_IR_VOR: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            unsigned lane = (unsigned)(instr->target & 0xffu);
-            if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
-            uint8_t out[16] = {0};
-            uint8_t scalar[8] = {0};
-            if (instr->src1.type != HB_OP_NONE) {
-                r = read_xmm_operand_bytes(ctx, &instr->src1, out, sizeof(out));
-                if (r != HB_OK) return r;
-            }
-            r = read_xmm_operand_bytes(ctx, &instr->src2, scalar, lane);
+            size_t bytes = instr->target == 32 ? 32 : 16;
+            uint64_t lhs[4], rhs[4], out[4] = {0, 0, 0, 0};
+            r = read_ymm_operand(ctx, &instr->src1, lhs, bytes);
             if (r != HB_OK) return r;
-            memcpy(out, scalar, lane);
-            return write_vec_reg_bytes(ctx, instr->dst.reg, out, sizeof(out));
+            r = read_ymm_operand(ctx, &instr->src2, rhs, bytes);
+            if (r != HB_OK) return r;
+            for (size_t i = 0; i < bytes / 8; i++) {
+                if (instr->op == HB_IR_VAND) out[i] = lhs[i] & rhs[i];
+                else if (instr->op == HB_IR_VANDN) out[i] = (~lhs[i]) & rhs[i];
+                else if (instr->op == HB_IR_VOR) out[i] = lhs[i] | rhs[i];
+                else out[i] = lhs[i] ^ rhs[i];
+            }
+            return write_ymm_reg(ctx, instr->dst.reg, out, bytes);
+        }
+
+        case HB_IR_VADDPS:
+        case HB_IR_VSUBPS:
+        case HB_IR_VMULPS:
+        case HB_IR_VDIVPS: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            size_t bytes = instr->target == 32 ? 32 : 16;
+            uint64_t lhs[4], rhs[4], out[4] = {0, 0, 0, 0};
+            float lf[8], rf[8], of[8] = {0};
+            r = read_ymm_operand(ctx, &instr->src1, lhs, bytes);
+            if (r != HB_OK) return r;
+            r = read_ymm_operand(ctx, &instr->src2, rhs, bytes);
+            if (r != HB_OK) return r;
+            memcpy(lf, lhs, bytes);
+            memcpy(rf, rhs, bytes);
+            for (size_t i = 0; i < bytes / 4; i++) {
+                if (instr->op == HB_IR_VSUBPS) of[i] = lf[i] - rf[i];
+                else if (instr->op == HB_IR_VMULPS) of[i] = lf[i] * rf[i];
+                else if (instr->op == HB_IR_VDIVPS) of[i] = lf[i] / rf[i];
+                else of[i] = lf[i] + rf[i];
+            }
+            memcpy(out, of, bytes);
+            return write_ymm_reg(ctx, instr->dst.reg, out, bytes);
+        }
+
+        case HB_IR_VMOVQ: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t raw = 0;
+            r = read_operand_value(ctx, &instr->src1, &raw);
+            if (r != HB_OK) return r;
+            uint64_t out[4] = { raw, 0, 0, 0 };
+            return write_ymm_reg(ctx, instr->dst.reg, out, 16);
         }
 
         case HB_IR_PCMPEQB:
         case HB_IR_PCMPEQW:
         case HB_IR_PCMPEQD: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lbytes[32], rbytes[32], obytes[32] = {0};
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t lbytes[16], rbytes[16], obytes[16];
             unsigned lane = instr->op == HB_IR_PCMPEQB ? 1 : (instr->op == HB_IR_PCMPEQW ? 2 : 4);
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lbytes, bytes);
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rbytes, bytes);
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
             if (r != HB_OK) return r;
-            for (unsigned i = 0; i < bytes; i += lane) {
+            memcpy(lbytes, lhs, sizeof(lbytes));
+            memcpy(rbytes, rhs, sizeof(rbytes));
+            memset(obytes, 0, sizeof(obytes));
+            for (unsigned i = 0; i < 16; i += lane) {
                 if (!memcmp(lbytes + i, rbytes + i, lane))
                     memset(obytes + i, 0xff, lane);
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, obytes, bytes);
+            memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_PCMPGTB:
         case HB_IR_PCMPGTW:
         case HB_IR_PCMPGTD: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lbytes[32], rbytes[32], obytes[32] = {0};
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t lbytes[16], rbytes[16], obytes[16];
             unsigned lane = instr->op == HB_IR_PCMPGTB ? 1 : (instr->op == HB_IR_PCMPGTW ? 2 : 4);
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lbytes, bytes);
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rbytes, bytes);
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
             if (r != HB_OK) return r;
-            for (unsigned i = 0; i < bytes; i += lane) {
+            memcpy(lbytes, lhs, sizeof(lbytes));
+            memcpy(rbytes, rhs, sizeof(rbytes));
+            memset(obytes, 0, sizeof(obytes));
+            for (unsigned i = 0; i < 16; i += lane) {
                 bool gt = false;
                 if (lane == 1) gt = *(int8_t *)(lbytes + i) > *(int8_t *)(rbytes + i);
                 else if (lane == 2) {
@@ -3394,7 +3465,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 }
                 if (gt) memset(obytes + i, 0xff, lane);
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, obytes, bytes);
+            memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_PMOVMSKB: {
@@ -3431,79 +3503,79 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
 
         case HB_IR_PUNPCK: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lbytes[32], rbytes[32], obytes[32] = {0};
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lbytes, bytes);
+            uint64_t lhs[2], rhs[2];
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rbytes, bytes);
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
             if (r != HB_OK) return r;
             unsigned lane = (unsigned)(instr->target & 0xff);
             bool high = (instr->target & 0x100) != 0;
             if (!(lane == 1 || lane == 2 || lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
-            for (size_t base = 0; base < bytes; base += 16) {
-                unsigned start = high ? 8 : 0;
-                unsigned lanes = 8 / lane;
-                unsigned out_pos = (unsigned)base;
-                for (unsigned i = 0; i < lanes; i++) {
-                    unsigned off = (unsigned)base + start + i * lane;
-                    memcpy(obytes + out_pos, lbytes + off, lane);
-                    out_pos += lane;
-                    memcpy(obytes + out_pos, rbytes + off, lane);
-                    out_pos += lane;
-                }
+            uint8_t lbytes[16], rbytes[16], obytes[16];
+            memcpy(lbytes, lhs, sizeof(lbytes));
+            memcpy(rbytes, rhs, sizeof(rbytes));
+            memset(obytes, 0, sizeof(obytes));
+            unsigned start = high ? 8 : 0;
+            unsigned lanes = 8 / lane;
+            unsigned out_pos = 0;
+            for (unsigned i = 0; i < lanes; i++) {
+                unsigned off = start + i * lane;
+                memcpy(obytes + out_pos, lbytes + off, lane);
+                out_pos += lane;
+                memcpy(obytes + out_pos, rbytes + off, lane);
+                out_pos += lane;
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, obytes, bytes);
+            uint64_t out[2];
+            memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_PACKSSWB:
         case HB_IR_PACKUSWB:
         case HB_IR_PACKSSDW: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lhs[32], rhs[32], obytes[32] = {0};
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t obytes[16] = {0};
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, bytes);
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
             if (r != HB_OK) return r;
 
-            for (size_t base = 0; base < bytes; base += 16) {
-                if (instr->op == HB_IR_PACKSSDW) {
-                    for (unsigned i = 0; i < 4; i++) {
-                        int32_t v;
-                        int16_t o;
-                        memcpy(&v, lhs + base + i * 4, sizeof(v));
-                        o = v > 32767 ? 32767 : (v < -32768 ? -32768 : (int16_t)v);
-                        memcpy(obytes + base + i * 2, &o, sizeof(o));
-                    }
-                    for (unsigned i = 0; i < 4; i++) {
-                        int32_t v;
-                        int16_t o;
-                        memcpy(&v, rhs + base + i * 4, sizeof(v));
-                        o = v > 32767 ? 32767 : (v < -32768 ? -32768 : (int16_t)v);
-                        memcpy(obytes + base + 8 + i * 2, &o, sizeof(o));
-                    }
-                } else {
-                    for (unsigned i = 0; i < 8; i++) {
-                        int16_t v;
-                        memcpy(&v, lhs + base + i * 2, sizeof(v));
-                        if (instr->op == HB_IR_PACKUSWB)
-                            obytes[base + i] = v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
-                        else
-                            obytes[base + i] = (uint8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
-                    }
-                    for (unsigned i = 0; i < 8; i++) {
-                        int16_t v;
-                        memcpy(&v, rhs + base + i * 2, sizeof(v));
-                        if (instr->op == HB_IR_PACKUSWB)
-                            obytes[base + 8 + i] = v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
-                        else
-                            obytes[base + 8 + i] = (uint8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
-                    }
+            if (instr->op == HB_IR_PACKSSDW) {
+                int32_t l[4], rr[4];
+                int16_t o[8];
+                memcpy(l, lhs, sizeof(l));
+                memcpy(rr, rhs, sizeof(rr));
+                for (unsigned i = 0; i < 4; i++) {
+                    int32_t v = l[i];
+                    o[i] = v > 32767 ? 32767 : (v < -32768 ? -32768 : (int16_t)v);
+                }
+                for (unsigned i = 0; i < 4; i++) {
+                    int32_t v = rr[i];
+                    o[4 + i] = v > 32767 ? 32767 : (v < -32768 ? -32768 : (int16_t)v);
+                }
+                memcpy(obytes, o, sizeof(o));
+            } else {
+                int16_t l[8], rr[8];
+                memcpy(l, lhs, sizeof(l));
+                memcpy(rr, rhs, sizeof(rr));
+                for (unsigned i = 0; i < 8; i++) {
+                    int16_t v = l[i];
+                    if (instr->op == HB_IR_PACKUSWB)
+                        obytes[i] = v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
+                    else
+                        obytes[i] = (uint8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
+                }
+                for (unsigned i = 0; i < 8; i++) {
+                    int16_t v = rr[i];
+                    if (instr->op == HB_IR_PACKUSWB)
+                        obytes[8 + i] = v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
+                    else
+                        obytes[8 + i] = (uint8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
                 }
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, obytes, bytes);
+            memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_PMULLW:
@@ -3511,44 +3583,45 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_PMULHUW:
         case HB_IR_PMADDWD: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lhs[32], rhs[32], out[32] = {0};
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, bytes);
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
             if (r != HB_OK) return r;
 
             if (instr->op == HB_IR_PMADDWD) {
-                for (size_t off = 0; off < bytes; off += 4) {
-                    int16_t a0, a1, b0, b1;
-                    int32_t value;
-                    memcpy(&a0, lhs + off, sizeof(a0));
-                    memcpy(&a1, lhs + off + 2, sizeof(a1));
-                    memcpy(&b0, rhs + off, sizeof(b0));
-                    memcpy(&b1, rhs + off + 2, sizeof(b1));
-                    value = (int32_t)a0 * (int32_t)b0 + (int32_t)a1 * (int32_t)b1;
-                    memcpy(out + off, &value, sizeof(value));
+                int16_t l[8], rr[8];
+                int32_t o[4];
+                memcpy(l, lhs, sizeof(l));
+                memcpy(rr, rhs, sizeof(rr));
+                for (unsigned i = 0; i < 4; i++) {
+                    int32_t a = (int32_t)l[i * 2] * (int32_t)rr[i * 2];
+                    int32_t b = (int32_t)l[i * 2 + 1] * (int32_t)rr[i * 2 + 1];
+                    o[i] = a + b;
                 }
+                memcpy(out, o, sizeof(o));
             } else {
-                for (size_t off = 0; off < bytes; off += 2) {
-                    uint16_t value;
-                    if (instr->op == HB_IR_PMULHUW) {
-                        uint16_t a, b;
-                        memcpy(&a, lhs + off, sizeof(a));
-                        memcpy(&b, rhs + off, sizeof(b));
-                        value = (uint16_t)(((uint32_t)a * (uint32_t)b) >> 16);
-                    } else {
-                        int16_t a, b;
-                        memcpy(&a, lhs + off, sizeof(a));
-                        memcpy(&b, rhs + off, sizeof(b));
-                        int32_t p = (int32_t)a * (int32_t)b;
-                        value = (uint16_t)(instr->op == HB_IR_PMULLW ? p : (p >> 16));
+                uint16_t o[8];
+                if (instr->op == HB_IR_PMULHUW) {
+                    uint16_t l[8], rr[8];
+                    memcpy(l, lhs, sizeof(l));
+                    memcpy(rr, rhs, sizeof(rr));
+                    for (unsigned i = 0; i < 8; i++) {
+                        uint32_t p = (uint32_t)l[i] * (uint32_t)rr[i];
+                        o[i] = (uint16_t)(p >> 16);
                     }
-                    memcpy(out + off, &value, sizeof(value));
+                } else {
+                    int16_t l[8], rr[8];
+                    memcpy(l, lhs, sizeof(l));
+                    memcpy(rr, rhs, sizeof(rr));
+                    for (unsigned i = 0; i < 8; i++) {
+                        int32_t p = (int32_t)l[i] * (int32_t)rr[i];
+                        o[i] = (uint16_t)(instr->op == HB_IR_PMULLW ? p : (p >> 16));
+                    }
                 }
+                memcpy(out, o, sizeof(o));
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_PADDSB:
@@ -3558,16 +3631,17 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_PAVGB:
         case HB_IR_PAVGW: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lbytes[32], rbytes[32], obytes[32] = {0};
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lbytes, bytes);
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t lbytes[16], rbytes[16], obytes[16] = {0};
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rbytes, bytes);
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
             if (r != HB_OK) return r;
+            memcpy(lbytes, lhs, sizeof(lbytes));
+            memcpy(rbytes, rhs, sizeof(rbytes));
 
             if (instr->op == HB_IR_PADDSB || instr->op == HB_IR_PADDUSB || instr->op == HB_IR_PAVGB) {
-                for (unsigned i = 0; i < bytes; i++) {
+                for (unsigned i = 0; i < 16; i++) {
                     if (instr->op == HB_IR_PAVGB) {
                         obytes[i] = (uint8_t)(((unsigned)lbytes[i] + (unsigned)rbytes[i] + 1u) >> 1);
                     } else if (instr->op == HB_IR_PADDUSB) {
@@ -3581,25 +3655,26 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     }
                 }
             } else {
-                for (unsigned i = 0; i < bytes; i += 2) {
-                    uint16_t a, b, value;
-                    memcpy(&a, lbytes + i, sizeof(a));
-                    memcpy(&b, rbytes + i, sizeof(b));
+                uint16_t lw[8], rw[8], ow[8];
+                memcpy(lw, lbytes, sizeof(lw));
+                memcpy(rw, rbytes, sizeof(rw));
+                for (unsigned i = 0; i < 8; i++) {
                     if (instr->op == HB_IR_PAVGW) {
-                        value = (uint16_t)(((uint32_t)a + (uint32_t)b + 1u) >> 1);
+                        ow[i] = (uint16_t)(((uint32_t)lw[i] + (uint32_t)rw[i] + 1u) >> 1);
                     } else if (instr->op == HB_IR_PADDUSW) {
-                        uint32_t v = (uint32_t)a + (uint32_t)b;
-                        value = (uint16_t)(v > 65535u ? 65535u : v);
+                        uint32_t v = (uint32_t)lw[i] + (uint32_t)rw[i];
+                        ow[i] = (uint16_t)(v > 65535u ? 65535u : v);
                     } else {
-                        int32_t v = (int32_t)(int16_t)a + (int32_t)(int16_t)b;
+                        int32_t v = (int32_t)(int16_t)lw[i] + (int32_t)(int16_t)rw[i];
                         if (v > 32767) v = 32767;
                         else if (v < -32768) v = -32768;
-                        value = (uint16_t)(int16_t)v;
+                        ow[i] = (uint16_t)(int16_t)v;
                     }
-                    memcpy(obytes + i, &value, sizeof(value));
                 }
+                memcpy(obytes, ow, sizeof(ow));
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, obytes, bytes);
+            memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_PSHUFB: {
@@ -3616,6 +3691,528 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 obytes[i] = (mask[i] & 0x80) ? 0 : src[mask[i] & 0x0f];
             }
             memcpy(out, obytes, sizeof(obytes));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PHADD:
+        case HB_IR_PHSUB: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t lhs[16], rhs[16], out_bytes[16] = {0};
+            uint64_t out[2];
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            bool saturating = (instr->target & 0x100) != 0;
+            bool sub = instr->op == HB_IR_PHSUB;
+            if (!(lane == 2 || lane == 4)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            for (unsigned src_id = 0; src_id < 2; src_id++) {
+                const uint8_t* srcv = src_id == 0 ? lhs : rhs;
+                unsigned out_base = src_id * 8;
+                for (unsigned i = 0; i < 8 / lane; i++) {
+                    if (lane == 2) {
+                        int16_t a, b, v;
+                        memcpy(&a, srcv + (i * 2) * lane, sizeof(a));
+                        memcpy(&b, srcv + (i * 2 + 1) * lane, sizeof(b));
+                        v = saturating ? sat_i16(sub ? (int)a - (int)b : (int)a + (int)b)
+                                       : (int16_t)(sub ? a - b : a + b);
+                        memcpy(out_bytes + out_base + i * lane, &v, sizeof(v));
+                    } else {
+                        int32_t a, b, v;
+                        memcpy(&a, srcv + (i * 2) * lane, sizeof(a));
+                        memcpy(&b, srcv + (i * 2 + 1) * lane, sizeof(b));
+                        v = sub ? a - b : a + b;
+                        memcpy(out_bytes + out_base + i * lane, &v, sizeof(v));
+                    }
+                }
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PSIGN: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t lhs[16], rhs[16], out_bytes[16] = {0};
+            uint64_t out[2];
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            if (!(lane == 1 || lane == 2 || lane == 4)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            for (unsigned off = 0; off < 16; off += lane) {
+                if (lane == 1) {
+                    int8_t a = (int8_t)lhs[off], b = (int8_t)rhs[off];
+                    int8_t v = b < 0 ? (int8_t)-a : (b == 0 ? 0 : a);
+                    memcpy(out_bytes + off, &v, sizeof(v));
+                } else if (lane == 2) {
+                    int16_t a, b, v;
+                    memcpy(&a, lhs + off, sizeof(a));
+                    memcpy(&b, rhs + off, sizeof(b));
+                    v = b < 0 ? (int16_t)-a : (b == 0 ? 0 : a);
+                    memcpy(out_bytes + off, &v, sizeof(v));
+                } else {
+                    int32_t a, b, v;
+                    memcpy(&a, lhs + off, sizeof(a));
+                    memcpy(&b, rhs + off, sizeof(b));
+                    v = b < 0 ? -a : (b == 0 ? 0 : a);
+                    memcpy(out_bytes + off, &v, sizeof(v));
+                }
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PMADDUBSW:
+        case HB_IR_PMULHRSW: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t lhs[16], rhs[16], out_bytes[16] = {0};
+            uint64_t out[2];
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            if (instr->op == HB_IR_PMADDUBSW) {
+                for (unsigned i = 0; i < 8; i++) {
+                    int value = (int)lhs[i * 2] * (int)(int8_t)rhs[i * 2] +
+                                (int)lhs[i * 2 + 1] * (int)(int8_t)rhs[i * 2 + 1];
+                    int16_t v = sat_i16(value);
+                    memcpy(out_bytes + i * 2, &v, sizeof(v));
+                }
+            } else {
+                for (unsigned i = 0; i < 8; i++) {
+                    int16_t a, b;
+                    memcpy(&a, lhs + i * 2, sizeof(a));
+                    memcpy(&b, rhs + i * 2, sizeof(b));
+                    int32_t value = (int32_t)a * (int32_t)b;
+                    int16_t v = (int16_t)((value + 0x4000) >> 15);
+                    memcpy(out_bytes + i * 2, &v, sizeof(v));
+                }
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PBLEND:
+        case HB_IR_PBLENDV: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t lhs[16], rhs[16], out_bytes[16], mask_bytes[16];
+            uint64_t out[2], mask_xmm[2];
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            if (!(lane == 1 || lane == 2 || lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            memcpy(out_bytes, lhs, sizeof(out_bytes));
+            if (instr->op == HB_IR_PBLEND) {
+                unsigned imm = (unsigned)((instr->target >> 8) & 0xff);
+                for (unsigned off = 0, bit = 0; off < 16; off += lane, bit++)
+                    if ((imm >> bit) & 1u) memcpy(out_bytes + off, rhs + off, lane);
+            } else {
+                r = read_xmm_reg(ctx, HB_REG_XMM0, mask_xmm);
+                if (r != HB_OK) return r;
+                memcpy(mask_bytes, mask_xmm, sizeof(mask_bytes));
+                for (unsigned off = 0; off < 16; off += lane) {
+                    unsigned sign_byte = off + lane - 1;
+                    if (mask_bytes[sign_byte] & 0x80) memcpy(out_bytes + off, rhs + off, lane);
+                }
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PTEST: {
+            uint64_t lhs[2], rhs[2];
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
+            if (r != HB_OK) return r;
+            ctx->flags.zf = ((lhs[0] & rhs[0]) == 0) && ((lhs[1] & rhs[1]) == 0);
+            ctx->flags.cf = ((~lhs[0] & rhs[0]) == 0) && ((~lhs[1] & rhs[1]) == 0);
+            ctx->flags.of = false;
+            ctx->flags.af = false;
+            ctx->flags.pf = false;
+            ctx->flags.sf = false;
+            hb_lazy_flags_clear(ctx);
+            return HB_OK;
+        }
+
+        case HB_IR_PABS: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t src[16], out_bytes[16] = {0};
+            uint64_t out[2];
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            if (!(lane == 1 || lane == 2 || lane == 4)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, src, 16);
+            if (r != HB_OK) return r;
+            for (unsigned off = 0; off < 16; off += lane) {
+                if (lane == 1) {
+                    int8_t v = (int8_t)src[off];
+                    uint8_t o = (uint8_t)(v < 0 ? -v : v);
+                    memcpy(out_bytes + off, &o, sizeof(o));
+                } else if (lane == 2) {
+                    int16_t v;
+                    memcpy(&v, src + off, sizeof(v));
+                    v = v < 0 ? (int16_t)-v : v;
+                    memcpy(out_bytes + off, &v, sizeof(v));
+                } else {
+                    int32_t v;
+                    memcpy(&v, src + off, sizeof(v));
+                    v = v < 0 ? -v : v;
+                    memcpy(out_bytes + off, &v, sizeof(v));
+                }
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PMOVX: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t src[16], out_bytes[16] = {0};
+            uint64_t out[2];
+            unsigned src_lane = (unsigned)(instr->target & 0xff);
+            unsigned dst_lane = (unsigned)((instr->target >> 8) & 0xff);
+            bool sign = (instr->target & 0x10000) != 0;
+            unsigned count = dst_lane ? 16 / dst_lane : 0;
+            if (!(src_lane == 1 || src_lane == 2 || src_lane == 4) ||
+                !(dst_lane == 2 || dst_lane == 4 || dst_lane == 8)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, src, count * src_lane);
+            if (r != HB_OK) return r;
+            for (unsigned i = 0; i < count; i++) {
+                int64_t signed_value = 0;
+                uint64_t value = 0;
+                if (src_lane == 1) {
+                    uint8_t raw = src[i];
+                    signed_value = (int8_t)raw;
+                    value = raw;
+                } else if (src_lane == 2) {
+                    uint16_t raw;
+                    memcpy(&raw, src + i * 2, sizeof(raw));
+                    signed_value = (int16_t)raw;
+                    value = raw;
+                } else {
+                    uint32_t raw;
+                    memcpy(&raw, src + i * 4, sizeof(raw));
+                    signed_value = (int32_t)raw;
+                    value = raw;
+                }
+                uint64_t out_value = sign ? (uint64_t)signed_value : value;
+                memcpy(out_bytes + i * dst_lane, &out_value, dst_lane);
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PCMPEQQ:
+        case HB_IR_PCMPGTQ: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
+            if (r != HB_OK) return r;
+            for (unsigned i = 0; i < 2; i++) {
+                bool set = instr->op == HB_IR_PCMPEQQ
+                    ? lhs[i] == rhs[i]
+                    : (int64_t)lhs[i] > (int64_t)rhs[i];
+                out[i] = set ? UINT64_MAX : 0;
+            }
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PACKUSDW: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t lhs[16], rhs[16], out_bytes[16] = {0};
+            uint64_t out[2];
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            for (unsigned i = 0; i < 8; i++) {
+                int32_t v;
+                const uint8_t* srcv = i < 4 ? lhs : rhs;
+                memcpy(&v, srcv + (i & 3u) * 4, sizeof(v));
+                uint16_t o = sat_u16_from_i32(v);
+                memcpy(out_bytes + i * 2, &o, sizeof(o));
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PMULDQ:
+        case HB_IR_PMULLD: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t lhs[16], rhs[16], out_bytes[16] = {0};
+            uint64_t out[2];
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            if (instr->op == HB_IR_PMULLD) {
+                for (unsigned i = 0; i < 4; i++) {
+                    int32_t a, b;
+                    memcpy(&a, lhs + i * 4, sizeof(a));
+                    memcpy(&b, rhs + i * 4, sizeof(b));
+                    uint32_t v = (uint32_t)((int64_t)a * (int64_t)b);
+                    memcpy(out_bytes + i * 4, &v, sizeof(v));
+                }
+            } else {
+                for (unsigned i = 0; i < 2; i++) {
+                    int32_t a, b;
+                    memcpy(&a, lhs + i * 8, sizeof(a));
+                    memcpy(&b, rhs + i * 8, sizeof(b));
+                    int64_t v = (int64_t)a * (int64_t)b;
+                    memcpy(out_bytes + i * 8, &v, sizeof(v));
+                }
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PMIN:
+        case HB_IR_PMAX: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t lhs[16], rhs[16], out_bytes[16] = {0};
+            uint64_t out[2];
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            bool is_signed = (instr->target & 0x100) != 0;
+            bool is_max = instr->op == HB_IR_PMAX;
+            if (!(lane == 1 || lane == 2 || lane == 4)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            for (unsigned off = 0; off < 16; off += lane) {
+                bool take_rhs;
+                if (lane == 1) {
+                    int a = is_signed ? (int)(int8_t)lhs[off] : (int)lhs[off];
+                    int bval = is_signed ? (int)(int8_t)rhs[off] : (int)rhs[off];
+                    take_rhs = is_max ? bval > a : bval < a;
+                } else if (lane == 2) {
+                    uint16_t au, bu;
+                    memcpy(&au, lhs + off, sizeof(au));
+                    memcpy(&bu, rhs + off, sizeof(bu));
+                    int a = is_signed ? (int)(int16_t)au : (int)au;
+                    int bval = is_signed ? (int)(int16_t)bu : (int)bu;
+                    take_rhs = is_max ? bval > a : bval < a;
+                } else {
+                    uint32_t au, bu;
+                    memcpy(&au, lhs + off, sizeof(au));
+                    memcpy(&bu, rhs + off, sizeof(bu));
+                    int64_t a = is_signed ? (int64_t)(int32_t)au : (int64_t)au;
+                    int64_t bval = is_signed ? (int64_t)(int32_t)bu : (int64_t)bu;
+                    take_rhs = is_max ? bval > a : bval < a;
+                }
+                memcpy(out_bytes + off, take_rhs ? rhs + off : lhs + off, lane);
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PHMINPOSUW: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint16_t words[8], result[8] = {0};
+            uint8_t src[16];
+            uint64_t out[2];
+            r = read_xmm_operand_bytes(ctx, &instr->src2, src, 16);
+            if (r != HB_OK) return r;
+            memcpy(words, src, sizeof(words));
+            uint16_t min = words[0];
+            uint16_t index = 0;
+            for (uint16_t i = 1; i < 8; i++) {
+                if (words[i] < min) {
+                    min = words[i];
+                    index = i;
+                }
+            }
+            result[0] = min;
+            result[1] = index;
+            memcpy(out, result, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_CRC32: {
+            uint64_t dst = 0, srcv = 0;
+            unsigned bytes = (unsigned)(instr->target & 0xff);
+            if (!(bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8)) return HB_ERR_INTERNAL;
+            r = read_operand_value(ctx, &instr->src1, &dst);
+            if (r != HB_OK) return r;
+            r = read_operand_value(ctx, &instr->src2, &srcv);
+            if (r != HB_OK) return r;
+            uint32_t crc = (uint32_t)dst;
+            for (unsigned i = 0; i < bytes; i++)
+                crc = crc32c_update(crc, (uint8_t)(srcv >> (i * 8)));
+            return write_operand_value(ctx, &instr->dst, crc);
+        }
+
+        case HB_IR_ROUND: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            bool scalar = (instr->target & 0x100) != 0;
+            unsigned imm = (unsigned)((instr->target >> 16) & 0xff);
+            uint8_t src[16], old[16], out_bytes[16];
+            uint64_t out[2];
+            if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, old, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, src, scalar ? lane : 16);
+            if (r != HB_OK) return r;
+            memcpy(out_bytes, scalar ? old : src, sizeof(out_bytes));
+            for (unsigned i = 0; i < (scalar ? 1U : 16U / lane); i++) {
+                if (lane == 4) {
+                    uint32_t bits;
+                    memcpy(&bits, src + i * 4, sizeof(bits));
+                    float rounded = (float)round_sse_value((double)hb_bits_to_float(bits), imm);
+                    bits = hb_float_to_bits(rounded);
+                    memcpy(out_bytes + i * 4, &bits, sizeof(bits));
+                } else {
+                    uint64_t bits;
+                    memcpy(&bits, src + i * 8, sizeof(bits));
+                    bits = hb_double_to_bits(round_sse_value(hb_bits_to_double(bits), imm));
+                    memcpy(out_bytes + i * 8, &bits, sizeof(bits));
+                }
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PALIGNR: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t lhs[16], rhs[16], temp[32], out_bytes[16] = {0};
+            uint64_t out[2];
+            unsigned imm = (unsigned)(instr->target & 0xff);
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            memcpy(temp, rhs, 16);
+            memcpy(temp + 16, lhs, 16);
+            if (imm < 32) {
+                unsigned count = 32 - imm;
+                if (count > 16) count = 16;
+                memcpy(out_bytes, temp + imm, count);
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_PEXTR: {
+            if (instr->src2.type != HB_OP_IMM) return HB_ERR_INTERNAL;
+            uint8_t src[16];
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            unsigned lanes = lane ? 16 / lane : 0;
+            unsigned index = lanes ? ((unsigned)instr->src2.imm & (lanes - 1)) : 0;
+            uint64_t value = 0;
+            if (!(lane == 1 || lane == 2 || lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, src, 16);
+            if (r != HB_OK) return r;
+            memcpy(&value, src + index * lane, lane);
+            return write_operand_value(ctx, &instr->dst, value);
+        }
+
+        case HB_IR_PINSR: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t out_bytes[16];
+            uint64_t out[2], value = 0;
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            unsigned lanes = lane ? 16 / lane : 0;
+            unsigned index = lanes ? (unsigned)((instr->target >> 8) & (lanes - 1)) : 0;
+            if (!(lane == 1 || lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, out_bytes, 16);
+            if (r != HB_OK) return r;
+            r = read_operand_value(ctx, &instr->src2, &value);
+            if (r != HB_OK) return r;
+            memcpy(out_bytes + index * lane, &value, lane);
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_INSERTPS: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t dst_bytes[16], src_bytes[16];
+            uint64_t out[2];
+            unsigned imm = (unsigned)(instr->target & 0xff);
+            unsigned src_lane = (imm >> 6) & 3u;
+            unsigned dst_lane = (imm >> 4) & 3u;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, dst_bytes, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, src_bytes, instr->src2.type == HB_OP_MEM ? 4 : 16);
+            if (r != HB_OK) return r;
+            if (instr->src2.type == HB_OP_MEM) src_lane = 0;
+            memcpy(dst_bytes + dst_lane * 4, src_bytes + src_lane * 4, 4);
+            for (unsigned lane_idx = 0; lane_idx < 4; lane_idx++) {
+                if ((imm >> lane_idx) & 1u) memset(dst_bytes + lane_idx * 4, 0, 4);
+            }
+            memcpy(out, dst_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_DP: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            unsigned lane = (unsigned)(instr->target & 0xff);
+            unsigned imm = (unsigned)((instr->target >> 8) & 0xff);
+            uint8_t lhs[16], rhs[16], out_bytes[16] = {0};
+            uint64_t out[2];
+            if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            if (lane == 4) {
+                float sum = 0.0f;
+                for (unsigned i = 0; i < 4; i++) {
+                    if ((imm >> (4 + i)) & 1u) {
+                        uint32_t a_bits, b_bits;
+                        memcpy(&a_bits, lhs + i * 4, sizeof(a_bits));
+                        memcpy(&b_bits, rhs + i * 4, sizeof(b_bits));
+                        sum += hb_bits_to_float(a_bits) * hb_bits_to_float(b_bits);
+                    }
+                }
+                uint32_t sum_bits = hb_float_to_bits(sum);
+                for (unsigned i = 0; i < 4; i++)
+                    if ((imm >> i) & 1u) memcpy(out_bytes + i * 4, &sum_bits, sizeof(sum_bits));
+            } else {
+                double sum = 0.0;
+                for (unsigned i = 0; i < 2; i++) {
+                    if ((imm >> (4 + i)) & 1u) {
+                        uint64_t a_bits, b_bits;
+                        memcpy(&a_bits, lhs + i * 8, sizeof(a_bits));
+                        memcpy(&b_bits, rhs + i * 8, sizeof(b_bits));
+                        sum += hb_bits_to_double(a_bits) * hb_bits_to_double(b_bits);
+                    }
+                }
+                uint64_t sum_bits = hb_double_to_bits(sum);
+                for (unsigned i = 0; i < 2; i++)
+                    if ((imm >> i) & 1u) memcpy(out_bytes + i * 8, &sum_bits, sizeof(sum_bits));
+            }
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
+        }
+
+        case HB_IR_MPSADBW: {
+            if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
+            uint8_t lhs[16], rhs[16];
+            uint16_t sums[8] = {0};
+            uint64_t out[2];
+            unsigned imm = (unsigned)(instr->target & 0xff);
+            unsigned lhs_base = (imm & 3u) * 4u;
+            unsigned rhs_base = ((imm >> 2) & 1u) * 4u;
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+            if (r != HB_OK) return r;
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+            if (r != HB_OK) return r;
+            for (unsigned i = 0; i < 8; i++) {
+                unsigned sum = 0;
+                for (unsigned j = 0; j < 4; j++) {
+                    int a = (int)lhs[lhs_base + j];
+                    int b = (int)rhs[rhs_base + i + j];
+                    sum += (unsigned)(a > b ? a - b : b - a);
+                }
+                sums[i] = (uint16_t)sum;
+            }
+            memcpy(out, sums, sizeof(out));
             return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
@@ -3714,18 +4311,17 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_PSRA:
         case HB_IR_PSLL: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t src[32], dst[32] = {0};
+            if (instr->src2.type != HB_OP_IMM) return HB_ERR_INTERNAL;
+            uint64_t in[2], out[2] = {0, 0};
+            uint8_t src[16], dst[16] = {0};
             unsigned lane = (unsigned)(instr->target & 0xff);
-            unsigned count = 0;
-            r = read_packed_shift_count(ctx, &instr->src2, &count);
-            if (r != HB_OK) return r;
+            unsigned count = (unsigned)(instr->src2.imm & 0xff);
             if (!(lane == 2 || lane == 4)) return HB_ERR_INTERNAL;
-            r = read_xmm_operand_bytes(ctx, &instr->src1, src, bytes);
+            r = read_xmm_operand(ctx, &instr->src1, in);
             if (r != HB_OK) return r;
+            memcpy(src, in, sizeof(src));
 
-            for (unsigned off = 0; off < bytes; off += lane) {
+            for (unsigned off = 0; off < 16; off += lane) {
                 if (lane == 2) {
                     uint16_t value;
                     memcpy(&value, src + off, sizeof(value));
@@ -3758,7 +4354,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     memcpy(dst + off, &result, sizeof(result));
                 }
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, dst, bytes);
+            memcpy(out, dst, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_PSRLQ:
@@ -3766,54 +4363,46 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_PSRLDQ:
         case HB_IR_PSLLDQ: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t src[32] = {0}, dst[32] = {0};
-            unsigned count = 0;
-            r = read_packed_shift_count(ctx, &instr->src2, &count);
-            if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src1, src, bytes);
+            if (instr->src2.type != HB_OP_IMM) return HB_ERR_INTERNAL;
+            uint64_t in[2], out[2] = {0, 0};
+            unsigned count = (unsigned)(instr->src2.imm & 0xff);
+            r = read_xmm_operand(ctx, &instr->src1, in);
             if (r != HB_OK) return r;
 
             if (instr->op == HB_IR_PSRLQ) {
-                for (size_t off = 0; off < bytes; off += 8) {
-                    uint64_t value = 0, result = 0;
-                    memcpy(&value, src + off, sizeof(value));
-                    result = (count > 63) ? 0 : (value >> count);
-                    memcpy(dst + off, &result, sizeof(result));
-                }
+                out[0] = (count > 63) ? 0 : (in[0] >> count);
+                out[1] = (count > 63) ? 0 : (in[1] >> count);
             } else if (instr->op == HB_IR_PSLLQ) {
-                for (size_t off = 0; off < bytes; off += 8) {
-                    uint64_t value = 0, result = 0;
-                    memcpy(&value, src + off, sizeof(value));
-                    result = (count > 63) ? 0 : (value << count);
-                    memcpy(dst + off, &result, sizeof(result));
-                }
+                out[0] = (count > 63) ? 0 : (in[0] << count);
+                out[1] = (count > 63) ? 0 : (in[1] << count);
             } else {
-                for (size_t base = 0; base < bytes; base += 16) {
-                    if (count >= 16) continue;
+                uint8_t src[16], dst[16] = {0};
+                memcpy(src, in, sizeof(src));
+                if (count < 16) {
                     if (instr->op == HB_IR_PSRLDQ) {
-                        memmove(dst + base, src + base + count, 16 - count);
+                        memmove(dst, src + count, 16 - count);
                     } else {
-                        memmove(dst + base + count, src + base, 16 - count);
+                        memmove(dst + count, src, 16 - count);
                     }
                 }
+                memcpy(out, dst, sizeof(out));
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, dst, bytes);
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_PADD: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lbytes[32], rbytes[32], obytes[32] = {0};
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t lbytes[16], rbytes[16], obytes[16];
             unsigned lane = (unsigned)(instr->target & 0xff);
             if (!(lane == 1 || lane == 2 || lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lbytes, bytes);
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rbytes, bytes);
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
             if (r != HB_OK) return r;
-            for (unsigned i = 0; i < bytes; i += lane) {
+            memcpy(lbytes, lhs, sizeof(lbytes));
+            memcpy(rbytes, rhs, sizeof(rbytes));
+            for (unsigned i = 0; i < 16; i += lane) {
                 if (lane == 1) {
                     obytes[i] = (uint8_t)(lbytes[i] + rbytes[i]);
                 } else if (lane == 2) {
@@ -3836,21 +4425,23 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     memcpy(obytes + i, &c, sizeof(c));
                 }
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, obytes, bytes);
+            memcpy(out, obytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_PSUB: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lbytes[32], rbytes[32], obytes[32] = {0};
+            uint64_t lhs[2], rhs[2], out[2] = {0, 0};
+            uint8_t lbytes[16], rbytes[16], obytes[16];
             unsigned lane = (unsigned)(instr->target & 0xff);
             if (!(lane == 1 || lane == 2 || lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lbytes, bytes);
+            r = read_xmm_operand(ctx, &instr->src1, lhs);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rbytes, bytes);
+            r = read_xmm_operand(ctx, &instr->src2, rhs);
             if (r != HB_OK) return r;
-            for (unsigned i = 0; i < bytes; i += lane) {
+            memcpy(lbytes, lhs, sizeof(lbytes));
+            memcpy(rbytes, rhs, sizeof(rbytes));
+            for (unsigned i = 0; i < 16; i += lane) {
                 if (lane == 1) {
                     obytes[i] = (uint8_t)(lbytes[i] - rbytes[i]);
                 } else if (lane == 2) {
@@ -3873,283 +4464,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     memcpy(obytes + i, &c, sizeof(c));
                 }
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, obytes, bytes);
-        }
-
-        case HB_IR_VEC_PACKED: {
-            hb_ir_vec_op_t vop = (hb_ir_vec_op_t)(instr->target >> 32);
-            unsigned imm = (unsigned)(instr->target & 0xffu);
-            size_t bytes = bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lhs[32] = {0}, rhs[32] = {0}, out[32] = {0};
-            if (instr->src1.type != HB_OP_NONE) {
-                r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
-                if (r != HB_OK) return r;
-            }
-            if (instr->src2.type != HB_OP_NONE) {
-                r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, bytes);
-                if (r != HB_OK) return r;
-            }
-
-            if (vop == HB_VEC_PTEST) {
-                bool zf = true, cf = true;
-                for (size_t i = 0; i < bytes; i++) {
-                    if ((lhs[i] & rhs[i]) != 0) zf = false;
-                    if (((uint8_t)~lhs[i] & rhs[i]) != 0) cf = false;
-                }
-                hb_lazy_flags_clear(ctx);
-                ctx->flags.zf = zf;
-                ctx->flags.cf = cf;
-                ctx->flags.of = ctx->flags.sf = ctx->flags.af = ctx->flags.pf = false;
-                return HB_OK;
-            }
-
-            if (vop == HB_VEC_PHADDW || vop == HB_VEC_PHADDD || vop == HB_VEC_PHADDSW ||
-                vop == HB_VEC_PHSUBW || vop == HB_VEC_PHSUBD || vop == HB_VEC_PHSUBSW) {
-                unsigned lane = (vop == HB_VEC_PHADDW || vop == HB_VEC_PHADDSW ||
-                                 vop == HB_VEC_PHSUBW || vop == HB_VEC_PHSUBSW) ? 2 : 4;
-                bool sub = (vop == HB_VEC_PHSUBW || vop == HB_VEC_PHSUBD || vop == HB_VEC_PHSUBSW);
-                bool sat = (vop == HB_VEC_PHADDSW || vop == HB_VEC_PHSUBSW);
-                for (size_t base = 0; base < bytes; base += 16) {
-                    unsigned pairs_per_src = 8 / lane;
-                    for (unsigned s = 0; s < 2; s++) {
-                        const uint8_t* src = s ? rhs + base : lhs + base;
-                        for (unsigned p = 0; p < pairs_per_src; p++) {
-                            int64_t a = load_lane_signed(src + p * 2 * lane, lane);
-                            int64_t b = load_lane_signed(src + (p * 2 + 1) * lane, lane);
-                            int64_t val = sub ? (a - b) : (a + b);
-                            size_t off = base + (s * pairs_per_src + p) * lane;
-                            if (sat) store_lane(out + off, lane, (uint16_t)sat_i16((int32_t)val));
-                            else store_lane(out + off, lane, (uint64_t)val);
-                        }
-                    }
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PMADDUBSW) {
-                for (size_t i = 0; i < bytes; i += 2) {
-                    int32_t v = (int32_t)lhs[i] * (int32_t)(int8_t)rhs[i] +
-                                (int32_t)lhs[i + 1] * (int32_t)(int8_t)rhs[i + 1];
-                    store_lane(out + i, 2, (uint16_t)sat_i16(v));
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PSIGNB || vop == HB_VEC_PSIGNW || vop == HB_VEC_PSIGND ||
-                vop == HB_VEC_PABSB || vop == HB_VEC_PABSW || vop == HB_VEC_PABSD) {
-                unsigned lane = (vop == HB_VEC_PSIGNB || vop == HB_VEC_PABSB) ? 1 :
-                                (vop == HB_VEC_PSIGNW || vop == HB_VEC_PABSW) ? 2 : 4;
-                for (size_t i = 0; i < bytes; i += lane) {
-                    int64_t a = load_lane_signed(lhs + i, lane);
-                    int64_t sign = (vop == HB_VEC_PSIGNB || vop == HB_VEC_PSIGNW || vop == HB_VEC_PSIGND)
-                                       ? load_lane_signed(rhs + i, lane) : 1;
-                    int64_t val = sign == 0 ? 0 : (sign < 0 ? -a : (a < 0 && vop >= HB_VEC_PABSB && vop <= HB_VEC_PABSD ? -a : a));
-                    store_lane(out + i, lane, (uint64_t)val);
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PMULHRSW) {
-                for (size_t i = 0; i < bytes; i += 2) {
-                    int16_t a, b;
-                    memcpy(&a, lhs + i, sizeof(a));
-                    memcpy(&b, rhs + i, sizeof(b));
-                    int32_t v = ((int32_t)a * (int32_t)b + 0x4000) >> 15;
-                    store_lane(out + i, 2, (uint16_t)v);
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if ((vop >= HB_VEC_PMOVSXBW && vop <= HB_VEC_PMOVSXDQ) ||
-                (vop >= HB_VEC_PMOVZXBW && vop <= HB_VEC_PMOVZXDQ)) {
-                bool sign = vop >= HB_VEC_PMOVSXBW && vop <= HB_VEC_PMOVSXDQ;
-                unsigned src_lane = (vop == HB_VEC_PMOVSXBW || vop == HB_VEC_PMOVSXBD ||
-                                     vop == HB_VEC_PMOVSXBQ || vop == HB_VEC_PMOVZXBW ||
-                                     vop == HB_VEC_PMOVZXBD || vop == HB_VEC_PMOVZXBQ) ? 1 :
-                                    (vop == HB_VEC_PMOVSXWD || vop == HB_VEC_PMOVSXWQ ||
-                                     vop == HB_VEC_PMOVZXWD || vop == HB_VEC_PMOVZXWQ) ? 2 : 4;
-                unsigned dst_lane = (vop == HB_VEC_PMOVSXBW || vop == HB_VEC_PMOVZXBW) ? 2 :
-                                    (vop == HB_VEC_PMOVSXBD || vop == HB_VEC_PMOVSXWD ||
-                                     vop == HB_VEC_PMOVZXBD || vop == HB_VEC_PMOVZXWD) ? 4 : 8;
-                unsigned count = (unsigned)(bytes / dst_lane);
-                for (unsigned i = 0; i < count; i++) {
-                    uint64_t val = sign ? (uint64_t)load_lane_signed(lhs + i * src_lane, src_lane)
-                                        : load_lane_unsigned(lhs + i * src_lane, src_lane);
-                    store_lane(out + i * dst_lane, dst_lane, val);
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PMULDQ) {
-                for (size_t i = 0, o = 0; i + 4 <= bytes; i += 8, o += 8) {
-                    int32_t a, b;
-                    memcpy(&a, lhs + i, sizeof(a));
-                    memcpy(&b, rhs + i, sizeof(b));
-                    int64_t v = (int64_t)a * (int64_t)b;
-                    memcpy(out + o, &v, sizeof(v));
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PCMPEQQ || vop == HB_VEC_PCMPGTQ) {
-                for (size_t i = 0; i < bytes; i += 8) {
-                    int64_t a, b;
-                    memcpy(&a, lhs + i, sizeof(a));
-                    memcpy(&b, rhs + i, sizeof(b));
-                    if ((vop == HB_VEC_PCMPEQQ && a == b) || (vop == HB_VEC_PCMPGTQ && a > b))
-                        memset(out + i, 0xff, 8);
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PACKUSDW) {
-                for (size_t base = 0; base < bytes; base += 16) {
-                    for (unsigned i = 0; i < 4; i++) {
-                        int32_t v;
-                        memcpy(&v, lhs + base + i * 4, sizeof(v));
-                        store_lane(out + base + i * 2, 2, sat_u16_from_i32(v));
-                        memcpy(&v, rhs + base + i * 4, sizeof(v));
-                        store_lane(out + base + 8 + i * 2, 2, sat_u16_from_i32(v));
-                    }
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PSUBUSB || vop == HB_VEC_PSUBUSW ||
-                vop == HB_VEC_PSUBSB || vop == HB_VEC_PSUBSW) {
-                bool is_unsigned = vop == HB_VEC_PSUBUSB || vop == HB_VEC_PSUBUSW;
-                unsigned lane = (vop == HB_VEC_PSUBUSB || vop == HB_VEC_PSUBSB) ? 1 : 2;
-                for (size_t i = 0; i < bytes; i += lane) {
-                    if (is_unsigned) {
-                        uint64_t a = load_lane_unsigned(lhs + i, lane);
-                        uint64_t b = load_lane_unsigned(rhs + i, lane);
-                        store_lane(out + i, lane, a > b ? a - b : 0);
-                    } else if (lane == 1) {
-                        int32_t v = (int32_t)(int8_t)lhs[i] - (int32_t)(int8_t)rhs[i];
-                        out[i] = (uint8_t)sat_i8(v);
-                    } else {
-                        int16_t a, b;
-                        memcpy(&a, lhs + i, sizeof(a));
-                        memcpy(&b, rhs + i, sizeof(b));
-                        store_lane(out + i, lane, (uint16_t)sat_i16((int32_t)a - (int32_t)b));
-                    }
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if ((vop >= HB_VEC_PMINSB && vop <= HB_VEC_PMULLD) ||
-                vop == HB_VEC_PMINUB || vop == HB_VEC_PMINSW ||
-                vop == HB_VEC_PMAXUB || vop == HB_VEC_PMAXSW) {
-                bool is_max = vop == HB_VEC_PMAXSB || vop == HB_VEC_PMAXSD ||
-                              vop == HB_VEC_PMAXUW || vop == HB_VEC_PMAXUD ||
-                              vop == HB_VEC_PMAXUB || vop == HB_VEC_PMAXSW;
-                bool is_mul = vop == HB_VEC_PMULLD;
-                bool is_signed = vop == HB_VEC_PMINSB || vop == HB_VEC_PMINSD ||
-                                 vop == HB_VEC_PMAXSB || vop == HB_VEC_PMAXSD ||
-                                 vop == HB_VEC_PMINSW || vop == HB_VEC_PMAXSW;
-                unsigned lane = (vop == HB_VEC_PMINSB || vop == HB_VEC_PMAXSB ||
-                                 vop == HB_VEC_PMINUB || vop == HB_VEC_PMAXUB) ? 1 :
-                                (vop == HB_VEC_PMINUW || vop == HB_VEC_PMAXUW ||
-                                 vop == HB_VEC_PMINSW || vop == HB_VEC_PMAXSW) ? 2 : 4;
-                for (size_t i = 0; i < bytes; i += lane) {
-                    uint64_t val;
-                    if (is_mul) {
-                        int32_t a, b, c;
-                        memcpy(&a, lhs + i, sizeof(a));
-                        memcpy(&b, rhs + i, sizeof(b));
-                        c = a * b;
-                        val = (uint32_t)c;
-                    } else if (is_signed) {
-                        int64_t a = load_lane_signed(lhs + i, lane);
-                        int64_t b = load_lane_signed(rhs + i, lane);
-                        val = (uint64_t)(is_max ? (a > b ? a : b) : (a < b ? a : b));
-                    } else {
-                        uint64_t a = load_lane_unsigned(lhs + i, lane);
-                        uint64_t b = load_lane_unsigned(rhs + i, lane);
-                        val = is_max ? (a > b ? a : b) : (a < b ? a : b);
-                    }
-                    store_lane(out + i, lane, val);
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PMULUDQ) {
-                for (size_t base = 0; base < bytes; base += 16) {
-                    for (unsigned i = 0; i < 2; i++) {
-                        uint32_t a, b;
-                        size_t src_off = base + i * 8;
-                        memcpy(&a, lhs + src_off, sizeof(a));
-                        memcpy(&b, rhs + src_off, sizeof(b));
-                        uint64_t v = (uint64_t)a * (uint64_t)b;
-                        memcpy(out + base + i * 8, &v, sizeof(v));
-                    }
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PSADBW) {
-                for (size_t base = 0; base < bytes; base += 8) {
-                    uint64_t sum = 0;
-                    for (unsigned i = 0; i < 8; i++) {
-                        int diff = (int)lhs[base + i] - (int)rhs[base + i];
-                        sum += (uint64_t)(diff < 0 ? -diff : diff);
-                    }
-                    memcpy(out + base, &sum, sizeof(sum));
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PHMINPOSUW) {
-                uint16_t minv = 0xffff, mini = 0;
-                for (uint16_t i = 0; i < 8; i++) {
-                    uint16_t v;
-                    memcpy(&v, lhs + i * 2, sizeof(v));
-                    if (v < minv) { minv = v; mini = i; }
-                }
-                memset(out, 0, bytes);
-                memcpy(out, &minv, sizeof(minv));
-                memcpy(out + 2, &mini, sizeof(mini));
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PALIGNR) {
-                for (size_t base = 0; base < bytes; base += 16) {
-                    uint8_t cat[32];
-                    memcpy(cat, rhs + base, 16);
-                    memcpy(cat + 16, lhs + base, 16);
-                    for (unsigned i = 0; i < 16; i++)
-                        out[base + i] = (imm + i < 32) ? cat[imm + i] : 0;
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PBLENDW || vop == HB_VEC_BLENDPS || vop == HB_VEC_BLENDPD) {
-                unsigned lane = vop == HB_VEC_PBLENDW ? 2 : (vop == HB_VEC_BLENDPS ? 4 : 8);
-                memcpy(out, lhs, bytes);
-                for (unsigned i = 0; i < bytes / lane; i++)
-                    if ((imm >> (i & 7)) & 1u) memcpy(out + i * lane, rhs + i * lane, lane);
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            if (vop == HB_VEC_PBLENDVB || vop == HB_VEC_BLENDVPS || vop == HB_VEC_BLENDVPD) {
-                uint8_t mask[32] = {0};
-                unsigned lane = vop == HB_VEC_PBLENDVB ? 1 : (vop == HB_VEC_BLENDVPS ? 4 : 8);
-                r = read_vec_reg_bytes(ctx, HB_REG_XMM0, mask, bytes);
-                if (r != HB_OK) return r;
-                memcpy(out, lhs, bytes);
-                for (unsigned i = 0; i < bytes; i += lane) {
-                    if (mask[i + lane - 1] & 0x80) memcpy(out + i, rhs + i, lane);
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-
-            return HB_ERR_UNSUPPORTED_OPCODE;
-        }
-
-        case HB_IR_VZEROUPPER: {
-            memset(ctx->ymm_hi, 0, sizeof(ctx->ymm_hi));
-            return HB_OK;
+            memcpy(out, obytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_MOVD: {
@@ -4374,16 +4690,15 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
             bool scalar = (instr->target & 0x100) != 0;
             unsigned lane = (unsigned)(instr->target & 0xff);
-            size_t bytes = scalar ? 16 : bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t src[32], out_bytes[32];
+            uint8_t src[16], out_bytes[16];
+            uint64_t out[2];
             if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
             if (instr->op != HB_IR_FSQRT && lane != 4) return HB_ERR_INTERNAL;
-            r = read_xmm_operand_bytes(ctx, &instr->src1, out_bytes, bytes);
+            r = read_xmm_operand_bytes(ctx, &instr->src1, out_bytes, 16);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, src, scalar ? lane : bytes);
+            r = read_xmm_operand_bytes(ctx, &instr->src2, src, scalar ? lane : 16);
             if (r != HB_OK) return r;
-            for (unsigned i = 0; i < (scalar ? 1U : (unsigned)(bytes / lane)); i++) {
+            for (unsigned i = 0; i < (scalar ? 1U : 16U / lane); i++) {
                 if (lane == 4) {
                     uint32_t bits, result_bits;
                     memcpy(&bits, src + i * 4, sizeof(bits));
@@ -4400,7 +4715,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     memcpy(out_bytes + i * 8, &result_bits, sizeof(result_bits));
                 }
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, out_bytes, bytes);
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_FADD:
@@ -4413,16 +4729,15 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             bool is_div = instr->op == HB_IR_FDIV;
             bool scalar = (instr->target & 0x100) != 0;
             unsigned lane = (unsigned)(instr->target & 0xff);
-            size_t bytes = scalar ? 16 : bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lhs[32], rhs[32], out_bytes[32];
+            uint8_t lhs[16], rhs[16], out_bytes[16];
+            uint64_t out[2];
             if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, scalar ? lane : bytes);
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, scalar ? lane : 16);
             if (r != HB_OK) return r;
-            memcpy(out_bytes, lhs, bytes);
-            for (unsigned i = 0; i < (scalar ? 1U : (unsigned)(bytes / lane)); i++) {
+            memcpy(out_bytes, lhs, sizeof(out_bytes));
+            for (unsigned i = 0; i < (scalar ? 1U : 16U / lane); i++) {
                 if (lane == 4) {
                     uint32_t abits, bbits, cbits;
                     memcpy(&abits, lhs + i * 4, sizeof(abits));
@@ -4443,7 +4758,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     memcpy(out_bytes + i * 8, &cbits, sizeof(cbits));
                 }
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, out_bytes, bytes);
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_FMIN:
@@ -4452,16 +4768,15 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             bool is_max = instr->op == HB_IR_FMAX;
             bool scalar = (instr->target & 0x100) != 0;
             unsigned lane = (unsigned)(instr->target & 0xff);
-            size_t bytes = scalar ? 16 : bytes_for_size(instr->dst.size);
-            if (bytes == 0) bytes = 16;
-            uint8_t lhs[32], rhs[32], out_bytes[32];
+            uint8_t lhs[16], rhs[16], out_bytes[16];
+            uint64_t out[2];
             if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
-            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
+            r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
             if (r != HB_OK) return r;
-            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, scalar ? lane : bytes);
+            r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, scalar ? lane : 16);
             if (r != HB_OK) return r;
-            memcpy(out_bytes, lhs, bytes);
-            for (unsigned i = 0; i < (scalar ? 1U : (unsigned)(bytes / lane)); i++) {
+            memcpy(out_bytes, lhs, sizeof(out_bytes));
+            for (unsigned i = 0; i < (scalar ? 1U : 16U / lane); i++) {
                 if (lane == 4) {
                     uint32_t abits, bbits, cbits;
                     memcpy(&abits, lhs + i * 4, sizeof(abits));
@@ -4480,7 +4795,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     memcpy(out_bytes + i * 8, &cbits, sizeof(cbits));
                 }
             }
-            return write_vec_reg_bytes(ctx, instr->dst.reg, out_bytes, bytes);
+            memcpy(out, out_bytes, sizeof(out));
+            return write_xmm_reg(ctx, instr->dst.reg, out);
         }
 
         case HB_IR_COMISS: {
@@ -4579,7 +4895,7 @@ hb_result_t hb_interpreter_run(hb_interpreter_t* interp, const hb_ir_func_t* fun
             steps++;
 
             const hb_ir_instr_t* instr = &block->instrs[i];
-            trace_current_instr = instr;
+            if (trace_mem_watch_enabled()) trace_current_instr = instr;
             if (instr_trace_flags) {
                 trace_pc_probe(ctx, instr);
                 trace_strcpy_probe(ctx, instr);

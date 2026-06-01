@@ -8,7 +8,6 @@ static hb_size_t size_from_dec(uint8_t sz) {
         case 2: return HB_SIZE_16;
         case 4: return HB_SIZE_32;
         case 8: return HB_SIZE_64;
-        case 10: return HB_SIZE_80;
         case 16: return HB_SIZE_128;
         case 32: return HB_SIZE_256;
         default: return HB_SIZE_64;
@@ -56,90 +55,6 @@ static hb_ir_operand_t operand_from_dec(const hb_decoded_t* dec, int slot) {
     return hb_ir_none();
 }
 
-static bool has_vex_src(const hb_decoded_t* dec) {
-    return dec->op3.present && !dec->op3.is_imm;
-}
-
-static bool is_vex_decoded(const hb_decoded_t* dec) {
-    return dec && dec->len > 0 && (dec->bytes[0] == 0xc4 || dec->bytes[0] == 0xc5);
-}
-
-static hb_ir_operand_t vector_src1_from_dec(const hb_decoded_t* dec, hb_ir_operand_t legacy_dst) {
-    return has_vex_src(dec) ? operand_from_dec(dec, 2) : legacy_dst;
-}
-
-static hb_ir_operand_t vector_src2_from_dec(const hb_decoded_t* dec) {
-    return has_vex_src(dec) ? operand_from_dec(dec, 3) : operand_from_dec(dec, 2);
-}
-
-static uint64_t vec_target(hb_ir_vec_op_t op, uint64_t arg) {
-    return ((uint64_t)op << 32) | arg;
-}
-
-static hb_ir_vec_op_t vec_op_from_ins(int opcode) {
-    switch (opcode) {
-        case HB_INS_PHADDW: return HB_VEC_PHADDW;
-        case HB_INS_PHADDD: return HB_VEC_PHADDD;
-        case HB_INS_PHADDSW: return HB_VEC_PHADDSW;
-        case HB_INS_PHSUBW: return HB_VEC_PHSUBW;
-        case HB_INS_PHSUBD: return HB_VEC_PHSUBD;
-        case HB_INS_PHSUBSW: return HB_VEC_PHSUBSW;
-        case HB_INS_PMADDUBSW: return HB_VEC_PMADDUBSW;
-        case HB_INS_PSIGNB: return HB_VEC_PSIGNB;
-        case HB_INS_PSIGNW: return HB_VEC_PSIGNW;
-        case HB_INS_PSIGND: return HB_VEC_PSIGND;
-        case HB_INS_PMULHRSW: return HB_VEC_PMULHRSW;
-        case HB_INS_PABSB: return HB_VEC_PABSB;
-        case HB_INS_PABSW: return HB_VEC_PABSW;
-        case HB_INS_PABSD: return HB_VEC_PABSD;
-        case HB_INS_PTEST: return HB_VEC_PTEST;
-        case HB_INS_PMOVSXBW: return HB_VEC_PMOVSXBW;
-        case HB_INS_PMOVSXBD: return HB_VEC_PMOVSXBD;
-        case HB_INS_PMOVSXBQ: return HB_VEC_PMOVSXBQ;
-        case HB_INS_PMOVSXWD: return HB_VEC_PMOVSXWD;
-        case HB_INS_PMOVSXWQ: return HB_VEC_PMOVSXWQ;
-        case HB_INS_PMOVSXDQ: return HB_VEC_PMOVSXDQ;
-        case HB_INS_PMULDQ: return HB_VEC_PMULDQ;
-        case HB_INS_PCMPEQQ: return HB_VEC_PCMPEQQ;
-        case HB_INS_PACKUSDW: return HB_VEC_PACKUSDW;
-        case HB_INS_PMOVZXBW: return HB_VEC_PMOVZXBW;
-        case HB_INS_PMOVZXBD: return HB_VEC_PMOVZXBD;
-        case HB_INS_PMOVZXBQ: return HB_VEC_PMOVZXBQ;
-        case HB_INS_PMOVZXWD: return HB_VEC_PMOVZXWD;
-        case HB_INS_PMOVZXWQ: return HB_VEC_PMOVZXWQ;
-        case HB_INS_PMOVZXDQ: return HB_VEC_PMOVZXDQ;
-        case HB_INS_PCMPGTQ: return HB_VEC_PCMPGTQ;
-        case HB_INS_PMINSB: return HB_VEC_PMINSB;
-        case HB_INS_PMINSD: return HB_VEC_PMINSD;
-        case HB_INS_PMINUW: return HB_VEC_PMINUW;
-        case HB_INS_PMINUD: return HB_VEC_PMINUD;
-        case HB_INS_PMAXSB: return HB_VEC_PMAXSB;
-        case HB_INS_PMAXSD: return HB_VEC_PMAXSD;
-        case HB_INS_PMAXUW: return HB_VEC_PMAXUW;
-        case HB_INS_PMAXUD: return HB_VEC_PMAXUD;
-        case HB_INS_PMULLD: return HB_VEC_PMULLD;
-        case HB_INS_PHMINPOSUW: return HB_VEC_PHMINPOSUW;
-        case HB_INS_PALIGNR: return HB_VEC_PALIGNR;
-        case HB_INS_PBLENDW: return HB_VEC_PBLENDW;
-        case HB_INS_BLENDPS: return HB_VEC_BLENDPS;
-        case HB_INS_BLENDPD: return HB_VEC_BLENDPD;
-        case HB_INS_PBLENDVB: return HB_VEC_PBLENDVB;
-        case HB_INS_BLENDVPS: return HB_VEC_BLENDVPS;
-        case HB_INS_BLENDVPD: return HB_VEC_BLENDVPD;
-        case HB_INS_PSUBUSB: return HB_VEC_PSUBUSB;
-        case HB_INS_PSUBUSW: return HB_VEC_PSUBUSW;
-        case HB_INS_PSUBSB: return HB_VEC_PSUBSB;
-        case HB_INS_PSUBSW: return HB_VEC_PSUBSW;
-        case HB_INS_PMINUB: return HB_VEC_PMINUB;
-        case HB_INS_PMINSW: return HB_VEC_PMINSW;
-        case HB_INS_PMAXUB: return HB_VEC_PMAXUB;
-        case HB_INS_PMAXSW: return HB_VEC_PMAXSW;
-        case HB_INS_PMULUDQ: return HB_VEC_PMULUDQ;
-        case HB_INS_PSADBW: return HB_VEC_PSADBW;
-        default: return 0;
-    }
-}
-
 static hb_cc_t cc_from_dec(int cond) {
     switch (cond) {
         case HB_COND_E:  return HB_CC_E;
@@ -164,15 +79,7 @@ static hb_cc_t cc_from_dec(int cond) {
 
 static inline hb_ir_instr_t* emit(hb_ir_builder_t* b, hb_ir_instr_t* i, const hb_decoded_t* dec) {
     (void)b;
-    if (i) {
-        i->guest_addr = dec->addr;
-        i->guest_len = dec->len;
-        if (is_vex_decoded(dec) && dec->op1.is_reg &&
-            dec->op1.reg >= HB_REG_XMM0 && dec->op1.reg <= HB_REG_XMM15 &&
-            dec->op1.size == 16) {
-            i->zero_ymm_upper = true;
-        }
-    }
+    if (i) { i->guest_addr = dec->addr; i->guest_len = dec->len; }
     return i;
 }
 
@@ -218,19 +125,6 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             hb_ir_operand_t src = operand_from_dec(dec, 2);
             if (dec->op1.is_mem && dec->op2.is_reg) {
                 emit(b, hb_ir_emit_store(b, dst, src), dec);
-            } else if (is_vex_decoded(dec) && dec->op1.is_reg &&
-                       dec->op1.reg >= HB_REG_XMM0 && dec->op1.reg <= HB_REG_XMM15 &&
-                       ((dec->op2.is_mem && (dec->op2.size == 4 || dec->op2.size == 8)) ||
-                        (dec->op3.present && (dec->op3.size == 4 || dec->op3.size == 8)))) {
-                hb_ir_instr_t* i = hb_ir_emit(b, HB_IR_XMM_SCALAR_MOV);
-                if (i) {
-                    i->dst = dst;
-                    i->src1 = dec->op3.present ? src : hb_ir_none();
-                    i->src2 = dec->op3.present ? operand_from_dec(dec, 3) : src;
-                    i->target = dec->op3.present ? dec->op3.size : dec->op2.size;
-                    if (!dec->op3.present && dec->op2.is_mem) i->zero_upper = true;
-                }
-                emit(b, i, dec);
             } else if (dec->op1.is_reg && dec->op2.is_mem) {
                 hb_ir_instr_t* i = emit(b, hb_ir_emit_load(b, dst, src), dec);
                 if (i) i->zero_upper = is_legacy_scalar_sse_mem_load(dec);
@@ -275,28 +169,25 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         }
         case HB_INS_MULSD: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
-            hb_ir_instr_t *i = hb_ir_emit(b, is_vex_decoded(dec) ? HB_IR_FMUL : HB_IR_MULSD);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; if (is_vex_decoded(dec)) i->target = 8 | 0x100; }
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_MULSD);
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
         case HB_INS_MULSS: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
-            hb_ir_instr_t *i = hb_ir_emit(b, is_vex_decoded(dec) ? HB_IR_FMUL : HB_IR_MULSS);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; if (is_vex_decoded(dec)) i->target = 4 | 0x100; }
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_MULSS);
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
         case HB_INS_DIVSS: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
-            hb_ir_instr_t *i = hb_ir_emit(b, is_vex_decoded(dec) ? HB_IR_FDIV : HB_IR_DIVSS);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; if (is_vex_decoded(dec)) i->target = 4 | 0x100; }
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_DIVSS);
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -320,8 +211,8 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                 bool scalar = (dec->opcode == HB_INS_MINSS || dec->opcode == HB_INS_MAXSS ||
                                dec->opcode == HB_INS_MINSD || dec->opcode == HB_INS_MAXSD);
                 i->dst = dst;
-                i->src1 = vector_src1_from_dec(dec, dst);
-                i->src2 = has_vex_src(dec) ? operand_from_dec(dec, 3) : src;
+                i->src1 = dst;
+                i->src2 = src;
                 i->target = lane | (scalar ? 0x100 : 0);
             }
             emit(b, i, dec);
@@ -365,14 +256,63 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_XORPS:
         case HB_INS_PXOR: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_op_t op = HB_IR_XORPS;
             if (dec->opcode == HB_INS_XMM_AND) op = HB_IR_XMM_AND;
             else if (dec->opcode == HB_INS_XMM_ANDN) op = HB_IR_XMM_ANDN;
             else if (dec->opcode == HB_INS_XMM_OR) op = HB_IR_XMM_OR;
             hb_ir_instr_t *i = hb_ir_emit(b, op);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; }
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_VZEROUPPER: {
+            emit(b, hb_ir_emit(b, HB_IR_VZEROUPPER), dec);
+            return HB_OK;
+        }
+        case HB_INS_VPXOR:
+        case HB_INS_VXORPS:
+        case HB_INS_VANDPS:
+        case HB_INS_VANDNPS:
+        case HB_INS_VORPS: {
+            hb_ir_op_t op = HB_IR_VPXOR;
+            if (dec->opcode == HB_INS_VANDPS) op = HB_IR_VAND;
+            else if (dec->opcode == HB_INS_VANDNPS) op = HB_IR_VANDN;
+            else if (dec->opcode == HB_INS_VORPS) op = HB_IR_VOR;
+            hb_ir_instr_t *i = hb_ir_emit(b, op);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = operand_from_dec(dec, 3);
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = dec->op1.size;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_VADDPS:
+        case HB_INS_VSUBPS:
+        case HB_INS_VMULPS:
+        case HB_INS_VDIVPS: {
+            hb_ir_op_t op = HB_IR_VADDPS;
+            if (dec->opcode == HB_INS_VSUBPS) op = HB_IR_VSUBPS;
+            else if (dec->opcode == HB_INS_VMULPS) op = HB_IR_VMULPS;
+            else if (dec->opcode == HB_INS_VDIVPS) op = HB_IR_VDIVPS;
+            hb_ir_instr_t *i = hb_ir_emit(b, op);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = operand_from_dec(dec, 3);
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = dec->op1.size;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_VMOVQ: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_VMOVQ);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = operand_from_dec(dec, 2);
+            }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -383,10 +323,9 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             if (dec->opcode == HB_INS_PCMPEQW) op = HB_IR_PCMPEQW;
             else if (dec->opcode == HB_INS_PCMPEQD) op = HB_IR_PCMPEQD;
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, op);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; }
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -397,10 +336,9 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             if (dec->opcode == HB_INS_PCMPGTW) op = HB_IR_PCMPGTW;
             else if (dec->opcode == HB_INS_PCMPGTD) op = HB_IR_PCMPGTD;
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, op);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; }
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -434,8 +372,8 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                 bool packed_double = (dec->opcode == HB_INS_UNPCKLPD || dec->opcode == HB_INS_UNPCKHPD);
                 bool high = (dec->opcode == HB_INS_UNPCKHPS || dec->opcode == HB_INS_UNPCKHPD);
                 i->dst = operand_from_dec(dec, 1);
-                i->src1 = vector_src1_from_dec(dec, i->dst);
-                i->src2 = vector_src2_from_dec(dec);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
                 i->target = (packed_double ? 8 : 4) | (high ? 0x100 : 0);
             }
             emit(b, i, dec);
@@ -460,8 +398,8 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                 bool high = (dec->opcode == HB_INS_PUNPCKHBW || dec->opcode == HB_INS_PUNPCKHWD ||
                              dec->opcode == HB_INS_PUNPCKHDQ || dec->opcode == HB_INS_PUNPCKHQDQ);
                 i->dst = dst;
-                i->src1 = vector_src1_from_dec(dec, dst);
-                i->src2 = has_vex_src(dec) ? operand_from_dec(dec, 3) : src;
+                i->src1 = dst;
+                i->src2 = src;
                 i->target = lane | (high ? 0x100 : 0);
             }
             emit(b, i, dec);
@@ -474,10 +412,9 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             if (dec->opcode == HB_INS_PACKUSWB) op = HB_IR_PACKUSWB;
             else if (dec->opcode == HB_INS_PACKSSDW) op = HB_IR_PACKSSDW;
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, op);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; }
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -490,10 +427,9 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             else if (dec->opcode == HB_INS_PMULHUW) op = HB_IR_PMULHUW;
             else if (dec->opcode == HB_INS_PMADDWD) op = HB_IR_PMADDWD;
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, op);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; }
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -506,29 +442,26 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             else if (dec->opcode == HB_INS_PADDUSB) op = HB_IR_PADDUSB;
             else if (dec->opcode == HB_INS_PADDUSW) op = HB_IR_PADDUSW;
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, op);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; }
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
         case HB_INS_PAVGB:
         case HB_INS_PAVGW: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, dec->opcode == HB_INS_PAVGB ? HB_IR_PAVGB : HB_IR_PAVGW);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; }
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
         case HB_INS_PSHUFB: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src1 = vector_src1_from_dec(dec, dst);
-            hb_ir_operand_t src2 = vector_src2_from_dec(dec);
+            hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PSHUFB);
-            if (i) { i->dst = dst; i->src1 = src1; i->src2 = src2; }
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -537,32 +470,121 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_PHADDSW:
         case HB_INS_PHSUBW:
         case HB_INS_PHSUBD:
-        case HB_INS_PHSUBSW:
-        case HB_INS_PMADDUBSW:
+        case HB_INS_PHSUBSW: {
+            hb_ir_op_t op = (dec->opcode == HB_INS_PHSUBW ||
+                             dec->opcode == HB_INS_PHSUBD ||
+                             dec->opcode == HB_INS_PHSUBSW) ? HB_IR_PHSUB : HB_IR_PHADD;
+            hb_ir_instr_t *i = hb_ir_emit(b, op);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = ((dec->opcode == HB_INS_PHADDD || dec->opcode == HB_INS_PHSUBD) ? 4 : 2) |
+                            ((dec->opcode == HB_INS_PHADDSW || dec->opcode == HB_INS_PHSUBSW) ? 0x100 : 0);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_PSIGNB:
         case HB_INS_PSIGNW:
-        case HB_INS_PSIGND:
-        case HB_INS_PMULHRSW:
+        case HB_INS_PSIGND: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PSIGN);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = dec->opcode == HB_INS_PSIGNB ? 1 : (dec->opcode == HB_INS_PSIGNW ? 2 : 4);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PMADDUBSW:
+        case HB_INS_PMULHRSW: {
+            hb_ir_instr_t *i = hb_ir_emit(b, dec->opcode == HB_INS_PMADDUBSW ? HB_IR_PMADDUBSW : HB_IR_PMULHRSW);
+            if (i) { i->dst = operand_from_dec(dec, 1); i->src1 = i->dst; i->src2 = operand_from_dec(dec, 2); }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PBLENDVB:
+        case HB_INS_BLENDVPS:
+        case HB_INS_BLENDVPD: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PBLENDV);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = dec->opcode == HB_INS_PBLENDVB ? 1 : (dec->opcode == HB_INS_BLENDVPS ? 4 : 8);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PTEST: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PTEST);
+            if (i) { i->src1 = operand_from_dec(dec, 1); i->src2 = operand_from_dec(dec, 2); }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_PABSB:
         case HB_INS_PABSW:
-        case HB_INS_PABSD:
-        case HB_INS_PTEST:
+        case HB_INS_PABSD: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PABS);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = operand_from_dec(dec, 2);
+                i->target = dec->opcode == HB_INS_PABSB ? 1 : (dec->opcode == HB_INS_PABSW ? 2 : 4);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_PMOVSXBW:
         case HB_INS_PMOVSXBD:
         case HB_INS_PMOVSXBQ:
         case HB_INS_PMOVSXWD:
         case HB_INS_PMOVSXWQ:
         case HB_INS_PMOVSXDQ:
-        case HB_INS_PMULDQ:
-        case HB_INS_PCMPEQQ:
-        case HB_INS_PACKUSDW:
         case HB_INS_PMOVZXBW:
         case HB_INS_PMOVZXBD:
         case HB_INS_PMOVZXBQ:
         case HB_INS_PMOVZXWD:
         case HB_INS_PMOVZXWQ:
-        case HB_INS_PMOVZXDQ:
-        case HB_INS_PCMPGTQ:
+        case HB_INS_PMOVZXDQ: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PMOVX);
+            if (i) {
+                unsigned src_lane = (dec->opcode == HB_INS_PMOVSXWD || dec->opcode == HB_INS_PMOVSXWQ ||
+                                     dec->opcode == HB_INS_PMOVZXWD || dec->opcode == HB_INS_PMOVZXWQ) ? 2 :
+                                    (dec->opcode == HB_INS_PMOVSXDQ || dec->opcode == HB_INS_PMOVZXDQ) ? 4 : 1;
+                unsigned dst_lane = (dec->opcode == HB_INS_PMOVSXBW || dec->opcode == HB_INS_PMOVZXBW) ? 2 :
+                                    (dec->opcode == HB_INS_PMOVSXBQ || dec->opcode == HB_INS_PMOVSXWQ ||
+                                     dec->opcode == HB_INS_PMOVZXBQ || dec->opcode == HB_INS_PMOVZXWQ ||
+                                     dec->opcode == HB_INS_PMOVSXDQ || dec->opcode == HB_INS_PMOVZXDQ) ? 8 : 4;
+                bool sign = dec->opcode >= HB_INS_PMOVSXBW && dec->opcode <= HB_INS_PMOVSXDQ;
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = operand_from_dec(dec, 2);
+                i->target = src_lane | (dst_lane << 8) | (sign ? 0x10000 : 0);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PCMPEQQ:
+        case HB_INS_PCMPGTQ: {
+            hb_ir_instr_t *i = hb_ir_emit(b, dec->opcode == HB_INS_PCMPEQQ ? HB_IR_PCMPEQQ : HB_IR_PCMPGTQ);
+            if (i) { i->dst = operand_from_dec(dec, 1); i->src1 = i->dst; i->src2 = operand_from_dec(dec, 2); }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PACKUSDW:
+        case HB_INS_PMULDQ:
+        case HB_INS_PMULLD:
+        case HB_INS_PHMINPOSUW: {
+            hb_ir_op_t op = HB_IR_PACKUSDW;
+            if (dec->opcode == HB_INS_PMULDQ) op = HB_IR_PMULDQ;
+            else if (dec->opcode == HB_INS_PMULLD) op = HB_IR_PMULLD;
+            else if (dec->opcode == HB_INS_PHMINPOSUW) op = HB_IR_PHMINPOSUW;
+            hb_ir_instr_t *i = hb_ir_emit(b, op);
+            if (i) { i->dst = operand_from_dec(dec, 1); i->src1 = i->dst; i->src2 = operand_from_dec(dec, 2); }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_PMINSB:
         case HB_INS_PMINSD:
         case HB_INS_PMINUW:
@@ -570,59 +592,141 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_PMAXSB:
         case HB_INS_PMAXSD:
         case HB_INS_PMAXUW:
-        case HB_INS_PMAXUD:
-        case HB_INS_PMULLD:
-        case HB_INS_PHMINPOSUW:
-        case HB_INS_PALIGNR:
-        case HB_INS_PBLENDW:
-        case HB_INS_BLENDPS:
-        case HB_INS_BLENDPD:
-        case HB_INS_PBLENDVB:
-        case HB_INS_BLENDVPS:
-        case HB_INS_BLENDVPD:
-        case HB_INS_PSUBUSB:
-        case HB_INS_PSUBUSW:
-        case HB_INS_PSUBSB:
-        case HB_INS_PSUBSW:
-        case HB_INS_PMINUB:
-        case HB_INS_PMINSW:
-        case HB_INS_PMAXUB:
-        case HB_INS_PMAXSW:
-        case HB_INS_PMULUDQ:
-        case HB_INS_PSADBW: {
-            hb_ir_vec_op_t op = vec_op_from_ins(dec->opcode);
-            hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_VEC_PACKED);
+        case HB_INS_PMAXUD: {
+            bool is_max = dec->opcode == HB_INS_PMAXSB || dec->opcode == HB_INS_PMAXSD ||
+                          dec->opcode == HB_INS_PMAXUW || dec->opcode == HB_INS_PMAXUD;
+            bool is_signed = dec->opcode == HB_INS_PMINSB || dec->opcode == HB_INS_PMINSD ||
+                             dec->opcode == HB_INS_PMAXSB || dec->opcode == HB_INS_PMAXSD;
+            unsigned lane = (dec->opcode == HB_INS_PMINSB || dec->opcode == HB_INS_PMAXSB) ? 1 :
+                            (dec->opcode == HB_INS_PMINUW || dec->opcode == HB_INS_PMAXUW) ? 2 : 4;
+            hb_ir_instr_t *i = hb_ir_emit(b, is_max ? HB_IR_PMAX : HB_IR_PMIN);
             if (i) {
-                uint64_t imm = dec->op3.is_imm ? ((uint64_t)dec->op3.imm & 0xffu) : 0;
-                i->dst = dst;
-                i->src1 = hb_ir_none();
-                i->src2 = hb_ir_none();
-                if (dec->opcode == HB_INS_PTEST) {
-                    i->src1 = dst;
-                    i->src2 = operand_from_dec(dec, 2);
-                } else if (dec->opcode == HB_INS_PALIGNR || dec->opcode == HB_INS_PBLENDW ||
-                           dec->opcode == HB_INS_BLENDPS || dec->opcode == HB_INS_BLENDPD) {
-                    i->src1 = dst;
-                    i->src2 = operand_from_dec(dec, 2);
-                } else if (dec->opcode == HB_INS_PABSB || dec->opcode == HB_INS_PABSW ||
-                           dec->opcode == HB_INS_PABSD ||
-                           (dec->opcode >= HB_INS_PMOVSXBW && dec->opcode <= HB_INS_PMOVSXDQ) ||
-                           (dec->opcode >= HB_INS_PMOVZXBW && dec->opcode <= HB_INS_PMOVZXDQ) ||
-                           dec->opcode == HB_INS_PHMINPOSUW) {
-                    i->src1 = operand_from_dec(dec, 2);
-                } else {
-                    i->src1 = vector_src1_from_dec(dec, dst);
-                    i->src2 = vector_src2_from_dec(dec);
-                }
-                i->target = vec_target(op, imm);
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = lane | (is_signed ? 0x100 : 0);
             }
             emit(b, i, dec);
             return HB_OK;
         }
-        case HB_INS_VZEROUPPER:
-            emit(b, hb_ir_emit(b, HB_IR_VZEROUPPER), dec);
+        case HB_INS_ROUNDPS:
+        case HB_INS_ROUNDPD:
+        case HB_INS_ROUNDSS:
+        case HB_INS_ROUNDSD: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_ROUND);
+            if (i) {
+                bool scalar = dec->opcode == HB_INS_ROUNDSS || dec->opcode == HB_INS_ROUNDSD;
+                unsigned lane = (dec->opcode == HB_INS_ROUNDPD || dec->opcode == HB_INS_ROUNDSD) ? 8 : 4;
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = lane | (scalar ? 0x100 : 0) | (((uint64_t)dec->op3.imm & 0xffu) << 16);
+            }
+            emit(b, i, dec);
             return HB_OK;
+        }
+        case HB_INS_BLENDPS:
+        case HB_INS_BLENDPD:
+        case HB_INS_PBLENDW: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PBLEND);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = (dec->opcode == HB_INS_BLENDPS ? 4 : (dec->opcode == HB_INS_BLENDPD ? 8 : 2)) |
+                            (((uint64_t)dec->op3.imm & 0xffu) << 8);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PALIGNR: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PALIGNR);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = (uint64_t)dec->op3.imm & 0xffu;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PEXTRB:
+        case HB_INS_PEXTRW:
+        case HB_INS_PEXTRD:
+        case HB_INS_PEXTRQ:
+        case HB_INS_EXTRACTPS: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PEXTR);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = operand_from_dec(dec, 2);
+                i->src2 = operand_from_dec(dec, 3);
+                i->target = dec->opcode == HB_INS_PEXTRB ? 1 :
+                            dec->opcode == HB_INS_PEXTRW ? 2 :
+                            dec->opcode == HB_INS_PEXTRQ ? 8 : 4;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_PINSRB:
+        case HB_INS_PINSRD:
+        case HB_INS_PINSRQ: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PINSR);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = (dec->opcode == HB_INS_PINSRB ? 1 : (dec->opcode == HB_INS_PINSRQ ? 8 : 4)) |
+                            (((uint64_t)dec->op3.imm & 0xffu) << 8);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_INSERTPS: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_INSERTPS);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = (uint64_t)dec->op3.imm & 0xffu;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_DPPS:
+        case HB_INS_DPPD: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_DP);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = (dec->opcode == HB_INS_DPPD ? 8 : 4) |
+                            (((uint64_t)dec->op3.imm & 0xffu) << 8);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_MPSADBW: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_MPSADBW);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = (uint64_t)dec->op3.imm & 0xffu;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_CRC32: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_CRC32);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
+                i->target = dec->op3.imm & 0xff;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_PSHUFD:
         case HB_INS_PSHUFLW:
         case HB_INS_PSHUFHW: {
@@ -659,11 +763,12 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             if (dec->opcode == HB_INS_PSRAW || dec->opcode == HB_INS_PSRAD) op = HB_IR_PSRA;
             else if (dec->opcode == HB_INS_PSLLW || dec->opcode == HB_INS_PSLLD) op = HB_IR_PSLL;
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t imm = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, op);
             if (i) {
                 i->dst = dst;
-                i->src1 = vector_src1_from_dec(dec, dst);
-                i->src2 = vector_src2_from_dec(dec);
+                i->src1 = dst;
+                i->src2 = imm;
                 i->target = (dec->opcode == HB_INS_PSRLW ||
                              dec->opcode == HB_INS_PSRAW ||
                              dec->opcode == HB_INS_PSLLW) ? 2 : 4;
@@ -680,12 +785,9 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             else if (dec->opcode == HB_INS_PSLLQ) op = HB_IR_PSLLQ;
             else if (dec->opcode == HB_INS_PSLLDQ) op = HB_IR_PSLLDQ;
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t imm = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, op);
-            if (i) {
-                i->dst = dst;
-                i->src1 = vector_src1_from_dec(dec, dst);
-                i->src2 = vector_src2_from_dec(dec);
-            }
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = imm; }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -700,8 +802,8 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                 else if (dec->opcode == HB_INS_PADDD) lane = 4;
                 else if (dec->opcode == HB_INS_PADDQ) lane = 8;
                 i->dst = operand_from_dec(dec, 1);
-                i->src1 = vector_src1_from_dec(dec, i->dst);
-                i->src2 = vector_src2_from_dec(dec);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
                 i->target = lane;
             }
             emit(b, i, dec);
@@ -718,8 +820,8 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                 else if (dec->opcode == HB_INS_PSUBD) lane = 4;
                 else if (dec->opcode == HB_INS_PSUBQ) lane = 8;
                 i->dst = operand_from_dec(dec, 1);
-                i->src1 = vector_src1_from_dec(dec, i->dst);
-                i->src2 = vector_src2_from_dec(dec);
+                i->src1 = i->dst;
+                i->src2 = operand_from_dec(dec, 2);
                 i->target = lane;
             }
             emit(b, i, dec);
@@ -1155,8 +1257,8 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                 bool scalar = (dec->opcode == HB_INS_ADDSS || dec->opcode == HB_INS_SUBSS ||
                                dec->opcode == HB_INS_ADDSD || dec->opcode == HB_INS_SUBSD);
                 i->dst = dst;
-                i->src1 = vector_src1_from_dec(dec, dst);
-                i->src2 = has_vex_src(dec) ? operand_from_dec(dec, 3) : src;
+                i->src1 = dst;
+                i->src2 = src;
                 i->target = lane | (scalar ? 0x100 : 0);
             }
             emit(b, i, dec);
@@ -1173,8 +1275,8 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             if (i) {
                 unsigned lane = (dec->opcode == HB_INS_MULPD || dec->opcode == HB_INS_DIVPD) ? 8 : 4;
                 i->dst = dst;
-                i->src1 = vector_src1_from_dec(dec, dst);
-                i->src2 = has_vex_src(dec) ? operand_from_dec(dec, 3) : src;
+                i->src1 = dst;
+                i->src2 = src;
                 i->target = lane;
             }
             emit(b, i, dec);
@@ -1191,8 +1293,8 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                 unsigned lane = (dec->opcode == HB_INS_SQRTPD || dec->opcode == HB_INS_SQRTSD) ? 8 : 4;
                 bool scalar = (dec->opcode == HB_INS_SQRTSS || dec->opcode == HB_INS_SQRTSD);
                 i->dst = dst;
-                i->src1 = vector_src1_from_dec(dec, dst);
-                i->src2 = has_vex_src(dec) ? operand_from_dec(dec, 3) : src;
+                i->src1 = dst;
+                i->src2 = src;
                 i->target = lane | (scalar ? 0x100 : 0);
             }
             emit(b, i, dec);
@@ -1219,13 +1321,8 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_DIVSD: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
-            hb_ir_instr_t *i = hb_ir_emit(b, is_vex_decoded(dec) ? HB_IR_FDIV : HB_IR_DIVSD);
-            if (i) {
-                i->dst = dst;
-                i->src1 = is_vex_decoded(dec) ? vector_src1_from_dec(dec, dst) : dst;
-                i->src2 = is_vex_decoded(dec) ? vector_src2_from_dec(dec) : src;
-                if (is_vex_decoded(dec)) i->target = 8 | 0x100;
-            }
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_DIVSD);
+            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }

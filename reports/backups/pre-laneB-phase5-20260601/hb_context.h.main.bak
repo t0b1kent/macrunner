@@ -49,7 +49,7 @@ typedef struct {
     uint64_t r12, r13, r14, r15;
     uint64_t rip;
     uint64_t rflags;
-    /* XMM state stores the low 128 bits of XMM/YMM registers. */
+    /* XMM placeholders — 128-bit low half stored as uint64_t[2] per reg */
     uint64_t xmm[16][2];
 } hb_regs_x64_t;
 
@@ -184,9 +184,8 @@ struct hb_context {
     /* User data */
     void* user_data;
 
-    /* YMM high halves for interpreter AVX/AVX2 semantics. Appended to keep
-       existing hb_context_t offsets stable for the ARM64 JIT lane. */
-    uint64_t ymm_hi[16][2];
+    /* AVX YMM upper 128 bits for x64. Appended to preserve existing field offsets. */
+    uint64_t x64_ymm_hi[16][2];
 };
 
 hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend);

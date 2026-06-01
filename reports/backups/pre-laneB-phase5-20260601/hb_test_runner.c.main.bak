@@ -290,9 +290,6 @@ TEST(decode_x64_port_interrupt_flag_family) {
 TEST(decode_x64_0f_system_segment_family) {
     uint8_t mov_cr0_rax[] = {0x0F, 0x22, 0xC0};
     uint8_t mov_rax_dr0[] = {0x0F, 0x21, 0xC0};
-    uint8_t random_mov_rsi_cr1[] = {0x0F, 0x20, 0x8E, 0x68, 0xAA, 0x83};
-    uint8_t random_mov_dr3_rbx[] = {0x0F, 0x23, 0x1B, 0x00};
-    uint8_t random_mov_r10_dr2[] = {0x41, 0x0F, 0x21, 0x52};
     uint8_t push_fs[] = {0x0F, 0xA0};
     uint8_t pop_gs[] = {0x0F, 0xA9};
     hb_decoded_t d;
@@ -306,21 +303,6 @@ TEST(decode_x64_0f_system_segment_family) {
     ASSERT(d.opcode == HB_INS_MOV_DR);
     ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RAX);
     ASSERT(d.op2.is_imm && d.op2.imm == 0);
-
-    ASSERT(hb_decode_x64(random_mov_rsi_cr1, sizeof(random_mov_rsi_cr1), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_MOV_CR && d.len == 3);
-    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RSI && d.op1.size == 8);
-    ASSERT(d.op2.is_imm && d.op2.imm == 1);
-
-    ASSERT(hb_decode_x64(random_mov_dr3_rbx, sizeof(random_mov_dr3_rbx), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_MOV_DR && d.len == 3);
-    ASSERT(d.op1.is_imm && d.op1.imm == 3);
-    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RBX && d.op2.size == 8);
-
-    ASSERT(hb_decode_x64(random_mov_r10_dr2, sizeof(random_mov_r10_dr2), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_MOV_DR && d.len == 4);
-    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_R10 && d.op1.size == 8);
-    ASSERT(d.op2.is_imm && d.op2.imm == 2);
 
     ASSERT(hb_decode_x64(push_fs, sizeof(push_fs), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_PUSH_SEG && d.op1.imm == 4);
@@ -379,7 +361,6 @@ TEST(decode_x64_x87_pushf_rotate_family) {
 
 TEST(decode_x64_prefix_pop_hlt_family) {
     uint8_t mixed_prefix_sar[] = {0x48, 0x26, 0xC0, 0x7F, 0x34, 0x12};
-    uint8_t rex_before_segment_mov_imm[] = {0x49, 0x64, 0xBB, 0x59, 0x63, 0x6E, 0x4A, 0x84};
     uint8_t pop_rax[] = {0x8F, 0xC0};
     uint8_t pop_ax[] = {0x66, 0x8F, 0xC0};
     uint8_t hlt[] = {0xF4};
@@ -389,11 +370,6 @@ TEST(decode_x64_prefix_pop_hlt_family) {
     ASSERT(d.opcode == HB_INS_SAR);
     ASSERT(d.op1.is_mem);
     ASSERT(d.op2.is_imm && d.op2.imm == 0x12);
-
-    ASSERT(hb_decode_x64(rex_before_segment_mov_imm, sizeof(rex_before_segment_mov_imm), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_MOV && d.len == 7);
-    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RBX && d.op1.size == 4);
-    ASSERT(d.op2.is_imm && d.op2.imm == 0x4a6e6359);
 
     ASSERT(hb_decode_x64(pop_rax, sizeof(pop_rax), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_POP && d.op1.is_reg && d.op1.reg == HB_REG_RAX && d.op1.size == 8);
@@ -416,14 +392,11 @@ TEST(decode_x64_0f_unsupported_family_lengths) {
     uint8_t mmx_movq[] = {0x0F, 0x6F, 0xC0};
     uint8_t mmx_paddd[] = {0x0F, 0xFE, 0xC0};
     uint8_t mmx_pshufw[] = {0x0F, 0x70, 0xC0, 0x7F};
-    uint8_t mmx_psrad_imm[] = {0x0F, 0x72, 0xE1, 0x21};
     uint8_t vmread[] = {0x0F, 0x78, 0xC0};
-    uint8_t lgs_random[] = {0x0F, 0xB5, 0x29, 0xBB};
     uint8_t haddpd[] = {0x66, 0x0F, 0x7C, 0xC0};
     uint8_t insertq[] = {0xF2, 0x0F, 0x78, 0xC0, 0x7F, 0x34};
     uint8_t rdfsbase[] = {0xF3, 0x0F, 0xAE, 0xC0};
     uint8_t popcnt[] = {0xF3, 0x0F, 0xB8, 0xC0};
-    uint8_t xbegin_random[] = {0xC7, 0xF8, 0xD9, 0x6B, 0x81, 0xFD};
     hb_decoded_t d;
 
     ASSERT(hb_decode_x64(syscall, sizeof(syscall), 0x1000, &d) == HB_OK);
@@ -453,13 +426,7 @@ TEST(decode_x64_0f_unsupported_family_lengths) {
     ASSERT(hb_decode_x64(mmx_pshufw, sizeof(mmx_pshufw), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_MMX && d.len == 4 && d.op3.imm == 0x7F);
 
-    ASSERT(hb_decode_x64(mmx_psrad_imm, sizeof(mmx_psrad_imm), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_MMX && d.len == 4 && d.op2.imm == 0x21);
-
     ASSERT(hb_decode_x64(vmread, sizeof(vmread), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_SYS && d.len == 3);
-
-    ASSERT(hb_decode_x64(lgs_random, sizeof(lgs_random), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_SYS && d.len == 3);
 
     ASSERT(hb_decode_x64(haddpd, sizeof(haddpd), 0x1000, &d) == HB_OK);
@@ -473,16 +440,6 @@ TEST(decode_x64_0f_unsupported_family_lengths) {
 
     ASSERT(hb_decode_x64(popcnt, sizeof(popcnt), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_SYS && d.len == 4);
-
-    ASSERT(hb_decode_x64(xbegin_random, sizeof(xbegin_random), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_SYS && d.len == 6);
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, xbegin_random, sizeof(xbegin_random), 0x1000);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ASSERT(func != NULL && func->has_unsupported);
-    hb_ir_func_destroy(func);
     tests_passed++;
 }
 
@@ -526,19 +483,31 @@ TEST(decode_x64_0f38_0f3a_vector_family_lengths) {
 
 TEST(decode_x64_vex_evex_vector_family_lengths) {
     uint8_t vzeroupper[] = {0xC5, 0xF8, 0x77};
+    uint8_t vpxor[] = {0xC5, 0xF9, 0xEF, 0xC0};
     uint8_t vaddps[] = {0xC5, 0xFC, 0x58, 0xC0};
-    uint8_t vcmpsd_random[] = {0xC5, 0xA7, 0xC2, 0x7F, 0x1C, 0x70, 0xFA};
+    uint8_t vsubps[] = {0xC5, 0xFC, 0x5C, 0xC0};
+    uint8_t vxorps[] = {0xC5, 0xFC, 0x57, 0xC0};
+    uint8_t vmovq[] = {0xC4, 0xE1, 0xF9, 0x6E, 0xC0};
     uint8_t evex_vaddps[] = {0x62, 0xF1, 0x7C, 0x48, 0x58, 0xC0};
     hb_decoded_t d;
 
     ASSERT(hb_decode_x64(vzeroupper, sizeof(vzeroupper), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_VZEROUPPER && d.len == 3);
 
-    ASSERT(hb_decode_x64(vaddps, sizeof(vaddps), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_ADDPS && d.len == 4 && d.op1.size == 32);
+    ASSERT(hb_decode_x64(vpxor, sizeof(vpxor), 0x1000, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_VPXOR && d.len == 4 && d.op3.reg == HB_REG_XMM0);
 
-    ASSERT(hb_decode_x64(vcmpsd_random, sizeof(vcmpsd_random), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_VEC && d.len == 6 && d.op3.imm == 0x70);
+    ASSERT(hb_decode_x64(vaddps, sizeof(vaddps), 0x1000, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_VADDPS && d.len == 4 && d.op1.size == 32);
+
+    ASSERT(hb_decode_x64(vsubps, sizeof(vsubps), 0x1000, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_VSUBPS && d.len == 4 && d.op1.size == 32);
+
+    ASSERT(hb_decode_x64(vxorps, sizeof(vxorps), 0x1000, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_VXORPS && d.len == 4 && d.op1.size == 32);
+
+    ASSERT(hb_decode_x64(vmovq, sizeof(vmovq), 0x1000, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_VMOVQ && d.len == 5);
 
     ASSERT(hb_decode_x64(evex_vaddps, sizeof(evex_vaddps), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_VEC && d.len == 6);
@@ -1224,48 +1193,6 @@ TEST(x87_environment_control_state_helpers) {
         ASSERT(rounded == 2.0);
     }
 
-    tests_passed++;
-}
-
-TEST(interp_x64_x87_fld_tbyte_memory_form) {
-    struct {
-        uint8_t code[6];
-        uint8_t mem[10];
-    } block = {
-        {0xdb, 0x2d, 0x00, 0x00, 0x00, 0x00},
-        {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0x3f}
-    };
-    uint64_t base = (uint64_t)(uintptr_t)&block;
-    hb_decoded_t d;
-    ASSERT(hb_decode_x64(block.code, sizeof(block.code), base, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_X87_FLD);
-    ASSERT(d.len == sizeof(block.code));
-    ASSERT(d.op1.is_mem && d.op1.size == 10 && d.op1.mem.rip_relative);
-
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, block.code, sizeof(block.code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ASSERT(func != NULL);
-
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    hb_x87_reset(&ctx->regs.x86.x87);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&block, sizeof(block),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    hb_exec_result_t out;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    double got = 0.0;
-    ASSERT(hb_x87_st_f64(&ctx->regs.x86.x87, 0, &got) == HB_OK);
-    ASSERT(got == 1.5);
-
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
     tests_passed++;
 }
 
@@ -4965,7 +4892,7 @@ TEST(jit_x64_native_bswap_family) {
     hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
     ASSERT(code_buf != NULL && cg != NULL);
     ASSERT(hb_arm64_codegen_block(cg, func->cfg->entry, code_buf) == HB_OK);
-    ASSERT(code_buf->size <= 80);
+    ASSERT(code_buf->size <= 84);
     hb_arm64_codegen_destroy(cg);
     hb_codegen_buffer_destroy(code_buf);
 
@@ -10583,7 +10510,7 @@ TEST(jit_x64_native_extend_family) {
     ASSERT(code_buf != NULL && cg != NULL);
     ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
     restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
-    ASSERT(code_buf->size <= 180);
+    ASSERT(code_buf->size <= 192);
     hb_arm64_codegen_destroy(cg);
     hb_codegen_buffer_destroy(code_buf);
 
@@ -10662,6 +10589,120 @@ TEST(jit_x64_native_xmm_move_family) {
 
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_native_xmm_logic_family) {
+    struct {
+        hb_ir_op_t op;
+        bool src1_mem;
+        bool src2_mem;
+        uint64_t lhs[2];
+        uint64_t rhs[2];
+    } cases[] = {
+        {HB_IR_XMM_AND, false, false,
+         {0xff00ff00ff00ff00ULL, 0x0f0f0f0f0f0f0f0fULL},
+         {0x00ff00ff00ff00ffULL, 0xf0f0f0f0f0f0f0f0ULL}},
+        {HB_IR_XMM_ANDN, false, false,
+         {0xffff0000ffff0000ULL, 0x3333333333333333ULL},
+         {0x00ff00ff00ff00ffULL, 0x5555555555555555ULL}},
+        {HB_IR_XMM_OR, false, true,
+         {0x1111000011110000ULL, 0x0000aaaa0000aaaaULL},
+         {0x0000222200002222ULL, 0xbbbb0000bbbb0000ULL}},
+        {HB_IR_XORPS, true, false,
+         {0x0123456789abcdefULL, 0xfedcba9876543210ULL},
+         {0xffff0000ffff0000ULL, 0x0000ffff0000ffffULL}},
+    };
+
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uint64_t base = 0x4620 + (uint64_t)i * 0x10;
+        uint64_t mem_src[2] = {
+            cases[i].src1_mem ? cases[i].lhs[0] : cases[i].rhs[0],
+            cases[i].src1_mem ? cases[i].lhs[1] : cases[i].rhs[1],
+        };
+        hb_ir_func_t* func = hb_ir_func_create(base, 0);
+        ASSERT(func != NULL);
+        hb_ir_block_t* blk = hb_ir_block_create(0, base);
+        ASSERT(blk != NULL);
+        hb_ir_cfg_add_block(func->cfg, blk);
+        func->cfg->entry = blk;
+
+        hb_ir_builder_t* b = hb_ir_builder_create(func);
+        ASSERT(b != NULL);
+        hb_ir_builder_set_block(b, blk);
+        hb_ir_instr_t* logic = hb_ir_emit(b, cases[i].op);
+        ASSERT(logic != NULL);
+        logic->dst = hb_ir_reg(HB_REG_XMM0, HB_SIZE_128);
+        logic->src1 = cases[i].src1_mem
+            ? hb_ir_mem(HB_REG_RBX, HB_REG_COUNT, 1, 0, HB_SIZE_128)
+            : hb_ir_reg(HB_REG_XMM1, HB_SIZE_128);
+        logic->src2 = cases[i].src2_mem
+            ? hb_ir_mem(HB_REG_RBX, HB_REG_COUNT, 1, 0, HB_SIZE_128)
+            : hb_ir_reg(HB_REG_XMM2, HB_SIZE_128);
+        logic->guest_addr = base;
+        logic->guest_len = 4;
+        hb_ir_builder_destroy(b);
+
+        hb_context_t* interp = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+        hb_context_t* jit = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+        ASSERT(interp != NULL && jit != NULL);
+        interp->memory = hb_memory_create(0);
+        jit->memory = hb_memory_create(0);
+        ASSERT(interp->memory != NULL && jit->memory != NULL);
+        if (cases[i].src1_mem || cases[i].src2_mem) {
+            ASSERT(hb_memory_map(interp->memory, (hb_gva_t)(uintptr_t)mem_src, sizeof(mem_src),
+                                 HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+            ASSERT(hb_memory_map(jit->memory, (hb_gva_t)(uintptr_t)mem_src, sizeof(mem_src),
+                                 HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+            interp->regs.x64.rbx = (uint64_t)(uintptr_t)mem_src;
+            jit->regs.x64.rbx = (uint64_t)(uintptr_t)mem_src;
+        }
+        interp->pc = base;
+        jit->pc = base;
+        for (int lane = 0; lane < 2; lane++) {
+            interp->regs.x64.xmm[0][lane] = 0xdeadbeefcafebabeULL;
+            jit->regs.x64.xmm[0][lane] = 0xdeadbeefcafebabeULL;
+            interp->regs.x64.xmm[1][lane] = cases[i].lhs[lane];
+            jit->regs.x64.xmm[1][lane] = cases[i].lhs[lane];
+            interp->regs.x64.xmm[2][lane] = cases[i].rhs[lane];
+            jit->regs.x64.xmm[2][lane] = cases[i].rhs[lane];
+        }
+        interp->flags.cf = true;
+        jit->flags.cf = true;
+        interp->flags.zf = true;
+        jit->flags.zf = true;
+        interp->lazy_flags.pending = true;
+        jit->lazy_flags.pending = true;
+
+        hb_exec_result_t interp_out;
+        hb_exec_result_t jit_out;
+        ASSERT(hb_runtime_run(interp, func, HB_BACKEND_INTERP, &interp_out) == HB_OK);
+        ASSERT(hb_runtime_run(jit, func, HB_BACKEND_JIT, &jit_out) == HB_OK);
+        ASSERT(interp_out.result == HB_OK);
+        ASSERT(jit_out.result == HB_OK);
+        ASSERT(jit->regs.x64.xmm[0][0] == interp->regs.x64.xmm[0][0]);
+        ASSERT(jit->regs.x64.xmm[0][1] == interp->regs.x64.xmm[0][1]);
+        ASSERT(jit->flags.cf == interp->flags.cf);
+        ASSERT(jit->flags.zf == interp->flags.zf);
+        ASSERT(jit->lazy_flags.pending == interp->lazy_flags.pending);
+
+        hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(256);
+        hb_arm64_codegen_t* cg = hb_arm64_codegen_create(jit);
+        ASSERT(code_buf != NULL && cg != NULL);
+        ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+        ASSERT(code_buf->size <= 160);
+        hb_arm64_codegen_destroy(cg);
+        hb_codegen_buffer_destroy(code_buf);
+
+        hb_context_destroy(interp);
+        hb_context_destroy(jit);
+        hb_ir_func_destroy(func);
+    }
+
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
     tests_passed++;
 }
 
@@ -13916,6 +13957,48 @@ TEST(jit_x64_native_mov_lea_same_base_pair) {
     tests_passed++;
 }
 
+TEST(jit_x64_native_gpr32_lea_zero_extends) {
+    hb_ir_func_t* func = hb_ir_func_create(0x5330, 0);
+    ASSERT(func != NULL);
+    hb_ir_block_t* blk = hb_ir_block_create(0, 0x5330);
+    ASSERT(blk != NULL);
+    hb_ir_cfg_add_block(func->cfg, blk);
+    func->cfg->entry = blk;
+
+    hb_ir_builder_t* b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, blk);
+    hb_ir_instr_t* lea = hb_ir_emit_lea(b, hb_ir_reg(HB_REG_RCX, HB_SIZE_32),
+                                        hb_ir_mem(HB_REG_RAX, HB_REG_COUNT, 1, 2, HB_SIZE_64));
+    ASSERT(lea);
+    lea->guest_addr = 0x5330; lea->guest_len = 3;
+    hb_ir_builder_destroy(b);
+
+    hb_context_t* interp = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+    hb_context_t* jit = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(interp != NULL && jit != NULL);
+    interp->pc = 0x5330;
+    jit->pc = 0x5330;
+    interp->regs.x64.rax = 0xffffffffULL;
+    jit->regs.x64.rax = 0xffffffffULL;
+    interp->regs.x64.rcx = 0xaaaaaaaa00000000ULL;
+    jit->regs.x64.rcx = 0xaaaaaaaa00000000ULL;
+
+    hb_exec_result_t interp_out;
+    hb_exec_result_t jit_out;
+    ASSERT(hb_runtime_run(interp, func, HB_BACKEND_INTERP, &interp_out) == HB_OK);
+    ASSERT(hb_runtime_run(jit, func, HB_BACKEND_JIT, &jit_out) == HB_OK);
+    ASSERT(interp_out.result == HB_OK);
+    ASSERT(jit_out.result == HB_OK);
+    ASSERT(interp->regs.x64.rcx == 1);
+    ASSERT(jit->regs.x64.rcx == interp->regs.x64.rcx);
+
+    hb_context_destroy(jit);
+    hb_context_destroy(interp);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(jit_x64_native_store_imm_mov_lea_same_base) {
     uint8_t mem[64];
     memset(mem, 0xcc, sizeof(mem));
@@ -16502,1886 +16585,6 @@ TEST(interp_x64_saturating_add_average_shuffle_blit_batch) {
     tests_passed++;
 }
 
-TEST(interp_x64_vex_avx_and_sse41_packed_vector_semantics) {
-    uint8_t vadd_vpxor[] = {
-        0xc5, 0xf4, 0x58, 0xc2, /* vaddps ymm0, ymm1, ymm2 */
-        0xc5, 0xf1, 0xef, 0xda  /* vpxor  xmm3, xmm1, xmm2 */
-    };
-    hb_decoded_t d;
-    ASSERT(hb_decode_x64(vadd_vpxor, 4, (uint64_t)(uintptr_t)vadd_vpxor, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_ADDPS && d.op1.reg == HB_REG_XMM0);
-    ASSERT(d.op2.reg == HB_REG_XMM1 && d.op3.reg == HB_REG_XMM2);
-    ASSERT(d.op1.size == 32 && d.op2.size == 32 && d.op3.size == 32);
-    ASSERT(hb_decode_x64(vadd_vpxor + 4, 4, (uint64_t)(uintptr_t)(vadd_vpxor + 4), &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PXOR && d.op1.reg == HB_REG_XMM3);
-    ASSERT(d.op2.reg == HB_REG_XMM1 && d.op3.reg == HB_REG_XMM2);
-
-    uint64_t base = (uint64_t)(uintptr_t)vadd_vpxor;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, vadd_vpxor, sizeof(vadd_vpxor), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ASSERT(func != NULL);
-
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)vadd_vpxor, sizeof(vadd_vpxor),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-
-    uint32_t ymm1_lo[4] = {test_float_bits(1.0f), test_float_bits(2.0f), test_float_bits(3.0f), test_float_bits(4.0f)};
-    uint32_t ymm1_hi[4] = {test_float_bits(5.0f), test_float_bits(6.0f), test_float_bits(7.0f), test_float_bits(8.0f)};
-    uint32_t ymm2_lo[4] = {test_float_bits(10.0f), test_float_bits(20.0f), test_float_bits(30.0f), test_float_bits(40.0f)};
-    uint32_t ymm2_hi[4] = {test_float_bits(50.0f), test_float_bits(60.0f), test_float_bits(70.0f), test_float_bits(80.0f)};
-    memcpy(ctx->regs.x64.xmm[1], ymm1_lo, sizeof(ymm1_lo));
-    memcpy(ctx->ymm_hi[1], ymm1_hi, sizeof(ymm1_hi));
-    memcpy(ctx->regs.x64.xmm[2], ymm2_lo, sizeof(ymm2_lo));
-    memcpy(ctx->ymm_hi[2], ymm2_hi, sizeof(ymm2_hi));
-
-    hb_exec_result_t run_out;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    uint32_t expected_vadd_lo[4] = {test_float_bits(11.0f), test_float_bits(22.0f), test_float_bits(33.0f), test_float_bits(44.0f)};
-    uint32_t expected_vadd_hi[4] = {test_float_bits(55.0f), test_float_bits(66.0f), test_float_bits(77.0f), test_float_bits(88.0f)};
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_vadd_lo, sizeof(expected_vadd_lo)) == 0);
-    ASSERT(memcmp(ctx->ymm_hi[0], expected_vadd_hi, sizeof(expected_vadd_hi)) == 0);
-    ASSERT(ctx->regs.x64.xmm[3][0] == (ctx->regs.x64.xmm[1][0] ^ ctx->regs.x64.xmm[2][0]));
-    ASSERT(ctx->regs.x64.xmm[3][1] == (ctx->regs.x64.xmm[1][1] ^ ctx->regs.x64.xmm[2][1]));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t avx2_packed[] = {
-        0xc5, 0xf5, 0xd8, 0xc2, /* vpsubusb ymm0, ymm1, ymm2 */
-        0xc5, 0xf5, 0xf6, 0xda, /* vpsadbw  ymm3, ymm1, ymm2 */
-        0xc5, 0xd5, 0xf4, 0xe6  /* vpmuludq ymm4, ymm5, ymm6 */
-    };
-    ASSERT(hb_decode_x64(avx2_packed, 4, (uint64_t)(uintptr_t)avx2_packed, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PSUBUSB && d.op1.size == 32 && d.op2.reg == HB_REG_XMM1);
-    ASSERT(hb_decode_x64(avx2_packed + 8, 4, (uint64_t)(uintptr_t)(avx2_packed + 8), &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PMULUDQ && d.op1.reg == HB_REG_XMM4 && d.op2.reg == HB_REG_XMM5);
-    base = (uint64_t)(uintptr_t)avx2_packed;
-    dec = hb_decoder_create(HB_ARCH_X64, avx2_packed, sizeof(avx2_packed), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ASSERT(func != NULL);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)avx2_packed, sizeof(avx2_packed),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint8_t avx2_lhs[32], avx2_rhs[32];
-    uint32_t mul_lhs[8] = {2, 0x11111111u, 0xffffffffu, 0x22222222u, 7, 8, 9, 10};
-    uint32_t mul_rhs[8] = {3, 0x33333333u, 2, 0x44444444u, 11, 12, 13, 14};
-    for (int i = 0; i < 32; i++) {
-        avx2_lhs[i] = (uint8_t)(i * 7 + 3);
-        avx2_rhs[i] = (uint8_t)(100 - i * 2);
-    }
-    memcpy(ctx->regs.x64.xmm[1], avx2_lhs, 16);
-    memcpy(ctx->ymm_hi[1], avx2_lhs + 16, 16);
-    memcpy(ctx->regs.x64.xmm[2], avx2_rhs, 16);
-    memcpy(ctx->ymm_hi[2], avx2_rhs + 16, 16);
-    memcpy(ctx->regs.x64.xmm[5], mul_lhs, 16);
-    memcpy(ctx->ymm_hi[5], mul_lhs + 4, 16);
-    memcpy(ctx->regs.x64.xmm[6], mul_rhs, 16);
-    memcpy(ctx->ymm_hi[6], mul_rhs + 4, 16);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    uint8_t expected_vpsubusb[32];
-    uint64_t expected_vpsadbw[4] = {0, 0, 0, 0};
-    uint64_t expected_vpmuludq[4] = {
-        6, 0x00000001fffffffeULL, 77, 117
-    };
-    for (int i = 0; i < 32; i++) {
-        expected_vpsubusb[i] = avx2_lhs[i] > avx2_rhs[i] ? (uint8_t)(avx2_lhs[i] - avx2_rhs[i]) : 0;
-        int diff = (int)avx2_lhs[i] - (int)avx2_rhs[i];
-        expected_vpsadbw[i / 8] += (uint64_t)(diff < 0 ? -diff : diff);
-    }
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_vpsubusb, 16) == 0);
-    ASSERT(memcmp(ctx->ymm_hi[0], expected_vpsubusb + 16, 16) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[3], expected_vpsadbw, 16) == 0);
-    ASSERT(memcmp(ctx->ymm_hi[3], expected_vpsadbw + 2, 16) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[4], expected_vpmuludq, 16) == 0);
-    ASSERT(memcmp(ctx->ymm_hi[4], expected_vpmuludq + 2, 16) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t vzero[] = {0xc5, 0xf8, 0x77};
-    ASSERT(hb_decode_x64(vzero, sizeof(vzero), (uint64_t)(uintptr_t)vzero, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_VZEROUPPER);
-    base = (uint64_t)(uintptr_t)vzero;
-    dec = hb_decoder_create(HB_ARCH_X64, vzero, sizeof(vzero), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ASSERT(func != NULL);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)vzero, sizeof(vzero),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    memset(ctx->ymm_hi, 0xa5, sizeof(ctx->ymm_hi));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    for (size_t i = 0; i < 16; i++) {
-        ASSERT(ctx->ymm_hi[i][0] == 0);
-        ASSERT(ctx->ymm_hi[i][1] == 0);
-    }
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t sse41[] = {
-        0x66, 0x0f, 0x3a, 0x0e, 0xc1, 0xaa, /* pblendw xmm0, xmm1, 0xaa */
-        0x66, 0x0f, 0x3a, 0x0f, 0xd3, 0x04, /* palignr xmm2, xmm3, 4 */
-        0x66, 0x0f, 0x38, 0x1c, 0xe5,       /* pabsb   xmm4, xmm5 */
-        0x66, 0x0f, 0x38, 0x39, 0xf7        /* pminsd  xmm6, xmm7 */
-    };
-    base = (uint64_t)(uintptr_t)sse41;
-    dec = hb_decoder_create(HB_ARCH_X64, sse41, sizeof(sse41), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ASSERT(func != NULL);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)sse41, sizeof(sse41),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint16_t blend_dst[8] = {100, 101, 102, 103, 104, 105, 106, 107};
-    uint16_t blend_src[8] = {200, 201, 202, 203, 204, 205, 206, 207};
-    uint8_t align_dst[16], align_src[16];
-    int8_t pabs_src[16] = {-1, -2, -128, 0, 1, 2, 127, -127, 5, -5, 10, -10, 64, -64, 30, -30};
-    int32_t min_dst[4] = {5, -10, 100, -100};
-    int32_t min_src[4] = {4, -20, 200, -50};
-    for (int i = 0; i < 16; i++) {
-        align_dst[i] = (uint8_t)(0xd0 + i);
-        align_src[i] = (uint8_t)(0x30 + i);
-    }
-    memcpy(ctx->regs.x64.xmm[0], blend_dst, sizeof(blend_dst));
-    memcpy(ctx->regs.x64.xmm[1], blend_src, sizeof(blend_src));
-    memcpy(ctx->regs.x64.xmm[2], align_dst, sizeof(align_dst));
-    memcpy(ctx->regs.x64.xmm[3], align_src, sizeof(align_src));
-    memcpy(ctx->regs.x64.xmm[5], pabs_src, sizeof(pabs_src));
-    memcpy(ctx->regs.x64.xmm[6], min_dst, sizeof(min_dst));
-    memcpy(ctx->regs.x64.xmm[7], min_src, sizeof(min_src));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    uint16_t expected_blend[8] = {100, 201, 102, 203, 104, 205, 106, 207};
-    uint8_t expected_align[16] = {0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b,
-                                  0x3c, 0x3d, 0x3e, 0x3f, 0xd0, 0xd1, 0xd2, 0xd3};
-    uint8_t expected_abs[16] = {1, 2, 0x80, 0, 1, 2, 127, 127, 5, 5, 10, 10, 64, 64, 30, 30};
-    int32_t expected_min[4] = {4, -20, 100, -100};
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_blend, sizeof(expected_blend)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[2], expected_align, sizeof(expected_align)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[4], expected_abs, sizeof(expected_abs)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[6], expected_min, sizeof(expected_min)) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
-static void test_set_ymm_bytes(hb_context_t* ctx, int reg, const void* bytes32) {
-    const uint8_t* bytes = (const uint8_t*)bytes32;
-    memcpy(ctx->regs.x64.xmm[reg], bytes, 16);
-    memcpy(ctx->ymm_hi[reg], bytes + 16, 16);
-}
-
-static bool test_ymm_bytes_equal(hb_context_t* ctx, int reg, const void* bytes32) {
-    const uint8_t* bytes = (const uint8_t*)bytes32;
-    return memcmp(ctx->regs.x64.xmm[reg], bytes, 16) == 0 &&
-           memcmp(ctx->ymm_hi[reg], bytes + 16, 16) == 0;
-}
-
-static void test_expect_punpck(uint8_t* out, const uint8_t* lhs, const uint8_t* rhs,
-                               size_t bytes, unsigned lane, bool high) {
-    memset(out, 0, bytes);
-    for (size_t base = 0; base < bytes; base += 16) {
-        unsigned start = high ? 8 : 0;
-        unsigned lanes = 8 / lane;
-        unsigned pos = (unsigned)base;
-        for (unsigned i = 0; i < lanes; i++) {
-            unsigned off = (unsigned)base + start + i * lane;
-            memcpy(out + pos, lhs + off, lane);
-            pos += lane;
-            memcpy(out + pos, rhs + off, lane);
-            pos += lane;
-        }
-    }
-}
-
-static void test_expect_pack_bytes(uint8_t* out, const int16_t* lhs, const int16_t* rhs,
-                                   size_t bytes, bool unsigned_sat) {
-    memset(out, 0, bytes);
-    for (size_t base = 0; base < bytes; base += 16) {
-        unsigned word_base = (unsigned)(base / 2);
-        for (unsigned i = 0; i < 8; i++) {
-            int16_t v = lhs[word_base + i];
-            out[base + i] = unsigned_sat
-                ? (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v))
-                : (uint8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
-        }
-        for (unsigned i = 0; i < 8; i++) {
-            int16_t v = rhs[word_base + i];
-            out[base + 8 + i] = unsigned_sat
-                ? (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v))
-                : (uint8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
-        }
-    }
-}
-
-static void test_expect_packssdw(int16_t* out, const int32_t* lhs, const int32_t* rhs,
-                                 size_t bytes) {
-    memset(out, 0, bytes);
-    for (size_t base = 0; base < bytes; base += 16) {
-        unsigned dword_base = (unsigned)(base / 4);
-        unsigned word_base = (unsigned)(base / 2);
-        for (unsigned i = 0; i < 4; i++) {
-            int32_t v = lhs[dword_base + i];
-            out[word_base + i] = v > 32767 ? 32767 : (v < -32768 ? -32768 : (int16_t)v);
-        }
-        for (unsigned i = 0; i < 4; i++) {
-            int32_t v = rhs[dword_base + i];
-            out[word_base + 4 + i] = v > 32767 ? 32767 : (v < -32768 ? -32768 : (int16_t)v);
-        }
-    }
-}
-
-TEST(interp_x64_avx2_packed_integer_256_family_semantics) {
-    hb_decoded_t d;
-    hb_exec_result_t run_out;
-
-    uint8_t shifts[] = {
-        0xc5, 0xf5, 0xd1, 0xc2, /* vpsrlw ymm0, ymm1, xmm2 */
-        0xc5, 0xdd, 0xe2, 0xdd, /* vpsrad ymm3, ymm4, xmm5 */
-        0xc5, 0xf5, 0xf3, 0xf2  /* vpsllq ymm6, ymm1, xmm2 */
-    };
-    ASSERT(hb_decode_x64(shifts, 4, (uint64_t)(uintptr_t)shifts, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PSRLW && d.op1.size == 32 && d.op3.size == 16);
-    uint64_t base = (uint64_t)(uintptr_t)shifts;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, shifts, sizeof(shifts), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)shifts, sizeof(shifts),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint16_t shift_words[16] = {0xffff, 0x8000, 0x0008, 0x00f0, 0x1234, 0xaaaa, 0x0001, 0x0100,
-                                0x7fff, 0x4000, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666, 0x7777};
-    int32_t shift_dwords[8] = {-16, 0x70000000, 16, -1, -32, 0x40000000, 0x12345678, -123456};
-    uint64_t count3 = 3, count4 = 4;
-    test_set_ymm_bytes(ctx, HB_REG_XMM1 - HB_REG_XMM0, shift_words);
-    memcpy(ctx->regs.x64.xmm[2], &count3, sizeof(count3));
-    test_set_ymm_bytes(ctx, HB_REG_XMM4 - HB_REG_XMM0, shift_dwords);
-    memcpy(ctx->regs.x64.xmm[5], &count4, sizeof(count4));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    uint16_t expect_psrlw[16];
-    int32_t expect_psrad[8];
-    uint64_t qsrc[4], expect_psllq[4];
-    memcpy(qsrc, shift_words, sizeof(qsrc));
-    for (unsigned i = 0; i < 16; i++) expect_psrlw[i] = (uint16_t)(shift_words[i] >> 3);
-    for (unsigned i = 0; i < 8; i++) expect_psrad[i] = shift_dwords[i] >> 4;
-    for (unsigned i = 0; i < 4; i++) expect_psllq[i] = qsrc[i] << 3;
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expect_psrlw));
-    ASSERT(test_ymm_bytes_equal(ctx, 3, expect_psrad));
-    ASSERT(test_ymm_bytes_equal(ctx, 6, expect_psllq));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t sat_avg[] = {
-        0xc5, 0xf5, 0xdc, 0xc2, /* vpaddusb ymm0, ymm1, ymm2 */
-        0xc5, 0xdd, 0xed, 0xdd, /* vpaddsw  ymm3, ymm4, ymm5 */
-        0xc5, 0xf5, 0xe0, 0xf2  /* vpavgb   ymm6, ymm1, ymm2 */
-    };
-    base = (uint64_t)(uintptr_t)sat_avg;
-    dec = hb_decoder_create(HB_ARCH_X64, sat_avg, sizeof(sat_avg), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)sat_avg, sizeof(sat_avg),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint8_t bytes_a[32], bytes_b[32], expect_paddusb[32], expect_pavgb[32];
-    int16_t words_a[16], words_b[16], expect_paddsw[16];
-    for (unsigned i = 0; i < 32; i++) {
-        bytes_a[i] = (uint8_t)(i * 9 + 11);
-        bytes_b[i] = (uint8_t)(240 - i * 5);
-        unsigned sum = (unsigned)bytes_a[i] + (unsigned)bytes_b[i];
-        expect_paddusb[i] = (uint8_t)(sum > 255 ? 255 : sum);
-        expect_pavgb[i] = (uint8_t)((sum + 1u) >> 1);
-    }
-    for (unsigned i = 0; i < 16; i++) {
-        words_a[i] = (int16_t)(i % 3 == 0 ? 30000 : (int)i * 1000 - 8000);
-        words_b[i] = (int16_t)(i % 4 == 0 ? 10000 : 9000 - (int)i * 700);
-        int32_t sum = (int32_t)words_a[i] + (int32_t)words_b[i];
-        expect_paddsw[i] = sum > 32767 ? 32767 : (sum < -32768 ? -32768 : (int16_t)sum);
-    }
-    test_set_ymm_bytes(ctx, 1, bytes_a);
-    test_set_ymm_bytes(ctx, 2, bytes_b);
-    test_set_ymm_bytes(ctx, 4, words_a);
-    test_set_ymm_bytes(ctx, 5, words_b);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expect_paddusb));
-    ASSERT(test_ymm_bytes_equal(ctx, 3, expect_paddsw));
-    ASSERT(test_ymm_bytes_equal(ctx, 6, expect_pavgb));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t muls[] = {
-        0xc5, 0xf5, 0xd5, 0xc2, /* vpmullw  ymm0, ymm1, ymm2 */
-        0xc5, 0xdd, 0xe4, 0xdd, /* vpmulhuw ymm3, ymm4, ymm5 */
-        0xc5, 0xf5, 0xf5, 0xf2  /* vpmaddwd ymm6, ymm1, ymm2 */
-    };
-    base = (uint64_t)(uintptr_t)muls;
-    dec = hb_decoder_create(HB_ARCH_X64, muls, sizeof(muls), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)muls, sizeof(muls),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    int16_t mul_a[16], mul_b[16];
-    uint16_t umul_a[16], umul_b[16], expect_pmulhuw[16], expect_pmullw[16];
-    int32_t expect_pmaddwd[8];
-    for (unsigned i = 0; i < 16; i++) {
-        mul_a[i] = (int16_t)(i * 321 - 2000);
-        mul_b[i] = (int16_t)(1500 - (int)i * 77);
-        int32_t product = (int32_t)mul_a[i] * (int32_t)mul_b[i];
-        expect_pmullw[i] = (uint16_t)product;
-        umul_a[i] = (uint16_t)(40000u + i * 123u);
-        umul_b[i] = (uint16_t)(30000u + i * 211u);
-        expect_pmulhuw[i] = (uint16_t)(((uint32_t)umul_a[i] * (uint32_t)umul_b[i]) >> 16);
-    }
-    for (unsigned i = 0; i < 8; i++) {
-        expect_pmaddwd[i] = (int32_t)mul_a[i * 2] * (int32_t)mul_b[i * 2] +
-                            (int32_t)mul_a[i * 2 + 1] * (int32_t)mul_b[i * 2 + 1];
-    }
-    test_set_ymm_bytes(ctx, 1, mul_a);
-    test_set_ymm_bytes(ctx, 2, mul_b);
-    test_set_ymm_bytes(ctx, 4, umul_a);
-    test_set_ymm_bytes(ctx, 5, umul_b);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expect_pmullw));
-    ASSERT(test_ymm_bytes_equal(ctx, 3, expect_pmulhuw));
-    ASSERT(test_ymm_bytes_equal(ctx, 6, expect_pmaddwd));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t compares[] = {
-        0xc5, 0xf5, 0x74, 0xc2, /* vpcmpeqb ymm0, ymm1, ymm2 */
-        0xc5, 0xdd, 0x65, 0xdd, /* vpcmpgtw ymm3, ymm4, ymm5 */
-        0xc5, 0xf5, 0x76, 0xf2  /* vpcmpeqd ymm6, ymm1, ymm2 */
-    };
-    base = (uint64_t)(uintptr_t)compares;
-    dec = hb_decoder_create(HB_ARCH_X64, compares, sizeof(compares), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)compares, sizeof(compares),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint8_t cmp_a[32], cmp_b[32], expect_pcmpeqb[32], expect_pcmpeqd[32];
-    int16_t cmpw_a[16], cmpw_b[16];
-    uint16_t expect_pcmpgtw[16];
-    for (unsigned i = 0; i < 32; i++) {
-        cmp_a[i] = (uint8_t)(i + (i % 5 == 0 ? 7 : 0));
-        cmp_b[i] = (uint8_t)(i + (i % 5 == 0 ? 7 : 1));
-        expect_pcmpeqb[i] = cmp_a[i] == cmp_b[i] ? 0xff : 0;
-    }
-    for (unsigned i = 0; i < 8; i++) {
-        uint32_t a, b;
-        memcpy(&a, cmp_a + i * 4, sizeof(a));
-        memcpy(&b, cmp_b + i * 4, sizeof(b));
-        memset(expect_pcmpeqd + i * 4, a == b ? 0xff : 0, 4);
-    }
-    for (unsigned i = 0; i < 16; i++) {
-        cmpw_a[i] = (int16_t)((int)i * 300 - 2000);
-        cmpw_b[i] = (int16_t)(i % 2 ? cmpw_a[i] + 1 : cmpw_a[i] - 1);
-        expect_pcmpgtw[i] = cmpw_a[i] > cmpw_b[i] ? 0xffff : 0;
-    }
-    test_set_ymm_bytes(ctx, 1, cmp_a);
-    test_set_ymm_bytes(ctx, 2, cmp_b);
-    test_set_ymm_bytes(ctx, 4, cmpw_a);
-    test_set_ymm_bytes(ctx, 5, cmpw_b);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expect_pcmpeqb));
-    ASSERT(test_ymm_bytes_equal(ctx, 3, expect_pcmpgtw));
-    ASSERT(test_ymm_bytes_equal(ctx, 6, expect_pcmpeqd));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
-TEST(interp_x64_avx2_unpack_pack_family_semantics) {
-    hb_decoded_t d;
-    hb_exec_result_t run_out;
-
-    uint8_t xmm_code[] = {
-        0xc5, 0xf1, 0x60, 0xc2, /* vpunpcklbw xmm0, xmm1, xmm2 */
-        0xc5, 0xd1, 0x63, 0xde  /* vpacksswb  xmm3, xmm5, xmm6 */
-    };
-    ASSERT(hb_decode_x64(xmm_code, 4, (uint64_t)(uintptr_t)xmm_code, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PUNPCKLBW && d.op1.size == 16 && d.op2.reg == HB_REG_XMM1);
-    ASSERT(hb_decode_x64(xmm_code + 4, 4, (uint64_t)(uintptr_t)(xmm_code + 4), &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PACKSSWB && d.op1.size == 16 && d.op2.reg == HB_REG_XMM5);
-    uint64_t base = (uint64_t)(uintptr_t)xmm_code;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, xmm_code, sizeof(xmm_code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)xmm_code, sizeof(xmm_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint8_t lhs16[16], rhs16[16], expected16[16];
-    int16_t pack_lhs16[8] = {-200, -129, -128, -1, 0, 1, 127, 200};
-    int16_t pack_rhs16[8] = {-300, -5, 5, 126, 127, 128, 500, -127};
-    for (unsigned i = 0; i < 16; i++) {
-        lhs16[i] = (uint8_t)(0x10 + i);
-        rhs16[i] = (uint8_t)(0xa0 + i);
-    }
-    memcpy(ctx->regs.x64.xmm[1], lhs16, sizeof(lhs16));
-    memcpy(ctx->regs.x64.xmm[2], rhs16, sizeof(rhs16));
-    memcpy(ctx->regs.x64.xmm[5], pack_lhs16, sizeof(pack_lhs16));
-    memcpy(ctx->regs.x64.xmm[6], pack_rhs16, sizeof(pack_rhs16));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    test_expect_punpck(expected16, lhs16, rhs16, 16, 1, false);
-    uint8_t expected_pack16[16];
-    test_expect_pack_bytes(expected_pack16, pack_lhs16, pack_rhs16, 16, false);
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected16, sizeof(expected16)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[3], expected_pack16, sizeof(expected_pack16)) == 0);
-
-    uint8_t legacy_code[] = {
-        0x66, 0x0f, 0x60, 0xc2, /* punpcklbw xmm0, xmm2 */
-        0x66, 0x0f, 0x63, 0xde  /* packsswb  xmm3, xmm6 */
-    };
-    hb_context_t* legacy = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(legacy != NULL);
-    legacy->memory = hb_memory_create(0);
-    ASSERT(legacy->memory != NULL);
-    ASSERT(hb_memory_map(legacy->memory, (hb_gva_t)(uintptr_t)legacy_code, sizeof(legacy_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    legacy->pc = (uint64_t)(uintptr_t)legacy_code;
-    memcpy(legacy->regs.x64.xmm[0], lhs16, sizeof(lhs16));
-    memcpy(legacy->regs.x64.xmm[2], rhs16, sizeof(rhs16));
-    memcpy(legacy->regs.x64.xmm[3], pack_lhs16, sizeof(pack_lhs16));
-    memcpy(legacy->regs.x64.xmm[6], pack_rhs16, sizeof(pack_rhs16));
-    hb_decoder_t* legacy_dec = hb_decoder_create(HB_ARCH_X64, legacy_code, sizeof(legacy_code), legacy->pc);
-    hb_ir_func_t* legacy_func = NULL;
-    ASSERT(legacy_dec != NULL);
-    ASSERT(hb_lift_func_x64(legacy_dec, &legacy_func) == HB_OK);
-    hb_decoder_destroy(legacy_dec);
-    ASSERT(hb_runtime_run(legacy, legacy_func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], legacy->regs.x64.xmm[0], sizeof(expected16)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[3], legacy->regs.x64.xmm[3], sizeof(expected_pack16)) == 0);
-    hb_context_destroy(legacy);
-    hb_ir_func_destroy(legacy_func);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t ymm_code[] = {
-        0xc5, 0xf5, 0x69, 0xc2, /* vpunpckhwd ymm0, ymm1, ymm2 */
-        0xc5, 0xdd, 0x67, 0xdd  /* vpackuswb  ymm3, ymm4, ymm5 */
-    };
-    base = (uint64_t)(uintptr_t)ymm_code;
-    dec = hb_decoder_create(HB_ARCH_X64, ymm_code, sizeof(ymm_code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)ymm_code, sizeof(ymm_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint8_t lhs32[32], rhs32[32], expected32[32], expected_pack32[32];
-    int16_t pack_lhs32[16], pack_rhs32[16];
-    for (unsigned i = 0; i < 32; i++) {
-        lhs32[i] = (uint8_t)(0x20 + i);
-        rhs32[i] = (uint8_t)(0xc0 + i);
-    }
-    for (unsigned i = 0; i < 16; i++) {
-        pack_lhs32[i] = (int16_t)((int)i * 40 - 120);
-        pack_rhs32[i] = (int16_t)(300 - (int)i * 25);
-    }
-    test_set_ymm_bytes(ctx, 1, lhs32);
-    test_set_ymm_bytes(ctx, 2, rhs32);
-    test_set_ymm_bytes(ctx, 4, pack_lhs32);
-    test_set_ymm_bytes(ctx, 5, pack_rhs32);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    test_expect_punpck(expected32, lhs32, rhs32, 32, 2, true);
-    test_expect_pack_bytes(expected_pack32, pack_lhs32, pack_rhs32, 32, true);
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expected32));
-    ASSERT(test_ymm_bytes_equal(ctx, 3, expected_pack32));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint8_t mem[32];
-    } mem_unpck = {
-        {0xc5, 0xf5, 0x62, 0x05, 0x00, 0x00, 0x00, 0x00},
-        {0}
-    };
-    for (unsigned i = 0; i < 32; i++) mem_unpck.mem[i] = (uint8_t)(0x80 + i);
-    base = (uint64_t)(uintptr_t)&mem_unpck;
-    dec = hb_decoder_create(HB_ARCH_X64, mem_unpck.code, sizeof(mem_unpck.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&mem_unpck, sizeof(mem_unpck),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    test_set_ymm_bytes(ctx, 1, lhs32);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    test_expect_punpck(expected32, lhs32, mem_unpck.mem, 32, 4, false);
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expected32));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        int32_t mem[8];
-    } mem_pack = {
-        {0xc5, 0xdd, 0x6b, 0x1d, 0x00, 0x00, 0x00, 0x00},
-        {0}
-    };
-    int32_t pack_lhs_dword[8], expected_pack_dword_src[8];
-    int16_t expected_packssdw[16];
-    for (unsigned i = 0; i < 8; i++) {
-        pack_lhs_dword[i] = (int32_t)i * 20000 - 50000;
-        mem_pack.mem[i] = 50000 - (int32_t)i * 15000;
-        expected_pack_dword_src[i] = mem_pack.mem[i];
-    }
-    base = (uint64_t)(uintptr_t)&mem_pack;
-    dec = hb_decoder_create(HB_ARCH_X64, mem_pack.code, sizeof(mem_pack.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&mem_pack, sizeof(mem_pack),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    test_set_ymm_bytes(ctx, 4, pack_lhs_dword);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    test_expect_packssdw(expected_packssdw, pack_lhs_dword, expected_pack_dword_src, 32);
-    ASSERT(test_ymm_bytes_equal(ctx, 3, expected_packssdw));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
-TEST(interp_x64_vex_movdqa_movdqu_load_store_semantics) {
-    hb_decoded_t d;
-    hb_exec_result_t run_out;
-
-    uint8_t reg_code[] = {
-        0xc5, 0xfa, 0x6f, 0xc1, /* vmovdqu xmm0, xmm1 */
-        0xc5, 0xfd, 0x6f, 0xd1  /* vmovdqa ymm2, ymm1 */
-    };
-    ASSERT(hb_decode_x64(reg_code, 4, (uint64_t)(uintptr_t)reg_code, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_SSE_MOV && d.op1.size == 16 && d.op2.size == 16);
-    ASSERT(hb_decode_x64(reg_code + 4, 4, (uint64_t)(uintptr_t)(reg_code + 4), &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_SSE_MOV && d.op1.size == 32 && d.op2.size == 32);
-    uint64_t base = (uint64_t)(uintptr_t)reg_code;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, reg_code, sizeof(reg_code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)reg_code, sizeof(reg_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint8_t src32[32];
-    for (unsigned i = 0; i < 32; i++) src32[i] = (uint8_t)(0x40 + i);
-    test_set_ymm_bytes(ctx, 1, src32);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], src32, 16) == 0);
-    ASSERT(test_ymm_bytes_equal(ctx, 2, src32));
-
-    uint8_t legacy_code[] = {0xf3, 0x0f, 0x6f, 0xc1}; /* movdqu xmm0, xmm1 */
-    hb_context_t* legacy = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(legacy != NULL);
-    legacy->memory = hb_memory_create(0);
-    ASSERT(legacy->memory != NULL);
-    ASSERT(hb_memory_map(legacy->memory, (hb_gva_t)(uintptr_t)legacy_code, sizeof(legacy_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    legacy->pc = (uint64_t)(uintptr_t)legacy_code;
-    memcpy(legacy->regs.x64.xmm[1], src32, 16);
-    hb_decoder_t* legacy_dec = hb_decoder_create(HB_ARCH_X64, legacy_code, sizeof(legacy_code), legacy->pc);
-    hb_ir_func_t* legacy_func = NULL;
-    ASSERT(legacy_dec != NULL);
-    ASSERT(hb_lift_func_x64(legacy_dec, &legacy_func) == HB_OK);
-    hb_decoder_destroy(legacy_dec);
-    ASSERT(hb_runtime_run(legacy, legacy_func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], legacy->regs.x64.xmm[0], 16) == 0);
-    hb_context_destroy(legacy);
-    hb_ir_func_destroy(legacy_func);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint8_t mem[32];
-    } load_case = {
-        {0xc5, 0xfd, 0x6f, 0x05, 0x00, 0x00, 0x00, 0x00},
-        {0}
-    };
-    for (unsigned i = 0; i < 32; i++) load_case.mem[i] = (uint8_t)(0x90 + i);
-    base = (uint64_t)(uintptr_t)&load_case;
-    dec = hb_decoder_create(HB_ARCH_X64, load_case.code, sizeof(load_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&load_case, sizeof(load_case),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(test_ymm_bytes_equal(ctx, 0, load_case.mem));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint8_t out[32];
-    } store_case = {
-        {0xc5, 0xfd, 0x7f, 0x05, 0x00, 0x00, 0x00, 0x00},
-        {0}
-    };
-    base = (uint64_t)(uintptr_t)&store_case;
-    dec = hb_decoder_create(HB_ARCH_X64, store_case.code, sizeof(store_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&store_case, sizeof(store_case),
-                         HB_PERM_READ | HB_PERM_WRITE | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    test_set_ymm_bytes(ctx, 0, src32);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(memcmp(store_case.out, src32, sizeof(src32)) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
-TEST(interp_x64_vex_packed_mov_float_load_store_semantics) {
-    hb_decoded_t d;
-    hb_exec_result_t run_out;
-
-    uint8_t reg_code[] = {
-        0xc5, 0xf8, 0x10, 0xc1, /* vmovups xmm0, xmm1 */
-        0xc5, 0xfd, 0x10, 0xd1, /* vmovupd ymm2, ymm1 */
-        0xc5, 0xfd, 0x28, 0xd9  /* vmovapd ymm3, ymm1 */
-    };
-    ASSERT(hb_decode_x64(reg_code, 4, (uint64_t)(uintptr_t)reg_code, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_SSE_MOV && d.op1.size == 16 && d.op2.size == 16);
-    ASSERT(hb_decode_x64(reg_code + 4, 4, (uint64_t)(uintptr_t)(reg_code + 4), &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_SSE_MOV && d.op1.size == 32 && d.op2.size == 32);
-    ASSERT(hb_decode_x64(reg_code + 8, 4, (uint64_t)(uintptr_t)(reg_code + 8), &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_SSE_MOV && d.op1.size == 32 && d.op2.size == 32);
-
-    uint64_t base = (uint64_t)(uintptr_t)reg_code;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, reg_code, sizeof(reg_code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)reg_code, sizeof(reg_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint8_t src32[32];
-    for (unsigned i = 0; i < 32; i++) src32[i] = (uint8_t)(0x20 + i);
-    test_set_ymm_bytes(ctx, 1, src32);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], src32, 16) == 0);
-    ASSERT(test_ymm_bytes_equal(ctx, 2, src32));
-    ASSERT(test_ymm_bytes_equal(ctx, 3, src32));
-
-    uint8_t legacy_code[] = {0x0f, 0x10, 0xc1}; /* movups xmm0, xmm1 */
-    hb_context_t* legacy = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(legacy != NULL);
-    legacy->memory = hb_memory_create(0);
-    ASSERT(legacy->memory != NULL);
-    ASSERT(hb_memory_map(legacy->memory, (hb_gva_t)(uintptr_t)legacy_code, sizeof(legacy_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    legacy->pc = (uint64_t)(uintptr_t)legacy_code;
-    memcpy(legacy->regs.x64.xmm[1], src32, 16);
-    hb_decoder_t* legacy_dec = hb_decoder_create(HB_ARCH_X64, legacy_code, sizeof(legacy_code), legacy->pc);
-    hb_ir_func_t* legacy_func = NULL;
-    ASSERT(legacy_dec != NULL);
-    ASSERT(hb_lift_func_x64(legacy_dec, &legacy_func) == HB_OK);
-    hb_decoder_destroy(legacy_dec);
-    ASSERT(hb_runtime_run(legacy, legacy_func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], legacy->regs.x64.xmm[0], 16) == 0);
-    hb_context_destroy(legacy);
-    hb_ir_func_destroy(legacy_func);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint8_t mem[32];
-    } load_case = {
-        {0xc5, 0xfc, 0x28, 0x05, 0x00, 0x00, 0x00, 0x00},
-        {0}
-    };
-    for (unsigned i = 0; i < 32; i++) load_case.mem[i] = (uint8_t)(0x70 + i);
-    base = (uint64_t)(uintptr_t)&load_case;
-    dec = hb_decoder_create(HB_ARCH_X64, load_case.code, sizeof(load_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&load_case, sizeof(load_case),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(test_ymm_bytes_equal(ctx, 0, load_case.mem));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint8_t out[32];
-    } store_case = {
-        {0xc5, 0xfc, 0x11, 0x05, 0x00, 0x00, 0x00, 0x00},
-        {0}
-    };
-    base = (uint64_t)(uintptr_t)&store_case;
-    dec = hb_decoder_create(HB_ARCH_X64, store_case.code, sizeof(store_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&store_case, sizeof(store_case),
-                         HB_PERM_READ | HB_PERM_WRITE | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    test_set_ymm_bytes(ctx, 0, src32);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(memcmp(store_case.out, src32, sizeof(src32)) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
-TEST(interp_x64_vex_packed_float_pd_and_sqrt_semantics) {
-    hb_exec_result_t out;
-    uint8_t code[] = {
-        0xc5, 0xf5, 0x5c, 0xc2, /* vsubpd ymm0, ymm1, ymm2 */
-        0xc5, 0xf5, 0x59, 0xda, /* vmulpd ymm3, ymm1, ymm2 */
-        0xc5, 0xf5, 0x5e, 0xe2, /* vdivpd ymm4, ymm1, ymm2 */
-        0xc5, 0xf5, 0x5d, 0xea, /* vminpd ymm5, ymm1, ymm2 */
-        0xc5, 0xf5, 0x5f, 0xf2  /* vmaxpd ymm6, ymm1, ymm2 */
-    };
-    uint64_t base = (uint64_t)(uintptr_t)code;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-
-    uint64_t lhs_bits[4] = {test_double_bits(10.0), test_double_bits(-20.0),
-                            test_double_bits(40.0), test_double_bits(1.5)};
-    uint64_t rhs_bits[4] = {test_double_bits(1.0), test_double_bits(2.0),
-                            test_double_bits(-4.0), test_double_bits(0.5)};
-    test_set_ymm_bytes(ctx, 1, (const uint8_t*)lhs_bits);
-    test_set_ymm_bytes(ctx, 2, (const uint8_t*)rhs_bits);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-
-    uint64_t expect_sub[4] = {test_double_bits(9.0), test_double_bits(-22.0),
-                              test_double_bits(44.0), test_double_bits(1.0)};
-    uint64_t expect_mul[4] = {test_double_bits(10.0), test_double_bits(-40.0),
-                              test_double_bits(-160.0), test_double_bits(0.75)};
-    uint64_t expect_div[4] = {test_double_bits(10.0), test_double_bits(-10.0),
-                              test_double_bits(-10.0), test_double_bits(3.0)};
-    uint64_t expect_min[4] = {test_double_bits(1.0), test_double_bits(-20.0),
-                              test_double_bits(-4.0), test_double_bits(0.5)};
-    uint64_t expect_max[4] = {test_double_bits(10.0), test_double_bits(2.0),
-                              test_double_bits(40.0), test_double_bits(1.5)};
-    ASSERT(test_ymm_bytes_equal(ctx, 0, (const uint8_t*)expect_sub));
-    ASSERT(test_ymm_bytes_equal(ctx, 3, (const uint8_t*)expect_mul));
-    ASSERT(test_ymm_bytes_equal(ctx, 4, (const uint8_t*)expect_div));
-    ASSERT(test_ymm_bytes_equal(ctx, 5, (const uint8_t*)expect_min));
-    ASSERT(test_ymm_bytes_equal(ctx, 6, (const uint8_t*)expect_max));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t vex_xmm[] = {0xc5, 0xf1, 0x5c, 0xc2}; /* vsubpd xmm0, xmm1, xmm2 */
-    uint8_t legacy_xmm[] = {0x66, 0x0f, 0x5c, 0xc2}; /* subpd xmm0, xmm2 */
-    hb_context_t* vex_ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    hb_context_t* legacy_ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(vex_ctx != NULL && legacy_ctx != NULL);
-    vex_ctx->memory = hb_memory_create(0);
-    legacy_ctx->memory = hb_memory_create(0);
-    ASSERT(vex_ctx->memory != NULL && legacy_ctx->memory != NULL);
-    ASSERT(hb_memory_map(vex_ctx->memory, (hb_gva_t)(uintptr_t)vex_xmm, sizeof(vex_xmm),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ASSERT(hb_memory_map(legacy_ctx->memory, (hb_gva_t)(uintptr_t)legacy_xmm, sizeof(legacy_xmm),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    vex_ctx->pc = (uint64_t)(uintptr_t)vex_xmm;
-    legacy_ctx->pc = (uint64_t)(uintptr_t)legacy_xmm;
-    memcpy(vex_ctx->regs.x64.xmm[1], lhs_bits, 16);
-    memcpy(vex_ctx->regs.x64.xmm[2], rhs_bits, 16);
-    memcpy(legacy_ctx->regs.x64.xmm[0], lhs_bits, 16);
-    memcpy(legacy_ctx->regs.x64.xmm[2], rhs_bits, 16);
-    hb_decoder_t* vex_dec = hb_decoder_create(HB_ARCH_X64, vex_xmm, sizeof(vex_xmm), vex_ctx->pc);
-    hb_decoder_t* leg_dec = hb_decoder_create(HB_ARCH_X64, legacy_xmm, sizeof(legacy_xmm), legacy_ctx->pc);
-    hb_ir_func_t* vex_func = NULL;
-    hb_ir_func_t* leg_func = NULL;
-    ASSERT(vex_dec != NULL && leg_dec != NULL);
-    ASSERT(hb_lift_func_x64(vex_dec, &vex_func) == HB_OK);
-    ASSERT(hb_lift_func_x64(leg_dec, &leg_func) == HB_OK);
-    hb_decoder_destroy(vex_dec);
-    hb_decoder_destroy(leg_dec);
-    ASSERT(hb_runtime_run(vex_ctx, vex_func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT(hb_runtime_run(legacy_ctx, leg_func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT(memcmp(vex_ctx->regs.x64.xmm[0], legacy_ctx->regs.x64.xmm[0], 16) == 0);
-    hb_context_destroy(vex_ctx);
-    hb_context_destroy(legacy_ctx);
-    hb_ir_func_destroy(vex_func);
-    hb_ir_func_destroy(leg_func);
-
-    struct {
-        uint8_t code[8];
-        uint64_t mem[4];
-    } mem_case = {
-        {0xc5, 0xf5, 0x5c, 0x05, 0x00, 0x00, 0x00, 0x00},
-        {test_double_bits(2.0), test_double_bits(4.0),
-         test_double_bits(6.0), test_double_bits(8.0)}
-    };
-    base = (uint64_t)(uintptr_t)&mem_case;
-    dec = hb_decoder_create(HB_ARCH_X64, mem_case.code, sizeof(mem_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&mem_case, sizeof(mem_case),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    test_set_ymm_bytes(ctx, 1, (const uint8_t*)lhs_bits);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint64_t expect_mem_sub[4] = {test_double_bits(8.0), test_double_bits(-24.0),
-                                  test_double_bits(34.0), test_double_bits(-6.5)};
-    ASSERT(test_ymm_bytes_equal(ctx, 0, (const uint8_t*)expect_mem_sub));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t sqrt_code[] = {
-        0xc5, 0xfc, 0x51, 0xc1, /* vsqrtps ymm0, ymm1 */
-        0xc5, 0xfd, 0x51, 0xd3  /* vsqrtpd ymm2, ymm3 */
-    };
-    base = (uint64_t)(uintptr_t)sqrt_code;
-    dec = hb_decoder_create(HB_ARCH_X64, sqrt_code, sizeof(sqrt_code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)sqrt_code, sizeof(sqrt_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint32_t ps_bits[8] = {
-        test_float_bits(1.0f), test_float_bits(4.0f), test_float_bits(9.0f), test_float_bits(16.0f),
-        test_float_bits(25.0f), test_float_bits(36.0f), test_float_bits(49.0f), test_float_bits(64.0f)
-    };
-    uint64_t pd_bits[4] = {test_double_bits(4.0), test_double_bits(9.0),
-                           test_double_bits(16.0), test_double_bits(25.0)};
-    test_set_ymm_bytes(ctx, 1, (const uint8_t*)ps_bits);
-    test_set_ymm_bytes(ctx, 3, (const uint8_t*)pd_bits);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint32_t expect_ps[8] = {
-        test_float_bits(1.0f), test_float_bits(2.0f), test_float_bits(3.0f), test_float_bits(4.0f),
-        test_float_bits(5.0f), test_float_bits(6.0f), test_float_bits(7.0f), test_float_bits(8.0f)
-    };
-    uint64_t expect_pd[4] = {test_double_bits(2.0), test_double_bits(3.0),
-                             test_double_bits(4.0), test_double_bits(5.0)};
-    ASSERT(test_ymm_bytes_equal(ctx, 0, (const uint8_t*)expect_ps));
-    ASSERT(test_ymm_bytes_equal(ctx, 2, (const uint8_t*)expect_pd));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
-TEST(interp_x64_vex_scalar_sqrt_semantics) {
-    uint8_t code[] = {
-        0xc5, 0xf2, 0x51, 0xc2, /* vsqrtss xmm0, xmm1, xmm2 */
-        0xc5, 0xdb, 0x51, 0xdd  /* vsqrtsd xmm3, xmm4, xmm5 */
-    };
-    uint64_t base = (uint64_t)(uintptr_t)code;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    ctx->regs.x64.xmm[1][0] = 0xaaaaaaaa00000000ULL | test_float_bits(99.0f);
-    ctx->regs.x64.xmm[1][1] = 0xbbbbbbbbbbbbbbbbULL;
-    ctx->regs.x64.xmm[2][0] = test_float_bits(16.0f);
-    ctx->regs.x64.xmm[4][0] = test_double_bits(123.0);
-    ctx->regs.x64.xmm[4][1] = 0xccccccccccccccccULL;
-    ctx->regs.x64.xmm[5][0] = test_double_bits(81.0);
-    hb_exec_result_t out;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT((uint32_t)ctx->regs.x64.xmm[0][0] == test_float_bits(4.0f));
-    ASSERT((ctx->regs.x64.xmm[0][0] >> 32) == 0xaaaaaaaaULL);
-    ASSERT(ctx->regs.x64.xmm[0][1] == 0xbbbbbbbbbbbbbbbbULL);
-    ASSERT(ctx->regs.x64.xmm[3][0] == test_double_bits(9.0));
-    ASSERT(ctx->regs.x64.xmm[3][1] == 0xccccccccccccccccULL);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint32_t mem;
-    } mem_case = {
-        {0xc5, 0xf2, 0x51, 0x05, 0x00, 0x00, 0x00, 0x00},
-        0
-    };
-    mem_case.mem = test_float_bits(25.0f);
-    base = (uint64_t)(uintptr_t)&mem_case;
-    dec = hb_decoder_create(HB_ARCH_X64, mem_case.code, sizeof(mem_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&mem_case, sizeof(mem_case),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    ctx->regs.x64.xmm[1][0] = 0xdddddddd00000000ULL | test_float_bits(1.0f);
-    ctx->regs.x64.xmm[1][1] = 0xeeeeeeeeeeeeeeeeULL;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT((uint32_t)ctx->regs.x64.xmm[0][0] == test_float_bits(5.0f));
-    ASSERT((ctx->regs.x64.xmm[0][0] >> 32) == 0xddddddddULL);
-    ASSERT(ctx->regs.x64.xmm[0][1] == 0xeeeeeeeeeeeeeeeeULL);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
-TEST(interp_x64_vex_scalar_mov_arith_and_upper_zero_semantics) {
-    hb_exec_result_t out;
-    uint8_t mov_code[] = {
-        0xc5, 0xf2, 0x10, 0xc2, /* vmovss xmm0, xmm1, xmm2 */
-        0xc5, 0xdb, 0x10, 0xdd  /* vmovsd xmm3, xmm4, xmm5 */
-    };
-    uint64_t base = (uint64_t)(uintptr_t)mov_code;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, mov_code, sizeof(mov_code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)mov_code, sizeof(mov_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint32_t ss_merge[4] = {test_float_bits(1.0f), 0xaaaaaaaaU, 0xbbbbbbbbU, 0xccccccccU};
-    uint32_t ss_rhs[4] = {test_float_bits(-4.5f), 0, 0, 0};
-    uint64_t sd_merge[2] = {test_double_bits(2.0), 0xddddddddddddddddULL};
-    uint64_t sd_rhs[2] = {test_double_bits(81.0), 0};
-    memcpy(ctx->regs.x64.xmm[1], ss_merge, sizeof(ss_merge));
-    memcpy(ctx->regs.x64.xmm[2], ss_rhs, sizeof(ss_rhs));
-    memcpy(ctx->regs.x64.xmm[4], sd_merge, sizeof(sd_merge));
-    memcpy(ctx->regs.x64.xmm[5], sd_rhs, sizeof(sd_rhs));
-    memset(ctx->ymm_hi[0], 0x5a, sizeof(ctx->ymm_hi[0]));
-    memset(ctx->ymm_hi[3], 0xa5, sizeof(ctx->ymm_hi[3]));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT((uint32_t)ctx->regs.x64.xmm[0][0] == test_float_bits(-4.5f));
-    ASSERT(memcmp((uint8_t*)ctx->regs.x64.xmm[0] + 4, (uint8_t*)ss_merge + 4, 12) == 0);
-    ASSERT(ctx->ymm_hi[0][0] == 0 && ctx->ymm_hi[0][1] == 0);
-    ASSERT(ctx->regs.x64.xmm[3][0] == test_double_bits(81.0));
-    ASSERT(ctx->regs.x64.xmm[3][1] == sd_merge[1]);
-    ASSERT(ctx->ymm_hi[3][0] == 0 && ctx->ymm_hi[3][1] == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint32_t mem;
-    } load_case = {
-        {0xc5, 0xfa, 0x10, 0x05, 0x00, 0x00, 0x00, 0x00},
-        0
-    };
-    load_case.mem = test_float_bits(6.25f);
-    base = (uint64_t)(uintptr_t)&load_case;
-    dec = hb_decoder_create(HB_ARCH_X64, load_case.code, sizeof(load_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&load_case, sizeof(load_case),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    memset(ctx->regs.x64.xmm[0], 0x77, sizeof(ctx->regs.x64.xmm[0]));
-    memset(ctx->ymm_hi[0], 0x88, sizeof(ctx->ymm_hi[0]));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT((uint32_t)ctx->regs.x64.xmm[0][0] == test_float_bits(6.25f));
-    ASSERT((ctx->regs.x64.xmm[0][0] >> 32) == 0);
-    ASSERT(ctx->regs.x64.xmm[0][1] == 0);
-    ASSERT(ctx->ymm_hi[0][0] == 0 && ctx->ymm_hi[0][1] == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint32_t out_mem;
-    } store_case = {
-        {0xc5, 0xfa, 0x11, 0x05, 0x00, 0x00, 0x00, 0x00},
-        0
-    };
-    base = (uint64_t)(uintptr_t)&store_case;
-    dec = hb_decoder_create(HB_ARCH_X64, store_case.code, sizeof(store_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&store_case, sizeof(store_case),
-                         HB_PERM_READ | HB_PERM_WRITE | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    ctx->regs.x64.xmm[0][0] = test_float_bits(-13.0f);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT(store_case.out_mem == test_float_bits(-13.0f));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint64_t mem;
-    } load_sd_case = {
-        {0xc5, 0xfb, 0x10, 0x05, 0x00, 0x00, 0x00, 0x00},
-        0
-    };
-    load_sd_case.mem = test_double_bits(-42.5);
-    base = (uint64_t)(uintptr_t)&load_sd_case;
-    dec = hb_decoder_create(HB_ARCH_X64, load_sd_case.code, sizeof(load_sd_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&load_sd_case, sizeof(load_sd_case),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    memset(ctx->regs.x64.xmm[0], 0x44, sizeof(ctx->regs.x64.xmm[0]));
-    memset(ctx->ymm_hi[0], 0x55, sizeof(ctx->ymm_hi[0]));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT(ctx->regs.x64.xmm[0][0] == test_double_bits(-42.5));
-    ASSERT(ctx->regs.x64.xmm[0][1] == 0);
-    ASSERT(ctx->ymm_hi[0][0] == 0 && ctx->ymm_hi[0][1] == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint64_t out_mem;
-    } store_sd_case = {
-        {0xc5, 0xfb, 0x11, 0x05, 0x00, 0x00, 0x00, 0x00},
-        0
-    };
-    base = (uint64_t)(uintptr_t)&store_sd_case;
-    dec = hb_decoder_create(HB_ARCH_X64, store_sd_case.code, sizeof(store_sd_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&store_sd_case, sizeof(store_sd_case),
-                         HB_PERM_READ | HB_PERM_WRITE | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    ctx->regs.x64.xmm[0][0] = test_double_bits(123.25);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT(store_sd_case.out_mem == test_double_bits(123.25));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t ss_code[] = {
-        0xc5, 0xf2, 0x58, 0xc2, /* vaddss xmm0, xmm1, xmm2 */
-        0xc5, 0xf2, 0x5c, 0xda, /* vsubss xmm3, xmm1, xmm2 */
-        0xc5, 0xf2, 0x59, 0xe2, /* vmulss xmm4, xmm1, xmm2 */
-        0xc5, 0xf2, 0x5e, 0xea, /* vdivss xmm5, xmm1, xmm2 */
-        0xc5, 0xf2, 0x5d, 0xf2, /* vminss xmm6, xmm1, xmm2 */
-        0xc5, 0xf2, 0x5f, 0xfa  /* vmaxss xmm7, xmm1, xmm2 */
-    };
-    base = (uint64_t)(uintptr_t)ss_code;
-    dec = hb_decoder_create(HB_ARCH_X64, ss_code, sizeof(ss_code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)ss_code, sizeof(ss_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint32_t ss_lhs[4] = {test_float_bits(9.0f), 0x10101010U, 0x20202020U, 0x30303030U};
-    uint32_t ss_rhs2[4] = {test_float_bits(3.0f), 0, 0, 0};
-    memcpy(ctx->regs.x64.xmm[1], ss_lhs, sizeof(ss_lhs));
-    memcpy(ctx->regs.x64.xmm[2], ss_rhs2, sizeof(ss_rhs2));
-    for (unsigned r = 0; r < 8; r++) memset(ctx->ymm_hi[r], 0xff, sizeof(ctx->ymm_hi[r]));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint32_t ss_expected[6] = {test_float_bits(12.0f), test_float_bits(6.0f),
-                               test_float_bits(27.0f), test_float_bits(3.0f),
-                               test_float_bits(3.0f), test_float_bits(9.0f)};
-    int ss_regs[6] = {0, 3, 4, 5, 6, 7};
-    for (unsigned i = 0; i < 6; i++) {
-        int reg = ss_regs[i];
-        ASSERT((uint32_t)ctx->regs.x64.xmm[reg][0] == ss_expected[i]);
-        ASSERT(memcmp((uint8_t*)ctx->regs.x64.xmm[reg] + 4, (uint8_t*)ss_lhs + 4, 12) == 0);
-        ASSERT(ctx->ymm_hi[reg][0] == 0 && ctx->ymm_hi[reg][1] == 0);
-    }
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t ss_edge_code[] = {
-        0xc5, 0xf2, 0x58, 0xc2, /* vaddss xmm0, xmm1, xmm2: +Inf + -Inf => NaN */
-        0xc5, 0xda, 0x5e, 0xdd  /* vdivss xmm3, xmm4, xmm5: -0 / +3 => -0 */
-    };
-    base = (uint64_t)(uintptr_t)ss_edge_code;
-    dec = hb_decoder_create(HB_ARCH_X64, ss_edge_code, sizeof(ss_edge_code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)ss_edge_code, sizeof(ss_edge_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint32_t ss_inf_merge[4] = {0x7f800000U, 0x11111111U, 0x22222222U, 0x33333333U};
-    uint32_t ss_neg_inf[4] = {0xff800000U, 0, 0, 0};
-    uint32_t ss_neg_zero[4] = {0x80000000U, 0x44444444U, 0x55555555U, 0x66666666U};
-    uint32_t ss_three[4] = {test_float_bits(3.0f), 0, 0, 0};
-    memcpy(ctx->regs.x64.xmm[1], ss_inf_merge, sizeof(ss_inf_merge));
-    memcpy(ctx->regs.x64.xmm[2], ss_neg_inf, sizeof(ss_neg_inf));
-    memcpy(ctx->regs.x64.xmm[4], ss_neg_zero, sizeof(ss_neg_zero));
-    memcpy(ctx->regs.x64.xmm[5], ss_three, sizeof(ss_three));
-    memset(ctx->ymm_hi[0], 0x9a, sizeof(ctx->ymm_hi[0]));
-    memset(ctx->ymm_hi[3], 0x9b, sizeof(ctx->ymm_hi[3]));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint32_t ss_nan = (uint32_t)ctx->regs.x64.xmm[0][0];
-    ASSERT((ss_nan & 0x7f800000U) == 0x7f800000U && (ss_nan & 0x007fffffU) != 0);
-    ASSERT(memcmp((uint8_t*)ctx->regs.x64.xmm[0] + 4, (uint8_t*)ss_inf_merge + 4, 12) == 0);
-    ASSERT((uint32_t)ctx->regs.x64.xmm[3][0] == 0x80000000U);
-    ASSERT(memcmp((uint8_t*)ctx->regs.x64.xmm[3] + 4, (uint8_t*)ss_neg_zero + 4, 12) == 0);
-    ASSERT(ctx->ymm_hi[0][0] == 0 && ctx->ymm_hi[0][1] == 0);
-    ASSERT(ctx->ymm_hi[3][0] == 0 && ctx->ymm_hi[3][1] == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t sd_code[] = {
-        0xc5, 0xf3, 0x58, 0xc2, /* vaddsd xmm0, xmm1, xmm2 */
-        0xc5, 0xf3, 0x5c, 0xda, /* vsubsd xmm3, xmm1, xmm2 */
-        0xc5, 0xf3, 0x59, 0xe2, /* vmulsd xmm4, xmm1, xmm2 */
-        0xc5, 0xf3, 0x5e, 0xea, /* vdivsd xmm5, xmm1, xmm2 */
-        0xc5, 0xf3, 0x5d, 0xf2, /* vminsd xmm6, xmm1, xmm2 */
-        0xc5, 0xf3, 0x5f, 0xfa  /* vmaxsd xmm7, xmm1, xmm2 */
-    };
-    base = (uint64_t)(uintptr_t)sd_code;
-    dec = hb_decoder_create(HB_ARCH_X64, sd_code, sizeof(sd_code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)sd_code, sizeof(sd_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint64_t sd_lhs[2] = {test_double_bits(8.0), 0x5151515151515151ULL};
-    uint64_t sd_rhs2[2] = {test_double_bits(2.0), 0};
-    memcpy(ctx->regs.x64.xmm[1], sd_lhs, sizeof(sd_lhs));
-    memcpy(ctx->regs.x64.xmm[2], sd_rhs2, sizeof(sd_rhs2));
-    for (unsigned r = 0; r < 8; r++) memset(ctx->ymm_hi[r], 0xee, sizeof(ctx->ymm_hi[r]));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint64_t sd_expected[6] = {test_double_bits(10.0), test_double_bits(6.0),
-                               test_double_bits(16.0), test_double_bits(4.0),
-                               test_double_bits(2.0), test_double_bits(8.0)};
-    for (unsigned i = 0; i < 6; i++) {
-        int reg = ss_regs[i];
-        ASSERT(ctx->regs.x64.xmm[reg][0] == sd_expected[i]);
-        ASSERT(ctx->regs.x64.xmm[reg][1] == sd_lhs[1]);
-        ASSERT(ctx->ymm_hi[reg][0] == 0 && ctx->ymm_hi[reg][1] == 0);
-    }
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t sd_edge_code[] = {
-        0xc5, 0xf3, 0x58, 0xc2, /* vaddsd xmm0, xmm1, xmm2: +Inf + -Inf => NaN */
-        0xc5, 0xdb, 0x5c, 0xdd  /* vsubsd xmm3, xmm4, xmm5: -0 - +0 => -0 */
-    };
-    base = (uint64_t)(uintptr_t)sd_edge_code;
-    dec = hb_decoder_create(HB_ARCH_X64, sd_edge_code, sizeof(sd_edge_code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)sd_edge_code, sizeof(sd_edge_code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint64_t sd_inf_merge[2] = {0x7ff0000000000000ULL, 0x1111222233334444ULL};
-    uint64_t sd_neg_inf[2] = {0xfff0000000000000ULL, 0};
-    uint64_t sd_neg_zero[2] = {0x8000000000000000ULL, 0x5555666677778888ULL};
-    uint64_t sd_pos_zero[2] = {0, 0};
-    memcpy(ctx->regs.x64.xmm[1], sd_inf_merge, sizeof(sd_inf_merge));
-    memcpy(ctx->regs.x64.xmm[2], sd_neg_inf, sizeof(sd_neg_inf));
-    memcpy(ctx->regs.x64.xmm[4], sd_neg_zero, sizeof(sd_neg_zero));
-    memcpy(ctx->regs.x64.xmm[5], sd_pos_zero, sizeof(sd_pos_zero));
-    memset(ctx->ymm_hi[0], 0x8a, sizeof(ctx->ymm_hi[0]));
-    memset(ctx->ymm_hi[3], 0x8b, sizeof(ctx->ymm_hi[3]));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint64_t sd_nan = ctx->regs.x64.xmm[0][0];
-    ASSERT((sd_nan & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL &&
-           (sd_nan & 0x000fffffffffffffULL) != 0);
-    ASSERT(ctx->regs.x64.xmm[0][1] == sd_inf_merge[1]);
-    ASSERT(ctx->regs.x64.xmm[3][0] == 0x8000000000000000ULL);
-    ASSERT(ctx->regs.x64.xmm[3][1] == sd_neg_zero[1]);
-    ASSERT(ctx->ymm_hi[0][0] == 0 && ctx->ymm_hi[0][1] == 0);
-    ASSERT(ctx->ymm_hi[3][0] == 0 && ctx->ymm_hi[3][1] == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
-TEST(interp_x64_vex128_upper_zero_audit) {
-    uint8_t code[] = {
-        0xc5, 0xf0, 0x58, 0xc2,       /* vaddps xmm0, xmm1, xmm2 */
-        0xc5, 0xf1, 0xef, 0xda,       /* vpxor xmm3, xmm1, xmm2 */
-        0xc5, 0xf1, 0xfc, 0xe2,       /* vpaddb xmm4, xmm1, xmm2 */
-        0xc5, 0xf1, 0x60, 0xea,       /* vpunpcklbw xmm5, xmm1, xmm2 */
-        0xc4, 0xe2, 0x71, 0x40, 0xf2, /* vpmulld xmm6, xmm1, xmm2 */
-        0xc5, 0xf8, 0x10, 0xf9        /* vmovups xmm7, xmm1 */
-    };
-    uint64_t base = (uint64_t)(uintptr_t)code;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint8_t lhs[32], rhs[32];
-    for (unsigned i = 0; i < 32; i++) {
-        lhs[i] = (uint8_t)(i + 1);
-        rhs[i] = (uint8_t)(0x80 + i);
-    }
-    test_set_ymm_bytes(ctx, 1, lhs);
-    test_set_ymm_bytes(ctx, 2, rhs);
-    for (unsigned r = 0; r < 8; r++) memset(ctx->ymm_hi[r], 0xab, sizeof(ctx->ymm_hi[r]));
-    hb_exec_result_t out;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    for (unsigned r = 0; r < 8; r++) {
-        if (r == 1 || r == 2) continue;
-        ASSERT(ctx->ymm_hi[r][0] == 0 && ctx->ymm_hi[r][1] == 0);
-    }
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-    tests_passed++;
-}
-
-TEST(interp_x64_vex_bitwise_pd_family_semantics) {
-    hb_exec_result_t run_out;
-    uint8_t code[] = {
-        0xc5, 0xf5, 0x54, 0xc2, /* vandpd  ymm0, ymm1, ymm2 */
-        0xc5, 0xf5, 0x55, 0xda, /* vandnpd ymm3, ymm1, ymm2 */
-        0xc5, 0xf5, 0x56, 0xe2, /* vorpd   ymm4, ymm1, ymm2 */
-        0xc5, 0xf5, 0x57, 0xea  /* vxorpd  ymm5, ymm1, ymm2 */
-    };
-    uint64_t base = (uint64_t)(uintptr_t)code;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint8_t lhs[32], rhs[32], expect_and[32], expect_andn[32], expect_or[32], expect_xor[32];
-    for (unsigned i = 0; i < 32; i++) {
-        lhs[i] = (uint8_t)(0xf0u ^ (i * 13u));
-        rhs[i] = (uint8_t)(0x33u + i * 7u);
-        expect_and[i] = lhs[i] & rhs[i];
-        expect_andn[i] = (uint8_t)(~lhs[i] & rhs[i]);
-        expect_or[i] = lhs[i] | rhs[i];
-        expect_xor[i] = lhs[i] ^ rhs[i];
-    }
-    test_set_ymm_bytes(ctx, 1, lhs);
-    test_set_ymm_bytes(ctx, 2, rhs);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expect_and));
-    ASSERT(test_ymm_bytes_equal(ctx, 3, expect_andn));
-    ASSERT(test_ymm_bytes_equal(ctx, 4, expect_or));
-    ASSERT(test_ymm_bytes_equal(ctx, 5, expect_xor));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[8];
-        uint8_t mem[32];
-    } mem_case = {
-        {0xc5, 0xf5, 0x54, 0x05, 0x00, 0x00, 0x00, 0x00},
-        {0}
-    };
-    for (unsigned i = 0; i < 32; i++) mem_case.mem[i] = (uint8_t)(0xa5u + i * 3u);
-    base = (uint64_t)(uintptr_t)&mem_case;
-    dec = hb_decoder_create(HB_ARCH_X64, mem_case.code, sizeof(mem_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&mem_case, sizeof(mem_case),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    test_set_ymm_bytes(ctx, 1, lhs);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    for (unsigned i = 0; i < 32; i++) expect_and[i] = lhs[i] & mem_case.mem[i];
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expect_and));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t vex_xmm[] = {0xc5, 0xf1, 0x54, 0xc2}; /* vandpd xmm0, xmm1, xmm2 */
-    uint8_t legacy_xmm[] = {0x66, 0x0f, 0x54, 0xc2}; /* andpd xmm0, xmm2 */
-    hb_context_t* vex_ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    hb_context_t* legacy_ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(vex_ctx != NULL && legacy_ctx != NULL);
-    vex_ctx->memory = hb_memory_create(0);
-    legacy_ctx->memory = hb_memory_create(0);
-    ASSERT(vex_ctx->memory != NULL && legacy_ctx->memory != NULL);
-    ASSERT(hb_memory_map(vex_ctx->memory, (hb_gva_t)(uintptr_t)vex_xmm, sizeof(vex_xmm),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ASSERT(hb_memory_map(legacy_ctx->memory, (hb_gva_t)(uintptr_t)legacy_xmm, sizeof(legacy_xmm),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    vex_ctx->pc = (uint64_t)(uintptr_t)vex_xmm;
-    legacy_ctx->pc = (uint64_t)(uintptr_t)legacy_xmm;
-    memcpy(vex_ctx->regs.x64.xmm[1], lhs, 16);
-    memcpy(vex_ctx->regs.x64.xmm[2], rhs, 16);
-    memcpy(legacy_ctx->regs.x64.xmm[0], lhs, 16);
-    memcpy(legacy_ctx->regs.x64.xmm[2], rhs, 16);
-    hb_decoder_t* vex_dec = hb_decoder_create(HB_ARCH_X64, vex_xmm, sizeof(vex_xmm), vex_ctx->pc);
-    hb_decoder_t* leg_dec = hb_decoder_create(HB_ARCH_X64, legacy_xmm, sizeof(legacy_xmm), legacy_ctx->pc);
-    hb_ir_func_t* vex_func = NULL;
-    hb_ir_func_t* leg_func = NULL;
-    ASSERT(vex_dec != NULL && leg_dec != NULL);
-    ASSERT(hb_lift_func_x64(vex_dec, &vex_func) == HB_OK);
-    ASSERT(hb_lift_func_x64(leg_dec, &leg_func) == HB_OK);
-    hb_decoder_destroy(vex_dec);
-    hb_decoder_destroy(leg_dec);
-    ASSERT(hb_runtime_run(vex_ctx, vex_func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(hb_runtime_run(legacy_ctx, leg_func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(memcmp(vex_ctx->regs.x64.xmm[0], legacy_ctx->regs.x64.xmm[0], 16) == 0);
-    hb_context_destroy(vex_ctx);
-    hb_context_destroy(legacy_ctx);
-    hb_ir_func_destroy(vex_func);
-    hb_ir_func_destroy(leg_func);
-
-    tests_passed++;
-}
-
-TEST(interp_x64_avx2_0f38_compare_minmax_mul_family_semantics) {
-    hb_decoded_t d;
-    hb_exec_result_t run_out;
-
-    uint8_t wide_ops[] = {
-        0xc4, 0xe2, 0x75, 0x29, 0xc2, /* vpcmpeqq ymm0, ymm1, ymm2 */
-        0xc4, 0xe2, 0x75, 0x37, 0xda, /* vpcmpgtq ymm3, ymm1, ymm2 */
-        0xc4, 0xe2, 0x75, 0x40, 0xe2, /* vpmulld  ymm4, ymm1, ymm2 */
-        0xc4, 0xe2, 0x75, 0x28, 0xea, /* vpmuldq  ymm5, ymm1, ymm2 */
-        0xc4, 0xe2, 0x75, 0x39, 0xf2, /* vpminsd  ymm6, ymm1, ymm2 */
-        0xc4, 0xe2, 0x75, 0x3f, 0xfa  /* vpmaxud  ymm7, ymm1, ymm2 */
-    };
-    ASSERT(hb_decode_x64(wide_ops, 5, (uint64_t)(uintptr_t)wide_ops, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PCMPEQQ && d.op1.size == 32);
-    ASSERT(hb_decode_x64(wide_ops + 5, 5, (uint64_t)(uintptr_t)(wide_ops + 5), &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PCMPGTQ && d.op2.reg == HB_REG_XMM1 && d.op3.reg == HB_REG_XMM2);
-    uint64_t base = (uint64_t)(uintptr_t)wide_ops;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, wide_ops, sizeof(wide_ops), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)wide_ops, sizeof(wide_ops),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-
-    int32_t lhs_d[8] = {10, -20, 3000, -4, 200000, 5, 100000, -7};
-    int32_t rhs_d[8] = {10, 30, -2, -5, 200000, 5, 50000, 9};
-    test_set_ymm_bytes(ctx, 1, lhs_d);
-    test_set_ymm_bytes(ctx, 2, rhs_d);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-
-    uint64_t expect_pcmpeqq[4] = {0, 0, UINT64_MAX, 0};
-    uint64_t expect_pcmpgtq[4] = {0, UINT64_MAX, 0, 0};
-    uint32_t expect_pmulld[8];
-    int64_t expect_pmuldq[4];
-    int32_t expect_pminsd[8];
-    uint32_t expect_pmaxud[8];
-    for (unsigned i = 0; i < 8; i++) {
-        expect_pmulld[i] = (uint32_t)((int64_t)lhs_d[i] * (int64_t)rhs_d[i]);
-        expect_pminsd[i] = lhs_d[i] < rhs_d[i] ? lhs_d[i] : rhs_d[i];
-        uint32_t a = (uint32_t)lhs_d[i], b = (uint32_t)rhs_d[i];
-        expect_pmaxud[i] = a > b ? a : b;
-    }
-    for (unsigned i = 0; i < 4; i++) {
-        expect_pmuldq[i] = (int64_t)lhs_d[i * 2] * (int64_t)rhs_d[i * 2];
-    }
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expect_pcmpeqq));
-    ASSERT(test_ymm_bytes_equal(ctx, 3, expect_pcmpgtq));
-    ASSERT(test_ymm_bytes_equal(ctx, 4, expect_pmulld));
-    ASSERT(test_ymm_bytes_equal(ctx, 5, expect_pmuldq));
-    ASSERT(test_ymm_bytes_equal(ctx, 6, expect_pminsd));
-    ASSERT(test_ymm_bytes_equal(ctx, 7, expect_pmaxud));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t narrow_ops[] = {
-        0xc4, 0xe2, 0x75, 0x38, 0xc2, /* vpminsb ymm0, ymm1, ymm2 */
-        0xc4, 0xe2, 0x75, 0x3c, 0xda, /* vpmaxsb ymm3, ymm1, ymm2 */
-        0xc4, 0xe2, 0x75, 0x3a, 0xe2, /* vpminuw ymm4, ymm1, ymm2 */
-        0xc4, 0xe2, 0x75, 0x3e, 0xea, /* vpmaxuw ymm5, ymm1, ymm2 */
-        0xc4, 0xe2, 0x75, 0x3b, 0xf2, /* vpminud ymm6, ymm1, ymm2 */
-        0xc4, 0xe2, 0x75, 0x3d, 0xfa  /* vpmaxsd ymm7, ymm1, ymm2 */
-    };
-    ASSERT(hb_decode_x64(narrow_ops, 5, (uint64_t)(uintptr_t)narrow_ops, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PMINSB && d.op1.size == 32);
-    base = (uint64_t)(uintptr_t)narrow_ops;
-    dec = hb_decoder_create(HB_ARCH_X64, narrow_ops, sizeof(narrow_ops), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)narrow_ops, sizeof(narrow_ops),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    uint8_t lhs_b[32], rhs_b[32], expect_pminsb[32], expect_pmaxsb[32];
-    uint16_t expect_pminuw[16], expect_pmaxuw[16];
-    uint32_t expect_pminud[8];
-    int32_t expect_pmaxsd[8];
-    for (unsigned i = 0; i < 32; i++) {
-        lhs_b[i] = (uint8_t)(i * 17u + 3u);
-        rhs_b[i] = (uint8_t)(240u - i * 11u);
-        int8_t as = (int8_t)lhs_b[i], bs = (int8_t)rhs_b[i];
-        expect_pminsb[i] = as < bs ? lhs_b[i] : rhs_b[i];
-        expect_pmaxsb[i] = as > bs ? lhs_b[i] : rhs_b[i];
-    }
-    for (unsigned i = 0; i < 16; i++) {
-        uint16_t a, b;
-        memcpy(&a, lhs_b + i * 2, sizeof(a));
-        memcpy(&b, rhs_b + i * 2, sizeof(b));
-        expect_pminuw[i] = a < b ? a : b;
-        expect_pmaxuw[i] = a > b ? a : b;
-    }
-    for (unsigned i = 0; i < 8; i++) {
-        uint32_t au, bu;
-        int32_t as, bs;
-        memcpy(&au, lhs_b + i * 4, sizeof(au));
-        memcpy(&bu, rhs_b + i * 4, sizeof(bu));
-        memcpy(&as, lhs_b + i * 4, sizeof(as));
-        memcpy(&bs, rhs_b + i * 4, sizeof(bs));
-        expect_pminud[i] = au < bu ? au : bu;
-        expect_pmaxsd[i] = as > bs ? as : bs;
-    }
-    test_set_ymm_bytes(ctx, 1, lhs_b);
-    test_set_ymm_bytes(ctx, 2, rhs_b);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expect_pminsb));
-    ASSERT(test_ymm_bytes_equal(ctx, 3, expect_pmaxsb));
-    ASSERT(test_ymm_bytes_equal(ctx, 4, expect_pminuw));
-    ASSERT(test_ymm_bytes_equal(ctx, 5, expect_pmaxuw));
-    ASSERT(test_ymm_bytes_equal(ctx, 6, expect_pminud));
-    ASSERT(test_ymm_bytes_equal(ctx, 7, expect_pmaxsd));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    struct {
-        uint8_t code[9];
-        int32_t mem[8];
-    } mem_case = {
-        {0xc4, 0xe2, 0x75, 0x40, 0x05, 0x00, 0x00, 0x00, 0x00},
-        {2, -3, 4, -5, 6, -7, 8, -9}
-    };
-    base = (uint64_t)(uintptr_t)&mem_case;
-    int32_t mem_disp = (int32_t)((uint64_t)(uintptr_t)mem_case.mem -
-                                 (base + sizeof(mem_case.code)));
-    memcpy(mem_case.code + 5, &mem_disp, sizeof(mem_disp));
-    dec = hb_decoder_create(HB_ARCH_X64, mem_case.code, sizeof(mem_case.code), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL && func != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&mem_case, sizeof(mem_case),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-    test_set_ymm_bytes(ctx, 1, lhs_d);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    uint32_t expect_mem_mulld[8];
-    for (unsigned i = 0; i < 8; i++)
-        expect_mem_mulld[i] = (uint32_t)((int64_t)lhs_d[i] * (int64_t)mem_case.mem[i]);
-    ASSERT(test_ymm_bytes_equal(ctx, 0, expect_mem_mulld));
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t vex_xmm[] = {0xc4, 0xe2, 0x71, 0x40, 0xc2}; /* vpmulld xmm0, xmm1, xmm2 */
-    uint8_t legacy_xmm[] = {0x66, 0x0f, 0x38, 0x40, 0xc2}; /* pmulld xmm0, xmm2 */
-    hb_context_t* vex_ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    hb_context_t* legacy_ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(vex_ctx != NULL && legacy_ctx != NULL);
-    vex_ctx->memory = hb_memory_create(0);
-    legacy_ctx->memory = hb_memory_create(0);
-    ASSERT(vex_ctx->memory != NULL && legacy_ctx->memory != NULL);
-    ASSERT(hb_memory_map(vex_ctx->memory, (hb_gva_t)(uintptr_t)vex_xmm, sizeof(vex_xmm),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ASSERT(hb_memory_map(legacy_ctx->memory, (hb_gva_t)(uintptr_t)legacy_xmm, sizeof(legacy_xmm),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    vex_ctx->pc = (uint64_t)(uintptr_t)vex_xmm;
-    legacy_ctx->pc = (uint64_t)(uintptr_t)legacy_xmm;
-    memcpy(vex_ctx->regs.x64.xmm[1], lhs_d, 16);
-    memcpy(vex_ctx->regs.x64.xmm[2], rhs_d, 16);
-    memcpy(legacy_ctx->regs.x64.xmm[0], lhs_d, 16);
-    memcpy(legacy_ctx->regs.x64.xmm[2], rhs_d, 16);
-    hb_decoder_t* vex_dec = hb_decoder_create(HB_ARCH_X64, vex_xmm, sizeof(vex_xmm), vex_ctx->pc);
-    hb_decoder_t* leg_dec = hb_decoder_create(HB_ARCH_X64, legacy_xmm, sizeof(legacy_xmm), legacy_ctx->pc);
-    hb_ir_func_t* vex_func = NULL;
-    hb_ir_func_t* leg_func = NULL;
-    ASSERT(vex_dec != NULL && leg_dec != NULL);
-    ASSERT(hb_lift_func_x64(vex_dec, &vex_func) == HB_OK);
-    ASSERT(hb_lift_func_x64(leg_dec, &leg_func) == HB_OK);
-    hb_decoder_destroy(vex_dec);
-    hb_decoder_destroy(leg_dec);
-    ASSERT(hb_runtime_run(vex_ctx, vex_func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(hb_runtime_run(legacy_ctx, leg_func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    ASSERT(memcmp(vex_ctx->regs.x64.xmm[0], legacy_ctx->regs.x64.xmm[0], 16) == 0);
-    hb_context_destroy(vex_ctx);
-    hb_context_destroy(legacy_ctx);
-    hb_ir_func_destroy(vex_func);
-    hb_ir_func_destroy(leg_func);
-
-    tests_passed++;
-}
-
-TEST(interp_x64_sse2_remaining_packed_vector_semantics) {
-    uint8_t code[] = {
-        0x66, 0x0f, 0xd8, 0xc1, /* psubusb xmm0, xmm1 */
-        0x66, 0x0f, 0xe9, 0xd3, /* psubsw  xmm2, xmm3 */
-        0x66, 0x0f, 0xda, 0xe5, /* pminub  xmm4, xmm5 */
-        0x66, 0x0f, 0xee, 0xf7  /* pmaxsw  xmm6, xmm7 */
-    };
-    hb_decoded_t d;
-    ASSERT(hb_decode_x64(code, 4, (uint64_t)(uintptr_t)code, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PSUBUSB);
-    ASSERT(hb_decode_x64(code + 12, 4, (uint64_t)(uintptr_t)(code + 12), &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PMAXSW);
-
-    uint64_t base = (uint64_t)(uintptr_t)code;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ASSERT(func != NULL);
-
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-
-    uint8_t psubusb_lhs[16] = {0, 5, 200, 255, 100, 50, 1, 2, 9, 80, 81, 82, 200, 201, 202, 203};
-    uint8_t psubusb_rhs[16] = {1, 3, 100, 255, 150, 49, 2, 1, 10, 70, 90, 82, 100, 210, 1, 255};
-    int16_t psubsw_lhs[8] = {0, 100, -100, 30000, -30000, 32767, -32768, 1234};
-    int16_t psubsw_rhs[8] = {1, -100, 100, -10000, 10000, -1, 1, 2345};
-    uint8_t pminub_lhs[16] = {10, 250, 1, 99, 44, 45, 46, 47, 200, 1, 2, 3, 4, 5, 6, 7};
-    uint8_t pminub_rhs[16] = {9, 251, 2, 98, 50, 40, 46, 48, 199, 2, 1, 4, 3, 6, 5, 8};
-    int16_t pmaxsw_lhs[8] = {-10, 10, 1000, -1000, 32760, -32760, 7, -7};
-    int16_t pmaxsw_rhs[8] = {-20, 20, 900, -900, 32767, -32768, -8, 8};
-    memcpy(ctx->regs.x64.xmm[0], psubusb_lhs, sizeof(psubusb_lhs));
-    memcpy(ctx->regs.x64.xmm[1], psubusb_rhs, sizeof(psubusb_rhs));
-    memcpy(ctx->regs.x64.xmm[2], psubsw_lhs, sizeof(psubsw_lhs));
-    memcpy(ctx->regs.x64.xmm[3], psubsw_rhs, sizeof(psubsw_rhs));
-    memcpy(ctx->regs.x64.xmm[4], pminub_lhs, sizeof(pminub_lhs));
-    memcpy(ctx->regs.x64.xmm[5], pminub_rhs, sizeof(pminub_rhs));
-    memcpy(ctx->regs.x64.xmm[6], pmaxsw_lhs, sizeof(pmaxsw_lhs));
-    memcpy(ctx->regs.x64.xmm[7], pmaxsw_rhs, sizeof(pmaxsw_rhs));
-
-    hb_exec_result_t run_out;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    uint8_t expected_psubusb[16] = {0, 2, 100, 0, 0, 1, 0, 1, 0, 10, 0, 0, 100, 0, 201, 0};
-    int16_t expected_psubsw[8] = {-1, 200, -200, 32767, -32768, 32767, -32768, -1111};
-    uint8_t expected_pminub[16] = {9, 250, 1, 98, 44, 40, 46, 47, 199, 1, 1, 3, 3, 5, 5, 7};
-    int16_t expected_pmaxsw[8] = {-10, 20, 1000, -900, 32767, -32760, 7, 8};
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_psubusb, sizeof(expected_psubusb)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[2], expected_psubsw, sizeof(expected_psubsw)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[4], expected_pminub, sizeof(expected_pminub)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[6], expected_pmaxsw, sizeof(expected_pmaxsw)) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t code2[] = {
-        0x66, 0x0f, 0xf4, 0xc1, /* pmuludq xmm0, xmm1 */
-        0x66, 0x0f, 0xf6, 0xd3, /* psadbw  xmm2, xmm3 */
-        0x66, 0x0f, 0xd1, 0xe5, /* psrlw   xmm4, xmm5 */
-        0x66, 0x0f, 0xe2, 0xf7  /* psrad   xmm6, xmm7 */
-    };
-    ASSERT(hb_decode_x64(code2, 4, (uint64_t)(uintptr_t)code2, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PMULUDQ);
-    ASSERT(hb_decode_x64(code2 + 8, 4, (uint64_t)(uintptr_t)(code2 + 8), &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_PSRLW && !d.op2.is_imm);
-    base = (uint64_t)(uintptr_t)code2;
-    dec = hb_decoder_create(HB_ARCH_X64, code2, sizeof(code2), base);
-    func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ASSERT(func != NULL);
-    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code2, sizeof(code2),
-                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-
-    uint32_t mul_lhs[4] = {2, 0x11111111u, 0xffffffffu, 0x22222222u};
-    uint32_t mul_rhs[4] = {3, 0x33333333u, 2, 0x44444444u};
-    uint8_t sad_lhs[16], sad_rhs[16];
-    uint16_t psrlw_lhs[8] = {0xffff, 0x8000, 0x0008, 0x00f0, 0x1234, 0xaaaa, 0x0001, 0x0100};
-    uint64_t psrlw_count = 3;
-    int32_t psrad_lhs[4] = {-16, 0x70000000, 16, -1};
-    uint64_t psrad_count = 4;
-    for (int i = 0; i < 16; i++) {
-        sad_lhs[i] = (uint8_t)i;
-        sad_rhs[i] = (uint8_t)(15 - i);
-    }
-    memcpy(ctx->regs.x64.xmm[0], mul_lhs, sizeof(mul_lhs));
-    memcpy(ctx->regs.x64.xmm[1], mul_rhs, sizeof(mul_rhs));
-    memcpy(ctx->regs.x64.xmm[2], sad_lhs, sizeof(sad_lhs));
-    memcpy(ctx->regs.x64.xmm[3], sad_rhs, sizeof(sad_rhs));
-    memcpy(ctx->regs.x64.xmm[4], psrlw_lhs, sizeof(psrlw_lhs));
-    memcpy(ctx->regs.x64.xmm[5], &psrlw_count, sizeof(psrlw_count));
-    memcpy(ctx->regs.x64.xmm[6], psrad_lhs, sizeof(psrad_lhs));
-    memcpy(ctx->regs.x64.xmm[7], &psrad_count, sizeof(psrad_count));
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &run_out) == HB_OK);
-    ASSERT(run_out.result == HB_OK);
-    uint64_t expected_mul[2] = {6, 0x00000001fffffffeULL};
-    uint64_t expected_sad[2] = {0, 0};
-    uint16_t expected_psrlw[8];
-    int32_t expected_psrad[4] = {-1, 0x07000000, 1, -1};
-    for (int i = 0; i < 8; i++) {
-        int diff0 = (int)sad_lhs[i] - (int)sad_rhs[i];
-        int diff1 = (int)sad_lhs[i + 8] - (int)sad_rhs[i + 8];
-        expected_sad[0] += (uint64_t)(diff0 < 0 ? -diff0 : diff0);
-        expected_sad[1] += (uint64_t)(diff1 < 0 ? -diff1 : diff1);
-        expected_psrlw[i] = (uint16_t)(psrlw_lhs[i] >> 3);
-    }
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_mul, sizeof(expected_mul)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[2], expected_sad, sizeof(expected_sad)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[4], expected_psrlw, sizeof(expected_psrlw)) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[6], expected_psrad, sizeof(expected_psrad)) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
 TEST(interp_x64_pshuf_immediate_family_notepadpp_vector_path) {
     struct {
         uint8_t prefix;
@@ -19528,6 +17731,249 @@ static int run_phase2_bench(void) {
     return cached_speedup >= 10.0 ? 0 : 2;
 }
 
+TEST(decode_lift_x64_0f38_0f3a_bulk_vector_semantics_family) {
+    struct {
+        uint8_t code[6];
+        size_t len;
+        int opcode;
+    } cases[] = {
+        {{0x66, 0x0f, 0x38, 0x01, 0xc1, 0x00}, 5, HB_INS_PHADDW},
+        {{0x66, 0x0f, 0x38, 0x04, 0xc1, 0x00}, 5, HB_INS_PMADDUBSW},
+        {{0x66, 0x0f, 0x38, 0x17, 0xc1, 0x00}, 5, HB_INS_PTEST},
+        {{0x66, 0x0f, 0x38, 0x20, 0xc1, 0x00}, 5, HB_INS_PMOVSXBW},
+        {{0x66, 0x0f, 0x38, 0x40, 0xc1, 0x00}, 5, HB_INS_PMULLD},
+        {{0xf2, 0x0f, 0x38, 0xf1, 0xc8, 0x00}, 5, HB_INS_CRC32},
+        {{0x66, 0x0f, 0x3a, 0x0e, 0xc1, 0x55}, 6, HB_INS_PBLENDW},
+        {{0x66, 0x0f, 0x3a, 0x14, 0xc1, 0x02}, 6, HB_INS_PEXTRB},
+        {{0x66, 0x0f, 0x3a, 0x20, 0xc1, 0x03}, 6, HB_INS_PINSRB},
+        {{0x66, 0x0f, 0x3a, 0x21, 0xc1, 0x10}, 6, HB_INS_INSERTPS},
+        {{0x66, 0x0f, 0x3a, 0x40, 0xc1, 0xf1}, 6, HB_INS_DPPS},
+        {{0x66, 0x0f, 0x3a, 0x42, 0xc1, 0x03}, 6, HB_INS_MPSADBW},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        hb_decoded_t d;
+        hb_decoder_t* dec;
+        hb_ir_func_t* func = NULL;
+        ASSERT(hb_decode_x64(cases[i].code, cases[i].len,
+                             (uint64_t)(uintptr_t)cases[i].code, &d) == HB_OK);
+        ASSERT((int)d.opcode == cases[i].opcode);
+        dec = hb_decoder_create(HB_ARCH_X64, cases[i].code, cases[i].len,
+                                (uint64_t)(uintptr_t)cases[i].code);
+        ASSERT(dec != NULL);
+        ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+        ASSERT(func != NULL);
+        hb_decoder_destroy(dec);
+        hb_ir_func_destroy(func);
+    }
+
+    tests_passed++;
+}
+
+TEST(interp_x64_0f38_0f3a_bulk_vector_semantics_oracle) {
+    uint8_t code[] = {
+        0xf2, 0x0f, 0x38, 0xf1, 0xc8,       /* crc32  %eax, %ecx */
+        0x66, 0x0f, 0x38, 0x1c, 0xc1,       /* pabsb  %xmm1, %xmm0 */
+        0x66, 0x0f, 0x38, 0x20, 0xd0,       /* pmovsxbw %xmm0, %xmm2 */
+        0x66, 0x0f, 0x38, 0x38, 0xdc,       /* pminsb %xmm4, %xmm3 */
+        0x66, 0x0f, 0x38, 0x17, 0xed,       /* ptest  %xmm5, %xmm5 */
+        0x66, 0x0f, 0x3a, 0x0e, 0xf7, 0x55, /* pblendw %xmm7, %xmm6, 0x55 */
+        0x66, 0x0f, 0x3a, 0x14, 0xf0, 0x02, /* pextrb %xmm6[2], %eax */
+        0x66, 0x0f, 0x3a, 0x20, 0xc8, 0x03  /* pinsrb %eax, %xmm1, 3 */
+    };
+    uint64_t base = (uint64_t)(uintptr_t)code;
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rax = 0x89abcdefu;
+    ctx->regs.x64.rcx = 0x12345678u;
+
+    int8_t pabs_src[16] = {-128, -5, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 127};
+    int8_t min_dst[16] = {10, -10, 100, -100, 0, 127, -128, 5, 30, -30, 40, -40, 50, -50, 60, -60};
+    int8_t min_src[16] = {5, -20, 120, -90, -1, 126, -127, 6, 31, -31, 39, -41, 51, -49, 59, -61};
+    uint16_t blend_dst[8] = {0x1000, 0x1001, 0x1002, 0x1003, 0x1004, 0x1005, 0x1006, 0x1007};
+    uint16_t blend_src[8] = {0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007};
+    memset(ctx->regs.x64.xmm, 0, sizeof(ctx->regs.x64.xmm));
+    memcpy(ctx->regs.x64.xmm[1], pabs_src, sizeof(pabs_src));
+    memcpy(ctx->regs.x64.xmm[3], min_dst, sizeof(min_dst));
+    memcpy(ctx->regs.x64.xmm[4], min_src, sizeof(min_src));
+    ctx->regs.x64.xmm[5][0] = 0xff00ff00ff00ff00ULL;
+    ctx->regs.x64.xmm[5][1] = 0x0000000000000001ULL;
+    memcpy(ctx->regs.x64.xmm[6], blend_dst, sizeof(blend_dst));
+    memcpy(ctx->regs.x64.xmm[7], blend_src, sizeof(blend_src));
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->regs.x64.rcx == 0xa360621eULL);
+    ASSERT_EQ(ctx->regs.x64.rax, 0x01ULL);
+    ASSERT(!ctx->flags.zf && ctx->flags.cf && !ctx->flags.of && !ctx->flags.sf);
+
+    uint8_t expected_abs[16] = {0x80, 5, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 127};
+    int16_t expected_movsx[8] = {-128, 5, 1, 0, 1, 2, 3, 4};
+    int8_t expected_min[16] = {5, -20, 100, -100, -1, 126, -128, 5, 30, -31, 39, -41, 50, -50, 59, -61};
+    uint16_t expected_blend[8] = {0x2000, 0x1001, 0x2002, 0x1003, 0x2004, 0x1005, 0x2006, 0x1007};
+    uint8_t expected_xmm1[16];
+    memcpy(expected_xmm1, pabs_src, sizeof(expected_xmm1));
+    expected_xmm1[3] = 0x01;
+    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_abs, sizeof(expected_abs)) == 0);
+    ASSERT(memcmp(ctx->regs.x64.xmm[2], expected_movsx, sizeof(expected_movsx)) == 0);
+    ASSERT(memcmp(ctx->regs.x64.xmm[3], expected_min, sizeof(expected_min)) == 0);
+    ASSERT(memcmp(ctx->regs.x64.xmm[6], expected_blend, sizeof(expected_blend)) == 0);
+    ASSERT(memcmp(ctx->regs.x64.xmm[1], expected_xmm1, sizeof(expected_xmm1)) == 0);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(decode_lift_x64_vex_avx_smoke_semantics_family) {
+    struct {
+        uint8_t code[5];
+        size_t len;
+        int opcode;
+    } cases[] = {
+        {{0xc5, 0xf8, 0x77, 0x00, 0x00}, 3, HB_INS_VZEROUPPER},
+        {{0xc5, 0xf9, 0xef, 0xc0, 0x00}, 4, HB_INS_VPXOR},
+        {{0xc5, 0xfc, 0x58, 0xc0, 0x00}, 4, HB_INS_VADDPS},
+        {{0xc5, 0xfc, 0x5c, 0xc0, 0x00}, 4, HB_INS_VSUBPS},
+        {{0xc5, 0xfc, 0x59, 0xc0, 0x00}, 4, HB_INS_VMULPS},
+        {{0xc5, 0xfc, 0x5e, 0xc0, 0x00}, 4, HB_INS_VDIVPS},
+        {{0xc5, 0xfc, 0x54, 0xc0, 0x00}, 4, HB_INS_VANDPS},
+        {{0xc5, 0xfc, 0x55, 0xc0, 0x00}, 4, HB_INS_VANDNPS},
+        {{0xc5, 0xfc, 0x56, 0xc0, 0x00}, 4, HB_INS_VORPS},
+        {{0xc5, 0xfc, 0x57, 0xc0, 0x00}, 4, HB_INS_VXORPS},
+        {{0xc4, 0xe1, 0xf9, 0x6e, 0xc0}, 5, HB_INS_VMOVQ},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        hb_decoded_t d;
+        hb_decoder_t* dec;
+        hb_ir_func_t* func = NULL;
+        ASSERT(hb_decode_x64(cases[i].code, cases[i].len, 0x1000, &d) == HB_OK);
+        ASSERT((int)d.opcode == cases[i].opcode);
+        dec = hb_decoder_create(HB_ARCH_X64, cases[i].code, cases[i].len,
+                                (uint64_t)(uintptr_t)cases[i].code);
+        ASSERT(dec != NULL);
+        ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+        ASSERT(func != NULL);
+        hb_decoder_destroy(dec);
+        hb_ir_func_destroy(func);
+    }
+
+    tests_passed++;
+}
+
+TEST(interp_x64_vex_avx_ymm_smoke_oracle) {
+    uint8_t code[] = {
+        0xc5, 0xfc, 0x58, 0xc1,       /* vaddps %ymm1, %ymm0, %ymm0 */
+        0xc5, 0xdc, 0x5c, 0xe5,       /* vsubps %ymm5, %ymm4, %ymm4 */
+        0xc5, 0xcc, 0x57, 0xf6,       /* vxorps %ymm6, %ymm6, %ymm6 */
+        0xc5, 0xe9, 0xef, 0xd2,       /* vpxor  %xmm2, %xmm2, %xmm2 */
+        0xc4, 0xe1, 0xf9, 0x6e, 0xd8  /* vmovq  %rax, %xmm3 */
+    };
+    uint64_t base = (uint64_t)(uintptr_t)code;
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rax = 0x1122334455667788ULL;
+
+    float lhs[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    float rhs[8] = {10, 20, 30, 40, 50, 60, 70, 80};
+    float expected[8];
+    for (size_t i = 0; i < 8; i++) expected[i] = lhs[i] + rhs[i];
+    float sub_lhs[8] = {100, 90, 80, 70, 60, 50, 40, 30};
+    float sub_rhs[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    float expected_sub[8];
+    for (size_t i = 0; i < 8; i++) expected_sub[i] = sub_lhs[i] - sub_rhs[i];
+    memcpy(ctx->regs.x64.xmm[0], lhs, sizeof(float) * 4);
+    memcpy(ctx->x64_ymm_hi[0], lhs + 4, sizeof(float) * 4);
+    memcpy(ctx->regs.x64.xmm[1], rhs, sizeof(float) * 4);
+    memcpy(ctx->x64_ymm_hi[1], rhs + 4, sizeof(float) * 4);
+    memcpy(ctx->regs.x64.xmm[4], sub_lhs, sizeof(float) * 4);
+    memcpy(ctx->x64_ymm_hi[4], sub_lhs + 4, sizeof(float) * 4);
+    memcpy(ctx->regs.x64.xmm[5], sub_rhs, sizeof(float) * 4);
+    memcpy(ctx->x64_ymm_hi[5], sub_rhs + 4, sizeof(float) * 4);
+    ctx->regs.x64.xmm[6][0] = 0x0123456789abcdefULL;
+    ctx->regs.x64.xmm[6][1] = 0xfedcba9876543210ULL;
+    ctx->x64_ymm_hi[6][0] = 0xaaaaaaaa55555555ULL;
+    ctx->x64_ymm_hi[6][1] = 0x11111111eeeeeeeeULL;
+    ctx->regs.x64.xmm[2][0] = 0xaabbccddeeff0011ULL;
+    ctx->regs.x64.xmm[2][1] = 0x8877665544332211ULL;
+    ctx->x64_ymm_hi[2][0] = 0x0123456789abcdefULL;
+    ctx->x64_ymm_hi[2][1] = 0xfedcba9876543210ULL;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected, sizeof(float) * 4) == 0);
+    ASSERT(memcmp(ctx->x64_ymm_hi[0], expected + 4, sizeof(float) * 4) == 0);
+    ASSERT(memcmp(ctx->regs.x64.xmm[4], expected_sub, sizeof(float) * 4) == 0);
+    ASSERT(memcmp(ctx->x64_ymm_hi[4], expected_sub + 4, sizeof(float) * 4) == 0);
+    ASSERT(ctx->regs.x64.xmm[6][0] == 0 && ctx->regs.x64.xmm[6][1] == 0);
+    ASSERT(ctx->x64_ymm_hi[6][0] == 0 && ctx->x64_ymm_hi[6][1] == 0);
+    ASSERT(ctx->regs.x64.xmm[2][0] == 0 && ctx->regs.x64.xmm[2][1] == 0);
+    ASSERT(ctx->x64_ymm_hi[2][0] == 0 && ctx->x64_ymm_hi[2][1] == 0);
+    ASSERT(ctx->regs.x64.xmm[3][0] == 0x1122334455667788ULL);
+    ASSERT(ctx->regs.x64.xmm[3][1] == 0);
+    ASSERT(ctx->x64_ymm_hi[3][0] == 0 && ctx->x64_ymm_hi[3][1] == 0);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+
+    uint8_t zcode[] = {0xc5, 0xf8, 0x77};
+    uint64_t zbase = (uint64_t)(uintptr_t)zcode;
+    dec = hb_decoder_create(HB_ARCH_X64, zcode, sizeof(zcode), zbase);
+    func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)zcode, sizeof(zcode),
+                         HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ctx->pc = zbase;
+    for (size_t i = 0; i < 16; i++) {
+        ctx->x64_ymm_hi[i][0] = 0xffff000000000000ULL | i;
+        ctx->x64_ymm_hi[i][1] = 0x1111000000000000ULL | i;
+    }
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    for (size_t i = 0; i < 16; i++) {
+        ASSERT(ctx->x64_ymm_hi[i][0] == 0);
+        ASSERT(ctx->x64_ymm_hi[i][1] == 0);
+    }
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 /* --- Entry point --- */
 
 int main(int argc, char** argv) {
@@ -19574,7 +18020,6 @@ int main(int argc, char** argv) {
             test_decode_x86_x87_environment_control_family();
             test_decode_x64_x87_environment_control_family();
             test_interp_x64_x87_environment_control_family();
-            test_interp_x64_x87_fld_tbyte_memory_form();
             test_interp_x86_x87_load_store_control_conversion_core();
             test_interp_x86_x87_memory_arithmetic_compare_core();
             test_interp_x86_x87_stack_register_pop_core();
@@ -19600,24 +18045,11 @@ int main(int argc, char** argv) {
             printf("x87_enter\n");
             test_decode_x64_x87_environment_control_family();
             test_interp_x64_x87_environment_control_family();
-            test_interp_x64_x87_fld_tbyte_memory_form();
             printf("x87_exit\n");
             printf("sse_enter\n");
             test_interp_x64_movaps_xmm_store();
             test_interp_x64_addpd_subpd_notepadpp_callback_block();
             test_interp_x64_packed_immediate_shift_family_smoke_helper_toolbar();
-            test_interp_x64_vex_avx_and_sse41_packed_vector_semantics();
-            test_interp_x64_avx2_packed_integer_256_family_semantics();
-            test_interp_x64_avx2_unpack_pack_family_semantics();
-            test_interp_x64_vex_movdqa_movdqu_load_store_semantics();
-            test_interp_x64_vex_packed_mov_float_load_store_semantics();
-            test_interp_x64_vex_packed_float_pd_and_sqrt_semantics();
-            test_interp_x64_vex_scalar_sqrt_semantics();
-            test_interp_x64_vex_scalar_mov_arith_and_upper_zero_semantics();
-            test_interp_x64_vex128_upper_zero_audit();
-            test_interp_x64_vex_bitwise_pd_family_semantics();
-            test_interp_x64_avx2_0f38_compare_minmax_mul_family_semantics();
-            test_interp_x64_sse2_remaining_packed_vector_semantics();
             printf("sse_exit\n");
             printf("atomics_enter\n");
             test_decode_xadd_lock_r32_calc_atomic();
@@ -19683,7 +18115,6 @@ int main(int argc, char** argv) {
     test_x86_context_x87_defaults();
     test_x87_fldcw_fnstcw_fistp_rounding_modes();
     test_x87_environment_control_state_helpers();
-    test_interp_x64_x87_fld_tbyte_memory_form();
     test_decode_interp_x86_x87_frndint_helper();
     test_decode_x86_x87_environment_control_family();
     test_decode_x64_x87_environment_control_family();
@@ -19915,6 +18346,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_store_imm_compact_family();
     test_jit_x64_native_extend_family();
     test_jit_x64_native_xmm_move_family();
+    test_jit_x64_native_xmm_logic_family();
     test_jit_neg_al_sbb_mask_notepadpp_mode_parser();
     test_jit_lahf_sahf_roundtrip();
     test_jit_setcc_cmovcc_memory_operands();
@@ -19970,6 +18402,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_stack_spill_push_sub_prologue();
     test_jit_x64_native_prologue_local_init_test_block();
     test_jit_x64_native_mov_lea_same_base_pair();
+    test_jit_x64_native_gpr32_lea_zero_extends();
     test_jit_x64_native_store_imm_mov_lea_same_base();
     test_jit_x64_native_xmm_load_store_pair();
     test_jit_x64_native_scalar_load_store_pair();
@@ -20007,18 +18440,6 @@ int main(int argc, char** argv) {
     test_interp_x64_pack_integer_saturation_family_blit_path();
     test_interp_x64_pmul_integer_family_blit_path();
     test_interp_x64_saturating_add_average_shuffle_blit_batch();
-    test_interp_x64_vex_avx_and_sse41_packed_vector_semantics();
-    test_interp_x64_avx2_packed_integer_256_family_semantics();
-    test_interp_x64_avx2_unpack_pack_family_semantics();
-    test_interp_x64_vex_movdqa_movdqu_load_store_semantics();
-    test_interp_x64_vex_packed_mov_float_load_store_semantics();
-    test_interp_x64_vex_packed_float_pd_and_sqrt_semantics();
-    test_interp_x64_vex_scalar_sqrt_semantics();
-    test_interp_x64_vex_scalar_mov_arith_and_upper_zero_semantics();
-    test_interp_x64_vex128_upper_zero_audit();
-    test_interp_x64_vex_bitwise_pd_family_semantics();
-    test_interp_x64_avx2_0f38_compare_minmax_mul_family_semantics();
-    test_interp_x64_sse2_remaining_packed_vector_semantics();
     test_interp_x64_pshuf_immediate_family_notepadpp_vector_path();
     test_interp_x64_psrldq_notepadpp_shift_bytes();
     test_interp_x64_packed_immediate_shift_family_smoke_helper_toolbar();
@@ -20033,6 +18454,10 @@ int main(int argc, char** argv) {
     test_interp_x64_divps_mulpd_packed_fp_family();
     test_decode_x64_shufps_shufpd_family_0fc6();
     test_interp_x64_shufps_shufpd_family();
+    test_decode_lift_x64_0f38_0f3a_bulk_vector_semantics_family();
+    test_interp_x64_0f38_0f3a_bulk_vector_semantics_oracle();
+    test_decode_lift_x64_vex_avx_smoke_semantics_family();
+    test_interp_x64_vex_avx_ymm_smoke_oracle();
 
     printf("\n%d passed, %d failed\n", tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

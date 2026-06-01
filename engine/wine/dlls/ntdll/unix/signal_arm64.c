@@ -1986,6 +1986,24 @@ static BOOL macrunner_hb_is_low_stack_access_fault( ucontext_t *context, const E
     return (fault >= (char *)teb->DeallocationStack && fault < (char *)teb->Tib.StackLimit);
 }
 
+static void *macrunner_hb_virtual_fault_stack( ucontext_t *context, const EXCEPTION_RECORD *rec )
+{
+    TEB *teb = NtCurrentTeb();
+    char *sp = (char *)SP_sig(context);
+    char *fault;
+
+    if (!teb || !teb->DeallocationStack || !teb->Tib.StackBase) return sp;
+    if (rec->NumberParameters < 2) return sp;
+    if (rec->ExceptionInformation[0] == EXCEPTION_EXECUTE_FAULT) return sp;
+
+    fault = (char *)rec->ExceptionInformation[1];
+    if (fault >= (char *)teb->DeallocationStack && fault < (char *)teb->Tib.StackBase &&
+        (sp < (char *)teb->DeallocationStack || sp >= (char *)teb->Tib.StackBase))
+        return fault;
+
+    return sp;
+}
+
 static BOOL macrunner_hb_trace_low_stack_fault_enabled(void)
 {
     static int count;
@@ -2083,6 +2101,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     DWORD64 esr = get_fault_esr( context );
 #if defined(__APPLE__)
     BOOL low_stack_fault;
+    void *virtual_stack;
 #endif
 
     rec.NumberParameters = 2;
@@ -2092,6 +2111,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
 #if defined(__APPLE__)
     low_stack_fault = macrunner_hb_is_low_stack_access_fault( context, &rec );
+    virtual_stack = macrunner_hb_virtual_fault_stack( context, &rec );
 #endif
 
     if (macrunner_hb_trace_callback_route_enabled())
@@ -2250,7 +2270,13 @@ skip_apple_x18_heal:
         setup_exception( context, &rec );
         return;
     }
-    if (!virtual_handle_fault( &rec, (void *)SP_sig(context) )) return;
+    if (!virtual_handle_fault( &rec,
+#if defined(__APPLE__)
+                               virtual_stack
+#else
+                               (void *)SP_sig(context)
+#endif
+         )) return;
 #if defined(__APPLE__)
     if (low_stack_fault)
     {
@@ -2324,6 +2350,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     BOOL low_stack_fault = FALSE;
     BOOL stack_overflow_fault = FALSE;
     BOOL fault_unhandled;
+    void *virtual_stack = (void *)SP_sig(context);
     TEB *teb = NtCurrentTeb();
 
 #if defined(BUS_ADRALN)
@@ -2341,6 +2368,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
 #if defined(__APPLE__)
     stack_overflow_fault = macrunner_hb_is_low_stack_access_fault( context, &rec );
+    virtual_stack = macrunner_hb_virtual_fault_stack( context, &rec );
 #endif
     if (teb && teb->DeallocationStack &&
         (char *)SP_sig(context) < (char *)teb->Tib.StackLimit + 0x10000)
@@ -2388,13 +2416,13 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
      * decodes as a faulting ARM64/SVE memory instruction. */
     if (macrunner_hb_route_x64_callback_fault( context, rec.ExceptionInformation[1], "bus-guest" )) return;
 
-    fault_unhandled = virtual_handle_fault( &rec, (void *)SP_sig(context) );
+    fault_unhandled = virtual_handle_fault( &rec, virtual_stack );
     if (low_stack_fault && macrunner_hb_trace_low_stack_fault_enabled())
         ERR( "macrunner-hb-bus-low-stack: after-virtual pid=%d unhandled=%u code=%#lx "
-             "fault=%p sp=%p teb_stack=%p-%p dealloc=%p\n",
+             "fault=%p sp=%p vstack=%p teb_stack=%p-%p dealloc=%p\n",
              getpid(), fault_unhandled, rec.ExceptionCode,
              (void *)(ULONG_PTR)rec.ExceptionInformation[1],
-             (void *)(ULONG_PTR)SP_sig(context),
+             (void *)(ULONG_PTR)SP_sig(context), virtual_stack,
              teb->Tib.StackLimit, teb->Tib.StackBase, teb->DeallocationStack );
     if (!fault_unhandled)
     {

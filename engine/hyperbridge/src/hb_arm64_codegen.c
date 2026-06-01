@@ -1232,6 +1232,68 @@ static bool emit_native_bit_scan(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
     return true;
 }
 
+static bool emit_native_bit_test(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    hb_ir_operand_t target, bitop;
+    hb_size_t size;
+    uint64_t width;
+
+    if (!instr || (instr->op != HB_IR_BT && instr->op != HB_IR_BTS &&
+                   instr->op != HB_IR_BTR && instr->op != HB_IR_BTC))
+        return false;
+    if (!is_gpr_reg_operand(&instr->src1))
+        return false;
+    if (instr->src2.type != HB_OP_IMM && !is_gpr_reg_operand(&instr->src2))
+        return false;
+
+    target = instr->src1;
+    size = target.size ? target.size : HB_SIZE_32;
+    if (size != HB_SIZE_16 && size != HB_SIZE_32 && size != HB_SIZE_64)
+        return false;
+    target.size = size;
+    width = (size == HB_SIZE_64) ? 64 : (size == HB_SIZE_16) ? 16 : 32;
+
+    if (!emit_load_gpr_sized_to_reg(buf, &target, 20))
+        return false;
+    if (instr->src2.type == HB_OP_IMM) {
+        emit_mov_imm_compact(buf, 21, (uint64_t)instr->src2.imm);
+    } else {
+        bitop = instr->src2;
+        if (!bitop.size) bitop.size = HB_SIZE_64;
+        if (!emit_load_gpr_sized_to_reg(buf, &bitop, 21))
+            return false;
+    }
+
+    emit_mov_imm_compact(buf, 23, width - 1);
+    emit_and_reg(buf, 21, 21, 23);
+    emit_lsrv(buf, 22, 20, 21);
+    emit_mov_imm_compact(buf, 23, 1);
+    emit_and_reg(buf, 22, 22, 23);
+
+    emit_clear_lazy_flags_pending(buf);
+    emit_store_flag_bool_from_w(buf, 22, offsetof(hb_flags_t, cf));
+
+    if (instr->op == HB_IR_BT)
+        return true;
+
+    emit_lslv(buf, 22, 23, 21);
+    switch (instr->op) {
+        case HB_IR_BTS:
+            emit_orr_reg(buf, 20, 20, 22);
+            break;
+        case HB_IR_BTR:
+            emit_mvn(buf, 22, 22);
+            emit_and_reg(buf, 20, 20, 22);
+            break;
+        case HB_IR_BTC:
+            emit_eor_reg(buf, 20, 20, 22);
+            break;
+        default:
+            return false;
+    }
+    emit_store_x20_to_gpr_sized(buf, &target);
+    return true;
+}
+
 static bool emit_native_cwd(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
     hb_size_t size;
     uint64_t sign_bit;
@@ -3301,11 +3363,16 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             return emit_interp_ir_helper(buf, instr);
         }
 
-        case HB_IR_MOV_SEG:
         case HB_IR_BT:
         case HB_IR_BTS:
         case HB_IR_BTR:
-        case HB_IR_BTC:
+        case HB_IR_BTC: {
+            if (emit_native_bit_test(buf, instr))
+                return HB_OK;
+            return emit_interp_ir_helper(buf, instr);
+        }
+
+        case HB_IR_MOV_SEG:
         case HB_IR_CMPXCHG:
         case HB_IR_CMPXCHG8B:
         case HB_IR_XCHG:
@@ -4372,8 +4439,11 @@ void hb_jit_helper_exec_unity_string_bsearch_loop(hb_context_t* ctx,
 
 void hb_jit_helper_exec_setcc_lazy(hb_context_t* ctx, uint64_t cc, uint64_t dst_reg) {
     bool value = false;
-    if (hb_flags_eval_cond(ctx, (hb_cc_t)cc, &value) != HB_OK) return;
-    hb_context_write_reg_value(ctx, dst_reg, value ? 1 : 0);
+    hb_result_t r = hb_flags_eval_cond(ctx, (hb_cc_t)cc, &value);
+    if (ctx) ctx->last_result = r;
+    if (r != HB_OK) return;
+    hb_context_write_reg_value_sized(ctx, dst_reg, value ? 1 : 0, HB_SIZE_8);
+    ctx->last_result = HB_OK;
 }
 
 void hb_jit_helper_exec_cmovcc_lazy(hb_context_t* ctx, uint64_t cc, uint64_t dst_reg,

@@ -29,6 +29,10 @@ static hb_block_cache_entry_t* block_cache_find(hb_block_cache_t* cache, uint64_
     return NULL;
 }
 
+static bool block_cache_is_full(const hb_block_cache_t* cache) {
+    return cache && cache->count >= HB_BLOCK_CACHE_SIZE;
+}
+
 static hb_block_cache_entry_t* block_cache_put(hb_block_cache_t* cache, uint64_t addr, uint8_t* code,
                                                size_t size, uint32_t steps,
                                                const hb_ir_block_t* block, bool fused) {
@@ -45,6 +49,7 @@ static hb_block_cache_entry_t* block_cache_put(hb_block_cache_t* cache, uint64_t
             cache->entries[probe].block = block;
             cache->entries[probe].fused = fused;
             cache->entries[probe].valid = true;
+            cache->count++;
             return &cache->entries[probe];
         }
         if (cache->entries[probe].guest_addr == addr) {
@@ -361,13 +366,39 @@ static hb_result_t set_runtime_fault_result(hb_exec_result_t* out, hb_context_t*
     return result;
 }
 
+static hb_result_t set_jit_interp_fallback_result(hb_exec_result_t* out,
+                                                  hb_result_t result,
+                                                  uint64_t steps,
+                                                  uint64_t blocks_executed,
+                                                  const char* reason) {
+    out->result = result;
+    out->steps_executed = steps;
+    out->blocks_executed = blocks_executed;
+    out->faulted = true;
+    out->fault_reason = reason;
+    return HB_OK;
+}
+
+static void trace_jit_code_cache_full_once(hb_jit_runtime_t* rt,
+                                           const char* reason,
+                                           size_t needed) {
+    if (!rt || !rt->jit_mem || !rt->block_cache) return;
+    if (rt->code_cache_full_reports++) return;
+    fprintf(stderr, "macrunner-hb-jit-code-cache-full: reason=%s used=%zu size=%zu "
+            "needed=%zu entries=%zu capacity=%u\n",
+            reason ? reason : "unknown", rt->jit_mem->used, rt->jit_mem->size,
+            needed, rt->block_cache->count, (unsigned)HB_BLOCK_CACHE_SIZE);
+    fflush(stderr);
+}
+
 static void try_promote_copy_scan_counted_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
                                                const hb_ir_block_t* block) {
     const hb_ir_block_t* body = NULL;
     const hb_ir_block_t* guard = NULL;
     hb_block_cache_entry_t* body_entry = NULL;
 
-    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !block || !block->instr_count)
+    if (!rt || !rt->block_cache || !rt->jit_mem || rt->code_cache_full ||
+        block_cache_is_full(rt->block_cache) || !ctx || !block || !block->instr_count)
         return;
 
     const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
@@ -438,7 +469,8 @@ static void try_promote_bounded_scan_loop(hb_jit_runtime_t* rt, hb_context_t* ct
     const hb_ir_block_t* body = NULL;
     hb_block_cache_entry_t* guard_entry = NULL;
 
-    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !block || !block->instr_count)
+    if (!rt || !rt->block_cache || !rt->jit_mem || rt->code_cache_full ||
+        block_cache_is_full(rt->block_cache) || !ctx || !block || !block->instr_count)
         return;
 
     const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
@@ -572,7 +604,8 @@ static void try_promote_byte_compare_loop(hb_jit_runtime_t* rt, hb_context_t* ct
     const hb_ir_block_t* backedge_block = NULL;
     hb_block_cache_entry_t* cmp_entry = NULL;
 
-    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !block || !block->instr_count)
+    if (!rt || !rt->block_cache || !rt->jit_mem || rt->code_cache_full ||
+        block_cache_is_full(rt->block_cache) || !ctx || !block || !block->instr_count)
         return;
 
     const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
@@ -708,7 +741,8 @@ static void try_promote_null_qword_scan_loop(hb_jit_runtime_t* rt, hb_context_t*
     uint64_t dec_addr = 0;
     uint64_t test_addr = 0;
 
-    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !block)
+    if (!rt || !rt->block_cache || !rt->jit_mem || rt->code_cache_full ||
+        block_cache_is_full(rt->block_cache) || !ctx || !block)
         return;
 
     if (load_test_nonzero_qword_block(block, &index_reg, &dec_addr, NULL)) {
@@ -877,7 +911,8 @@ static const hb_ir_block_t* find_comparator_entry_near_cache(hb_block_cache_t* c
 
 static void try_promote_i32_less_tiebreaker_comparator(hb_jit_runtime_t* rt, hb_context_t* ctx,
                                                        const hb_ir_block_t* block) {
-    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !block)
+    if (!rt || !rt->block_cache || !rt->jit_mem || rt->code_cache_full ||
+        block_cache_is_full(rt->block_cache) || !ctx || !block)
         return;
 
     uint64_t equal_addr = 0;
@@ -960,7 +995,8 @@ static bool small_terminal_jcc_self_loop(const hb_ir_block_t* block) {
 
 static void try_promote_self_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
                                   const hb_ir_block_t* block) {
-    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !small_terminal_jcc_self_loop(block))
+    if (!rt || !rt->block_cache || !rt->jit_mem || rt->code_cache_full ||
+        block_cache_is_full(rt->block_cache) || !ctx || !small_terminal_jcc_self_loop(block))
         return;
     hb_block_cache_entry_t* entry = block_cache_find(rt->block_cache, block->guest_addr);
     if (!entry || entry->fused) return;
@@ -1059,6 +1095,14 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             trace_jit_hot_block_tick(rt, cached);
             steps += cached->steps;
         } else {
+            if (rt->code_cache_full || block_cache_is_full(rt->block_cache)) {
+                rt->code_cache_full = true;
+                trace_jit_code_cache_full_once(rt, "block-cache-full", 0);
+                return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
+                                                      steps, blocks_executed,
+                                                      "JIT code cache full; interpreter fallback");
+            }
+
             /* Compile block into codegen buffer */
             hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(4096);
             if (!code_buf) return HB_ERR_OUT_OF_MEMORY;
@@ -1079,18 +1123,18 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             }
 
             /* Append to JIT buffer (bump allocator) */
-            r = hb_jit_buffer_make_writable(rt->jit_mem);
-            if (r != HB_OK) { hb_codegen_buffer_destroy(code_buf); return r; }
-
             size_t needed = code_buf->size;
             if (rt->jit_mem->used + needed > rt->jit_mem->size) {
+                rt->code_cache_full = true;
+                trace_jit_code_cache_full_once(rt, "jit-buffer-full", needed);
                 hb_codegen_buffer_destroy(code_buf);
-                out->result = HB_ERR_OUT_OF_MEMORY;
-                out->steps_executed = steps;
-                out->blocks_executed = blocks_executed;
-                out->fault_reason = "JIT buffer exhausted";
-                return HB_OK;
+                return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
+                                                      steps, blocks_executed,
+                                                      "JIT code cache full; interpreter fallback");
             }
+
+            r = hb_jit_buffer_make_writable(rt->jit_mem);
+            if (r != HB_OK) { hb_codegen_buffer_destroy(code_buf); return r; }
 
             size_t emitted_size = code_buf->size;
             uint8_t* dest = rt->jit_mem->writable + rt->jit_mem->used;
@@ -1106,6 +1150,10 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             /* Store in block cache */
             cached = block_cache_put(rt->block_cache, ctx->pc, dest, emitted_size,
                                      jit_block_step_count(block), block, false);
+            if (!cached) {
+                rt->code_cache_full = true;
+                trace_jit_code_cache_full_once(rt, "block-cache-put-failed", emitted_size);
+            }
             trace_jit_block(ctx->pc, dest, emitted_size, block);
             try_promote_copy_scan_counted_loop(rt, ctx, block);
             try_promote_bounded_scan_loop(rt, ctx, block);

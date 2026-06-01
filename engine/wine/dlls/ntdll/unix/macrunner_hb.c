@@ -84,6 +84,9 @@ struct macrunner_hb_special
 #define MACRUNNER_HB_LOCAL_HEAP_ALIGN 16
 #define MACRUNNER_HB_LOCAL_FILE_MAX 256
 #define MACRUNNER_HB_LOCAL_FILE_BASE 0x00006f4000000000ULL
+#define MACRUNNER_HB_LOCAL_MAPPING_MAX 256
+#define MACRUNNER_HB_LOCAL_MAPPING_BASE 0x00006f4100000000ULL
+#define MACRUNNER_HB_LOCAL_MAPPING_VIEW_MAX 256
 #define MACRUNNER_HB_VIRTUAL_REGION_MAX 8192
 #define MACRUNNER_HB_PSEUDO_HWINSTA 0x00006f5000000010ULL
 #define MACRUNNER_HB_PSEUDO_HDESK 0x00006f5000000020ULL
@@ -124,6 +127,23 @@ struct macrunner_hb_local_file
 {
     uint64_t handle;
     int fd;
+    char path[512];
+};
+
+struct macrunner_hb_local_mapping
+{
+    uint64_t handle;
+    int fd;
+    uint64_t file_handle;
+    SIZE_T size;
+    DWORD protect;
+};
+
+struct macrunner_hb_local_mapping_view
+{
+    void *base;
+    SIZE_T size;
+    uint64_t mapping_handle;
 };
 
 struct macrunner_hb_registered_message
@@ -224,6 +244,10 @@ static struct macrunner_hb_local_heap_arena macrunner_hb_local_heap_arenas[MACRU
 static pthread_mutex_t macrunner_hb_local_file_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct macrunner_hb_local_file macrunner_hb_local_files[MACRUNNER_HB_LOCAL_FILE_MAX];
 static uint64_t macrunner_hb_local_file_next = MACRUNNER_HB_LOCAL_FILE_BASE;
+static pthread_mutex_t macrunner_hb_local_mapping_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct macrunner_hb_local_mapping macrunner_hb_local_mappings[MACRUNNER_HB_LOCAL_MAPPING_MAX];
+static struct macrunner_hb_local_mapping_view macrunner_hb_local_mapping_views[MACRUNNER_HB_LOCAL_MAPPING_VIEW_MAX];
+static uint64_t macrunner_hb_local_mapping_next = MACRUNNER_HB_LOCAL_MAPPING_BASE;
 static pthread_mutex_t macrunner_hb_virtual_region_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct macrunner_hb_virtual_region macrunner_hb_virtual_regions[MACRUNNER_HB_VIRTUAL_REGION_MAX];
 static unsigned int macrunner_hb_virtual_region_count;
@@ -1842,10 +1866,16 @@ static BOOL macrunner_hb_kernel_export_has_local_semantic( const char *dll_name,
            macrunner_hb_strieq( import_name, "LCMapStringEx" ) ||
            macrunner_hb_strieq( import_name, "GetStartupInfoA" ) ||
            macrunner_hb_strieq( import_name, "GetStartupInfoW" ) ||
-           macrunner_hb_strieq( import_name, "GetStdHandle" ) ||
-           macrunner_hb_strieq( import_name, "GetFileType" ) ||
-           macrunner_hb_strieq( import_name, "GetFileInformationByHandle" ) ||
-           macrunner_hb_strieq( import_name, "WriteFile" ) ||
+            macrunner_hb_strieq( import_name, "GetStdHandle" ) ||
+            macrunner_hb_strieq( import_name, "GetFileType" ) ||
+            macrunner_hb_strieq( import_name, "GetFileInformationByHandle" ) ||
+            macrunner_hb_strieq( import_name, "GetFileInformationByHandleEx" ) ||
+            macrunner_hb_strieq( import_name, "CreateFileMappingW" ) ||
+            macrunner_hb_strieq( import_name, "OpenFileMappingW" ) ||
+            macrunner_hb_strieq( import_name, "MapViewOfFile" ) ||
+            macrunner_hb_strieq( import_name, "UnmapViewOfFile" ) ||
+            macrunner_hb_strieq( import_name, "FlushViewOfFile" ) ||
+            macrunner_hb_strieq( import_name, "WriteFile" ) ||
            macrunner_hb_strieq( import_name, "GetLastError" ) ||
            macrunner_hb_strieq( import_name, "SetLastError" ) ||
            macrunner_hb_strieq( import_name, "GetProcessHeap" ) ||
@@ -3269,7 +3299,7 @@ static void *macrunner_hb_local_heap_realloc( void *old_ptr, SIZE_T requested_si
     return new_ptr;
 }
 
-static uint64_t macrunner_hb_local_file_remember( int fd )
+static uint64_t macrunner_hb_local_file_remember( int fd, const char *path )
 {
     unsigned int i;
     uint64_t handle = 0;
@@ -3283,6 +3313,12 @@ static uint64_t macrunner_hb_local_file_remember( int fd )
             handle = macrunner_hb_local_file_next++;
             macrunner_hb_local_files[i].handle = handle;
             macrunner_hb_local_files[i].fd = fd;
+            if (path)
+            {
+                lstrcpynA( macrunner_hb_local_files[i].path, path,
+                           ARRAY_SIZE(macrunner_hb_local_files[i].path) );
+            }
+            else macrunner_hb_local_files[i].path[0] = 0;
             break;
         }
     }
@@ -3308,6 +3344,27 @@ static int macrunner_hb_local_file_fd( uint64_t handle )
     return fd;
 }
 
+static BOOL macrunner_hb_local_file_path( uint64_t handle, char *path, size_t size )
+{
+    unsigned int i;
+    BOOL found = FALSE;
+
+    if (!path || !size) return FALSE;
+    path[0] = 0;
+    pthread_mutex_lock( &macrunner_hb_local_file_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_FILE_MAX; i++)
+    {
+        if (macrunner_hb_local_files[i].handle == handle)
+        {
+            lstrcpynA( path, macrunner_hb_local_files[i].path, size );
+            found = TRUE;
+            break;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_file_mutex );
+    return found;
+}
+
 static BOOL macrunner_hb_local_file_close( uint64_t handle )
 {
     unsigned int i;
@@ -3321,6 +3378,7 @@ static BOOL macrunner_hb_local_file_close( uint64_t handle )
             fd = macrunner_hb_local_files[i].fd;
             macrunner_hb_local_files[i].handle = 0;
             macrunner_hb_local_files[i].fd = -1;
+            macrunner_hb_local_files[i].path[0] = 0;
             break;
         }
     }
@@ -3332,22 +3390,134 @@ static BOOL macrunner_hb_local_file_close( uint64_t handle )
 
 static BOOL macrunner_hb_local_file_duplicate( uint64_t handle, uint64_t *dup_handle )
 {
+    char path[512];
     int fd;
     int dup_fd;
 
     if (!dup_handle) return FALSE;
     *dup_handle = 0;
+    path[0] = 0;
+    macrunner_hb_local_file_path( handle, path, sizeof(path) );
     fd = macrunner_hb_local_file_fd( handle );
     if (fd < 0) return FALSE;
     dup_fd = dup( fd );
     if (dup_fd < 0) return FALSE;
-    *dup_handle = macrunner_hb_local_file_remember( dup_fd );
+    *dup_handle = macrunner_hb_local_file_remember( dup_fd, path[0] ? path : NULL );
     if (!*dup_handle)
     {
         close( dup_fd );
         return FALSE;
     }
     return TRUE;
+}
+
+static uint64_t macrunner_hb_local_mapping_remember( int fd, uint64_t file_handle,
+                                                     SIZE_T size, DWORD protect )
+{
+    unsigned int i;
+    uint64_t handle = 0;
+
+    if (fd < 0 || !size) return 0;
+    pthread_mutex_lock( &macrunner_hb_local_mapping_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_MAPPING_MAX; i++)
+    {
+        if (!macrunner_hb_local_mappings[i].handle)
+        {
+            handle = macrunner_hb_local_mapping_next++;
+            macrunner_hb_local_mappings[i].handle = handle;
+            macrunner_hb_local_mappings[i].fd = fd;
+            macrunner_hb_local_mappings[i].file_handle = file_handle;
+            macrunner_hb_local_mappings[i].size = size;
+            macrunner_hb_local_mappings[i].protect = protect;
+            break;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_mapping_mutex );
+    return handle;
+}
+
+static BOOL macrunner_hb_local_mapping_get( uint64_t handle, int *fd, SIZE_T *size,
+                                            DWORD *protect )
+{
+    unsigned int i;
+    BOOL found = FALSE;
+
+    pthread_mutex_lock( &macrunner_hb_local_mapping_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_MAPPING_MAX; i++)
+    {
+        if (macrunner_hb_local_mappings[i].handle == handle)
+        {
+            if (fd) *fd = macrunner_hb_local_mappings[i].fd;
+            if (size) *size = macrunner_hb_local_mappings[i].size;
+            if (protect) *protect = macrunner_hb_local_mappings[i].protect;
+            found = TRUE;
+            break;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_mapping_mutex );
+    return found;
+}
+
+static BOOL macrunner_hb_local_mapping_close( uint64_t handle )
+{
+    unsigned int i;
+    int fd = -1;
+
+    pthread_mutex_lock( &macrunner_hb_local_mapping_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_MAPPING_MAX; i++)
+    {
+        if (macrunner_hb_local_mappings[i].handle == handle)
+        {
+            fd = macrunner_hb_local_mappings[i].fd;
+            memset( &macrunner_hb_local_mappings[i], 0, sizeof(macrunner_hb_local_mappings[i]) );
+            break;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_mapping_mutex );
+    if (fd < 0) return FALSE;
+    close( fd );
+    return TRUE;
+}
+
+static void macrunner_hb_local_mapping_view_remember( void *base, SIZE_T size, uint64_t mapping_handle )
+{
+    unsigned int i;
+
+    if (!base || !size) return;
+    pthread_mutex_lock( &macrunner_hb_local_mapping_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_MAPPING_VIEW_MAX; i++)
+    {
+        if (!macrunner_hb_local_mapping_views[i].base)
+        {
+            macrunner_hb_local_mapping_views[i].base = base;
+            macrunner_hb_local_mapping_views[i].size = size;
+            macrunner_hb_local_mapping_views[i].mapping_handle = mapping_handle;
+            break;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_mapping_mutex );
+}
+
+static BOOL macrunner_hb_local_mapping_view_forget( void *base, SIZE_T *size )
+{
+    unsigned int i;
+    BOOL found = FALSE;
+
+    if (size) *size = 0;
+    pthread_mutex_lock( &macrunner_hb_local_mapping_mutex );
+    for (i = 0; i < MACRUNNER_HB_LOCAL_MAPPING_VIEW_MAX; i++)
+    {
+        if (macrunner_hb_local_mapping_views[i].base == base)
+        {
+            if (size) *size = macrunner_hb_local_mapping_views[i].size;
+            memset( &macrunner_hb_local_mapping_views[i], 0,
+                    sizeof(macrunner_hb_local_mapping_views[i]) );
+            found = TRUE;
+            break;
+        }
+    }
+    pthread_mutex_unlock( &macrunner_hb_local_mapping_mutex );
+    return found;
 }
 
 static int macrunner_hb_wcsnicmp_local( const WCHAR *a, const WCHAR *b, ULONG len )
@@ -3727,15 +3897,29 @@ int macrunner_hb_pc_is_x64_guest_code( void *pc )
            macrunner_hb_pc_in_executable_section( image_base, (uint64_t)(uintptr_t)pc );
 }
 
-int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc )
+int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc )
 {
+    LDR_DATA_TABLE_ENTRY *ldr;
     void *module;
 
     if (!pc) return FALSE;
-    if (!macrunner_hb_is_registered_x64_guest_address( pc )) return FALSE;
+    if ((ldr = macrunner_hb_ldr_entry_from_pc( pc )))
+    {
+        module = ldr->DllBase;
+        if (!module || macrunner_hb_module_machine( module ) != IMAGE_FILE_MACHINE_AMD64) return FALSE;
+        return macrunner_hb_pc_in_executable_section( module, (uint64_t)(uintptr_t)pc );
+    }
+
     module = macrunner_hb_module_from_pc( pc );
     if (!module || macrunner_hb_module_machine( module ) != IMAGE_FILE_MACHINE_AMD64) return FALSE;
     return macrunner_hb_pc_in_executable_section( module, (uint64_t)(uintptr_t)pc );
+}
+
+int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc )
+{
+    if (!pc) return FALSE;
+    if (!macrunner_hb_is_registered_x64_guest_address( pc )) return FALSE;
+    return macrunner_hb_pc_is_x64_guest_code_module_no_lock( pc );
 }
 
 static int macrunner_hb_decode_spans_pc( uint64_t candidate, uint64_t pc,
@@ -7658,7 +7842,7 @@ static BOOL macrunner_hb_try_local_file_semantic( hb_context_t *ctx,
             *ret = (uint64_t)(uintptr_t)INVALID_HANDLE_VALUE;
             return TRUE;
         }
-        if (!(handle = macrunner_hb_local_file_remember( fd )))
+        if (!(handle = macrunner_hb_local_file_remember( fd, path )))
         {
             close( fd );
             RtlSetLastWin32Error( ERROR_TOO_MANY_OPEN_FILES );
@@ -7802,6 +7986,113 @@ static BOOL macrunner_hb_try_local_file_semantic( hb_context_t *ctx,
         return TRUE;
     }
 
+    if (macrunner_hb_strieq( thunk->import_name, "GetFileInformationByHandleEx" ))
+    {
+        int fd = macrunner_hb_local_file_fd( args[0] );
+        FILE_INFO_BY_HANDLE_CLASS cls = (FILE_INFO_BY_HANDLE_CLASS)(DWORD)args[1];
+        struct stat st;
+
+        if (fd < 0) return FALSE;
+        if (!args[2])
+        {
+            RtlSetLastWin32Error( ERROR_NOACCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+            *ret = FALSE;
+            return TRUE;
+        }
+        if (fstat( fd, &st ))
+        {
+            macrunner_hb_set_errno_error();
+            *ret = FALSE;
+            return TRUE;
+        }
+
+        if (cls == FileBasicInfo)
+        {
+            FILE_BASIC_INFO info;
+
+            if ((DWORD)args[3] < sizeof(info))
+            {
+                RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+                NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+                *ret = FALSE;
+                return TRUE;
+            }
+            memset( &info, 0, sizeof(info) );
+            info.CreationTime = macrunner_hb_unix_time_to_filetime( st.st_ctime );
+            info.LastAccessTime = macrunner_hb_unix_time_to_filetime( st.st_atime );
+            info.LastWriteTime = macrunner_hb_unix_time_to_filetime( st.st_mtime );
+            info.ChangeTime = macrunner_hb_unix_time_to_filetime( st.st_ctime );
+            info.FileAttributes = macrunner_hb_attributes_from_stat( &st );
+            if (hb_memory_write( ctx->memory, (hb_gva_t)args[2], &info, sizeof(info) ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = FALSE;
+                return TRUE;
+            }
+            *ret = TRUE;
+        }
+        else if (cls == FileStandardInfo)
+        {
+            FILE_STANDARD_INFO info;
+
+            if ((DWORD)args[3] < sizeof(info))
+            {
+                RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+                NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+                *ret = FALSE;
+                return TRUE;
+            }
+            memset( &info, 0, sizeof(info) );
+            info.AllocationSize.QuadPart = (LONGLONG)st.st_blocks * 512;
+            info.EndOfFile.QuadPart = st.st_size;
+            info.NumberOfLinks = (DWORD)st.st_nlink;
+            info.Directory = S_ISDIR( st.st_mode );
+            if (hb_memory_write( ctx->memory, (hb_gva_t)args[2], &info, sizeof(info) ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = FALSE;
+                return TRUE;
+            }
+            *ret = TRUE;
+        }
+        else if (cls == FileAttributeTagInfo)
+        {
+            FILE_ATTRIBUTE_TAG_INFO info;
+
+            if ((DWORD)args[3] < sizeof(info))
+            {
+                RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+                NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+                *ret = FALSE;
+                return TRUE;
+            }
+            memset( &info, 0, sizeof(info) );
+            info.FileAttributes = macrunner_hb_attributes_from_stat( &st );
+            if (hb_memory_write( ctx->memory, (hb_gva_t)args[2], &info, sizeof(info) ) != HB_OK)
+            {
+                RtlSetLastWin32Error( ERROR_NOACCESS );
+                NtCurrentTeb()->LastStatusValue = STATUS_ACCESS_VIOLATION;
+                *ret = FALSE;
+                return TRUE;
+            }
+            *ret = TRUE;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = FALSE;
+            return TRUE;
+        }
+
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
     if (macrunner_hb_strieq( thunk->import_name, "SetFilePointer" ) ||
         macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" ))
     {
@@ -7842,6 +8133,166 @@ static BOOL macrunner_hb_try_local_file_semantic( hb_context_t *ctx,
         }
         RtlSetLastWin32Error( ERROR_SUCCESS );
         NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "CreateFileMappingW" ))
+    {
+        int fd = macrunner_hb_local_file_fd( args[0] );
+        uint64_t max_size = ((uint64_t)(DWORD)args[3] << 32) | (DWORD)args[4];
+        uint64_t handle;
+        struct stat st;
+        int dup_fd;
+
+        if (fd < 0) return FALSE;
+        if (fstat( fd, &st ))
+        {
+            macrunner_hb_set_errno_error();
+            *ret = 0;
+            return TRUE;
+        }
+        if (!max_size) max_size = st.st_size;
+        if (!max_size)
+        {
+            RtlSetLastWin32Error( ERROR_FILE_INVALID );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = 0;
+            return TRUE;
+        }
+        dup_fd = dup( fd );
+        if (dup_fd < 0)
+        {
+            macrunner_hb_set_errno_error();
+            *ret = 0;
+            return TRUE;
+        }
+        handle = macrunner_hb_local_mapping_remember( dup_fd, args[0], (SIZE_T)max_size, (DWORD)args[2] );
+        if (!handle)
+        {
+            close( dup_fd );
+            RtlSetLastWin32Error( ERROR_TOO_MANY_OPEN_FILES );
+            NtCurrentTeb()->LastStatusValue = STATUS_TOO_MANY_OPENED_FILES;
+            *ret = 0;
+            return TRUE;
+        }
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = handle;
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "MapViewOfFile" ))
+    {
+        int fd = -1;
+        SIZE_T mapping_size = 0, view_size;
+        DWORD protect = 0;
+        uint64_t offset = ((uint64_t)(DWORD)args[2] << 32) | (DWORD)args[3];
+        void *base = NULL;
+        SIZE_T alloc_size;
+        ULONG page_protect;
+        NTSTATUS status;
+        char *dst;
+        SIZE_T left;
+
+        if (!macrunner_hb_local_mapping_get( args[0], &fd, &mapping_size, &protect ))
+            return FALSE;
+        if (offset > mapping_size)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = 0;
+            return TRUE;
+        }
+        view_size = (SIZE_T)args[4];
+        if (!view_size) view_size = mapping_size - (SIZE_T)offset;
+        if (!view_size)
+        {
+            RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+            NtCurrentTeb()->LastStatusValue = STATUS_INVALID_PARAMETER;
+            *ret = 0;
+            return TRUE;
+        }
+        alloc_size = view_size;
+        page_protect = PAGE_READWRITE;
+        if (macrunner_hb_trace_file_api_enabled())
+            fprintf( stderr, "macrunner-hb-file-map-local: before handle=%p fd=%d offset=%p "
+                     "view_size=%p mapping_size=%p protect=0x%lx\n",
+                     (void *)(uintptr_t)args[0], fd, (void *)(uintptr_t)offset,
+                     (void *)(uintptr_t)view_size, (void *)(uintptr_t)mapping_size,
+                     (unsigned long)protect );
+        status = NtAllocateVirtualMemory( NtCurrentProcess(), &base, 0, &alloc_size,
+                                          MEM_RESERVE | MEM_COMMIT, page_protect );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (status)
+        {
+            if (macrunner_hb_trace_file_api_enabled())
+                fprintf( stderr, "macrunner-hb-file-map-local: alloc-failed status=%08lx size=%p\n",
+                         (unsigned long)status, (void *)(uintptr_t)alloc_size );
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = 0;
+            return TRUE;
+        }
+
+        dst = base;
+        left = view_size;
+        while (left)
+        {
+            ssize_t done = pread( fd, dst, left, (off_t)(offset + (uint64_t)(view_size - left)) );
+            if (done < 0 && errno == EINTR) continue;
+            if (done < 0)
+            {
+                void *free_base = base;
+                SIZE_T free_size = 0;
+                macrunner_hb_set_errno_error();
+                if (macrunner_hb_trace_file_api_enabled())
+                    fprintf( stderr, "macrunner-hb-file-map-local: pread-failed errno=%d\n", errno );
+                NtFreeVirtualMemory( NtCurrentProcess(), &free_base, &free_size, MEM_RELEASE );
+                *ret = 0;
+                return TRUE;
+            }
+            if (!done)
+            {
+                memset( dst, 0, left );
+                break;
+            }
+            dst += done;
+            left -= done;
+        }
+
+        macrunner_hb_remember_virtual_region( base, alloc_size, page_protect );
+        macrunner_hb_sync_virtual_region( ctx, base, alloc_size, page_protect );
+        macrunner_hb_local_mapping_view_remember( base, alloc_size, args[0] );
+        RtlSetLastWin32Error( ERROR_SUCCESS );
+        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+        *ret = (uint64_t)(uintptr_t)base;
+        if (macrunner_hb_trace_file_api_enabled())
+            fprintf( stderr, "macrunner-hb-file-map-local: mapped handle=%p base=%p size=%p\n",
+                     (void *)(uintptr_t)args[0], base, (void *)(uintptr_t)alloc_size );
+        return TRUE;
+    }
+
+    if (macrunner_hb_strieq( thunk->import_name, "UnmapViewOfFile" ))
+    {
+        void *base = (void *)(uintptr_t)args[0];
+        SIZE_T view_size = 0;
+
+        if (!macrunner_hb_local_mapping_view_forget( base, &view_size ))
+            return FALSE;
+        macrunner_hb_forget_virtual_region_record( base );
+        macrunner_hb_forget_virtual_region( ctx, base );
+        view_size = 0;
+        NtCurrentTeb()->LastStatusValue =
+            NtFreeVirtualMemory( NtCurrentProcess(), &base, &view_size, MEM_RELEASE );
+        if (NtCurrentTeb()->LastStatusValue)
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( NtCurrentTeb()->LastStatusValue ) );
+            *ret = FALSE;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            *ret = TRUE;
+        }
         return TRUE;
     }
 
@@ -9479,7 +9930,7 @@ static BOOL macrunner_hb_try_crt_stdio_semantic( hb_context_t *ctx,
             *ret = 0;
             return TRUE;
         }
-        if (!(handle = macrunner_hb_local_file_remember( fd )))
+        if (!(handle = macrunner_hb_local_file_remember( fd, path )))
         {
             close( fd );
             *ret = 0;
@@ -12678,6 +13129,13 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             *ret = TRUE;
             return TRUE;
         }
+        if (macrunner_hb_local_mapping_close( args[0] ))
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
+            *ret = TRUE;
+            return TRUE;
+        }
         status = NtClose( (HANDLE)(uintptr_t)args[0] );
         NtCurrentTeb()->LastStatusValue = status;
         if (NT_ERROR( status ))
@@ -13761,6 +14219,27 @@ static unsigned int macrunner_hb_import_arg_count( const struct macrunner_hb_imp
         return 2;
     if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
          macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "GetFileInformationByHandleEx" ))
+        return 4;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "CreateFileMappingW" ))
+        return 6;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "MapViewOfFile" ))
+        return 5;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        (macrunner_hb_strieq( thunk->import_name, "UnmapViewOfFile" ) ||
+         macrunner_hb_strieq( thunk->import_name, "FlushViewOfFile" )))
+        return 1;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+        macrunner_hb_strieq( thunk->import_name, "OpenFileMappingW" ))
+        return 3;
+    if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+         macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
         (macrunner_hb_strieq( thunk->import_name, "SetFilePointer" ) ||
          macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" )))
         return 4;
@@ -14145,8 +14624,13 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
          macrunner_hb_strieq( thunk->import_name, "GetFileSize" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetFileSizeEx" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetFileInformationByHandle" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetFileInformationByHandleEx" ) ||
          macrunner_hb_strieq( thunk->import_name, "SetFilePointer" ) ||
-         macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" )) &&
+         macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CreateFileMappingW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "MapViewOfFile" ) ||
+         macrunner_hb_strieq( thunk->import_name, "UnmapViewOfFile" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CloseHandle" )) &&
         macrunner_hb_trace_file_api_budget_allows())
     {
         fprintf( stderr, "macrunner-hb-file-api: before import=%s!%s pc=%p rsp=%p ret=%p "
@@ -14158,6 +14642,8 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
                  (void *)(uintptr_t)args[3], (void *)(uintptr_t)args[4],
                  (void *)(uintptr_t)args[5], (void *)(uintptr_t)args[6],
                  (void *)(uintptr_t)args[7] );
+        if (macrunner_hb_strieq( thunk->import_name, "CreateFileW" ))
+            macrunner_hb_trace_guest_wstr( ctx, "file.path", args[0] );
     }
 
     TRACE( "MacRunner HyperBridge native import call %s!%s guest=%p target=%p ret=%p\n",
@@ -14302,8 +14788,13 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
          macrunner_hb_strieq( thunk->import_name, "GetFileSize" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetFileSizeEx" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetFileInformationByHandle" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetFileInformationByHandleEx" ) ||
          macrunner_hb_strieq( thunk->import_name, "SetFilePointer" ) ||
-         macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" )) &&
+         macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CreateFileMappingW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "MapViewOfFile" ) ||
+         macrunner_hb_strieq( thunk->import_name, "UnmapViewOfFile" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CloseHandle" )) &&
         macrunner_hb_trace_file_api_budget_allows())
     {
         fprintf( stderr, "macrunner-hb-file-api: after import=%s!%s pc=%p rsp=%p ret=%p "
@@ -14639,8 +15130,12 @@ static BOOL macrunner_hb_trace_import_interesting( const struct macrunner_hb_imp
          macrunner_hb_strieq( thunk->import_name, "GetFileSize" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetFileSizeEx" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetFileInformationByHandle" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetFileInformationByHandleEx" ) ||
          macrunner_hb_strieq( thunk->import_name, "SetFilePointer" ) ||
          macrunner_hb_strieq( thunk->import_name, "SetFilePointerEx" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CreateFileMappingW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "MapViewOfFile" ) ||
+         macrunner_hb_strieq( thunk->import_name, "UnmapViewOfFile" ) ||
          macrunner_hb_strieq( thunk->import_name, "HeapAlloc" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetSystemTimeAsFileTime" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetTimeZoneInformation" ) ||
@@ -14862,9 +15357,32 @@ static void macrunner_hb_normalize_import_args( const struct macrunner_hb_import
     }
     else if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
               macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
-             macrunner_hb_strieq( thunk->import_name, "ReadFile" ))
+              macrunner_hb_strieq( thunk->import_name, "ReadFile" ))
     {
         args[2] = macrunner_hb_u32_arg( args[2] ); /* DWORD bytes to read */
+    }
+    else if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+              macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+             macrunner_hb_strieq( thunk->import_name, "GetFileInformationByHandleEx" ))
+    {
+        args[1] = macrunner_hb_u32_arg( args[1] ); /* FILE_INFO_BY_HANDLE_CLASS */
+        args[3] = macrunner_hb_u32_arg( args[3] ); /* DWORD buffer size */
+    }
+    else if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+              macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+             macrunner_hb_strieq( thunk->import_name, "CreateFileMappingW" ))
+    {
+        args[2] = macrunner_hb_u32_arg( args[2] ); /* DWORD protection */
+        args[3] = macrunner_hb_u32_arg( args[3] ); /* DWORD max size high */
+        args[4] = macrunner_hb_u32_arg( args[4] ); /* DWORD max size low */
+    }
+    else if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
+              macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
+             macrunner_hb_strieq( thunk->import_name, "MapViewOfFile" ))
+    {
+        args[1] = macrunner_hb_u32_arg( args[1] ); /* DWORD desired access */
+        args[2] = macrunner_hb_u32_arg( args[2] ); /* DWORD offset high */
+        args[3] = macrunner_hb_u32_arg( args[3] ); /* DWORD offset low */
     }
     else if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
               macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
@@ -15015,20 +15533,20 @@ static void macrunner_hb_trace_abi_return( hb_context_t *ctx,
 
 static void macrunner_hb_trace_guest_wstr( hb_context_t *ctx, const char *name, uint64_t addr )
 {
-    char text[96];
+    char text[512];
     unsigned int i, out = 0;
 
     if (!ctx || !ctx->memory || !addr || addr < 0x10000) return;
 
-    for (i = 0; i < 40 && out + 5 < sizeof(text); i++)
+    for (i = 0; i < 240 && out + 5 < sizeof(text); i++)
     {
         uint16_t ch = 0;
         hb_result_t r = hb_memory_read_u16( ctx->memory, (hb_gva_t)addr + i * 2, &ch );
 
         if (r != HB_OK)
         {
-            ERR( "macrunner-hb-guest-wstr: %s=%p read=%s index=%u\n",
-                 name ? name : "?", (void *)(uintptr_t)addr, hb_result_string(r), i );
+            fprintf( stderr, "macrunner-hb-guest-wstr: %s=%p read=%s index=%u\n",
+                     name ? name : "?", (void *)(uintptr_t)addr, hb_result_string(r), i );
             return;
         }
         if (!ch) break;
@@ -15040,8 +15558,8 @@ static void macrunner_hb_trace_guest_wstr( hb_context_t *ctx, const char *name, 
         }
     }
     text[out] = 0;
-    ERR( "macrunner-hb-guest-wstr: %s=%p text=\"%s\"\n",
-         name ? name : "?", (void *)(uintptr_t)addr, text );
+    fprintf( stderr, "macrunner-hb-guest-wstr: %s=%p text=\"%s\"\n",
+             name ? name : "?", (void *)(uintptr_t)addr, text );
 }
 
 static void macrunner_hb_trace_startupinfo( hb_context_t *ctx,
@@ -16239,6 +16757,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         {
             ret = hb_jit_runtime_run( jit_rt, func, &out );
             if (ret == HB_OK && (out.result == HB_ERR_UNSUPPORTED_OPCODE ||
+                                 out.result == HB_ERR_UNSUPPORTED_FEATURE ||
                                  out.result == HB_ERR_INTERNAL))
             {
                 if (++jit_fallbacks <= 20)

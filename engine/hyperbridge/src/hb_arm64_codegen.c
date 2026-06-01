@@ -2655,7 +2655,25 @@ extern void     hb_jit_helper_exec_i32_less_tiebreaker(hb_context_t* ctx,
                                                        const hb_ir_block_t* equal,
                                                        const hb_ir_block_t* less);
 extern void     hb_jit_helper_exec_unity_string_bsearch_loop(hb_context_t* ctx,
+                                                              const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_unity_u32_ptr_compare(hb_context_t* ctx,
+                                                          const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_mono_metadata_bsearch_loop(hb_context_t* ctx,
+                                                               const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_mono_string_hash(hb_context_t* ctx,
+                                                     const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_mono_string_equal(hb_context_t* ctx,
+                                                      const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_mono_metadata_rowptr_entry(hb_context_t* ctx,
+                                                               const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_mono_metadata_decode_row_loop(hb_context_t* ctx,
+                                                                  const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_mono_metadata_decode_row_entry(hb_context_t* ctx,
+                                                                   const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_mono_metadata_decode_col(hb_context_t* ctx,
                                                              const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_mono_metadata_coded_index_search(hb_context_t* ctx,
+                                                                     const hb_ir_block_t* block);
 
 static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn);
 
@@ -2799,7 +2817,324 @@ static bool unity_string_bsearch_loop_candidate(const hb_ir_block_t* block) {
            jit_exact_reg(&i[10].src1, HB_REG_RDX, HB_SIZE_32) &&
            jit_exact_reg(&i[10].src2, HB_REG_RCX, HB_SIZE_32) &&
            i[11].op == HB_IR_Jcc && i[11].cc == HB_CC_NE &&
-           i[11].target == block->guest_addr + 0x32;
+	           i[11].target == block->guest_addr + 0x32;
+}
+
+static bool unity_u32_ptr_compare_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 3) return false;
+    const hb_ir_instr_t* i = block->instrs;
+
+    return i[0].op == HB_IR_LOAD &&
+           jit_exact_reg(&i[0].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_mem(&i[0].src1, HB_REG_RDX, HB_REG_COUNT, 1, 0, HB_SIZE_32) &&
+           i[1].op == HB_IR_CMP &&
+           jit_exact_mem(&i[1].src1, HB_REG_RCX, HB_REG_COUNT, 1, 0, HB_SIZE_32) &&
+           jit_exact_reg(&i[1].src2, HB_REG_RAX, HB_SIZE_32) &&
+           i[2].op == HB_IR_Jcc && i[2].cc == HB_CC_NE &&
+           i[2].target == block->guest_addr + 0x0d;
+}
+
+static bool mono_string_hash_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 3) return false;
+    const hb_ir_instr_t* i = block->instrs;
+
+    return i[0].op == HB_IR_XOR &&
+           jit_exact_reg(&i[0].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_reg(&i[0].src1, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_reg(&i[0].src2, HB_REG_RAX, HB_SIZE_32) &&
+           i[1].op == HB_IR_CMP &&
+           jit_exact_mem(&i[1].src1, HB_REG_RCX, HB_REG_COUNT, 1, 0, HB_SIZE_8) &&
+           jit_exact_reg(&i[1].src2, HB_REG_RAX, HB_SIZE_8) &&
+           i[2].op == HB_IR_Jcc && i[2].cc == HB_CC_E &&
+	           i[2].target == block->guest_addr + 0x24;
+}
+
+static bool mono_string_equal_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 2) return false;
+    const hb_ir_instr_t* i = block->instrs;
+
+    return i[0].op == HB_IR_CMP &&
+           jit_exact_reg(&i[0].src1, HB_REG_RCX, HB_SIZE_64) &&
+           jit_exact_reg(&i[0].src2, HB_REG_RDX, HB_SIZE_64) &&
+           i[1].op == HB_IR_Jcc && i[1].cc == HB_CC_E &&
+           i[1].target == block->guest_addr + 0x2c;
+}
+
+static const hb_ir_instr_t* mono_metadata_bsearch_loop_instrs(const hb_ir_block_t* block,
+                                                              size_t* count) {
+    const hb_ir_instr_t* i;
+    size_t n;
+    if (!block || !block->instr_count) return NULL;
+    i = block->instrs;
+    n = block->instr_count;
+    if (n == 19 && i[0].op == HB_IR_NOP) {
+        i++;
+        n--;
+    }
+    if (count) *count = n;
+    return i;
+}
+
+static bool mono_metadata_bsearch_loop_candidate(const hb_ir_block_t* block) {
+    size_t n = 0;
+    const hb_ir_instr_t* i = mono_metadata_bsearch_loop_instrs(block, &n);
+    if (!i || n != 18) return false;
+
+    return i[0].op == HB_IR_LEA &&
+           jit_exact_reg(&i[0].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_mem(&i[0].src1, HB_REG_R9, HB_REG_RBP, 1, 0, HB_SIZE_32) &&
+           i[1].op == HB_IR_CWD &&
+           i[2].op == HB_IR_SUB &&
+           jit_exact_reg(&i[2].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_reg(&i[2].src1, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_reg(&i[2].src2, HB_REG_RDX, HB_SIZE_32) &&
+           i[3].op == HB_IR_SAR &&
+           jit_exact_reg(&i[3].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_reg(&i[3].src1, HB_REG_RAX, HB_SIZE_32) &&
+           i[3].src2.type == HB_OP_IMM && i[3].src2.imm == 1 &&
+           i[4].op == HB_IR_SIGN_EXTEND &&
+           jit_exact_reg(&i[4].dst, HB_REG_RCX, HB_SIZE_64) &&
+           jit_exact_reg(&i[4].src1, HB_REG_RAX, HB_SIZE_32) &&
+           i[5].op == HB_IR_LOAD &&
+           jit_exact_reg(&i[5].dst, HB_REG_RCX, HB_SIZE_64) &&
+           jit_exact_mem(&i[5].src1, HB_REG_RBX, HB_REG_RCX, 8, 24, HB_SIZE_64) &&
+           i[6].op == HB_IR_SIGN_EXTEND &&
+           jit_exact_reg(&i[6].dst, HB_REG_R8, HB_SIZE_64) &&
+           jit_exact_mem(&i[6].src1, HB_REG_RCX, HB_REG_COUNT, 1, 28, HB_SIZE_32) &&
+           i[7].op == HB_IR_LOAD &&
+           jit_exact_reg(&i[7].dst, HB_REG_RCX, HB_SIZE_64) &&
+           jit_exact_mem(&i[7].src1, HB_REG_RCX, HB_REG_COUNT, 1, 16, HB_SIZE_64) &&
+           i[8].op == HB_IR_ADD &&
+           jit_exact_reg(&i[8].dst, HB_REG_R8, HB_SIZE_64) &&
+           jit_exact_reg(&i[8].src1, HB_REG_R8, HB_SIZE_64) &&
+           jit_exact_reg(&i[8].src2, HB_REG_RCX, HB_SIZE_64) &&
+           i[9].op == HB_IR_MOV &&
+           jit_exact_reg(&i[9].dst, HB_REG_RCX, HB_SIZE_32) &&
+           jit_exact_reg(&i[9].src1, HB_REG_RAX, HB_SIZE_32) &&
+           i[10].op == HB_IR_CMP &&
+           jit_exact_reg(&i[10].src1, HB_REG_R10, HB_SIZE_64) &&
+           jit_exact_reg(&i[10].src2, HB_REG_R8, HB_SIZE_64) &&
+           i[11].op == HB_IR_ADD &&
+           jit_exact_reg(&i[11].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_reg(&i[11].src1, HB_REG_RAX, HB_SIZE_32) &&
+           i[11].src2.type == HB_OP_IMM && i[11].src2.imm == 1 &&
+           i[12].op == HB_IR_CMOVcc && i[12].cc == HB_CC_AE &&
+           jit_exact_reg(&i[12].dst, HB_REG_RCX, HB_SIZE_32) &&
+           jit_exact_reg(&i[12].src1, HB_REG_R9, HB_SIZE_32) &&
+           i[13].op == HB_IR_CMP &&
+           jit_exact_reg(&i[13].src1, HB_REG_R10, HB_SIZE_64) &&
+           jit_exact_reg(&i[13].src2, HB_REG_R8, HB_SIZE_64) &&
+           i[14].op == HB_IR_MOV &&
+           jit_exact_reg(&i[14].dst, HB_REG_R9, HB_SIZE_32) &&
+           jit_exact_reg(&i[14].src1, HB_REG_RCX, HB_SIZE_32) &&
+           i[15].op == HB_IR_CMOVcc && i[15].cc == HB_CC_AE &&
+           jit_exact_reg(&i[15].dst, HB_REG_RBP, HB_SIZE_32) &&
+           jit_exact_reg(&i[15].src1, HB_REG_RAX, HB_SIZE_32) &&
+           i[16].op == HB_IR_CMP &&
+           jit_exact_reg(&i[16].src1, HB_REG_RBP, HB_SIZE_32) &&
+           jit_exact_reg(&i[16].src2, HB_REG_RCX, HB_SIZE_32) &&
+           i[17].op == HB_IR_Jcc && i[17].cc == HB_CC_L &&
+           i[17].target == i[0].guest_addr;
+}
+
+static bool mono_metadata_decode_row_loop_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 9) return false;
+    const hb_ir_instr_t* i = block->instrs;
+
+    return i[0].op == HB_IR_MOV &&
+           jit_exact_reg(&i[0].dst, HB_REG_RCX, HB_SIZE_32) &&
+           jit_exact_reg(&i[0].src1, HB_REG_RDX, HB_SIZE_32) &&
+           i[1].op == HB_IR_NOP &&
+           i[2].op == HB_IR_MOV &&
+           jit_exact_reg(&i[2].dst, HB_REG_R8, HB_SIZE_32) &&
+           jit_exact_reg(&i[2].src1, HB_REG_R15, HB_SIZE_32) &&
+           i[3].op == HB_IR_SHR &&
+           jit_exact_reg(&i[3].dst, HB_REG_R8, HB_SIZE_32) &&
+           jit_exact_reg(&i[3].src1, HB_REG_R8, HB_SIZE_32) &&
+           jit_exact_reg(&i[3].src2, HB_REG_RCX, HB_SIZE_8) &&
+           i[4].op == HB_IR_AND &&
+           jit_exact_reg(&i[4].dst, HB_REG_R8, HB_SIZE_32) &&
+           jit_exact_reg(&i[4].src1, HB_REG_R8, HB_SIZE_32) &&
+           i[4].src2.type == HB_OP_IMM && i[4].src2.imm == 3 &&
+           i[5].op == HB_IR_ADD &&
+           jit_exact_reg(&i[5].dst, HB_REG_R8, HB_SIZE_32) &&
+           jit_exact_reg(&i[5].src1, HB_REG_R8, HB_SIZE_32) &&
+           i[5].src2.type == HB_OP_IMM && i[5].src2.imm == 1 &&
+           i[6].op == HB_IR_MOV &&
+           jit_exact_reg(&i[6].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_reg(&i[6].src1, HB_REG_R8, HB_SIZE_32) &&
+           i[7].op == HB_IR_SUB &&
+           jit_exact_reg(&i[7].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_reg(&i[7].src1, HB_REG_RAX, HB_SIZE_32) &&
+           i[7].src2.type == HB_OP_IMM && i[7].src2.imm == 1 &&
+           i[8].op == HB_IR_Jcc && i[8].cc == HB_CC_E &&
+	           i[8].target == block->guest_addr + 0x34;
+}
+
+static bool mono_metadata_rowptr_entry_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 9) return false;
+    const hb_ir_instr_t* i = block->instrs;
+
+    return i[0].op == HB_IR_STORE &&
+           jit_exact_mem(&i[0].src1, HB_REG_RSP, HB_REG_COUNT, 1, 8, HB_SIZE_64) &&
+           jit_exact_reg(&i[0].src2, HB_REG_RBX, HB_SIZE_64) &&
+           i[1].op == HB_IR_STORE &&
+           jit_exact_mem(&i[1].src1, HB_REG_RSP, HB_REG_COUNT, 1, 16, HB_SIZE_64) &&
+           jit_exact_reg(&i[1].src2, HB_REG_RSI, HB_SIZE_64) &&
+           i[2].op == HB_IR_PUSH &&
+           jit_exact_reg(&i[2].src1, HB_REG_RDI, HB_SIZE_64) &&
+           i[3].op == HB_IR_SUB &&
+           jit_exact_reg(&i[3].dst, HB_REG_RSP, HB_SIZE_64) &&
+           jit_exact_reg(&i[3].src1, HB_REG_RSP, HB_SIZE_64) &&
+           i[3].src2.type == HB_OP_IMM && i[3].src2.imm == 64 &&
+           i[4].op == HB_IR_MOV &&
+           jit_exact_reg(&i[4].dst, HB_REG_RDI, HB_SIZE_64) &&
+           jit_exact_reg(&i[4].src1, HB_REG_RCX, HB_SIZE_64) &&
+           i[5].op == HB_IR_MOV &&
+           jit_exact_reg(&i[5].dst, HB_REG_RBX, HB_SIZE_32) &&
+           jit_exact_reg(&i[5].src1, HB_REG_RDX, HB_SIZE_32) &&
+           i[6].op == HB_IR_LOAD &&
+           jit_exact_reg(&i[6].dst, HB_REG_RCX, HB_SIZE_32) &&
+           jit_exact_mem(&i[6].src1, HB_REG_RCX, HB_REG_COUNT, 1, 0x80, HB_SIZE_32) &&
+           i[7].op == HB_IR_CMP &&
+           jit_exact_reg(&i[7].src1, HB_REG_RDX, HB_SIZE_32) &&
+           jit_exact_reg(&i[7].src2, HB_REG_RCX, HB_SIZE_32) &&
+           i[8].op == HB_IR_Jcc && i[8].cc == HB_CC_B &&
+           i[8].target == block->guest_addr + 0xb6;
+}
+
+static bool mono_metadata_decode_row_entry_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 18) return false;
+    const hb_ir_instr_t* i = block->instrs;
+
+    return i[0].op == HB_IR_STORE &&
+           jit_exact_mem(&i[0].src1, HB_REG_RSP, HB_REG_COUNT, 1, 8, HB_SIZE_64) &&
+           jit_exact_reg(&i[0].src2, HB_REG_RBX, HB_SIZE_64) &&
+           i[1].op == HB_IR_STORE &&
+           jit_exact_mem(&i[1].src1, HB_REG_RSP, HB_REG_COUNT, 1, 16, HB_SIZE_64) &&
+           jit_exact_reg(&i[1].src2, HB_REG_RBP, HB_SIZE_64) &&
+           i[2].op == HB_IR_STORE &&
+           jit_exact_mem(&i[2].src1, HB_REG_RSP, HB_REG_COUNT, 1, 24, HB_SIZE_64) &&
+           jit_exact_reg(&i[2].src2, HB_REG_RSI, HB_SIZE_64) &&
+           i[3].op == HB_IR_PUSH &&
+           jit_exact_reg(&i[3].src1, HB_REG_RDI, HB_SIZE_64) &&
+           i[4].op == HB_IR_PUSH &&
+           jit_exact_reg(&i[4].src1, HB_REG_R14, HB_SIZE_64) &&
+           i[5].op == HB_IR_PUSH &&
+           jit_exact_reg(&i[5].src1, HB_REG_R15, HB_SIZE_64) &&
+           i[6].op == HB_IR_SUB &&
+           jit_exact_reg(&i[6].dst, HB_REG_RSP, HB_SIZE_64) &&
+           jit_exact_reg(&i[6].src1, HB_REG_RSP, HB_SIZE_64) &&
+           i[6].src2.type == HB_OP_IMM && i[6].src2.imm == 32 &&
+           i[7].op == HB_IR_LOAD &&
+           jit_exact_reg(&i[7].dst, HB_REG_R15, HB_SIZE_32) &&
+           jit_exact_mem(&i[7].src1, HB_REG_RCX, HB_REG_COUNT, 1, 12, HB_SIZE_32) &&
+           i[8].op == HB_IR_MOV &&
+           jit_exact_reg(&i[8].dst, HB_REG_RBP, HB_SIZE_32) &&
+           jit_exact_reg(&i[8].src1, HB_REG_R9, HB_SIZE_32) &&
+           i[9].op == HB_IR_LOAD &&
+           jit_exact_reg(&i[9].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_mem(&i[9].src1, HB_REG_RCX, HB_REG_COUNT, 1, 8, HB_SIZE_32) &&
+           i[10].op == HB_IR_MOV &&
+           jit_exact_reg(&i[10].dst, HB_REG_RDI, HB_SIZE_32) &&
+           jit_exact_reg(&i[10].src1, HB_REG_R15, HB_SIZE_32) &&
+           i[11].op == HB_IR_SHR &&
+           jit_exact_reg(&i[11].dst, HB_REG_RDI, HB_SIZE_32) &&
+           jit_exact_reg(&i[11].src1, HB_REG_RDI, HB_SIZE_32) &&
+           i[11].src2.type == HB_OP_IMM && i[11].src2.imm == 24 &&
+           i[12].op == HB_IR_AND &&
+           jit_exact_reg(&i[12].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_reg(&i[12].src1, HB_REG_RAX, HB_SIZE_32) &&
+           i[12].src2.type == HB_OP_IMM && i[12].src2.imm == 0xffffff &&
+           i[13].op == HB_IR_MOV &&
+           jit_exact_reg(&i[13].dst, HB_REG_R14, HB_SIZE_64) &&
+           jit_exact_reg(&i[13].src1, HB_REG_R8, HB_SIZE_64) &&
+           i[14].op == HB_IR_MOV &&
+           jit_exact_reg(&i[14].dst, HB_REG_RBX, HB_SIZE_32) &&
+           jit_exact_reg(&i[14].src1, HB_REG_RDX, HB_SIZE_32) &&
+           i[15].op == HB_IR_MOV &&
+           jit_exact_reg(&i[15].dst, HB_REG_RSI, HB_SIZE_64) &&
+           jit_exact_reg(&i[15].src1, HB_REG_RCX, HB_SIZE_64) &&
+           i[16].op == HB_IR_CMP &&
+           jit_exact_reg(&i[16].src1, HB_REG_RDX, HB_SIZE_32) &&
+           jit_exact_reg(&i[16].src2, HB_REG_RAX, HB_SIZE_32) &&
+           i[17].op == HB_IR_Jcc && i[17].cc == HB_CC_B &&
+           i[17].target == block->guest_addr + 0x59;
+}
+
+static bool mono_metadata_decode_col_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 13) return false;
+    const hb_ir_instr_t* i = block->instrs;
+
+    return i[0].op == HB_IR_STORE &&
+           jit_exact_mem(&i[0].src1, HB_REG_RSP, HB_REG_COUNT, 1, 8, HB_SIZE_64) &&
+           jit_exact_reg(&i[0].src2, HB_REG_RBX, HB_SIZE_64) &&
+           i[1].op == HB_IR_STORE &&
+           jit_exact_mem(&i[1].src1, HB_REG_RSP, HB_REG_COUNT, 1, 16, HB_SIZE_64) &&
+           jit_exact_reg(&i[1].src2, HB_REG_RBP, HB_SIZE_64) &&
+           i[2].op == HB_IR_STORE &&
+           jit_exact_mem(&i[2].src1, HB_REG_RSP, HB_REG_COUNT, 1, 24, HB_SIZE_64) &&
+           jit_exact_reg(&i[2].src2, HB_REG_RSI, HB_SIZE_64) &&
+           i[3].op == HB_IR_PUSH &&
+           jit_exact_reg(&i[3].src1, HB_REG_RDI, HB_SIZE_64) &&
+           i[4].op == HB_IR_SUB &&
+           jit_exact_reg(&i[4].dst, HB_REG_RSP, HB_SIZE_64) &&
+           jit_exact_reg(&i[4].src1, HB_REG_RSP, HB_SIZE_64) &&
+           i[4].src2.type == HB_OP_IMM && i[4].src2.imm == 32 &&
+           i[5].op == HB_IR_LOAD &&
+           jit_exact_reg(&i[5].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_mem(&i[5].src1, HB_REG_RCX, HB_REG_COUNT, 1, 8, HB_SIZE_32) &&
+           i[6].op == HB_IR_MOV &&
+           jit_exact_reg(&i[6].dst, HB_REG_RSI, HB_SIZE_32) &&
+           jit_exact_reg(&i[6].src1, HB_REG_R8, HB_SIZE_32) &&
+           i[7].op == HB_IR_LOAD &&
+           jit_exact_reg(&i[7].dst, HB_REG_RBX, HB_SIZE_32) &&
+           jit_exact_mem(&i[7].src1, HB_REG_RCX, HB_REG_COUNT, 1, 12, HB_SIZE_32) &&
+           i[8].op == HB_IR_AND &&
+           jit_exact_reg(&i[8].dst, HB_REG_RAX, HB_SIZE_32) &&
+           jit_exact_reg(&i[8].src1, HB_REG_RAX, HB_SIZE_32) &&
+           i[8].src2.type == HB_OP_IMM && i[8].src2.imm == 0xffffff &&
+           i[9].op == HB_IR_MOV &&
+           jit_exact_reg(&i[9].dst, HB_REG_RBP, HB_SIZE_32) &&
+           jit_exact_reg(&i[9].src1, HB_REG_RDX, HB_SIZE_32) &&
+           i[10].op == HB_IR_MOV &&
+           jit_exact_reg(&i[10].dst, HB_REG_RDI, HB_SIZE_64) &&
+           jit_exact_reg(&i[10].src1, HB_REG_RCX, HB_SIZE_64) &&
+           i[11].op == HB_IR_CMP &&
+           jit_exact_reg(&i[11].src1, HB_REG_RDX, HB_SIZE_32) &&
+           jit_exact_reg(&i[11].src2, HB_REG_RAX, HB_SIZE_32) &&
+           i[12].op == HB_IR_Jcc && i[12].cc == HB_CC_B &&
+           i[12].target == block->guest_addr + 0x4b;
+}
+
+static bool mono_metadata_coded_index_search_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 9) return false;
+    const hb_ir_instr_t* i = block->instrs;
+
+    return i[0].op == HB_IR_PUSH &&
+           jit_exact_reg(&i[0].src1, HB_REG_RBX, HB_SIZE_64) &&
+           i[1].op == HB_IR_PUSH &&
+           jit_exact_reg(&i[1].src1, HB_REG_RDI, HB_SIZE_64) &&
+           i[2].op == HB_IR_PUSH &&
+           jit_exact_reg(&i[2].src1, HB_REG_R14, HB_SIZE_64) &&
+           i[3].op == HB_IR_SUB &&
+           jit_exact_reg(&i[3].dst, HB_REG_RSP, HB_SIZE_64) &&
+           jit_exact_reg(&i[3].src1, HB_REG_RSP, HB_SIZE_64) &&
+           i[3].src2.type == HB_OP_IMM && i[3].src2.imm == 48 &&
+           i[4].op == HB_IR_LEA &&
+           jit_exact_reg(&i[4].dst, HB_REG_R14, HB_SIZE_64) &&
+           jit_exact_mem(&i[4].src1, HB_REG_RCX, HB_REG_COUNT, 1, 0x390, HB_SIZE_64) &&
+           i[5].op == HB_IR_MOV &&
+           jit_exact_reg(&i[5].dst, HB_REG_RBX, HB_SIZE_64) &&
+           jit_exact_reg(&i[5].src1, HB_REG_R8, HB_SIZE_64) &&
+           i[6].op == HB_IR_MOV &&
+           jit_exact_reg(&i[6].dst, HB_REG_RDI, HB_SIZE_32) &&
+           jit_exact_reg(&i[6].src1, HB_REG_RDX, HB_SIZE_32) &&
+           i[7].op == HB_IR_TEST &&
+           jit_exact_reg(&i[7].src1, HB_REG_R8, HB_SIZE_64) &&
+           jit_exact_reg(&i[7].src2, HB_REG_R8, HB_SIZE_64) &&
+           i[8].op == HB_IR_Jcc && i[8].cc == HB_CC_NE &&
+           i[8].target == block->guest_addr + 0x3a;
 }
 
 static bool emit_unity_string_bsearch_loop(hb_codegen_buffer_t* buf,
@@ -2814,6 +3149,150 @@ static bool emit_unity_string_bsearch_loop(hb_codegen_buffer_t* buf,
     emit_mov_reg(buf, 0, 19);
     emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
     emit_call_helper(buf, (void*)hb_jit_helper_exec_unity_string_bsearch_loop);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_unity_u32_ptr_compare(hb_codegen_buffer_t* buf,
+                                       const hb_ir_block_t* block) {
+    if (!unity_u32_ptr_compare_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=unity-u32-ptr-compare block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_unity_u32_ptr_compare);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_mono_string_hash(hb_codegen_buffer_t* buf,
+                                  const hb_ir_block_t* block) {
+    if (!mono_string_hash_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-string-hash block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_mono_string_hash);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_mono_string_equal(hb_codegen_buffer_t* buf,
+                                   const hb_ir_block_t* block) {
+    if (!mono_string_equal_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-string-equal block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_mono_string_equal);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_mono_metadata_bsearch_loop(hb_codegen_buffer_t* buf,
+                                            const hb_ir_block_t* block) {
+    if (!mono_metadata_bsearch_loop_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-bsearch block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_mono_metadata_bsearch_loop);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_mono_metadata_rowptr_entry(hb_codegen_buffer_t* buf,
+                                            const hb_ir_block_t* block) {
+    if (!mono_metadata_rowptr_entry_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-rowptr-entry block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_mono_metadata_rowptr_entry);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_mono_metadata_decode_row_loop(hb_codegen_buffer_t* buf,
+                                               const hb_ir_block_t* block) {
+    if (!mono_metadata_decode_row_loop_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-decode-row block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_mono_metadata_decode_row_loop);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_mono_metadata_decode_row_entry(hb_codegen_buffer_t* buf,
+                                                const hb_ir_block_t* block) {
+    if (!mono_metadata_decode_row_entry_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-decode-row-entry block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_mono_metadata_decode_row_entry);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_mono_metadata_decode_col(hb_codegen_buffer_t* buf,
+                                          const hb_ir_block_t* block) {
+    if (!mono_metadata_decode_col_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-decode-col block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_mono_metadata_decode_col);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_mono_metadata_coded_index_search(hb_codegen_buffer_t* buf,
+                                                  const hb_ir_block_t* block) {
+    if (!mono_metadata_coded_index_search_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-coded-index-search block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_mono_metadata_coded_index_search);
     emit_return_if_helper_failed(buf);
     return true;
 }
@@ -4434,7 +4913,787 @@ void hb_jit_helper_exec_unity_string_bsearch_loop(hb_context_t* ctx,
         ctx->regs.x64.rip = ctx->pc;
         hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_TEST, HB_SIZE_64, r9, r9, r9, 0);
     }
+	    ctx->last_result = r;
+}
+
+void hb_jit_helper_exec_unity_u32_ptr_compare(hb_context_t* ctx,
+                                              const hb_ir_block_t* block) {
+    uint64_t rsp, ret_addr, rcx, rdx;
+    uint32_t lhs = 0;
+    uint32_t rhs = 0;
+    uint64_t rax;
+    uint8_t al;
+    hb_result_t r;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !unity_u32_ptr_compare_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    rsp = ctx->regs.x64.rsp;
+    rcx = ctx->regs.x64.rcx;
+    rdx = ctx->regs.x64.rdx;
+    r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_memory_read_u32(ctx->memory, rdx, &rhs);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_memory_read_u32(ctx->memory, rcx, &lhs);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+
+    rax = rhs;
+    if (lhs != rhs) {
+        al = ((int32_t)lhs < (int32_t)rhs) ? 1u : 0u;
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_32,
+                           lhs, rhs, (uint32_t)(lhs - rhs), 0);
+    } else {
+        al = (rcx < rdx) ? 1u : 0u;
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_64,
+                           rcx, rdx, rcx - rdx, 0);
+    }
+
+    ctx->regs.x64.rax = (rax & ~0xffull) | al;
+    ctx->regs.x64.rsp = rsp + 8u;
+    ctx->pc = ret_addr;
+    hb_jit_helper_sync_pc(ctx);
+    ctx->last_result = HB_OK;
+}
+
+void hb_jit_helper_exec_mono_string_hash(hb_context_t* ctx,
+                                         const hb_ir_block_t* block) {
+    uint64_t rsp, ret_addr, rcx;
+    uint32_t eax = 0;
+    uint8_t ch = 0;
+    bool loop_entered = false;
+    hb_result_t r;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !mono_string_hash_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    rsp = ctx->regs.x64.rsp;
+    rcx = ctx->regs.x64.rcx;
+    r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_memory_read_u8(ctx->memory, rcx, &ch);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+
+    if (ch != 0) {
+        loop_entered = true;
+        for (uint64_t iter = 0;; iter++) {
+            if (iter >= (1u << 20)) {
+                ctx->last_result = HB_ERR_EXEC_FAULT;
+                return;
+            }
+            r = hb_memory_read_u8(ctx->memory, rcx + 1u, &ch);
+            if (r != HB_OK) { ctx->last_result = r; return; }
+            rcx++;
+            eax = (uint32_t)(eax * 31u - (uint32_t)(int32_t)(int8_t)ch);
+            if (ch == 0) break;
+        }
+    }
+
+    ctx->regs.x64.rax = eax;
+    ctx->regs.x64.rcx = rcx;
+    if (loop_entered) {
+        ctx->regs.x64.r8 = 0;
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_TEST, HB_SIZE_8, 0, 0, 0, 0);
+    } else {
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_8, 0, 0, 0, 0);
+    }
+    ctx->regs.x64.rsp = rsp + 8u;
+    ctx->pc = ret_addr;
+    hb_jit_helper_sync_pc(ctx);
+    ctx->last_result = HB_OK;
+}
+
+void hb_jit_helper_exec_mono_string_equal(hb_context_t* ctx,
+                                          const hb_ir_block_t* block) {
+    uint64_t rsp, ret_addr, rcx, rdx, offset;
+    uint32_t eax = 0;
+    uint32_t r8d = 0;
+    hb_result_t r;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !mono_string_equal_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    rsp = ctx->regs.x64.rsp;
+    rcx = ctx->regs.x64.rcx;
+    rdx = ctx->regs.x64.rdx;
+    r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+
+    if (rcx == rdx) {
+        ctx->regs.x64.rax = 1;
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_64, rcx, rdx, 0, 0);
+        ctx->regs.x64.rsp = rsp + 8u;
+        ctx->pc = ret_addr;
+        hb_jit_helper_sync_pc(ctx);
+        ctx->last_result = HB_OK;
+        return;
+    }
+
+    offset = rdx - rcx;
+    rdx = offset;
+    for (uint64_t iter = 0;; iter++) {
+        uint8_t lhs = 0;
+        uint8_t rhs = 0;
+        if (iter >= (1u << 20)) {
+            ctx->last_result = HB_ERR_EXEC_FAULT;
+            return;
+        }
+        r = hb_memory_read_u8(ctx->memory, rcx, &lhs);
+        if (r != HB_OK) { ctx->last_result = r; return; }
+        r = hb_memory_read_u8(ctx->memory, rcx + offset, &rhs);
+        if (r != HB_OK) { ctx->last_result = r; return; }
+        eax = rhs;
+        r8d = (uint32_t)lhs - (uint32_t)rhs;
+        if (r8d != 0) {
+            eax = 0;
+            hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_XOR, HB_SIZE_32, 0, 0, 0, 0);
+            break;
+        }
+        rcx++;
+        if (rhs == 0) {
+            eax = 1;
+            hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_TEST, HB_SIZE_32, 0, 0, 0, 0);
+            break;
+        }
+    }
+
+    ctx->regs.x64.rax = eax;
+    ctx->regs.x64.rcx = rcx;
+    ctx->regs.x64.rdx = rdx;
+    ctx->regs.x64.r8 = r8d;
+    ctx->regs.x64.rsp = rsp + 8u;
+    ctx->pc = ret_addr;
+    hb_jit_helper_sync_pc(ctx);
+    ctx->last_result = HB_OK;
+}
+
+void hb_jit_helper_exec_mono_metadata_rowptr_entry(hb_context_t* ctx,
+                                                   const hb_ir_block_t* block) {
+    uint64_t rsp, ret_addr, table, base;
+    uint32_t idx, rows;
+    hb_result_t r;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !mono_metadata_rowptr_entry_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    rsp = ctx->regs.x64.rsp;
+    table = ctx->regs.x64.rcx;
+    idx = (uint32_t)ctx->regs.x64.rdx;
+    r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_memory_read_u32(ctx->memory, table + 0x80u, &rows);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+
+    if (idx >= rows) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    r = hb_jit_read_guest_u64_result(ctx, table + 0x78u, &base);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+
+    ctx->regs.x64.rax = base + idx;
+    ctx->regs.x64.rcx = rows;
+    hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_ADD, HB_SIZE_64,
+                       rsp - 0x48u, 0x40u, rsp - 8u, 0);
+    ctx->regs.x64.rsp = rsp + 8u;
+    ctx->pc = ret_addr;
+    hb_jit_helper_sync_pc(ctx);
+    ctx->last_result = HB_OK;
+}
+
+void hb_jit_helper_exec_mono_metadata_bsearch_loop(hb_context_t* ctx,
+                                                   const hb_ir_block_t* block) {
+    const hb_ir_instr_t* i;
+    size_t n = 0;
+    uint64_t rax, rbx, rcx, rdx, rbp, r8, r9, r10;
+    uint64_t loop_pc;
+    uint64_t fallthrough_pc;
+    hb_result_t r = HB_OK;
+    bool loop_taken = false;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !mono_metadata_bsearch_loop_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    i = mono_metadata_bsearch_loop_instrs(block, &n);
+    loop_pc = i[0].guest_addr;
+    fallthrough_pc = i[17].guest_addr + i[17].guest_len;
+
+    rax = ctx->regs.x64.rax;
+    rbx = ctx->regs.x64.rbx;
+    rcx = ctx->regs.x64.rcx;
+    rdx = ctx->regs.x64.rdx;
+    rbp = ctx->regs.x64.rbp;
+    r8 = ctx->regs.x64.r8;
+    r9 = ctx->regs.x64.r9;
+    r10 = ctx->regs.x64.r10;
+
+    for (uint64_t iter = 0; iter < (1u << 20); iter++) {
+        uint32_t eax = (uint32_t)r9 + (uint32_t)rbp;
+        uint32_t ecx;
+        uint32_t tmp32 = 0;
+        uint64_t node = 0;
+        bool add_no_carry;
+        bool cmp_above_or_equal;
+
+        rax = eax;
+        rdx = ((int32_t)eax < 0) ? 0xffffffffu : 0u;
+        eax = (uint32_t)(eax - (uint32_t)rdx);
+        eax = (uint32_t)((int32_t)eax >> 1);
+        rax = eax;
+        rcx = (uint64_t)(int64_t)(int32_t)eax;
+
+        r = hb_jit_read_guest_u64_result(ctx, rbx + rcx * 8u + 24u, &node);
+        if (r != HB_OK) break;
+        rcx = node;
+        r = hb_memory_read_u32(ctx->memory, rcx + 28u, &tmp32);
+        if (r != HB_OK) break;
+        r8 = (uint64_t)(int64_t)(int32_t)tmp32;
+        r = hb_jit_read_guest_u64_result(ctx, rcx + 16u, &rcx);
+        if (r != HB_OK) break;
+        r8 += rcx;
+        ecx = eax;
+
+        add_no_carry = eax != 0xffffffffu;
+        cmp_above_or_equal = r10 >= r8;
+        eax = (uint32_t)(eax + 1u);
+        rax = eax;
+        if (add_no_carry) ecx = (uint32_t)r9;
+        r9 = ecx;
+        if (cmp_above_or_equal) rbp = eax;
+        rcx = ecx;
+        loop_taken = (int32_t)(uint32_t)rbp < (int32_t)ecx;
+        if (!loop_taken) break;
+    }
+
+    ctx->regs.x64.rax = rax;
+    ctx->regs.x64.rcx = rcx;
+    ctx->regs.x64.rdx = rdx;
+    ctx->regs.x64.rbp = rbp;
+    ctx->regs.x64.r8 = r8;
+    ctx->regs.x64.r9 = r9;
+
+    if (r == HB_OK) {
+        uint32_t lhs = (uint32_t)rbp;
+        uint32_t rhs = (uint32_t)rcx;
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_32, lhs, rhs,
+                           (uint32_t)(lhs - rhs), 0);
+        ctx->pc = loop_taken ? loop_pc : fallthrough_pc;
+        hb_jit_helper_sync_pc(ctx);
+    }
     ctx->last_result = r;
+}
+
+void hb_jit_helper_exec_mono_metadata_decode_row_loop(hb_context_t* ctx,
+                                                      const hb_ir_block_t* block) {
+    uint64_t rax, rbx, rcx, rdx, r8, r9, r14, r15;
+    uint64_t fallthrough_pc;
+    hb_result_t r = HB_OK;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !mono_metadata_decode_row_loop_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    rax = ctx->regs.x64.rax;
+    rbx = ctx->regs.x64.rbx;
+    rcx = (uint32_t)ctx->regs.x64.rdx;
+    rdx = ctx->regs.x64.rdx;
+    r8 = ctx->regs.x64.r8;
+    r9 = ctx->regs.x64.r9;
+    r14 = ctx->regs.x64.r14;
+    r15 = ctx->regs.x64.r15;
+    fallthrough_pc = block->guest_addr + 0x4c;
+
+    for (uint64_t iter = 0; (int64_t)rdx < (int64_t)r9; iter++) {
+        uint32_t width = ((uint32_t)r15 >> ((uint8_t)rcx & 31)) & 3u;
+        uint32_t value = 0;
+        uint8_t v8 = 0;
+        uint16_t v16 = 0;
+
+        if (iter >= (1u << 20)) {
+            r = HB_ERR_EXEC_FAULT;
+            break;
+        }
+
+        width++;
+        r8 = width;
+        rax = width - 1u;
+        if ((uint32_t)rax == 0) {
+            r = hb_memory_read_u8(ctx->memory, rbx, &v8);
+            if (r != HB_OK) break;
+            value = (uint32_t)(int32_t)(int8_t)v8;
+        } else {
+            rax = (uint32_t)rax - 1u;
+            if ((uint32_t)rax == 0) {
+                r = hb_memory_read_u16(ctx->memory, rbx, &v16);
+                if (r != HB_OK) break;
+                value = v16;
+            } else if ((uint32_t)rax == 2) {
+                r = hb_memory_read_u32(ctx->memory, rbx, &value);
+                if (r != HB_OK) break;
+            } else {
+                ctx->regs.x64.rax = rax;
+                ctx->regs.x64.rcx = rcx;
+                ctx->regs.x64.rdx = rdx;
+                ctx->regs.x64.r8 = r8;
+                hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_32,
+                                   (uint32_t)rax, 2u, (uint32_t)rax - 2u, 0);
+                ctx->pc = block->guest_addr + 0x65;
+                hb_jit_helper_sync_pc(ctx);
+                ctx->last_result = HB_OK;
+                return;
+            }
+        }
+
+        r = hb_memory_write_u32(ctx->memory, r14 + rdx * 4u, value);
+        if (r != HB_OK) break;
+        rcx = (uint32_t)((uint32_t)rcx + 2u);
+        rax = width;
+        rdx++;
+        rbx += rax;
+    }
+
+    ctx->regs.x64.rax = rax;
+    ctx->regs.x64.rbx = rbx;
+    ctx->regs.x64.rcx = rcx;
+    ctx->regs.x64.rdx = rdx;
+    ctx->regs.x64.r8 = r8;
+
+    if (r == HB_OK) {
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_64,
+                           rdx, r9, rdx - r9, 0);
+        ctx->pc = fallthrough_pc;
+        hb_jit_helper_sync_pc(ctx);
+    }
+    ctx->last_result = r;
+}
+
+void hb_jit_helper_exec_mono_metadata_decode_row_entry(hb_context_t* ctx,
+                                                       const hb_ir_block_t* block) {
+    uint64_t table, out_ptr, rsp, ret_addr, base, row, rax, rcx, rdx, r8, r9;
+    uint32_t rows_field, rows, bits, cols, idx, res_size, last_width;
+    uint32_t values[64];
+    hb_result_t r;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !mono_metadata_decode_row_entry_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    table = ctx->regs.x64.rcx;
+    idx = (uint32_t)ctx->regs.x64.rdx;
+    out_ptr = ctx->regs.x64.r8;
+    cols = (uint32_t)ctx->regs.x64.r9;
+    rsp = ctx->regs.x64.rsp;
+
+    r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_jit_read_guest_u64_result(ctx, table, &base);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_memory_read_u32(ctx->memory, table + 8u, &rows_field);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_memory_read_u32(ctx->memory, table + 12u, &bits);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+
+    rows = rows_field & 0xffffffu;
+    res_size = bits >> 24;
+    if (idx >= rows || (int32_t)idx < 0 || cols != res_size ||
+        cols > (uint32_t)(sizeof(values) / sizeof(values[0])) ||
+        (!out_ptr && cols)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    row = base + (uint32_t)(idx * (uint8_t)(rows_field >> 24));
+    last_width = (uint8_t)(rows_field >> 24);
+    for (uint32_t col = 0, shift = 0; col < cols; col++, shift += 2) {
+        uint32_t width = ((bits >> (shift & 31u)) & 3u) + 1u;
+        if (width == 1u) {
+            uint8_t v = 0;
+            r = hb_memory_read_u8(ctx->memory, row, &v);
+            if (r != HB_OK) { ctx->last_result = r; return; }
+            values[col] = (uint32_t)(int32_t)(int8_t)v;
+        } else if (width == 2u) {
+            uint16_t v = 0;
+            r = hb_memory_read_u16(ctx->memory, row, &v);
+            if (r != HB_OK) { ctx->last_result = r; return; }
+            values[col] = v;
+        } else if (width == 4u) {
+            r = hb_memory_read_u32(ctx->memory, row, &values[col]);
+            if (r != HB_OK) { ctx->last_result = r; return; }
+        } else {
+            ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+            return;
+        }
+        last_width = width;
+        row += width;
+    }
+
+    for (uint32_t col = 0; col < cols; col++) {
+        r = hb_memory_write_u32(ctx->memory, out_ptr + (uint64_t)col * 4u, values[col]);
+        if (r != HB_OK) { ctx->last_result = r; return; }
+    }
+
+    rdx = cols;
+    r9 = cols;
+    if (cols) {
+        rax = last_width;
+        rcx = (uint32_t)(cols * 2u);
+        r8 = last_width;
+    } else {
+        rax = last_width;
+        rcx = table;
+        r8 = out_ptr;
+    }
+
+    ctx->regs.x64.rax = rax;
+    ctx->regs.x64.rcx = rcx;
+    ctx->regs.x64.rdx = rdx;
+    ctx->regs.x64.r8 = r8;
+    ctx->regs.x64.r9 = r9;
+    hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_64, rdx, r9, rdx - r9, 0);
+    ctx->regs.x64.rsp = rsp + 8u;
+    ctx->pc = ret_addr;
+    hb_jit_helper_sync_pc(ctx);
+    ctx->last_result = HB_OK;
+}
+
+void hb_jit_helper_exec_mono_metadata_decode_col(hb_context_t* ctx,
+                                                 const hb_ir_block_t* block) {
+    uint64_t table, rsp, ret_addr, base, row;
+    uint32_t rows_field, rows, bits, idx, col, res_size, eax, edi;
+    uint8_t row_size;
+    uint64_t r8, r9, r10;
+    hb_result_t r;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !mono_metadata_decode_col_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    table = ctx->regs.x64.rcx;
+    idx = (uint32_t)ctx->regs.x64.rdx;
+    col = (uint32_t)ctx->regs.x64.r8;
+    rsp = ctx->regs.x64.rsp;
+
+    r = hb_memory_read_u32(ctx->memory, table + 8u, &rows_field);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_memory_read_u32(ctx->memory, table + 12u, &bits);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    rows = rows_field & 0xffffffu;
+    res_size = bits >> 24;
+    if (idx >= rows || col >= res_size) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+    r = hb_memory_read_u8(ctx->memory, table + 11u, &row_size);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_jit_read_guest_u64_result(ctx, table, &base);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+
+    r8 = base + (uint64_t)row_size * idx;
+    r9 = 0;
+    r10 = 0;
+    eax = (bits & 3u) + 1u;
+    edi = 0;
+
+    if (col >= 2u) {
+        uint32_t ecx = ((col - 2u) >> 1) + 1u;
+        uint32_t edx = 4u;
+        uint64_t r11 = ecx;
+        edi = ecx + ecx;
+        do {
+            ecx = eax;
+            eax = bits;
+            r9 += ecx;
+            ecx = edx - 2u;
+            eax >>= (ecx & 31u);
+            ecx = edx;
+            eax &= 3u;
+            edx += 4u;
+            eax++;
+            r10 += eax;
+            r11--;
+        } while (r11 != 0);
+    }
+
+    if (edi < col) {
+        uint32_t ecx = eax;
+        eax = bits;
+        r8 += ecx;
+        ecx = edi * 2u + 2u;
+        eax >>= (ecx & 31u);
+        eax &= 3u;
+        eax++;
+    }
+
+    row = r8 + r10 + r9;
+    eax--;
+    if (eax == 0) {
+        uint8_t v = 0;
+        r = hb_memory_read_u8(ctx->memory, row, &v);
+        if (r != HB_OK) { ctx->last_result = r; return; }
+        ctx->regs.x64.rax = (uint32_t)(int32_t)(int8_t)v;
+    } else {
+        eax--;
+        if (eax == 0) {
+            uint16_t v = 0;
+            r = hb_memory_read_u16(ctx->memory, row, &v);
+            if (r != HB_OK) { ctx->last_result = r; return; }
+            ctx->regs.x64.rax = v;
+        } else if (eax == 2) {
+            uint32_t v = 0;
+            r = hb_memory_read_u32(ctx->memory, row, &v);
+            if (r != HB_OK) { ctx->last_result = r; return; }
+            ctx->regs.x64.rax = v;
+        } else {
+            ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+            return;
+        }
+    }
+
+    hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_ADD, HB_SIZE_64,
+                       rsp - 0x28u, 0x20u, rsp - 8u, 0);
+    ctx->regs.x64.rsp = rsp + 8u;
+    ctx->pc = ret_addr;
+    hb_jit_helper_sync_pc(ctx);
+    ctx->last_result = HB_OK;
+}
+
+static hb_result_t mono_metadata_decode_col_value(hb_context_t* ctx, uint64_t table,
+                                                  uint32_t idx, uint32_t col,
+                                                  uint32_t* out_value) {
+    uint32_t rows_field, rows, bits, res_size, eax, edi;
+    uint8_t row_size;
+    uint64_t base, r8, r9, r10, row;
+    hb_result_t r;
+
+    if (!ctx || !ctx->memory || !out_value) return HB_ERR_INVALID_ARG;
+    r = hb_memory_read_u32(ctx->memory, table + 8u, &rows_field);
+    if (r != HB_OK) return r;
+    r = hb_memory_read_u32(ctx->memory, table + 12u, &bits);
+    if (r != HB_OK) return r;
+    rows = rows_field & 0xffffffu;
+    res_size = bits >> 24;
+    if (idx >= rows || col >= res_size) return HB_ERR_INVALID_ARG;
+    r = hb_memory_read_u8(ctx->memory, table + 11u, &row_size);
+    if (r != HB_OK) return r;
+    r = hb_jit_read_guest_u64_result(ctx, table, &base);
+    if (r != HB_OK) return r;
+
+    r8 = base + (uint64_t)row_size * idx;
+    r9 = 0;
+    r10 = 0;
+    eax = (bits & 3u) + 1u;
+    edi = 0;
+
+    if (col >= 2u) {
+        uint32_t ecx = ((col - 2u) >> 1) + 1u;
+        uint32_t edx = 4u;
+        uint64_t r11 = ecx;
+        edi = ecx + ecx;
+        do {
+            ecx = eax;
+            eax = bits;
+            r9 += ecx;
+            ecx = edx - 2u;
+            eax >>= (ecx & 31u);
+            ecx = edx;
+            eax &= 3u;
+            edx += 4u;
+            eax++;
+            r10 += eax;
+            r11--;
+        } while (r11 != 0);
+    }
+
+    if (edi < col) {
+        uint32_t ecx = eax;
+        eax = bits;
+        r8 += ecx;
+        ecx = edi * 2u + 2u;
+        eax >>= (ecx & 31u);
+        eax &= 3u;
+        eax++;
+    }
+
+    row = r8 + r10 + r9;
+    eax--;
+    if (eax == 0) {
+        uint8_t v = 0;
+        r = hb_memory_read_u8(ctx->memory, row, &v);
+        if (r != HB_OK) return r;
+        *out_value = (uint32_t)(int32_t)(int8_t)v;
+    } else {
+        eax--;
+        if (eax == 0) {
+            uint16_t v = 0;
+            r = hb_memory_read_u16(ctx->memory, row, &v);
+            if (r != HB_OK) return r;
+            *out_value = v;
+        } else if (eax == 2) {
+            r = hb_memory_read_u32(ctx->memory, row, out_value);
+            if (r != HB_OK) return r;
+        } else {
+            return HB_ERR_INVALID_ARG;
+        }
+    }
+    return HB_OK;
+}
+
+void hb_jit_helper_exec_mono_metadata_coded_index_search(hb_context_t* ctx,
+                                                         const hb_ir_block_t* block) {
+    uint64_t rsp, ret_addr, image, table, out_ptr, table_base;
+    uint32_t token, token_type, tag, key, rows_field, rows, value;
+    uint8_t row_size;
+    hb_result_t r;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !mono_metadata_coded_index_search_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    rsp = ctx->regs.x64.rsp;
+    image = ctx->regs.x64.rcx;
+    token = (uint32_t)ctx->regs.x64.rdx;
+    out_ptr = ctx->regs.x64.r8;
+    table = image + 0x390u;
+
+    if (!out_ptr) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_jit_read_guest_u64_result(ctx, table, &table_base);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+
+    if (!table_base) {
+        ctx->regs.x64.rax = 0;
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_ADD, HB_SIZE_64,
+                           rsp - 0x48u, 0x30u, rsp - 0x18u, 0);
+        ctx->regs.x64.rsp = rsp + 8u;
+        ctx->pc = ret_addr;
+        hb_jit_helper_sync_pc(ctx);
+        ctx->last_result = HB_OK;
+        return;
+    }
+
+    token_type = token >> 24;
+    if (token_type == 2u) {
+        tag = 0;
+    } else if (token_type == 6u) {
+        tag = 1;
+    } else {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    key = ((token & 0xffffffu) << 1) | tag;
+    r = hb_memory_write_u32(ctx->memory, out_ptr, key);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_memory_read_u32(ctx->memory, table + 8u, &rows_field);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    r = hb_memory_read_u8(ctx->memory, table + 11u, &row_size);
+    if (r != HB_OK) { ctx->last_result = r; return; }
+    rows = rows_field & 0xffffffu;
+
+    ctx->regs.x64.rax = 0;
+    if (rows && row_size) {
+        uint64_t low = table_base;
+        uint64_t count = rows;
+        uint32_t found = UINT32_MAX;
+
+        for (uint64_t iter = 0; count > 0; iter++) {
+            uint64_t mid_ptr;
+            uint32_t mid;
+            if (iter >= (1u << 20)) {
+                ctx->last_result = HB_ERR_EXEC_FAULT;
+                return;
+            }
+            mid_ptr = low + (count >> 1) * (uint64_t)row_size;
+            mid = (uint32_t)((mid_ptr - table_base) / row_size);
+            r = mono_metadata_decode_col_value(ctx, table, mid, 2u, &value);
+            if (r != HB_OK) { ctx->last_result = r; return; }
+            if (key == value) {
+                found = mid;
+                break;
+            }
+            if (key < value) {
+                count >>= 1;
+            } else {
+                low = mid_ptr + row_size;
+                count = (count - 1u) >> 1;
+            }
+        }
+
+        if (found != UINT32_MAX) {
+            while (found > 0) {
+                r = mono_metadata_decode_col_value(ctx, table, found - 1u, 2u, &value);
+                if (r != HB_OK) { ctx->last_result = r; return; }
+                if (value != key) break;
+                found--;
+            }
+            ctx->regs.x64.rax = (uint64_t)found + 1u;
+        }
+    }
+
+    hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_ADD, HB_SIZE_64,
+                       rsp - 0x48u, 0x30u, rsp - 0x18u, 0);
+    ctx->regs.x64.rsp = rsp + 8u;
+    ctx->pc = ret_addr;
+    hb_jit_helper_sync_pc(ctx);
+    ctx->last_result = HB_OK;
 }
 
 void hb_jit_helper_exec_setcc_lazy(hb_context_t* ctx, uint64_t cc, uint64_t dst_reg) {
@@ -4926,6 +6185,42 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         }
     }
     if (!mid_block_transfer) {
+        if (emit_unity_u32_ptr_compare(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_mono_string_hash(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_mono_string_equal(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_mono_metadata_coded_index_search(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_mono_metadata_rowptr_entry(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_mono_metadata_decode_row_entry(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_mono_metadata_decode_col(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_mono_metadata_decode_row_loop(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_mono_metadata_bsearch_loop(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
         if (emit_unity_string_bsearch_loop(out, block)) {
             emit_epilogue(out);
             return HB_OK;

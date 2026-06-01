@@ -745,6 +745,7 @@ TEB *__wine_get_current_teb_for_x18(void)
 
 extern int macrunner_hb_pc_is_x64_guest_code( void *pc );
 extern int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc );
+extern int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc );
 extern ULONG64 macrunner_hb_normalize_x64_callback_pc( ULONG64 pc );
 extern ULONG64 macrunner_hb_normalize_x64_tls_callback_pc( ULONG64 pc, ULONG64 image_base,
                                                            ULONG64 reason );
@@ -877,16 +878,30 @@ __ASM_GLOBAL_FUNC( macrunner_hb_x64_callback_trampoline,
 static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PTR fault_addr,
                                                    const char *source )
 {
-    ULONG_PTR pc, raw_pc, x4_target;
-    BOOL raw_is_guest, fault_is_guest, x4_is_guest;
+    ULONG_PTR pc, raw_pc, x4_target, x16_target;
+    BOOL raw_is_guest, fault_is_guest, x4_is_guest, x16_is_guest, sigill_source;
     static int rejected_trace_count;
 
     if (!macrunner_hb_x64_fault_routing_enabled()) return FALSE;
     raw_pc = PC_sig(context);
     x4_target = REGn_sig(4, context);
+    x16_target = REGn_sig(16, context);
     raw_is_guest = macrunner_hb_pc_is_x64_guest_code_no_lock( (void *)raw_pc );
     fault_is_guest = macrunner_hb_pc_is_x64_guest_code_no_lock( (void *)fault_addr );
     x4_is_guest = macrunner_hb_pc_is_x64_guest_code_no_lock( (void *)x4_target );
+    x16_is_guest = macrunner_hb_pc_is_x64_guest_code_no_lock( (void *)x16_target );
+    sigill_source = source && (!strcmp( source, "sigill" ) || !strcmp( source, "primary-ill" ));
+    if (sigill_source)
+    {
+        if (!raw_is_guest)
+            raw_is_guest = macrunner_hb_pc_is_x64_guest_code_module_no_lock( (void *)raw_pc );
+        if (fault_addr && !fault_is_guest)
+            fault_is_guest = macrunner_hb_pc_is_x64_guest_code_module_no_lock( (void *)fault_addr );
+        if (!x4_is_guest)
+            x4_is_guest = macrunner_hb_pc_is_x64_guest_code_module_no_lock( (void *)x4_target );
+        if (!x16_is_guest)
+            x16_is_guest = macrunner_hb_pc_is_x64_guest_code_module_no_lock( (void *)x16_target );
+    }
 
     /* Wine's ARM64EC-style indirect-call path can leave the real x64 target
      * in x4 while the architectural fault PC points at dispatch residue,
@@ -894,7 +909,13 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
      * Prefer that explicit target only when the fault PC/address already
      * identifies x64 guest execution.  Otherwise a stale native x4 register
      * can manufacture a bogus callback from an ordinary ARM64 fault. */
-    if (x4_is_guest && (raw_is_guest || fault_is_guest))
+    if (sigill_source && x16_is_guest && (raw_is_guest || fault_is_guest))
+    {
+        pc = macrunner_hb_normalize_explicit_x64_callback_target( context, x16_target );
+        TRACE( "MacRunner Phase F using x16 x64 callback target raw_pc=%p x16=%p normalized=%p\n",
+               (void *)raw_pc, (void *)x16_target, (void *)pc );
+    }
+    else if (x4_is_guest && (raw_is_guest || fault_is_guest))
     {
         pc = macrunner_hb_normalize_explicit_x64_callback_target( context, x4_target );
         TRACE( "MacRunner Phase F using x4 x64 callback target raw_pc=%p x4=%p normalized=%p\n",
@@ -1792,6 +1813,37 @@ static void macrunner_hb_trace_callback_target_module( const char *source, ULONG
              source, (void *)pc, module_name, module, (unsigned long long)rva, hex );
 }
 
+static BOOL macrunner_hb_redirect_arm64x_hexpthk_sigill( ucontext_t *context )
+{
+    static const unsigned char thunk_prefix[] = { 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x20, 0x55, 0x5d, 0xe9 };
+    unsigned char bytes[sizeof(thunk_prefix) + sizeof(LONG)];
+    ULONG_PTR pc = PC_sig(context);
+    ULONG_PTR thunk = REGn_sig(16, context);
+    ULONG_PTR target;
+    void *module;
+    LONG rel;
+
+    if (!thunk || pc < thunk || pc >= thunk + sizeof(bytes)) return FALSE;
+    if (!virtual_check_buffer_for_read( (void *)thunk, sizeof(bytes) )) return FALSE;
+    macrunner_signal_copy_bytes( bytes, (void *)thunk, sizeof(bytes) );
+    if (memcmp( bytes, thunk_prefix, sizeof(thunk_prefix) )) return FALSE;
+
+    module = macrunner_hb_readable_pe_module_from_pc( thunk );
+    if (!module || macrunner_hb_readable_pe_module_from_pc( pc ) != module) return FALSE;
+    memcpy( &rel, bytes + sizeof(thunk_prefix), sizeof(rel) );
+    target = thunk + sizeof(bytes) + rel;
+    if ((target & 3) || macrunner_hb_readable_pe_module_from_pc( target ) != module) return FALSE;
+    if (!virtual_check_buffer_for_read( (void *)target, sizeof(DWORD) )) return FALSE;
+
+    if (macrunner_hb_trace_callback_route_enabled())
+        fprintf( stderr, "macrunner-hb-arm64x-hexpthk-redirect: pc=%p thunk=%p target=%p\n",
+                 (void *)pc, (void *)thunk, (void *)target );
+    REGn_sig(16, context) = target;
+    REGn_sig(18, context) = (ULONG_PTR)NtCurrentTeb();
+    PC_sig(context) = target;
+    return TRUE;
+}
+
 static BOOL macrunner_hb_native_fault_read_u64( ULONG_PTR addr, ULONG_PTR *out )
 {
     if (!addr || !out) return FALSE;
@@ -2318,6 +2370,7 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
              (void *)(ULONG_PTR)REGn_sig(23, context),
              (void *)(ULONG_PTR)REGn_sig(26, context) );
 
+    if (macrunner_hb_redirect_arm64x_hexpthk_sigill( context )) return;
     if (macrunner_hb_route_x64_callback_fault( context, 0, "sigill" )) return;
 
     if (!(PSTATE_sig( context ) & 0x10) && /* AArch64 (not WoW) */

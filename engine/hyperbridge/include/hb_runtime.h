@@ -41,11 +41,12 @@ typedef struct {
     bool valid;
 } hb_block_cache_entry_t;
 
-#define HB_BLOCK_CACHE_SIZE 16384
+#define HB_BLOCK_CACHE_SIZE 65536
 
 /* In-memory block cache */
 typedef struct {
     hb_block_cache_entry_t entries[HB_BLOCK_CACHE_SIZE];
+    size_t count;
 } hb_block_cache_t;
 
 /* JIT executor */
@@ -55,6 +56,8 @@ typedef struct {
     hb_block_cache_t* block_cache;
     uint64_t hot_trace_blocks;
     uint64_t hot_trace_next;
+    uint64_t code_cache_full_reports;
+    bool code_cache_full;
 } hb_jit_runtime_t;
 
 hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx);

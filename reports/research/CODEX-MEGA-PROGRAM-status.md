@@ -7,11 +7,19 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
-## NEXT (operator-directed 2026-06-01) → SHIFT TO GRAPHICS / DXMT — graphics never starts
-**Latest Hollow Knight runs show NO `GfxDevice`/`d3d11`/`dxgi`/`Direct3D` markers — the renderer
-never starts, so the missing window is NOT just throughput.** JIT perf is fallback-zero + hot blocks
-native (good, KEEP it as the permanent speed foundation — not wasted), but it's at diminishing
-returns for the window. PRIMARY GOAL now = the DX11→Metal (DXMT) path. Full brief:
+## LANE SYNC POINT (2026-06-01, operator) — both lanes reconciled into HEAD `6a2b855`
+Both lanes were stopped, all Lane B ISA work (batches 06-01..06-05) merged into main, kit refreshed
+to this base. Build rc=0, runner 395/0, fast-family PASS. Now both resume from this clean base:
+- **Lane A (this main mac):** GRAPHICS / DXMT (below). JIT codegen is yours. Do NOT edit
+  `hb_decode_x64.c` / `hb_lift_x64.c` / `hb_interpreter.c` vector semantics — Lane B owns those.
+- **Lane B (Air/kit):** finishing ISA semantics (full AVX2 packed, 0F3A AES/string, MMX, EVEX) in
+  `_air-bulk-isa-kit/` per its AGENTS.md. Returns bundles via disk; operator reconciles (~daily).
+
+## NEXT (operator-directed 2026-06-01) → GRAPHICS / DXMT — Unity attach to first frame
+**DXMT staging is active and Hollow Knight now gets past `winemetal.dll`, `dxgi.dll`, and
+`d3d11.dll` process attach.** JIT perf remains fallback-zero and is the speed foundation, but
+PRIMARY GOAL now = clear UnityPlayer attach, reach Unity `GfxDevice` / DX11 device creation, then
+drive DXMT to swapchain → on-screen window → present → first frame. Full brief:
 `docs/CODEX-LANE-A-graphics-dxmt-to-window-brief.md`.
 1. FIRST diagnose why graphics doesn't start (does Unity even reach d3d11/dxgi CreateDevice, or die
    earlier in Mono/CPU init?) → `reports/research/HB-GRAPHICS-bringup-diagnosis-20260601.md`.
@@ -19,6 +27,68 @@ returns for the window. PRIMARY GOAL now = the DX11→Metal (DXMT) path. Full br
    fixtures where possible. Graphics lane is yours (`engine/dxmt`, `engine/graphics`, `engine/vkd3d`).
 3. BOUNDARY: decoder/lifter (`hb_decode_x64.c`, `hb_lift_x64.c`) belong to Lane B (the Air) now —
    **do NOT edit them.** JIT codegen stays yours.
+
+**Diagnosis checkpoint (2026-06-01 07:05 local):**
+DXMT staging is functional: `run-20260601-064714-hk-dxmt-long120` has
+`macrunner-hb-dxmt-unixlib-bridge=1`, DXGI/d3d11/winemetal attach success, and UnityPlayer attach
+success with JIT fallback/codegen/helper-fault counters all zero. The finite semantic-import pass
+removed the earlier `c000007b`/raw x64 kernel32 fallthroughs by wiring kernel32 stdio, codepage,
+time/perf, environment, bulk kernel32/kernelbase semantic-table parity, kernel32 heap,
+process/thread id/tickcount, and local-export `GetProcAddress`. Graphics is still not reached:
+`GfxDevice=0`, `D3D11CreateDevice=0`, and swapchain `0` after a clean 120s run; wait tracing in
+`run-20260601-065130-hk-dxmt-waittrace60` found no failed waits or obvious deadlock. Artificial
+block-limit evidence in `run-20260601-065324-hk-dxmt-blocklimit60` stops inside a UnityPlayer
+CFG/XFG indirect-call loop at `UnityPlayer.dll` RVA `0x19d439d` (`movabs r10, <xfg hash>; call
+[rip+0x2dd83]` through helper table entry `0x1819e89f0`). NEXT: keep graphics primary, but treat
+UnityPlayer throughput before `GfxDevice` as the current graphics bring-up blocker; profile/promote
+that hot indirect-call/dispatch path or otherwise prove a Unity init gate. Continue runs through
+`scripts/mr-run.sh`, prune with `scripts/mr-clean.sh --prune`, and do not edit Lane B-owned
+`hb_decode_x64.c` / `hb_lift_x64.c`.
+
+**Current checkpoint (2026-06-01 16:58 local):**
+PE ntdll remains the active x64 main-thread route and the crash/fault class is clear. JIT safe-default
+work since the 10:53 checkpoint added exact helper-backed promotions for two-block scan loops, Unity
+byte-compare loops, helper-heavy CRT compare blocks, terminal-`Jcc` self-loops up to 16 IR ops, the
+Mono null-qword table scan, direct-stack CALL/RET/PUSH/POP independent of unsafe direct memory, and
+the Unity int32 comparator at UnityPlayer RVA `0x649910`. The comparator promotion now has a
+near-cache fallback for CFG fragments without predecessor metadata, fires in Hollow Knight, and uses a
+single exact helper for the full `load/cmp/jne -> setb/setl/ret` family instead of generic IR-block
+dispatch. `scripts/mr-run.sh` now defaults `MACRUNNER_HB_JIT_DIRECT_STACK=1` for
+`dist-arm64ec-spike` while keeping `MACRUNNER_HB_JIT_DIRECT_MEM=0`. Validation:
+`test-20260601-1648-hb-i32-comparator-exact.log` = `395 passed, 0 failed`; staged `ntdll.so`
+build/copy `build-20260601-1649-ntdll-i32-comparator-exact.log` = `0`.
+Preserved low-trace proof `run-20260601-1418-hk-dxmt-lowtrace300` timed out cleanly:
+`c0000005=0`, `c000007b=0`, `MEMORY_FAULT=0`, `JIT codegen failed=0`, `JIT helper fault=0`,
+`macrunner-hb-jit-fallback=0`; DXMT bridge is loaded, but graphics still is not reached
+(`GfxDevice=0`, `D3D11CreateDevice=0`, `CreateSwapChain=0`, `Present=0`), so this is not just trace
+overhead. Wait-caller probe `run-20260601-1504-hk-dxmt-waitcaller75` maps the worker parks to
+UnityPlayer RVA `0x577c92/0x577f44` and the zero-timeout main poll to UnityPlayer RVA `0xcba8b2`;
+no Wine/DXMT device call is failing yet. Latest preserved run
+`run-20260601-1651-hk-dxmt-i32-comparator-exact90` remains fallback/fault-zero and pre-GfxDevice,
+with active fusions `bounded-byte-scan=456`, `copy-scan-counted=167`, `self-loop=96`,
+`byte-compare-loop=19`, `i32-less-tiebreaker=1`, `null-qword-scan=1`. Hot work still remains around
+Unity comparator/string/sort/XFG loops (`0x649910`, `0x6c44xx`, `0x2838xx`, `0x19d4xxx`). NEXT: keep
+graphics primary, but diagnose/promote the next finite Unity hot family, especially the XFG indirect
+call loop around `0x19d439d` or the sort partition loops around `0x2838xx`, until `GfxDevice`
+appears; do not edit Lane-B-owned `hb_decode_x64.c` / `hb_lift_x64.c`.
+
+**Current checkpoint (2026-06-01 18:28 local):**
+Runner preloader root cause found and fixed in `scripts/mr-run.sh`: the ARM64EC Wine app child was
+parking in macOS `_dyld_start` inside the temporary preloader copy; `WINELOADERNOEXEC=1` restores
+Wine/HyperBridge bootstrap and is now the default for `dist-arm64ec-spike`. JIT work added safe
+absolute/RIP-relative 64-bit indirect branch target loads for `CALL/JMP [abs]` without enabling broad
+`MACRUNNER_HB_JIT_DIRECT_MEM`; validation `test-20260601-1725-hb-abs-branch-target.log` =
+`395 passed, 0 failed`, staged build `build-20260601-1727-ntdll-abs-branch-target.log` = `0`.
+Hollow Knight proof after the runner fix:
+`run-20260601-1820-hk-dxmt-noexec-abs-branch-target240` timed out cleanly with DXMT loaded
+(`macrunner-hb-dxmt-unixlib-bridge=1`, `winemetal.dll=40`, `UnityPlayer.dll=48`) and zero
+`macrunner-hb-jit-fallback`, JIT codegen/helper fault, memory fault, or unsupported opcode. Renderer
+markers remain absent: `GfxDevice=0`, `D3D11CreateDevice=0`, `CreateSwapChain=0`, `Present=0`.
+Follow-up IR probe `run-20260601-1828-hk-dxmt-ir-sort-283876180` shows `0x283876` is already covered
+by the bounded-byte-scan fusion, so NEXT is the remaining finite Unity hot families: the string
+binary-search loop at `0x6c4451/0x6c4483/0x6c449e`, sort/callback loop heads around
+`0x283d31/0x283d52/0x283d91`, and residual XFG `0x19d439d`. Continue graphics-primary; switch to
+DXMT device/swapchain code only when a real `GfxDevice`/D3D11 create marker appears.
 
 ---
 

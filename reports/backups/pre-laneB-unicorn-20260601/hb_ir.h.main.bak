@@ -212,10 +212,8 @@ typedef enum {
     HB_IR_SHL,
     HB_IR_SHR,
     HB_IR_SAR,
-    HB_IR_ROL,
-    HB_IR_ROR,
-    HB_IR_RCL,
-    HB_IR_RCR,
+    HB_IR_ROL,      /* placeholder */
+    HB_IR_ROR,      /* placeholder */
     HB_IR_SHLD,
     HB_IR_SHRD,
     HB_IR_CMP,
@@ -255,7 +253,6 @@ typedef enum {
     HB_IR_TZCNT,
     HB_IR_LZCNT,
     HB_IR_BSR,
-    HB_IR_POPCNT,
     HB_IR_BSWAP,
     HB_IR_XMM_AND,
     HB_IR_XMM_SCALAR_MOV,

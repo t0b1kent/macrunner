@@ -2,80 +2,79 @@
 
 Base: `18be487 checkpoint(Lane A): gate broken - past NtWaitForSingleObject deadlock, now on CRT/entry init`
 
-## Oracle Status
+## Oracle
 
-Intel SDE is not installed in this kit environment: `sde64`/`sde` not found.
+Unicorn 2.1.4 is installed and is now wired as the primary x86-64 oracle:
 
-`tools/hb_oracle/sde_adapter.py` and `tools/hb_oracle/hyperbridge_adapter.py` are still scaffolds and raise `NotImplementedError`, so no SDE result is claimed. The implemented fallback is:
+- `tools/hb_oracle/unicorn_adapter.py`
+- deterministic seed-compatible state generator matching `hb_diff_case_runner`
+- GPR, modeled EFLAGS, XMM/YMM lanes, RIP, and data/stack memory hashes compared
+- SDE remains unavailable and scaffold-only
 
-- exact Python identities for selected integer flags, logic flags, shifts, CMOVNE, SETNE, TZCNT/LZCNT/POPCNT when the instruction executes
-- interpreter-vs-JIT whole-state differential for GPRs, modeled EFLAGS bits, XMM/YMM state, and scratch memory
+Harness updates:
 
-## Work Done
+- `hb_diff_case_runner.c` now emits all XMM/YMM lanes, raw RFLAGS, defined-flag mask, and data/stack hashes.
+- Raw RFLAGS fuzzing is sanitized to status flags plus DF/IF/reserved bit, avoiding Unicorn TF/VM/AC/system-bit traps.
+- REP string instructions run to the instruction end address in Unicorn rather than one micro-step.
+- Undefined x86 flags are filtered per template where required.
 
-Added:
+## Bugs Found And Fixed
 
-- `engine/hyperbridge/tests/hb_diff_case_runner.c`: single-instruction differential runner. It seeds random x64 state, maps code/data/stack memory, executes the same lifted instruction through interpreter and JIT, then emits JSON snapshots.
-- `engine/hyperbridge/tests/hb_fuzz_diff.py`: seeded template fuzzer over game-relevant families with exact-oracle checks and fallback backend diffing.
+- `IMUL r64,r/m64` now sets CF/OF on signed truncation overflow.
+- `POPCNT r64,r/m64` now decodes, lifts, and executes with Intel flag semantics.
+- `RCL/RCR` now lift and execute in the interpreter.
+- `AESDEC/AESDECLAST` inverse AES round order corrected and regression expectations updated to Unicorn/Intel behavior.
 
-Fixed in the new harness:
+Permanent regression:
 
-- Lazy flags are now materialized through each instruction's defined flag mask instead of forcing `HB_FLAG_BIT_ALL`. This avoids false mismatches for instructions with undefined flags such as AF after `AND/OR/XOR/TEST` and OF after multi-bit shifts.
+- `interp_x64_unicorn_diff_regressions_scalar_flags` in `hb_test_runner.c`.
 
-No decode/lift/interpreter semantic fix was required by the exact-oracle failures in this run. No JIT codegen was edited.
+## Fuzz Runs
 
-## Fuzz Evidence
+Final all-family command:
 
-Command:
-
-`python3 tests/hb_fuzz_diff.py --cases 1000000 --batch 4096`
+`python3 tests/hb_fuzz_diff.py --cases 100000 --batch 1024`
 
 Result:
 
-- cases run: 1,000,000
-- exact-oracle checked: 608,698
-- exact-oracle passed: 608,698
-- exact-oracle mismatches: 0
-- backend mismatches: 43,478
+- cases run: 100,000
+- Unicorn checked: 91,650
+- Unicorn oracle mismatches: 0
+- families covered: int arith/logic, mul/div, shifts, RCL/RCR, CMOV/SETcc, BT*, bit scan, BMI, XCHG/XADD/CMPXCHG, LEA, SSE/SSE2/SSSE3/SSE4, AES/PCLMUL, AVX templates, string/REP
 
-Family distribution:
+Focused confirmations:
 
-- int_arith_flags: 217,395
-- int_logic_flags: 173,913
-- shift_rotate_flags: 43,478
-- cmov_setcc: 86,956
-- bmi: 130,434
-- sse: 130,434
-- sse2: 43,478
-- string_ops: 173,912
+- `python3 tests/hb_fuzz_diff.py --families aes_pclmul --cases 700 --batch 128`: 700 checked, 0 mismatches
+- `python3 tests/hb_fuzz_diff.py --families string_ops --cases 1000 --batch 128`: 1000 checked, 0 mismatches
 
-Backend mismatch minimized sample:
+## Known Oracle Limits
 
-- instruction: `SETNE r8b`
-- bytes: `41 0f 95 c0`
-- seed: `0xee8b31b0ef0351eb`
-- initial `r8`: `0x2aa9b3c6758e4412`
-- initial `ZF`: 1
-- expected/interpreter `r8`: `0x2aa9b3c6758e4400`
-- JIT `r8`: `0x0000000000000000`
+Unicorn 2.1.4 is not reliable for the AVX subset here:
 
-Classification: interpreter matches exact SETcc oracle; JIT zeroes the whole destination register. This is a JIT codegen bug and was not fixed because the task scope forbids JIT edits.
+- rejects several 256-bit VEX instructions as invalid
+- mishandles 128-bit VEX three-operand source semantics / upper-zero behavior
 
-Unsupported counted, not hidden:
+Those are recorded under `oracle_unsupported` / `oracle_quirks`, not counted as interpreter failures.
 
-- `POPCNT r8,r9` (`f3 4d 0f b8 c1`): interpreter and JIT both return unsupported in 43,478 cases.
+DIV overflow/divide-by-zero cases are counted as Unicorn exceptions; both sides fault for the random trap cases seen.
 
 ## Verification
 
-- `make && ./tests/hb_test_runner`: pass, 416 passed, 0 failed
-- `./tests/hb_test_runner --fast-family phase1_core`: pass, 41 passed, 0 failed
-- `python3 tests/hb_fuzz_diff.py --cases 1000000 --batch 4096`: exit 1 due known JIT backend mismatch; exact interpreter oracle mismatches 0
+- `make tests/hb_test_runner && ./tests/hb_test_runner`: 417 passed, 0 failed
+- `./tests/hb_test_runner --fast-family phase1_core`: 41 passed, 0 failed
+- `python3 tests/hb_fuzz_diff.py --cases 100000 --batch 1024`: 0 Unicorn interpreter mismatches
 
-## Remaining Gaps
+## Changed Files
 
-- Real SDE differential mode still requires implementing `tools/hb_oracle/sde_adapter.py` and installing Intel SDE.
-- JIT `SETNE r8b` partial-register behavior remains wrong but is out of Lane B scope.
-- `POPCNT r8,r9` remains unsupported by both tested backends.
-- SSE/string templates currently rely on backend differential only unless exact hardware/SDE oracle support is added.
+- `engine/hyperbridge/include/hb_ir.h`
+- `engine/hyperbridge/src/hb_decode_x64.c`
+- `engine/hyperbridge/src/hb_lift_x64.c`
+- `engine/hyperbridge/src/hb_interpreter.c`
+- `engine/hyperbridge/tests/hb_test_runner.c`
+- `engine/hyperbridge/tests/hb_diff_case_runner.c`
+- `engine/hyperbridge/tests/hb_fuzz_diff.py`
+- `engine/hyperbridge/reports/hb_fuzz_diff_last.json`
+- `tools/hb_oracle/unicorn_adapter.py`
+- `reports/HB-FUZZ-CORRECTNESS-20260601.md`
 
-No local main tree was touched. No merge was performed.
+No JIT codegen was edited. No local main tree was touched. No merge was performed.

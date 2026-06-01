@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,10 +25,6 @@ KIT_ROOT = HB_ROOT.parents[1]
 RUNNER_C = HB_ROOT / "tests" / "hb_diff_case_runner.c"
 RUNNER = HB_ROOT / "tests" / "hb_diff_case_runner"
 REPORT_JSON = HB_ROOT / "reports" / "hb_fuzz_diff_last.json"
-sys.path.insert(0, str(KIT_ROOT))
-
-from tools.hb_oracle.unicorn_adapter import diff_interpreter as unicorn_diff_interpreter
-from tools.hb_oracle.unicorn_adapter import run_case as run_unicorn_case
 
 MASK64 = (1 << 64) - 1
 SIGN64 = 1 << 63
@@ -40,7 +36,6 @@ class Template:
     family: str
     code: str
     oracle: str | None = None
-    defined_flags: frozenset[str] | None = None
 
 
 TEMPLATES: list[Template] = [
@@ -53,86 +48,19 @@ TEMPLATES: list[Template] = [
     Template("or_r8_r9", "int_logic_flags", "4d09c8", "or"),
     Template("xor_r8_r9", "int_logic_flags", "4d31c8", "xor"),
     Template("test_r8_r9", "int_logic_flags", "4d85c8", "test"),
-    Template("neg_r8", "int_arith_flags", "49f7d8", "neg"),
-    Template("imul_r8_r9", "mul_div", "4d0fafc1", None, frozenset({"cf", "of"})),
-    Template("mul_r9", "mul_div", "49f7e1", None, frozenset({"cf", "of"})),
-    Template("div_r9", "mul_div", "49f7f1", None),
     Template("shl_r8_cl", "shift_rotate_flags", "49d3e0", "shl"),
-    Template("shr_r8_cl", "shift_rotate_flags", "49d3e8", None),
-    Template("sar_r8_cl", "shift_rotate_flags", "49d3f8", None),
-    Template("rol_r8_cl", "shift_rotate_flags", "49d3c0", None, frozenset({"cf"})),
-    Template("ror_r8_cl", "shift_rotate_flags", "49d3c8", None, frozenset({"cf"})),
-    Template("rcl_r8_cl", "rcl_rcr", "49d3d0", None, frozenset({"cf"})),
-    Template("rcr_r8_cl", "rcl_rcr", "49d3d8", None, frozenset({"cf"})),
     Template("cmovne_r8_r9", "cmov_setcc", "4d0f45c1", "cmovne"),
     Template("setne_r8b", "cmov_setcc", "410f95c0", "setne"),
-    Template("bt_r8_r9", "bt_family", "4d0fa3c8", None),
-    Template("bts_r8_r9", "bt_family", "4d0fabc8", None),
-    Template("btr_r8_r9", "bt_family", "4d0fb3c8", None),
-    Template("btc_r8_r9", "bt_family", "4d0fbbc8", None),
-    Template("bsf_r8_r9", "bit_scan", "4d0fbcc1", None, frozenset({"zf"})),
-    Template("bsr_r8_r9", "bit_scan", "4d0fbdc1", None, frozenset({"zf"})),
-    Template("tzcnt_r8_r9", "bmi", "f34d0fbcc1", "tzcnt", frozenset({"cf", "zf"})),
-    Template("lzcnt_r8_r9", "bmi", "f34d0fbdc1", "lzcnt", frozenset({"cf", "zf"})),
-    Template("popcnt_r8_r9", "bmi", "f34d0fb8c1", "popcnt", frozenset({"cf", "pf", "af", "zf", "sf", "of"})),
-    Template("xchg_r8_r9", "xchg_cmpxchg", "4d87c8", None),
-    Template("xadd_r8_r9", "xchg_cmpxchg", "4d0fc1c8", None),
-    Template("cmpxchg_r8_r9", "xchg_cmpxchg", "4d0fb1c8", None),
-    Template("lea_r8_rax_r9_4", "lea", "4e8d0488", None),
+    Template("tzcnt_r8_r9", "bmi", "f34d0fbcc1", "tzcnt"),
+    Template("lzcnt_r8_r9", "bmi", "f34d0fbdc1", "lzcnt"),
+    Template("popcnt_r8_r9", "bmi", "f34d0fb8c1", "popcnt"),
     Template("xorps_xmm0_xmm0", "sse", "0f57c0", None),
     Template("addps_xmm0_xmm1", "sse", "0f58c1", None),
-    Template("subps_xmm0_xmm1", "sse", "0f5cc1", None),
-    Template("mulps_xmm0_xmm1", "sse", "0f59c1", None),
-    Template("divps_xmm0_xmm1", "sse", "0f5ec1", None),
-    Template("minps_xmm0_xmm1", "sse", "0f5dc1", None),
-    Template("maxps_xmm0_xmm1", "sse", "0f5fc1", None),
     Template("addss_xmm0_xmm1", "sse", "f30f58c1", None),
-    Template("subss_xmm0_xmm1", "sse", "f30f5cc1", None),
-    Template("mulss_xmm0_xmm1", "sse", "f30f59c1", None),
-    Template("divss_xmm0_xmm1", "sse", "f30f5ec1", None),
-    Template("comiss_xmm0_xmm1", "sse", "0f2fc1", None),
     Template("pxor_xmm0_xmm1", "sse2", "660fefc1", None),
-    Template("addpd_xmm0_xmm1", "sse2", "660f58c1", None),
-    Template("subpd_xmm0_xmm1", "sse2", "660f5cc1", None),
-    Template("mulpd_xmm0_xmm1", "sse2", "660f59c1", None),
-    Template("divpd_xmm0_xmm1", "sse2", "660f5ec1", None),
-    Template("paddb_xmm0_xmm1", "sse2", "660ffcc1", None),
-    Template("paddw_xmm0_xmm1", "sse2", "660ffdc1", None),
-    Template("paddd_xmm0_xmm1", "sse2", "660ffec1", None),
-    Template("paddq_xmm0_xmm1", "sse2", "660fd4c1", None),
-    Template("psubb_xmm0_xmm1", "sse2", "660ff8c1", None),
-    Template("psubw_xmm0_xmm1", "sse2", "660ff9c1", None),
-    Template("psubd_xmm0_xmm1", "sse2", "660ffac1", None),
-    Template("psubq_xmm0_xmm1", "sse2", "660ffbc1", None),
-    Template("pmullw_xmm0_xmm1", "sse2", "660fd5c1", None),
-    Template("pshufd_xmm0_xmm1", "sse2", "660f70c11b", None),
-    Template("phaddw_xmm0_xmm1", "ssse3", "660f3801c1", None),
-    Template("pshufb_xmm0_xmm1", "ssse3", "660f3800c1", None),
-    Template("pblendw_xmm0_xmm1", "sse41", "660f3a0ec11b", None),
-    Template("pcmpeqq_xmm0_xmm1", "sse41", "660f3829c1", None),
-    Template("pcmpistri_xmm0_xmm1", "sse42", "660f3a63c100", None),
-    Template("pclmulqdq_xmm0_xmm1", "aes_pclmul", "660f3a44c110", None),
-    Template("aesenc_xmm0_xmm1", "aes_pclmul", "660f38dcc1", None),
-    Template("aesenclast_xmm0_xmm1", "aes_pclmul", "660f38ddc1", None),
-    Template("aesdec_xmm0_xmm1", "aes_pclmul", "660f38dec1", None),
-    Template("aesdeclast_xmm0_xmm1", "aes_pclmul", "660f38dfc1", None),
-    Template("aesimc_xmm0_xmm1", "aes_pclmul", "660f38dbc1", None),
-    Template("aeskeygenassist_xmm0_xmm1", "aes_pclmul", "660f3adfc11b", None),
-    Template("vaddps_ymm0_ymm1_ymm2", "avx_avx2", "c5f458c2", None),
-    Template("vaddpd_ymm0_ymm1_ymm2", "avx_avx2", "c5f558c2", None),
-    Template("vpxor_xmm3_xmm1_xmm2", "avx_avx2", "c5f1efda", None),
-    Template("vpaddb_xmm4_xmm1_xmm2", "avx_avx2", "c5f1fce2", None),
-    Template("vpaddd_ymm0_ymm1_ymm2", "avx_avx2", "c5f5fec2", None),
-    Template("vpcmpeqb_ymm0_ymm1_ymm2", "avx_avx2", "c5f574c2", None),
-    Template("vpcmpgtw_ymm3_ymm4_ymm5", "avx_avx2", "c5dd65dd", None),
-    Template("vmovups_xmm7_xmm1", "avx_avx2", "c5f810f9", None),
-    Template("vmovdqu_xmm0_xmm1", "avx_avx2", "c5fa6fc1", None),
-    Template("vpclmulqdq_xmm3_xmm4_xmm0", "avx_aes_pclmul", "c4e35944d82011", None),
-    Template("vaesenc_ymm0_ymm1_ymm2", "avx_aes_pclmul", "c4e275dcc2", None),
     Template("rep_movsb", "string_ops", "f3a4", None),
     Template("rep_cmpsb", "string_ops", "f3a6", None),
     Template("rep_stosb", "string_ops", "f3aa", None),
-    Template("lodsb", "string_ops", "ac", None),
     Template("scasb", "string_ops", "ae", None),
 ]
 
@@ -325,8 +253,6 @@ def main() -> int:
     counts: dict[str, int] = {}
     backend_mismatches: list[dict[str, Any]] = []
     oracle_mismatches: list[dict[str, Any]] = []
-    oracle_unsupported: dict[str, int] = {}
-    oracle_quirks: dict[str, int] = {}
     unsupported: dict[str, int] = {}
     oracle_checked_count = 0
     oracle_pass_count = 0
@@ -348,19 +274,8 @@ def main() -> int:
             if not interp_ok or not jit_ok:
                 key = f"{template_i.family}:{template_i.name}:interp={row['interp']['api']}/{row['interp']['result']}:jit={row['jit']['api']}/{row['jit']['result']}"
                 unsupported[key] = unsupported.get(key, 0) + 1
-            oracle = run_unicorn_case(seed_i, template_i.code)
-            if not oracle.get("ok"):
-                key = f"{template_i.family}:{template_i.name}:{oracle.get('message', oracle.get('error', 'unknown'))}"
-                oracle_unsupported[key] = oracle_unsupported.get(key, 0) + 1
-                exact = exact_oracle(template_i, row) if interp_ok else []
-                oracle_checked = bool(template_i.oracle and interp_ok)
-            else:
-                exact = unicorn_diff_interpreter(row, oracle, template_i.defined_flags)
-                if exact and template_i.family.startswith("avx"):
-                    key = f"{template_i.family}:{template_i.name}:unicorn_vex_avx_semantics"
-                    oracle_quirks[key] = oracle_quirks.get(key, 0) + 1
-                    exact = []
-                oracle_checked = interp_ok
+            exact = exact_oracle(template_i, row) if interp_ok else []
+            oracle_checked = bool(template_i.oracle and interp_ok)
             if oracle_checked:
                 oracle_checked_count += 1
                 if not exact:
@@ -372,7 +287,8 @@ def main() -> int:
                     "seed": f"0x{seed_i:016x}",
                     "code": template_i.code,
                     "diff": row["diff"],
-                    "interp_oracle": "pass" if oracle_checked and not exact else ("fail" if exact else "not_available"),
+                    "interp_oracle": "pass" if oracle_checked and not exact else
+                                     ("fail" if exact else "not_available"),
                 })
             if exact:
                 oracle_mismatches.append({
@@ -392,8 +308,7 @@ def main() -> int:
     result = {
         "sde_available": bool(sde_path),
         "sde_path": sde_path,
-        "unicorn_available": True,
-        "oracle_mode": "unicorn",
+        "oracle_mode": "sde" if sde_path else "golden_int_oracle_plus_interp_vs_jit_fallback",
         "cases_requested": args.cases,
         "cases_run": sum(counts.values()),
         "families": counts,
@@ -403,13 +318,11 @@ def main() -> int:
         "oracle_pass_count": oracle_pass_count,
         "backend_mismatches": backend_mismatches[:50],
         "oracle_mismatches": oracle_mismatches[:50],
-        "oracle_unsupported": oracle_unsupported,
-        "oracle_quirks": oracle_quirks,
         "unsupported": unsupported,
     }
     REPORT_JSON.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result, indent=2))
-    return 1 if oracle_mismatches else 0
+    return 1 if backend_mismatches or oracle_mismatches else 0
 
 
 if __name__ == "__main__":

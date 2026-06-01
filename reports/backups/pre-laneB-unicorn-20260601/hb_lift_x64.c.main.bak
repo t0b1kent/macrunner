@@ -1020,17 +1020,13 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_SHR:
         case HB_INS_SAR:
         case HB_INS_ROL:
-        case HB_INS_ROR:
-        case HB_INS_RCL:
-        case HB_INS_RCR: {
+        case HB_INS_ROR: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_op_t ir_op = (dec->opcode == HB_INS_SHL) ? HB_IR_SHL :
                                (dec->opcode == HB_INS_SHR) ? HB_IR_SHR :
                                (dec->opcode == HB_INS_SAR) ? HB_IR_SAR :
-                               (dec->opcode == HB_INS_ROL) ? HB_IR_ROL :
-                               (dec->opcode == HB_INS_ROR) ? HB_IR_ROR :
-                               (dec->opcode == HB_INS_RCL) ? HB_IR_RCL : HB_IR_RCR;
+                               (dec->opcode == HB_INS_ROL) ? HB_IR_ROL : HB_IR_ROR;
             emit(b, hb_ir_emit_binop(b, ir_op, dst, dst, src), dec);
             return HB_OK;
         }
@@ -1228,14 +1224,6 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_BSR);
-            if (i) { i->dst = dst; i->src1 = src; }
-            emit(b, i, dec);
-            return HB_OK;
-        }
-        case HB_INS_POPCNT: {
-            hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src = operand_from_dec(dec, 2);
-            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_POPCNT);
             if (i) { i->dst = dst; i->src1 = src; }
             emit(b, i, dec);
             return HB_OK;

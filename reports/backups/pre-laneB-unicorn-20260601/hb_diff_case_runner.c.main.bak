@@ -19,9 +19,6 @@
 #define HB_DIFF_DATA_SIZE  0x2000U
 #define HB_DIFF_STACK_SIZE 0x2000U
 #define HB_DIFF_MAX_CODE   15U
-#define HB_DIFF_FNV64_OFFSET 0xcbf29ce484222325ULL
-#define HB_DIFF_FNV64_PRIME  0x100000001b3ULL
-#define HB_DIFF_RFLAGS_FUZZ_MASK 0xcd5ULL
 
 typedef struct {
     uint64_t gpr[16];
@@ -75,15 +72,6 @@ static void print_hex_bytes(const uint8_t* bytes, size_t len) {
     }
 }
 
-static uint64_t fnv1a64(const uint8_t* bytes, size_t len) {
-    uint64_t h = HB_DIFF_FNV64_OFFSET;
-    for (size_t i = 0; i < len; i++) {
-        h ^= bytes[i];
-        h *= HB_DIFF_FNV64_PRIME;
-    }
-    return h;
-}
-
 static void set_flags_from_bits(hb_context_t* ctx, uint64_t bits) {
     ctx->flags.cf = (bits & 0x001) != 0;
     ctx->flags.pf = (bits & 0x004) != 0;
@@ -91,7 +79,7 @@ static void set_flags_from_bits(hb_context_t* ctx, uint64_t bits) {
     ctx->flags.zf = (bits & 0x040) != 0;
     ctx->flags.sf = (bits & 0x080) != 0;
     ctx->flags.of = (bits & 0x800) != 0;
-    ctx->regs.x64.rflags = (bits & HB_DIFF_RFLAGS_FUZZ_MASK) | 0x202ULL;
+    ctx->regs.x64.rflags = bits | 0x202ULL;
 }
 
 static uint64_t flags_to_bits(const hb_flags_t* f) {
@@ -305,17 +293,6 @@ static void print_regs_json(const hb_diff_snapshot_t* s) {
     printf(",\"rip\":\"0x%016" PRIx64 "\"}", s->rip);
 }
 
-static void print_vec_array_json(const uint8_t v[16][16]) {
-    putchar('[');
-    for (unsigned i = 0; i < 16; i++) {
-        if (i) putchar(',');
-        putchar('"');
-        print_hex_bytes(v[i], 16);
-        putchar('"');
-    }
-    putchar(']');
-}
-
 static void print_flags_json(const hb_flags_t* f) {
     printf("{\"cf\":%u,\"pf\":%u,\"af\":%u,\"zf\":%u,\"sf\":%u,\"of\":%u}",
            f->cf ? 1 : 0, f->pf ? 1 : 0, f->af ? 1 : 0,
@@ -325,30 +302,14 @@ static void print_flags_json(const hb_flags_t* f) {
 static void print_snapshot_json(const char* name, const hb_diff_snapshot_t* s) {
     printf("\"%s\":{\"api\":%d,\"result\":%d,\"regs\":", name, s->api_result, s->exec_result);
     print_regs_json(s);
-    printf(",\"rflags\":\"0x%016" PRIx64 "\"", s->rflags);
     printf(",\"flags\":");
     print_flags_json(&s->flags);
     printf(",\"flag_mask\":\"0x%02x\",\"flag_status\":%d", s->flag_mask, s->flag_status);
-    printf(",\"xmm\":");
-    print_vec_array_json(s->xmm);
-    printf(",\"ymm_hi\":");
-    print_vec_array_json(s->ymm_hi);
-    printf(",\"data_hash\":\"0x%016" PRIx64 "\",\"stack_hash\":\"0x%016" PRIx64 "\"",
-           fnv1a64(s->data, sizeof(s->data)), fnv1a64(s->stack, sizeof(s->stack)));
     printf(",\"xmm0\":\"");
     print_hex_bytes(s->xmm[0], 16);
     printf("\",\"ymm0_hi\":\"");
     print_hex_bytes(s->ymm_hi[0], 16);
-    printf("\"");
-    const char* dump_memory = getenv("HB_DIFF_DUMP_MEMORY");
-    if (dump_memory && strcmp(dump_memory, "1") == 0) {
-        printf(",\"data\":\"");
-        print_hex_bytes(s->data, sizeof(s->data));
-        printf("\",\"stack\":\"");
-        print_hex_bytes(s->stack, sizeof(s->stack));
-        printf("\"");
-    }
-    printf("}");
+    printf("\"}");
 }
 
 static void run_case_line(uint64_t seed, const char* code_hex) {

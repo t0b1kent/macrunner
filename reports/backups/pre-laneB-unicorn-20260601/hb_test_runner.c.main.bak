@@ -472,7 +472,7 @@ TEST(decode_x64_0f_unsupported_family_lengths) {
     ASSERT(d.opcode == HB_INS_SYS && d.len == 4);
 
     ASSERT(hb_decode_x64(popcnt, sizeof(popcnt), 0x1000, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_POPCNT && d.len == 4);
+    ASSERT(d.opcode == HB_INS_SYS && d.len == 4);
 
     ASSERT(hb_decode_x64(xbegin_random, sizeof(xbegin_random), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_SYS && d.len == 6);
@@ -14835,104 +14835,6 @@ TEST(interp_x64_byte_offset_propagates_through_flag_helpers) {
     tests_passed++;
 }
 
-static hb_result_t make_unicorn_diff_regression_ctx(const uint8_t* code, size_t len,
-                                                    hb_ir_func_t** out_func,
-                                                    hb_context_t** out_ctx) {
-    uint64_t base = (uint64_t)(uintptr_t)code;
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, len, base);
-    if (!dec) return HB_ERR_OUT_OF_MEMORY;
-    hb_result_t r = hb_lift_func_x64(dec, out_func);
-    hb_decoder_destroy(dec);
-    if (r != HB_OK) return r;
-    if (!*out_func) return HB_ERR_INTERNAL;
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    if (!ctx) return HB_ERR_OUT_OF_MEMORY;
-    ctx->memory = hb_memory_create(0);
-    if (!ctx->memory) {
-        hb_context_destroy(ctx);
-        return HB_ERR_OUT_OF_MEMORY;
-    }
-    r = hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, len,
-                      HB_PERM_READ | HB_PERM_EXEC);
-    if (r != HB_OK) {
-        hb_context_destroy(ctx);
-        return r;
-    }
-    ctx->pc = base;
-    *out_ctx = ctx;
-    return HB_OK;
-}
-
-TEST(interp_x64_unicorn_diff_regressions_scalar_flags) {
-    hb_exec_result_t out;
-    hb_ir_func_t* func = NULL;
-    hb_context_t* ctx = NULL;
-
-    uint8_t imul_r8_r9[] = {0x4d, 0x0f, 0xaf, 0xc1}; /* imul %r9,%r8 */
-    hb_decoded_t d;
-    ASSERT(hb_decode_x64(imul_r8_r9, sizeof(imul_r8_r9),
-                         (uint64_t)(uintptr_t)imul_r8_r9, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_IMUL);
-    ASSERT(make_unicorn_diff_regression_ctx(imul_r8_r9, sizeof(imul_r8_r9), &func, &ctx) == HB_OK);
-    ctx->regs.x64.r8 = 0x4000000000000000ULL;
-    ctx->regs.x64.r9 = 4;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT(ctx->regs.x64.r8 == 0);
-    ASSERT(ctx->flags.cf == true && ctx->flags.of == true);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t popcnt_r8_r9[] = {0xf3, 0x4d, 0x0f, 0xb8, 0xc1}; /* popcnt %r9,%r8 */
-    ASSERT(hb_decode_x64(popcnt_r8_r9, sizeof(popcnt_r8_r9),
-                         (uint64_t)(uintptr_t)popcnt_r8_r9, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_POPCNT);
-    func = NULL;
-    ASSERT(make_unicorn_diff_regression_ctx(popcnt_r8_r9, sizeof(popcnt_r8_r9), &func, &ctx) == HB_OK);
-    ctx->regs.x64.r9 = 0xf0f0000000000001ULL;
-    ctx->flags.cf = ctx->flags.pf = ctx->flags.af = true;
-    ctx->flags.sf = ctx->flags.of = true;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT(ctx->regs.x64.r8 == 9);
-    ASSERT(!ctx->flags.cf && !ctx->flags.pf && !ctx->flags.af);
-    ASSERT(!ctx->flags.zf && !ctx->flags.sf && !ctx->flags.of);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t rcl_r8_1[] = {0x49, 0xd1, 0xd0}; /* rcl %r8,1 */
-    ASSERT(hb_decode_x64(rcl_r8_1, sizeof(rcl_r8_1),
-                         (uint64_t)(uintptr_t)rcl_r8_1, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_RCL);
-    func = NULL;
-    ASSERT(make_unicorn_diff_regression_ctx(rcl_r8_1, sizeof(rcl_r8_1), &func, &ctx) == HB_OK);
-    ctx->regs.x64.r8 = 0x8000000000000000ULL;
-    ctx->flags.cf = true;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT(ctx->regs.x64.r8 == 1);
-    ASSERT(ctx->flags.cf == true && ctx->flags.of == true);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t rcr_r8_1[] = {0x49, 0xd1, 0xd8}; /* rcr %r8,1 */
-    ASSERT(hb_decode_x64(rcr_r8_1, sizeof(rcr_r8_1),
-                         (uint64_t)(uintptr_t)rcr_r8_1, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_RCR);
-    func = NULL;
-    ASSERT(make_unicorn_diff_regression_ctx(rcr_r8_1, sizeof(rcr_r8_1), &func, &ctx) == HB_OK);
-    ctx->regs.x64.r8 = 1;
-    ctx->flags.cf = true;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT(ctx->regs.x64.r8 == 0x8000000000000000ULL);
-    ASSERT(ctx->flags.cf == true && ctx->flags.of == true);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
 TEST(interp_x64_sse_visible_window_family_gaps) {
     hb_exec_result_t out;
     hb_decoder_t* dec;
@@ -19235,16 +19137,12 @@ TEST(interp_x64_aes_round_family_semantics) {
         0x2d,0x18,0x43,0xd8,0xcb,0x12,0x8f,0xe4
     };
     static const uint8_t expect_r8[16] = {
-        0xf4,0xdf,0x52,0x42,0x4d,0x0a,0xf9,0x89,
-        0x8b,0xaf,0x73,0x1a,0xf4,0xdc,0xa2,0x5e
+        0xfd,0xe3,0xba,0xd2,0x05,0xe5,0xd0,0xd7,
+        0x35,0x47,0x96,0x4e,0xf1,0xfe,0x37,0xf1
     };
     static const uint8_t expect_dk1[16] = {
         0x8c,0x56,0xdf,0xf0,0x82,0x5d,0xd3,0xf9,
         0x80,0x5a,0xd3,0xfc,0x86,0x59,0xd7,0xfd
-    };
-    static const uint8_t expect_declast[16] = {
-        0xf7,0xd7,0x3d,0x77,0xbb,0x1c,0x4d,0x2d,
-        0xde,0x04,0x07,0xcd,0x9d,0xab,0x00,0xe8
     };
     static const uint8_t aes_dk9[16] = {
         0x13,0xaa,0x29,0xbe,0x9c,0x8f,0xaf,0xf6,
@@ -19300,7 +19198,7 @@ TEST(interp_x64_aes_round_family_semantics) {
     ASSERT(memcmp(ctx->regs.x64.xmm[3], expect_r1, 16) == 0);
     ASSERT(memcmp(ctx->regs.x64.xmm[5], aes_ct, 16) == 0);
     ASSERT(memcmp(ctx->regs.x64.xmm[7], expect_r8, 16) == 0);
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expect_declast, 16) == 0);
+    ASSERT(memcmp(ctx->regs.x64.xmm[0], aes_r9, 16) == 0);
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
 
@@ -19332,7 +19230,7 @@ TEST(interp_x64_aes_round_family_semantics) {
                          HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
     ASSERT(hb_memory_map_private(ctx->memory, data_base, 0x100, HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
     uint8_t dk9_ymm[32], rk10_ymm[32], init_ymm[32], rk1_ymm[32], r9_ymm[32], ct_ymm[32];
-    uint8_t expect_r1_ymm[32], expect_r8_ymm[32], expect_declast_ymm[32];
+    uint8_t expect_r1_ymm[32], expect_r8_ymm[32];
     memcpy(dk9_ymm, aes_dk9, 16); memcpy(dk9_ymm + 16, aes_dk9, 16);
     memcpy(rk10_ymm, aes_rk10, 16); memcpy(rk10_ymm + 16, aes_rk10, 16);
     memcpy(init_ymm, aes_init, 16); memcpy(init_ymm + 16, aes_init, 16);
@@ -19341,7 +19239,6 @@ TEST(interp_x64_aes_round_family_semantics) {
     memcpy(ct_ymm, aes_ct, 16); memcpy(ct_ymm + 16, aes_ct, 16);
     memcpy(expect_r1_ymm, expect_r1, 16); memcpy(expect_r1_ymm + 16, expect_r1, 16);
     memcpy(expect_r8_ymm, expect_r8, 16); memcpy(expect_r8_ymm + 16, expect_r8, 16);
-    memcpy(expect_declast_ymm, expect_declast, 16); memcpy(expect_declast_ymm + 16, expect_declast, 16);
     ASSERT(hb_memory_write(ctx->memory, data_base, dk9_ymm, sizeof(dk9_ymm)) == HB_OK);
     ASSERT(hb_memory_write(ctx->memory, data_base + 0x20, rk10_ymm, sizeof(rk10_ymm)) == HB_OK);
     ctx->pc = (uint64_t)(uintptr_t)vex_code;
@@ -19357,7 +19254,7 @@ TEST(interp_x64_aes_round_family_semantics) {
     ASSERT(test_ymm_bytes_equal(ctx, 0, expect_r1_ymm));
     ASSERT(test_ymm_bytes_equal(ctx, 3, ct_ymm));
     ASSERT(test_ymm_bytes_equal(ctx, 6, expect_r8_ymm));
-    ASSERT(test_ymm_bytes_equal(ctx, 8, expect_declast_ymm));
+    ASSERT(test_ymm_bytes_equal(ctx, 8, r9_ymm));
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
 
@@ -21377,7 +21274,6 @@ int main(int argc, char** argv) {
     test_interp_x64_bswap_family_notepadpp_message_path();
     test_interp_x64_legacy_high8_register_family_strlen_tail();
     test_interp_x64_byte_offset_propagates_through_flag_helpers();
-    test_interp_x64_unicorn_diff_regressions_scalar_flags();
     test_interp_x64_sse_visible_window_family_gaps();
     test_interp_x64_movd_cvtdq2pd_calc_cluster();
     test_interp_x64_calc_sse2_divsd_mulsd_cluster();

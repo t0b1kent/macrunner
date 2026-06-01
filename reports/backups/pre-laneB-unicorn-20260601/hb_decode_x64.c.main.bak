@@ -3100,19 +3100,8 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         bool generic_0f_imm8_second = false;
         if (!operand16 && !prefix_f2 && !prefix_f3 && (op2 == 0x78 || op2 == 0x79)) {
             generic_0f_sys = true; /* VMREAD/VMWRITE */
-        } else if (prefix_f3 && op2 == 0xB8) {
-            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-            uint8_t modrm = read_u8(d);
-            out->opcode = HB_INS_POPCNT;
-            out->writes_flags = true;
-            uint8_t popcnt_size = rex_w ? 8 : (operand16 ? 2 : 4);
-            hb_result_t r = parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b,
-                                        popcnt_size, out, 1, 2, false);
-            if (r != HB_OK) return r;
-            refresh_rip_targets(d, out);
-            return HB_OK;
-        } else if (prefix_f3 && op2 == 0xAE) {
-            generic_0f_sys = true; /* RDFSBASE family */
+        } else if (prefix_f3 && (op2 == 0xAE || op2 == 0xB8)) {
+            generic_0f_sys = true; /* RDFSBASE/POPCNT family */
         } else if ((operand16 || prefix_f2) && op2 == 0x78) {
             generic_0f_vec = true; /* EXTRQ/INSERTQ imm8, imm8 */
             generic_0f_imm8 = true;

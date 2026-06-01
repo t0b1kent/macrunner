@@ -195,29 +195,6 @@ def generate_cases(random_count: int) -> list[Case]:
         "vex/vpmaxud": "c4 e2 75 3f c2",
         "vex/vpmuludq": "c5 f5 f4 c0",
         "vex/vpsadbw": "c5 f5 f6 c0",
-        "vex/vpbroadcastb": "c4 e2 79 78 c1",
-        "vex/vpbroadcastw": "c4 e2 7d 79 d3",
-        "vex/vpbroadcastd": "c4 e2 7d 58 e5",
-        "vex/vpbroadcastq": "c4 e2 7d 59 f7",
-        "vex/vbroadcasti128": "c4 e2 7d 5a 10",
-        "vex/vpblendd": "c4 e3 75 02 c2 aa",
-        "vex/vpermq": "c4 e3 fd 00 c2 1b",
-        "vex/vpermpd": "c4 e3 fd 01 c2 1b",
-        "vex/vinsertf128": "c4 e3 75 18 c2 01",
-        "vex/vinserti128": "c4 e3 75 38 c2 01",
-        "vex/vextractf128": "c4 e3 7d 19 c1 01",
-        "vex/vextracti128": "c4 e3 7d 39 c1 01",
-        "vex/vperm2f128": "c4 e3 75 06 c2 31",
-        "vex/vperm2i128": "c4 e3 75 46 c2 31",
-        "vex/vpsrlvd": "c4 e2 71 45 c2",
-        "vex/vpsrlvq": "c4 e2 f5 45 c2",
-        "vex/vpsravd": "c4 e2 71 46 c2",
-        "vex/vpsllvd": "c4 e2 71 47 c2",
-        "vex/vpsllvq": "c4 e2 f5 47 c2",
-        "vex/vpclmulqdq": "c4 e3 71 44 c2 10",
-        "vex/vaeskeygenassist": "c4 e3 79 df c2 1b",
-        "vex/vpermps": "c4 e2 75 16 c2",
-        "vex/vpermd": "c4 e2 75 36 c2",
         "vex/vmovq": "c4 e1 f9 6e c0",
         "evex/vaddps": "62 f1 7c 48 58 c0",
         "evex/vmovdqa32": "62 f1 7d 48 6f c0",
@@ -328,13 +305,7 @@ def normalize_capstone(mnemonic: str) -> str:
         "psubusb", "psubusw", "psubsb", "psubsw",
         "pminub", "pminsw", "pminsb", "pminsd", "pminuw", "pminud",
         "pmaxub", "pmaxsw", "pmaxsb", "pmaxsd", "pmaxuw", "pmaxud",
-        "pmuludq", "psadbw", "pbroadcastb", "pbroadcastw", "pbroadcastd",
-        "pbroadcastq", "broadcasti128", "pblendd", "permq", "permpd",
-        "insertf128", "inserti128", "extractf128", "extracti128",
-        "perm2f128", "perm2i128",
-        "psrlvd", "psrlvq", "psravd", "psllvd", "psllvq",
-        "pclmulqdq", "aeskeygenassist",
-        "permps", "permd",
+        "pmuludq", "psadbw",
     }
     if m.startswith("v") and m[1:] in implemented_vex:
         return m[1:]
@@ -408,15 +379,6 @@ def normalize_capstone(mnemonic: str) -> str:
 
 def normalize_hb(op: str) -> str:
     low = op.lower()
-    if low.startswith("vpbroadcast"):
-        return low[1:]
-    if low == "vbroadcasti128":
-        return "broadcasti128"
-    if low in {"vpblendd", "vpermq", "vpermpd", "vinsertf128", "vinserti128",
-               "vextractf128", "vextracti128", "vperm2f128", "vperm2i128",
-               "vpsrlvd", "vpsrlvq", "vpsravd", "vpsllvd", "vpsllvq",
-               "vpclmulqdq", "vaeskeygenassist", "vpermps", "vpermd"}:
-        return low[1:]
     if low in {"mov_seg", "mov_cr", "mov_dr"}:
         return "mov"
     if low == "push_seg":

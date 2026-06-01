@@ -76,12 +76,6 @@ static uint64_t vec_target(hb_ir_vec_op_t op, uint64_t arg) {
     return ((uint64_t)op << 32) | arg;
 }
 
-static uint8_t dec_imm8(const hb_decoded_t* dec) {
-    if (dec->has_imm8) return dec->imm8;
-    if (dec->op3.present && dec->op3.is_imm) return (uint8_t)dec->op3.imm;
-    return 0;
-}
-
 static hb_ir_vec_op_t vec_op_from_ins(int opcode) {
     switch (opcode) {
         case HB_INS_PHADDW: return HB_VEC_PHADDW;
@@ -142,30 +136,6 @@ static hb_ir_vec_op_t vec_op_from_ins(int opcode) {
         case HB_INS_PMAXSW: return HB_VEC_PMAXSW;
         case HB_INS_PMULUDQ: return HB_VEC_PMULUDQ;
         case HB_INS_PSADBW: return HB_VEC_PSADBW;
-        case HB_INS_VPBROADCASTB: return HB_VEC_VPBROADCASTB;
-        case HB_INS_VPBROADCASTW: return HB_VEC_VPBROADCASTW;
-        case HB_INS_VPBROADCASTD: return HB_VEC_VPBROADCASTD;
-        case HB_INS_VPBROADCASTQ: return HB_VEC_VPBROADCASTQ;
-        case HB_INS_VBROADCASTI128: return HB_VEC_VBROADCASTI128;
-        case HB_INS_VPBLENDD: return HB_VEC_VPBLENDD;
-        case HB_INS_VPERMQ: return HB_VEC_VPERMQ;
-        case HB_INS_VPERMPD: return HB_VEC_VPERMPD;
-        case HB_INS_VINSERTF128: return HB_VEC_VINSERTF128;
-        case HB_INS_VINSERTI128: return HB_VEC_VINSERTI128;
-        case HB_INS_VEXTRACTF128: return HB_VEC_VEXTRACTF128;
-        case HB_INS_VEXTRACTI128: return HB_VEC_VEXTRACTI128;
-        case HB_INS_VPERM2F128: return HB_VEC_VPERM2F128;
-        case HB_INS_VPERM2I128: return HB_VEC_VPERM2I128;
-        case HB_INS_VPSRLVD: return HB_VEC_VPSRLVD;
-        case HB_INS_VPSRLVQ: return HB_VEC_VPSRLVQ;
-        case HB_INS_VPSRAVD: return HB_VEC_VPSRAVD;
-        case HB_INS_VPSLLVD: return HB_VEC_VPSLLVD;
-        case HB_INS_VPSLLVQ: return HB_VEC_VPSLLVQ;
-        case HB_INS_PCLMULQDQ: return HB_VEC_PCLMULQDQ;
-        case HB_INS_VPCLMULQDQ: return HB_VEC_PCLMULQDQ;
-        case HB_INS_AESKEYGENASSIST: return HB_VEC_AESKEYGENASSIST;
-        case HB_INS_VPERMD: return HB_VEC_VPERMD;
-        case HB_INS_VPERMPS: return HB_VEC_VPERMPS;
         default: return 0;
     }
 }
@@ -619,36 +589,12 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_PMAXUB:
         case HB_INS_PMAXSW:
         case HB_INS_PMULUDQ:
-        case HB_INS_PSADBW:
-        case HB_INS_VPBROADCASTB:
-        case HB_INS_VPBROADCASTW:
-        case HB_INS_VPBROADCASTD:
-        case HB_INS_VPBROADCASTQ:
-        case HB_INS_VBROADCASTI128:
-        case HB_INS_VPBLENDD:
-        case HB_INS_VPERMQ:
-        case HB_INS_VPERMPD:
-        case HB_INS_VINSERTF128:
-        case HB_INS_VINSERTI128:
-        case HB_INS_VEXTRACTF128:
-        case HB_INS_VEXTRACTI128:
-        case HB_INS_VPERM2F128:
-        case HB_INS_VPERM2I128:
-        case HB_INS_VPSRLVD:
-        case HB_INS_VPSRLVQ:
-        case HB_INS_VPSRAVD:
-        case HB_INS_VPSLLVD:
-        case HB_INS_VPSLLVQ:
-        case HB_INS_PCLMULQDQ:
-        case HB_INS_VPCLMULQDQ:
-        case HB_INS_AESKEYGENASSIST:
-        case HB_INS_VPERMD:
-        case HB_INS_VPERMPS: {
+        case HB_INS_PSADBW: {
             hb_ir_vec_op_t op = vec_op_from_ins(dec->opcode);
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_VEC_PACKED);
             if (i) {
-                uint64_t imm = dec_imm8(dec);
+                uint64_t imm = dec->op3.is_imm ? ((uint64_t)dec->op3.imm & 0xffu) : 0;
                 i->dst = dst;
                 i->src1 = hb_ir_none();
                 i->src2 = hb_ir_none();
@@ -660,26 +606,11 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                     i->src1 = dst;
                     i->src2 = operand_from_dec(dec, 2);
                 } else if (dec->opcode == HB_INS_PABSB || dec->opcode == HB_INS_PABSW ||
-                            dec->opcode == HB_INS_PABSD || 
-                            (dec->opcode >= HB_INS_PMOVSXBW && dec->opcode <= HB_INS_PMOVSXDQ) ||
-                            (dec->opcode >= HB_INS_PMOVZXBW && dec->opcode <= HB_INS_PMOVZXDQ) ||
-                            dec->opcode == HB_INS_PHMINPOSUW ||
-                            (dec->opcode >= HB_INS_VPBROADCASTB && dec->opcode <= HB_INS_VBROADCASTI128) ||
-                            dec->opcode == HB_INS_AESKEYGENASSIST) {
+                           dec->opcode == HB_INS_PABSD ||
+                           (dec->opcode >= HB_INS_PMOVSXBW && dec->opcode <= HB_INS_PMOVSXDQ) ||
+                           (dec->opcode >= HB_INS_PMOVZXBW && dec->opcode <= HB_INS_PMOVZXDQ) ||
+                           dec->opcode == HB_INS_PHMINPOSUW) {
                     i->src1 = operand_from_dec(dec, 2);
-                } else if (dec->opcode == HB_INS_VPERMQ || dec->opcode == HB_INS_VPERMPD ||
-                           dec->opcode == HB_INS_VEXTRACTF128 || dec->opcode == HB_INS_VEXTRACTI128) {
-                    i->src1 = operand_from_dec(dec, 2);
-                } else if (dec->opcode == HB_INS_VPBLENDD ||
-                           dec->opcode == HB_INS_VINSERTF128 || dec->opcode == HB_INS_VINSERTI128 ||
-                           dec->opcode == HB_INS_VPERM2F128 || dec->opcode == HB_INS_VPERM2I128 ||
-                           dec->opcode == HB_INS_VPSRLVD || dec->opcode == HB_INS_VPSRLVQ ||
-                           dec->opcode == HB_INS_VPSRAVD ||
-                           dec->opcode == HB_INS_VPSLLVD || dec->opcode == HB_INS_VPSLLVQ ||
-                           dec->opcode == HB_INS_VPCLMULQDQ ||
-                           dec->opcode == HB_INS_VPERMD || dec->opcode == HB_INS_VPERMPS) {
-                    i->src1 = operand_from_dec(dec, 2);
-                    i->src2 = operand_from_dec(dec, 3);
                 } else {
                     i->src1 = vector_src1_from_dec(dec, dst);
                     i->src2 = vector_src2_from_dec(dec);

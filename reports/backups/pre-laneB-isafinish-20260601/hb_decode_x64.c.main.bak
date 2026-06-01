@@ -112,11 +112,6 @@ static inline void set_imm(hb_decoded_t* out, int slot, int64_t v, uint8_t sz) {
     }
 }
 
-static inline void set_extra_imm8(hb_decoded_t* out, uint8_t v) {
-    out->has_imm8 = true;
-    out->imm8 = v;
-}
-
 static inline void set_mem(hb_decoded_t* out, int slot,
                            int base, int index, uint8_t scale, int64_t disp, uint8_t sz) {
     if (slot == 1) {
@@ -332,8 +327,6 @@ static int sse41_0f3a_opcode(uint8_t op) {
         case 0x0d: return HB_INS_BLENDPD;
         case 0x0e: return HB_INS_PBLENDW;
         case 0x0f: return HB_INS_PALIGNR;
-        case 0x44: return HB_INS_PCLMULQDQ;
-        case 0xdf: return HB_INS_AESKEYGENASSIST;
         default: return 0;
     }
 }
@@ -906,165 +899,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             } else if (vex_map == 2 && vex_pp == 1) {
                 mapped = ssse3_0f38_opcode(vex_opcode);
                 if (!mapped) mapped = sse41_0f38_opcode(vex_opcode);
-                if (!mapped && (vex_opcode == 0x16 || vex_opcode == 0x36) && !vex_w && vex_l) {
-                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-                    uint8_t modrm = read_u8(d);
-                    out->opcode = vex_opcode == 0x16 ? HB_INS_VPERMPS : HB_INS_VPERMD;
-                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
-                                                32, out, 1, 2, false);
-                    if (r != HB_OK) return r;
-                    hb_decoded_t tmp = *out;
-                    out->op3 = tmp.op2;
-                    memset(&out->op2, 0, sizeof(out->op2));
-                    set_reg(out, 2, vex_v, 32);
-                    mark_vec_operand(out, 1, 32);
-                    mark_vec_operand(out, 2, 32);
-                    mark_vec_operand(out, 3, 32);
-                    if (out->op3.is_mem) out->op3.size = 32;
-                    return HB_OK;
-                }
-                if (!mapped && (vex_opcode == 0x45 || vex_opcode == 0x46 ||
-                                vex_opcode == 0x47)) {
-                    if (vex_opcode == 0x45) {
-                        mapped = vex_w ? HB_INS_VPSRLVQ : HB_INS_VPSRLVD;
-                    } else if (vex_opcode == 0x46) {
-                        if (vex_w) return HB_ERR_UNSUPPORTED_OPCODE;
-                        mapped = HB_INS_VPSRAVD;
-                    } else {
-                        mapped = vex_w ? HB_INS_VPSLLVQ : HB_INS_VPSLLVD;
-                    }
-                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-                    uint8_t modrm = read_u8(d);
-                    out->opcode = mapped;
-                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
-                                                vec_size, out, 1, 2, false);
-                    if (r != HB_OK) return r;
-                    hb_decoded_t tmp = *out;
-                    out->op3 = tmp.op2;
-                    memset(&out->op2, 0, sizeof(out->op2));
-                    set_reg(out, 2, vex_v, vec_size);
-                    mark_vec_operand(out, 1, vec_size);
-                    mark_vec_operand(out, 2, vec_size);
-                    mark_vec_operand(out, 3, vec_size);
-                    if (out->op3.is_mem) out->op3.size = vec_size;
-                    return HB_OK;
-                }
-                if (!mapped && (vex_opcode == 0x58 || vex_opcode == 0x59 ||
-                                vex_opcode == 0x5a || vex_opcode == 0x78 ||
-                                vex_opcode == 0x79)) {
-                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-                    uint8_t modrm = read_u8(d);
-                    uint8_t mod = (modrm >> 6) & 3;
-                    uint8_t lane = 0;
-                    if (vex_opcode == 0x78) {
-                        mapped = HB_INS_VPBROADCASTB;
-                        lane = 1;
-                    } else if (vex_opcode == 0x79) {
-                        mapped = HB_INS_VPBROADCASTW;
-                        lane = 2;
-                    } else if (vex_opcode == 0x58) {
-                        mapped = HB_INS_VPBROADCASTD;
-                        lane = 4;
-                    } else if (vex_opcode == 0x59) {
-                        mapped = HB_INS_VPBROADCASTQ;
-                        lane = 8;
-                    } else {
-                        if (!vex_l || mod == 3) return HB_ERR_UNSUPPORTED_OPCODE;
-                        mapped = HB_INS_VBROADCASTI128;
-                        lane = 16;
-                    }
-                    out->opcode = mapped;
-                    out->writes_flags = false;
-                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
-                                                lane, out, 1, 2, false);
-                    if (r != HB_OK) return r;
-                    mark_vec_operand(out, 1, vex_opcode == 0x5a ? 32 : vec_size);
-                    if (out->op2.is_reg) mark_xmm_operand(out, 2);
-                    if (out->op2.is_mem) out->op2.size = lane;
-                    return HB_OK;
-                }
             } else if (vex_map == 3 && vex_pp == 1) {
-                if (vex_opcode == 0x44) {
-                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-                    uint8_t modrm = read_u8(d);
-                    out->opcode = HB_INS_VPCLMULQDQ;
-                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
-                                                16, out, 1, 2, false);
-                    if (r != HB_OK) return r;
-                    hb_decoded_t tmp = *out;
-                    out->op3 = tmp.op2;
-                    memset(&out->op2, 0, sizeof(out->op2));
-                    set_reg(out, 2, vex_v, 16);
-                    mark_vec_operand(out, 1, 16);
-                    mark_vec_operand(out, 2, 16);
-                    mark_vec_operand(out, 3, 16);
-                    if (out->op3.is_mem) out->op3.size = 16;
-                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-                    uint8_t imm = read_u8(d);
-                    set_extra_imm8(out, imm);
-                    return HB_OK;
-                }
-                if ((vex_opcode == 0x00 && vex_w && vex_l) ||
-                    (vex_opcode == 0x01 && vex_w && vex_l)) {
-                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-                    uint8_t modrm = read_u8(d);
-                    out->opcode = vex_opcode == 0x00 ? HB_INS_VPERMQ : HB_INS_VPERMPD;
-                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
-                                                32, out, 1, 2, false);
-                    if (r != HB_OK) return r;
-                    mark_vec_operands(out, 32);
-                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-                    uint8_t imm = read_u8(d);
-                    set_imm(out, 3, imm, 1);
-                    set_extra_imm8(out, imm);
-                    return HB_OK;
-                }
-                if ((vex_opcode == 0x02 && !vex_w) ||
-                    (vex_opcode == 0x06 && vex_l) ||
-                    (vex_opcode == 0x18 && vex_l) ||
-                    (vex_opcode == 0x19 && vex_l) ||
-                    (vex_opcode == 0x38 && vex_l) ||
-                    (vex_opcode == 0x39 && vex_l) ||
-                    (vex_opcode == 0x46 && vex_l)) {
-                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-                    uint8_t modrm = read_u8(d);
-                    bool extract = vex_opcode == 0x19 || vex_opcode == 0x39;
-                    uint8_t rm_size = (vex_opcode == 0x18 || vex_opcode == 0x38 || extract) ? 16 : vec_size;
-                    switch (vex_opcode) {
-                        case 0x02: out->opcode = HB_INS_VPBLENDD; break;
-                        case 0x06: out->opcode = HB_INS_VPERM2F128; break;
-                        case 0x18: out->opcode = HB_INS_VINSERTF128; break;
-                        case 0x19: out->opcode = HB_INS_VEXTRACTF128; break;
-                        case 0x38: out->opcode = HB_INS_VINSERTI128; break;
-                        case 0x39: out->opcode = HB_INS_VEXTRACTI128; break;
-                        case 0x46: out->opcode = HB_INS_VPERM2I128; break;
-                        default: return HB_ERR_UNSUPPORTED_OPCODE;
-                    }
-                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
-                                                rm_size, out, 1, 2, extract);
-                    if (r != HB_OK) return r;
-                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-                    uint8_t imm = read_u8(d);
-                    set_extra_imm8(out, imm);
-                    if (extract) {
-                        if (out->op1.is_reg) mark_vec_operand(out, 1, 16);
-                        else if (out->op1.is_mem) out->op1.size = 16;
-                        mark_vec_operand(out, 2, 32);
-                    } else {
-                        hb_decoded_t tmp = *out;
-                        out->op3 = tmp.op2;
-                        memset(&out->op2, 0, sizeof(out->op2));
-                        set_reg(out, 2, vex_v + HB_REG_XMM0,
-                                (vex_opcode == 0x18 || vex_opcode == 0x38 ||
-                                 vex_opcode == 0x06 || vex_opcode == 0x46) ? 32 : vec_size);
-                        mark_vec_operand(out, 1,
-                                         (vex_opcode == 0x18 || vex_opcode == 0x38 ||
-                                          vex_opcode == 0x06 || vex_opcode == 0x46) ? 32 : vec_size);
-                        if (out->op3.is_reg) mark_vec_operand(out, 3, rm_size);
-                        else if (out->op3.is_mem) out->op3.size = rm_size;
-                    }
-                    return HB_OK;
-                }
                 mapped = sse41_0f3a_opcode(vex_opcode);
             }
             if (mapped) {
@@ -3687,30 +3522,6 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_PMULUDQ: return "PMULUDQ";
         case HB_INS_PSADBW: return "PSADBW";
         case HB_INS_VZEROUPPER: return "VZEROUPPER";
-        case HB_INS_VPBROADCASTB: return "VPBROADCASTB";
-        case HB_INS_VPBROADCASTW: return "VPBROADCASTW";
-        case HB_INS_VPBROADCASTD: return "VPBROADCASTD";
-        case HB_INS_VPBROADCASTQ: return "VPBROADCASTQ";
-        case HB_INS_VBROADCASTI128: return "VBROADCASTI128";
-        case HB_INS_VPBLENDD: return "VPBLENDD";
-        case HB_INS_VPERMQ: return "VPERMQ";
-        case HB_INS_VPERMPD: return "VPERMPD";
-        case HB_INS_VINSERTF128: return "VINSERTF128";
-        case HB_INS_VINSERTI128: return "VINSERTI128";
-        case HB_INS_VEXTRACTF128: return "VEXTRACTF128";
-        case HB_INS_VEXTRACTI128: return "VEXTRACTI128";
-        case HB_INS_VPERM2F128: return "VPERM2F128";
-        case HB_INS_VPERM2I128: return "VPERM2I128";
-        case HB_INS_VPSRLVD: return "VPSRLVD";
-        case HB_INS_VPSRLVQ: return "VPSRLVQ";
-        case HB_INS_VPSRAVD: return "VPSRAVD";
-        case HB_INS_VPSLLVD: return "VPSLLVD";
-        case HB_INS_VPSLLVQ: return "VPSLLVQ";
-        case HB_INS_PCLMULQDQ: return "PCLMULQDQ";
-        case HB_INS_AESKEYGENASSIST: return "AESKEYGENASSIST";
-        case HB_INS_VPCLMULQDQ: return "VPCLMULQDQ";
-        case HB_INS_VPERMD: return "VPERMD";
-        case HB_INS_VPERMPS: return "VPERMPS";
         case HB_INS_MOVD: return "MOVD";
         case HB_INS_CVTDQ2PD: return "CVTDQ2PD";
         case HB_INS_CVTDQ2PS: return "CVTDQ2PS";

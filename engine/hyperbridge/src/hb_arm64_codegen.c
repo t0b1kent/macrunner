@@ -2543,6 +2543,7 @@ extern void     hb_jit_helper_push(hb_context_t* ctx, uint64_t val);
 extern void     hb_jit_helper_adjust_stack(hb_context_t* ctx, uint64_t delta);
 extern uint64_t hb_jit_helper_call(hb_context_t* ctx, uint64_t target, uint64_t ret_addr);
 extern void     hb_jit_helper_exec_call_operand(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_xfg_dispatch_call(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_jmp_operand(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern uint64_t hb_jit_helper_exec_binop_lazy(hb_context_t* ctx, uint64_t op, uint64_t dst_reg,
                                               uint64_t src1_reg, uint64_t src2_is_reg,
@@ -2590,6 +2591,8 @@ extern void     hb_jit_helper_exec_i32_less_tiebreaker(hb_context_t* ctx,
                                                        const hb_ir_block_t* entry,
                                                        const hb_ir_block_t* equal,
                                                        const hb_ir_block_t* less);
+extern void     hb_jit_helper_exec_unity_string_bsearch_loop(hb_context_t* ctx,
+                                                             const hb_ir_block_t* block);
 
 static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn);
 
@@ -2655,6 +2658,93 @@ static bool emit_i32_less_tiebreaker_helper(hb_codegen_buffer_t* buf,
     emit_mov_imm64(buf, 2, (uint64_t)(uintptr_t)equal);
     emit_mov_imm64(buf, 3, (uint64_t)(uintptr_t)less);
     emit_call_helper(buf, (void*)hb_jit_helper_exec_i32_less_tiebreaker);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_xfg_dispatch_call_pair(hb_codegen_buffer_t* buf,
+                                        const hb_ir_instr_t* mov,
+                                        const hb_ir_instr_t* call) {
+    if (!buf || !mov || !call) return false;
+    if (mov->op != HB_IR_MOV || call->op != HB_IR_CALL || call->src1.type == HB_OP_NONE)
+        return false;
+    if (mov->dst.type != HB_OP_REG || mov->dst.reg != HB_REG_R10 ||
+        mov->dst.size != HB_SIZE_64 || mov->dst.reg_offset != 0 ||
+        mov->src1.type != HB_OP_IMM)
+        return false;
+    if (mov->guest_addr + mov->guest_len != call->guest_addr)
+        return false;
+
+    emit_mov_imm64(buf, 20, (uint64_t)mov->src1.imm);
+    emit_str_x(buf, 20, 19, (uint32_t)x64_reg_off(HB_REG_R10));
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)call);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_xfg_dispatch_call);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool jit_exact_reg(const hb_ir_operand_t* op, hb_reg_t reg, hb_size_t size) {
+    return is_plain_gpr_reg_operand(op) && op->reg == reg && op->size == size;
+}
+
+static bool jit_exact_mem(const hb_ir_operand_t* op, hb_reg_t base, hb_reg_t index,
+                          uint8_t scale, int64_t disp, hb_size_t size) {
+    return op && op->type == HB_OP_MEM && op->size == size &&
+           op->mem.base == base && op->mem.index == index &&
+           op->mem.scale == scale && op->mem.disp == disp &&
+           op->mem.segment == 0 && !op->mem.addr32;
+}
+
+static bool unity_string_bsearch_loop_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 12) return false;
+    const hb_ir_instr_t* i = block->instrs;
+
+    return i[0].op == HB_IR_MOV &&
+           jit_exact_reg(&i[0].dst, HB_REG_R10, HB_SIZE_64) &&
+           jit_exact_reg(&i[0].src1, HB_REG_R9, HB_SIZE_64) &&
+           i[1].op == HB_IR_MOV &&
+           jit_exact_reg(&i[1].dst, HB_REG_R8, HB_SIZE_64) &&
+           jit_exact_reg(&i[1].src1, HB_REG_RDI, HB_SIZE_64) &&
+           i[2].op == HB_IR_SHR &&
+           jit_exact_reg(&i[2].dst, HB_REG_R10, HB_SIZE_64) &&
+           jit_exact_reg(&i[2].src1, HB_REG_R10, HB_SIZE_64) &&
+           i[2].src2.type == HB_OP_IMM && i[2].src2.imm == 1 &&
+           i[3].op == HB_IR_MOV &&
+           jit_exact_reg(&i[3].dst, HB_REG_R11, HB_SIZE_64) &&
+           jit_exact_reg(&i[3].src1, HB_REG_R10, HB_SIZE_64) &&
+           i[4].op == HB_IR_ADD &&
+           jit_exact_reg(&i[4].dst, HB_REG_R11, HB_SIZE_64) &&
+           jit_exact_reg(&i[4].src1, HB_REG_R11, HB_SIZE_64) &&
+           jit_exact_reg(&i[4].src2, HB_REG_R11, HB_SIZE_64) &&
+           i[5].op == HB_IR_LOAD &&
+           jit_exact_reg(&i[5].dst, HB_REG_RAX, HB_SIZE_64) &&
+           jit_exact_mem(&i[5].src1, HB_REG_RBX, HB_REG_R11, 8, 0, HB_SIZE_64) &&
+           i[6].op == HB_IR_SUB &&
+           jit_exact_reg(&i[6].dst, HB_REG_R8, HB_SIZE_64) &&
+           jit_exact_reg(&i[6].src1, HB_REG_R8, HB_SIZE_64) &&
+           jit_exact_reg(&i[6].src2, HB_REG_RAX, HB_SIZE_64) &&
+           i[7].op == HB_IR_NOP &&
+           i[8].op == HB_IR_ZERO_EXTEND &&
+           jit_exact_reg(&i[8].dst, HB_REG_RDX, HB_SIZE_32) &&
+           jit_exact_mem(&i[8].src1, HB_REG_RAX, HB_REG_COUNT, 1, 0, HB_SIZE_8) &&
+           i[9].op == HB_IR_ZERO_EXTEND &&
+           jit_exact_reg(&i[9].dst, HB_REG_RCX, HB_SIZE_32) &&
+           jit_exact_mem(&i[9].src1, HB_REG_RAX, HB_REG_R8, 1, 0, HB_SIZE_8) &&
+           i[10].op == HB_IR_SUB &&
+           jit_exact_reg(&i[10].dst, HB_REG_RDX, HB_SIZE_32) &&
+           jit_exact_reg(&i[10].src1, HB_REG_RDX, HB_SIZE_32) &&
+           jit_exact_reg(&i[10].src2, HB_REG_RCX, HB_SIZE_32) &&
+           i[11].op == HB_IR_Jcc && i[11].cc == HB_CC_NE &&
+           i[11].target == block->guest_addr + 0x32;
+}
+
+static bool emit_unity_string_bsearch_loop(hb_codegen_buffer_t* buf,
+                                           const hb_ir_block_t* block) {
+    if (!unity_string_bsearch_loop_candidate(block)) return false;
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_unity_string_bsearch_loop);
     emit_return_if_helper_failed(buf);
     return true;
 }
@@ -3536,6 +3626,96 @@ void hb_jit_helper_exec_call_operand(hb_context_t* ctx, const hb_ir_instr_t* ins
     ctx->last_result = HB_OK;
 }
 
+static bool hb_jit_read_guest_u8(hb_context_t* ctx, uint64_t addr, uint8_t* out) {
+    return ctx && ctx->memory && out &&
+           hb_memory_read_u8(ctx->memory, addr, out) == HB_OK;
+}
+
+static bool hb_jit_read_guest_u32(hb_context_t* ctx, uint64_t addr, uint32_t* out) {
+    return ctx && ctx->memory && out &&
+           hb_memory_read_u32(ctx->memory, addr, out) == HB_OK;
+}
+
+static bool hb_jit_read_guest_u64(hb_context_t* ctx, uint64_t addr, uint64_t* out) {
+    return ctx && ctx->memory && out &&
+           hb_memory_read_u64(ctx->memory, addr, out) == HB_OK;
+}
+
+static bool hb_jit_xfg_dispatch_resolves_to_rax(hb_context_t* ctx, uint64_t target) {
+    uint8_t b0 = 0;
+    uint8_t b1 = 0;
+    uint32_t disp32 = 0;
+    uint64_t slot = 0;
+    uint64_t next = 0;
+
+    if (!hb_jit_read_guest_u8(ctx, target, &b0) ||
+        !hb_jit_read_guest_u8(ctx, target + 1, &b1))
+        return false;
+    if (b0 == 0xff && b1 == 0xe0)
+        return true;
+    if (b0 != 0xff || b1 != 0x25)
+        return false;
+    if (!hb_jit_read_guest_u32(ctx, target + 2, &disp32))
+        return false;
+    slot = target + 6 + (int64_t)(int32_t)disp32;
+    if (!hb_jit_read_guest_u64(ctx, slot, &next))
+        return false;
+    return hb_jit_read_guest_u8(ctx, next, &b0) &&
+           hb_jit_read_guest_u8(ctx, next + 1, &b1) &&
+           b0 == 0xff && b1 == 0xe0;
+}
+
+static hb_result_t hb_jit_read_guest_u8_result(hb_context_t* ctx, uint64_t addr,
+                                               uint8_t* out) {
+    if (!ctx || !ctx->memory || !out) return HB_ERR_MEMORY_FAULT;
+    return hb_memory_read_u8(ctx->memory, addr, out);
+}
+
+static hb_result_t hb_jit_read_guest_u64_result(hb_context_t* ctx, uint64_t addr,
+                                                uint64_t* out) {
+    if (!ctx || !ctx->memory || !out) return HB_ERR_MEMORY_FAULT;
+    return hb_memory_read_u64(ctx->memory, addr, out);
+}
+
+static hb_result_t hb_jit_call_target64(hb_context_t* ctx, uint64_t target,
+                                        uint64_t ret_addr) {
+    uint64_t new_rsp = ctx->regs.x64.rsp - 8;
+    hb_result_t r = hb_memory_write_u64(ctx->memory, new_rsp, ret_addr);
+    if (r != HB_OK) return r;
+    ctx->regs.x64.rsp = new_rsp;
+    ctx->pc = target;
+    ctx->regs.x64.rip = target;
+    return HB_OK;
+}
+
+void hb_jit_helper_exec_xfg_dispatch_call(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    uint64_t target = instr ? instr->target : 0;
+    hb_result_t r;
+    if (!ctx || !instr) return;
+    if (ctx->mode != HB_MODE_64BIT || instr->src1.type == HB_OP_NONE) {
+        hb_jit_helper_exec_call_operand(ctx, instr);
+        return;
+    }
+
+    r = hb_flags_read_operand_value(ctx, &instr->src1, &target);
+    if (r != HB_OK) {
+        ctx->last_result = r;
+        return;
+    }
+    if (!target) {
+        ctx->last_result = HB_ERR_EXEC_FAULT;
+        return;
+    }
+
+    uint64_t direct = ctx->regs.x64.rax;
+    if (!direct || !hb_jit_xfg_dispatch_resolves_to_rax(ctx, target)) {
+        hb_jit_helper_exec_call_operand(ctx, instr);
+        return;
+    }
+
+    ctx->last_result = hb_jit_call_target64(ctx, direct, instr->guest_addr + instr->guest_len);
+}
+
 void hb_jit_helper_exec_jmp_operand(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     uint64_t target = instr ? instr->target : 0;
     hb_result_t r;
@@ -4099,6 +4279,90 @@ void hb_jit_helper_exec_i32_less_tiebreaker(hb_context_t* ctx,
     ctx->last_result = r;
 }
 
+void hb_jit_helper_exec_unity_string_bsearch_loop(hb_context_t* ctx,
+                                                  const hb_ir_block_t* block) {
+    uint64_t rax, rbx, rcx, rdx, r8, r9, r10, r11, rdi;
+    hb_result_t r = HB_OK;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !unity_string_bsearch_loop_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    rax = ctx->regs.x64.rax;
+    rbx = ctx->regs.x64.rbx;
+    rcx = ctx->regs.x64.rcx;
+    rdx = ctx->regs.x64.rdx;
+    r8 = ctx->regs.x64.r8;
+    r9 = ctx->regs.x64.r9;
+    r10 = ctx->regs.x64.r10;
+    r11 = ctx->regs.x64.r11;
+    rdi = ctx->regs.x64.rdi;
+
+    for (uint64_t iter = 0; (int64_t)r9 > 0; iter++) {
+        if (iter >= 4096) {
+            r = HB_ERR_EXEC_FAULT;
+            break;
+        }
+
+        r10 = r9 >> 1;
+        r11 = r10;
+        r11 += r11;
+        r = hb_jit_read_guest_u64_result(ctx, rbx + r11 * 8, &rax);
+        if (r != HB_OK) break;
+        r8 = rdi - rax;
+
+        for (uint64_t scan = 0;; scan++) {
+            uint8_t lhs = 0;
+            uint8_t rhs = 0;
+            uint32_t diff;
+            if (scan >= (1u << 20)) {
+                r = HB_ERR_EXEC_FAULT;
+                break;
+            }
+            r = hb_jit_read_guest_u8_result(ctx, rax, &lhs);
+            if (r != HB_OK) break;
+            r = hb_jit_read_guest_u8_result(ctx, rax + r8, &rhs);
+            if (r != HB_OK) break;
+            rcx = rhs;
+            diff = (uint32_t)lhs - (uint32_t)rhs;
+            rdx = diff;
+            if (diff != 0) break;
+            rax++;
+            if ((uint32_t)rcx == 0) break;
+        }
+        if (r != HB_OK) break;
+
+        if ((int32_t)(uint32_t)rdx < 0) {
+            rbx = rbx + r11 * 8 + 0x10;
+            rax = UINT64_MAX - r10;
+            r9 += rax;
+        } else {
+            r9 = r10;
+        }
+    }
+
+    ctx->regs.x64.rax = rax;
+    ctx->regs.x64.rbx = rbx;
+    ctx->regs.x64.rcx = rcx;
+    ctx->regs.x64.rdx = rdx;
+    ctx->regs.x64.r8 = r8;
+    ctx->regs.x64.r9 = r9;
+    ctx->regs.x64.r10 = r10;
+    ctx->regs.x64.r11 = r11;
+
+    if (r == HB_OK) {
+        ctx->pc = block->guest_addr + 0x55;
+        ctx->regs.x64.rip = ctx->pc;
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_TEST, HB_SIZE_64, r9, r9, r9, 0);
+    }
+    ctx->last_result = r;
+}
+
 void hb_jit_helper_exec_setcc_lazy(hb_context_t* ctx, uint64_t cc, uint64_t dst_reg) {
     bool value = false;
     if (hb_flags_eval_cond(ctx, (hb_cc_t)cc, &value) != HB_OK) return;
@@ -4585,6 +4849,10 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         }
     }
     if (!mid_block_transfer) {
+        if (emit_unity_string_bsearch_loop(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
         if (!jit_direct_mem_enabled() && emit_hot_helper_block(out, block)) {
             emit_epilogue(out);
             return HB_OK;
@@ -4629,6 +4897,11 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
             emit_stack_spill_push_sub_prologue(out, &block->instrs[i], &block->instrs[i + 1],
                                                &block->instrs[i + 2], &block->instrs[i + 3])) {
             i += 3;
+            continue;
+        }
+        if (i + 1 < instr_limit &&
+            emit_xfg_dispatch_call_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
+            i++;
             continue;
         }
         if (i + 2 < instr_limit &&

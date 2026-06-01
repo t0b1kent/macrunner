@@ -80,6 +80,17 @@ static uint64_t trace_jit_native_addr(void) {
     return addr;
 }
 
+static uint64_t trace_jit_guest_addr(void) {
+    static int parsed = 0;
+    static uint64_t addr = 0;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_GUEST_ADDR");
+        if (env && *env) addr = strtoull(env, NULL, 0);
+        parsed = 1;
+    }
+    return addr;
+}
+
 static int trace_jit_blocks_budget_allows(int force) {
     static int count;
     static int exhausted;
@@ -102,12 +113,26 @@ static int trace_jit_blocks_budget_allows(int force) {
 static void trace_jit_block(uint64_t guest_pc, const uint8_t* native, size_t native_size,
                             const hb_ir_block_t* block) {
     uint64_t watch = trace_jit_native_addr();
+    uint64_t guest_watch = trace_jit_guest_addr();
     int matched = watch && (uintptr_t)native <= (uintptr_t)watch &&
                   (uintptr_t)watch < (uintptr_t)native + native_size;
+    int guest_matched = guest_watch && guest_pc == guest_watch;
     const hb_ir_instr_t* first = (block && block->instr_count) ? &block->instrs[0] : NULL;
     const hb_ir_instr_t* last = (block && block->instr_count) ?
                                 &block->instrs[block->instr_count - 1] : NULL;
 
+    if (!guest_matched && guest_watch && block) {
+        for (size_t i = 0; i < block->instr_count; i++) {
+            const hb_ir_instr_t* instr = &block->instrs[i];
+            uint64_t start = instr->guest_addr;
+            uint64_t end = start + instr->guest_len;
+            if (guest_watch == start || (instr->guest_len && guest_watch >= start && guest_watch < end)) {
+                guest_matched = 1;
+                break;
+            }
+        }
+    }
+    matched = matched || guest_matched;
     if (!trace_jit_blocks_budget_allows(matched)) return;
     fprintf(stderr, "macrunner-hb-jit-block: guest=%p native=%p-%p size=%zu instrs=%zu "
             "first_op=%u first_guest=%p last_op=%u last_guest=%p last_target=%p%s\n",
@@ -122,6 +147,31 @@ static void trace_jit_block(uint64_t guest_pc, const uint8_t* native, size_t nat
             fprintf(stderr, "macrunner-hb-jit-block-ir: guest=%p op=%u target=%p len=%u\n",
                     (void*)(uintptr_t)instr->guest_addr, (unsigned)instr->op,
                     (void*)(uintptr_t)instr->target, (unsigned)instr->guest_len);
+            fprintf(stderr,
+                    "macrunner-hb-jit-block-ir-operands: guest=%p "
+                    "dst{t=%u sz=%u reg=%u off=%u imm=%lld mem=(base=%u index=%u scale=%u disp=%lld seg=%u addr32=%u)} "
+                    "src1{t=%u sz=%u reg=%u off=%u imm=%lld mem=(base=%u index=%u scale=%u disp=%lld seg=%u addr32=%u)} "
+                    "src2{t=%u sz=%u reg=%u off=%u imm=%lld mem=(base=%u index=%u scale=%u disp=%lld seg=%u addr32=%u)} cc=%u\n",
+                    (void*)(uintptr_t)instr->guest_addr,
+                    (unsigned)instr->dst.type, (unsigned)instr->dst.size,
+                    (unsigned)instr->dst.reg, (unsigned)instr->dst.reg_offset,
+                    (long long)instr->dst.imm, (unsigned)instr->dst.mem.base,
+                    (unsigned)instr->dst.mem.index, (unsigned)instr->dst.mem.scale,
+                    (long long)instr->dst.mem.disp, (unsigned)instr->dst.mem.segment,
+                    (unsigned)instr->dst.mem.addr32,
+                    (unsigned)instr->src1.type, (unsigned)instr->src1.size,
+                    (unsigned)instr->src1.reg, (unsigned)instr->src1.reg_offset,
+                    (long long)instr->src1.imm, (unsigned)instr->src1.mem.base,
+                    (unsigned)instr->src1.mem.index, (unsigned)instr->src1.mem.scale,
+                    (long long)instr->src1.mem.disp, (unsigned)instr->src1.mem.segment,
+                    (unsigned)instr->src1.mem.addr32,
+                    (unsigned)instr->src2.type, (unsigned)instr->src2.size,
+                    (unsigned)instr->src2.reg, (unsigned)instr->src2.reg_offset,
+                    (long long)instr->src2.imm, (unsigned)instr->src2.mem.base,
+                    (unsigned)instr->src2.mem.index, (unsigned)instr->src2.mem.scale,
+                    (long long)instr->src2.mem.disp, (unsigned)instr->src2.mem.segment,
+                    (unsigned)instr->src2.mem.addr32,
+                    (unsigned)instr->cc);
         }
     }
     fflush(stderr);
@@ -261,6 +311,32 @@ static hb_ir_block_t* find_block(const hb_ir_cfg_t* cfg, uint64_t addr) {
         if (cfg->blocks[i]->guest_addr == addr) return cfg->blocks[i];
     }
     return NULL;
+}
+
+static bool is_control_transfer_op(hb_ir_op_t op) {
+    return op == HB_IR_CALL || op == HB_IR_RET || op == HB_IR_JMP ||
+           op == HB_IR_Jcc || op == HB_IR_LOOP || op == HB_IR_JRCXZ;
+}
+
+static const hb_ir_instr_t* first_control_transfer_instr(const hb_ir_block_t* block) {
+    if (!block) return NULL;
+    for (size_t i = 0; i < block->instr_count; i++) {
+        if (is_control_transfer_op(block->instrs[i].op)) return &block->instrs[i];
+    }
+    return NULL;
+}
+
+static uint32_t jit_block_step_count(const hb_ir_block_t* block) {
+    const hb_ir_instr_t* transfer = first_control_transfer_instr(block);
+    if (!block) return 0;
+    if (!transfer) return (uint32_t)block->instr_count;
+    return (uint32_t)((size_t)(transfer - block->instrs) + 1);
+}
+
+static void sync_arch_pc_after_jit_block(hb_context_t* ctx) {
+    if (!ctx) return;
+    if (ctx->arch == HB_ARCH_X64) ctx->regs.x64.rip = ctx->pc;
+    else if (ctx->arch == HB_ARCH_X86) ctx->regs.x86.eip = (uint32_t)ctx->pc;
 }
 
 static void set_helper_fault_result(hb_exec_result_t* out, hb_context_t* ctx,
@@ -426,6 +502,512 @@ static void try_promote_bounded_scan_loop(hb_jit_runtime_t* rt, hb_context_t* ct
     }
 }
 
+static bool same_plain_runtime_reg_operand(const hb_ir_operand_t* a,
+                                           const hb_ir_operand_t* b) {
+    return a && b &&
+           a->type == HB_OP_REG && b->type == HB_OP_REG &&
+           a->reg == b->reg && a->size == b->size &&
+           a->reg_offset == b->reg_offset;
+}
+
+static bool zero_extend_mem8_to_reg32(const hb_ir_instr_t* instr) {
+    return instr && instr->op == HB_IR_ZERO_EXTEND &&
+           instr->dst.type == HB_OP_REG && instr->dst.size == HB_SIZE_32 &&
+           instr->src1.type == HB_OP_MEM && instr->src1.size == HB_SIZE_8;
+}
+
+static bool add_imm1_same_reg64(const hb_ir_instr_t* instr) {
+    return instr && instr->op == HB_IR_ADD &&
+           instr->dst.type == HB_OP_REG && instr->dst.size == HB_SIZE_64 &&
+           same_plain_runtime_reg_operand(&instr->dst, &instr->src1) &&
+           instr->src2.type == HB_OP_IMM && instr->src2.imm == 1;
+}
+
+static bool test_same_reg32(const hb_ir_instr_t* instr, const hb_ir_operand_t* reg) {
+    return instr && reg && instr->op == HB_IR_TEST &&
+           instr->src1.type == HB_OP_REG && instr->src1.size == HB_SIZE_32 &&
+           same_plain_runtime_reg_operand(&instr->src1, &instr->src2) &&
+           same_plain_runtime_reg_operand(&instr->src1, reg);
+}
+
+static bool byte_compare_loop_pair(const hb_ir_block_t* cmp_block,
+                                   const hb_ir_block_t* backedge_block) {
+    const hb_ir_instr_t *lhs, *rhs, *sub, *cmp_jcc;
+    const hb_ir_instr_t *inc, *test, *back_jcc;
+    if (!cmp_block || !backedge_block ||
+        cmp_block->instr_count != 4 || backedge_block->instr_count != 3)
+        return false;
+
+    lhs = &cmp_block->instrs[0];
+    rhs = &cmp_block->instrs[1];
+    sub = &cmp_block->instrs[2];
+    cmp_jcc = &cmp_block->instrs[3];
+    inc = &backedge_block->instrs[0];
+    test = &backedge_block->instrs[1];
+    back_jcc = &backedge_block->instrs[2];
+
+    if (!zero_extend_mem8_to_reg32(lhs) || !zero_extend_mem8_to_reg32(rhs))
+        return false;
+    if (sub->op != HB_IR_SUB ||
+        !same_plain_runtime_reg_operand(&sub->dst, &lhs->dst) ||
+        !same_plain_runtime_reg_operand(&sub->src1, &lhs->dst) ||
+        !same_plain_runtime_reg_operand(&sub->src2, &rhs->dst))
+        return false;
+    if (cmp_jcc->op != HB_IR_Jcc ||
+        (cmp_jcc->cc != HB_CC_E && cmp_jcc->cc != HB_CC_NE) ||
+        cmp_jcc->guest_addr + cmp_jcc->guest_len != backedge_block->guest_addr)
+        return false;
+    if (!add_imm1_same_reg64(inc) ||
+        !test_same_reg32(test, &rhs->dst) ||
+        back_jcc->op != HB_IR_Jcc ||
+        (back_jcc->cc != HB_CC_E && back_jcc->cc != HB_CC_NE) ||
+        back_jcc->target != cmp_block->guest_addr)
+        return false;
+    return true;
+}
+
+static void try_promote_byte_compare_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
+                                          const hb_ir_block_t* block) {
+    const hb_ir_block_t* cmp_block = NULL;
+    const hb_ir_block_t* backedge_block = NULL;
+    hb_block_cache_entry_t* cmp_entry = NULL;
+
+    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !block || !block->instr_count)
+        return;
+
+    const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
+    if (block->instr_count == 4 && last->op == HB_IR_Jcc) {
+        hb_block_cache_entry_t* backedge_entry =
+            block_cache_find(rt->block_cache, last->guest_addr + last->guest_len);
+        cmp_entry = block_cache_find(rt->block_cache, block->guest_addr);
+        if (!backedge_entry || !backedge_entry->block || !cmp_entry || cmp_entry->fused) return;
+        cmp_block = block;
+        backedge_block = backedge_entry->block;
+    } else if (block->instr_count == 3 && last->op == HB_IR_Jcc) {
+        cmp_entry = block_cache_find(rt->block_cache, last->target);
+        if (!cmp_entry || !cmp_entry->block || cmp_entry->fused) return;
+        cmp_block = cmp_entry->block;
+        backedge_block = block;
+    } else {
+        return;
+    }
+
+    if (!byte_compare_loop_pair(cmp_block, backedge_block)) return;
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(1024);
+    if (!code_buf) return;
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    if (!cg) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    hb_result_t r = hb_arm64_codegen_two_block_loop_helper(cg, cmp_block, backedge_block, code_buf);
+    hb_arm64_codegen_destroy(cg);
+    if (r != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    size_t needed = code_buf->size;
+    if (rt->jit_mem->used + needed > rt->jit_mem->size) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    size_t emitted_size = code_buf->size;
+    uint8_t* dest = rt->jit_mem->writable + rt->jit_mem->used;
+    memcpy(dest, code_buf->code, emitted_size);
+    rt->jit_mem->used += emitted_size;
+    rt->jit_mem->used = (rt->jit_mem->used + 15) & ~15;
+    hb_codegen_buffer_destroy(code_buf);
+
+    if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    block_cache_put(rt->block_cache, cmp_block->guest_addr, dest, emitted_size,
+                    (uint32_t)(cmp_block->instr_count + backedge_block->instr_count),
+                    cmp_block, true);
+    if (trace_jit_blocks_enabled()) {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=byte-compare-loop cmp=%p backedge=%p "
+                "native=%p-%p size=%zu\n",
+                (void*)(uintptr_t)cmp_block->guest_addr,
+                (void*)(uintptr_t)backedge_block->guest_addr,
+                dest, dest + emitted_size, emitted_size);
+        fflush(stderr);
+    }
+}
+
+static bool sub_imm_same_reg64(const hb_ir_instr_t* instr,
+                               const hb_ir_operand_t* reg,
+                               int64_t imm) {
+    return instr && reg && instr->op == HB_IR_SUB &&
+           instr->dst.type == HB_OP_REG && instr->dst.size == HB_SIZE_64 &&
+           same_plain_runtime_reg_operand(&instr->dst, reg) &&
+           same_plain_runtime_reg_operand(&instr->src1, reg) &&
+           instr->src2.type == HB_OP_IMM && instr->src2.imm == imm;
+}
+
+static bool load_test_nonzero_qword_block(const hb_ir_block_t* block,
+                                          hb_ir_operand_t* index_reg,
+                                          uint64_t* fallthrough,
+                                          uint64_t* nonzero_target) {
+    if (!block || block->instr_count != 3) return false;
+    const hb_ir_instr_t* load = &block->instrs[0];
+    const hb_ir_instr_t* test = &block->instrs[1];
+    const hb_ir_instr_t* jcc = &block->instrs[2];
+    if (load->op != HB_IR_LOAD ||
+        load->dst.type != HB_OP_REG || load->dst.size != HB_SIZE_64 ||
+        load->src1.type != HB_OP_MEM || load->src1.size != HB_SIZE_64 ||
+        load->src1.mem.index >= HB_REG_COUNT || load->src1.mem.scale != 8)
+        return false;
+    if (test->src1.type != HB_OP_REG || test->src1.size != HB_SIZE_64 ||
+        !same_plain_runtime_reg_operand(&test->src1, &test->src2) ||
+        !same_plain_runtime_reg_operand(&test->src1, &load->dst))
+        return false;
+    if (jcc->op != HB_IR_Jcc || jcc->cc != HB_CC_NE) return false;
+    if (index_reg) *index_reg = hb_ir_reg(load->src1.mem.index, HB_SIZE_64);
+    if (fallthrough) *fallthrough = jcc->guest_addr + jcc->guest_len;
+    if (nonzero_target) *nonzero_target = jcc->target;
+    return true;
+}
+
+static bool dec_to_test_block(const hb_ir_block_t* block,
+                              const hb_ir_operand_t* index_reg,
+                              uint64_t* test_target) {
+    if (!block || !index_reg || block->instr_count != 2) return false;
+    const hb_ir_instr_t* sub = &block->instrs[0];
+    const hb_ir_instr_t* jmp = &block->instrs[1];
+    if (!sub_imm_same_reg64(sub, index_reg, 1)) return false;
+    if (jmp->op != HB_IR_JMP) return false;
+    if (test_target) *test_target = jmp->target;
+    return true;
+}
+
+static bool test_nonnegative_backedge_block(const hb_ir_block_t* block,
+                                            const hb_ir_operand_t* index_reg,
+                                            uint64_t load_target) {
+    if (!block || !index_reg || block->instr_count != 2) return false;
+    const hb_ir_instr_t* test = &block->instrs[0];
+    const hb_ir_instr_t* jcc = &block->instrs[1];
+    return test && test->op == HB_IR_TEST &&
+           same_plain_runtime_reg_operand(&test->src1, index_reg) &&
+           same_plain_runtime_reg_operand(&test->src2, index_reg) &&
+           jcc->op == HB_IR_Jcc && jcc->cc == HB_CC_NS && jcc->target == load_target;
+}
+
+static void try_promote_null_qword_scan_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
+                                             const hb_ir_block_t* block) {
+    const hb_ir_block_t* load_block = NULL;
+    const hb_ir_block_t* dec_block = NULL;
+    const hb_ir_block_t* test_block = NULL;
+    hb_block_cache_entry_t* load_entry = NULL;
+    hb_ir_operand_t index_reg = hb_ir_none();
+    uint64_t dec_addr = 0;
+    uint64_t test_addr = 0;
+
+    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !block)
+        return;
+
+    if (load_test_nonzero_qword_block(block, &index_reg, &dec_addr, NULL)) {
+        load_block = block;
+        hb_block_cache_entry_t* dec_entry = block_cache_find(rt->block_cache, dec_addr);
+        if (!dec_entry || !dec_entry->block ||
+            !dec_to_test_block(dec_entry->block, &index_reg, &test_addr))
+            return;
+        hb_block_cache_entry_t* test_entry = block_cache_find(rt->block_cache, test_addr);
+        if (!test_entry || !test_entry->block) return;
+        dec_block = dec_entry->block;
+        test_block = test_entry->block;
+        load_entry = block_cache_find(rt->block_cache, load_block->guest_addr);
+    } else if (block->instr_count == 2 && block->instrs[1].op == HB_IR_Jcc) {
+        test_block = block;
+        uint64_t load_addr = block->instrs[1].target;
+        load_entry = block_cache_find(rt->block_cache, load_addr);
+        if (!load_entry || !load_entry->block ||
+            !load_test_nonzero_qword_block(load_entry->block, &index_reg, &dec_addr, NULL))
+            return;
+        hb_block_cache_entry_t* dec_entry = block_cache_find(rt->block_cache, dec_addr);
+        if (!dec_entry || !dec_entry->block ||
+            !dec_to_test_block(dec_entry->block, &index_reg, &test_addr) ||
+            test_addr != test_block->guest_addr)
+            return;
+        load_block = load_entry->block;
+        dec_block = dec_entry->block;
+    } else {
+        return;
+    }
+
+    if (!load_entry || load_entry->fused ||
+        !test_nonnegative_backedge_block(test_block, &index_reg, load_block->guest_addr))
+        return;
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(1024);
+    if (!code_buf) return;
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    if (!cg) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    hb_result_t r = hb_arm64_codegen_four_block_loop_helper(cg, load_block, dec_block,
+                                                            test_block, NULL, code_buf);
+    hb_arm64_codegen_destroy(cg);
+    if (r != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    size_t needed = code_buf->size;
+    if (rt->jit_mem->used + needed > rt->jit_mem->size) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    size_t emitted_size = code_buf->size;
+    uint8_t* dest = rt->jit_mem->writable + rt->jit_mem->used;
+    memcpy(dest, code_buf->code, emitted_size);
+    rt->jit_mem->used += emitted_size;
+    rt->jit_mem->used = (rt->jit_mem->used + 15) & ~15;
+    hb_codegen_buffer_destroy(code_buf);
+
+    if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    block_cache_put(rt->block_cache, load_block->guest_addr, dest, emitted_size,
+                    (uint32_t)(load_block->instr_count + dec_block->instr_count +
+                               test_block->instr_count),
+                    load_block, true);
+    if (trace_jit_blocks_enabled()) {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=null-qword-scan load=%p dec=%p test=%p "
+                "native=%p-%p size=%zu\n",
+                (void*)(uintptr_t)load_block->guest_addr,
+                (void*)(uintptr_t)dec_block->guest_addr,
+                (void*)(uintptr_t)test_block->guest_addr,
+                dest, dest + emitted_size, emitted_size);
+        fflush(stderr);
+    }
+}
+
+static bool load_cmp_jne_i32_entry_block(const hb_ir_block_t* block,
+                                         uint64_t* equal_addr,
+                                         uint64_t* less_addr) {
+    if (!block || block->instr_count != 3) return false;
+    const hb_ir_instr_t* load = &block->instrs[0];
+    const hb_ir_instr_t* cmp = &block->instrs[1];
+    const hb_ir_instr_t* jcc = &block->instrs[2];
+    if (load->op != HB_IR_LOAD ||
+        load->dst.type != HB_OP_REG || load->dst.size != HB_SIZE_32 ||
+        load->src1.type != HB_OP_MEM || load->src1.size != HB_SIZE_32)
+        return false;
+    if (cmp->op != HB_IR_CMP ||
+        cmp->src1.type != HB_OP_MEM || cmp->src1.size != HB_SIZE_32 ||
+        !same_plain_runtime_reg_operand(&cmp->src2, &load->dst))
+        return false;
+    if (jcc->op != HB_IR_Jcc || jcc->cc != HB_CC_NE) return false;
+    if (equal_addr) *equal_addr = jcc->guest_addr + jcc->guest_len;
+    if (less_addr) *less_addr = jcc->target;
+    return true;
+}
+
+static bool cmp_setcc_ret_block(const hb_ir_block_t* block, hb_cc_t cc,
+                                hb_ir_operand_t* setcc_dst) {
+    if (!block || block->instr_count != 3) return false;
+    const hb_ir_instr_t* cmp = &block->instrs[0];
+    const hb_ir_instr_t* setcc = &block->instrs[1];
+    const hb_ir_instr_t* ret = &block->instrs[2];
+    if (cmp->op != HB_IR_CMP ||
+        cmp->src1.type != HB_OP_REG || cmp->src1.size != HB_SIZE_64 ||
+        cmp->src2.type != HB_OP_REG || cmp->src2.size != HB_SIZE_64)
+        return false;
+    if (setcc->op != HB_IR_SETcc || setcc->cc != cc || setcc->dst.size != HB_SIZE_8 ||
+        ret->op != HB_IR_RET)
+        return false;
+    if (setcc_dst) *setcc_dst = setcc->dst;
+    return true;
+}
+
+static bool setcc_ret_block(const hb_ir_block_t* block, hb_cc_t cc,
+                            const hb_ir_operand_t* expected_dst) {
+    if (!block || !expected_dst || block->instr_count != 2) return false;
+    const hb_ir_instr_t* setcc = &block->instrs[0];
+    const hb_ir_instr_t* ret = &block->instrs[1];
+    return setcc->op == HB_IR_SETcc && setcc->cc == cc &&
+           same_plain_runtime_reg_operand(&setcc->dst, expected_dst) &&
+           ret->op == HB_IR_RET;
+}
+
+static const hb_ir_block_t* find_comparator_entry_pred(const hb_ir_block_t* block,
+                                                       uint64_t* equal_addr,
+                                                       uint64_t* less_addr) {
+    if (load_cmp_jne_i32_entry_block(block, equal_addr, less_addr))
+        return block;
+    if (!block) return NULL;
+    for (size_t i = 0; i < block->pred_count; i++) {
+        const hb_ir_block_t* pred = block->pred[i];
+        if (load_cmp_jne_i32_entry_block(pred, equal_addr, less_addr))
+            return pred;
+    }
+    return NULL;
+}
+
+static const hb_ir_block_t* find_comparator_entry_near_cache(hb_block_cache_t* cache,
+                                                             const hb_ir_block_t* equal_block,
+                                                             uint64_t* equal_addr,
+                                                             uint64_t* less_addr) {
+    hb_ir_operand_t ignored = hb_ir_none();
+    if (!cache || !equal_block || !cmp_setcc_ret_block(equal_block, HB_CC_B, &ignored))
+        return NULL;
+    for (uint64_t back = 1; back <= 16; back++) {
+        hb_block_cache_entry_t* entry = block_cache_find(cache, equal_block->guest_addr - back);
+        if (!entry || !entry->block) continue;
+        uint64_t candidate_equal = 0;
+        uint64_t candidate_less = 0;
+        if (load_cmp_jne_i32_entry_block(entry->block, &candidate_equal, &candidate_less) &&
+            candidate_equal == equal_block->guest_addr) {
+            if (equal_addr) *equal_addr = candidate_equal;
+            if (less_addr) *less_addr = candidate_less;
+            return entry->block;
+        }
+    }
+    return NULL;
+}
+
+static void try_promote_i32_less_tiebreaker_comparator(hb_jit_runtime_t* rt, hb_context_t* ctx,
+                                                       const hb_ir_block_t* block) {
+    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !block)
+        return;
+
+    uint64_t equal_addr = 0;
+    uint64_t less_addr = 0;
+    const hb_ir_block_t* entry_block = find_comparator_entry_pred(block, &equal_addr, &less_addr);
+    if (!entry_block)
+        entry_block = find_comparator_entry_near_cache(rt->block_cache, block, &equal_addr, &less_addr);
+    if (!entry_block) return;
+
+    hb_block_cache_entry_t* entry = block_cache_find(rt->block_cache, entry_block->guest_addr);
+    hb_block_cache_entry_t* equal = block_cache_find(rt->block_cache, equal_addr);
+    hb_block_cache_entry_t* less = block_cache_find(rt->block_cache, less_addr);
+    if (!entry || entry->fused || !equal || !equal->block)
+        return;
+
+    hb_ir_operand_t setcc_dst = hb_ir_none();
+    if (!cmp_setcc_ret_block(equal->block, HB_CC_B, &setcc_dst))
+        return;
+    if (less && less->block && !setcc_ret_block(less->block, HB_CC_L, &setcc_dst))
+        less = NULL;
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(1024);
+    if (!code_buf) return;
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    if (!cg) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    hb_result_t r = hb_arm64_codegen_i32_less_tiebreaker_helper(
+        cg, entry_block, equal->block, less && less->block ? less->block : NULL, code_buf);
+    hb_arm64_codegen_destroy(cg);
+    if (r != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    size_t needed = code_buf->size;
+    if (rt->jit_mem->used + needed > rt->jit_mem->size) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    size_t emitted_size = code_buf->size;
+    uint8_t* dest = rt->jit_mem->writable + rt->jit_mem->used;
+    memcpy(dest, code_buf->code, emitted_size);
+    rt->jit_mem->used += emitted_size;
+    rt->jit_mem->used = (rt->jit_mem->used + 15) & ~15;
+    hb_codegen_buffer_destroy(code_buf);
+
+    if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    block_cache_put(rt->block_cache, entry_block->guest_addr, dest, emitted_size,
+                    (uint32_t)(entry_block->instr_count + equal->block->instr_count +
+                               (less && less->block ? less->block->instr_count : 0)),
+                    entry_block, true);
+    if (trace_jit_blocks_enabled()) {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=i32-less-tiebreaker entry=%p equal=%p less=%p "
+                "native=%p-%p size=%zu\n",
+                (void*)(uintptr_t)entry_block->guest_addr,
+                (void*)(uintptr_t)equal->block->guest_addr,
+                (void*)(uintptr_t)(less && less->block ? less->block->guest_addr : 0),
+                dest, dest + emitted_size, emitted_size);
+        fflush(stderr);
+    }
+}
+
+static bool small_terminal_jcc_self_loop(const hb_ir_block_t* block) {
+    if (!block || block->instr_count < 2 || block->instr_count > 16) return false;
+    const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
+    if (last->op != HB_IR_Jcc || last->target != block->guest_addr) return false;
+    for (size_t i = 0; i + 1 < block->instr_count; i++) {
+        hb_ir_op_t op = block->instrs[i].op;
+        if (op == HB_IR_CALL || op == HB_IR_RET || op == HB_IR_JMP ||
+            op == HB_IR_Jcc || op == HB_IR_LOOP || op == HB_IR_JRCXZ)
+            return false;
+    }
+    return true;
+}
+
+static void try_promote_self_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
+                                  const hb_ir_block_t* block) {
+    if (!rt || !rt->block_cache || !rt->jit_mem || !ctx || !small_terminal_jcc_self_loop(block))
+        return;
+    hb_block_cache_entry_t* entry = block_cache_find(rt->block_cache, block->guest_addr);
+    if (!entry || entry->fused) return;
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(1024);
+    if (!code_buf) return;
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    if (!cg) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    hb_result_t r = hb_arm64_codegen_two_block_loop_helper(cg, block, block, code_buf);
+    hb_arm64_codegen_destroy(cg);
+    if (r != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+    size_t needed = code_buf->size;
+    if (rt->jit_mem->used + needed > rt->jit_mem->size) {
+        hb_codegen_buffer_destroy(code_buf);
+        return;
+    }
+
+    size_t emitted_size = code_buf->size;
+    uint8_t* dest = rt->jit_mem->writable + rt->jit_mem->used;
+    memcpy(dest, code_buf->code, emitted_size);
+    rt->jit_mem->used += emitted_size;
+    rt->jit_mem->used = (rt->jit_mem->used + 15) & ~15;
+    hb_codegen_buffer_destroy(code_buf);
+
+    if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    block_cache_put(rt->block_cache, block->guest_addr, dest, emitted_size,
+                    (uint32_t)block->instr_count, block, true);
+    if (trace_jit_blocks_enabled()) {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=self-loop block=%p "
+                "native=%p-%p size=%zu\n",
+                (void*)(uintptr_t)block->guest_addr, dest, dest + emitted_size, emitted_size);
+        fflush(stderr);
+    }
+}
+
 hb_result_t hb_jit_runtime_compile(hb_jit_runtime_t* rt, const hb_ir_func_t* func) {
     (void)rt; (void)func;
     /* Compilation is done on-demand per-block in hb_jit_runtime_run for MVP */
@@ -523,18 +1105,23 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
 
             /* Store in block cache */
             cached = block_cache_put(rt->block_cache, ctx->pc, dest, emitted_size,
-                                     (uint32_t)block->instr_count, block, false);
+                                     jit_block_step_count(block), block, false);
             trace_jit_block(ctx->pc, dest, emitted_size, block);
             try_promote_copy_scan_counted_loop(rt, ctx, block);
             try_promote_bounded_scan_loop(rt, ctx, block);
+            try_promote_byte_compare_loop(rt, ctx, block);
+            try_promote_null_qword_scan_loop(rt, ctx, block);
+            try_promote_i32_less_tiebreaker_comparator(rt, ctx, block);
+            try_promote_self_loop(rt, ctx, block);
 
             /* Execute */
             typedef void (*jit_block_t)(hb_context_t*);
             jit_block_t exec = (jit_block_t)(void*)dest;
             exec(ctx);
             trace_jit_hot_block_tick(rt, cached);
-            steps += block->instr_count;
+            steps += jit_block_step_count(block);
         }
+        sync_arch_pc_after_jit_block(ctx);
         if (ctx->last_result != HB_OK) {
             set_helper_fault_result(out, ctx, steps, blocks_executed);
             return HB_OK;
@@ -548,8 +1135,10 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             return HB_OK;
         }
 
-        hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
-        if (last->op == HB_IR_RET) {
+        const hb_ir_instr_t* transfer = first_control_transfer_instr(block);
+        const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
+        const hb_ir_instr_t* terminal = transfer ? transfer : last;
+        if (terminal->op == HB_IR_RET) {
             out->result = HB_OK;
             out->steps_executed = steps;
             out->blocks_executed = blocks_executed;
@@ -564,8 +1153,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                                                 steps, blocks_executed,
                                                 "translated function truncated before branch target");
             }
-            if (last->op == HB_IR_CALL || last->op == HB_IR_RET ||
-                last->op == HB_IR_JMP || last->op == HB_IR_Jcc) {
+            if (is_control_transfer_op(terminal->op)) {
                 out->result = HB_OK;
                 out->steps_executed = steps;
                 out->blocks_executed = blocks_executed;
@@ -578,7 +1166,9 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             out->fault_reason = "branch target block not found";
             return HB_OK;
         }
-        if (last->op == HB_IR_JMP || last->op == HB_IR_Jcc || last->op == HB_IR_CALL) {
+        if (terminal->op == HB_IR_JMP || terminal->op == HB_IR_Jcc ||
+            terminal->op == HB_IR_CALL || terminal->op == HB_IR_LOOP ||
+            terminal->op == HB_IR_JRCXZ) {
             /* Continue with the target block */
             continue;
         }

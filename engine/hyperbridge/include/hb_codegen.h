@@ -34,6 +34,21 @@ hb_result_t hb_arm64_codegen_bounded_scan_loop(hb_arm64_codegen_t* cg,
                                                const hb_ir_block_t* guard,
                                                const hb_ir_block_t* body,
                                                hb_codegen_buffer_t* out);
+hb_result_t hb_arm64_codegen_two_block_loop_helper(hb_arm64_codegen_t* cg,
+                                                   const hb_ir_block_t* first,
+                                                   const hb_ir_block_t* second,
+                                                   hb_codegen_buffer_t* out);
+hb_result_t hb_arm64_codegen_four_block_loop_helper(hb_arm64_codegen_t* cg,
+                                                    const hb_ir_block_t* first,
+                                                    const hb_ir_block_t* second,
+                                                    const hb_ir_block_t* third,
+                                                    const hb_ir_block_t* fourth,
+                                                    hb_codegen_buffer_t* out);
+hb_result_t hb_arm64_codegen_i32_less_tiebreaker_helper(hb_arm64_codegen_t* cg,
+                                                        const hb_ir_block_t* entry,
+                                                        const hb_ir_block_t* equal,
+                                                        const hb_ir_block_t* less,
+                                                        hb_codegen_buffer_t* out);
 hb_result_t hb_arm64_codegen_instr(hb_arm64_codegen_t* cg, const hb_ir_instr_t* instr, hb_codegen_buffer_t* out);
 
 /* JIT buffer management */

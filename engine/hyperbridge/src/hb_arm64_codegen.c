@@ -252,6 +252,10 @@ static void emit_sbfm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imms) {
     emit_u32(buf, 0x93400000 | ((imms & 0x3f) << 10) | (rn << 5) | rd);
 }
 
+static void emit_ubfm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imms) {
+    emit_u32(buf, 0xd3400000 | ((imms & 0x3f) << 10) | (rn << 5) | rd);
+}
+
 static void __attribute__((unused)) emit_mvn(hb_codegen_buffer_t* buf, int rd, int rn) {
     /* ORN Xd, XZR, Xn */
     emit_u32(buf, 0xaa2003e0 | (rn << 16) | rd);
@@ -292,6 +296,11 @@ static bool operand_is_none_or_unset(const hb_ir_operand_t* op) {
 
 static bool jit_direct_mem_enabled(void) {
     const char* val = getenv("MACRUNNER_HB_JIT_DIRECT_MEM");
+    return val && val[0] && val[0] != '0';
+}
+
+static bool jit_direct_stack_enabled(void) {
+    const char* val = getenv("MACRUNNER_HB_JIT_DIRECT_STACK");
     return val && val[0] && val[0] != '0';
 }
 
@@ -382,12 +391,16 @@ static void emit_load_operand(hb_codegen_buffer_t* buf, const hb_ir_operand_t* o
 }
 
 /* Store X20 into IR operand (must be register) */
+static void emit_store_x20_to_gpr_sized(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op);
+
 static void emit_store_operand(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
     if (op->type == HB_OP_REG) {
-        size_t off = x64_reg_off(op->reg);
-        emit_str_x(buf, 20, 19, (uint32_t)off);
+        emit_store_x20_to_gpr_sized(buf, op);
     }
 }
+
+static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn);
+extern uint64_t hb_jit_helper_load_u64(hb_context_t* ctx, uint64_t addr);
 
 static bool is_direct_user_mem_operand(const hb_ir_operand_t* op) {
     if (!op || op->type != HB_OP_MEM) return false;
@@ -399,6 +412,13 @@ static bool is_direct_user_mem_operand(const hb_ir_operand_t* op) {
     if (op->mem.base != HB_REG_COUNT && op->mem.base >= HB_REG_XMM0) return false;
     if (op->mem.index != HB_REG_COUNT && op->mem.index >= HB_REG_XMM0) return false;
     return true;
+}
+
+static bool is_absolute_mem64_operand(const hb_ir_operand_t* op) {
+    return op && op->type == HB_OP_MEM && op->size == HB_SIZE_64 &&
+           op->mem.segment == 0 && !op->mem.addr32 &&
+           op->mem.base == HB_REG_COUNT && op->mem.index == HB_REG_COUNT &&
+           op->mem.scale == 1;
 }
 
 static bool is_direct_user_xmm_mem_operand(const hb_ir_operand_t* op) {
@@ -851,6 +871,9 @@ static void emit_store_x20_to_gpr_sized(hb_codegen_buffer_t* buf, const hb_ir_op
             emit_strh_w(buf, 20, 19, (uint32_t)off);
             break;
         case HB_SIZE_32:
+            emit_ubfm(buf, 20, 20, 31);
+            emit_str_x(buf, 20, 19, (uint32_t)x64_reg_off(op->reg));
+            break;
         case HB_SIZE_64:
         default:
             emit_str_x(buf, 20, 19, (uint32_t)x64_reg_off(op->reg));
@@ -868,7 +891,7 @@ static void emit_store_zero_to_gpr_sized(hb_codegen_buffer_t* buf, const hb_ir_o
             emit_strh_w(buf, 31, 19, (uint32_t)off);
             break;
         case HB_SIZE_32:
-            emit_str_w(buf, 31, 19, (uint32_t)off);
+            emit_str_x(buf, 31, 19, (uint32_t)x64_reg_off(op->reg));
             break;
         case HB_SIZE_64:
         default:
@@ -989,7 +1012,7 @@ static void emit_native_stack_push_x20(hb_codegen_buffer_t* buf) {
 }
 
 static bool emit_native_push(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
-    if (!jit_direct_mem_enabled() || !instr || instr->op != HB_IR_PUSH) return false;
+    if (!jit_direct_stack_enabled() || !instr || instr->op != HB_IR_PUSH) return false;
     if (instr->src1.type == HB_OP_REG) {
         if (!is_plain_gpr_reg_operand(&instr->src1) || instr->src1.size != HB_SIZE_64)
             return false;
@@ -1004,7 +1027,7 @@ static bool emit_native_push(hb_codegen_buffer_t* buf, const hb_ir_instr_t* inst
 }
 
 static bool emit_native_pop(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
-    if (!jit_direct_mem_enabled() || !instr || instr->op != HB_IR_POP) return false;
+    if (!jit_direct_stack_enabled() || !instr || instr->op != HB_IR_POP) return false;
     if (!is_plain_gpr_reg_operand(&instr->dst) || instr->dst.size != HB_SIZE_64)
         return false;
     emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
@@ -1017,7 +1040,7 @@ static bool emit_native_pop(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr
 
 static bool emit_native_ret(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
     uint64_t adjust = 0;
-    if (!jit_direct_mem_enabled() || !instr || instr->op != HB_IR_RET) return false;
+    if (!jit_direct_stack_enabled() || !instr || instr->op != HB_IR_RET) return false;
     if (instr->src1.type == HB_OP_IMM) {
         adjust = (uint64_t)instr->src1.imm;
         if (adjust > 4095) return false;
@@ -1034,7 +1057,7 @@ static bool emit_native_ret(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr
 }
 
 static bool emit_native_direct_call(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
-    if (!jit_direct_mem_enabled() || !instr || instr->op != HB_IR_CALL) return false;
+    if (!jit_direct_stack_enabled() || !instr || instr->op != HB_IR_CALL) return false;
     if (instr->src1.type != HB_OP_NONE) return false;
     emit_mov_imm_compact(buf, 20, instr->guest_addr + instr->guest_len);
     emit_native_stack_push_x20(buf);
@@ -1051,6 +1074,14 @@ static bool emit_native_branch_target_to_x20(hb_codegen_buffer_t* buf,
     if (jit_direct_mem_enabled() && is_direct_user_mem_operand(op) && op->size == HB_SIZE_64) {
         emit_direct_mem_addr(buf, op);
         emit_direct_mem_load_to_x20(buf, op->size);
+        return true;
+    }
+    if (is_absolute_mem64_operand(op)) {
+        emit_mov_reg(buf, 0, 19);
+        emit_mov_imm64(buf, 1, (uint64_t)op->mem.disp);
+        emit_call_helper(buf, (void*)hb_jit_helper_load_u64);
+        emit_return_if_helper_failed(buf);
+        emit_mov_reg(buf, 20, 0);
         return true;
     }
     return false;
@@ -1078,6 +1109,7 @@ static bool emit_native_indirect_jmp(hb_codegen_buffer_t* buf, const hb_ir_instr
 
 static bool emit_native_indirect_call(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
     if (!instr || instr->op != HB_IR_CALL || instr->src1.type == HB_OP_NONE) return false;
+    if (!jit_direct_stack_enabled()) return false;
     if (!emit_native_branch_target_to_x20(buf, &instr->src1)) return false;
     size_t done_branch = emit_zero_target_fault_skip_to_done(buf, 20);
     emit_mov_reg(buf, 23, 20);
@@ -2543,6 +2575,21 @@ extern void     hb_jit_helper_xgetbv(hb_context_t* ctx);
 extern void     hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern hb_result_t hb_interpreter_exec_one_for_jit(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_interp_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_two_block_loop(hb_context_t* ctx,
+                                                  const hb_ir_block_t* first,
+                                                  const hb_ir_block_t* second);
+extern void     hb_jit_helper_exec_four_block_loop(hb_context_t* ctx,
+                                                   const hb_ir_block_t* first,
+                                                   const hb_ir_block_t* second,
+                                                   const hb_ir_block_t* third,
+                                                   const hb_ir_block_t* fourth);
+extern void     hb_jit_helper_exec_ir_block(hb_context_t* ctx, const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_load_cmp_jcc_block(hb_context_t* ctx, const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_cmp_setcc_ret_block(hb_context_t* ctx, const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_i32_less_tiebreaker(hb_context_t* ctx,
+                                                       const hb_ir_block_t* entry,
+                                                       const hb_ir_block_t* equal,
+                                                       const hb_ir_block_t* less);
 
 static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn);
 
@@ -2564,6 +2611,121 @@ static hb_result_t emit_interp_ir_helper(hb_codegen_buffer_t* buf, const hb_ir_i
 static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn) {
     emit_mov_imm64(buf, 23, (uint64_t)fn);
     emit_blr(buf, 23);
+}
+
+static bool emit_two_block_loop_helper(hb_codegen_buffer_t* buf,
+                                       const hb_ir_block_t* first,
+                                       const hb_ir_block_t* second) {
+    if (!buf || !first || !second || !first->instr_count || !second->instr_count)
+        return false;
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)first);
+    emit_mov_imm64(buf, 2, (uint64_t)(uintptr_t)second);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_two_block_loop);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_four_block_loop_helper(hb_codegen_buffer_t* buf,
+                                        const hb_ir_block_t* first,
+                                        const hb_ir_block_t* second,
+                                        const hb_ir_block_t* third,
+                                        const hb_ir_block_t* fourth) {
+    if (!buf || !first || !second || !third ||
+        !first->instr_count || !second->instr_count || !third->instr_count)
+        return false;
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)first);
+    emit_mov_imm64(buf, 2, (uint64_t)(uintptr_t)second);
+    emit_mov_imm64(buf, 3, (uint64_t)(uintptr_t)third);
+    emit_mov_imm64(buf, 4, (uint64_t)(uintptr_t)fourth);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_four_block_loop);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_i32_less_tiebreaker_helper(hb_codegen_buffer_t* buf,
+                                            const hb_ir_block_t* entry,
+                                            const hb_ir_block_t* equal,
+                                            const hb_ir_block_t* less) {
+    if (!buf || !entry || !equal || !entry->instr_count || !equal->instr_count)
+        return false;
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)entry);
+    emit_mov_imm64(buf, 2, (uint64_t)(uintptr_t)equal);
+    emit_mov_imm64(buf, 3, (uint64_t)(uintptr_t)less);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_i32_less_tiebreaker);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool hot_helper_block_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 3) return false;
+    const hb_ir_instr_t* a = &block->instrs[0];
+    const hb_ir_instr_t* b = &block->instrs[1];
+    const hb_ir_instr_t* c = &block->instrs[2];
+    if (a->op == HB_IR_LOAD && (b->op == HB_IR_CMP || b->op == HB_IR_TEST) &&
+        c->op == HB_IR_Jcc)
+        return true;
+    if ((a->op == HB_IR_CMP || a->op == HB_IR_TEST) &&
+        b->op == HB_IR_SETcc && c->op == HB_IR_RET)
+        return true;
+    return false;
+}
+
+static bool hot_helper_scalar_operand(const hb_ir_operand_t* op, bool allow_imm) {
+    if (!op) return false;
+    if (op->type == HB_OP_IMM) return allow_imm;
+    if (op->type == HB_OP_REG)
+        return op->reg < HB_REG_XMM0 && op->size && op->size <= HB_SIZE_64;
+    if (op->type == HB_OP_MEM)
+        return op->size && op->size <= HB_SIZE_64 && op->mem.base != HB_REG_RIP &&
+               !op->mem.addr32;
+    return false;
+}
+
+static bool hot_helper_load_cmp_jcc_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 3) return false;
+    const hb_ir_instr_t* load = &block->instrs[0];
+    const hb_ir_instr_t* cmp = &block->instrs[1];
+    const hb_ir_instr_t* jcc = &block->instrs[2];
+    return load->op == HB_IR_LOAD &&
+           load->dst.type == HB_OP_REG && load->dst.reg < HB_REG_XMM0 &&
+           load->dst.size && load->dst.size <= HB_SIZE_64 &&
+           load->src1.type == HB_OP_MEM && hot_helper_scalar_operand(&load->src1, false) &&
+           (cmp->op == HB_IR_CMP || cmp->op == HB_IR_TEST) &&
+           hot_helper_scalar_operand(&cmp->src1, true) &&
+           hot_helper_scalar_operand(&cmp->src2, true) &&
+           jcc->op == HB_IR_Jcc;
+}
+
+static bool hot_helper_cmp_setcc_ret_candidate(const hb_ir_block_t* block) {
+    if (!block || block->instr_count != 3) return false;
+    const hb_ir_instr_t* cmp = &block->instrs[0];
+    const hb_ir_instr_t* setcc = &block->instrs[1];
+    const hb_ir_instr_t* ret = &block->instrs[2];
+    return (cmp->op == HB_IR_CMP || cmp->op == HB_IR_TEST) &&
+           hot_helper_scalar_operand(&cmp->src1, true) &&
+           hot_helper_scalar_operand(&cmp->src2, true) &&
+           setcc->op == HB_IR_SETcc &&
+           setcc->dst.size == HB_SIZE_8 &&
+           (setcc->dst.type == HB_OP_REG || setcc->dst.type == HB_OP_MEM) &&
+           hot_helper_scalar_operand(&setcc->dst, false) &&
+           ret->op == HB_IR_RET;
+}
+
+static bool emit_hot_helper_block(hb_codegen_buffer_t* buf, const hb_ir_block_t* block) {
+    if (!hot_helper_block_candidate(block)) return false;
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    if (hot_helper_load_cmp_jcc_candidate(block))
+        emit_call_helper(buf, (void*)hb_jit_helper_exec_load_cmp_jcc_block);
+    else if (hot_helper_cmp_setcc_ret_candidate(block))
+        emit_call_helper(buf, (void*)hb_jit_helper_exec_cmp_setcc_ret_block);
+    else
+        emit_call_helper(buf, (void*)hb_jit_helper_exec_ir_block);
+    emit_return_if_helper_failed(buf);
+    return true;
 }
 
 /* --- Per-instruction codegen --- */
@@ -3672,6 +3834,271 @@ void hb_jit_helper_exec_interp_ir(hb_context_t* ctx, const hb_ir_instr_t* instr)
     ctx->last_result = hb_interpreter_exec_one_for_jit(ctx, instr);
 }
 
+static bool hb_jit_helper_is_control_transfer(hb_ir_op_t op) {
+    return op == HB_IR_CALL || op == HB_IR_RET || op == HB_IR_JMP ||
+           op == HB_IR_Jcc || op == HB_IR_LOOP || op == HB_IR_JRCXZ;
+}
+
+static uint64_t hb_jit_helper_two_block_loop_budget(void) {
+    const char* env = getenv("MACRUNNER_HB_JIT_HELPER_LOOP_BLOCK_BUDGET");
+    uint64_t budget = env && *env ? strtoull(env, NULL, 0) : 16384ULL;
+    return budget ? budget : 16384ULL;
+}
+
+static void hb_jit_helper_sync_pc(hb_context_t* ctx) {
+    if (!ctx) return;
+    if (ctx->mode == HB_MODE_32BIT) ctx->regs.x86.eip = (uint32_t)ctx->pc;
+    else ctx->regs.x64.rip = ctx->pc;
+}
+
+static hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
+                                                    const hb_ir_block_t* block) {
+    if (!ctx || !block) return HB_ERR_INVALID_ARG;
+    for (size_t i = 0; i < block->instr_count; i++) {
+        const hb_ir_instr_t* instr = &block->instrs[i];
+        hb_result_t r = hb_interpreter_exec_one_for_jit(ctx, instr);
+        if (r != HB_OK) return r;
+        if (hb_jit_helper_is_control_transfer(instr->op)) return HB_OK;
+    }
+    if (block->instr_count) {
+        const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
+        ctx->pc = last->guest_addr + last->guest_len;
+        hb_jit_helper_sync_pc(ctx);
+    }
+    return HB_OK;
+}
+
+void hb_jit_helper_exec_two_block_loop(hb_context_t* ctx,
+                                       const hb_ir_block_t* first,
+                                       const hb_ir_block_t* second) {
+    uint64_t budget = hb_jit_helper_two_block_loop_budget();
+    uint64_t blocks = 0;
+    if (!ctx || !first || !second) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    ctx->last_result = HB_OK;
+    while (blocks++ < budget) {
+        const hb_ir_block_t* block = NULL;
+        if (ctx->pc == first->guest_addr) block = first;
+        else if (ctx->pc == second->guest_addr) block = second;
+        else return;
+
+        hb_result_t r = hb_jit_helper_exec_ir_block_once(ctx, block);
+        if (r != HB_OK) {
+            ctx->last_result = r;
+            return;
+        }
+        if (ctx->pc != first->guest_addr && ctx->pc != second->guest_addr) return;
+    }
+    /* Leave ctx->pc inside the loop; the runtime will re-enter the cached loop block. */
+    ctx->last_result = HB_OK;
+}
+
+void hb_jit_helper_exec_four_block_loop(hb_context_t* ctx,
+                                        const hb_ir_block_t* first,
+                                        const hb_ir_block_t* second,
+                                        const hb_ir_block_t* third,
+                                        const hb_ir_block_t* fourth) {
+    uint64_t budget = hb_jit_helper_two_block_loop_budget();
+    uint64_t blocks = 0;
+    if (!ctx || !first || !second || !third) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    ctx->last_result = HB_OK;
+    while (blocks++ < budget) {
+        const hb_ir_block_t* block = NULL;
+        if (ctx->pc == first->guest_addr) block = first;
+        else if (ctx->pc == second->guest_addr) block = second;
+        else if (ctx->pc == third->guest_addr) block = third;
+        else if (fourth && ctx->pc == fourth->guest_addr) block = fourth;
+        else return;
+
+        hb_result_t r = hb_jit_helper_exec_ir_block_once(ctx, block);
+        if (r != HB_OK) {
+            ctx->last_result = r;
+            return;
+        }
+        if (ctx->pc != first->guest_addr && ctx->pc != second->guest_addr &&
+            ctx->pc != third->guest_addr && (!fourth || ctx->pc != fourth->guest_addr))
+            return;
+    }
+    ctx->last_result = HB_OK;
+}
+
+void hb_jit_helper_exec_ir_block(hb_context_t* ctx, const hb_ir_block_t* block) {
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+}
+
+static hb_result_t hb_jit_helper_exec_cmp_or_test(hb_context_t* ctx,
+                                                  const hb_ir_instr_t* instr) {
+    uint64_t lhs = 0;
+    uint64_t rhs = 0;
+    hb_result_t r = hb_flags_read_operand_value(ctx, &instr->src1, &lhs);
+    if (r != HB_OK) return r;
+    r = hb_flags_read_operand_value(ctx, &instr->src2, &rhs);
+    if (r != HB_OK) return r;
+    if (instr->op == HB_IR_CMP) {
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, instr->src1.size, lhs, rhs, lhs - rhs, 0);
+        return HB_OK;
+    }
+    if (instr->op == HB_IR_TEST) {
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_TEST, instr->src1.size, lhs, rhs, lhs & rhs, 0);
+        return HB_OK;
+    }
+    return HB_ERR_INVALID_ARG;
+}
+
+static hb_result_t hb_jit_helper_exec_ret_exact(hb_context_t* ctx,
+                                                const hb_ir_instr_t* instr) {
+    uint64_t ret_addr = 0;
+    uint64_t ret_imm = instr->src1.type == HB_OP_IMM ? (uint64_t)instr->src1.imm : 0;
+    hb_result_t r;
+    if (ctx->mode == HB_MODE_32BIT) {
+        uint32_t ret32 = 0;
+        r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp, &ret32);
+        if (r != HB_OK) return r;
+        ret_addr = ret32;
+        ctx->regs.x86.esp += 4 + (uint32_t)ret_imm;
+    } else {
+        r = hb_memory_read_u64(ctx->memory, ctx->regs.x64.rsp, &ret_addr);
+        if (r != HB_OK) return r;
+        ctx->regs.x64.rsp += 8 + ret_imm;
+    }
+    ctx->pc = ret_addr;
+    hb_jit_helper_sync_pc(ctx);
+    return HB_OK;
+}
+
+void hb_jit_helper_exec_load_cmp_jcc_block(hb_context_t* ctx, const hb_ir_block_t* block) {
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !hot_helper_load_cmp_jcc_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    const hb_ir_instr_t* load = &block->instrs[0];
+    const hb_ir_instr_t* cmp = &block->instrs[1];
+    const hb_ir_instr_t* jcc = &block->instrs[2];
+    hb_ir_operand_t load_src = load->src1;
+    load_src.size = load->dst.size;
+
+    uint64_t value = 0;
+    hb_result_t r = hb_flags_read_operand_value(ctx, &load_src, &value);
+    if (r == HB_OK) r = hb_flags_write_operand_value(ctx, &load->dst, value);
+    if (r == HB_OK) r = hb_jit_helper_exec_cmp_or_test(ctx, cmp);
+    bool taken = false;
+    if (r == HB_OK) r = hb_flags_eval_cond(ctx, jcc->cc, &taken);
+    if (r != HB_OK) {
+        ctx->last_result = r;
+        return;
+    }
+    ctx->pc = taken ? jcc->target : jcc->guest_addr + jcc->guest_len;
+    hb_jit_helper_sync_pc(ctx);
+    ctx->last_result = HB_OK;
+}
+
+void hb_jit_helper_exec_cmp_setcc_ret_block(hb_context_t* ctx, const hb_ir_block_t* block) {
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || !hot_helper_cmp_setcc_ret_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    const hb_ir_instr_t* cmp = &block->instrs[0];
+    const hb_ir_instr_t* setcc = &block->instrs[1];
+    const hb_ir_instr_t* ret = &block->instrs[2];
+    hb_result_t r = hb_jit_helper_exec_cmp_or_test(ctx, cmp);
+    bool value = false;
+    if (r == HB_OK) r = hb_flags_eval_cond(ctx, setcc->cc, &value);
+    if (r == HB_OK) r = hb_flags_write_operand_value(ctx, &setcc->dst, value ? 1 : 0);
+    if (r == HB_OK) r = hb_jit_helper_exec_ret_exact(ctx, ret);
+    ctx->last_result = r;
+}
+
+void hb_jit_helper_exec_i32_less_tiebreaker(hb_context_t* ctx,
+                                            const hb_ir_block_t* entry,
+                                            const hb_ir_block_t* equal,
+                                            const hb_ir_block_t* less) {
+    if (!ctx || !entry || !equal || entry->instr_count != 3 || equal->instr_count != 3) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+
+    const hb_ir_instr_t* load = &entry->instrs[0];
+    const hb_ir_instr_t* entry_cmp = &entry->instrs[1];
+    const hb_ir_instr_t* entry_jcc = &entry->instrs[2];
+    const hb_ir_instr_t* equal_cmp = &equal->instrs[0];
+    const hb_ir_instr_t* equal_setcc = &equal->instrs[1];
+    const hb_ir_instr_t* equal_ret = &equal->instrs[2];
+    const hb_ir_instr_t* less_setcc = less && less->instr_count == 2 ? &less->instrs[0] : NULL;
+    const hb_ir_instr_t* less_ret = less && less->instr_count == 2 ? &less->instrs[1] : NULL;
+    uint64_t lhs = 0;
+    uint64_t rhs = 0;
+    uint64_t loaded = 0;
+    bool taken = false;
+    hb_result_t r;
+
+    if (load->op != HB_IR_LOAD || entry_cmp->op != HB_IR_CMP ||
+        entry_jcc->op != HB_IR_Jcc || equal_cmp->op != HB_IR_CMP ||
+        equal_setcc->op != HB_IR_SETcc || equal_ret->op != HB_IR_RET) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, entry);
+        return;
+    }
+
+    hb_ir_operand_t load_src = load->src1;
+    load_src.size = load->dst.size;
+    r = hb_flags_read_operand_value(ctx, &load_src, &loaded);
+    if (r == HB_OK) r = hb_flags_write_operand_value(ctx, &load->dst, loaded);
+    if (r == HB_OK) r = hb_flags_read_operand_value(ctx, &entry_cmp->src1, &lhs);
+    if (r == HB_OK) r = hb_flags_read_operand_value(ctx, &entry_cmp->src2, &rhs);
+    if (r == HB_OK) {
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, entry_cmp->src1.size, lhs, rhs, lhs - rhs, 0);
+        r = hb_flags_eval_cond(ctx, entry_jcc->cc, &taken);
+    }
+    if (r != HB_OK) {
+        ctx->last_result = r;
+        return;
+    }
+
+    if (taken) {
+        bool value = false;
+        if (!less_setcc || !less_ret || less_setcc->op != HB_IR_SETcc || less_ret->op != HB_IR_RET) {
+            ctx->pc = entry_jcc->target;
+            hb_jit_helper_sync_pc(ctx);
+            ctx->last_result = HB_OK;
+            return;
+        }
+        r = hb_flags_eval_cond(ctx, less_setcc->cc, &value);
+        if (r == HB_OK) r = hb_flags_write_operand_value(ctx, &less_setcc->dst, value ? 1 : 0);
+        if (r == HB_OK) r = hb_jit_helper_exec_ret_exact(ctx, less_ret);
+        ctx->last_result = r;
+        return;
+    }
+
+    r = hb_flags_read_operand_value(ctx, &equal_cmp->src1, &lhs);
+    if (r == HB_OK) r = hb_flags_read_operand_value(ctx, &equal_cmp->src2, &rhs);
+    if (r == HB_OK) {
+        bool value = false;
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, equal_cmp->src1.size, lhs, rhs, lhs - rhs, 0);
+        r = hb_flags_eval_cond(ctx, equal_setcc->cc, &value);
+        if (r == HB_OK) r = hb_flags_write_operand_value(ctx, &equal_setcc->dst, value ? 1 : 0);
+    }
+    if (r == HB_OK) r = hb_jit_helper_exec_ret_exact(ctx, equal_ret);
+    ctx->last_result = r;
+}
+
 void hb_jit_helper_exec_setcc_lazy(hb_context_t* ctx, uint64_t cc, uint64_t dst_reg) {
     bool value = false;
     if (hb_flags_eval_cond(ctx, (hb_cc_t)cc, &value) != HB_OK) return;
@@ -4059,7 +4486,8 @@ hb_result_t hb_arm64_codegen_copy_scan_counted_loop(hb_arm64_codegen_t* cg,
     (void)cg;
     if (!body || !guard || !out) return HB_ERR_INVALID_ARG;
     emit_prologue(out);
-    if (!emit_copy_scan_counted_loop_block(out, body, guard)) {
+    if (!emit_copy_scan_counted_loop_block(out, body, guard) &&
+        !emit_two_block_loop_helper(out, body, guard)) {
         return HB_ERR_UNSUPPORTED_FEATURE;
     }
     emit_epilogue(out);
@@ -4073,19 +4501,80 @@ hb_result_t hb_arm64_codegen_bounded_scan_loop(hb_arm64_codegen_t* cg,
     (void)cg;
     if (!guard || !body || !out) return HB_ERR_INVALID_ARG;
     emit_prologue(out);
-    if (!emit_bounded_scan_loop_block(out, guard, body)) {
+    if (!emit_bounded_scan_loop_block(out, guard, body) &&
+        !emit_two_block_loop_helper(out, guard, body)) {
         return HB_ERR_UNSUPPORTED_FEATURE;
     }
     emit_epilogue(out);
     return HB_OK;
 }
 
+hb_result_t hb_arm64_codegen_two_block_loop_helper(hb_arm64_codegen_t* cg,
+                                                   const hb_ir_block_t* first,
+                                                   const hb_ir_block_t* second,
+                                                   hb_codegen_buffer_t* out) {
+    (void)cg;
+    if (!first || !second || !out) return HB_ERR_INVALID_ARG;
+    emit_prologue(out);
+    if (!emit_two_block_loop_helper(out, first, second))
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    emit_epilogue(out);
+    return HB_OK;
+}
+
+hb_result_t hb_arm64_codegen_four_block_loop_helper(hb_arm64_codegen_t* cg,
+                                                    const hb_ir_block_t* first,
+                                                    const hb_ir_block_t* second,
+                                                    const hb_ir_block_t* third,
+                                                    const hb_ir_block_t* fourth,
+                                                    hb_codegen_buffer_t* out) {
+    (void)cg;
+    if (!first || !second || !third || !out) return HB_ERR_INVALID_ARG;
+    emit_prologue(out);
+    if (!emit_four_block_loop_helper(out, first, second, third, fourth))
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    emit_epilogue(out);
+    return HB_OK;
+}
+
+hb_result_t hb_arm64_codegen_i32_less_tiebreaker_helper(hb_arm64_codegen_t* cg,
+                                                        const hb_ir_block_t* entry,
+                                                        const hb_ir_block_t* equal,
+                                                        const hb_ir_block_t* less,
+                                                        hb_codegen_buffer_t* out) {
+    (void)cg;
+    if (!entry || !equal || !out) return HB_ERR_INVALID_ARG;
+    emit_prologue(out);
+    if (!emit_i32_less_tiebreaker_helper(out, entry, equal, less))
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    emit_epilogue(out);
+    return HB_OK;
+}
+
+static bool codegen_is_control_transfer_op(hb_ir_op_t op) {
+    return op == HB_IR_CALL || op == HB_IR_RET || op == HB_IR_JMP ||
+           op == HB_IR_Jcc || op == HB_IR_LOOP || op == HB_IR_JRCXZ;
+}
+
+static size_t codegen_instr_limit_before_fallthrough(const hb_ir_block_t* block) {
+    if (!block) return 0;
+    for (size_t i = 0; i < block->instr_count; i++) {
+        if (codegen_is_control_transfer_op(block->instrs[i].op)) return i + 1;
+    }
+    return block->instr_count;
+}
+
 hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_block_t* block,
                                             const hb_ir_cfg_t* cfg, hb_codegen_buffer_t* out) {
     (void)cg;
+    size_t instr_limit;
+    bool mid_block_transfer;
+
     if (!block || !out) return HB_ERR_INVALID_ARG;
+    instr_limit = codegen_instr_limit_before_fallthrough(block);
+    mid_block_transfer = instr_limit < block->instr_count;
     emit_prologue(out);
-    if (cfg && block->instr_count == 5) {
+    if (!mid_block_transfer && cfg && block->instr_count == 5) {
         const hb_ir_instr_t* jcc = &block->instrs[4];
         const hb_ir_block_t* guard = (jcc->op == HB_IR_Jcc)
             ? find_cfg_block_for_codegen(cfg, jcc->guest_addr + jcc->guest_len)
@@ -4095,100 +4584,106 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
             return HB_OK;
         }
     }
-    if (emit_store_count_loop_block(out, block)) {
-        emit_epilogue(out);
-        return HB_OK;
+    if (!mid_block_transfer) {
+        if (!jit_direct_mem_enabled() && emit_hot_helper_block(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_store_count_loop_block(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_prologue_local_init_test_block(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_epilogue_restore_ret_block(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_zero_store_update_backedge_block(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_copy_scan_body_block(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_hot_scalar_scan_loop(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+        if (emit_zero_test_jcc_block(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
     }
-    if (emit_prologue_local_init_test_block(out, block)) {
-        emit_epilogue(out);
-        return HB_OK;
-    }
-    if (emit_epilogue_restore_ret_block(out, block)) {
-        emit_epilogue(out);
-        return HB_OK;
-    }
-    if (emit_zero_store_update_backedge_block(out, block)) {
-        emit_epilogue(out);
-        return HB_OK;
-    }
-    if (emit_copy_scan_body_block(out, block)) {
-        emit_epilogue(out);
-        return HB_OK;
-    }
-    if (emit_hot_scalar_scan_loop(out, block)) {
-        emit_epilogue(out);
-        return HB_OK;
-    }
-    if (emit_zero_test_jcc_block(out, block)) {
-        emit_epilogue(out);
-        return HB_OK;
-    }
-    for (size_t i = 0; i < block->instr_count; i++) {
-        if (i + 2 < block->instr_count &&
+    for (size_t i = 0; i < instr_limit; i++) {
+        if (i + 2 < instr_limit &&
             emit_arith_rmw_dead_flags_test_jcc(out, &block->instrs[i], &block->instrs[i + 1],
                                                &block->instrs[i + 2])) {
             i += 2;
             continue;
         }
-        if (i + 3 < block->instr_count &&
+        if (i + 3 < instr_limit &&
             emit_stack_spill_push_sub_prologue(out, &block->instrs[i], &block->instrs[i + 1],
                                                &block->instrs[i + 2], &block->instrs[i + 3])) {
             i += 3;
             continue;
         }
-        if (i + 2 < block->instr_count &&
+        if (i + 2 < instr_limit &&
             emit_store_imm_mov_lea_same_base(out, &block->instrs[i], &block->instrs[i + 1],
                                              &block->instrs[i + 2])) {
             i += 2;
             continue;
         }
-        if (i + 2 < block->instr_count &&
+        if (i + 2 < instr_limit &&
             emit_scalar_flags_setcc_sequence(out, &block->instrs[i], &block->instrs[i + 1],
                                              &block->instrs[i + 2])) {
             i += 2;
             continue;
         }
-        if (i + 1 < block->instr_count &&
+        if (i + 1 < instr_limit &&
             emit_scalar_flags_setcc_sequence(out, &block->instrs[i], NULL, &block->instrs[i + 1])) {
             i++;
             continue;
         }
-        if (i + 1 < block->instr_count &&
+        if (i + 1 < instr_limit &&
             emit_mov_lea_same_base_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }
-        if (i + 1 < block->instr_count &&
+        if (i + 1 < instr_limit &&
             emit_xmm_load_store_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }
-        if (i + 1 < block->instr_count &&
+        if (i + 1 < instr_limit &&
             emit_scalar_load_store_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }
-        if (i + 1 < block->instr_count &&
+        if (i + 1 < instr_limit &&
             emit_adjacent_mem64_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }
-        if (i + 1 < block->instr_count &&
+        if (i + 1 < instr_limit &&
             emit_mem_reg_flags_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }
-        if (i + 1 < block->instr_count &&
+        if (i + 1 < instr_limit &&
             emit_mem_imm_flags_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }
-        if (i + 1 < block->instr_count &&
+        if (i + 1 < instr_limit &&
             emit_test_same_reg_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }
-        if (i + 1 < block->instr_count &&
+        if (i + 1 < instr_limit &&
             emit_scalar_flags_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;

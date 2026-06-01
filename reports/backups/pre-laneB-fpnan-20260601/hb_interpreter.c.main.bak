@@ -472,7 +472,7 @@ static uint16_t hb_float_bits_to_half(uint32_t bits, unsigned imm) {
     return (uint16_t)(sign | ((uint16_t)half_exp << 10) | mant);
 }
 
-static hb_result_t read_scalar_double_bits(hb_context_t* ctx, const hb_ir_operand_t* op, uint64_t* out) {
+static hb_result_t read_scalar_double(hb_context_t* ctx, const hb_ir_operand_t* op, double* out) {
     if (!ctx || !op || !out) return HB_ERR_INVALID_ARG;
     uint64_t bits = 0;
     if (op->type == HB_OP_REG && is_xmm_reg(op->reg)) {
@@ -487,32 +487,20 @@ static hb_result_t read_scalar_double_bits(hb_context_t* ctx, const hb_ir_operan
     } else {
         return HB_ERR_INTERNAL;
     }
-    *out = bits;
-    return HB_OK;
-}
-
-static hb_result_t read_scalar_double(hb_context_t* ctx, const hb_ir_operand_t* op, double* out) {
-    uint64_t bits = 0;
-    hb_result_t r = read_scalar_double_bits(ctx, op, &bits);
-    if (r != HB_OK) return r;
     *out = hb_bits_to_double(bits);
     return HB_OK;
 }
 
-static hb_result_t write_scalar_double_bits(hb_context_t* ctx, const hb_ir_operand_t* op, uint64_t bits) {
+static hb_result_t write_scalar_double(hb_context_t* ctx, const hb_ir_operand_t* op, double value) {
     if (!ctx || !op || op->type != HB_OP_REG || !is_xmm_reg(op->reg)) return HB_ERR_INTERNAL;
     uint64_t xmm[2];
     hb_result_t r = read_xmm_reg(ctx, op->reg, xmm);
     if (r != HB_OK) return r;
-    xmm[0] = bits;
+    xmm[0] = hb_double_to_bits(value);
     return write_xmm_reg(ctx, op->reg, xmm);
 }
 
-static hb_result_t write_scalar_double(hb_context_t* ctx, const hb_ir_operand_t* op, double value) {
-    return write_scalar_double_bits(ctx, op, hb_double_to_bits(value));
-}
-
-static hb_result_t read_scalar_float_bits(hb_context_t* ctx, const hb_ir_operand_t* op, uint32_t* out) {
+static hb_result_t read_scalar_float(hb_context_t* ctx, const hb_ir_operand_t* op, float* out) {
     if (!ctx || !op || !out) return HB_ERR_INVALID_ARG;
     uint32_t bits = 0;
     if (op->type == HB_OP_REG && is_xmm_reg(op->reg)) {
@@ -529,29 +517,17 @@ static hb_result_t read_scalar_float_bits(hb_context_t* ctx, const hb_ir_operand
     } else {
         return HB_ERR_INTERNAL;
     }
-    *out = bits;
-    return HB_OK;
-}
-
-static hb_result_t read_scalar_float(hb_context_t* ctx, const hb_ir_operand_t* op, float* out) {
-    uint32_t bits = 0;
-    hb_result_t r = read_scalar_float_bits(ctx, op, &bits);
-    if (r != HB_OK) return r;
     *out = hb_bits_to_float(bits);
     return HB_OK;
 }
 
-static hb_result_t write_scalar_float_bits(hb_context_t* ctx, const hb_ir_operand_t* op, uint32_t bits) {
+static hb_result_t write_scalar_float(hb_context_t* ctx, const hb_ir_operand_t* op, float value) {
     if (!ctx || !op || op->type != HB_OP_REG || !is_xmm_reg(op->reg)) return HB_ERR_INTERNAL;
     uint64_t xmm[2];
     hb_result_t r = read_xmm_reg(ctx, op->reg, xmm);
     if (r != HB_OK) return r;
-    xmm[0] = (xmm[0] & 0xffffffff00000000ULL) | bits;
+    xmm[0] = (xmm[0] & 0xffffffff00000000ULL) | hb_float_to_bits(value);
     return write_xmm_reg(ctx, op->reg, xmm);
-}
-
-static hb_result_t write_scalar_float(hb_context_t* ctx, const hb_ir_operand_t* op, float value) {
-    return write_scalar_float_bits(ctx, op, hb_float_to_bits(value));
 }
 
 static void write_scalar_compare_flags(hb_context_t* ctx, double lhs, double rhs) {
@@ -578,89 +554,6 @@ static float select_sse_minmax_float(float lhs, float rhs, bool is_max) {
 static double select_sse_minmax_double(double lhs, double rhs, bool is_max) {
     if (lhs != lhs || rhs != rhs) return rhs;
     return is_max ? (lhs > rhs ? lhs : rhs) : (lhs < rhs ? lhs : rhs);
-}
-
-static bool hb_float_bits_is_nan(uint32_t bits) {
-    return (bits & 0x7f800000u) == 0x7f800000u && (bits & 0x007fffffu) != 0;
-}
-
-static bool hb_float_bits_is_inf(uint32_t bits) {
-    return (bits & 0x7fffffffu) == 0x7f800000u;
-}
-
-static bool hb_float_bits_is_zero(uint32_t bits) {
-    return (bits & 0x7fffffffu) == 0;
-}
-
-static uint32_t hb_quiet_float_nan_bits(uint32_t bits) {
-    return bits | 0x00400000u;
-}
-
-static bool hb_double_bits_is_nan(uint64_t bits) {
-    return (bits & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL &&
-           (bits & 0x000fffffffffffffULL) != 0;
-}
-
-static bool hb_double_bits_is_inf(uint64_t bits) {
-    return (bits & 0x7fffffffffffffffULL) == 0x7ff0000000000000ULL;
-}
-
-static bool hb_double_bits_is_zero(uint64_t bits) {
-    return (bits & 0x7fffffffffffffffULL) == 0;
-}
-
-static uint64_t hb_quiet_double_nan_bits(uint64_t bits) {
-    return bits | 0x0008000000000000ULL;
-}
-
-static bool hb_sse_arith_invalid_float(uint32_t lhs, uint32_t rhs, hb_ir_op_t op) {
-    bool lhs_inf = hb_float_bits_is_inf(lhs), rhs_inf = hb_float_bits_is_inf(rhs);
-    bool lhs_zero = hb_float_bits_is_zero(lhs), rhs_zero = hb_float_bits_is_zero(rhs);
-    if (op == HB_IR_FADD) return lhs_inf && rhs_inf && ((lhs ^ rhs) & 0x80000000u);
-    if (op == HB_IR_FSUB) return lhs_inf && rhs_inf && !((lhs ^ rhs) & 0x80000000u);
-    if (op == HB_IR_FMUL) return (lhs_inf && rhs_zero) || (rhs_inf && lhs_zero);
-    if (op == HB_IR_FDIV) return (lhs_inf && rhs_inf) || (lhs_zero && rhs_zero);
-    return false;
-}
-
-static bool hb_sse_arith_invalid_double(uint64_t lhs, uint64_t rhs, hb_ir_op_t op) {
-    bool lhs_inf = hb_double_bits_is_inf(lhs), rhs_inf = hb_double_bits_is_inf(rhs);
-    bool lhs_zero = hb_double_bits_is_zero(lhs), rhs_zero = hb_double_bits_is_zero(rhs);
-    if (op == HB_IR_FADD) return lhs_inf && rhs_inf && ((lhs ^ rhs) & 0x8000000000000000ULL);
-    if (op == HB_IR_FSUB) return lhs_inf && rhs_inf && !((lhs ^ rhs) & 0x8000000000000000ULL);
-    if (op == HB_IR_FMUL) return (lhs_inf && rhs_zero) || (rhs_inf && lhs_zero);
-    if (op == HB_IR_FDIV) return (lhs_inf && rhs_inf) || (lhs_zero && rhs_zero);
-    return false;
-}
-
-static uint32_t hb_sse_arith_float_bits(uint32_t lhs, uint32_t rhs, hb_ir_op_t op) {
-    bool lhs_nan = hb_float_bits_is_nan(lhs), rhs_nan = hb_float_bits_is_nan(rhs);
-    if (lhs_nan || rhs_nan) {
-        uint32_t chosen = lhs_nan && (!rhs_nan || ((lhs & 0x007fffffu) >= (rhs & 0x007fffffu))) ? lhs : rhs;
-        return hb_quiet_float_nan_bits(chosen);
-    }
-    if (hb_sse_arith_invalid_float(lhs, rhs, op)) return 0xffc00000u;
-    float aval = hb_bits_to_float(lhs);
-    float bval = hb_bits_to_float(rhs);
-    float cval = op == HB_IR_FDIV ? (aval / bval) :
-                 (op == HB_IR_FMUL ? (aval * bval) :
-                  (op == HB_IR_FSUB ? (aval - bval) : (aval + bval)));
-    return hb_float_to_bits(cval);
-}
-
-static uint64_t hb_sse_arith_double_bits(uint64_t lhs, uint64_t rhs, hb_ir_op_t op) {
-    bool lhs_nan = hb_double_bits_is_nan(lhs), rhs_nan = hb_double_bits_is_nan(rhs);
-    if (lhs_nan || rhs_nan) {
-        uint64_t chosen = lhs_nan && (!rhs_nan || ((lhs & 0x000fffffffffffffULL) >= (rhs & 0x000fffffffffffffULL))) ? lhs : rhs;
-        return hb_quiet_double_nan_bits(chosen);
-    }
-    if (hb_sse_arith_invalid_double(lhs, rhs, op)) return 0xfff8000000000000ULL;
-    double aval = hb_bits_to_double(lhs);
-    double bval = hb_bits_to_double(rhs);
-    double cval = op == HB_IR_FDIV ? (aval / bval) :
-                  (op == HB_IR_FMUL ? (aval * bval) :
-                   (op == HB_IR_FSUB ? (aval - bval) : (aval + bval)));
-    return hb_double_to_bits(cval);
 }
 
 static int16_t sat_i16(int32_t v) {
@@ -5207,55 +5100,54 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
 
         case HB_IR_DIVSD: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            uint64_t lhs = 0, rhs = 0;
-            r = read_scalar_double_bits(ctx, &instr->src1, &lhs);
+            double lhs = 0.0, rhs = 0.0;
+            r = read_scalar_double(ctx, &instr->src1, &lhs);
             if (r != HB_OK) return r;
-            r = read_scalar_double_bits(ctx, &instr->src2, &rhs);
+            r = read_scalar_double(ctx, &instr->src2, &rhs);
             if (r != HB_OK) return r;
-            return write_scalar_double_bits(ctx, &instr->dst, hb_sse_arith_double_bits(lhs, rhs, HB_IR_FDIV));
+            return write_scalar_double(ctx, &instr->dst, lhs / rhs);
         }
 
         case HB_IR_ADDSD:
         case HB_IR_SUBSD: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            uint64_t lhs = 0, rhs = 0;
-            r = read_scalar_double_bits(ctx, &instr->src1, &lhs);
+            double lhs = 0.0, rhs = 0.0;
+            r = read_scalar_double(ctx, &instr->src1, &lhs);
             if (r != HB_OK) return r;
-            r = read_scalar_double_bits(ctx, &instr->src2, &rhs);
+            r = read_scalar_double(ctx, &instr->src2, &rhs);
             if (r != HB_OK) return r;
-            return write_scalar_double_bits(ctx, &instr->dst,
-                                            hb_sse_arith_double_bits(lhs, rhs,
-                                                                     instr->op == HB_IR_ADDSD ? HB_IR_FADD : HB_IR_FSUB));
+            return write_scalar_double(ctx, &instr->dst,
+                                       instr->op == HB_IR_ADDSD ? lhs + rhs : lhs - rhs);
         }
 
         case HB_IR_MULSD: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            uint64_t lhs = 0, rhs = 0;
-            r = read_scalar_double_bits(ctx, &instr->src1, &lhs);
+            double lhs = 0.0, rhs = 0.0;
+            r = read_scalar_double(ctx, &instr->src1, &lhs);
             if (r != HB_OK) return r;
-            r = read_scalar_double_bits(ctx, &instr->src2, &rhs);
+            r = read_scalar_double(ctx, &instr->src2, &rhs);
             if (r != HB_OK) return r;
-            return write_scalar_double_bits(ctx, &instr->dst, hb_sse_arith_double_bits(lhs, rhs, HB_IR_FMUL));
+            return write_scalar_double(ctx, &instr->dst, lhs * rhs);
         }
 
         case HB_IR_MULSS: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            uint32_t lhs = 0, rhs = 0;
-            r = read_scalar_float_bits(ctx, &instr->src1, &lhs);
+            float lhs = 0.0f, rhs = 0.0f;
+            r = read_scalar_float(ctx, &instr->src1, &lhs);
             if (r != HB_OK) return r;
-            r = read_scalar_float_bits(ctx, &instr->src2, &rhs);
+            r = read_scalar_float(ctx, &instr->src2, &rhs);
             if (r != HB_OK) return r;
-            return write_scalar_float_bits(ctx, &instr->dst, hb_sse_arith_float_bits(lhs, rhs, HB_IR_FMUL));
+            return write_scalar_float(ctx, &instr->dst, lhs * rhs);
         }
 
         case HB_IR_DIVSS: {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-            uint32_t lhs = 0, rhs = 0;
-            r = read_scalar_float_bits(ctx, &instr->src1, &lhs);
+            float lhs = 0.0f, rhs = 0.0f;
+            r = read_scalar_float(ctx, &instr->src1, &lhs);
             if (r != HB_OK) return r;
-            r = read_scalar_float_bits(ctx, &instr->src2, &rhs);
+            r = read_scalar_float(ctx, &instr->src2, &rhs);
             if (r != HB_OK) return r;
-            return write_scalar_float_bits(ctx, &instr->dst, hb_sse_arith_float_bits(lhs, rhs, HB_IR_FDIV));
+            return write_scalar_float(ctx, &instr->dst, lhs / rhs);
         }
 
         case HB_IR_FSQRT:
@@ -5317,19 +5209,19 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     uint32_t abits, bbits, cbits;
                     memcpy(&abits, lhs + i * 4, sizeof(abits));
                     memcpy(&bbits, rhs + i * 4, sizeof(bbits));
-                    cbits = hb_sse_arith_float_bits(abits, bbits,
-                                                     is_div ? HB_IR_FDIV :
-                                                     (is_mul ? HB_IR_FMUL :
-                                                      (is_sub ? HB_IR_FSUB : HB_IR_FADD)));
+                    float aval = hb_bits_to_float(abits);
+                    float bval = hb_bits_to_float(bbits);
+                    float cval = is_div ? (aval / bval) : (is_mul ? (aval * bval) : (is_sub ? (aval - bval) : (aval + bval)));
+                    cbits = hb_float_to_bits(cval);
                     memcpy(out_bytes + i * 4, &cbits, sizeof(cbits));
                 } else {
                     uint64_t abits, bbits, cbits;
                     memcpy(&abits, lhs + i * 8, sizeof(abits));
                     memcpy(&bbits, rhs + i * 8, sizeof(bbits));
-                    cbits = hb_sse_arith_double_bits(abits, bbits,
-                                                      is_div ? HB_IR_FDIV :
-                                                      (is_mul ? HB_IR_FMUL :
-                                                       (is_sub ? HB_IR_FSUB : HB_IR_FADD)));
+                    double aval = hb_bits_to_double(abits);
+                    double bval = hb_bits_to_double(bbits);
+                    double cval = is_div ? (aval / bval) : (is_mul ? (aval * bval) : (is_sub ? (aval - bval) : (aval + bval)));
+                    cbits = hb_double_to_bits(cval);
                     memcpy(out_bytes + i * 8, &cbits, sizeof(cbits));
                 }
             }

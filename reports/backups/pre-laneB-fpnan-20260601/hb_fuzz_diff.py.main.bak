@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Differential correctness fuzzer for HyperBridge x64 interpreter semantics.
 
-Unicorn is the primary oracle. SDE support is detected but not faked. When an
-opcode is not supported by Unicorn, this harness reports that explicitly and
-only uses exact Python oracles for the small scalar subset modeled below.
+SDE support is detected but not faked. When SDE is unavailable, this harness
+uses two fallback signals:
+  * exact Python golden oracles for selected integer/flag instructions
+  * interpreter-vs-JIT post-state differential for game-relevant templates
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import random
 import shutil
 import subprocess
@@ -56,7 +56,7 @@ TEMPLATES: list[Template] = [
     Template("neg_r8", "int_arith_flags", "49f7d8", "neg"),
     Template("imul_r8_r9", "mul_div", "4d0fafc1", None, frozenset({"cf", "of"})),
     Template("mul_r9", "mul_div", "49f7e1", None, frozenset({"cf", "of"})),
-    Template("div_r9", "mul_div", "49f7f1", None, frozenset()),
+    Template("div_r9", "mul_div", "49f7f1", None),
     Template("shl_r8_cl", "shift_rotate_flags", "49d3e0", "shl"),
     Template("shr_r8_cl", "shift_rotate_flags", "49d3e8", None),
     Template("sar_r8_cl", "shift_rotate_flags", "49d3f8", None),
@@ -66,10 +66,10 @@ TEMPLATES: list[Template] = [
     Template("rcr_r8_cl", "rcl_rcr", "49d3d8", None, frozenset({"cf"})),
     Template("cmovne_r8_r9", "cmov_setcc", "4d0f45c1", "cmovne"),
     Template("setne_r8b", "cmov_setcc", "410f95c0", "setne"),
-    Template("bt_r8_r9", "bt_family", "4d0fa3c8", None, frozenset({"cf"})),
-    Template("bts_r8_r9", "bt_family", "4d0fabc8", None, frozenset({"cf"})),
-    Template("btr_r8_r9", "bt_family", "4d0fb3c8", None, frozenset({"cf"})),
-    Template("btc_r8_r9", "bt_family", "4d0fbbc8", None, frozenset({"cf"})),
+    Template("bt_r8_r9", "bt_family", "4d0fa3c8", None),
+    Template("bts_r8_r9", "bt_family", "4d0fabc8", None),
+    Template("btr_r8_r9", "bt_family", "4d0fb3c8", None),
+    Template("btc_r8_r9", "bt_family", "4d0fbbc8", None),
     Template("bsf_r8_r9", "bit_scan", "4d0fbcc1", None, frozenset({"zf"})),
     Template("bsr_r8_r9", "bit_scan", "4d0fbdc1", None, frozenset({"zf"})),
     Template("tzcnt_r8_r9", "bmi", "f34d0fbcc1", "tzcnt", frozenset({"cf", "zf"})),
@@ -90,7 +90,7 @@ TEMPLATES: list[Template] = [
     Template("subss_xmm0_xmm1", "sse", "f30f5cc1", None),
     Template("mulss_xmm0_xmm1", "sse", "f30f59c1", None),
     Template("divss_xmm0_xmm1", "sse", "f30f5ec1", None),
-    Template("comiss_xmm0_xmm1", "sse", "0f2fc1", None, frozenset({"cf", "pf", "af", "zf", "sf", "of"})),
+    Template("comiss_xmm0_xmm1", "sse", "0f2fc1", None),
     Template("pxor_xmm0_xmm1", "sse2", "660fefc1", None),
     Template("addpd_xmm0_xmm1", "sse2", "660f58c1", None),
     Template("subpd_xmm0_xmm1", "sse2", "660f5cc1", None),
@@ -110,10 +110,7 @@ TEMPLATES: list[Template] = [
     Template("pshufb_xmm0_xmm1", "ssse3", "660f3800c1", None),
     Template("pblendw_xmm0_xmm1", "sse41", "660f3a0ec11b", None),
     Template("pcmpeqq_xmm0_xmm1", "sse41", "660f3829c1", None),
-    Template("pcmpestrm_xmm0_xmm1", "sse42", "660f3a60c100", None, frozenset({"cf", "zf", "sf", "of"})),
-    Template("pcmpestri_xmm0_xmm1", "sse42", "660f3a61c100", None, frozenset({"cf", "zf", "sf", "of"})),
-    Template("pcmpistrm_xmm0_xmm1", "sse42", "660f3a62c100", None, frozenset({"cf", "zf", "sf", "of"})),
-    Template("pcmpistri_xmm0_xmm1", "sse42", "660f3a63c100", None, frozenset({"cf", "zf", "sf", "of"})),
+    Template("pcmpistri_xmm0_xmm1", "sse42", "660f3a63c100", None),
     Template("pclmulqdq_xmm0_xmm1", "aes_pclmul", "660f3a44c110", None),
     Template("aesenc_xmm0_xmm1", "aes_pclmul", "660f38dcc1", None),
     Template("aesenclast_xmm0_xmm1", "aes_pclmul", "660f38ddc1", None),
@@ -130,7 +127,7 @@ TEMPLATES: list[Template] = [
     Template("vpcmpgtw_ymm3_ymm4_ymm5", "avx_avx2", "c5dd65dd", None),
     Template("vmovups_xmm7_xmm1", "avx_avx2", "c5f810f9", None),
     Template("vmovdqu_xmm0_xmm1", "avx_avx2", "c5fa6fc1", None),
-    Template("vpclmulqdq_xmm3_xmm4_xmm0", "avx_aes_pclmul", "c4e35944d811", None),
+    Template("vpclmulqdq_xmm3_xmm4_xmm0", "avx_aes_pclmul", "c4e35944d82011", None),
     Template("vaesenc_ymm0_ymm1_ymm2", "avx_aes_pclmul", "c4e275dcc2", None),
     Template("vfmadd132ps_ymm0_ymm1_ymm2", "fma3", "c4e27598c2", None),
     Template("vfmadd213pd_ymm0_ymm1_ymm2", "fma3", "c4e2f5a8c2", None),
@@ -299,11 +296,8 @@ def exact_oracle(template: Template, row: dict[str, Any]) -> list[str]:
     return mismatches
 
 
-def run_batch(cases: list[tuple[int, Template]], *, backend_diff: bool) -> list[dict[str, Any]]:
+def run_batch(cases: list[tuple[int, Template]]) -> list[dict[str, Any]]:
     payload = "".join(f"0x{seed:016x} {template.code}\n" for seed, template in cases)
-    env = None
-    if not backend_diff:
-        env = dict(**os.environ, HB_DIFF_INTERP_ONLY="1")
     proc = subprocess.run(
         [str(RUNNER)],
         cwd=HB_ROOT,
@@ -312,7 +306,6 @@ def run_batch(cases: list[tuple[int, Template]], *, backend_diff: bool) -> list[
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=True,
-        env=env,
     )
     rows = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
     if len(rows) != len(cases):
@@ -326,126 +319,89 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0x18BE487)
     ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--families", default="", help="comma-separated family filter")
-    ap.add_argument("--seed-list", default="", help="comma-separated seeds; cases are split across them")
-    ap.add_argument("--report-json", default=str(REPORT_JSON), help="output JSON report path")
-    ap.add_argument("--no-build", action="store_true", help="use an already-built hb_diff_case_runner")
-    ap.add_argument("--run-jit-backend-diff", action="store_true", help="also run JIT backend comparison")
     ap.add_argument("--stop-on-mismatch", action="store_true")
     args = ap.parse_args()
 
-    if not args.no_build:
-        build_runner()
+    build_runner()
     sde_path = shutil.which("sde64") or shutil.which("sde")
     family_filter = {x for x in args.families.split(",") if x}
     templates = [t for t in TEMPLATES if not family_filter or t.family in family_filter]
     if not templates:
         raise SystemExit("no templates selected")
 
-    seeds = [int(x, 0) for x in args.seed_list.split(",") if x] or [args.seed]
+    rng = random.Random(args.seed)
     counts: dict[str, int] = {}
     backend_mismatches: list[dict[str, Any]] = []
     oracle_mismatches: list[dict[str, Any]] = []
     oracle_unsupported: dict[str, int] = {}
     oracle_quirks: dict[str, int] = {}
-    shared_traps: dict[str, int] = {}
     unsupported: dict[str, int] = {}
     oracle_checked_count = 0
     oracle_pass_count = 0
 
     pending: list[tuple[int, Template]] = []
     case_index = 0
-    cases_per_seed = [args.cases // len(seeds)] * len(seeds)
-    for i in range(args.cases % len(seeds)):
-        cases_per_seed[i] += 1
-    total_cases = 0
-    for seed_base, seed_cases in zip(seeds, cases_per_seed):
-        rng = random.Random(seed_base)
-        local_index = 0
-        while local_index < seed_cases:
-            template = templates[case_index % len(templates)]
-            seed = rng.getrandbits(64)
-            pending.append((seed, template))
-            local_index += 1
-            case_index += 1
-            total_cases += 1
-            if len(pending) < args.batch and total_cases < args.cases:
-                continue
-            rows = run_batch(pending, backend_diff=args.run_jit_backend_diff)
-            for (seed_i, template_i), row in zip(pending, rows):
-                counts[template_i.family] = counts.get(template_i.family, 0) + 1
-                interp_ok = row["interp"]["api"] == 0 and row["interp"]["result"] == 0
-                jit_ok = row["jit"]["api"] == 0 and row["jit"]["result"] == 0
-                if not interp_ok or (args.run_jit_backend_diff and not jit_ok):
-                    key = f"{template_i.family}:{template_i.name}:interp={row['interp']['api']}/{row['interp']['result']}:jit={row['jit']['api']}/{row['jit']['result']}"
-                    unsupported[key] = unsupported.get(key, 0) + 1
-                oracle = run_unicorn_case(seed_i, template_i.code)
-                if not oracle.get("ok"):
-                    oracle_msg = oracle.get("message", oracle.get("error", "unknown"))
-                    if oracle.get("trap") == "invalid_instruction":
-                        key = f"{template_i.family}:{template_i.name}:{oracle_msg}"
-                        oracle_unsupported[key] = oracle_unsupported.get(key, 0) + 1
-                        exact = exact_oracle(template_i, row) if interp_ok else []
-                        oracle_checked = bool(template_i.oracle and interp_ok)
-                    elif interp_ok:
-                        exact = [f"oracle_trap_but_interp_ok:{oracle_msg}"]
-                        oracle_checked = True
-                    elif oracle.get("trap") == "cpu_exception":
-                        key = f"{template_i.family}:{template_i.name}:{oracle_msg}:interp={row['interp']['api']}/{row['interp']['result']}"
-                        shared_traps[key] = shared_traps.get(key, 0) + 1
-                        exact = []
-                        oracle_checked = True
-                    else:
-                        key = f"{template_i.family}:{template_i.name}:{oracle_msg}"
-                        oracle_unsupported[key] = oracle_unsupported.get(key, 0) + 1
-                        exact = exact_oracle(template_i, row) if interp_ok else []
-                        oracle_checked = bool(template_i.oracle and interp_ok)
-                else:
-                    exact = unicorn_diff_interpreter(row, oracle, template_i.defined_flags)
-                    if exact and template_i.family.startswith("avx"):
-                        key = f"{template_i.family}:{template_i.name}:unicorn_vex_avx_semantics"
-                        oracle_quirks[key] = oracle_quirks.get(key, 0) + 1
-                        exact = []
-                    oracle_checked = interp_ok
-                if oracle_checked:
-                    oracle_checked_count += 1
-                    if not exact:
-                        oracle_pass_count += 1
-                if args.run_jit_backend_diff and interp_ok and jit_ok and not row["ok"]:
-                    backend_mismatches.append({
-                        "template": template_i.name,
-                        "family": template_i.family,
-                        "seed": f"0x{seed_i:016x}",
-                        "code": template_i.code,
-                        "diff": row["diff"],
-                        "interp_oracle": "pass" if oracle_checked and not exact else ("fail" if exact else "not_available"),
-                    })
-                if exact:
-                    oracle_mismatches.append({
-                        "template": template_i.name,
-                        "family": template_i.family,
-                        "seed": f"0x{seed_i:016x}",
-                        "code": template_i.code,
-                        "mismatches": exact,
-                    })
-                if args.stop_on_mismatch and (backend_mismatches or oracle_mismatches):
-                    break
-            pending = []
+    while case_index < args.cases:
+        template = templates[case_index % len(templates)]
+        seed = rng.getrandbits(64)
+        pending.append((seed, template))
+        case_index += 1
+        if len(pending) < args.batch and case_index < args.cases:
+            continue
+        rows = run_batch(pending)
+        for (seed_i, template_i), row in zip(pending, rows):
+            counts[template_i.family] = counts.get(template_i.family, 0) + 1
+            interp_ok = row["interp"]["api"] == 0 and row["interp"]["result"] == 0
+            jit_ok = row["jit"]["api"] == 0 and row["jit"]["result"] == 0
+            if not interp_ok or not jit_ok:
+                key = f"{template_i.family}:{template_i.name}:interp={row['interp']['api']}/{row['interp']['result']}:jit={row['jit']['api']}/{row['jit']['result']}"
+                unsupported[key] = unsupported.get(key, 0) + 1
+            oracle = run_unicorn_case(seed_i, template_i.code)
+            if not oracle.get("ok"):
+                key = f"{template_i.family}:{template_i.name}:{oracle.get('message', oracle.get('error', 'unknown'))}"
+                oracle_unsupported[key] = oracle_unsupported.get(key, 0) + 1
+                exact = exact_oracle(template_i, row) if interp_ok else []
+                oracle_checked = bool(template_i.oracle and interp_ok)
+            else:
+                exact = unicorn_diff_interpreter(row, oracle, template_i.defined_flags)
+                if exact and template_i.family.startswith("avx"):
+                    key = f"{template_i.family}:{template_i.name}:unicorn_vex_avx_semantics"
+                    oracle_quirks[key] = oracle_quirks.get(key, 0) + 1
+                    exact = []
+                oracle_checked = interp_ok
+            if oracle_checked:
+                oracle_checked_count += 1
+                if not exact:
+                    oracle_pass_count += 1
+            if interp_ok and jit_ok and not row["ok"]:
+                backend_mismatches.append({
+                    "template": template_i.name,
+                    "family": template_i.family,
+                    "seed": f"0x{seed_i:016x}",
+                    "code": template_i.code,
+                    "diff": row["diff"],
+                    "interp_oracle": "pass" if oracle_checked and not exact else ("fail" if exact else "not_available"),
+                })
+            if exact:
+                oracle_mismatches.append({
+                    "template": template_i.name,
+                    "family": template_i.family,
+                    "seed": f"0x{seed_i:016x}",
+                    "code": template_i.code,
+                    "mismatches": exact,
+                })
             if args.stop_on_mismatch and (backend_mismatches or oracle_mismatches):
                 break
+        pending = []
         if args.stop_on_mismatch and (backend_mismatches or oracle_mismatches):
             break
 
-    report_json = Path(args.report_json)
-    if not report_json.is_absolute():
-        report_json = HB_ROOT / report_json
-    report_json.parent.mkdir(parents=True, exist_ok=True)
+    REPORT_JSON.parent.mkdir(parents=True, exist_ok=True)
     result = {
         "sde_available": bool(sde_path),
         "sde_path": sde_path,
         "unicorn_available": True,
         "oracle_mode": "unicorn",
-        "backend_diff_enabled": args.run_jit_backend_diff,
-        "seeds": [f"0x{s:x}" for s in seeds],
         "cases_requested": args.cases,
         "cases_run": sum(counts.values()),
         "families": counts,
@@ -457,10 +413,9 @@ def main() -> int:
         "oracle_mismatches": oracle_mismatches[:50],
         "oracle_unsupported": oracle_unsupported,
         "oracle_quirks": oracle_quirks,
-        "shared_traps": shared_traps,
         "unsupported": unsupported,
     }
-    report_json.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    REPORT_JSON.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result, indent=2))
     return 1 if oracle_mismatches else 0
 

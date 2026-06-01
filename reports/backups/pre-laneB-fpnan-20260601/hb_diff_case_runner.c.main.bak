@@ -361,17 +361,9 @@ static void run_case_line(uint64_t seed, const char* code_hex) {
     hb_diff_snapshot_t initial, interp, jit;
     memset(&initial, 0, sizeof(initial));
     hb_result_t ri = run_backend(code, code_len, seed, HB_BACKEND_INTERP, &initial, &interp);
-    const char* interp_only_env = getenv("HB_DIFF_INTERP_ONLY");
-    bool interp_only = interp_only_env && strcmp(interp_only_env, "1") == 0;
-    hb_result_t rj = HB_OK;
-    if (interp_only) {
-        jit = interp;
-    } else {
-        rj = run_backend(code, code_len, seed, HB_BACKEND_JIT, NULL, &jit);
-    }
+    hb_result_t rj = run_backend(code, code_len, seed, HB_BACKEND_JIT, NULL, &jit);
     char diff[64] = {0};
-    bool ok = interp_only ? (ri == HB_OK) :
-              (ri == HB_OK && rj == HB_OK && snapshots_equal(&interp, &jit, diff, sizeof(diff)));
+    bool ok = (ri == HB_OK && rj == HB_OK && snapshots_equal(&interp, &jit, diff, sizeof(diff)));
     printf("{\"ok\":%s,\"seed\":\"0x%016" PRIx64 "\",\"code\":\"", ok ? "true" : "false", seed);
     print_hex_bytes(code, code_len);
     printf("\",\"diff\":\"%s\",", diff);

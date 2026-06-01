@@ -20,17 +20,28 @@ The required speed-vs-gate experiment is complete:
 `reports/phase4-hollow-knight/run-20260601-hk-dxmt-speed-vs-gate900/` and
 `reports/research/HB-GRAPHICS-speed-vs-gate-verdict-20260601.md`.
 
-Verdict: stop blind JIT loop-warming. In the 900s Hollow Knight DXMT run, real
+Verdict: the WINDOW blocker is a GATE, not throughput. In the 900s Hollow Knight DXMT run, real
 `D3D11CreateDevice=0`, `GfxDevice=0`, `CreateSwapChain=0`, and progress plateaued from
 the first 60s sample through timeout at the same heartbeat (`blocks=56205`, `steps=1e7b0e`,
 `rva=0x4e7e60`, trace bytes unchanged except the timeout line). Wait callers map to Unity
 RVA `0xcba8b2` zero-timeout poll plus worker parks at `0x577c92/0x577f44`; CPU sample showed
-Hollow Knight/wineserver/services at `0.0%`.
+Hollow Knight/wineserver/services at `0.0%` (parked, not slow-translating).
+
+**Clarification on the JIT loop-warming (operator 2026-06-01):** the JIT-warming work is NOT
+wasted — every promoted hot block is a permanent engine speedup that ALL games on this engine
+reuse, and full JIT coverage will be needed anyway for playable FPS once the window opens. The
+point is only about PRIORITY/SEQUENCING: warming loops cannot, by itself, OPEN the window, because
+the main thread is parked on a wait that never signals (no amount of speed helps a sleeping thread).
+So:
+- **Priority #1 = fix the GATE** (this is the only thing that makes `GfxDevice` appear).
+- **JIT-warming continues as valid BACKGROUND work** — keep the promotions you've made, and you
+  MAY keep promoting genuinely-hot blocks opportunistically; just don't treat loop-warming as the
+  path to the window. Don't expect the window from it; expect FPS from it (later).
 
 NEXT action: diagnose the Unity main-thread gate at RVA `0xcba8b2`. Find the handle/event/timer
-or init condition it polls, correlate with the worker waits, and fix the missing semantic/thread
-state at the root. Do **not** continue warming `0x283xxx` / `0x19d4xxx` loops until this gate is
-resolved or falsified.
+or init condition it polls, correlate with the worker waits at `0x577c92/0x577f44`, and fix the
+missing semantic/thread state at the root. THAT is what makes the window appear — not more loop
+optimization.
 
 ---
 

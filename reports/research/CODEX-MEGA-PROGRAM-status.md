@@ -15,7 +15,35 @@ to this base. Build rc=0, runner 395/0, fast-family PASS. Now both resume from t
 - **Lane B (Air/kit):** finishing ISA semantics (full AVX2 packed, 0F3A AES/string, MMX, EVEX) in
   `_air-bulk-isa-kit/` per its AGENTS.md. Returns bundles via disk; operator reconciles (~daily).
 
-## NEXT (operator-directed 2026-06-01) → GRAPHICS / DXMT — Unity attach to first frame
+## ⚠️ NEXT (operator-directed 2026-06-01 14:40) — STOP blind loop-warming; PROVE speed-vs-gate FIRST
+You have spent ~8h (06:00→14:30) warming one Unity hot loop after another, fault-zero, but
+`GfxDevice`/`D3D11CreateDevice`/`CreateSwapChain` still NEVER appear (only import-thunk registration,
+no real device-create call). This is diminishing returns. Before promoting ANY more hot loops, you
+MUST disambiguate the two hypotheses — is the missing window (1) pure THROUGHPUT (Unity is just slow
+and would reach GfxDevice given more time) or (2) a GATE (Unity is waiting on a thread/event/timer/
+init condition and will NEVER reach GfxDevice no matter how fast)?
+
+**Required experiment (do this BEFORE more JIT work):**
+1. Run ONE long run with a big timeout: `timeout 900` (15 min) on Hollow Knight via `scripts/mr-run.sh`,
+   DXMT backend, low trace. Question: does `D3D11CreateDevice` (a REAL call, not a thunk-register
+   line — filter out `redirected|registered|rewrote|import thunk`) appear at ANY point?
+2. Instrument guest progress: log the furthest-reached UnityPlayer RVA / a monotonic "blocks executed"
+   counter over time. Is it still ADVANCING at minute 10, or stuck cycling the same RVAs (= gate)?
+3. Check the worker/main waits: are threads parked on `NtWaitForSingleObject`/a timer that never
+   gets signaled (= gate), or genuinely burning CPU translating new code (= throughput)?
+
+**Decision:**
+- If REAL `D3D11CreateDevice` appears (even slowly) → hypothesis (1) confirmed: continue JIT
+  loop-warming + then drive DXMT device→swapchain→window→present→first frame.
+- If after 15 min still no device-create AND guest RVA progress has plateaued → hypothesis (2):
+  it's a GATE, not speed. STOP warming loops; find what Unity is waiting for (missing API
+  semantic, unsignaled event, a thread that never starts, a Mono init dependency) and fix THAT.
+Write the verdict to `reports/research/HB-GRAPHICS-speed-vs-gate-verdict-20260601.md` with pasted
+evidence (the device-create line or its absence + the RVA-progress trend). Evidence, not status.
+
+---
+
+## (background) GRAPHICS / DXMT — Unity attach to first frame
 **DXMT staging is active and Hollow Knight now gets past `winemetal.dll`, `dxgi.dll`, and
 `d3d11.dll` process attach.** JIT perf remains fallback-zero and is the speed foundation, but
 PRIMARY GOAL now = clear UnityPlayer attach, reach Unity `GfxDevice` / DX11 device creation, then

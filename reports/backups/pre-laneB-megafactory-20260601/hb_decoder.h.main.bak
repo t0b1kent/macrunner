@@ -90,15 +90,7 @@ typedef struct {
         HB_INS_VPSRLVD, HB_INS_VPSRLVQ, HB_INS_VPSRAVD,
         HB_INS_VPSLLVD, HB_INS_VPSLLVQ,
         HB_INS_PCLMULQDQ, HB_INS_AESKEYGENASSIST, HB_INS_VPCLMULQDQ,
-        HB_INS_AESIMC, HB_INS_AESENC, HB_INS_AESENCLAST, HB_INS_AESDEC, HB_INS_AESDECLAST,
-        HB_INS_VAESENC, HB_INS_VAESENCLAST, HB_INS_VAESDEC, HB_INS_VAESDECLAST,
-        HB_INS_GF2P8MULB, HB_INS_VGF2P8MULB,
         HB_INS_VPERMD, HB_INS_VPERMPS,
-        HB_INS_VMASKMOVPS, HB_INS_VMASKMOVPD,
-        HB_INS_VPMASKMOVD, HB_INS_VPMASKMOVQ,
-        HB_INS_VGATHERDPS, HB_INS_VGATHERDPD, HB_INS_VGATHERQPS, HB_INS_VGATHERQPD,
-        HB_INS_VPGATHERDD, HB_INS_VPGATHERDQ, HB_INS_VPGATHERQD, HB_INS_VPGATHERQQ,
-        HB_INS_PCMPESTRM, HB_INS_PCMPESTRI, HB_INS_PCMPISTRM, HB_INS_PCMPISTRI,
         HB_INS_MOVD, HB_INS_CVTDQ2PD, HB_INS_CVTDQ2PS, HB_INS_CVTPS2DQ, HB_INS_CVTTPS2DQ,
         HB_INS_CVTPS2PD, HB_INS_CVTPD2PS, HB_INS_CVTSS2SD, HB_INS_CVTSD2SS,
         HB_INS_CVTSI2SD, HB_INS_CVTSI2SS,
@@ -159,10 +151,6 @@ typedef struct {
             uint64_t rip_target; /* resolved RIP-relative */
             uint8_t segment;     /* legacy segment prefix: 0 none, 0x64 FS, 0x65 GS */
             bool addr32;          /* x86-64 address-size override (0x67): 32-bit effective address */
-            bool vsib;            /* AVX gather VSIB: index names an XMM/YMM vector register */
-            uint8_t vsib_index_size;
-            uint8_t vsib_elem_size;
-            uint8_t vsib_count;
         } mem;
         uint8_t size; /* operand size in bytes */
     } op1, op2, op3;

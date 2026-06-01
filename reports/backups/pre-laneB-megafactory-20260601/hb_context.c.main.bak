@@ -48,9 +48,6 @@ hb_result_t hb_context_reset(hb_context_t* ctx) {
     if (!ctx) return HB_ERR_INVALID_ARG;
     memset(&ctx->regs, 0, sizeof(ctx->regs));
     if (ctx->arch == HB_ARCH_X86) hb_x87_reset(&ctx->regs.x86.x87);
-    memset(ctx->ymm_hi, 0, sizeof(ctx->ymm_hi));
-    memset(ctx->zmm_hi, 0, sizeof(ctx->zmm_hi));
-    memset(ctx->k, 0, sizeof(ctx->k));
     memset(&ctx->flags, 0, sizeof(ctx->flags));
     memset(&ctx->lazy_flags, 0, sizeof(ctx->lazy_flags));
     ctx->step_count = 0;

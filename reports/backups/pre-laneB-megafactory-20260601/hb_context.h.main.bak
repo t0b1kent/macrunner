@@ -187,11 +187,6 @@ struct hb_context {
     /* YMM high halves for interpreter AVX/AVX2 semantics. Appended to keep
        existing hb_context_t offsets stable for the ARM64 JIT lane. */
     uint64_t ymm_hi[16][2];
-
-    /* ZMM bits 256..511 plus AVX-512 opmask state. Appended for interpreter
-       EVEX semantics; existing XMM/YMM storage remains unchanged. */
-    uint64_t zmm_hi[16][4];
-    uint64_t k[8];
 };
 
 hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend);

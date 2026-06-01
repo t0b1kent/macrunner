@@ -308,26 +308,24 @@ static hb_result_t write_xmm_reg(hb_context_t* ctx, int idx, const uint64_t in[2
 }
 
 static hb_result_t read_vec_reg_bytes(hb_context_t* ctx, int idx, uint8_t* out, size_t bytes) {
-    if (!ctx || !out || !is_xmm_reg(idx) || bytes > 64) return HB_ERR_INVALID_ARG;
+    if (!ctx || !out || !is_xmm_reg(idx) || bytes > 32) return HB_ERR_INVALID_ARG;
     memset(out, 0, bytes);
     if (ctx->mode == HB_MODE_32BIT) {
         unsigned n = (unsigned)(idx - HB_REG_XMM0);
         if (n >= 8) return HB_ERR_INVALID_ARG;
         memcpy(out, ctx->regs.x86.xmm[n], bytes < 16 ? bytes : 16);
-        if (bytes > 16) memcpy(out + 16, ctx->ymm_hi[n], bytes > 32 ? 16 : bytes - 16);
-        if (bytes > 32) memcpy(out + 32, ctx->zmm_hi[n], bytes - 32);
+        if (bytes > 16) memcpy(out + 16, ctx->ymm_hi[n], bytes - 16);
         return HB_OK;
     }
     unsigned n = (unsigned)(idx - HB_REG_XMM0);
     memcpy(out, ctx->regs.x64.xmm[n], bytes < 16 ? bytes : 16);
-    if (bytes > 16) memcpy(out + 16, ctx->ymm_hi[n], bytes > 32 ? 16 : bytes - 16);
-    if (bytes > 32) memcpy(out + 32, ctx->zmm_hi[n], bytes - 32);
+    if (bytes > 16) memcpy(out + 16, ctx->ymm_hi[n], bytes - 16);
     return HB_OK;
 }
 
 static hb_result_t write_vec_reg_bytes(hb_context_t* ctx, int idx, const uint8_t* in, size_t bytes) {
-    if (!ctx || !in || !is_xmm_reg(idx) || bytes > 64) return HB_ERR_INVALID_ARG;
-    uint8_t tmp[64] = {0};
+    if (!ctx || !in || !is_xmm_reg(idx) || bytes > 32) return HB_ERR_INVALID_ARG;
+    uint8_t tmp[32] = {0};
     bool zero_ymm_upper = trace_current_instr && trace_current_instr->zero_ymm_upper && bytes <= 16;
     memcpy(tmp, in, bytes);
     if (ctx->mode == HB_MODE_32BIT) {
@@ -335,17 +333,15 @@ static hb_result_t write_vec_reg_bytes(hb_context_t* ctx, int idx, const uint8_t
         if (n >= 8) return HB_ERR_INVALID_ARG;
         if (bytes < 16) memcpy(ctx->regs.x86.xmm[n], tmp, bytes);
         else memcpy(ctx->regs.x86.xmm[n], tmp, 16);
-        if (bytes > 16) memcpy(ctx->ymm_hi[n], tmp + 16, bytes > 32 ? 16 : bytes - 16);
+        if (bytes > 16) memcpy(ctx->ymm_hi[n], tmp + 16, bytes - 16);
         else if (zero_ymm_upper) memset(ctx->ymm_hi[n], 0, sizeof(ctx->ymm_hi[n]));
-        if (bytes > 32) memcpy(ctx->zmm_hi[n], tmp + 32, bytes - 32);
         return HB_OK;
     }
     unsigned n = (unsigned)(idx - HB_REG_XMM0);
     if (bytes < 16) memcpy(ctx->regs.x64.xmm[n], tmp, bytes);
     else memcpy(ctx->regs.x64.xmm[n], tmp, 16);
-    if (bytes > 16) memcpy(ctx->ymm_hi[n], tmp + 16, bytes > 32 ? 16 : bytes - 16);
+    if (bytes > 16) memcpy(ctx->ymm_hi[n], tmp + 16, bytes - 16);
     else if (zero_ymm_upper) memset(ctx->ymm_hi[n], 0, sizeof(ctx->ymm_hi[n]));
-    if (bytes > 32) memcpy(ctx->zmm_hi[n], tmp + 32, bytes - 32);
     return HB_OK;
 }
 
@@ -358,7 +354,6 @@ static size_t bytes_for_size(hb_size_t size) {
         case HB_SIZE_80: return 10;
         case HB_SIZE_128: return 16;
         case HB_SIZE_256: return 32;
-        case HB_SIZE_512: return 64;
         default: return 0;
     }
 }
@@ -542,98 +537,6 @@ static uint32_t aes_rotword(uint32_t w) {
     return (w >> 8) | (w << 24);
 }
 
-static uint8_t aes_xtime(uint8_t x) {
-    return (uint8_t)((x << 1) ^ ((x & 0x80u) ? 0x1bu : 0u));
-}
-
-static uint8_t aes_gmul(uint8_t a, uint8_t b) {
-    uint8_t r = 0;
-    while (b) {
-        if (b & 1u) r ^= a;
-        a = aes_xtime(a);
-        b >>= 1;
-    }
-    return r;
-}
-
-static uint8_t aes_inv_sbox_byte(uint8_t v) {
-    for (unsigned i = 0; i < 256; i++) {
-        if (aes_sbox[i] == v) return (uint8_t)i;
-    }
-    return 0;
-}
-
-static void aes_sub_bytes(uint8_t s[16], bool inverse) {
-    for (unsigned i = 0; i < 16; i++) {
-        s[i] = inverse ? aes_inv_sbox_byte(s[i]) : aes_sbox[s[i]];
-    }
-}
-
-static void aes_shift_rows(uint8_t s[16], bool inverse) {
-    uint8_t t[16];
-    for (unsigned row = 0; row < 4; row++) {
-        for (unsigned col = 0; col < 4; col++) {
-            unsigned src_col = inverse ? ((col + 4 - row) & 3u) : ((col + row) & 3u);
-            t[col * 4 + row] = s[src_col * 4 + row];
-        }
-    }
-    memcpy(s, t, sizeof(t));
-}
-
-static void aes_mix_columns(uint8_t s[16], bool inverse) {
-    for (unsigned col = 0; col < 4; col++) {
-        uint8_t *a = s + col * 4;
-        uint8_t r0, r1, r2, r3;
-        if (inverse) {
-            r0 = (uint8_t)(aes_gmul(a[0], 14) ^ aes_gmul(a[1], 11) ^ aes_gmul(a[2], 13) ^ aes_gmul(a[3], 9));
-            r1 = (uint8_t)(aes_gmul(a[0], 9) ^ aes_gmul(a[1], 14) ^ aes_gmul(a[2], 11) ^ aes_gmul(a[3], 13));
-            r2 = (uint8_t)(aes_gmul(a[0], 13) ^ aes_gmul(a[1], 9) ^ aes_gmul(a[2], 14) ^ aes_gmul(a[3], 11));
-            r3 = (uint8_t)(aes_gmul(a[0], 11) ^ aes_gmul(a[1], 13) ^ aes_gmul(a[2], 9) ^ aes_gmul(a[3], 14));
-        } else {
-            r0 = (uint8_t)(aes_gmul(a[0], 2) ^ aes_gmul(a[1], 3) ^ a[2] ^ a[3]);
-            r1 = (uint8_t)(a[0] ^ aes_gmul(a[1], 2) ^ aes_gmul(a[2], 3) ^ a[3]);
-            r2 = (uint8_t)(a[0] ^ a[1] ^ aes_gmul(a[2], 2) ^ aes_gmul(a[3], 3));
-            r3 = (uint8_t)(aes_gmul(a[0], 3) ^ a[1] ^ a[2] ^ aes_gmul(a[3], 2));
-        }
-        a[0] = r0;
-        a[1] = r1;
-        a[2] = r2;
-        a[3] = r3;
-    }
-}
-
-static void aes_xor_key(uint8_t s[16], const uint8_t key[16]) {
-    for (unsigned i = 0; i < 16; i++) s[i] ^= key[i];
-}
-
-static void aes_round128(hb_ir_vec_op_t vop, const uint8_t state[16],
-                         const uint8_t key[16], uint8_t out[16]) {
-    memcpy(out, state, 16);
-    if (vop == HB_VEC_AESIMC) {
-        aes_mix_columns(out, true);
-        return;
-    }
-    if (vop == HB_VEC_AESENC || vop == HB_VEC_AESENCLAST) {
-        aes_sub_bytes(out, false);
-        aes_shift_rows(out, false);
-        if (vop == HB_VEC_AESENC) aes_mix_columns(out, false);
-        aes_xor_key(out, key);
-        return;
-    }
-    if (vop == HB_VEC_AESDEC) {
-        aes_mix_columns(out, true);
-        aes_xor_key(out, key);
-        aes_shift_rows(out, true);
-        aes_sub_bytes(out, true);
-        return;
-    }
-    if (vop == HB_VEC_AESDECLAST) {
-        aes_xor_key(out, key);
-        aes_shift_rows(out, true);
-        aes_sub_bytes(out, true);
-    }
-}
-
 static void pclmul64(uint64_t a, uint64_t b, uint8_t out[16]) {
     __uint128_t acc = 0;
     for (unsigned bit = 0; bit < 64; bit++) {
@@ -643,102 +546,6 @@ static void pclmul64(uint64_t a, uint64_t b, uint8_t out[16]) {
     uint64_t hi = (uint64_t)(acc >> 64);
     memcpy(out, &lo, sizeof(lo));
     memcpy(out + 8, &hi, sizeof(hi));
-}
-
-static int pcmp_explicit_len(uint32_t raw, unsigned max_units) {
-    int32_t signed_len = (int32_t)raw;
-    int64_t len = signed_len < 0 ? -(int64_t)signed_len : (int64_t)signed_len;
-    if (len > (int64_t)max_units) len = max_units;
-    return (int)len;
-}
-
-static uint64_t pcmp_unit_unsigned(const uint8_t* bytes, unsigned unit, unsigned idx) {
-    if (unit == 1) return bytes[idx];
-    uint16_t v;
-    memcpy(&v, bytes + idx * 2, sizeof(v));
-    return v;
-}
-
-static int64_t pcmp_unit_signed(const uint8_t* bytes, unsigned unit, unsigned idx) {
-    if (unit == 1) return (int8_t)bytes[idx];
-    int16_t v;
-    memcpy(&v, bytes + idx * 2, sizeof(v));
-    return v;
-}
-
-static int pcmp_implicit_len(const uint8_t* bytes, unsigned unit, unsigned max_units) {
-    for (unsigned i = 0; i < max_units; i++) {
-        if (pcmp_unit_unsigned(bytes, unit, i) == 0) return (int)i;
-    }
-    return (int)max_units;
-}
-
-static uint32_t pcmpxstr_result(hb_context_t* ctx, hb_ir_vec_op_t vop,
-                                const uint8_t lhs[16], const uint8_t rhs[16],
-                                unsigned imm, unsigned* max_units_out,
-                                int* len1_out, int* len2_out) {
-    unsigned unit = (imm & 1u) ? 2 : 1;
-    bool is_signed = (imm & 2u) != 0;
-    unsigned max_units = 16 / unit;
-    bool explicit_len = vop == HB_VEC_PCMPESTRM || vop == HB_VEC_PCMPESTRI;
-    int len1 = explicit_len ? pcmp_explicit_len((uint32_t)ctx->regs.x64.rax, max_units)
-                            : pcmp_implicit_len(lhs, unit, max_units);
-    int len2 = explicit_len ? pcmp_explicit_len((uint32_t)ctx->regs.x64.rdx, max_units)
-                            : pcmp_implicit_len(rhs, unit, max_units);
-    uint32_t res1 = 0;
-    unsigned aggregation = (imm >> 2) & 3u;
-    for (unsigned j = 0; j < max_units; j++) {
-        bool bit = false;
-        if (aggregation == 0) {
-            if ((int)j < len2) {
-                for (int i = 0; i < len1; i++) {
-                    if (pcmp_unit_unsigned(lhs, unit, (unsigned)i) ==
-                        pcmp_unit_unsigned(rhs, unit, j)) { bit = true; break; }
-                }
-            }
-        } else if (aggregation == 1) {
-            if ((int)j < len2) {
-                for (int i = 0; i + 1 < len1; i += 2) {
-                    if (is_signed) {
-                        int64_t lo = pcmp_unit_signed(lhs, unit, (unsigned)i);
-                        int64_t hi = pcmp_unit_signed(lhs, unit, (unsigned)(i + 1));
-                        int64_t v = pcmp_unit_signed(rhs, unit, j);
-                        if (lo <= v && v <= hi) { bit = true; break; }
-                    } else {
-                        uint64_t lo = pcmp_unit_unsigned(lhs, unit, (unsigned)i);
-                        uint64_t hi = pcmp_unit_unsigned(lhs, unit, (unsigned)(i + 1));
-                        uint64_t v = pcmp_unit_unsigned(rhs, unit, j);
-                        if (lo <= v && v <= hi) { bit = true; break; }
-                    }
-                }
-            }
-        } else if (aggregation == 2) {
-            if ((int)j < len1 && (int)j < len2 &&
-                pcmp_unit_unsigned(lhs, unit, j) == pcmp_unit_unsigned(rhs, unit, j)) bit = true;
-        } else {
-            if (len1 == 0) {
-                bit = (int)j <= len2;
-            } else if ((int)j + len1 <= len2) {
-                bit = true;
-                for (int i = 0; i < len1; i++) {
-                    if (pcmp_unit_unsigned(lhs, unit, (unsigned)i) !=
-                        pcmp_unit_unsigned(rhs, unit, (unsigned)(j + i))) { bit = false; break; }
-                }
-            }
-        }
-        if (bit) res1 |= 1u << j;
-    }
-    uint32_t full = max_units == 16 ? 0xffffu : 0xffu;
-    uint32_t valid2 = len2 >= (int)max_units ? full : ((1u << len2) - 1u);
-    uint32_t polarity = (imm >> 4) & 3u;
-    uint32_t res2 = res1;
-    if (polarity == 1) res2 = (~res1) & full;
-    else if (polarity == 2) res2 = res1 & valid2;
-    else if (polarity == 3) res2 = (~res1) & valid2;
-    *max_units_out = max_units;
-    *len1_out = len1;
-    *len2_out = len2;
-    return res2 & full;
 }
 
 static hb_result_t read_xmm_operand(hb_context_t* ctx, const hb_ir_operand_t* op, uint64_t out[2]) {
@@ -753,7 +560,7 @@ static hb_result_t read_xmm_operand(hb_context_t* ctx, const hb_ir_operand_t* op
 
 static hb_result_t read_xmm_operand_bytes(hb_context_t* ctx, const hb_ir_operand_t* op,
                                           uint8_t* out, size_t bytes) {
-    if (!ctx || !op || !out || bytes > 64) return HB_ERR_INVALID_ARG;
+    if (!ctx || !op || !out || bytes > 32) return HB_ERR_INVALID_ARG;
     memset(out, 0, bytes);
     if (op->type == HB_OP_REG && is_xmm_reg(op->reg)) {
         return read_vec_reg_bytes(ctx, op->reg, out, bytes);
@@ -2197,7 +2004,7 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 is_xmm_reg(instr->dst.reg) && is_xmm_reg(instr->src1.reg)) {
                 size_t bytes = bytes_for_size(instr->dst.size);
                 if (bytes == 0) bytes = 16;
-                uint8_t src[64], dst[64];
+                uint8_t src[32], dst[32];
                 r = read_vec_reg_bytes(ctx, instr->src1.reg, src, bytes);
                 if (r != HB_OK) return r;
                 if (bytes >= 16) return write_vec_reg_bytes(ctx, instr->dst.reg, src, bytes);
@@ -3550,7 +3357,7 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
             size_t bytes = bytes_for_size(instr->dst.size);
             if (bytes == 0) bytes = 16;
-            uint8_t lhs[64], rhs[64], out[64];
+            uint8_t lhs[32], rhs[32], out[32];
             r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
             if (r != HB_OK) return r;
             r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, bytes);
@@ -4114,49 +3921,7 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             unsigned imm = (unsigned)(instr->target & 0xffu);
             size_t bytes = bytes_for_size(instr->dst.size);
             if (bytes == 0) bytes = 16;
-            uint8_t lhs[64] = {0}, rhs[64] = {0}, out[64] = {0};
-            if (vop == HB_VEC_PCMPESTRM || vop == HB_VEC_PCMPESTRI ||
-                vop == HB_VEC_PCMPISTRM || vop == HB_VEC_PCMPISTRI) {
-                r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
-                if (r != HB_OK) return r;
-                r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
-                if (r != HB_OK) return r;
-                unsigned max_units = 0;
-                int len1 = 0, len2 = 0;
-                uint32_t res = pcmpxstr_result(ctx, vop, lhs, rhs, imm, &max_units, &len1, &len2);
-                ctx->lazy_flags.pending = false;
-                ctx->flags.cf = res != 0;
-                ctx->flags.zf = len2 < (int)max_units;
-                ctx->flags.sf = len1 < (int)max_units;
-                ctx->flags.of = (res & 1u) != 0;
-                ctx->flags.af = false;
-                ctx->flags.pf = false;
-                if (vop == HB_VEC_PCMPESTRI || vop == HB_VEC_PCMPISTRI) {
-                    uint32_t idx = 0;
-                    if ((imm >> 6) & 1u) {
-                        for (int i = (int)max_units - 1; i >= 0; i--) {
-                            if ((res >> i) & 1u) { idx = (uint32_t)i; break; }
-                        }
-                    } else {
-                        idx = (uint32_t)max_units;
-                        for (unsigned i = 0; i < max_units; i++) {
-                            if ((res >> i) & 1u) { idx = i; break; }
-                        }
-                    }
-                    write_reg_sized(ctx, HB_REG_RCX, idx, HB_SIZE_32);
-                    return HB_OK;
-                }
-                unsigned unit = (imm & 1u) ? 2 : 1;
-                if ((imm >> 6) & 1u) {
-                    for (unsigned i = 0; i < max_units; i++) {
-                        if ((res >> i) & 1u) memset(out + i * unit, 0xff, unit);
-                    }
-                } else {
-                    uint16_t compact = (uint16_t)res;
-                    memcpy(out, &compact, sizeof(compact));
-                }
-                return write_vec_reg_bytes(ctx, HB_REG_XMM0, out, 16);
-            }
+            uint8_t lhs[32] = {0}, rhs[32] = {0}, out[32] = {0};
             if (vop == HB_VEC_VEXTRACTF128 || vop == HB_VEC_VEXTRACTI128) {
                 r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 32);
                 if (r != HB_OK) return r;
@@ -4249,81 +4014,6 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 }
                 return write_vec_reg_bytes(ctx, instr->dst.reg, out, 32);
             }
-            if (vop == HB_VEC_VGATHERDPS || vop == HB_VEC_VGATHERDPD ||
-                vop == HB_VEC_VGATHERQPS || vop == HB_VEC_VGATHERQPD ||
-                vop == HB_VEC_VPGATHERDD || vop == HB_VEC_VPGATHERDQ ||
-                vop == HB_VEC_VPGATHERQD || vop == HB_VEC_VPGATHERQQ) {
-                if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg) ||
-                    instr->src1.type != HB_OP_REG || !is_xmm_reg(instr->src1.reg) ||
-                    instr->src2.type != HB_OP_MEM || !instr->src2.mem.vsib ||
-                    !is_xmm_reg(instr->src2.mem.index)) {
-                    return HB_ERR_INTERNAL;
-                }
-                unsigned elem = instr->src2.mem.vsib_elem_size;
-                unsigned index_size = instr->src2.mem.vsib_index_size;
-                unsigned count = instr->src2.mem.vsib_count;
-                if (!((elem == 4 || elem == 8) && (index_size == 4 || index_size == 8) &&
-                      count > 0 && count <= 8)) return HB_ERR_INTERNAL;
-                r = read_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-                if (r != HB_OK) return r;
-                r = read_vec_reg_bytes(ctx, instr->src1.reg, lhs, bytes);
-                if (r != HB_OK) return r;
-                r = read_vec_reg_bytes(ctx, instr->src2.mem.index, rhs, index_size * count);
-                if (r != HB_OK) return r;
-                hb_ir_operand_t base_op = instr->src2;
-                base_op.mem.index = HB_REG_COUNT;
-                uint64_t base_addr = resolve_addr(ctx, &base_op);
-                for (unsigned lane_i = 0; lane_i < count; lane_i++) {
-                    size_t off = (size_t)lane_i * elem;
-                    if (!(lhs[off + elem - 1] & 0x80)) continue;
-                    int64_t idx;
-                    if (index_size == 4) {
-                        int32_t v;
-                        memcpy(&v, rhs + lane_i * index_size, sizeof(v));
-                        idx = v;
-                    } else {
-                        memcpy(&idx, rhs + lane_i * index_size, sizeof(idx));
-                    }
-                    uint64_t addr = base_addr + (uint64_t)(idx * (int64_t)instr->src2.mem.scale);
-                    r = hb_memory_read(ctx->memory, addr, out + off, elem);
-                    if (r != HB_OK) return r;
-                    memset(lhs + off, 0, elem);
-                }
-                r = write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-                if (r != HB_OK) return r;
-                return write_vec_reg_bytes(ctx, instr->src1.reg, lhs, bytes);
-            }
-            if (vop == HB_VEC_VMASKMOVPS || vop == HB_VEC_VMASKMOVPD ||
-                vop == HB_VEC_VPMASKMOVD || vop == HB_VEC_VPMASKMOVQ) {
-                unsigned lane = imm == 8 ? 8 : 4;
-                r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
-                if (r != HB_OK) return r;
-                if (instr->dst.type == HB_OP_REG && is_xmm_reg(instr->dst.reg) &&
-                    instr->src2.type == HB_OP_MEM) {
-                    uint64_t addr = resolve_addr(ctx, &instr->src2);
-                    for (size_t off = 0; off < bytes; off += lane) {
-                        if (lhs[off + lane - 1] & 0x80) {
-                            r = hb_memory_read(ctx->memory, addr + off, out + off, lane);
-                            if (r != HB_OK) return r;
-                        }
-                    }
-                    return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-                }
-                if (instr->dst.type == HB_OP_MEM && instr->src2.type == HB_OP_REG &&
-                    is_xmm_reg(instr->src2.reg)) {
-                    r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, bytes);
-                    if (r != HB_OK) return r;
-                    uint64_t addr = resolve_addr(ctx, &instr->dst);
-                    for (size_t off = 0; off < bytes; off += lane) {
-                        if (lhs[off + lane - 1] & 0x80) {
-                            r = hb_memory_write(ctx->memory, addr + off, rhs + off, lane);
-                            if (r != HB_OK) return r;
-                        }
-                    }
-                    return HB_OK;
-                }
-                return HB_ERR_INTERNAL;
-            }
             if (vop == HB_VEC_PCLMULQDQ) {
                 r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
                 if (r != HB_OK) return r;
@@ -4350,28 +4040,6 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 memcpy(out + 8, &sw3, sizeof(sw3));
                 memcpy(out + 12, &rw3, sizeof(rw3));
                 return write_vec_reg_bytes(ctx, instr->dst.reg, out, 16);
-            }
-            if (vop == HB_VEC_AESIMC || vop == HB_VEC_AESENC || vop == HB_VEC_AESENCLAST ||
-                vop == HB_VEC_AESDEC || vop == HB_VEC_AESDECLAST) {
-                if (bytes != 16 && bytes != 32 && bytes != 64) return HB_ERR_INTERNAL;
-                r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
-                if (r != HB_OK) return r;
-                if (vop != HB_VEC_AESIMC) {
-                    r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, bytes);
-                    if (r != HB_OK) return r;
-                }
-                for (size_t off = 0; off < bytes; off += 16) {
-                    aes_round128(vop, lhs + off, rhs + off, out + off);
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-            if (vop == HB_VEC_GF2P8MULB) {
-                r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
-                if (r != HB_OK) return r;
-                r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, bytes);
-                if (r != HB_OK) return r;
-                for (size_t i = 0; i < bytes; i++) out[i] = aes_gmul(lhs[i], rhs[i]);
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
             }
             bool is_broadcast = vop == HB_VEC_VPBROADCASTB || vop == HB_VEC_VPBROADCASTW ||
                                 vop == HB_VEC_VPBROADCASTD || vop == HB_VEC_VPBROADCASTQ ||
@@ -4928,7 +4596,7 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             unsigned lane = (unsigned)(instr->target & 0xff);
             size_t bytes = scalar ? 16 : bytes_for_size(instr->dst.size);
             if (bytes == 0) bytes = 16;
-            uint8_t lhs[64], rhs[64], out_bytes[64];
+            uint8_t lhs[32], rhs[32], out_bytes[32];
             if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
             r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
             if (r != HB_OK) return r;

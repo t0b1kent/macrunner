@@ -218,28 +218,9 @@ def generate_cases(random_count: int) -> list[Case]:
         "vex/vaeskeygenassist": "c4 e3 79 df c2 1b",
         "vex/vpermps": "c4 e2 75 16 c2",
         "vex/vpermd": "c4 e2 75 36 c2",
-        "vex/vmaskmovps_load": "c4 e2 6d 2c 08",
-        "vex/vmaskmovpd_store": "c4 e2 49 2f 68 20",
-        "vex/vpmaskmovd_load": "c4 e2 75 8c 18",
-        "vex/vpmaskmovq_store": "c4 e2 dd 8e 98 80 00 00 00",
-        "vex/vpgatherdd": "c4 e2 5d 90 1c 90",
-        "vex/vpgatherdq": "c4 e2 dd 90 1c 90",
-        "vex/vpgatherqd": "c4 e2 5d 91 1c 90",
-        "vex/vpgatherqq": "c4 e2 dd 91 1c 90",
-        "vex/vgatherdps": "c4 e2 5d 92 1c 90",
-        "vex/vgatherdpd": "c4 e2 dd 92 1c 90",
-        "vex/vgatherqps": "c4 e2 5d 93 1c 90",
-        "vex/vgatherqpd": "c4 e2 dd 93 1c 90",
-        "vex/vaesenc": "c4 e2 75 dc c2",
-        "vex/vaesenclast": "c4 e2 75 dd c2",
-        "vex/vaesdec": "c4 e2 75 de c2",
-        "vex/vaesdeclast": "c4 e2 75 df c2",
-        "vex/vgf2p8mulb": "c4 e2 75 cf c2",
         "vex/vmovq": "c4 e1 f9 6e c0",
         "evex/vaddps": "62 f1 7c 48 58 c0",
         "evex/vmovdqa32": "62 f1 7d 48 6f c0",
-        "evex/vaesenc": "62 f2 75 48 dc c2",
-        "evex/vgf2p8mulb": "62 f2 75 48 cf c2",
     }
     for name, hex_bytes in samples.items():
         cases.append(Case(name, name.split("/")[0].upper(), bytes.fromhex(hex_bytes) + TAIL))
@@ -313,9 +294,6 @@ def normalize_capstone(mnemonic: str) -> str:
         "blendps", "blendpd", "pblendvb", "blendvps", "blendvpd",
         "psubusb", "psubusw", "psubsb", "psubsw", "pminub", "pminsw",
         "pmaxub", "pmaxsw", "pmuludq", "psadbw",
-        "aesimc", "aesenc", "aesenclast", "aesdec", "aesdeclast",
-        "gf2p8mulb",
-        "pcmpestrm", "pcmpestri", "pcmpistrm", "pcmpistri",
     }
     if m in implemented_vec:
         return m
@@ -356,20 +334,13 @@ def normalize_capstone(mnemonic: str) -> str:
         "perm2f128", "perm2i128",
         "psrlvd", "psrlvq", "psravd", "psllvd", "psllvq",
         "pclmulqdq", "aeskeygenassist",
-        "aesenc", "aesenclast", "aesdec", "aesdeclast",
-        "gf2p8mulb",
         "permps", "permd",
-        "maskmovps", "maskmovpd", "pmaskmovd", "pmaskmovq",
-        "gatherdps", "gatherdpd", "gatherqps", "gatherqpd",
-        "pgatherdd", "pgatherdq", "pgatherqd", "pgatherqq",
     }
     if m.startswith("v") and m[1:] in implemented_vex:
         return m[1:]
     if m == "vmovq":
         return "movd"
     if m in {"vmovaps", "vmovups", "vmovapd", "vmovupd", "vmovss", "vmovsd", "vmovdqa", "vmovdqu"}:
-        return "sse_mov"
-    if m in {"vmovdqa32", "vmovdqa64", "vmovdqu32", "vmovdqu64"}:
         return "sse_mov"
     if (m.startswith("sha") or m.startswith("phadd") or m.startswith("phsub") or
             m.startswith("round") or m.startswith("blend") or
@@ -444,12 +415,7 @@ def normalize_hb(op: str) -> str:
     if low in {"vpblendd", "vpermq", "vpermpd", "vinsertf128", "vinserti128",
                "vextractf128", "vextracti128", "vperm2f128", "vperm2i128",
                "vpsrlvd", "vpsrlvq", "vpsravd", "vpsllvd", "vpsllvq",
-               "vpclmulqdq", "vaeskeygenassist", "vpermps", "vpermd",
-               "vaesenc", "vaesenclast", "vaesdec", "vaesdeclast",
-               "vgf2p8mulb",
-               "vmaskmovps", "vmaskmovpd", "vpmaskmovd", "vpmaskmovq",
-               "vgatherdps", "vgatherdpd", "vgatherqps", "vgatherqpd",
-               "vpgatherdd", "vpgatherdq", "vpgatherqd", "vpgatherqq"}:
+               "vpclmulqdq", "vaeskeygenassist", "vpermps", "vpermd"}:
         return low[1:]
     if low in {"mov_seg", "mov_cr", "mov_dr"}:
         return "mov"

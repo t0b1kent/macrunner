@@ -28,8 +28,7 @@ typedef enum {
     HB_SIZE_64 = 8,
     HB_SIZE_80 = 10,
     HB_SIZE_128 = 16,
-    HB_SIZE_256 = 32,
-    HB_SIZE_512 = 64
+    HB_SIZE_256 = 32
 } hb_size_t;
 
 typedef enum {
@@ -112,30 +111,8 @@ typedef enum {
     HB_VEC_VPSLLVQ,
     HB_VEC_PCLMULQDQ,
     HB_VEC_AESKEYGENASSIST,
-    HB_VEC_AESIMC,
-    HB_VEC_AESENC,
-    HB_VEC_AESENCLAST,
-    HB_VEC_AESDEC,
-    HB_VEC_AESDECLAST,
-    HB_VEC_GF2P8MULB,
     HB_VEC_VPERMD,
-    HB_VEC_VPERMPS,
-    HB_VEC_VMASKMOVPS,
-    HB_VEC_VMASKMOVPD,
-    HB_VEC_VPMASKMOVD,
-    HB_VEC_VPMASKMOVQ,
-    HB_VEC_VGATHERDPS,
-    HB_VEC_VGATHERDPD,
-    HB_VEC_VGATHERQPS,
-    HB_VEC_VGATHERQPD,
-    HB_VEC_VPGATHERDD,
-    HB_VEC_VPGATHERDQ,
-    HB_VEC_VPGATHERQD,
-    HB_VEC_VPGATHERQQ,
-    HB_VEC_PCMPESTRM,
-    HB_VEC_PCMPESTRI,
-    HB_VEC_PCMPISTRM,
-    HB_VEC_PCMPISTRI
+    HB_VEC_VPERMPS
 } hb_ir_vec_op_t;
 
 /* x64 registers */
@@ -177,10 +154,6 @@ typedef struct {
             int64_t disp;
             uint8_t segment; /* 0 none, 0x64 FS, 0x65 GS */
             bool addr32;     /* x86-64 0x67 address-size override: low-32 effective address */
-            bool vsib;       /* AVX gather VSIB: index names an XMM/YMM vector register */
-            uint8_t vsib_index_size;
-            uint8_t vsib_elem_size;
-            uint8_t vsib_count;
         } mem;
         uint64_t label;
     };

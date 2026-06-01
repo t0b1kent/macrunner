@@ -7,6 +7,29 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
+## ⚡ LANE A SPEED — turn ON the unused accelerators (operator 2026-06-02) — biggest lever
+Post-gate the main thread is throughput-bound in Mono managed-init (heartbeat ~705K blocks and
+climbing, no D3D11CreateDevice yet). Warming one hot loop per run is too slow. An audit found TWO
+big accelerators that EXIST but are NOT engaged in the Hollow Knight runs:
+1. **AOT / persistent translation cache is NOT used in HK runs.** `hb_aot_cache.c` exists and
+   `engine/hyperbridge/build/hyperbridge-cache/translation-cache.bin` is present but EMPTY (16 bytes);
+   `scripts/mr-run.sh` sets no AOT/translation-cache env, and the HK trace shows zero cache hit/miss
+   markers. So every run re-JITs the entire Mono init from scratch — millions of managed-code
+   instructions recompiled each launch. **TURN IT ON:** wire the persistent translation cache into
+   the spike/HK run path so a first run warms it and subsequent runs start warm (cache-hit the Mono
+   init). This is the single biggest startup speedup. Verify with cache hit counts climbing run-over-
+   run and the warm-start heartbeat reaching far more blocks in the same wall-clock.
+2. **`MACRUNNER_HB_JIT_DIRECT_MEM=0`** (off). JIT memory ops go through helper calls instead of
+   direct loads/stores. Enable it for the proven-safe paths (you already trust DIRECT_STACK=1) and
+   measure — direct memory is a large per-access win on the hot Mono loops.
+3. **Bulk-warm instead of one-loop-per-run:** do ONE profiling run, collect ALL hot blocks at once
+   (you already log `jit-hot-block` ranks), and native-promote them in a batch — don't discover one
+   loop per launch.
+NOTE: there is NO public "map of hot JIT paths" — hot paths are unique to this app+translator. The
+levers are architectural (AOT cache, block chaining, direct-mem, bulk promotion), and #1+#2 above
+are currently OFF. Engage them first; that is the fastest route to finishing Mono init → main →
+GfxDevice → window. Keep correctness (the shift/SETcc JIT flag fix below) intact.
+
 ## 🐞 LANE A — JIT CORRECTNESS BUG found by Lane B fuzzer (operator 2026-06-01, do alongside gate)
 Lane B's new differential fuzzer (`engine/hyperbridge/tests/hb_fuzz_diff.py`, merged) ran 1M cases:
 interpreter semantics are CLEAN (exact-oracle mismatches=0), but there are **43,478 interpreter-vs-
@@ -19,6 +42,87 @@ mismatches; or run the single case `41 0f 95 c0` through interp vs JIT and diff 
 flag materialization in the JIT shift/rotate/SETcc path so JIT == interpreter, then re-run the
 fuzzer to confirm `backend mismatches=0`. (Lane B owns the fuzzer + interpreter; the JIT FIX is
 yours.)
+
+**20:53 checkpoint (Codex): JIT correctness bug fixed.** Root cause was not interpreter flags:
+`SETcc r/m8` fast JIT helper wrote the whole destination GPR. For `SETNE r8b`, interpreter preserved
+upper bits (`0x2aa9b3c6758e4400`) while JIT zeroed all of `r8`. `hb_arm64_codegen.c`
+`hb_jit_helper_exec_setcc_lazy()` now writes `HB_SIZE_8` via `hb_context_write_reg_value_sized()`.
+Validation:
+- `cd engine/hyperbridge && python3 tests/hb_fuzz_diff.py --cases 200000 --batch 4096`: rc=0,
+  backend mismatches=0, oracle mismatches=0.
+- `cd engine/hyperbridge && python3 tests/hb_fuzz_diff.py --cases 1000000 --batch 4096`: rc=0,
+  backend mismatches=0, oracle mismatches=0, oracle checked/pass=608,698/608,698.
+- `cd engine/hyperbridge && make && ./tests/hb_test_runner`: rc=0, 416 passed, 0 failed.
+**21:50 checkpoint (Codex): graphics gate moved earlier to prefix/bootstrap setup.** Added local
+`GetFileInformationByHandle` for synthetic local file handles and a local
+`SystemTimeToTzSpecificLocalTime` / `TzSpecificLocalTimeToSystemTime` semantic family in
+`macrunner_hb.c`; targeted ntdll rebuild/install succeeded. Added direct ARM64 JIT for register
+`BT/BTS/BTR/BTC` after `kernelbase!UrlIsOpaqueA` looked suspicious; validation:
+`bt_family` 10k backend=0/oracle=0 and `shift_rotate_flags` 10k backend=0/oracle=0.
+However the current DXMT no-log gate run still does not reach Unity/D3D: fresh throwaway prefixes
+spend the full timeout in auto `wineboot.exe --init` /
+`rundll32.exe setupapi,InstallHinfSection PreInstall ... wine.inf`
+(`run-20260601-bit-test-jit-nolog240`, `D3D11CreateDevice=0`, `GfxDevice=0`, heartbeat only
+`rva=0x4f960`). A focused JIT trace (`run-20260601-setupapi-hotblock-ir90`) proves that hot block
+compiles (`macrunner-hb-jit-fallback=0`, `match=1`); it is a prologue/load/test/jcc block, not the
+BT instruction. NEXT: diagnose/fix the prefix bootstrap gate at the root: either make `mr-run.sh` /
+`sync-prefix-from-dist.sh` seed an already-initialized disposable prefix, or find the missing
+Win32/setupapi semantic that makes `wine.inf` PreInstall never complete. Do not return to Unity wait
+diagnosis until this fresh-prefix setup path is cleared; do not treat loop warming as the window path.
+
+**22:08 checkpoint (Codex): fresh-prefix setup gate cleared in the runner.** `scripts/mr-run.sh`
+now seeds DXMT throwaway prefixes from the newest validated `artifacts/warm-prefix/*` registry
+template before `sync-prefix-from-dist.sh`, and stamps the disposable `.update-timestamp` to the
+current dist `wine.inf` mtime on the default skip-wineboot path. Validation run
+`run-20260601-warm-prefix-gate90`: `wineboot=0`, `setupapi,InstallHinfSection=0`, no
+`rundll32.exe`/`wineboot.exe` spin in 15/45/75s process samples, cleanup rc=0. The app is now back
+inside Hollow Knight/Unity (`last heartbeat rva=0x5544c1`) but still has `D3D11CreateDevice=0`,
+`GfxDevice=0`, `CreateSwapChain=0`, `jit_fallback=0`. NEXT: resume the real Unity gate diagnosis
+from the post-prefix state: identify the wait/worker object around the current Unity RVAs (including
+the prior `0xcba8b2` zero-timeout poll and worker parks) and fix the missing sync semantic at root;
+do not warm loops as the path to graphics.
+
+**22:15 checkpoint (Codex): post-prefix wait trace reclassifies the current blocker as CPU progress,
+not a live wait gate.** `run-20260601-post-prefix-waittrace240` still has `D3D11CreateDevice=0` /
+`GfxDevice=0`, but the wait evidence is healthy: `0xcba8b2` is still
+`WaitForSingleObject(GetCurrentProcess(), 0)` returning `WAIT_TIMEOUT`; `0x577f44` startup waits are
+released by matching `ReleaseSemaphore` calls from RVA `0x14d1f30`; `0x577c92` workers park on idle
+semaphores. Process samples at 60/120/180/240s show the Hollow Knight process active at
+~99-100% CPU, not parked; hot heartbeats are `0x649910`, `0x283d25/0x283876`, `0x19d439d`, etc.,
+with `jit_fallback=0`. NEXT: run a clean 900s post-prefix speed-vs-gate check (low trace) to verify
+whether progress eventually reaches real `D3D11CreateDevice`; if it stays CPU-bound with moving
+heartbeats, resume evidence-targeted JIT/codegen hot-family work, not sync patching.
+
+**22:33 checkpoint (Codex): post-prefix 900s verdict is CPU/JIT-native, not wait-gate.** Verdict file:
+`reports/research/HB-GRAPHICS-speed-vs-gate-verdict-20260601-post-prefix.md`. Run
+`run-20260601-post-prefix-speed-vs-gate900` stayed clean (`wineboot=0`,
+`setupapi,InstallHinfSection=0`, `jit_fallback=0`, `JIT codegen failed=0`) and still had
+`D3D11CreateDevice=0` / `GfxDevice=0`. Heartbeats froze after the 60s snapshot at Unity RVA
+`0x5544b8` while the real `Hollow Knight.exe` process stayed ~99-100% CPU through 900s; live macOS
+sample mapped the active PC to anonymous executable VM (`0x87fff960000-0x87fffa60000`, sampled around
+`0x87fff9ce678`). NEXT: run a focused JIT hot-block/native-address trace to map that anonymous PC
+back to the guest block, then fix or specialize that finite hot block family. Do not patch
+wait/event semantics without new wait evidence.
+
+**22:55 checkpoint (Codex): anonymous CPU loop mapped to Wine ntdll timerqueue assert.** Focused
+native-address runs mapped sampled PC `0x87fff9ce678` outside the HB block cache; live disassembly
+showed an ARM64 fatal/assert loop. Decoding the ADRP string operands identified
+`"../dlls/ntdll/threadpool.c"`, line `569`, assertion `"t->destroy"` in `queue_remove_timer()`.
+This is not a Unity wait object and not an HB JIT fallback. NEXT: instrument the old timer queue path
+(`RtlCreateTimer*`/`RtlUpdateTimer`/`RtlDeleteTimer*`, `queue_add/move/destroy/remove`) to find how a
+timer reaches `queue_remove_timer()` without the destroy invariant, then fix the root cross-arch
+timer/callback/sync semantic. Do not relax the assert as a workaround.
+
+**23:54 checkpoint (Codex): timerqueue assert hypothesis is not current-reproducible.** Rebuilt with
+the old timerqueue probes active in `threadpool.c`, then ran `run-20260601-timerqueue-trace120` and
+`run-20260601-timerqueue-trace300`; both still had `D3D11CreateDevice=0` / `GfxDevice=0`, but
+`macrunner-hb-timerqueue=0`, `threadpool.c=0`, and `t->destroy=0`. Fresh live samples
+`run-20260601-current-generated-pc120b` and `run-20260601-current-assert-wide100` repeat the same
+anonymous ntdll-generated CPU loop at `0x87fff9d0e4c`, plus lldb catches a native ARM64 PE
+`EXC_BAD_ACCESS address=0x60` at `ldr x8, [x18,#0x60]` (`0x87fff9bb040`). Source already has an
+Apple `x18`/TEB self-heal in `unix/signal_arm64.c`, so NEXT is evidence-first: determine whether
+that lldb x18 stop is the real unhandled root or only debugger interception of a recoverable signal,
+then map/fix the ntdll-generated fatal loop. Do not patch sync/timer semantics without a firing trace.
 
 ## LANE SYNC POINT (2026-06-01, operator) — both lanes reconciled into HEAD `6a2b855`
 Both lanes were stopped, all Lane B ISA work (batches 06-01..06-05) merged into main, kit refreshed
@@ -112,6 +216,157 @@ the original wait/fault gate is fixed; current evidence again looks like pre-D3D
 Mono memory bookkeeping, but generic loop warming is still held by the latest operator instruction.
 If allowed to reclassify, resume targeted JIT/throughput on the finite hot Mono/Unity loops; if not,
 add narrower semantic probes around Mono memory bookkeeping ownership and graphics-init transition.
+
+**Latest checkpoint (Codex): Mono assembly-load gate cleared; resume from post-mscorlib Unity init.**
+Two root cross-arch file/runtime bugs were fixed in Unix ntdll. First, ARM64X kernelbase `.hexpthk`
+stubs that look like x64 bytes now redirect SIGILL to the real ARM64 target; validation
+`run-20260601-arm64x-hexpthk-route120` had `.hexpthk` redirects and no invalid-disposition loop.
+Second, synthetic HyperBridge local file handles now implement the mapping/info family needed by
+Mono (`GetFileInformationByHandleEx`, `CreateFileMappingW`, `MapViewOfFile`, `UnmapViewOfFile`,
+mapping `CloseHandle`). This fixes the `mscorlib.dll` load path at root: original game data only
+(`Hollow Knight_Data/Managed/mscorlib.dll`, no diagnostic `Managed/mono/*` copy) maps successfully
+through `CreateFileMappingW`/`MapViewOfFile`. Validation:
+`run-20260601-mapview-original-data180` partial low-trace run (tool timeout, then scoped
+`mr-clean.sh --prune`) shows `mscorlib_missing=0`, `invalid_cil=0`, `mapped=1`, `sig=0`,
+`jit_fallback=0`, and still `D3D11CreateDevice=0` / `GfxDevice=0` in the captured window. NEXT:
+run a clean low-trace Hollow Knight DXMT gate check from this post-mscorlib state; if D3D11 is still
+absent, continue evidence-first on the next Mono/Unity initialization gate after the assembly-map
+success, not generic loop warming.
+
+**Current checkpoint (Codex, 2026-06-02 03:11 +10): JIT correctness and code-cache fatal are
+cleared; graphics still has no device marker.** The Lane B fuzzer bug was fixed in
+`hb_arm64_codegen.c`: `SETcc r/m8` now writes only the byte destination via
+`hb_context_write_reg_value_sized(..., HB_SIZE_8)`, preserving upper register bits for cases like
+`SETNE r8b`. Fresh validation after the Mono helper changes:
+`cd engine/hyperbridge && python3 tests/hb_fuzz_diff.py --cases 10000 --batch 1024 --families
+shift_rotate_flags` -> `backend_mismatch_count=0`, `oracle_mismatch_count=0`,
+`oracle_pass_count=10000/10000`.
+
+The post-mscorlib `JIT buffer exhausted` fatal is also converted to a fail-open interpreter fallback:
+the block cache is expanded to 65,536 entries, occupancy is tracked, and full code cache / block table
+conditions no longer surface as `OUT_OF_MEMORY`. `run-20260601-jit-cache-failopen-dxmt360` had
+`runtime_fail=0`, `jit_buffer_exhausted=0`, `jit_code_cache_full=0`, `jit_fallback=0`, but still
+`D3D11CreateDevice=0` / `GfxDevice=0`. A targeted Mono metadata bsearch helper for
+`mono-2.0-bdwgc.dll` RVA `0x14f180` is now linked and active; the first semantic bug in its CMOV flag
+handling was repaired, and `run-20260601-mono-bsearch-helper-flagsfix-hot180` finished with
+`runtime_fail=0`, `mono_assert=0`, `mono_bsearch_fusion=2`, `top_14f180=0`, and still no D3D/Gfx
+marker.
+
+NEXT: continue evidence-first from the clean post-helper state. The current hot set moved to
+`mono-2.0-bdwgc.dll` around guest PCs `0x87ef1533eeb`, `0x87ef1533ed5`, `0x87ef1533ec0` plus
+UnityPlayer `0x87efcba9910`. Dump IR for the top Mono hot family, decide whether it is a finite
+helper/codegen coverage gap or a real semantic gate, and rerun Hollow Knight DXMT checking for a real
+`D3D11CreateDevice`. Keep direct memory disabled: `run-20260601-directmem-probe360` faulted at
+UnityPlayer `0x649910`.
+
+**03:52 checkpoint (Codex): two Mono metadata decode helpers added and validated.** Evidence showed
+the `0x183e*` hot cluster is Mono `metadata.c` row decode, not a wait or graphics API gate. Added
+JIT helpers in `hb_arm64_codegen.c` for the valid fast paths:
+`mono-metadata-decode-row` (`0x183eb4` loop entry) and `mono-metadata-decode-col`
+(`0x184130` function entry, including return-address pop). Validation:
+`make && ./tests/hb_test_runner` -> 419/0; `hb_fuzz_diff.py --cases 10000 --batch 1024 --families
+shift_rotate_flags` -> backend/oracle mismatches 0; forced `ntdll.so` relink/install has both helper
+strings. App runs `run-20260602-mono-decode-row-helper-hot180` and
+`run-20260602-mono-decode-col-helper-hot180` showed the fusions active with `runtime_fail=0`,
+`jit_fallback=0`, `mono_assert=0`. Clean low-trace graphics check
+`run-20260602-post-metadata-helpers-lowtrace360` still has real `D3D11CreateDevice=0` /
+`GfxDevice=0`, with Hollow Knight CPU-active and final heartbeats shifted to Mono RVAs
+`0x19213d`, `0x1922e0`, `0x4c9002`, and bsearch `0x14f180`. NEXT: map the new active Mono
+`0x192xxx` family with IR/disassembly, then decide whether it is another finite metadata helper or a
+real post-Mono semantic gate before any graphics-device transition.
+
+**04:40 checkpoint (Codex): JIT flag correctness revalidated and the Mono `0x192xxx` helper landed.**
+The Lane B fuzzer bug remains fixed on the current tree after the later Mono helper edits:
+`python3 tests/hb_fuzz_diff.py --cases 200000 --batch 4096 --families shift_rotate_flags` completed
+with `backend_mismatch_count=0`, `oracle_mismatch_count=0`, and `oracle_pass_count=200000/200000`.
+Root cause remains the `SETcc r/m8` byte-destination write in `hb_arm64_codegen.c`; no interpreter or
+Lane B decoder/lifter files were touched.
+
+The `0x192xxx` Mono hot path was mapped to a finite metadata coded-index search helper. Added
+`mono-metadata-coded-index-search` in `hb_arm64_codegen.c`, sharing the validated metadata column decode
+logic and falling back before mutation outside the proven fast path. Validation: `make &&
+./tests/hb_test_runner` -> `419 passed, 0 failed`; targeted `ntdll.so` rebuild/install contains
+`mono-metadata-coded-index-search=1`, `mono-metadata-decode-col=1`, and
+`mono-metadata-decode-row=1`. App run `run-20260602-mono-coded-index-helper-hot180` shows
+`coded_index_fusion=1`, `decode_col_fusion=1`, `decode_row_fusion=1`, `bsearch_fusion=2`,
+`hot_192240=0`, `hot_1922e0=0`, `hot_19213d=0`, and no runtime/JIT/Mono asserts. Clean DXMT check
+`run-20260602-post-coded-index-lowtrace360` still has `D3D11CreateDevice=0`, `GfxDevice=0`,
+`CreateSwapChain=0`, `runtime_fail=0`, `jit_fallback=0`, `mono_assert=0`, and Hollow Knight remains
+CPU-active in Mono/Unity initialization.
+
+NEXT: do not revisit the `0x192xxx` family unless it reappears. Map the new post-coded-index active
+tail in `mono-2.0-bdwgc.dll` (including RVAs `0x183e00`/`0x183e59`/`0x183ac6`/`0x18d5d0` and
+`0x53fa59`/`0x545bcb`/`0x545bd0`) and classify it as either another finite helper/codegen gap or the
+actual post-Mono semantic gate before the first real `D3D11CreateDevice`.
+
+**04:57 checkpoint (Codex): Mono checked row-decode entry helper added.** Focused IR probe
+`run-20260602-mono-183e00-ir90` mapped `mono-2.0-bdwgc.dll` RVA `0x183e00` to the checked entry
+wrapper for the same metadata row decode family: bounds/column-count asserts, then the existing
+`0x183eb4` decode loop. Added `mono-metadata-decode-row-entry` in `hb_arm64_codegen.c` so valid calls
+run as one whole-function helper and invalid/assert paths fall back before mutation. Validation:
+`make && ./tests/hb_test_runner` -> `419 passed, 0 failed`; post-helper
+`hb_fuzz_diff.py --cases 10000 --batch 1024 --families shift_rotate_flags` ->
+`backend_mismatch_count=0`, `oracle_mismatch_count=0`; forced `ntdll.so` relink/install contains
+`mono-metadata-decode-row-entry`. App run `run-20260602-mono-row-entry-helper-hot180` shows
+`row_entry_fusion=1`, `coded_index_fusion=1`, `decode_col_fusion=1`, `bsearch_fusion=2`,
+`runtime_fail=0`, `jit_fallback=0`, `mono_assert=0`, and still no real `D3D11CreateDevice`/`GfxDevice`.
+
+NEXT: continue from the clean post-row-entry state. The active tail is now UnityPlayer compare block
+around RVA `0x649910` plus Mono RVAs around `0x183a10`/`0x183ac6`, `0x1409870` string/hash loops, and
+final-heartbeat Mono RVAs `0x150d95`/`0x58cb6`/`0x27ffb6`/`0x280028`/`0x4ca3d0`. Map those in bulk
+against static disassembly + targeted IR; only add another helper if the fast path is finite and can be
+mirrored exactly. Keep direct-memory optimization disabled for UnityPlayer `0x649910` until the earlier
+faulting directmem path has a root-cause fix.
+
+**05:19 checkpoint (Codex): post-row-entry hot-tail helper batch added and validated.** Static
+disassembly plus targeted IR runs mapped three finite hot helpers: UnityPlayer RVA `0x649910`
+`u32` pointer compare (`run-20260602-unity-cmp-649910-ir80`), Mono metadata row-pointer entry
+RVA `0x183a10` (`run-20260602-mono-rowptr-183a10-ir80`), and Mono string hash at module RVA
+`0x59870` (`run-20260602-mono-hash-59870-ir80`; the earlier `0x1409870` label was the guest address,
+not module RVA). Added JIT helpers in `hb_arm64_codegen.c`: `unity-u32-ptr-compare`,
+`mono-metadata-rowptr-entry`, and `mono-string-hash`. These do not enable the generic direct-memory
+optimization that previously faulted at Unity `0x649910`; they use checked C helpers and preserve
+byte-write / flag / return semantics.
+
+Validation: `make && ./tests/hb_test_runner` -> `419 passed, 0 failed`;
+`hb_fuzz_diff.py --cases 10000 --batch 1024 --families shift_rotate_flags` ->
+`backend_mismatch_count=0`, `oracle_mismatch_count=0`; forced `ntdll.so` relink/install contains all
+three new helper strings. App run `run-20260602-hot-tail-helpers-hot180` shows
+`unity_cmp_fusion=1`, `mono_hash_fusion=1`, `rowptr_fusion=1`, existing Mono metadata fusions active,
+and `runtime_fail=0`, `jit_fallback=0`, `mono_assert=0`. Clean low-trace
+`run-20260602-post-hot-tail-helpers-lowtrace360` still has `D3D11CreateDevice=0`, `GfxDevice=0`,
+`CreateSwapChain=0`, `runtime_fail=0`, `jit_fallback=0`, `mono_assert=0`; process samples keep
+Hollow Knight at ~99-100% CPU, so this remains CPU progress before graphics init, not a wait park.
+
+NEXT: continue mapping the new low-trace tail in bulk: Mono RVAs `0x19213d`/`0x192141`,
+`0x18e2c0`, `0xb7c19`, `0x4ec1a9`, `0x7185e`, `0x183e00`, `0x3622ad`, `0x150d8a`,
+`0x672c6`, and `0x53fadd`/`0x53faa3`, plus the non-Mono `0x87fff65b328` generated/runtime block.
+Classify with static disassembly + targeted IR first; only add helpers for exact finite fast paths, and
+keep watching for the first real `D3D11CreateDevice` marker after each batch.
+
+**05:47 checkpoint (Codex): Mono string equality helper added and validated.** Static disassembly plus
+targeted IR (`run-20260602-mono-streq-59830-ir80`) mapped Mono RVA `0x59830` to the finite byte-string
+equality fast path: pointer-equal return 1, otherwise compare `[rcx]` with `[rcx + (rdx - rcx)]` until
+mismatch or shared terminator. Added the exact JIT helper `mono-string-equal` in `hb_arm64_codegen.c`,
+preserving RCX/RDX/R8/RAX and the post-branch flags for pointer-equal, mismatch, and terminator-equal
+returns.
+
+Validation: `cd engine/hyperbridge && make && ./tests/hb_test_runner` -> `419 passed, 0 failed`;
+`python3 tests/hb_fuzz_diff.py --cases 10000 --batch 1024 --families shift_rotate_flags` ->
+`backend_mismatch_count=0`, `oracle_mismatch_count=0`; forced `ntdll.so` relink/install
+`build-20260602-mono-string-equal-ntdll` contains `unity-u32-ptr-compare`, `mono-string-hash`,
+`mono-string-equal`, and `mono-metadata-rowptr-entry`. App run
+`run-20260602-mono-string-equal-hot150` shows `mono_string_equal_fusion=1`, `mono_string_hash_fusion=1`,
+`unity_cmp_fusion=1`, `rowptr_fusion=1`, and still `runtime_fail=0`, `jit_fallback=0`,
+`mono_assert=0`; real `D3D11CreateDevice=0`, `GfxDevice=0`, `CreateSwapChain=0`.
+
+NEXT: continue from the post-string-equality clean state. The remaining hot tail is now dominated by
+UnityPlayer blocks around guest `0x87efc7e3876`/`0x87efc7e3860`, `0x87efc7e3d6c`/`0x87efc7e3d2d`,
+and `0x87efc81b5db`/`0x87efc81b5d2`/`0x87efc81b5c0` (likely Unity RVAs `0x283876`/`0x283860`,
+`0x283d6c`/`0x283d2d`, and `0x2bb5db`/`0x2bb5d2`/`0x2bb5c0` if the Unity base remains
+`0x87efc560000`). Map those in bulk with static disassembly plus targeted IR before adding any helper.
+Keep checking for the first real `D3D11CreateDevice`/`GfxDevice` marker after each batch; do not edit
+`hb_decode_x64.c`, `hb_lift_x64.c`, or interpreter vector semantics.
 
 ---
 

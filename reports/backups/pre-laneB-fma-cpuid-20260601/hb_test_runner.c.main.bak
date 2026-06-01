@@ -14933,174 +14933,6 @@ TEST(interp_x64_unicorn_diff_regressions_scalar_flags) {
     tests_passed++;
 }
 
-TEST(interp_x64_fma3_f16c_semantics) {
-    typedef struct { uint8_t code[5]; int opcode; uint8_t bytes; } fma_decode_case_t;
-    static const fma_decode_case_t fma_cases[] = {
-        {{0xc4,0xe2,0x75,0x98,0xc2}, HB_INS_VFMADD132PS, 32},
-        {{0xc4,0xe2,0xf5,0x98,0xc2}, HB_INS_VFMADD132PD, 32},
-        {{0xc4,0xe2,0x71,0x99,0xc2}, HB_INS_VFMADD132SS, 16},
-        {{0xc4,0xe2,0xf1,0x99,0xc2}, HB_INS_VFMADD132SD, 16},
-        {{0xc4,0xe2,0x75,0xa8,0xc2}, HB_INS_VFMADD213PS, 32},
-        {{0xc4,0xe2,0xf5,0xa8,0xc2}, HB_INS_VFMADD213PD, 32},
-        {{0xc4,0xe2,0x71,0xa9,0xc2}, HB_INS_VFMADD213SS, 16},
-        {{0xc4,0xe2,0xf1,0xa9,0xc2}, HB_INS_VFMADD213SD, 16},
-        {{0xc4,0xe2,0x75,0xb8,0xc2}, HB_INS_VFMADD231PS, 32},
-        {{0xc4,0xe2,0xf5,0xb8,0xc2}, HB_INS_VFMADD231PD, 32},
-        {{0xc4,0xe2,0x71,0xb9,0xc2}, HB_INS_VFMADD231SS, 16},
-        {{0xc4,0xe2,0xf1,0xb9,0xc2}, HB_INS_VFMADD231SD, 16},
-        {{0xc4,0xe2,0x75,0x9a,0xc2}, HB_INS_VFMSUB132PS, 32},
-        {{0xc4,0xe2,0xf5,0x9a,0xc2}, HB_INS_VFMSUB132PD, 32},
-        {{0xc4,0xe2,0x71,0x9b,0xc2}, HB_INS_VFMSUB132SS, 16},
-        {{0xc4,0xe2,0xf1,0x9b,0xc2}, HB_INS_VFMSUB132SD, 16},
-        {{0xc4,0xe2,0x75,0xaa,0xc2}, HB_INS_VFMSUB213PS, 32},
-        {{0xc4,0xe2,0xf5,0xaa,0xc2}, HB_INS_VFMSUB213PD, 32},
-        {{0xc4,0xe2,0x71,0xab,0xc2}, HB_INS_VFMSUB213SS, 16},
-        {{0xc4,0xe2,0xf1,0xab,0xc2}, HB_INS_VFMSUB213SD, 16},
-        {{0xc4,0xe2,0x75,0xba,0xc2}, HB_INS_VFMSUB231PS, 32},
-        {{0xc4,0xe2,0xf5,0xba,0xc2}, HB_INS_VFMSUB231PD, 32},
-        {{0xc4,0xe2,0x71,0xbb,0xc2}, HB_INS_VFMSUB231SS, 16},
-        {{0xc4,0xe2,0xf1,0xbb,0xc2}, HB_INS_VFMSUB231SD, 16},
-    };
-    hb_decoded_t d;
-    for (size_t i = 0; i < sizeof(fma_cases) / sizeof(fma_cases[0]); i++) {
-        ASSERT(hb_decode_x64(fma_cases[i].code, sizeof(fma_cases[i].code),
-                             (uint64_t)(uintptr_t)fma_cases[i].code, &d) == HB_OK);
-        ASSERT((int)d.opcode == fma_cases[i].opcode);
-        ASSERT(d.op1.reg == HB_REG_XMM0 && d.op2.reg == HB_REG_XMM1 && d.op3.reg == HB_REG_XMM2);
-        ASSERT(d.op1.size == fma_cases[i].bytes);
-    }
-
-    hb_exec_result_t out;
-    hb_ir_func_t* func = NULL;
-    hb_context_t* ctx = NULL;
-    uint64_t data_addr = 0x70000000ULL;
-
-    uint8_t fma132ps_mem[] = {0xc4,0xe2,0x75,0x98,0x00}; /* vfmadd132ps ymm0,ymm1,[rax] */
-    ASSERT(make_unicorn_diff_regression_ctx(fma132ps_mem, sizeof(fma132ps_mem), &func, &ctx) == HB_OK);
-    ASSERT(hb_memory_map_private(ctx->memory, data_addr, 0x1000, HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
-    ctx->regs.x64.rax = data_addr;
-    uint32_t fma_dst_lo[4] = {test_float_bits(1.0f), test_float_bits(2.0f), test_float_bits(3.0f), test_float_bits(4.0f)};
-    uint32_t fma_dst_hi[4] = {test_float_bits(5.0f), test_float_bits(6.0f), test_float_bits(7.0f), test_float_bits(8.0f)};
-    uint32_t fma_src1_lo[4] = {test_float_bits(100.0f), test_float_bits(200.0f), test_float_bits(300.0f), test_float_bits(400.0f)};
-    uint32_t fma_src1_hi[4] = {test_float_bits(500.0f), test_float_bits(600.0f), test_float_bits(700.0f), test_float_bits(800.0f)};
-    uint32_t fma_mem[8] = {test_float_bits(10.0f), test_float_bits(20.0f), test_float_bits(30.0f), test_float_bits(40.0f),
-                           test_float_bits(50.0f), test_float_bits(60.0f), test_float_bits(70.0f), test_float_bits(80.0f)};
-    memcpy(ctx->regs.x64.xmm[0], fma_dst_lo, 16);
-    memcpy(ctx->ymm_hi[0], fma_dst_hi, 16);
-    memcpy(ctx->regs.x64.xmm[1], fma_src1_lo, 16);
-    memcpy(ctx->ymm_hi[1], fma_src1_hi, 16);
-    ASSERT(hb_memory_write(ctx->memory, data_addr, fma_mem, sizeof(fma_mem)) == HB_OK);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint32_t expected_fma_ps_lo[4] = {test_float_bits(110.0f), test_float_bits(240.0f), test_float_bits(390.0f), test_float_bits(560.0f)};
-    uint32_t expected_fma_ps_hi[4] = {test_float_bits(750.0f), test_float_bits(960.0f), test_float_bits(1190.0f), test_float_bits(1440.0f)};
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_fma_ps_lo, 16) == 0);
-    ASSERT(memcmp(ctx->ymm_hi[0], expected_fma_ps_hi, 16) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t vfmsub231pd[] = {0xc4,0xe2,0xf5,0xba,0xc2}; /* vfmsub231pd ymm0,ymm1,ymm2 */
-    func = NULL;
-    ASSERT(make_unicorn_diff_regression_ctx(vfmsub231pd, sizeof(vfmsub231pd), &func, &ctx) == HB_OK);
-    uint64_t pd_dst_lo[2] = {test_double_bits(1.0), test_double_bits(2.0)};
-    uint64_t pd_dst_hi[2] = {test_double_bits(3.0), test_double_bits(4.0)};
-    uint64_t pd_s1_lo[2] = {test_double_bits(10.0), test_double_bits(20.0)};
-    uint64_t pd_s1_hi[2] = {test_double_bits(30.0), test_double_bits(40.0)};
-    uint64_t pd_s2_lo[2] = {test_double_bits(2.0), test_double_bits(3.0)};
-    uint64_t pd_s2_hi[2] = {test_double_bits(4.0), test_double_bits(5.0)};
-    memcpy(ctx->regs.x64.xmm[0], pd_dst_lo, 16);
-    memcpy(ctx->ymm_hi[0], pd_dst_hi, 16);
-    memcpy(ctx->regs.x64.xmm[1], pd_s1_lo, 16);
-    memcpy(ctx->ymm_hi[1], pd_s1_hi, 16);
-    memcpy(ctx->regs.x64.xmm[2], pd_s2_lo, 16);
-    memcpy(ctx->ymm_hi[2], pd_s2_hi, 16);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint64_t expected_pd_lo[2] = {test_double_bits(19.0), test_double_bits(58.0)};
-    uint64_t expected_pd_hi[2] = {test_double_bits(117.0), test_double_bits(196.0)};
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_pd_lo, 16) == 0);
-    ASSERT(memcmp(ctx->ymm_hi[0], expected_pd_hi, 16) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t vfmadd213ss[] = {0xc4,0xe2,0x71,0xa9,0xc2}; /* vfmadd213ss xmm0,xmm1,xmm2 */
-    func = NULL;
-    ASSERT(make_unicorn_diff_regression_ctx(vfmadd213ss, sizeof(vfmadd213ss), &func, &ctx) == HB_OK);
-    uint32_t ss_dst[4] = {test_float_bits(3.0f), test_float_bits(30.0f), test_float_bits(31.0f), test_float_bits(32.0f)};
-    uint32_t ss_s1[4] = {test_float_bits(4.0f), test_float_bits(40.0f), test_float_bits(41.0f), test_float_bits(42.0f)};
-    uint32_t ss_s2[4] = {test_float_bits(5.0f), test_float_bits(50.0f), test_float_bits(51.0f), test_float_bits(52.0f)};
-    memset(ctx->ymm_hi[0], 0xa5, 16);
-    memcpy(ctx->regs.x64.xmm[0], ss_dst, 16);
-    memcpy(ctx->regs.x64.xmm[1], ss_s1, 16);
-    memcpy(ctx->regs.x64.xmm[2], ss_s2, 16);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint32_t expected_ss[4] = {test_float_bits(17.0f), test_float_bits(40.0f), test_float_bits(41.0f), test_float_bits(42.0f)};
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_ss, 16) == 0);
-    ASSERT(ctx->ymm_hi[0][0] == 0 && ctx->ymm_hi[0][1] == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t vfmsub132sd[] = {0xc4,0xe2,0xf1,0x9b,0xc2}; /* vfmsub132sd xmm0,xmm1,xmm2 */
-    func = NULL;
-    ASSERT(make_unicorn_diff_regression_ctx(vfmsub132sd, sizeof(vfmsub132sd), &func, &ctx) == HB_OK);
-    uint64_t sd_dst[2] = {test_double_bits(10.0), test_double_bits(30.0)};
-    uint64_t sd_s1[2] = {test_double_bits(4.0), test_double_bits(40.0)};
-    uint64_t sd_s2[2] = {test_double_bits(3.0), test_double_bits(50.0)};
-    memcpy(ctx->regs.x64.xmm[0], sd_dst, 16);
-    memcpy(ctx->regs.x64.xmm[1], sd_s1, 16);
-    memcpy(ctx->regs.x64.xmm[2], sd_s2, 16);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint64_t expected_sd[2] = {test_double_bits(26.0), test_double_bits(40.0)};
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_sd, 16) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t vcvtph2ps_reg[] = {0xc4,0xe2,0x79,0x13,0xc1};
-    ASSERT(hb_decode_x64(vcvtph2ps_reg, sizeof(vcvtph2ps_reg), (uint64_t)(uintptr_t)vcvtph2ps_reg, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_VCVTPH2PS && d.op1.size == 16 && d.op2.size == 8);
-    uint8_t vcvtps2ph_reg[] = {0xc4,0xe3,0x7d,0x1d,0xc1,0x00};
-    ASSERT(hb_decode_x64(vcvtps2ph_reg, sizeof(vcvtps2ph_reg), (uint64_t)(uintptr_t)vcvtps2ph_reg, &d) == HB_OK);
-    ASSERT(d.opcode == HB_INS_VCVTPS2PH && d.op1.size == 16 && d.op2.size == 32);
-
-    uint8_t vcvtph2ps_mem[] = {0xc4,0xe2,0x7d,0x13,0x00}; /* vcvtph2ps ymm0,[rax] */
-    func = NULL;
-    ASSERT(make_unicorn_diff_regression_ctx(vcvtph2ps_mem, sizeof(vcvtph2ps_mem), &func, &ctx) == HB_OK);
-    ASSERT(hb_memory_map_private(ctx->memory, data_addr, 0x1000, HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
-    ctx->regs.x64.rax = data_addr;
-    uint16_t halves[8] = {0x3c00, 0xc000, 0x3800, 0x7c00, 0x0000, 0x8000, 0x7e00, 0x3555};
-    ASSERT(hb_memory_write(ctx->memory, data_addr, halves, sizeof(halves)) == HB_OK);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint32_t expected_ph2ps_lo[4] = {test_float_bits(1.0f), test_float_bits(-2.0f), test_float_bits(0.5f), 0x7f800000u};
-    uint32_t expected_ph2ps_hi[4] = {test_float_bits(0.0f), 0x80000000u, 0x7fc00000u, 0x3eaaa000u};
-    ASSERT(memcmp(ctx->regs.x64.xmm[0], expected_ph2ps_lo, 16) == 0);
-    ASSERT(memcmp(ctx->ymm_hi[0], expected_ph2ps_hi, 16) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    uint8_t vcvtps2ph_mem[] = {0xc4,0xe3,0x7d,0x1d,0x00,0x00}; /* vcvtps2ph [rax],ymm0,0 */
-    func = NULL;
-    ASSERT(make_unicorn_diff_regression_ctx(vcvtps2ph_mem, sizeof(vcvtps2ph_mem), &func, &ctx) == HB_OK);
-    ASSERT(hb_memory_map_private(ctx->memory, data_addr, 0x1000, HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
-    ctx->regs.x64.rax = data_addr;
-    uint32_t floats_lo[4] = {test_float_bits(1.0f), test_float_bits(-2.0f), test_float_bits(0.5f), 0x7f800000u};
-    uint32_t floats_hi[4] = {test_float_bits(0.0f), 0x80000000u, 0x7fc00000u, 0x3eaaa000u};
-    memcpy(ctx->regs.x64.xmm[0], floats_lo, 16);
-    memcpy(ctx->ymm_hi[0], floats_hi, 16);
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    uint16_t got_halves[8] = {0};
-    uint16_t expected_halves[8] = {0x3c00, 0xc000, 0x3800, 0x7c00, 0x0000, 0x8000, 0x7e00, 0x3555};
-    ASSERT(hb_memory_read(ctx->memory, data_addr, got_halves, sizeof(got_halves)) == HB_OK);
-    ASSERT(memcmp(got_halves, expected_halves, sizeof(expected_halves)) == 0);
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-
-    tests_passed++;
-}
-
 TEST(interp_x64_sse_visible_window_family_gaps) {
     hb_exec_result_t out;
     hb_decoder_t* dec;
@@ -20692,46 +20524,9 @@ TEST(interp_x64_cpuid_vendor_and_leaf1) {
     ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
     ASSERT(out.result == HB_OK);
     ASSERT((uint32_t)ctx->regs.x64.rax == 0x000306a9U);
-    ASSERT((uint32_t)ctx->regs.x64.rcx & (1u << 12)); /* FMA */
-    ASSERT((uint32_t)ctx->regs.x64.rcx & (1u << 27)); /* OSXSAVE */
-    ASSERT((uint32_t)ctx->regs.x64.rcx & (1u << 28)); /* AVX */
-    ASSERT((uint32_t)ctx->regs.x64.rcx & (1u << 29)); /* F16C */
+    ASSERT(((uint32_t)ctx->regs.x64.rcx & (1u << 27)) == 0); /* OSXSAVE: not advertised yet */
+    ASSERT(((uint32_t)ctx->regs.x64.rcx & (1u << 28)) == 0); /* AVX: not advertised yet */
     ASSERT((uint32_t)ctx->regs.x64.rdx & (1u << 26)); /* SSE2 */
-
-    hb_context_destroy(ctx);
-    hb_ir_func_destroy(func);
-    tests_passed++;
-}
-
-TEST(interp_x64_cpuid_leaf7_hides_unverified_simd_features) {
-    uint8_t code[] = {
-        0xb8, 0x07, 0x00, 0x00, 0x00, /* mov eax,7 */
-        0x31, 0xc9,                   /* xor ecx,ecx */
-        0x0f, 0xa2                    /* cpuid */
-    };
-    uint64_t base = (uint64_t)(uintptr_t)code;
-
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
-    hb_ir_func_t* func = NULL;
-    ASSERT(dec != NULL);
-    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
-    hb_decoder_destroy(dec);
-    ASSERT(func != NULL);
-
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    ctx->memory = hb_memory_create(0);
-    ASSERT(ctx->memory != NULL);
-    ASSERT(hb_memory_map(ctx->memory, base, sizeof(code), HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
-    ctx->pc = base;
-
-    hb_exec_result_t out;
-    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
-    ASSERT(out.result == HB_OK);
-    ASSERT(((uint32_t)ctx->regs.x64.rbx & (1u << 5)) == 0);  /* AVX2 */
-    ASSERT(((uint32_t)ctx->regs.x64.rbx & (1u << 16)) == 0); /* AVX512F */
-    ASSERT(((uint32_t)ctx->regs.x64.rbx & (1u << 29)) == 0); /* SHA */
-    ASSERT(((uint32_t)ctx->regs.x64.rcx & (1u << 8)) == 0);  /* GFNI */
 
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
@@ -20762,7 +20557,7 @@ TEST(interp_x64_xgetbv_leaf0) {
     hb_exec_result_t out;
     ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
     ASSERT(out.result == HB_OK);
-    ASSERT((uint32_t)ctx->regs.x64.rax == 0x7U);
+    ASSERT((uint32_t)ctx->regs.x64.rax == 0x3U);
     ASSERT((uint32_t)ctx->regs.x64.rdx == 0x0U);
 
     hb_context_destroy(ctx);
@@ -21210,7 +21005,6 @@ int main(int argc, char** argv) {
             test_interp_x64_avx2_permute_dword_family_semantics();
             test_interp_x64_avx_maskmov_family_semantics();
             test_interp_x64_avx2_gather_family_semantics();
-            test_interp_x64_fma3_f16c_semantics();
             test_interp_x64_aes_round_family_semantics();
             test_interp_x64_gfni_gf2p8mulb_family_semantics();
             test_interp_x64_evex_zmm_unmasked_core_semantics();
@@ -21247,7 +21041,6 @@ int main(int argc, char** argv) {
     test_decode_x64_truncated_sib_fails_cleanly();
     test_decode_xgetbv_opcode_0f01d0();
     test_interp_x64_cpuid_vendor_and_leaf1();
-    test_interp_x64_cpuid_leaf7_hides_unverified_simd_features();
     test_jit_x64_cpuid_vendor_and_leaf1();
     test_interp_x64_xgetbv_leaf0();
     test_jit_x64_xgetbv_leaf0();
@@ -21628,7 +21421,6 @@ int main(int argc, char** argv) {
     test_interp_x64_avx2_permute_dword_family_semantics();
     test_interp_x64_avx_maskmov_family_semantics();
     test_interp_x64_avx2_gather_family_semantics();
-    test_interp_x64_fma3_f16c_semantics();
     test_interp_x64_aes_round_family_semantics();
     test_interp_x64_gfni_gf2p8mulb_family_semantics();
     test_interp_x64_evex_zmm_unmasked_core_semantics();

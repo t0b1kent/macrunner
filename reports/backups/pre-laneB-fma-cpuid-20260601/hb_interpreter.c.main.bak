@@ -390,88 +390,6 @@ static uint32_t hb_float_to_bits(float value) {
     return bits;
 }
 
-static uint32_t hb_half_to_float_bits(uint16_t h) {
-    uint32_t sign = ((uint32_t)h & 0x8000u) << 16;
-    uint32_t exp = ((uint32_t)h >> 10) & 0x1fu;
-    uint32_t frac = (uint32_t)h & 0x03ffu;
-    if (exp == 0) {
-        if (frac == 0) return sign;
-        int e = -14;
-        while ((frac & 0x0400u) == 0) {
-            frac <<= 1;
-            e--;
-        }
-        frac &= 0x03ffu;
-        return sign | (uint32_t)(e + 127) << 23 | (frac << 13);
-    }
-    if (exp == 0x1fu) return sign | 0x7f800000u | (frac << 13);
-    return sign | ((exp + 112u) << 23) | (frac << 13);
-}
-
-static bool hb_round_shift_should_increment(uint64_t value, unsigned shift,
-                                            unsigned mode, bool sign) {
-    if (shift == 0) return false;
-    uint64_t mask = (shift >= 64) ? UINT64_MAX : ((1ULL << shift) - 1ULL);
-    uint64_t rem = value & mask;
-    if (rem == 0) return false;
-    if (mode == 1) return sign;      /* round toward -inf */
-    if (mode == 2) return !sign;     /* round toward +inf */
-    if (mode == 3) return false;     /* truncate */
-    uint64_t half = 1ULL << (shift - 1);
-    uint64_t lsb = (value >> shift) & 1ULL;
-    return rem > half || (rem == half && lsb);
-}
-
-static uint16_t hb_float_bits_to_half(uint32_t bits, unsigned imm) {
-    bool sign_bool = (bits & 0x80000000u) != 0;
-    uint16_t sign = sign_bool ? 0x8000u : 0;
-    unsigned mode = (imm & 0x04u) ? 0u : (imm & 0x03u); /* MXCSR is not modeled; use nearest-even. */
-    uint32_t exp = (bits >> 23) & 0xffu;
-    uint32_t frac = bits & 0x7fffffu;
-
-    if (exp == 0xffu) {
-        if (frac == 0) return (uint16_t)(sign | 0x7c00u);
-        uint16_t payload = (uint16_t)(frac >> 13);
-        if (payload == 0) payload = 1;
-        return (uint16_t)(sign | 0x7c00u | payload | 0x0200u);
-    }
-    if (exp == 0) {
-        if (frac == 0) return sign;
-        if ((mode == 1 && sign_bool) || (mode == 2 && !sign_bool)) return (uint16_t)(sign | 1u);
-        return sign;
-    }
-
-    int half_exp = (int)exp - 127 + 15;
-    if (half_exp >= 31) {
-        if (mode == 3 || (mode == 1 && !sign_bool) || (mode == 2 && sign_bool))
-            return (uint16_t)(sign | 0x7bffu);
-        return (uint16_t)(sign | 0x7c00u);
-    }
-    if (half_exp <= 0) {
-        uint64_t sig = 0x800000u | frac;
-        unsigned shift = (unsigned)(14 - half_exp);
-        if (shift >= 64) {
-            if ((mode == 1 && sign_bool) || (mode == 2 && !sign_bool)) return (uint16_t)(sign | 1u);
-            return sign;
-        }
-        uint64_t mant = sig >> shift;
-        if (shift < 64 && hb_round_shift_should_increment(sig, shift, mode, sign_bool)) mant++;
-        if (mant >= 0x400u) return (uint16_t)(sign | 0x0400u);
-        return (uint16_t)(sign | (uint16_t)mant);
-    }
-
-    uint16_t mant = (uint16_t)(frac >> 13);
-    if (hb_round_shift_should_increment(frac, 13, mode, sign_bool)) {
-        mant++;
-        if (mant == 0x400u) {
-            mant = 0;
-            half_exp++;
-            if (half_exp >= 31) return (uint16_t)(sign | 0x7c00u);
-        }
-    }
-    return (uint16_t)(sign | ((uint16_t)half_exp << 10) | mant);
-}
-
 static hb_result_t read_scalar_double(hb_context_t* ctx, const hb_ir_operand_t* op, double* out) {
     if (!ctx || !op || !out) return HB_ERR_INVALID_ARG;
     uint64_t bits = 0;
@@ -3288,22 +3206,13 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     break;
                 case 1:
                     eax = 0x000306a9U;
-                    /* Advertise only families with interpreter semantics and tests.
-                     * Keep SHA/GFNI/AVX-512 out of leaf 7 so guests take their
-                     * fallback paths until broad semantics are modeled.
+                    /* Be honest about the bridge's implemented opcode surface.
+                     * Advertising AVX/OSXSAVE makes apps select VEX/YMM paths
+                     * before HyperBridge can execute them. Keep the synthetic
+                     * CPU at a conservative SSE2-era baseline until those
+                     * feature families are implemented end-to-end.
                      */
-                    ecx = (1U << 0)  |  /* SSE3 */
-                          (1U << 1)  |  /* PCLMULQDQ */
-                          (1U << 9)  |  /* SSSE3 */
-                          (1U << 12) |  /* FMA */
-                          (1U << 19) |  /* SSE4.1 */
-                          (1U << 20) |  /* SSE4.2 */
-                          (1U << 23) |  /* POPCNT */
-                          (1U << 25) |  /* AES */
-                          (1U << 26) |  /* XSAVE */
-                          (1U << 27) |  /* OSXSAVE */
-                          (1U << 28) |  /* AVX */
-                          (1U << 29);   /* F16C */
+                    ecx = 0;
                     edx = (1U << 8)  |  /* CX8 */
                           (1U << 15) |  /* CMOV */
                           (1U << 23) |  /* MMX */
@@ -3327,7 +3236,7 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             uint64_t xcr0 = 0;
 
             if (ecx == 0)
-                xcr0 = 0x7; /* x87 + SSE + YMM state for advertised AVX/FMA/F16C paths. */
+                xcr0 = 0x3; /* x87 + SSE state only; AVX is intentionally not advertised. */
 
             write_reg_sized(ctx, HB_REG_RAX, (uint32_t)xcr0, HB_SIZE_32);
             write_reg_sized(ctx, HB_REG_RDX, (uint32_t)(xcr0 >> 32), HB_SIZE_32);
@@ -4291,99 +4200,9 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_VEC_PACKED: {
             hb_ir_vec_op_t vop = (hb_ir_vec_op_t)(instr->target >> 32);
             unsigned imm = (unsigned)(instr->target & 0xffu);
-            unsigned arg = (unsigned)(instr->target & 0xffffffffu);
             size_t bytes = bytes_for_size(instr->dst.size);
             if (bytes == 0) bytes = 16;
-            uint8_t dst_old[64] = {0}, lhs[64] = {0}, rhs[64] = {0}, out[64] = {0};
-            if (vop == HB_VEC_VFMADD132 || vop == HB_VEC_VFMADD213 ||
-                vop == HB_VEC_VFMADD231 || vop == HB_VEC_VFMSUB132 ||
-                vop == HB_VEC_VFMSUB213 || vop == HB_VEC_VFMSUB231) {
-                if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-                unsigned lane = arg & 0xffu;
-                bool scalar = (arg & 0x100u) != 0;
-                if (!(lane == 4 || lane == 8)) return HB_ERR_INTERNAL;
-                bytes = scalar ? 16 : bytes;
-                r = read_vec_reg_bytes(ctx, instr->dst.reg, dst_old, bytes);
-                if (r != HB_OK) return r;
-                r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);
-                if (r != HB_OK) return r;
-                r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, scalar ? lane : bytes);
-                if (r != HB_OK) return r;
-                if (scalar) memcpy(out, lhs, bytes);
-                for (size_t off = 0; off < (scalar ? lane : bytes); off += lane) {
-                    if (lane == 4) {
-                        uint32_t dbits, s1bits, s2bits, rbits;
-                        memcpy(&dbits, dst_old + off, sizeof(dbits));
-                        memcpy(&s1bits, lhs + off, sizeof(s1bits));
-                        memcpy(&s2bits, rhs + off, sizeof(s2bits));
-                        float dval = hb_bits_to_float(dbits);
-                        float s1 = hb_bits_to_float(s1bits);
-                        float s2 = hb_bits_to_float(s2bits);
-                        float result;
-                        if (vop == HB_VEC_VFMADD132) result = fmaf(dval, s2, s1);
-                        else if (vop == HB_VEC_VFMADD213) result = fmaf(s1, dval, s2);
-                        else if (vop == HB_VEC_VFMADD231) result = fmaf(s1, s2, dval);
-                        else if (vop == HB_VEC_VFMSUB132) result = fmaf(dval, s2, -s1);
-                        else if (vop == HB_VEC_VFMSUB213) result = fmaf(s1, dval, -s2);
-                        else result = fmaf(s1, s2, -dval);
-                        rbits = hb_float_to_bits(result);
-                        memcpy(out + off, &rbits, sizeof(rbits));
-                    } else {
-                        uint64_t dbits, s1bits, s2bits, rbits;
-                        memcpy(&dbits, dst_old + off, sizeof(dbits));
-                        memcpy(&s1bits, lhs + off, sizeof(s1bits));
-                        memcpy(&s2bits, rhs + off, sizeof(s2bits));
-                        double dval = hb_bits_to_double(dbits);
-                        double s1 = hb_bits_to_double(s1bits);
-                        double s2 = hb_bits_to_double(s2bits);
-                        double result;
-                        if (vop == HB_VEC_VFMADD132) result = fma(dval, s2, s1);
-                        else if (vop == HB_VEC_VFMADD213) result = fma(s1, dval, s2);
-                        else if (vop == HB_VEC_VFMADD231) result = fma(s1, s2, dval);
-                        else if (vop == HB_VEC_VFMSUB132) result = fma(dval, s2, -s1);
-                        else if (vop == HB_VEC_VFMSUB213) result = fma(s1, dval, -s2);
-                        else result = fma(s1, s2, -dval);
-                        rbits = hb_double_to_bits(result);
-                        memcpy(out + off, &rbits, sizeof(rbits));
-                    }
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-            if (vop == HB_VEC_VCVTPH2PS) {
-                if (instr->dst.type != HB_OP_REG || !is_xmm_reg(instr->dst.reg)) return HB_ERR_INTERNAL;
-                size_t src_bytes = bytes / 2;
-                r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, src_bytes);
-                if (r != HB_OK) return r;
-                for (size_t i = 0; i < src_bytes / 2; i++) {
-                    uint16_t h;
-                    uint32_t fbits;
-                    memcpy(&h, lhs + i * 2, sizeof(h));
-                    fbits = hb_half_to_float_bits(h);
-                    memcpy(out + i * 4, &fbits, sizeof(fbits));
-                }
-                return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
-            }
-            if (vop == HB_VEC_VCVTPS2PH) {
-                size_t src_bytes = bytes_for_size(instr->src1.size);
-                if (src_bytes == 0) src_bytes = 16;
-                size_t result_bytes = src_bytes / 2;
-                r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, src_bytes);
-                if (r != HB_OK) return r;
-                for (size_t i = 0; i < src_bytes / 4; i++) {
-                    uint32_t fbits;
-                    uint16_t h;
-                    memcpy(&fbits, lhs + i * 4, sizeof(fbits));
-                    h = hb_float_bits_to_half(fbits, imm);
-                    memcpy(out + i * 2, &h, sizeof(h));
-                }
-                if (instr->dst.type == HB_OP_REG && is_xmm_reg(instr->dst.reg))
-                    return write_vec_reg_bytes(ctx, instr->dst.reg, out, 16);
-                if (instr->dst.type == HB_OP_MEM) {
-                    uint64_t addr = resolve_addr(ctx, &instr->dst);
-                    return hb_memory_write(ctx->memory, addr, out, result_bytes);
-                }
-                return HB_ERR_INTERNAL;
-            }
+            uint8_t lhs[64] = {0}, rhs[64] = {0}, out[64] = {0};
             if (vop == HB_VEC_PCMPESTRM || vop == HB_VEC_PCMPESTRI ||
                 vop == HB_VEC_PCMPISTRM || vop == HB_VEC_PCMPISTRI) {
                 r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);

@@ -85,22 +85,6 @@ static uint64_t vec_target(hb_ir_vec_op_t op, uint64_t arg) {
     return ((uint64_t)op << 32) | arg;
 }
 
-static uint32_t fma_target_from_ins(int opcode) {
-    bool scalar = opcode == HB_INS_VFMADD132SS || opcode == HB_INS_VFMADD132SD ||
-                  opcode == HB_INS_VFMADD213SS || opcode == HB_INS_VFMADD213SD ||
-                  opcode == HB_INS_VFMADD231SS || opcode == HB_INS_VFMADD231SD ||
-                  opcode == HB_INS_VFMSUB132SS || opcode == HB_INS_VFMSUB132SD ||
-                  opcode == HB_INS_VFMSUB213SS || opcode == HB_INS_VFMSUB213SD ||
-                  opcode == HB_INS_VFMSUB231SS || opcode == HB_INS_VFMSUB231SD;
-    bool fp64 = opcode == HB_INS_VFMADD132PD || opcode == HB_INS_VFMADD132SD ||
-                opcode == HB_INS_VFMADD213PD || opcode == HB_INS_VFMADD213SD ||
-                opcode == HB_INS_VFMADD231PD || opcode == HB_INS_VFMADD231SD ||
-                opcode == HB_INS_VFMSUB132PD || opcode == HB_INS_VFMSUB132SD ||
-                opcode == HB_INS_VFMSUB213PD || opcode == HB_INS_VFMSUB213SD ||
-                opcode == HB_INS_VFMSUB231PD || opcode == HB_INS_VFMSUB231SD;
-    return (fp64 ? 8u : 4u) | (scalar ? 0x100u : 0u);
-}
-
 static uint8_t dec_imm8(const hb_decoded_t* dec) {
     if (dec->has_imm8) return dec->imm8;
     if (dec->op3.present && dec->op3.is_imm) return (uint8_t)dec->op3.imm;
@@ -218,32 +202,6 @@ static hb_ir_vec_op_t vec_op_from_ins(int opcode) {
         case HB_INS_PCMPESTRI: return HB_VEC_PCMPESTRI;
         case HB_INS_PCMPISTRM: return HB_VEC_PCMPISTRM;
         case HB_INS_PCMPISTRI: return HB_VEC_PCMPISTRI;
-        case HB_INS_VFMADD132PS:
-        case HB_INS_VFMADD132PD:
-        case HB_INS_VFMADD132SS:
-        case HB_INS_VFMADD132SD: return HB_VEC_VFMADD132;
-        case HB_INS_VFMADD213PS:
-        case HB_INS_VFMADD213PD:
-        case HB_INS_VFMADD213SS:
-        case HB_INS_VFMADD213SD: return HB_VEC_VFMADD213;
-        case HB_INS_VFMADD231PS:
-        case HB_INS_VFMADD231PD:
-        case HB_INS_VFMADD231SS:
-        case HB_INS_VFMADD231SD: return HB_VEC_VFMADD231;
-        case HB_INS_VFMSUB132PS:
-        case HB_INS_VFMSUB132PD:
-        case HB_INS_VFMSUB132SS:
-        case HB_INS_VFMSUB132SD: return HB_VEC_VFMSUB132;
-        case HB_INS_VFMSUB213PS:
-        case HB_INS_VFMSUB213PD:
-        case HB_INS_VFMSUB213SS:
-        case HB_INS_VFMSUB213SD: return HB_VEC_VFMSUB213;
-        case HB_INS_VFMSUB231PS:
-        case HB_INS_VFMSUB231PD:
-        case HB_INS_VFMSUB231SS:
-        case HB_INS_VFMSUB231SD: return HB_VEC_VFMSUB231;
-        case HB_INS_VCVTPH2PS: return HB_VEC_VCVTPH2PS;
-        case HB_INS_VCVTPS2PH: return HB_VEC_VCVTPS2PH;
         default: return 0;
     }
 }
@@ -748,33 +706,7 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_PCMPESTRM:
         case HB_INS_PCMPESTRI:
         case HB_INS_PCMPISTRM:
-        case HB_INS_PCMPISTRI:
-        case HB_INS_VFMADD132PS:
-        case HB_INS_VFMADD132PD:
-        case HB_INS_VFMADD132SS:
-        case HB_INS_VFMADD132SD:
-        case HB_INS_VFMADD213PS:
-        case HB_INS_VFMADD213PD:
-        case HB_INS_VFMADD213SS:
-        case HB_INS_VFMADD213SD:
-        case HB_INS_VFMADD231PS:
-        case HB_INS_VFMADD231PD:
-        case HB_INS_VFMADD231SS:
-        case HB_INS_VFMADD231SD:
-        case HB_INS_VFMSUB132PS:
-        case HB_INS_VFMSUB132PD:
-        case HB_INS_VFMSUB132SS:
-        case HB_INS_VFMSUB132SD:
-        case HB_INS_VFMSUB213PS:
-        case HB_INS_VFMSUB213PD:
-        case HB_INS_VFMSUB213SS:
-        case HB_INS_VFMSUB213SD:
-        case HB_INS_VFMSUB231PS:
-        case HB_INS_VFMSUB231PD:
-        case HB_INS_VFMSUB231SS:
-        case HB_INS_VFMSUB231SD:
-        case HB_INS_VCVTPH2PS:
-        case HB_INS_VCVTPS2PH: {
+        case HB_INS_PCMPISTRI: {
             hb_ir_vec_op_t op = vec_op_from_ins(dec->opcode);
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_VEC_PACKED);
@@ -813,18 +745,11 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                             dec->opcode == HB_INS_VMASKMOVPS || dec->opcode == HB_INS_VMASKMOVPD ||
                             dec->opcode == HB_INS_VPMASKMOVD || dec->opcode == HB_INS_VPMASKMOVQ ||
                             dec->opcode == HB_INS_VAESENC || dec->opcode == HB_INS_VAESENCLAST ||
-                           dec->opcode == HB_INS_VAESDEC || dec->opcode == HB_INS_VAESDECLAST ||
-                           dec->opcode == HB_INS_VGF2P8MULB ||
+                            dec->opcode == HB_INS_VAESDEC || dec->opcode == HB_INS_VAESDECLAST ||
+                            dec->opcode == HB_INS_VGF2P8MULB ||
                             (dec->opcode >= HB_INS_VGATHERDPS && dec->opcode <= HB_INS_VPGATHERQQ)) {
                     i->src1 = operand_from_dec(dec, 2);
                     i->src2 = operand_from_dec(dec, 3);
-                } else if (dec->opcode >= HB_INS_VFMADD132PS &&
-                           dec->opcode <= HB_INS_VFMSUB231SD) {
-                    i->src1 = operand_from_dec(dec, 2);
-                    i->src2 = operand_from_dec(dec, 3);
-                    imm = fma_target_from_ins(dec->opcode);
-                } else if (dec->opcode == HB_INS_VCVTPH2PS || dec->opcode == HB_INS_VCVTPS2PH) {
-                    i->src1 = operand_from_dec(dec, 2);
                 } else if (dec->opcode == HB_INS_PCMPESTRM || dec->opcode == HB_INS_PCMPESTRI ||
                            dec->opcode == HB_INS_PCMPISTRM || dec->opcode == HB_INS_PCMPISTRI) {
                     i->dst = (dec->opcode == HB_INS_PCMPESTRI || dec->opcode == HB_INS_PCMPISTRI)

@@ -7,6 +7,19 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
+## 🐞 LANE A — JIT CORRECTNESS BUG found by Lane B fuzzer (operator 2026-06-01, do alongside gate)
+Lane B's new differential fuzzer (`engine/hyperbridge/tests/hb_fuzz_diff.py`, merged) ran 1M cases:
+interpreter semantics are CLEAN (exact-oracle mismatches=0), but there are **43,478 interpreter-vs-
+JIT mismatches, ALL in the `shift_rotate_flags` family**, minimized to `SETNE r8b` (`41 0f 95 c0`).
+That means the **JIT codegen (`hb_arm64_codegen.c`, Lane A's file) computes wrong FLAGS** for
+shift/rotate and/or SETcc — a silent correctness bug that would corrupt games unpredictably. This
+is higher-severity than missing speed: fix it. Repro: `cd engine/hyperbridge && python3
+tests/hb_fuzz_diff.py --cases 200000 --batch 4096` and look at `shift_rotate_flags` backend
+mismatches; or run the single case `41 0f 95 c0` through interp vs JIT and diff EFLAGS. Fix the
+flag materialization in the JIT shift/rotate/SETcc path so JIT == interpreter, then re-run the
+fuzzer to confirm `backend mismatches=0`. (Lane B owns the fuzzer + interpreter; the JIT FIX is
+yours.)
+
 ## LANE SYNC POINT (2026-06-01, operator) — both lanes reconciled into HEAD `6a2b855`
 Both lanes were stopped, all Lane B ISA work (batches 06-01..06-05) merged into main, kit refreshed
 to this base. Build rc=0, runner 395/0, fast-family PASS. Now both resume from this clean base:
@@ -42,6 +55,63 @@ NEXT action: diagnose the Unity main-thread gate at RVA `0xcba8b2`. Find the han
 or init condition it polls, correlate with the worker waits at `0x577c92/0x577f44`, and fix the
 missing semantic/thread state at the root. THAT is what makes the window appear — not more loop
 optimization.
+
+**17:40 checkpoint (Codex):** re-anchored the wait graph and confirmed the earlier focused trace:
+`0xcba8b2` is `WaitForSingleObject(GetCurrentProcess(), 0)` and correctly returns
+`WAIT_TIMEOUT`; `0x577f44` startup semaphores signal; `0x577c92` workers are parked on idle work
+semaphores. Static IAT mapping shows the nearby Unity wake sites (`0xcba981`/siblings) are
+`api-ms-win-core-synch-l1-2-0.dll!WakeByAddressSingle`, so the address-wait family is a real
+sync-semantic gap candidate. Unix ntdll now has a local `WaitOnAddress`/`WakeByAddress*` semantic
+mirroring Wine's `RtlWaitOnAddress` keyed waiter queues instead of delegating back through the
+forwarded PE/API-set target; targeted `ntdll.so` rebuild/install succeeded. Validation runs
+`run-20260601-sync-address-local-wait180` and `run-20260601-sync-address-prewait120` still have
+real `D3D11CreateDevice=0`, but currently time out earlier than the prior Unity wait traces:
+XTAJIT ProcessInit/ThreadInit completes, then no `BeginSimulation`, no wait-semantic line, and no
+heartbeat. NEXT: diagnose this pre-entry loader/startup park first (with XTAJIT/IAT traces and
+thread wait sampling), then rerun the full Hollow Knight DXMT gate check for real `D3D11CreateDevice`.
+Do not resume loop warming for this gate.
+
+**15:30 checkpoint (Codex):** focused wait/thread trace shows `0xcba8b2` returns the expected
+`WAIT_TIMEOUT` for `WaitForSingleObject(GetCurrentProcess(), 0)` and `0x577c92` is the idle work
+semaphore wait for seven `AssetGarbageCollectorHelper` workers; `0x577f44` startup handshakes are
+signaled. A root sync gap was found and patched in HyperBridge: `CRITICAL_SECTION` imports no
+longer fake owner/recursion state and now use interlocked acquisition plus real NT semaphore wakeups
+in the Unix ntdll semantic path. Targeted `ntdll.so` rebuild/install succeeded. NEXT: run a clean
+full Hollow Knight DXMT gate check (no sampling wrapper) and, if `D3D11CreateDevice` is still zero,
+continue from producer/main-thread state rather than loop warming.
+
+**16:25 checkpoint (Codex):** the wait gate diagnosis is resolved, and a second root bug was fixed.
+The `0xcba8b2` process-handle poll is not the missing signal, `0x577f44` startup semaphores signal,
+and `0x577c92` is the worker idle-work semaphore wait. Post-critical-section runs exposed the real
+pre-D3D killer: ARM64 PE calls executed on the HyperBridge stack while TEB stack bounds were merged
+across Wine's native stack and the bridge stack, creating a fake contiguous range with an unmapped
+gap. Unity/Mono stack probing then faulted just below the bridge stack low
+(`run-20260601-154911-hk-dxmt-bridge-stack-faultfix360`, `fault=bridge_low-0x280`). Fix:
+`macrunner_hb_call_arm64_pe_import12` now publishes only the active bridge stack in
+`Tib.StackLimit`/`Tib.StackBase` and `DeallocationStack` during native PE calls, and
+`macrunner_hb_run_x64` publishes/restores bridge `DeallocationStack`; ARM64 signal handling also
+routes bridge-stack faults to `virtual_handle_fault` with a bridge-stack pointer. Targeted
+`ntdll.so` rebuild/install: `build-20260601-160858-ntdll-bridge-stack-teb-range.log` rc=0.
+Validation: `run-20260601-160925-hk-dxmt-bridge-teb-range360` timed out cleanly with
+`bus_low_stack=0`, `virtual_nested=0`, `runtime_fail=0`, `MEMORY_FAULT=0`, JIT fallback/codegen
+failures `0`, and `scripts/mr-clean.sh --prune` clean. Real `D3D11CreateDevice=0`, `GfxDevice=0`,
+`CreateSwapChain=0`; no main open wait remains in this trace. NEXT: graphics still has no device
+marker; continue gate diagnosis from the clean pre-D3D state after the final native import burst
+(`VirtualQuery`/`VirtualAlloc`/`DuplicateHandle`) and Mono page-table loop at Mono RVA `0x4e7e98`.
+Do not resume generic loop warming unless the operator reclassifies this as throughput again.
+
+**16:33 checkpoint (Codex):** focused memory-import trace
+`run-20260601-162254-hk-dxmt-memory-import360` preserved the clean stack/fault state
+(`bus_low_stack=0`, `virtual_nested=0`, `runtime_fail=0`, `MEMORY_FAULT=0`, JIT fallback `0`) and
+still had `D3D11CreateDevice=0`. The final memory calls feeding the Mono loop are normal-sized
+alloc/query calls, not an obvious bad-range gate: repeated `VirtualAlloc(..., size=0x40000,
+MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)` chunks at `0x11fb80000`/`0x11fbc0000`/`0x11fc00000` and
+`0x13b300000..0x13b380000`, plus `VirtualQuery(stack=0x11624d000, size=0x30) -> 0x30`. Last
+heartbeat remains Mono RVA `0x4e7e98` in the page-table fill loop with no open main wait. NEXT:
+the original wait/fault gate is fixed; current evidence again looks like pre-D3D CPU progress in
+Mono memory bookkeeping, but generic loop warming is still held by the latest operator instruction.
+If allowed to reclassify, resume targeted JIT/throughput on the finite hot Mono/Unity loops; if not,
+add narrower semantic probes around Mono memory bookkeeping ownership and graphics-init transition.
 
 ---
 

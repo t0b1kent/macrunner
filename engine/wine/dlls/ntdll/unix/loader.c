@@ -739,7 +739,8 @@ static void replace_wineloader_path_with_link(char **wineloader_path, const char
 static void preloader_exec( char **argv, const char *image_path )
 {
 #ifdef HAVE_WINE_PRELOADER
-    asprintf( &argv[0], "%s-preloader", argv[1] );
+    if (asprintf( &argv[0], "%s-preloader", argv[1] ) < 0)
+        fatal_error( "out of memory executing wine preloader\n" );
 #ifdef __APPLE__
     {
         posix_spawnattr_t attr;
@@ -780,7 +781,7 @@ static NTSTATUS loader_exec( char **argv, WORD machine, const char *image_path )
 
     if (((argv[1] = get_alternate_wineloader( machine )))) preloader_exec( argv, image_path );
 
-    argv[1] = strdup( wineloader );
+    if (!(argv[1] = strdup( wineloader ))) return STATUS_NO_MEMORY;
     preloader_exec( argv, image_path );
     return STATUS_INVALID_IMAGE_FORMAT;
 }
@@ -834,8 +835,20 @@ static int exec_wineserver( pid_t *pid, char **argv )
 
     if ((path = getenv( "PATH" )))
     {
-        for (path = strtok( strdup( path ), ":" ); path; path = strtok( NULL, ":" ))
-            if (!build_path_and_exec( pid, path, "wineserver", argv )) return 0;
+        char *path_copy;
+
+        if ((path_copy = strdup( path )))
+        {
+            for (path = strtok( path_copy, ":" ); path; path = strtok( NULL, ":" ))
+            {
+                if (!build_path_and_exec( pid, path, "wineserver", argv ))
+                {
+                    free( path_copy );
+                    return 0;
+                }
+            }
+            free( path_copy );
+        }
     }
     return build_path_and_exec( pid, BINDIR, "wineserver", argv );
 }

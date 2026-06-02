@@ -5,6 +5,7 @@
 #include "hb_context.h"
 #include "hb_ir.h"
 #include "hb_codegen.h"
+#include "hb_cache.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -57,6 +58,7 @@ typedef struct {
     uint64_t hot_trace_blocks;
     uint64_t hot_trace_next;
     uint64_t code_cache_full_reports;
+    hb_cache_t* persistent_cache;
     bool code_cache_full;
 } hb_jit_runtime_t;
 

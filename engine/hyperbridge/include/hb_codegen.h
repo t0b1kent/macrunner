@@ -49,6 +49,9 @@ hb_result_t hb_arm64_codegen_i32_less_tiebreaker_helper(hb_arm64_codegen_t* cg,
                                                         const hb_ir_block_t* equal,
                                                         const hb_ir_block_t* less,
                                                         hb_codegen_buffer_t* out);
+hb_result_t hb_arm64_codegen_unity_sort_inner_loop_helper(hb_arm64_codegen_t* cg,
+                                                          const hb_ir_block_t* sort,
+                                                          hb_codegen_buffer_t* out);
 hb_result_t hb_arm64_codegen_instr(hb_arm64_codegen_t* cg, const hb_ir_instr_t* instr, hb_codegen_buffer_t* out);
 
 /* JIT buffer management */

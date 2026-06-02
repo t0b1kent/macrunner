@@ -300,6 +300,13 @@ static bool jit_direct_mem_enabled(void) {
     return val && val[0] && val[0] != '0';
 }
 
+static bool jit_direct_scalar_scan_enabled(void) {
+    const char* val = getenv("MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN");
+    if (jit_direct_mem_enabled()) return true;
+    if (!val || !val[0]) return true;
+    return val[0] != '0';
+}
+
 static bool jit_direct_stack_enabled(void) {
     const char* val = getenv("MACRUNNER_HB_JIT_DIRECT_STACK");
     return val && val[0] && val[0] != '0';
@@ -1332,7 +1339,7 @@ static bool emit_hot_scalar_scan_loop(hb_codegen_buffer_t* buf, const hb_ir_bloc
     size_t loop_off;
     int32_t loop_delta;
 
-    if (!jit_direct_mem_enabled() || !block || block->instr_count != 3) return false;
+    if (!jit_direct_scalar_scan_enabled() || !block || block->instr_count != 3) return false;
 
     add = &block->instrs[0];
     cmp = &block->instrs[1];
@@ -1348,6 +1355,13 @@ static bool emit_hot_scalar_scan_loop(hb_codegen_buffer_t* buf, const hb_ir_bloc
     if (!mem_operand_uses_reg(&cmp->src1, add->dst.reg)) return false;
     if (cmp->src2.type == HB_OP_REG && !is_gpr_reg_operand(&cmp->src2)) return false;
     if (cmp->src2.type != HB_OP_REG && cmp->src2.type != HB_OP_IMM) return false;
+
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=direct-scalar-scan block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
 
     scan_reg = add->dst.reg;
     emit_ldr_x(buf, 20, 19, (uint32_t)x64_reg_off(scan_reg)); /* X20 = scan register */
@@ -2654,10 +2668,14 @@ extern void     hb_jit_helper_exec_i32_less_tiebreaker(hb_context_t* ctx,
                                                        const hb_ir_block_t* entry,
                                                        const hb_ir_block_t* equal,
                                                        const hb_ir_block_t* less);
+extern void     hb_jit_helper_exec_unity_sort_inner_loop(hb_context_t* ctx,
+                                                         const hb_ir_block_t* sort);
 extern void     hb_jit_helper_exec_unity_string_bsearch_loop(hb_context_t* ctx,
-                                                              const hb_ir_block_t* block);
+                                                             const hb_ir_block_t* block);
+extern void     hb_jit_helper_exec_unity_freelist_fill_loop(hb_context_t* ctx,
+                                                            const hb_ir_block_t* block);
 extern void     hb_jit_helper_exec_unity_u32_ptr_compare(hb_context_t* ctx,
-                                                          const hb_ir_block_t* block);
+                                                         const hb_ir_block_t* block);
 extern void     hb_jit_helper_exec_mono_metadata_bsearch_loop(hb_context_t* ctx,
                                                                const hb_ir_block_t* block);
 extern void     hb_jit_helper_exec_mono_string_hash(hb_context_t* ctx,
@@ -2739,6 +2757,16 @@ static bool emit_i32_less_tiebreaker_helper(hb_codegen_buffer_t* buf,
     emit_mov_imm64(buf, 2, (uint64_t)(uintptr_t)equal);
     emit_mov_imm64(buf, 3, (uint64_t)(uintptr_t)less);
     emit_call_helper(buf, (void*)hb_jit_helper_exec_i32_less_tiebreaker);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_unity_sort_inner_loop_helper(hb_codegen_buffer_t* buf,
+                                              const hb_ir_block_t* sort) {
+    if (!sort) return false;
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)sort);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_unity_sort_inner_loop);
     emit_return_if_helper_failed(buf);
     return true;
 }
@@ -2834,6 +2862,32 @@ static bool unity_u32_ptr_compare_candidate(const hb_ir_block_t* block) {
            i[2].target == block->guest_addr + 0x0d;
 }
 
+static bool unity_sort_inner_loop_candidate(const hb_ir_block_t* sort) {
+    if (!sort || sort->instr_count != 7) return false;
+    const hb_ir_instr_t* s = sort->instrs;
+
+    return s[0].op == HB_IR_LOAD &&
+           s[1].op == HB_IR_MOV &&
+           s[2].op == HB_IR_STORE &&
+           s[3].op == HB_IR_MOV &&
+           s[4].op == HB_IR_LOAD &&
+           s[5].op == HB_IR_SUB &&
+           s[6].op == HB_IR_CALL &&
+           jit_exact_reg(&s[6].src1, HB_REG_RBP, HB_SIZE_64);
+}
+
+static bool emit_unity_sort_inner_loop(hb_codegen_buffer_t* buf,
+                                       const hb_ir_block_t* sort) {
+    if (!unity_sort_inner_loop_candidate(sort)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=unity-sort-inner-codegen sort=%p\n",
+                (void*)(uintptr_t)sort->guest_addr);
+        fflush(stderr);
+    }
+    return emit_unity_sort_inner_loop_helper(buf, sort);
+}
+
 static bool mono_string_hash_candidate(const hb_ir_block_t* block) {
     if (!block || block->instr_count != 3) return false;
     const hb_ir_instr_t* i = block->instrs;
@@ -2858,6 +2912,46 @@ static bool mono_string_equal_candidate(const hb_ir_block_t* block) {
            jit_exact_reg(&i[0].src2, HB_REG_RDX, HB_SIZE_64) &&
            i[1].op == HB_IR_Jcc && i[1].cc == HB_CC_E &&
            i[1].target == block->guest_addr + 0x2c;
+}
+
+static const hb_ir_instr_t* unity_freelist_fill_loop_instrs(const hb_ir_block_t* block,
+                                                            size_t* prefix_count) {
+    const hb_ir_instr_t* i;
+    if (prefix_count) *prefix_count = 0;
+    if (!block || !block->instr_count) return NULL;
+    i = block->instrs;
+    if (block->instr_count == 7 &&
+        i[0].op == HB_IR_SIGN_EXTEND &&
+        jit_exact_reg(&i[0].dst, HB_REG_R8, HB_SIZE_64) &&
+        jit_exact_reg(&i[0].src1, HB_REG_R8, HB_SIZE_32) &&
+        i[1].op == HB_IR_NOP) {
+        if (prefix_count) *prefix_count = 2;
+        return i + 2;
+    }
+    if (block->instr_count == 5) return i;
+    return NULL;
+}
+
+static bool unity_freelist_fill_loop_candidate(const hb_ir_block_t* block) {
+    size_t prefix_count = 0;
+    const hb_ir_instr_t* i = unity_freelist_fill_loop_instrs(block, &prefix_count);
+    if (!i) return false;
+
+    return i[0].op == HB_IR_MOV &&
+           jit_exact_reg(&i[0].dst, HB_REG_RAX, HB_SIZE_64) &&
+           jit_exact_reg(&i[0].src1, HB_REG_RCX, HB_SIZE_64) &&
+           i[1].op == HB_IR_STORE &&
+           jit_exact_mem(&i[1].src1, HB_REG_RCX, HB_REG_COUNT, 1, 0, HB_SIZE_64) &&
+           jit_exact_reg(&i[1].src2, HB_REG_R14, HB_SIZE_64) &&
+           i[2].op == HB_IR_XCHG &&
+           jit_exact_mem(&i[2].src1, HB_REG_RSI, HB_REG_COUNT, 1, 0x80, HB_SIZE_64) &&
+           jit_exact_reg(&i[2].src2, HB_REG_RAX, HB_SIZE_64) &&
+           i[3].op == HB_IR_TEST &&
+           jit_exact_reg(&i[3].src1, HB_REG_RAX, HB_SIZE_64) &&
+           jit_exact_reg(&i[3].src2, HB_REG_RAX, HB_SIZE_64) &&
+           i[4].op == HB_IR_Jcc && i[4].cc == HB_CC_E &&
+           i[4].target == i[0].guest_addr + 0x17 &&
+           (!prefix_count || i[0].guest_addr == block->guest_addr + 0x0c);
 }
 
 static const hb_ir_instr_t* mono_metadata_bsearch_loop_instrs(const hb_ir_block_t* block,
@@ -3149,6 +3243,22 @@ static bool emit_unity_string_bsearch_loop(hb_codegen_buffer_t* buf,
     emit_mov_reg(buf, 0, 19);
     emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
     emit_call_helper(buf, (void*)hb_jit_helper_exec_unity_string_bsearch_loop);
+    emit_return_if_helper_failed(buf);
+    return true;
+}
+
+static bool emit_unity_freelist_fill_loop(hb_codegen_buffer_t* buf,
+                                          const hb_ir_block_t* block) {
+    if (!unity_freelist_fill_loop_candidate(block)) return false;
+    const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+    if (trace && *trace && *trace != '0') {
+        fprintf(stderr, "macrunner-hb-jit-fusion: kind=unity-freelist-fill-loop block=%p\n",
+                (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_unity_freelist_fill_loop);
     emit_return_if_helper_failed(buf);
     return true;
 }
@@ -4760,6 +4870,11 @@ void hb_jit_helper_exec_cmp_setcc_ret_block(hb_context_t* ctx, const hb_ir_block
     ctx->last_result = r;
 }
 
+static hb_result_t hb_jit_helper_read_u8_fast(hb_context_t* ctx, uint64_t addr, uint8_t* out);
+static hb_result_t hb_jit_helper_read_u16_fast(hb_context_t* ctx, uint64_t addr, uint16_t* out);
+static hb_result_t hb_jit_helper_read_u32_fast(hb_context_t* ctx, uint64_t addr, uint32_t* out);
+static hb_result_t hb_jit_helper_read_u64_fast(hb_context_t* ctx, uint64_t addr, uint64_t* out);
+
 void hb_jit_helper_exec_i32_less_tiebreaker(hb_context_t* ctx,
                                             const hb_ir_block_t* entry,
                                             const hb_ir_block_t* equal,
@@ -4830,6 +4945,147 @@ void hb_jit_helper_exec_i32_less_tiebreaker(hb_context_t* ctx,
     }
     if (r == HB_OK) r = hb_jit_helper_exec_ret_exact(ctx, equal_ret);
     ctx->last_result = r;
+}
+
+static bool hb_jit_helper_unity_sort_cmp_bytes_ready(hb_context_t* ctx, uint64_t cmp_pc) {
+    static const uint8_t unity_cmp_bytes[] = {
+        0x8b, 0x02, 0x39, 0x01, 0x75, 0x07, 0x48, 0x3b, 0xca,
+        0x0f, 0x92, 0xc0, 0xc3, 0x0f, 0x9c, 0xc0, 0xc3
+    };
+    uint8_t bytes[sizeof(unity_cmp_bytes)];
+    if (!ctx || !ctx->memory || !cmp_pc) return false;
+    if (hb_memory_read(ctx->memory, cmp_pc, bytes, sizeof(bytes)) != HB_OK)
+        return false;
+    return memcmp(bytes, unity_cmp_bytes, sizeof(bytes)) == 0;
+}
+
+static bool hb_jit_helper_unity_sort_bytes_ready(hb_context_t* ctx,
+                                                 const hb_ir_block_t* sort) {
+    static const uint8_t unity_sort_bytes[] = {
+        0x48, 0x8b, 0x07,             /* mov rax, [rdi] */
+        0x49, 0x8b, 0xcf,             /* mov rcx, r15 */
+        0x49, 0x89, 0x06,             /* mov [r14], rax */
+        0x4c, 0x8b, 0xf7,             /* mov r14, rdi */
+        0x48, 0x8b, 0x57, 0xf8,       /* mov rdx, [rdi-8] */
+        0x48, 0x83, 0xef, 0x08,       /* sub rdi, 8 */
+        0xff, 0xd5                    /* call rbp */
+    };
+    uint8_t bytes[sizeof(unity_sort_bytes)];
+    if (!ctx || !ctx->memory || !sort) return false;
+    if (hb_memory_read(ctx->memory, sort->guest_addr, bytes, sizeof(bytes)) != HB_OK)
+        return false;
+    return memcmp(bytes, unity_sort_bytes, sizeof(bytes)) == 0;
+}
+
+static bool hb_jit_helper_unity_sort_guard_ready(hb_context_t* ctx,
+                                                 const hb_ir_block_t* sort,
+                                                 uint64_t* fallthrough_pc) {
+    uint64_t guard_pc;
+    uint8_t bytes[4];
+    int8_t rel;
+    uint64_t target;
+    if (!ctx || !ctx->memory || !sort || sort->instr_count != 7)
+        return false;
+    guard_pc = sort->instrs[6].guest_addr + sort->instrs[6].guest_len;
+    if (hb_memory_read(ctx->memory, guard_pc, bytes, sizeof(bytes)) != HB_OK)
+        return false;
+    if (bytes[0] != 0x84 || bytes[1] != 0xc0 || bytes[2] != 0x75)
+        return false;
+    rel = (int8_t)bytes[3];
+    target = guard_pc + sizeof(bytes) + rel;
+    if (target != sort->guest_addr)
+        return false;
+    if (fallthrough_pc) *fallthrough_pc = guard_pc + sizeof(bytes);
+    return true;
+}
+
+void hb_jit_helper_exec_unity_sort_inner_loop(hb_context_t* ctx,
+                                              const hb_ir_block_t* sort) {
+    uint64_t budget = hb_jit_helper_two_block_loop_budget();
+    uint64_t rax, rcx, rdx, rdi, r14, r15, rbp;
+    uint64_t fallthrough_pc = 0;
+    hb_result_t r = HB_OK;
+
+    if (!ctx || !sort || sort->instr_count != 7) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    if (ctx->mode != HB_MODE_64BIT || ctx->pc != sort->guest_addr ||
+        !hb_jit_helper_unity_sort_bytes_ready(ctx, sort) ||
+        !hb_jit_helper_unity_sort_cmp_bytes_ready(ctx, ctx->regs.x64.rbp) ||
+        !hb_jit_helper_unity_sort_guard_ready(ctx, sort, &fallthrough_pc)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, sort);
+        return;
+    }
+
+    rax = ctx->regs.x64.rax;
+    rcx = ctx->regs.x64.rcx;
+    rdx = ctx->regs.x64.rdx;
+    rdi = ctx->regs.x64.rdi;
+    r14 = ctx->regs.x64.r14;
+    r15 = ctx->regs.x64.r15;
+    rbp = ctx->regs.x64.rbp;
+
+    for (uint64_t iter = 0; iter < budget; iter++) {
+        uint32_t lhs = 0;
+        uint32_t rhs = 0;
+        uint8_t al;
+
+        r = hb_jit_helper_read_u64_fast(ctx, rdi, &rax);
+        if (r != HB_OK) break;
+        rcx = r15;
+        r = hb_memory_write_u64(ctx->memory, r14, rax);
+        if (r != HB_OK) break;
+        r14 = rdi;
+        r = hb_jit_helper_read_u64_fast(ctx, rdi - 8u, &rdx);
+        if (r != HB_OK) break;
+        rdi -= 8u;
+
+        r = hb_jit_helper_read_u32_fast(ctx, rdx, &rhs);
+        if (r != HB_OK) break;
+        r = hb_jit_helper_read_u32_fast(ctx, rcx, &lhs);
+        if (r != HB_OK) break;
+        rax = rhs;
+        if (lhs != rhs) {
+            al = ((int32_t)lhs < (int32_t)rhs) ? 1u : 0u;
+            hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_32,
+                               lhs, rhs, (uint32_t)(lhs - rhs), 0);
+        } else {
+            al = (rcx < rdx) ? 1u : 0u;
+            hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_64,
+                               rcx, rdx, rcx - rdx, 0);
+        }
+        rax = (rax & ~0xffull) | al;
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_TEST, HB_SIZE_8, al, al, al, 0);
+        if (al) continue;
+
+        ctx->pc = fallthrough_pc;
+        ctx->regs.x64.rip = ctx->pc;
+        ctx->regs.x64.rax = rax;
+        ctx->regs.x64.rcx = rcx;
+        ctx->regs.x64.rdx = rdx;
+        ctx->regs.x64.rdi = rdi;
+        ctx->regs.x64.r14 = r14;
+        ctx->regs.x64.r15 = r15;
+        ctx->regs.x64.rbp = rbp;
+        ctx->last_result = HB_OK;
+        return;
+    }
+
+    ctx->regs.x64.rax = rax;
+    ctx->regs.x64.rcx = rcx;
+    ctx->regs.x64.rdx = rdx;
+    ctx->regs.x64.rdi = rdi;
+    ctx->regs.x64.r14 = r14;
+    ctx->regs.x64.r15 = r15;
+    ctx->regs.x64.rbp = rbp;
+    if (r != HB_OK) {
+        ctx->last_result = r;
+        return;
+    }
+    ctx->pc = sort->guest_addr;
+    ctx->regs.x64.rip = ctx->pc;
+    ctx->last_result = HB_OK;
 }
 
 void hb_jit_helper_exec_unity_string_bsearch_loop(hb_context_t* ctx,
@@ -4916,8 +5172,81 @@ void hb_jit_helper_exec_unity_string_bsearch_loop(hb_context_t* ctx,
 	    ctx->last_result = r;
 }
 
+void hb_jit_helper_exec_unity_freelist_fill_loop(hb_context_t* ctx,
+                                                 const hb_ir_block_t* block) {
+    size_t prefix_count = 0;
+    const hb_ir_instr_t* body = NULL;
+    uint64_t loop_pc, exit_pc;
+    uint64_t rcx, rdx, rsi, r8, r14, old_head;
+    uint64_t budget = hb_jit_helper_two_block_loop_budget();
+    hb_result_t r;
+
+    if (!ctx || !block) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    body = unity_freelist_fill_loop_instrs(block, &prefix_count);
+    if (ctx->mode != HB_MODE_64BIT || !body || !unity_freelist_fill_loop_candidate(block)) {
+        ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
+        return;
+    }
+
+    loop_pc = body[0].guest_addr;
+    exit_pc = loop_pc + 0x7bu;
+    rcx = ctx->regs.x64.rcx;
+    rdx = ctx->regs.x64.rdx;
+    rsi = ctx->regs.x64.rsi;
+    r8 = ctx->regs.x64.r8;
+    r14 = ctx->regs.x64.r14;
+    if (prefix_count) {
+        r8 = (uint64_t)(int64_t)(int32_t)r8;
+        ctx->regs.x64.r8 = r8;
+    }
+
+    for (uint64_t iter = 0; iter < budget; iter++) {
+        ctx->regs.x64.rax = rcx;
+        r = hb_memory_write_u64(ctx->memory, rcx, r14);
+        if (r != HB_OK) { ctx->last_result = r; return; }
+
+        r = hb_memory_read_u64(ctx->memory, rsi + 0x80u, &old_head);
+        if (r != HB_OK) { ctx->last_result = r; return; }
+        r = hb_memory_write_u64(ctx->memory, rsi + 0x80u, rcx);
+        if (r != HB_OK) { ctx->last_result = r; return; }
+        ctx->regs.x64.rax = old_head;
+
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_TEST, HB_SIZE_64,
+                           old_head, old_head, old_head, 0);
+        if (old_head) {
+            r = hb_memory_write_u64(ctx->memory, old_head, rcx);
+        } else {
+            r = hb_memory_write_u64(ctx->memory, rsi + 0x40u, rcx);
+        }
+        if (r != HB_OK) { ctx->last_result = r; return; }
+
+        rcx += r8;
+        ctx->regs.x64.rcx = rcx;
+        hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, HB_SIZE_64,
+                           rcx, rdx, rcx - rdx, 0);
+        if (rcx > rdx) {
+            ctx->pc = exit_pc;
+            hb_jit_helper_sync_pc(ctx);
+            ctx->last_result = HB_OK;
+            return;
+        }
+    }
+
+    ctx->pc = loop_pc;
+    hb_jit_helper_sync_pc(ctx);
+    ctx->last_result = HB_OK;
+}
+
+static hb_result_t hb_jit_helper_read_u8_fast(hb_context_t* ctx, uint64_t addr, uint8_t* out);
+static hb_result_t hb_jit_helper_read_u16_fast(hb_context_t* ctx, uint64_t addr, uint16_t* out);
+static hb_result_t hb_jit_helper_read_u32_fast(hb_context_t* ctx, uint64_t addr, uint32_t* out);
+static hb_result_t hb_jit_helper_read_u64_fast(hb_context_t* ctx, uint64_t addr, uint64_t* out);
+
 void hb_jit_helper_exec_unity_u32_ptr_compare(hb_context_t* ctx,
-                                              const hb_ir_block_t* block) {
+                                               const hb_ir_block_t* block) {
     uint64_t rsp, ret_addr, rcx, rdx;
     uint32_t lhs = 0;
     uint32_t rhs = 0;
@@ -4939,9 +5268,9 @@ void hb_jit_helper_exec_unity_u32_ptr_compare(hb_context_t* ctx,
     rdx = ctx->regs.x64.rdx;
     r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
     if (r != HB_OK) { ctx->last_result = r; return; }
-    r = hb_memory_read_u32(ctx->memory, rdx, &rhs);
+    r = hb_jit_helper_read_u32_fast(ctx, rdx, &rhs);
     if (r != HB_OK) { ctx->last_result = r; return; }
-    r = hb_memory_read_u32(ctx->memory, rcx, &lhs);
+    r = hb_jit_helper_read_u32_fast(ctx, rcx, &lhs);
     if (r != HB_OK) { ctx->last_result = r; return; }
 
     rax = rhs;
@@ -4962,8 +5291,68 @@ void hb_jit_helper_exec_unity_u32_ptr_compare(hb_context_t* ctx,
     ctx->last_result = HB_OK;
 }
 
+static const uint8_t* hb_jit_helper_host_read_span(hb_context_t* ctx, uint64_t addr,
+                                                   size_t min_size, size_t* available) {
+    hb_region_t* region;
+    uint64_t region_end;
+    if (available) *available = 0;
+    if (!ctx || !ctx->memory) return NULL;
+    if (min_size && addr + min_size < addr) return NULL;
+    region = hb_memory_find_region(ctx->memory, addr);
+    if (!region || !region->host_base || !(region->perm & HB_PERM_READ)) return NULL;
+    region_end = region->base + region->size;
+    if (region_end < region->base || addr < region->base || addr >= region_end) return NULL;
+    if (min_size > (size_t)(region_end - addr)) return NULL;
+    if (available) *available = (size_t)(region_end - addr);
+    return (const uint8_t*)region->host_base + (addr - region->base);
+}
+
+static hb_result_t hb_jit_helper_read_u8_fast(hb_context_t* ctx, uint64_t addr, uint8_t* out) {
+    size_t available = 0;
+    const uint8_t* span = hb_jit_helper_host_read_span(ctx, addr, sizeof(*out), &available);
+    (void)available;
+    if (span) {
+        *out = span[0];
+        return HB_OK;
+    }
+    return hb_memory_read_u8(ctx->memory, addr, out);
+}
+
+static hb_result_t hb_jit_helper_read_u16_fast(hb_context_t* ctx, uint64_t addr, uint16_t* out) {
+    size_t available = 0;
+    const uint8_t* span = hb_jit_helper_host_read_span(ctx, addr, sizeof(*out), &available);
+    (void)available;
+    if (span) {
+        memcpy(out, span, sizeof(*out));
+        return HB_OK;
+    }
+    return hb_memory_read_u16(ctx->memory, addr, out);
+}
+
+static hb_result_t hb_jit_helper_read_u32_fast(hb_context_t* ctx, uint64_t addr, uint32_t* out) {
+    size_t available = 0;
+    const uint8_t* span = hb_jit_helper_host_read_span(ctx, addr, sizeof(*out), &available);
+    (void)available;
+    if (span) {
+        memcpy(out, span, sizeof(*out));
+        return HB_OK;
+    }
+    return hb_memory_read_u32(ctx->memory, addr, out);
+}
+
+static hb_result_t hb_jit_helper_read_u64_fast(hb_context_t* ctx, uint64_t addr, uint64_t* out) {
+    size_t available = 0;
+    const uint8_t* span = hb_jit_helper_host_read_span(ctx, addr, sizeof(*out), &available);
+    (void)available;
+    if (span) {
+        memcpy(out, span, sizeof(*out));
+        return HB_OK;
+    }
+    return hb_jit_read_guest_u64_result(ctx, addr, out);
+}
+
 void hb_jit_helper_exec_mono_string_hash(hb_context_t* ctx,
-                                         const hb_ir_block_t* block) {
+                                          const hb_ir_block_t* block) {
     uint64_t rsp, ret_addr, rcx;
     uint32_t eax = 0;
     uint8_t ch = 0;
@@ -4983,19 +5372,31 @@ void hb_jit_helper_exec_mono_string_hash(hb_context_t* ctx,
     rcx = ctx->regs.x64.rcx;
     r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
     if (r != HB_OK) { ctx->last_result = r; return; }
-    r = hb_memory_read_u8(ctx->memory, rcx, &ch);
-    if (r != HB_OK) { ctx->last_result = r; return; }
+    size_t span_available = 0;
+    const uint8_t* span = hb_jit_helper_host_read_span(ctx, rcx, 1, &span_available);
+    if (span) {
+        ch = span[0];
+    } else {
+        r = hb_jit_helper_read_u8_fast(ctx, rcx, &ch);
+        if (r != HB_OK) { ctx->last_result = r; return; }
+    }
 
     if (ch != 0) {
         loop_entered = true;
+        uint64_t base = rcx;
         for (uint64_t iter = 0;; iter++) {
+            uint64_t pos = iter + 1u;
             if (iter >= (1u << 20)) {
                 ctx->last_result = HB_ERR_EXEC_FAULT;
                 return;
             }
-            r = hb_memory_read_u8(ctx->memory, rcx + 1u, &ch);
-            if (r != HB_OK) { ctx->last_result = r; return; }
-            rcx++;
+            if (span && pos < span_available) {
+                ch = span[pos];
+            } else {
+                r = hb_jit_helper_read_u8_fast(ctx, base + pos, &ch);
+                if (r != HB_OK) { ctx->last_result = r; return; }
+            }
+            rcx = base + pos;
             eax = (uint32_t)(eax * 31u - (uint32_t)(int32_t)(int8_t)ch);
             if (ch == 0) break;
         }
@@ -5049,6 +5450,10 @@ void hb_jit_helper_exec_mono_string_equal(hb_context_t* ctx,
 
     offset = rdx - rcx;
     rdx = offset;
+    size_t lhs_available = 0;
+    size_t rhs_available = 0;
+    const uint8_t* lhs_span = hb_jit_helper_host_read_span(ctx, rcx, 1, &lhs_available);
+    const uint8_t* rhs_span = hb_jit_helper_host_read_span(ctx, rcx + offset, 1, &rhs_available);
     for (uint64_t iter = 0;; iter++) {
         uint8_t lhs = 0;
         uint8_t rhs = 0;
@@ -5056,10 +5461,18 @@ void hb_jit_helper_exec_mono_string_equal(hb_context_t* ctx,
             ctx->last_result = HB_ERR_EXEC_FAULT;
             return;
         }
-        r = hb_memory_read_u8(ctx->memory, rcx, &lhs);
-        if (r != HB_OK) { ctx->last_result = r; return; }
-        r = hb_memory_read_u8(ctx->memory, rcx + offset, &rhs);
-        if (r != HB_OK) { ctx->last_result = r; return; }
+        if (lhs_span && iter < lhs_available) {
+            lhs = lhs_span[iter];
+        } else {
+            r = hb_jit_helper_read_u8_fast(ctx, rcx, &lhs);
+            if (r != HB_OK) { ctx->last_result = r; return; }
+        }
+        if (rhs_span && iter < rhs_available) {
+            rhs = rhs_span[iter];
+        } else {
+            r = hb_jit_helper_read_u8_fast(ctx, rcx + offset, &rhs);
+            if (r != HB_OK) { ctx->last_result = r; return; }
+        }
         eax = rhs;
         r8d = (uint32_t)lhs - (uint32_t)rhs;
         if (r8d != 0) {
@@ -5105,7 +5518,7 @@ void hb_jit_helper_exec_mono_metadata_rowptr_entry(hb_context_t* ctx,
     idx = (uint32_t)ctx->regs.x64.rdx;
     r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
     if (r != HB_OK) { ctx->last_result = r; return; }
-    r = hb_memory_read_u32(ctx->memory, table + 0x80u, &rows);
+    r = hb_jit_helper_read_u32_fast(ctx, table + 0x80u, &rows);
     if (r != HB_OK) { ctx->last_result = r; return; }
 
     if (idx >= rows) {
@@ -5113,7 +5526,7 @@ void hb_jit_helper_exec_mono_metadata_rowptr_entry(hb_context_t* ctx,
         return;
     }
 
-    r = hb_jit_read_guest_u64_result(ctx, table + 0x78u, &base);
+    r = hb_jit_helper_read_u64_fast(ctx, table + 0x78u, &base);
     if (r != HB_OK) { ctx->last_result = r; return; }
 
     ctx->regs.x64.rax = base + idx;
@@ -5173,13 +5586,13 @@ void hb_jit_helper_exec_mono_metadata_bsearch_loop(hb_context_t* ctx,
         rax = eax;
         rcx = (uint64_t)(int64_t)(int32_t)eax;
 
-        r = hb_jit_read_guest_u64_result(ctx, rbx + rcx * 8u + 24u, &node);
+        r = hb_jit_helper_read_u64_fast(ctx, rbx + rcx * 8u + 24u, &node);
         if (r != HB_OK) break;
         rcx = node;
-        r = hb_memory_read_u32(ctx->memory, rcx + 28u, &tmp32);
+        r = hb_jit_helper_read_u32_fast(ctx, rcx + 28u, &tmp32);
         if (r != HB_OK) break;
         r8 = (uint64_t)(int64_t)(int32_t)tmp32;
-        r = hb_jit_read_guest_u64_result(ctx, rcx + 16u, &rcx);
+        r = hb_jit_helper_read_u64_fast(ctx, rcx + 16u, &rcx);
         if (r != HB_OK) break;
         r8 += rcx;
         ecx = eax;
@@ -5254,17 +5667,17 @@ void hb_jit_helper_exec_mono_metadata_decode_row_loop(hb_context_t* ctx,
         r8 = width;
         rax = width - 1u;
         if ((uint32_t)rax == 0) {
-            r = hb_memory_read_u8(ctx->memory, rbx, &v8);
+            r = hb_jit_helper_read_u8_fast(ctx, rbx, &v8);
             if (r != HB_OK) break;
             value = (uint32_t)(int32_t)(int8_t)v8;
         } else {
             rax = (uint32_t)rax - 1u;
             if ((uint32_t)rax == 0) {
-                r = hb_memory_read_u16(ctx->memory, rbx, &v16);
+                r = hb_jit_helper_read_u16_fast(ctx, rbx, &v16);
                 if (r != HB_OK) break;
                 value = v16;
             } else if ((uint32_t)rax == 2) {
-                r = hb_memory_read_u32(ctx->memory, rbx, &value);
+                r = hb_jit_helper_read_u32_fast(ctx, rbx, &value);
                 if (r != HB_OK) break;
             } else {
                 ctx->regs.x64.rax = rax;
@@ -5327,11 +5740,11 @@ void hb_jit_helper_exec_mono_metadata_decode_row_entry(hb_context_t* ctx,
 
     r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
     if (r != HB_OK) { ctx->last_result = r; return; }
-    r = hb_jit_read_guest_u64_result(ctx, table, &base);
+    r = hb_jit_helper_read_u64_fast(ctx, table, &base);
     if (r != HB_OK) { ctx->last_result = r; return; }
-    r = hb_memory_read_u32(ctx->memory, table + 8u, &rows_field);
+    r = hb_jit_helper_read_u32_fast(ctx, table + 8u, &rows_field);
     if (r != HB_OK) { ctx->last_result = r; return; }
-    r = hb_memory_read_u32(ctx->memory, table + 12u, &bits);
+    r = hb_jit_helper_read_u32_fast(ctx, table + 12u, &bits);
     if (r != HB_OK) { ctx->last_result = r; return; }
 
     rows = rows_field & 0xffffffu;
@@ -5349,16 +5762,16 @@ void hb_jit_helper_exec_mono_metadata_decode_row_entry(hb_context_t* ctx,
         uint32_t width = ((bits >> (shift & 31u)) & 3u) + 1u;
         if (width == 1u) {
             uint8_t v = 0;
-            r = hb_memory_read_u8(ctx->memory, row, &v);
+            r = hb_jit_helper_read_u8_fast(ctx, row, &v);
             if (r != HB_OK) { ctx->last_result = r; return; }
             values[col] = (uint32_t)(int32_t)(int8_t)v;
         } else if (width == 2u) {
             uint16_t v = 0;
-            r = hb_memory_read_u16(ctx->memory, row, &v);
+            r = hb_jit_helper_read_u16_fast(ctx, row, &v);
             if (r != HB_OK) { ctx->last_result = r; return; }
             values[col] = v;
         } else if (width == 4u) {
-            r = hb_memory_read_u32(ctx->memory, row, &values[col]);
+            r = hb_jit_helper_read_u32_fast(ctx, row, &values[col]);
             if (r != HB_OK) { ctx->last_result = r; return; }
         } else {
             ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
@@ -5419,9 +5832,9 @@ void hb_jit_helper_exec_mono_metadata_decode_col(hb_context_t* ctx,
     col = (uint32_t)ctx->regs.x64.r8;
     rsp = ctx->regs.x64.rsp;
 
-    r = hb_memory_read_u32(ctx->memory, table + 8u, &rows_field);
+    r = hb_jit_helper_read_u32_fast(ctx, table + 8u, &rows_field);
     if (r != HB_OK) { ctx->last_result = r; return; }
-    r = hb_memory_read_u32(ctx->memory, table + 12u, &bits);
+    r = hb_jit_helper_read_u32_fast(ctx, table + 12u, &bits);
     if (r != HB_OK) { ctx->last_result = r; return; }
     rows = rows_field & 0xffffffu;
     res_size = bits >> 24;
@@ -5429,9 +5842,9 @@ void hb_jit_helper_exec_mono_metadata_decode_col(hb_context_t* ctx,
         ctx->last_result = hb_jit_helper_exec_ir_block_once(ctx, block);
         return;
     }
-    r = hb_memory_read_u8(ctx->memory, table + 11u, &row_size);
+    r = hb_jit_helper_read_u8_fast(ctx, table + 11u, &row_size);
     if (r != HB_OK) { ctx->last_result = r; return; }
-    r = hb_jit_read_guest_u64_result(ctx, table, &base);
+    r = hb_jit_helper_read_u64_fast(ctx, table, &base);
     if (r != HB_OK) { ctx->last_result = r; return; }
     r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
     if (r != HB_OK) { ctx->last_result = r; return; }
@@ -5476,19 +5889,19 @@ void hb_jit_helper_exec_mono_metadata_decode_col(hb_context_t* ctx,
     eax--;
     if (eax == 0) {
         uint8_t v = 0;
-        r = hb_memory_read_u8(ctx->memory, row, &v);
+        r = hb_jit_helper_read_u8_fast(ctx, row, &v);
         if (r != HB_OK) { ctx->last_result = r; return; }
         ctx->regs.x64.rax = (uint32_t)(int32_t)(int8_t)v;
     } else {
         eax--;
         if (eax == 0) {
             uint16_t v = 0;
-            r = hb_memory_read_u16(ctx->memory, row, &v);
+            r = hb_jit_helper_read_u16_fast(ctx, row, &v);
             if (r != HB_OK) { ctx->last_result = r; return; }
             ctx->regs.x64.rax = v;
         } else if (eax == 2) {
             uint32_t v = 0;
-            r = hb_memory_read_u32(ctx->memory, row, &v);
+            r = hb_jit_helper_read_u32_fast(ctx, row, &v);
             if (r != HB_OK) { ctx->last_result = r; return; }
             ctx->regs.x64.rax = v;
         } else {
@@ -5514,16 +5927,16 @@ static hb_result_t mono_metadata_decode_col_value(hb_context_t* ctx, uint64_t ta
     hb_result_t r;
 
     if (!ctx || !ctx->memory || !out_value) return HB_ERR_INVALID_ARG;
-    r = hb_memory_read_u32(ctx->memory, table + 8u, &rows_field);
+    r = hb_jit_helper_read_u32_fast(ctx, table + 8u, &rows_field);
     if (r != HB_OK) return r;
-    r = hb_memory_read_u32(ctx->memory, table + 12u, &bits);
+    r = hb_jit_helper_read_u32_fast(ctx, table + 12u, &bits);
     if (r != HB_OK) return r;
     rows = rows_field & 0xffffffu;
     res_size = bits >> 24;
     if (idx >= rows || col >= res_size) return HB_ERR_INVALID_ARG;
-    r = hb_memory_read_u8(ctx->memory, table + 11u, &row_size);
+    r = hb_jit_helper_read_u8_fast(ctx, table + 11u, &row_size);
     if (r != HB_OK) return r;
-    r = hb_jit_read_guest_u64_result(ctx, table, &base);
+    r = hb_jit_helper_read_u64_fast(ctx, table, &base);
     if (r != HB_OK) return r;
 
     r8 = base + (uint64_t)row_size * idx;
@@ -5566,18 +5979,18 @@ static hb_result_t mono_metadata_decode_col_value(hb_context_t* ctx, uint64_t ta
     eax--;
     if (eax == 0) {
         uint8_t v = 0;
-        r = hb_memory_read_u8(ctx->memory, row, &v);
+        r = hb_jit_helper_read_u8_fast(ctx, row, &v);
         if (r != HB_OK) return r;
         *out_value = (uint32_t)(int32_t)(int8_t)v;
     } else {
         eax--;
         if (eax == 0) {
             uint16_t v = 0;
-            r = hb_memory_read_u16(ctx->memory, row, &v);
+            r = hb_jit_helper_read_u16_fast(ctx, row, &v);
             if (r != HB_OK) return r;
             *out_value = v;
         } else if (eax == 2) {
-            r = hb_memory_read_u32(ctx->memory, row, out_value);
+            r = hb_jit_helper_read_u32_fast(ctx, row, out_value);
             if (r != HB_OK) return r;
         } else {
             return HB_ERR_INVALID_ARG;
@@ -5615,7 +6028,7 @@ void hb_jit_helper_exec_mono_metadata_coded_index_search(hb_context_t* ctx,
 
     r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
     if (r != HB_OK) { ctx->last_result = r; return; }
-    r = hb_jit_read_guest_u64_result(ctx, table, &table_base);
+    r = hb_jit_helper_read_u64_fast(ctx, table, &table_base);
     if (r != HB_OK) { ctx->last_result = r; return; }
 
     if (!table_base) {
@@ -6151,6 +6564,18 @@ hb_result_t hb_arm64_codegen_i32_less_tiebreaker_helper(hb_arm64_codegen_t* cg,
     return HB_OK;
 }
 
+hb_result_t hb_arm64_codegen_unity_sort_inner_loop_helper(hb_arm64_codegen_t* cg,
+                                                          const hb_ir_block_t* sort,
+                                                          hb_codegen_buffer_t* out) {
+    (void)cg;
+    if (!sort || !out) return HB_ERR_INVALID_ARG;
+    emit_prologue(out);
+    if (!emit_unity_sort_inner_loop_helper(out, sort))
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    emit_epilogue(out);
+    return HB_OK;
+}
+
 static bool codegen_is_control_transfer_op(hb_ir_op_t op) {
     return op == HB_IR_CALL || op == HB_IR_RET || op == HB_IR_JMP ||
            op == HB_IR_Jcc || op == HB_IR_LOOP || op == HB_IR_JRCXZ;
@@ -6174,6 +6599,12 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
     instr_limit = codegen_instr_limit_before_fallthrough(block);
     mid_block_transfer = instr_limit < block->instr_count;
     emit_prologue(out);
+    if (!mid_block_transfer && block->instr_count == 7) {
+        if (emit_unity_sort_inner_loop(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
+    }
     if (!mid_block_transfer && cfg && block->instr_count == 5) {
         const hb_ir_instr_t* jcc = &block->instrs[4];
         const hb_ir_block_t* guard = (jcc->op == HB_IR_Jcc)
@@ -6185,6 +6616,10 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
         }
     }
     if (!mid_block_transfer) {
+        if (emit_unity_freelist_fill_loop(out, block)) {
+            emit_epilogue(out);
+            return HB_OK;
+        }
         if (emit_unity_u32_ptr_compare(out, block)) {
             emit_epilogue(out);
             return HB_OK;

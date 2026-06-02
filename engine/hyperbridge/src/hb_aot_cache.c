@@ -45,6 +45,9 @@ struct hb_cache {
     uint32_t format_version;
     uint32_t abi_version;
     hb_cache_stats_t stats;
+    hb_disk_entry_t* entries;
+    size_t count;
+    size_t cap;
 };
 
 static void free_entries(hb_disk_entry_t* entries, size_t count) {
@@ -214,6 +217,8 @@ hb_cache_t* hb_cache_open(const char* root, const hb_cache_options_t* options) {
     mkdir(c->root, 0755);
     snprintf(c->path, sizeof(c->path), "%s/translation-cache.bin", c->root);
     if (ensure_file(c) != 0) { free(c); return NULL; }
+    if (load_entries(c, &c->entries, &c->count) != HB_OK) { free(c); return NULL; }
+    c->cap = c->count ? c->count : 16;
     return c;
 }
 
@@ -225,43 +230,42 @@ hb_cache_t* hb_cache_create(const char* path) {
     if (path && path[0]) strncpy(c->path, path, sizeof(c->path) - 1);
     else strncpy(c->path, "build/hyperbridge-cache/translation-cache.bin", sizeof(c->path) - 1);
     if (ensure_file(c) != 0) { free(c); return NULL; }
+    if (load_entries(c, &c->entries, &c->count) != HB_OK) { free(c); return NULL; }
+    c->cap = c->count ? c->count : 16;
     return c;
 }
 
-void hb_cache_destroy(hb_cache_t* cache) { free(cache); }
+void hb_cache_destroy(hb_cache_t* cache) {
+    if (!cache) return;
+    free_entries(cache->entries, cache->count);
+    free(cache);
+}
 void hb_cache_close(hb_cache_t* cache) { hb_cache_destroy(cache); }
 
 hb_result_t hb_cache_get(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t** out) {
-    hb_disk_entry_t* entries = NULL;
-    size_t count = 0;
-    hb_result_t r;
     if (!cache || !key || !out) return HB_ERR_INVALID_ARG;
     *out = NULL;
     cache->stats.lookups++;
-    r = load_entries(cache, &entries, &count);
-    if (r != HB_OK) return r;
-    for (size_t i = 0; i < count; i++) {
-        if (memcmp(&entries[i].key, key, sizeof(*key)) == 0) {
+    for (size_t i = 0; i < cache->count; i++) {
+        if (memcmp(&cache->entries[i].key, key, sizeof(*key)) == 0) {
             hb_cache_entry_t* e = calloc(1, sizeof(*e));
-            if (!e) { free_entries(entries, count); return HB_ERR_OUT_OF_MEMORY; }
-            e->key = entries[i].key;
-            e->valid = entries[i].valid != 0;
-            e->unsupported = entries[i].unsupported != 0;
-            e->steps = entries[i].steps;
-            e->native_size = entries[i].native_size;
+            if (!e) return HB_ERR_OUT_OF_MEMORY;
+            e->key = cache->entries[i].key;
+            e->valid = cache->entries[i].valid != 0;
+            e->unsupported = cache->entries[i].unsupported != 0;
+            e->steps = cache->entries[i].steps;
+            e->native_size = cache->entries[i].native_size;
             if (e->native_size) {
                 e->native_code = malloc(e->native_size);
-                if (!e->native_code) { free(e); free_entries(entries, count); return HB_ERR_OUT_OF_MEMORY; }
-                memcpy(e->native_code, entries[i].native_code, e->native_size);
+                if (!e->native_code) { free(e); return HB_ERR_OUT_OF_MEMORY; }
+                memcpy(e->native_code, cache->entries[i].native_code, e->native_size);
             }
             *out = e;
             cache->stats.hits++;
-            free_entries(entries, count);
             return HB_OK;
         }
     }
     cache->stats.misses++;
-    free_entries(entries, count);
     return HB_ERR_NOT_FOUND;
 }
 
@@ -270,40 +274,38 @@ hb_result_t hb_cache_lookup(hb_cache_t* cache, const hb_cache_key_t* key, hb_cac
 }
 
 hb_result_t hb_cache_put(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t* entry) {
-    hb_disk_entry_t* entries = NULL;
-    hb_disk_entry_t* n;
-    size_t count = 0, keep = 0;
-    hb_result_t r;
+    size_t pos;
     if (!cache || !key || !entry) return HB_ERR_INVALID_ARG;
-    r = load_entries(cache, &entries, &count);
-    if (r != HB_OK) return r;
-    for (size_t i = 0; i < count; i++) {
-        if (memcmp(&entries[i].key, key, sizeof(*key)) != 0) {
-            if (keep != i) entries[keep] = entries[i];
-            keep++;
-        } else {
-            free(entries[i].native_code);
-        }
+    for (pos = 0; pos < cache->count; pos++) {
+        if (memcmp(&cache->entries[pos].key, key, sizeof(*key)) == 0) break;
     }
-    n = realloc(entries, (keep + 1) * sizeof(*entries));
-    if (!n) { free_entries(entries, keep); return HB_ERR_OUT_OF_MEMORY; }
-    entries = n;
-    memset(&entries[keep], 0, sizeof(entries[keep]));
-    entries[keep].key = *key;
-    entries[keep].native_size = entry->native_size;
-    entries[keep].steps = entry->steps;
-    entries[keep].valid = entry->valid ? 1 : 0;
-    entries[keep].unsupported = entry->unsupported ? 1 : 0;
+    if (pos == cache->count) {
+        if (cache->count >= cache->cap) {
+            size_t new_cap = cache->cap ? cache->cap * 2 : 16;
+            hb_disk_entry_t* n = realloc(cache->entries, new_cap * sizeof(*cache->entries));
+            if (!n) return HB_ERR_OUT_OF_MEMORY;
+            memset(n + cache->cap, 0, (new_cap - cache->cap) * sizeof(*n));
+            cache->entries = n;
+            cache->cap = new_cap;
+        }
+        cache->count++;
+    } else {
+        free(cache->entries[pos].native_code);
+    }
+    memset(&cache->entries[pos], 0, sizeof(cache->entries[pos]));
+    cache->entries[pos].key = *key;
+    cache->entries[pos].native_size = entry->native_size;
+    cache->entries[pos].steps = entry->steps;
+    cache->entries[pos].valid = entry->valid ? 1 : 0;
+    cache->entries[pos].unsupported = entry->unsupported ? 1 : 0;
     if (entry->native_code && entry->native_size) {
-        entries[keep].native_code = malloc(entry->native_size);
-        if (!entries[keep].native_code) { free_entries(entries, keep); return HB_ERR_OUT_OF_MEMORY; }
-        memcpy(entries[keep].native_code, entry->native_code, entry->native_size);
+        cache->entries[pos].native_code = malloc(entry->native_size);
+        if (!cache->entries[pos].native_code) return HB_ERR_OUT_OF_MEMORY;
+        memcpy(cache->entries[pos].native_code, entry->native_code, entry->native_size);
         cache->stats.bytes_stored += entry->native_size;
     }
     cache->stats.entries_stored++;
-    r = write_entries_atomic(cache, entries, keep + 1);
-    free_entries(entries, keep + 1);
-    return r;
+    return write_entries_atomic(cache, cache->entries, cache->count);
 }
 
 hb_result_t hb_cache_store(hb_cache_t* cache, const hb_cache_key_t* key, const uint8_t* native_blob, size_t native_size, const hb_cache_entry_t* metadata) {
@@ -319,44 +321,40 @@ hb_result_t hb_cache_store(hb_cache_t* cache, const hb_cache_key_t* key, const u
 }
 
 hb_result_t hb_cache_invalidate(hb_cache_t* cache, uint32_t version) {
-    hb_disk_entry_t* entries = NULL;
-    size_t count = 0, keep = 0;
+    size_t count, keep = 0;
     hb_result_t r;
     if (!cache) return HB_ERR_INVALID_ARG;
-    r = load_entries(cache, &entries, &count);
-    if (r != HB_OK) return r;
+    count = cache->count;
     for (size_t i = 0; i < count; i++) {
-        if (entries[i].key.version == version) {
-            if (keep != i) entries[keep] = entries[i];
+        if (cache->entries[i].key.version == version) {
+            if (keep != i) cache->entries[keep] = cache->entries[i];
             keep++;
         } else {
-            free(entries[i].native_code);
+            free(cache->entries[i].native_code);
             cache->stats.invalidations++;
         }
     }
-    r = write_entries_atomic(cache, entries, keep);
-    free_entries(entries, keep);
+    cache->count = keep;
+    r = write_entries_atomic(cache, cache->entries, cache->count);
     return r;
 }
 
 hb_result_t hb_cache_invalidate_module(hb_cache_t* cache, uint64_t module_id) {
-    hb_disk_entry_t* entries = NULL;
-    size_t count = 0, keep = 0;
+    size_t count, keep = 0;
     hb_result_t r;
     if (!cache) return HB_ERR_INVALID_ARG;
-    r = load_entries(cache, &entries, &count);
-    if (r != HB_OK) return r;
+    count = cache->count;
     for (size_t i = 0; i < count; i++) {
-        if (entries[i].key.module_id != module_id) {
-            if (keep != i) entries[keep] = entries[i];
+        if (cache->entries[i].key.module_id != module_id) {
+            if (keep != i) cache->entries[keep] = cache->entries[i];
             keep++;
         } else {
-            free(entries[i].native_code);
+            free(cache->entries[i].native_code);
             cache->stats.invalidations++;
         }
     }
-    r = write_entries_atomic(cache, entries, keep);
-    free_entries(entries, keep);
+    cache->count = keep;
+    r = write_entries_atomic(cache, cache->entries, cache->count);
     return r;
 }
 
@@ -370,6 +368,10 @@ hb_result_t hb_cache_prune(hb_cache_t* cache, uint64_t max_bytes) {
 
 hb_result_t hb_cache_clear(hb_cache_t* cache) {
     if (!cache) return HB_ERR_INVALID_ARG;
+    free_entries(cache->entries, cache->count);
+    cache->entries = NULL;
+    cache->count = 0;
+    cache->cap = 0;
     cache->stats.invalidations++;
     return write_entries_atomic(cache, NULL, 0);
 }

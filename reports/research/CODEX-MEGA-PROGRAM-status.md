@@ -21,6 +21,142 @@ now-warm AOT cache** (run it 2–3 times so the cache warms across runs, then a 
 Also: DIRECT_MEM is still 0 — enable for safe paths and measure. Report blocks-per-wallclock and
 cache hit-rate before/after. Keep the JIT shift/SETcc flag correctness fix intact.
 
+**2026-06-03 operator-corrected Lane A checkpoint: old `0x14f180`/`~0x9456f` gate is cleared; new
+gate is a hard park at `rva=0x5158b4`.** Fresh 900s samples from
+`reports/phase4-hollow-knight/run-20260603-livelock-settle900-clean-head/samples.tsv` climb
+`0xe1c53` at 60s to `0x1a841b` at 300s, then remain exactly `0x1a841b` at 600s and 900s with
+process CPU sampled at `0.0%`. This is not the old Mono bsearch livelock and not slow throughput;
+it is a deeper park/deadlock before graphics (`D3D11CreateDevice=0`, `GfxDevice=0`). NEXT: run HK
+with `MACRUNNER_HB_TRACE_WAIT_SEMANTIC=1` plus heartbeat and identify the exact wait primitive
+behind the last guest PC `rva=0x5158b4`: handle/event/WaitOnAddress address, whether any wake/signal
+targets it, and which guest worker/render condition should signal it if no wake appears.
+
+**2026-06-03 fresh 900s verdict (Codex Lane A): old `~0x9456f` plateau is cleared; current gate is
+Mono RuntimeType vtable mismatch caused by 16-bit `TEST`/Jcc semantics.** Disk guard passed
+(`137 GB >= 30 GB`). The stashed Lane A codegen WIP was restored only for validation, but it is NOT
+build-green (`hb_test_runner`: `425 passed, 3 failed`), so it was restored to stash state and not
+committed. Clean-source HyperBridge/`ntdll.so` rebuilt and the spike `ntdll.so` was reinstalled and
+codesigned (`reports/phase4-hollow-knight/laneA-clean-source-rebuild-20260603-051152.log`, rc=0).
+
+Requested 900s HK run:
+`reports/phase4-hollow-knight/run-20260603-livelock-settle900-clean-head/`.
+Samples: 60s `blocks=0xe1c53 rva=0x192049`; 300s `blocks=0x1a841b rva=0x5158b4`;
+600s `blocks=0x1a841b rva=0x5158b4`; 900s `blocks=0x1a841b rva=0x5158b4`.
+`D3D11CreateDevice=0`, `GfxDevice=0`, `CreateSwapChain=0`, `Present=0`; process CPU sampled `0.0%`
+after the assertion. So this run definitively does NOT plateau at the old `~600k` bsearch count; it
+passes that rung and then stops at the newer Mono assertion gate:
+`Type System.RuntimeType has invalid vtable method slot 16 with method System.Reflection.MemberInfo:get_Name()`.
+
+Loop/condition verdict: not a lost wake and not another-thread signaling. Prior exact branch proof
+(`run-20260603-vtable-btjb-chain-interp-branchbudget-240`) shows Mono compares
+`RuntimeType.System:get_Name` against inherited abstract `MemberInfo.System.Reflection:get_Name`.
+Names, param counts, and return type match, but the override store at `0xd4aa9` never fires. The
+engine falls through the `BT bit22` check correctly (`cf=0` for
+`candidate_sig_flags ^ target_sig_flags = 0x01010000`), then wrongly takes the `jne` at `0xd4838`
+after `testw %cx,%cx`. Since `ecx=0x01010000`, `cx == 0`, so `JNE` must fall through. The "value"
+being re-tested is the low 16 bits of the signature flag xor; nobody should change it. The real gate
+is wrong 16-bit `TEST` flag/condition semantics in the Lane B-owned decode/lift/interpreter path,
+not more Mono bsearch/vtable helper optimization.
+
+**2026-06-03 Lane A STOP checkpoint: long-run verdict is livelock, CMOVAE clears it, next root is
+Lane B-owned 16-bit TEST semantics.** Decisive HK long run
+`reports/phase4-hollow-knight/run-20260602-livelock-decisive-1800b/samples.tsv`:
+60s `blocks=0x45a23 rva=0x53faec`; 300s `blocks=0x93eef rva=0x14f180`;
+600s `blocks=0x93eef rva=0x14f180`; 900s `blocks=0x93eef rva=0x14f180`. So the old
+`~0x94k` block count was a true fixed livelock, not throughput. The uncommitted Lane A CMOVAE
+correction in `hb_arm64_codegen.c` moved HK past that plateau to `blocks=0x1a80c3`, then exposed
+Mono's `RuntimeType` invalid-vtable assertion before graphics (`D3D11CreateDevice=0`,
+`GfxDevice=0`).
+
+Follow-up probes narrowed the new blocker. `RuntimeType.System:get_Name` and
+`MemberInfo.System.Reflection:get_Name` have matching names, param counts, and identical string
+return type pointers, but `mono_class_setup_vtable_general` advances through `0xd49ac` and never
+stores at `0xd4aa9`, leaving inherited abstract slot 16. Broad forced interpreter ranges for
+type-equality/vtable code did not fix it. Disassembly plus branch traces show the exact pair
+falls through name compare, `BT bit22` (`cf=0`), and param-count checks, then incorrectly takes
+`0xd4838` (`testw %cx,%cx; jne`) with `ecx=0x01010000`; low 16 bits are zero, so `JNE` should
+fall through. This is evidence for wrong 16-bit `TEST` operand-size/flags semantics in the
+decode/lift/interpreter-owned path, not a JIT-only or Mono-data issue. Lane A must not edit
+`hb_decode_x64.c`, `hb_lift_x64.c`, or `hb_interpreter.c`; hand this exact root to Lane B.
+Key proof run: `reports/phase4-hollow-knight/run-20260603-vtable-btjb-chain-interp-branchbudget-240/`.
+
+**21:12 checkpoint (Codex Lane A restart): context-fix HK verdict = not exercised; no graphics
+progress.** Re-read `CLAUDE.md` + `reports/research/LANE-A-MEGA-MISSION.md`. Reviewed dirty
+`engine/hyperbridge/src/hb_arm64_codegen.c` plus dependent memory-region cache changes: the
+`CMOVAE` bsearch semantic change is plausibly correct, but focused `make -C engine/hyperbridge
+test` was not green (`424 passed, 3 failed`), so the WIP code was stashed as
+`stash@{0}: Lane A WIP mono metadata codegen fast path` instead of committed. Rebuilt committed
+HEAD `9892ba9` HyperBridge/`ntdll.so`; full ARM64EC build still has unrelated `appwiz.cpl`
+`__alloca/___chkstk_ms` linker failures. Local relink required re-signing
+`engine/wine/dist-arm64ec-spike` or Wine was SIGKILLed before HB startup.
+
+Fresh HK run evidence: valid run is
+`reports/phase4-hollow-knight/run-20260602-post-getcontext-head240-signed-abs/`, launched from the
+extracted game dir so `Hollow Knight_Data` is adjacent. It timed out with `mr-run exit=143`,
+`heartbeat=686`, `wait_semantic=73`, `D3D11CreateDevice=0`, `GfxDevice=0`, `CreateSwapChain=0`,
+`Present=0`, `runtime_fail=0`, `jit_fallback=0`, and no `Killed: 9`. Final heartbeat:
+`blocks=0x94025 steps=0x38c036 block_pc=0x87ef14ff180 rva=0x14f180`, still the known Mono metadata
+hot region and not past the prior `0x9456f/0x96ae0` plateau. Critical context verdict:
+`nt-get-context guest-x64=0` and `get-context import=0`, so HK did not exercise the new real guest
+`GetThreadContext` path; no sane RIP/RSP/XMM sample can be claimed from this run. Wait traces are
+normal `WaitForSingleObject*` calls/returns; the only `suspend` text is `CreateThread(... flags=0x4
+suspended=1)` worker creation, not `SuspendThread`, so this is not a proven Mono GC stop-the-world
+pending-suspend park. NEXT: do not chase GC `pending_suspends` unless `SuspendThread`/`NtGetContextThread`
+starts appearing; continue bulk native promotion / profiling around the `rva=0x14f180` Mono metadata
+chain, and keep a small suspend/GetContext trace enabled as a guard.
+
+**10:56 checkpoint (Codex): starting the LANE A NEXT long-run experiment.** Plan: run Hollow
+Knight 3x90s to warm the persistent translation cache with safe direct paths enabled
+(`DIRECT_STACK=1`, `DIRECT_SCALAR_SCAN=1`, global `DIRECT_MEM=0` because the Unity comparator
+fault at `rdx=0x10` is still proven unsafe), then run one 600s warm-cache profile. Report
+heartbeat blocks/wallclock, cache hit-rate, and whether real `D3D11CreateDevice`/`GfxDevice`
+appears or the heartbeat plateaus.
+
+**11:19 checkpoint (Codex): long warm-cache result initially looked like a fixed plateau.**
+Run root: `reports/phase4-hollow-knight/laneA-long-20260602/`. Warmups with safe direct
+paths (`DIRECT_STACK=1`, `DIRECT_SCALAR_SCAN=1`, global `DIRECT_MEM=0`) reached the same
+`600000` hot-block heartbeat in ~108-110s. Cache hit-rate improved from warm1
+`9577/(9577+15236)=38.60%` to warm2/warm3 `~40.86%`; cache grew to ~2.9MB. The final
+`long600-warm` run (`timeout=600`, wall `624s`, `run.rc=143`) still stopped at
+`heartbeat_last=600000` (`~961.5 blocks/s` over wall), had cache `hits=10141`,
+`misses=14678`, `stores=0`, hit-rate `40.86%`, and no real `D3D11CreateDevice` or
+`GfxDevice` markers. `macrunner-hb-runtime-fail=0`, `macrunner-hb-jit-fallback=0`,
+`JIT codegen failed=0`. Follow-up below checks whether this is a true wait/sync gate or
+just the JIT hot-block aggregate flattening while Mono still burns CPU.
+
+**11:47 checkpoint (Codex): follow-up verdict = throughput in Mono metadata, not a wait gate.**
+`run-20260602-gate-wait180-small` and `run-20260602-heartbeat-filter240` kept safe direct
+paths (`DIRECT_STACK=1`, `DIRECT_SCALAR_SCAN=1`) and global `DIRECT_MEM=0`. The 180s
+wait probe had `wait_semantic_count=73`; waits release normally, ending with
+`ReleaseSemaphore(handle=0xa4) status=0`, and HK stayed `~99-100%` CPU through timeout.
+The filtered 240s heartbeat run avoided raw-log prune and shows real execution still moving:
+`heartbeat_last blocks=0x96ae0 steps=0x3982f2 block_pc=0x87ef14ff180 rva=0x14f180`.
+That PC is the known `mono-metadata-bsearch` helper/fusion region, not a parked worker.
+Still no `D3D11CreateDevice`, `GfxDevice`, or `CreateSwapChain`; runtime/JIT fallback/codegen
+fail counts remain zero. Correct NEXT: keep AOT cache on, keep safe direct paths on, do not
+flip global `DIRECT_MEM` until the Unity comparator fault class is proven safe, and continue
+bulk native-promotion around Mono metadata bsearch/decode-row/rowptr/string hot paths until
+Mono init reaches graphics creation.
+
+**12:08 checkpoint (Codex): Mono metadata bsearch helper tightened; correctness green, no app-level
+speed win yet.** In `hb_arm64_codegen.c`, `hb_jit_helper_exec_mono_metadata_bsearch_loop()` now
+uses one host-span read for the contiguous metadata node fields (`node+16` qword and `node+28`
+dword) and caches the metadata pointer-table host span for in-span table entries, while preserving
+the old ordered guest-read fallback for boundary/fault cases. Validation: `make` + `hb_test_runner`
+-> `419 passed, 0 failed`; `hb_fuzz_diff.py --cases 10000 --batch 1024 --families
+shift_rotate_flags` -> backend/oracle mismatches `0`; spike `ntdll.so` was forcibly relinked against
+the new `libhyperbridge.a`, installed, and codesigned. HK probes:
+`run-20260602-mono-bsearch-nodefast-heartbeat240` and
+`run-20260602-mono-bsearch-tablefast-heartbeat240` stayed clean (`runtime_fail=0`,
+`jit_fallback=0`, `JIT codegen failed=0`) but still had `D3D11CreateDevice=0`, `GfxDevice=0`,
+`CreateSwapChain=0`. Final table-span run ended at `heartbeat_last blocks=0x9456f`
+(`607599` decimal) / `steps=0x38c21d`, still at `rva=0x14f180` with HK `~99-100%` CPU and waits
+releasing normally. This helper-only micro-opt is correctness-safe but not sufficient; NEXT should
+move to a broader native promotion of the adjacent Mono metadata call chain or direct-memory safety
+proofing, not more isolated reads inside this helper. Parallel ISA coverage refreshed:
+`x64_isa_coverage.py --random 1000` passed with capstone-valid decode misses empty; see
+`reports/research/HB-X64-ISA-COVERAGE-matrix.md`.
+
 ## ⚡ LANE A SPEED — turn ON the unused accelerators (operator 2026-06-02) — biggest lever
 Post-gate the main thread is throughput-bound in Mono managed-init (heartbeat ~705K blocks and
 climbing, no D3D11CreateDevice yet). Warming one hot loop per run is too slow. An audit found TWO

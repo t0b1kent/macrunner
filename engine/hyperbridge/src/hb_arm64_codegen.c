@@ -6599,6 +6599,19 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
     instr_limit = codegen_instr_limit_before_fallthrough(block);
     mid_block_transfer = instr_limit < block->instr_count;
     emit_prologue(out);
+    {
+        const char* trace_env = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
+        const char* watch_env = getenv("MACRUNNER_HB_TRACE_JIT_GUEST_ADDR");
+        uint64_t watch = watch_env && *watch_env ? strtoull(watch_env, NULL, 0) : 0;
+        if (trace_env && *trace_env && *trace_env != '0' && watch && block->guest_addr == watch) {
+            fprintf(stderr,
+                    "macrunner-hb-codegen-watch: guest=%p instrs=%zu instr_limit=%zu mid=%u unity_sort_candidate=%u\n",
+                    (void*)(uintptr_t)block->guest_addr, block->instr_count, instr_limit,
+                    mid_block_transfer ? 1u : 0u,
+                    unity_sort_inner_loop_candidate(block) ? 1u : 0u);
+            fflush(stderr);
+        }
+    }
     if (!mid_block_transfer && block->instr_count == 7) {
         if (emit_unity_sort_inner_loop(out, block)) {
             emit_epilogue(out);

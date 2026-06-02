@@ -7556,8 +7556,17 @@ fail:
     delayinfo.DelayloadDescriptor = desc;
     delayinfo.ThunkAddress = addr;
     delayinfo.TargetDllName = name;
-    delayinfo.TargetApiDescriptor.ImportDescribedByName = !IMAGE_SNAP_BY_ORDINAL(pINT[id].u1.Ordinal);
-    delayinfo.TargetApiDescriptor.Description.Ordinal = LOWORD(pINT[id].u1.Ordinal);
+    if (IMAGE_SNAP_BY_ORDINAL(pINT[id].u1.Ordinal))
+    {
+        delayinfo.TargetApiDescriptor.ImportDescribedByName = FALSE;
+        delayinfo.TargetApiDescriptor.Description.Ordinal = LOWORD(pINT[id].u1.Ordinal);
+    }
+    else
+    {
+        const IMAGE_IMPORT_BY_NAME* iibn = get_rva(base, pINT[id].u1.AddressOfData);
+        delayinfo.TargetApiDescriptor.ImportDescribedByName = TRUE;
+        delayinfo.TargetApiDescriptor.Description.Name = (const char *)iibn->Name;
+    }
     delayinfo.TargetModuleBase = *phmod;
     delayinfo.Unused = NULL;
     delayinfo.LastError = nts;

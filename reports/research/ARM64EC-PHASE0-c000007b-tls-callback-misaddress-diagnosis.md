@@ -55,3 +55,34 @@ real function like 0x1500/0x1530).
 ## Gate for Phase 0 done
 `hello_x64` + `stdout_stderr_x64` run with ZERO `runtime-fail`/`MEMORY_FAULT`/`c000007b` lines,
 exit 0. Paste the clean log.
+
+## Resolution (2026-05-30)
+
+Implemented in:
+- `engine/wine/dlls/ntdll/unix/macrunner_hb.c`
+- `engine/wine/dlls/ntdll/unix/signal_arm64.c`
+
+Fix:
+- `macrunner_hb_dispatch_x64_callback()` now normalizes x64 callback targets through the
+  module TLS directory before `macrunner_hb_run_x64()`.
+- The normalizer reads `AddressOfCallBacks` from the AMD64 image passed in the Win64 TLS
+  callback ABI (`x0/RCX = ImageBase`, `x1/RDX = reason`) and snaps near-padding PCs to the
+  authoritative callback entry.
+- Signal-route fallback uses the same TLS-aware normalizer when it routes callback execute faults.
+
+Trace proof:
+- `reports/arm64ec-phase0-run-trace4-hello-20260530-143847.log`
+- The bad dispatch was normalized from `original=0x14000150f` to `target=0x140001510`.
+
+Gate:
+- `reports/arm64ec-phase0-run-hello_x64-20260530-143933.log`
+  - `hello from windows pe`
+  - `run_exit=0`
+  - `cleanup_exit=0`
+  - no `runtime-fail` / `MEMORY_FAULT` / `c000007b`
+- `reports/arm64ec-phase0-run-stdout_stderr_x64-20260530-143933.log`
+  - `stdout ok`
+  - `stderr ok`
+  - `run_exit=0`
+  - `cleanup_exit=0`
+  - no `runtime-fail` / `MEMORY_FAULT` / `c000007b`

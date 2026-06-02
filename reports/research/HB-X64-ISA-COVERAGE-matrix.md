@@ -6,6 +6,8 @@ Reference decoder: vendored `engine/wine/libs/capstone`. HyperBridge decoder/lif
 
 Current checkpoint: Phase 3 throughput work is active in the JIT-codegen matrix; bulk ISA remains the parallel finite checklist against capstone and is unchanged by the `CMP direct-memory, 0` JIT specialization.
 
+2026-06-02 checkpoint: bounded bulk-capstone refresh (`python3 tests/x64_isa_coverage.py --random 1000`) passes with no decode-missing mnemonics in the capstone-valid set. Coverage summary: 1-byte `1375/1375` decoded, 0F `1101/1101`, 0F38 `136/136`, 0F3A `35/35`, VEX `157/157`, EVEX `4/4`, x87 `364/364`, random valid capstone `769/769`; top_missing empty. Lifter gaps remain by group and stay on the finite checklist.
+
 ## Current Inventory
 
 - decoder source bytes: 107551

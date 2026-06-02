@@ -1,9 +1,9 @@
 # FAST VALIDATION RESULT
 
-- family: string_ops
+- family: phase1_core
 - status: **PASS**
 - oracle: 1 / 1
-- filecheck: 3 / 3
+- filecheck: 1 / 1
 - hb_test_runner: pass
 
 ## Notes

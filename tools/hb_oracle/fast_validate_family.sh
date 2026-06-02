@@ -50,6 +50,12 @@ case "$FAMILY" in
       "$ROOT/tools/hb_filecheck/examples/string_ops_cmps_lods.check"
     )
     ;;
+  phase1_core)
+    fixtures=()
+    checks=(
+      "$ROOT/tools/hb_filecheck/examples/phase1_core.check"
+    )
+    ;;
   *)
     echo "unknown family: $FAMILY"
     exit 2

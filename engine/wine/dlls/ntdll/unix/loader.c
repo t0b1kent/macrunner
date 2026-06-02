@@ -2253,14 +2253,20 @@ static void load_ntdll(void)
     if (is_arm64ec()) machine = main_image_info.Machine;
     pe_dir = get_pe_dir( machine );
 
-    if (build_dir) asprintf( &name, "%s%s/ntdll.dll", ntdll_dir, pe_dir );
-    else asprintf( &name, "%s%s/ntdll.dll", dll_dir, pe_dir );
+    if (build_dir)
+    {
+        if (asprintf( &name, "%s%s/ntdll.dll", ntdll_dir, pe_dir ) < 0)
+            fatal_error( "out of memory building ntdll path\n" );
+    }
+    else if (asprintf( &name, "%s%s/ntdll.dll", dll_dir, pe_dir ) < 0)
+        fatal_error( "out of memory building ntdll path\n" );
 
     status = open_builtin_pe_file( name, &attr, &module, &size, &info, 0, 0, machine, FALSE, 0 );
     if (status == STATUS_DLL_NOT_FOUND)
     {
         free( name );
-        asprintf( &name, "%s/ntdll.dll%c.so", ntdll_dir, 0 );
+        if (asprintf( &name, "%s/ntdll.dll%c.so", ntdll_dir, 0 ) < 0)
+            fatal_error( "out of memory building ntdll path\n" );
         status = open_builtin_so_file( name, &attr, &module, &info, machine, 0, FALSE );
     }
     if (status == STATUS_IMAGE_NOT_AT_BASE) status = virtual_relocate_module( module );
@@ -2809,17 +2815,21 @@ static void check_command_line( int argc, char *argv[] )
 
         if (build_dir)
         {
-            asprintf( &exe, "%s/programs/%s%s/%s.exe", build_dir, basename, pe_dir, basename );
-            if (!access( exe, R_OK )) reexec_loader( argc, argv, basename );
-            free( exe );
+            if (asprintf( &exe, "%s/programs/%s%s/%s.exe", build_dir, basename, pe_dir, basename ) >= 0)
+            {
+                if (!access( exe, R_OK )) reexec_loader( argc, argv, basename );
+                free( exe );
+            }
         }
         else
         {
             for (int i = 0; dll_paths[i]; i++)
             {
-                asprintf( &exe, "%s%s/%s.exe", dll_paths[i], pe_dir, basename );
-                if (!access( exe, R_OK )) reexec_loader( argc, argv, basename );
-                free( exe );
+                if (asprintf( &exe, "%s%s/%s.exe", dll_paths[i], pe_dir, basename ) >= 0)
+                {
+                    if (!access( exe, R_OK )) reexec_loader( argc, argv, basename );
+                    free( exe );
+                }
             }
         }
     }

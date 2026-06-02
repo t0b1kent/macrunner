@@ -13,6 +13,7 @@ Do not edit `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdl
 
 ## Closed In Checkpoints
 
+- 2026-06-03: HIGHADJ relocation support in `ntdll/loader.c` and `ntdll/unix/virtual.c`. Both PE relocation paths now handle standard two-slot `IMAGE_REL_BASED_HIGHADJ` fixups and reject truncated HIGHADJ blocks instead of treating the relocation type as unsupported.
 - 2026-06-03: `NtQueryVirtualMemory` buffer validation in `ntdll/unix/virtual.c`. Supported query classes now reject null result buffers with `STATUS_ACCESS_VIOLATION` before filling basic, region, working-set, image, or Wine Unix function outputs.
 - 2026-06-03: Core VM in/out pointer validation in `ntdll/unix/virtual.c`. `NtAllocateVirtualMemory`, `NtAllocateVirtualMemoryEx`, `NtFreeVirtualMemory`, `NtProtectVirtualMemory`, `NtMapViewOfSection`, `NtMapViewOfSectionEx`, and `NtWow64AllocateVirtualMemory64` now reject null mandatory address/size/protection pointers before trace/APC/local dereferences.
 - 2026-06-03: Lock/unlock/flush VM pointer validation in `ntdll/unix/virtual.c`. `NtLockVirtualMemory`, `NtUnlockVirtualMemory`, and `NtFlushVirtualMemory` now reject null address/size pointer arguments with `STATUS_ACCESS_VIOLATION` before dereferencing them or queuing remote APCs.

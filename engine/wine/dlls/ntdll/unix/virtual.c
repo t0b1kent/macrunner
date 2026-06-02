@@ -3379,6 +3379,12 @@ static IMAGE_BASE_RELOCATION *process_relocation_block( char *page, IMAGE_BASE_R
         case IMAGE_REL_BASED_HIGHLOW:
             *(int *)(page + offset) += delta;
             break;
+        case IMAGE_REL_BASED_HIGHADJ:
+            if (count < 2) return NULL;
+            *(short *)(page + offset) += HIWORD( delta + (short)reloc[1] );
+            reloc++;
+            count--;
+            break;
         case IMAGE_REL_BASED_DIR64:
             *(INT64 *)(page + offset) += delta;
             break;

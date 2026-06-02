@@ -7326,6 +7326,12 @@ IMAGE_BASE_RELOCATION * WINAPI LdrProcessRelocationBlock( void *page, UINT count
         case IMAGE_REL_BASED_HIGHLOW:
             *(int *)((char *)page + offset) += delta;
             break;
+        case IMAGE_REL_BASED_HIGHADJ:
+            if (!count) return NULL;
+            *(short *)((char *)page + offset) += HIWORD( delta + (short)relocs[1] );
+            relocs++;
+            count--;
+            break;
 #ifdef _WIN64
         case IMAGE_REL_BASED_DIR64:
             *(INT_PTR *)((char *)page + offset) += delta;

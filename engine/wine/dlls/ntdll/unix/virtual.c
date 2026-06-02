@@ -516,7 +516,7 @@ static void mmap_add_reserved_area( void *addr, SIZE_T size )
     }
 }
 
-static void mmap_remove_reserved_area( void *addr, SIZE_T size )
+static BOOL mmap_remove_reserved_area( void *addr, SIZE_T size )
 {
     struct reserved_area *area;
     struct list *ptr;
@@ -558,12 +558,10 @@ static void mmap_remove_reserved_area( void *addr, SIZE_T size )
                 {
                     /* range is in the middle of area -> split area in two */
                     struct reserved_area *new_area = malloc( sizeof(*new_area) );
-                    if (new_area)
-                    {
-                        new_area->base = (char *)addr + size;
-                        new_area->size = (char *)area->base + area->size - (char *)new_area->base;
-                        list_add_after( ptr, &new_area->entry );
-                    }
+                    if (!new_area) return FALSE;
+                    new_area->base = (char *)addr + size;
+                    new_area->size = (char *)area->base + area->size - (char *)new_area->base;
+                    list_add_after( ptr, &new_area->entry );
                     area->size = (char *)addr - (char *)area->base;
                     break;
                 }
@@ -576,6 +574,7 @@ static void mmap_remove_reserved_area( void *addr, SIZE_T size )
         }
         ptr = list_next( &reserved_areas, ptr );
     }
+    return TRUE;
 }
 
 static int mmap_is_in_reserved_area( void *addr, SIZE_T size )
@@ -1721,13 +1720,13 @@ static void *find_reserved_free_area( void *base, void *end, size_t size, int to
  * Remove a reserved area from the list maintained by libwine.
  * virtual_mutex must be held by caller.
  */
-static void remove_reserved_area( void *addr, size_t size )
+static BOOL remove_reserved_area( void *addr, size_t size )
 {
     struct file_view *view;
     size_t view_size;
 
     TRACE( "removing %p-%p\n", addr, (char *)addr + size );
-    mmap_remove_reserved_area( addr, size );
+    if (!mmap_remove_reserved_area( addr, size )) return FALSE;
 
     /* unmap areas not covered by an existing view */
     WINE_RB_FOR_EACH_ENTRY( view, &views_tree, struct file_view, entry )
@@ -1735,12 +1734,13 @@ static void remove_reserved_area( void *addr, size_t size )
         if ((char *)view->base >= (char *)addr + size) break;
         if ((char *)view->base + view->size <= (char *)addr) continue;
         if (view->base > addr) munmap( addr, (char *)view->base - (char *)addr );
-        if ((char *)view->base + view->size > (char *)addr + size) return;
+        if ((char *)view->base + view->size > (char *)addr + size) return TRUE;
         view_size = ROUND_SIZE( view->base, view->size, host_page_mask );
         size = (char *)addr + size - ((char *)view->base + view_size);
         addr = (char *)view->base + view_size;
     }
     munmap( addr, size );
+    return TRUE;
 }
 
 
@@ -4120,7 +4120,11 @@ static void *alloc_virtual_heap( SIZE_T size )
         if ((char *)end - (char *)base < size) continue;
         ret = anon_mmap_fixed( (char *)end - size, size, PROT_READ | PROT_WRITE, 0 );
         if (ret == MAP_FAILED) continue;
-        mmap_remove_reserved_area( ret, size );
+        if (!mmap_remove_reserved_area( ret, size ))
+        {
+            anon_mmap_fixed( ret, size, PROT_NONE, MAP_NORESERVE );
+            continue;
+        }
         return ret;
     }
     return anon_mmap_alloc( size, PROT_READ | PROT_WRITE );
@@ -5638,7 +5642,7 @@ static void free_reserved_memory( char *base, char *limit )
             if (area_base >= limit) return;
             if (area_base < base) area_base = base;
             if (area_end > limit) area_end = limit;
-            remove_reserved_area( area_base, area_end - area_base );
+            if (!remove_reserved_area( area_base, area_end - area_base )) return;
             removed = 1;
             break;
         }

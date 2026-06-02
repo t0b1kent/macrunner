@@ -1130,7 +1130,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
             fixup_rva_dwords( &imports->ImportNameTableRVA, delta, 1 );
             fixup_rva_dwords( &imports->BoundImportAddressTableRVA, delta, 1 );
             fixup_rva_dwords( &imports->UnloadInformationTableRVA, delta, 1 );
-            fixup_rva_names( (UINT_PTR *)(addr + imports->ImportNameTableRVA), delta );
+            if (imports->ImportNameTableRVA)
+                fixup_rva_names( (UINT_PTR *)(addr + imports->ImportNameTableRVA), delta );
             imports++;
         }
     }
@@ -2379,7 +2380,8 @@ static void hook(void *to_hook, const void *replace)
     ULONG_PTR intval = (UINT_PTR)to_hook;
 
     intval -= (intval % 4096);
-    mprotect((void *)intval, 0x2000, PROT_EXEC | PROT_READ | PROT_WRITE);
+    if (mprotect( (void *)intval, 0x2000, PROT_EXEC | PROT_READ | PROT_WRITE ))
+        fatal_error( "failed to make hook target %p writable: %s\n", to_hook, strerror(errno) );
 
     /* The offset is from the end of the jmp instruction (6 bytes) to the start of the destination. */
     offset = offsetof(struct hooked_function, dst) - offsetof(struct hooked_function, jmp) - 0x6;

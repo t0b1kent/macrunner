@@ -4489,27 +4489,43 @@ static void call_tls_callbacks( HMODULE module, UINT reason )
     dir = RtlImageDirectoryEntryToData( module, TRUE, IMAGE_DIRECTORY_ENTRY_TLS, &dirsize );
     if (!dir || !dir->AddressOfCallBacks) return;
 
-    for (callback = (const PIMAGE_TLS_CALLBACK *)dir->AddressOfCallBacks; *callback; callback++)
+    for (callback = (const PIMAGE_TLS_CALLBACK *)dir->AddressOfCallBacks;; callback++)
     {
-        TRACE_(relay)("\1Call TLS callback (proc=%p,module=%p,reason=%s,reserved=0)\n",
-                      *callback, module, reason_names[reason] );
+        PIMAGE_TLS_CALLBACK proc;
+
         __TRY
         {
-            if (macrunner_hb_call_x64_tls_callback( module, *callback, reason, &status ))
+            proc = *callback;
+        }
+        __EXCEPT_ALL
+        {
+            TRACE_(relay)("\1exception %08lx reading TLS callback array (callbacks=%p,module=%p,reason=%s)\n",
+                          GetExceptionCode(), callback, module, reason_names[reason] );
+            return;
+        }
+        __ENDTRY
+
+        if (!proc) break;
+
+        TRACE_(relay)("\1Call TLS callback (proc=%p,module=%p,reason=%s,reserved=0)\n",
+                      proc, module, reason_names[reason] );
+        __TRY
+        {
+            if (macrunner_hb_call_x64_tls_callback( module, proc, reason, &status ))
             {
                 if (status)
                 {
                     TRACE_(relay)("\1exception %08lx in TLS callback (proc=%p,module=%p,reason=%s,reserved=0)\n",
-                                  status, *callback, module, reason_names[reason] );
+                                  status, proc, module, reason_names[reason] );
                     return;
                 }
             }
-            else call_dll_entry_point( (DLLENTRYPROC)*callback, module, reason, NULL );
+            else call_dll_entry_point( (DLLENTRYPROC)proc, module, reason, NULL );
         }
         __EXCEPT_ALL
         {
             TRACE_(relay)("\1exception %08lx in TLS callback (proc=%p,module=%p,reason=%s,reserved=0)\n",
-                          GetExceptionCode(), callback, module, reason_names[reason] );
+                          GetExceptionCode(), proc, module, reason_names[reason] );
             return;
         }
         __ENDTRY

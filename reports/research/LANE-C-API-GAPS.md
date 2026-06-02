@@ -13,6 +13,7 @@ Do not edit `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdl
 
 ## Closed In Checkpoints
 
+- 2026-06-03: TLS callback array guard in `ntdll/loader.c`. `call_tls_callbacks()` now reads each callback pointer inside the existing SEH protection path, so malformed TLS callback arrays fail as loader-handled callback exceptions instead of dereferencing before the guard.
 - 2026-06-03: HIGHADJ relocation support in `ntdll/loader.c` and `ntdll/unix/virtual.c`. Both PE relocation paths now handle standard two-slot `IMAGE_REL_BASED_HIGHADJ` fixups and reject truncated HIGHADJ blocks instead of treating the relocation type as unsupported.
 - 2026-06-03: `NtQueryVirtualMemory` buffer validation in `ntdll/unix/virtual.c`. Supported query classes now reject null result buffers with `STATUS_ACCESS_VIOLATION` before filling basic, region, working-set, image, or Wine Unix function outputs.
 - 2026-06-03: Core VM in/out pointer validation in `ntdll/unix/virtual.c`. `NtAllocateVirtualMemory`, `NtAllocateVirtualMemoryEx`, `NtFreeVirtualMemory`, `NtProtectVirtualMemory`, `NtMapViewOfSection`, `NtMapViewOfSectionEx`, and `NtWow64AllocateVirtualMemory64` now reject null mandatory address/size/protection pointers before trace/APC/local dereferences.

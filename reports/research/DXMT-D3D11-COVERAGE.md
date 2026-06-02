@@ -37,6 +37,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Unity optional BC probes | PASS | `BC1_UNORM`, `BC3_UNORM`, and `BC7_UNORM` report Texture2D + shader-sample support. |
 | Unity feature probes | PASS | `THREADING`, `D3D11_OPTIONS`, `ARCHITECTURE_INFO`, and `DOUBLES` all return `hr=0x00000000`. |
 | Unity resource probes | PASS | Color texture + SRV/RTV/update/copy/readback, dynamic vertex buffer map, immutable constant buffer, depth DSV, and R32_UINT UAV creation all return success. |
+| Unity shader/draw probes | PASS | Dynamic `d3dcompiler_47` load, VS/PS compile, shader creation, input layout, vertex buffer, fullscreen draw, present, and red-pixel readback pass. |
 | Headless Metal layer fallback | PASS | When Wine macdrv Metal-view symbols are unavailable, `winemetal` creates a retained fallback `CAMetalLayer` for the smoke HWND. |
 | Swapchain/present | PASS | Message HWND path prints `CreateSwapChainForHwnd hr=0x00000000`, `IDXGISwapChain::GetBuffer hr=0x00000000`, `Present hr=0x00000000`. |
 | RTV clear/readback | PASS | Swapchain backbuffer clears to RGBA `(0.125,0.5,0.875,1.0)`; readback prints `pixel0_bgra=223,128,32,255`, `pixel_readback=PASS`. |
@@ -82,7 +83,8 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Unity FL 11_0 + BGRA support | PASS | `D3D11CreateDevice hr=0x00000000`, `feature_level=0xb100`, BGRA flags `0x02fef3f3`. |
 | Unity format probes | PASS | Core Unity color/depth formats plus optional BC1/BC3/BC7 probes pass in the headless smoke. |
 | Phase 3 resource probes | PASS | Texture/buffer/view/update/map/copy/UAV creation probes pass in the headless smoke. |
-| Phase 4 shaders/draw | Next | Add compiled vertex/pixel shader creation, input layout, IA/VS/PS/OM draw, draw readback, and shader reflection/compiler coverage. |
+| Phase 4 shaders/draw | PASS | Embedded HLSL VS/PS compiles via `d3dcompiler_47`, shader/input-layout creation succeeds, fullscreen draw presents, and readback returns `pixel0_bgra=0,0,255,255`. |
+| Phase 5 Unity probe expansion | Next | Add blend/rasterizer/depth-stencil/sampler state matrices, resize-buffer cases, instancing/indexed draws, and texture sampling. |
 | Swapchain variants | Partial | Basic headless message-HWND swapchain/present is green; add bitblt + flip model smoke cases and resize/present evidence. |
 | Adapter/output enumeration | Partial | Add smoke for `EnumOutputs`, monitor desc, display modes. |
 | State object breadth | Partial | Add smoke creation matrix for blend/rasterizer/depth/sampler defaults and Unity variants. |

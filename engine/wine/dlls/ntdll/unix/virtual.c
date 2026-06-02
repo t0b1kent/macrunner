@@ -5770,6 +5770,19 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
     SIZE_T size = *size_ptr;
     NTSTATUS status = STATUS_SUCCESS;
 
+    if (type & MEM_LARGE_PAGES)
+    {
+        static const ULONG large_page_type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_LARGE_PAGES;
+        static const SIZE_T large_page_mask = 2 * 1024 * 1024 - 1;
+
+        if ((type & ~large_page_type_mask) ||
+            (type & (MEM_COMMIT | MEM_RESERVE)) != (MEM_COMMIT | MEM_RESERVE) ||
+            (*ret && ((UINT_PTR)*ret & large_page_mask)) ||
+            (*size_ptr & large_page_mask))
+            return STATUS_INVALID_PARAMETER;
+        return STATUS_PRIVILEGE_NOT_HELD;
+    }
+
     /* Round parameters to a page boundary */
 
     if (is_beyond_limit( 0, size, working_set_limit )) return STATUS_WORKING_SET_LIMIT_RANGE;
@@ -5907,7 +5920,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
                                          SIZE_T *size_ptr, ULONG type, ULONG protect )
 {
     static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH
-                                   | MEM_RESET | MEM_RESET_UNDO_FLAGS;
+                                   | MEM_RESET | MEM_RESET_UNDO_FLAGS | MEM_LARGE_PAGES;
     ULONG_PTR limit;
 
     TRACE("%p %p %08lx %x %08x\n", process, *ret, *size_ptr, type, protect );
@@ -6048,7 +6061,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
 {
     static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH
                                    | MEM_RESET | MEM_RESET_UNDO_FLAGS | MEM_RESERVE_PLACEHOLDER
-                                   | MEM_REPLACE_PLACEHOLDER;
+                                   | MEM_REPLACE_PLACEHOLDER | MEM_LARGE_PAGES;
     ULONG_PTR limit_low = 0;
     ULONG_PTR limit_high = 0;
     ULONG_PTR align = 0;

@@ -2321,7 +2321,8 @@ static void load_wow64_ntdll( USHORT machine )
     if (machine == current_machine) return;
     if (!(wow64_dir = get_machine_wow64_dir( machine ))) return;
 
-    path = malloc( sizeof("\\??\\C:\\windows\\system32\\ntdll.dll") * sizeof(WCHAR) );
+    if (!(path = malloc( sizeof("\\??\\C:\\windows\\system32\\ntdll.dll") * sizeof(WCHAR) )))
+        fatal_error( "out of memory loading wow64 ntdll.dll\n" );
     wcscpy( path, wow64_dir );
     wcscat( path, ntdllW );
     init_unicode_string( &nt_name, path );

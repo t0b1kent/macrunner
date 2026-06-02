@@ -5994,6 +5994,8 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
             MEM_ADDRESS_REQUIREMENTS *r = parameters[i].Pointer;
             ULONG_PTR limit;
 
+            if (!r) return STATUS_INVALID_PARAMETER;
+
             if (is_wow64()) limit = get_wow_user_space_limit();
             else limit = (ULONG_PTR)user_space_limit;
 
@@ -6020,7 +6022,7 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
                 *limit_high = (ULONG_PTR)r->HighestEndingAddress;
                 if (*limit_high > limit ||
                     *limit_high <= *limit_low ||
-                    ((*limit_high + 1) & (page_mask - 1)))
+                    ((*limit_high + 1) & page_mask))
                 {
                     WARN( "Invalid limit %p.\n", r->HighestEndingAddress );
                     return STATUS_INVALID_PARAMETER;

@@ -9,7 +9,62 @@ ARCH="${1:-aarch64}"
 BUILD_DIR="$GRAPHICS_BUILD/dxmt-${ARCH}-tests"
 CROSS_FILE="$GRAPHICS_BUILD/cross/dxmt-${ARCH}-tests.ini"
 NATIVE_LLVM_PATH="${NATIVE_LLVM_PATH:-/opt/homebrew/opt/llvm@15}"
-WINE_BUILTIN_DLL="${WINE_BUILTIN_DLL:-false}"
+DXMT_SMOKE_BIND_MODE="${DXMT_SMOKE_BIND_MODE:-mixed}"
+WINE_DIST="$PROJECT_ROOT/engine/wine/dist"
+WINE="$WINE_DIST/bin/wine"
+WINESERVER="$WINE_DIST/bin/wineserver"
+PREFIX="$PROJECT_ROOT/artifacts/dxmt-smoke-prefix"
+PREFIX_SYSTEM32="$PREFIX/drive_c/windows/system32"
+APP_DIR="$PREFIX/drive_c/dxmt-smoke"
+OVERLAY_DIR="$PREFIX/dxmt-builtin-overlay"
+LOG_DIR="$PROJECT_ROOT/artifacts/dxmt-smoke-logs"
+LOG="$LOG_DIR/dx11-headless-${ARCH}.log"
+WINEBOOT_TIMEOUT_SECONDS="${WINEBOOT_TIMEOUT_SECONDS:-60}"
+TIMEOUT_BIN="${TIMEOUT_BIN:-$(command -v gtimeout || command -v timeout || true)}"
+POSTPROCESS_WINEMETAL_ONLY=false
+
+case "$DXMT_SMOKE_BIND_MODE" in
+  native)
+    WINE_BUILTIN_DLL="${WINE_BUILTIN_DLL:-false}"
+    DXMT_SMOKE_DLL_OVERRIDES="${DXMT_SMOKE_DLL_OVERRIDES:-d3d11,dxgi,winemetal=n}"
+    ;;
+  mixed)
+    WINE_BUILTIN_DLL="${WINE_BUILTIN_DLL:-false}"
+    DXMT_SMOKE_DLL_OVERRIDES="${DXMT_SMOKE_DLL_OVERRIDES:-d3d11,dxgi=n;winemetal=b,n}"
+    POSTPROCESS_WINEMETAL_ONLY=true
+    ;;
+  builtin)
+    WINE_BUILTIN_DLL="${WINE_BUILTIN_DLL:-true}"
+    DXMT_SMOKE_DLL_OVERRIDES="${DXMT_SMOKE_DLL_OVERRIDES:-d3d11,dxgi,winemetal=b,n}"
+    ;;
+  *)
+    echo "unsupported DXMT smoke bind mode: $DXMT_SMOKE_BIND_MODE" >&2
+    exit 24
+    ;;
+esac
+
+case "$ARCH" in
+  aarch64|arm64) MACHINE_DIR="aarch64-windows"; UNIX_DIR="aarch64-unix" ;;
+  x86_64|amd64) MACHINE_DIR="x86_64-windows"; UNIX_DIR="x86_64-unix" ;;
+  i386|x86) MACHINE_DIR="i386-windows"; UNIX_DIR="i386-unix" ;;
+  *) echo "unsupported DXMT smoke arch: $ARCH" >&2; exit 21 ;;
+esac
+
+OVERLAY_MACHINE_DIR="$OVERLAY_DIR/$MACHINE_DIR"
+OVERLAY_UNIX_DIR="$OVERLAY_DIR/$UNIX_DIR"
+WINE_MACHINE_DIR="$WINE_DIST/lib/wine/$MACHINE_DIR"
+WINE_UNIX_DIR="$WINE_DIST/lib/wine/$UNIX_DIR"
+
+run_with_timeout() {
+  local timeout_seconds="$1"
+  shift
+
+  if [[ -n "$TIMEOUT_BIN" ]]; then
+    "$TIMEOUT_BIN" "$timeout_seconds" "$@"
+  else
+    "$@"
+  fi
+}
 
 ensure_build_tools
 ensure_llvm_mingw
@@ -21,17 +76,115 @@ if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
     -Denable_tests=true \
     -Dwine_builtin_dll="$WINE_BUILTIN_DLL" \
     -Dnative_llvm_path="$NATIVE_LLVM_PATH" \
-    -Dwine_install_path="$PROJECT_ROOT/engine/wine/dist"
+    -Dwine_install_path="$WINE_DIST"
 else
   "${MESON[@]}" configure "$BUILD_DIR" \
     -Denable_tests=true \
     -Dwine_builtin_dll="$WINE_BUILTIN_DLL" \
     -Dnative_llvm_path="$NATIVE_LLVM_PATH" \
-    -Dwine_install_path="$PROJECT_ROOT/engine/wine/dist"
+    -Dwine_install_path="$WINE_DIST"
 fi
 
-ninja -C "$BUILD_DIR" tests/dx11/dx11_headless_smoke.exe src/d3d11/d3d11.dll src/dxgi/dxgi.dll src/winemetal/winemetal.dll
+ninja -C "$BUILD_DIR" tests/dx11/dx11_headless_smoke.exe src/winemetal/unix/winemetal.so
 
-echo "built=$BUILD_DIR/tests/dx11/dx11_headless_smoke.exe"
-echo "dlls=$BUILD_DIR/src/d3d11/d3d11.dll,$BUILD_DIR/src/dxgi/dxgi.dll,$BUILD_DIR/src/winemetal/winemetal.dll"
-echo "run with a scoped Wine prefix and DLL overrides: d3d11,dxgi,winemetal=n,b"
+if [[ "$WINE_BUILTIN_DLL" == "true" ]]; then
+  ninja -C "$BUILD_DIR" src/d3d11/d3d11.dll.postproc src/dxgi/dxgi.dll.postproc src/winemetal/winemetal.dll.postproc
+else
+  rm -f "$BUILD_DIR/src/d3d11/d3d11.dll" "$BUILD_DIR/src/dxgi/dxgi.dll" "$BUILD_DIR/src/winemetal/winemetal.dll"
+  ninja -C "$BUILD_DIR" src/d3d11/d3d11.dll src/dxgi/dxgi.dll src/winemetal/winemetal.dll
+  if [[ "$POSTPROCESS_WINEMETAL_ONLY" == "true" ]]; then
+    "$WINE_DIST/bin/winebuild" --builtin "$BUILD_DIR/src/winemetal/winemetal.dll"
+  fi
+fi
+
+EXE="$BUILD_DIR/tests/dx11/dx11_headless_smoke.exe"
+D3D11_DLL="$BUILD_DIR/src/d3d11/d3d11.dll"
+DXGI_DLL="$BUILD_DIR/src/dxgi/dxgi.dll"
+WINEMETAL_DLL="$BUILD_DIR/src/winemetal/winemetal.dll"
+WINEMETAL_SO="$BUILD_DIR/src/winemetal/unix/winemetal.so"
+
+if [[ ! -x "$WINE" || ! -x "$WINESERVER" ]]; then
+  echo "missing Wine runtime under $WINE_DIST" >&2
+  exit 20
+fi
+if [[ ! -d "$WINE_MACHINE_DIR" ]]; then
+  echo "missing Wine PE builtin dir: $WINE_MACHINE_DIR" >&2
+  exit 22
+fi
+if [[ ! -d "$WINE_UNIX_DIR" ]]; then
+  echo "missing Wine Unix builtin dir: $WINE_UNIX_DIR" >&2
+  exit 23
+fi
+
+mkdir -p "$PREFIX" "$LOG_DIR"
+WINEPREFIX="$PREFIX" "$WINESERVER" -k >/dev/null 2>&1 || true
+WINEPREFIX="$PREFIX" WINEDEBUG=-all run_with_timeout "$WINEBOOT_TIMEOUT_SECONDS" "$WINE" wineboot -u >/dev/null 2>&1 || true
+
+mkdir -p "$PREFIX_SYSTEM32" "$APP_DIR" "$OVERLAY_MACHINE_DIR" "$OVERLAY_UNIX_DIR"
+find "$OVERLAY_MACHINE_DIR" -mindepth 1 -maxdepth 1 -exec rm -f {} +
+find "$OVERLAY_UNIX_DIR" -mindepth 1 -maxdepth 1 -exec rm -f {} +
+find "$WINE_MACHINE_DIR" -mindepth 1 -maxdepth 1 -exec sh -c 'ln -s "$1" "$2/$(basename "$1")"' sh {} "$OVERLAY_MACHINE_DIR" \;
+find "$WINE_UNIX_DIR" -mindepth 1 -maxdepth 1 -exec sh -c 'ln -s "$1" "$2/$(basename "$1")"' sh {} "$OVERLAY_UNIX_DIR" \;
+rm -f "$OVERLAY_MACHINE_DIR/d3d11.dll" "$OVERLAY_MACHINE_DIR/dxgi.dll" "$OVERLAY_MACHINE_DIR/winemetal.dll"
+rm -f "$OVERLAY_UNIX_DIR/winemetal.so" \
+  "$OVERLAY_MACHINE_DIR/winemetal.so" "$OVERLAY_MACHINE_DIR/winemetal.dll.so" \
+  "$APP_DIR/winemetal.so" "$APP_DIR/winemetal.dll.so" \
+  "$PREFIX_SYSTEM32/winemetal.so" "$PREFIX_SYSTEM32/winemetal.dll.so"
+cp -f "$D3D11_DLL" "$PREFIX_SYSTEM32/d3d11.dll"
+cp -f "$DXGI_DLL" "$PREFIX_SYSTEM32/dxgi.dll"
+cp -f "$WINEMETAL_DLL" "$PREFIX_SYSTEM32/winemetal.dll"
+cp -f "$EXE" "$APP_DIR/dx11_headless_smoke.exe"
+cp -f "$D3D11_DLL" "$APP_DIR/d3d11.dll"
+cp -f "$DXGI_DLL" "$APP_DIR/dxgi.dll"
+cp -f "$WINEMETAL_DLL" "$APP_DIR/winemetal.dll"
+cp -f "$D3D11_DLL" "$OVERLAY_MACHINE_DIR/d3d11.dll"
+cp -f "$DXGI_DLL" "$OVERLAY_MACHINE_DIR/dxgi.dll"
+cp -f "$WINEMETAL_DLL" "$OVERLAY_MACHINE_DIR/winemetal.dll"
+cp -f "$WINEMETAL_SO" "$OVERLAY_UNIX_DIR/"
+cp -f "$WINEMETAL_SO" "$OVERLAY_MACHINE_DIR/winemetal.so"
+cp -f "$WINEMETAL_SO" "$OVERLAY_MACHINE_DIR/winemetal.dll.so"
+cp -f "$WINEMETAL_SO" "$APP_DIR/winemetal.so"
+cp -f "$WINEMETAL_SO" "$APP_DIR/winemetal.dll.so"
+cp -f "$WINEMETAL_SO" "$PREFIX_SYSTEM32/winemetal.so"
+cp -f "$WINEMETAL_SO" "$PREFIX_SYSTEM32/winemetal.dll.so"
+
+echo "built=$EXE"
+echo "prefix=$PREFIX"
+echo "system32=$PREFIX_SYSTEM32"
+echo "app_dir=$APP_DIR"
+echo "builtin_overlay=$OVERLAY_MACHINE_DIR"
+echo "unix_overlay=$OVERLAY_UNIX_DIR"
+echo "dxmt_root=$OVERLAY_DIR"
+echo "bind_mode=$DXMT_SMOKE_BIND_MODE"
+echo "wine_builtin_dll=$WINE_BUILTIN_DLL"
+echo "overrides=$DXMT_SMOKE_DLL_OVERRIDES"
+echo "log=$LOG"
+
+set +e
+(
+  cd "$APP_DIR"
+  # Keep build-tool environment out of the Wine process; it changes native DLL binding.
+  env -i \
+    HOME="$HOME" \
+    USER="${USER:-}" \
+    LOGNAME="${LOGNAME:-${USER:-}}" \
+    PATH="$PATH" \
+    TMPDIR="${TMPDIR:-/tmp}" \
+    WINEPREFIX="$PREFIX" \
+    MACRUNNER_DXMT_ROOT="$OVERLAY_DIR" \
+    WINEDLLOVERRIDES="$DXMT_SMOKE_DLL_OVERRIDES" \
+    WINEDLLDIR0="$OVERLAY_DIR" \
+    WINEDLLPATH="$OVERLAY_MACHINE_DIR:$OVERLAY_UNIX_DIR:$WINE_MACHINE_DIR:$WINE_UNIX_DIR" \
+    WINESYSTEMDLLPATH="$OVERLAY_MACHINE_DIR" \
+    WINEDEBUG="${WINEDEBUG_SMOKE:--all,+loaddll}" \
+    "$WINE" dx11_headless_smoke.exe
+) >"$LOG" 2>&1
+SMOKE_RC=$?
+set -e
+
+WINEPREFIX="$PREFIX" "$WINESERVER" -k >/dev/null 2>&1 || true
+
+echo "exit_code=$SMOKE_RC"
+grep -E "DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDXGIFactory1|factory_probe|EnumAdapters|adapter_probe|RegisterClassExW|CreateWindowExW|window_create|D3D11CreateDevice|feature_level|CheckFormatSupport|format_support|CreateSwapChainForHwnd|IDXGISwapChain::GetBuffer|CreateTexture2D|CreateRenderTargetView|ClearRenderTargetView|Present|Readback|pixel0_bgra|pixel_readback|c0000135|err:module|not found|failed|FAIL" "$LOG" | tail -140 || true
+
+exit "$SMOKE_RC"

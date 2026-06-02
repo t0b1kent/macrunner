@@ -8,7 +8,7 @@ Do not edit `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdl
 
 ## Open Gaps
 
-- None recorded in this Lane C pass yet.
+- 2026-06-02: `engine/wine/include/winnt.h` defines `MEM_RESET_UNDO` as `0x10000000`, but real Win32/llvm-mingw guests use `0x01000000`. Lane C runtime accepts both in `ntdll/unix/virtual.c`; header correction is outside Lane C's owned DLL/loader/virtual file set.
 
 ## Closed In Checkpoints
 

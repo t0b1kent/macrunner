@@ -96,6 +96,10 @@ WINE_DEFAULT_DEBUG_CHANNEL(virtual);
 WINE_DECLARE_DEBUG_CHANNEL(module);
 WINE_DECLARE_DEBUG_CHANNEL(virtual_ranges);
 
+/* Real Win32 guests use 0x01000000; keep accepting Wine's local header value too. */
+#define MEM_RESET_UNDO_WIN32 0x01000000
+#define MEM_RESET_UNDO_FLAGS (MEM_RESET_UNDO | MEM_RESET_UNDO_WIN32)
+
 struct preload_info
 {
     void  *addr;
@@ -122,6 +126,11 @@ struct builtin_module
 };
 
 static struct list builtin_modules = LIST_INIT( builtin_modules );
+
+static inline BOOL is_mem_reset_undo_type( ULONG type )
+{
+    return type == MEM_RESET_UNDO || type == MEM_RESET_UNDO_WIN32;
+}
 
 struct file_view
 {
@@ -5784,7 +5793,13 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 
     /* Compute the alloc type flags */
 
-    if (!(type & (MEM_COMMIT | MEM_RESERVE | MEM_RESET))
+    if ((type & MEM_RESET_UNDO_FLAGS) && !is_mem_reset_undo_type( type ))
+    {
+        WARN("called with wrong alloc type flags (%08x) !\n", type);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (!(type & (MEM_COMMIT | MEM_RESERVE | MEM_RESET | MEM_RESET_UNDO_FLAGS))
         || (type & MEM_REPLACE_PLACEHOLDER && !(type & MEM_RESERVE)))
     {
         WARN("called with wrong alloc type flags (%08x) !\n", type);
@@ -5798,7 +5813,7 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
 
-    if ((type & MEM_RESERVE) || !base)
+    if ((type & MEM_RESERVE) || (!base && !(type & (MEM_RESET | MEM_RESET_UNDO_FLAGS))))
     {
         if (!(status = get_vprot_flags( protect, &vprot, FALSE )))
         {
@@ -5822,7 +5837,20 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
     else if (type & MEM_RESET)
     {
         if (!(view = find_view( base, size ))) status = STATUS_NOT_MAPPED_VIEW;
+#if defined(__APPLE__) && defined(MADV_FREE_REUSABLE)
+        else if (madvise( base, size, MADV_FREE_REUSABLE )) status = errno_to_status( errno );
+#else
         else if (madvise( base, size, MADV_DONTNEED )) status = errno_to_status( errno );
+#endif
+    }
+    else if (type & MEM_RESET_UNDO_FLAGS)
+    {
+        if (!(view = find_view( base, size ))) status = STATUS_NOT_MAPPED_VIEW;
+#if defined(__APPLE__) && defined(MADV_FREE_REUSE)
+        else if (madvise( base, size, MADV_FREE_REUSE )) status = errno_to_status( errno );
+#else
+        else status = STATUS_UNSUCCESSFUL;
+#endif
     }
     else  /* commit the pages */
     {
@@ -5871,7 +5899,8 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR zero_bits,
                                          SIZE_T *size_ptr, ULONG type, ULONG protect )
 {
-    static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET;
+    static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH
+                                   | MEM_RESET | MEM_RESET_UNDO_FLAGS;
     ULONG_PTR limit;
 
     TRACE("%p %p %08lx %x %08x\n", process, *ret, *size_ptr, type, protect );
@@ -6011,7 +6040,8 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                                            ULONG count )
 {
     static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH
-                                   | MEM_RESET | MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER;
+                                   | MEM_RESET | MEM_RESET_UNDO_FLAGS | MEM_RESERVE_PLACEHOLDER
+                                   | MEM_REPLACE_PLACEHOLDER;
     ULONG_PTR limit_low = 0;
     ULONG_PTR limit_high = 0;
     ULONG_PTR align = 0;

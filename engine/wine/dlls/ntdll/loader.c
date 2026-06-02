@@ -5137,7 +5137,7 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
     if (!relocs->Size) return STATUS_SUCCESS;
     if (!relocs->VirtualAddress) return STATUS_CONFLICTING_ADDRESSES;
 
-    if (!(protect_old = RtlAllocateHeap( GetProcessHeap(), 0,
+    if (!(protect_old = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY,
                                          nt->FileHeader.NumberOfSections * sizeof(*protect_old ))))
         return STATUS_NO_MEMORY;
 
@@ -5146,8 +5146,14 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
     {
         void *addr = get_rva( module, sec[i].VirtualAddress );
         SIZE_T size = sec[i].SizeOfRawData;
-        NtProtectVirtualMemory( NtCurrentProcess(), &addr,
-                                &size, PAGE_READWRITE, &protect_old[i] );
+        if (!size) continue;
+        status = NtProtectVirtualMemory( NtCurrentProcess(), &addr,
+                                         &size, PAGE_READWRITE, &protect_old[i] );
+        if (status)
+        {
+            WARN( "failed to make relocation section %lu writable, status %lx\n", i, status );
+            goto done;
+        }
     }
 
     TRACE( "relocating from %p-%p to %p-%p\n",
@@ -5179,15 +5185,22 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
         }
     }
 
+done:
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
+        NTSTATUS restore_status;
         void *addr = get_rva( module, sec[i].VirtualAddress );
         SIZE_T size = sec[i].SizeOfRawData;
-        NtProtectVirtualMemory( NtCurrentProcess(), &addr,
-                                &size, protect_old[i], &protect_old[i] );
-    }
 
-done:
+        if (!protect_old[i]) continue;
+        restore_status = NtProtectVirtualMemory( NtCurrentProcess(), &addr,
+                                                 &size, protect_old[i], &protect_old[i] );
+        if (restore_status)
+        {
+            WARN( "failed to restore relocation section %lu protection, status %lx\n", i, restore_status );
+            if (!status) status = restore_status;
+        }
+    }
     RtlFreeHeap( GetProcessHeap(), 0, protect_old );
     return status;
 }

@@ -3582,17 +3582,27 @@ static NTSTATUS walk_node_dependencies( LDR_DDAG_NODE *node, void *context,
  * Find the final function pointer for a forwarded function.
  * The loader_section must be locked while calling this function.
  */
-static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWSTR load_path, WINE_MODREF *importer, BOOL is_dynamic )
+static FARPROC find_forwarded_export( HMODULE module, const char *forward, const char *forward_end,
+                                      LPCWSTR load_path, WINE_MODREF *importer, BOOL is_dynamic )
 {
     const IMAGE_EXPORT_DIRECTORY *exports;
     DWORD exp_size;
     WINE_MODREF *wm;
     WCHAR mod_name[256];
-    const char *end = strrchr(forward, '.');
+    const char *end, *nul;
     FARPROC proc = NULL;
     BOOL wm_loaded = FALSE;
 
-    if (!end) return NULL;
+    if (!(nul = memchr( forward, 0, forward_end - forward )))
+    {
+        WARN( "forwarder string at %p is not terminated in export directory\n", forward );
+        return NULL;
+    }
+
+    for (end = nul; end > forward && end[-1] != '.'; --end) {}
+    if (end == forward || end == nul) return NULL;
+    --end;
+
     if (build_import_name( importer, mod_name, forward, end - forward )) return NULL;
 
     if (!(wm = find_basename_module_machine( mod_name, current_machine )))
@@ -3714,7 +3724,8 @@ static FARPROC find_ordinal_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY
     /* if the address falls into the export dir, it's a forward */
     if (((const char *)proc >= (const char *)exports) && 
         ((const char *)proc < (const char *)exports + exp_size))
-        return find_forwarded_export( module, (const char *)proc, load_path, importer, is_dynamic );
+        return find_forwarded_export( module, (const char *)proc, (const char *)exports + exp_size,
+                                      load_path, importer, is_dynamic );
 
     if (TRACE_ON(snoop))
     {

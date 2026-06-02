@@ -12,6 +12,7 @@ Do not edit `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdl
 
 ## Closed In Checkpoints
 
+- 2026-06-03: Forwarded-export string hardening in `ntdll/loader.c`. Forwarder strings are now required to be NUL-terminated inside the export directory before parsing `DLL.Name` / `DLL.#ordinal`, preventing malformed export data from driving unbounded loader string scans.
 - 2026-06-03: Unix loader path-format allocation hardening in `ntdll/unix/loader.c`. Startup ntdll path construction now fails explicitly on `asprintf()` failure, and reexec probing skips paths that could not be formatted instead of calling `access()` on null.
 - 2026-06-03: Loader environment-buffer allocation hardening in `ntdll/loader.c`. `get_env_var()` now returns `STATUS_NO_MEMORY` if the query buffer allocation fails instead of passing a null buffer to `RtlQueryEnvironmentVariable()`.
 - 2026-06-03: System-directory NT name allocation hardening in `ntdll/loader.c`. KnownDll and bootstrap builtin search now return `STATUS_NO_MEMORY` and close opened section mappings if the synthesized system32 NT path cannot be allocated.

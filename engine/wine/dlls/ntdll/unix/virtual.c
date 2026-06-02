@@ -6893,6 +6893,8 @@ NTSTATUS WINAPI NtLockVirtualMemory( HANDLE process, PVOID *addr, SIZE_T *size, 
 {
     unsigned int status = STATUS_SUCCESS;
 
+    if (!addr || !size) return STATUS_ACCESS_VIOLATION;
+
     if (process != NtCurrentProcess())
     {
         union apc_call call;
@@ -6930,6 +6932,8 @@ NTSTATUS WINAPI NtLockVirtualMemory( HANDLE process, PVOID *addr, SIZE_T *size, 
 NTSTATUS WINAPI NtUnlockVirtualMemory( HANDLE process, PVOID *addr, SIZE_T *size, ULONG unknown )
 {
     unsigned int status = STATUS_SUCCESS;
+
+    if (!addr || !size) return STATUS_ACCESS_VIOLATION;
 
     if (process != NtCurrentProcess())
     {
@@ -7324,7 +7328,11 @@ NTSTATUS WINAPI NtFlushVirtualMemory( HANDLE process, LPCVOID *addr_ptr,
     struct file_view *view;
     unsigned int status = STATUS_SUCCESS;
     sigset_t sigset;
-    void *addr = ROUND_ADDR( *addr_ptr, page_mask );
+    void *addr;
+
+    if (!addr_ptr || !size_ptr) return STATUS_ACCESS_VIOLATION;
+
+    addr = ROUND_ADDR( *addr_ptr, page_mask );
 
     if (process != NtCurrentProcess())
     {

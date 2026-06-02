@@ -12,6 +12,13 @@ Do not edit `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdl
 
 ## Closed In Checkpoints
 
+- 2026-06-02: Large-page allocation semantics in `ntdll/unix/virtual.c`. `MEM_LARGE_PAGES` is now accepted by the public type masks and returns explicit invalid-parameter vs privilege-not-held results instead of falling through the unknown-bit path.
+- 2026-06-02: Write-watch allocation validation in `ntdll/unix/virtual.c`. `MEM_WRITE_WATCH` now requires `MEM_RESERVE` so commit-only calls cannot implicitly create write-watch regions.
+- 2026-06-02: Reserved-area split hardening in `ntdll/unix/virtual.c`. Reserved-area removal now reports split bookkeeping allocation failure atomically, with virtual-heap callers restoring the reserved mapping before falling back.
+- 2026-06-02: Loader startup/path allocation hardening in `ntdll/unix/loader.c`. DLL path setup, prefix/path helpers, re-exec argv, WOW64 ntdll path, macOS temp-link creation, preloader exec formatting, wineserver PATH probing, and Android JNI argv construction now handle allocation failure instead of dereferencing null buffers.
+- 2026-06-02: `MEM_RESET_UNDO` support in `ntdll/unix/virtual.c`. Both the real Win32 bit (`0x01000000`) and the current Wine header bit are accepted, with Darwin `MADV_FREE_REUSE` handling when available.
+- 2026-06-02: Working-set query allocation hardening in `ntdll/unix/virtual.c`. `MemoryWorkingSetExInformation` now returns `STATUS_NO_MEMORY` if the temporary reference array allocation fails.
+- 2026-06-02: LargeAddressAware registry lookup hardening in `ntdll/unix/virtual.c`. The AppDefaults key lookup now handles failed app-name allocation and closes the root key on all paths.
 - 2026-06-02: Relocation protection hardening in `ntdll/loader.c`. PE relocation now checks section `NtProtectVirtualMemory()` failures and restores successfully changed section protections through a common cleanup path.
 - 2026-06-02: TLS allocation failure hardening in `ntdll/loader.c`. `alloc_tls_slot()` no longer reports success when per-thread TLS data allocation fails, and it closes the enumerated thread handle on early allocation failures.
 - 2026-06-02: IAT protection hardening in `ntdll/loader.c`. Static import binding now fails explicitly if the loader cannot make a read-only import address table writable or restore its original protection.

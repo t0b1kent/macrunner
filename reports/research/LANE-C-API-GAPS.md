@@ -12,6 +12,7 @@ Do not edit `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdl
 
 ## Closed In Checkpoints
 
+- 2026-06-02: IAT protection hardening in `ntdll/loader.c`. Static import binding now fails explicitly if the loader cannot make a read-only import address table writable or restore its original protection.
 - 2026-06-02: `MEM_RESET` error propagation in `ntdll/unix/virtual.c`. `NtAllocateVirtualMemory` now returns an NTSTATUS for failed `madvise(MADV_DONTNEED)` instead of silently reporting success.
 - 2026-06-02: Delay-import RVA fixup hardening in `ntdll/unix/loader.c`. The builtin PE mapper now mirrors normal import handling and skips the import-name table walk when a delay descriptor has no INT.
 - 2026-06-02: Loader hook protection hardening in `ntdll/unix/loader.c`. The Apple x86_64 hook helper now fails loudly if `mprotect()` cannot make the target page writable before patching bytes.

@@ -73,6 +73,9 @@ WINE_DEFAULT_DEBUG_CHANNEL(seh);
 #define NTDLL_DWARF_H_NO_UNWINDER
 #include "dwarf.h"
 
+extern NTSTATUS macrunner_hb_get_x64_thread_context( HANDLE handle, AMD64_CONTEXT *context );
+extern NTSTATUS macrunner_hb_set_x64_thread_context( HANDLE handle, const AMD64_CONTEXT *context );
+
 /***********************************************************************
  * signal context platform-specific definitions
  */
@@ -372,6 +375,9 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
     BOOL self = (handle == GetCurrentThread());
     DWORD flags = context->ContextFlags & ~CONTEXT_ARM64;
 
+    if (((const AMD64_CONTEXT *)context)->ContextFlags & CONTEXT_AMD64)
+        return macrunner_hb_set_x64_thread_context( handle, (const AMD64_CONTEXT *)context );
+
     if (self && (flags & CONTEXT_DEBUG_REGISTERS)) self = FALSE;
 
     if (!self)
@@ -419,6 +425,15 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
     struct syscall_frame *frame = get_syscall_frame();
     DWORD needed_flags = context->ContextFlags & ~CONTEXT_ARM64;
     BOOL self = (handle == GetCurrentThread());
+
+    if (((AMD64_CONTEXT *)context)->ContextFlags & CONTEXT_AMD64)
+    {
+        NTSTATUS ret = macrunner_hb_get_x64_thread_context( handle, (AMD64_CONTEXT *)context );
+        if (!ret)
+            set_context_exception_reporting_flags( &((AMD64_CONTEXT *)context)->ContextFlags,
+                                                   CONTEXT_SERVICE_ACTIVE );
+        return ret;
+    }
 
     if (!self)
     {

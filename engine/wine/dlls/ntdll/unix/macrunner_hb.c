@@ -76,6 +76,7 @@ struct macrunner_hb_special
 #define MACRUNNER_HB_APISET_MODULE_MAX 512
 #define MACRUNNER_HB_TLS_SLOT_MAX 128
 #define MACRUNNER_HB_TLS_THREAD_MAX 512
+#define MACRUNNER_HB_X64_THREAD_CONTEXT_MAX 512
 #define MACRUNNER_HB_REGISTERED_MESSAGE_MAX 128
 #define MACRUNNER_HB_REGISTERED_MESSAGE_NAME_MAX 128
 #define MACRUNNER_HB_LOCAL_HEAP_MAX 8192
@@ -201,6 +202,13 @@ struct macrunner_hb_tls_thread_values
     uint64_t fls_values[MACRUNNER_HB_TLS_SLOT_MAX];
 };
 
+struct macrunner_hb_x64_thread_context_entry
+{
+    DWORD tid;
+    hb_context_t *ctx;
+    AMD64_CONTEXT snapshot;
+};
+
 static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULONG64 *ret_value,
                                       ULONG64 *blocks_out, ULONG64 *steps_out,
                                       const char *label, void *image_base );
@@ -222,6 +230,8 @@ static unsigned char macrunner_hb_tls_slots[MACRUNNER_HB_TLS_SLOT_MAX];
 static unsigned char macrunner_hb_fls_slots[MACRUNNER_HB_TLS_SLOT_MAX];
 static uint64_t macrunner_hb_fls_callbacks[MACRUNNER_HB_TLS_SLOT_MAX];
 static struct macrunner_hb_tls_thread_values macrunner_hb_tls_thread_values[MACRUNNER_HB_TLS_THREAD_MAX];
+static pthread_mutex_t macrunner_hb_x64_thread_context_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct macrunner_hb_x64_thread_context_entry macrunner_hb_x64_thread_contexts[MACRUNNER_HB_X64_THREAD_CONTEXT_MAX];
 static pthread_mutex_t macrunner_hb_error_mode_mutex = PTHREAD_MUTEX_INITIALIZER;
 static DWORD macrunner_hb_error_mode;
 static __thread DWORD macrunner_hb_thread_error_mode;
@@ -928,6 +938,340 @@ static void macrunner_hb_trace_guest_amd64_context( hb_context_t *ctx,
              hb_result_string( rax_read ), hb_result_string( rcx_read ),
              hb_result_string( rdx_read ) );
     fflush( stderr );
+}
+
+static DWORD macrunner_hb_amd64_context_bits( DWORD flags )
+{
+    return flags & ~CONTEXT_AMD64 &
+           ~(CONTEXT_EXCEPTION_ACTIVE | CONTEXT_SERVICE_ACTIVE |
+             CONTEXT_EXCEPTION_REQUEST | CONTEXT_EXCEPTION_REPORTING);
+}
+
+static DWORD macrunner_hb_current_tid(void)
+{
+    return (DWORD)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread;
+}
+
+static NTSTATUS macrunner_hb_tid_from_thread_handle( HANDLE handle, DWORD *tid )
+{
+    THREAD_BASIC_INFORMATION info;
+    NTSTATUS status;
+
+    if (!tid) return STATUS_INVALID_PARAMETER;
+    if (handle == GetCurrentThread())
+    {
+        *tid = macrunner_hb_current_tid();
+        return *tid ? STATUS_SUCCESS : STATUS_INVALID_HANDLE;
+    }
+    status = NtQueryInformationThread( handle, ThreadBasicInformation, &info, sizeof(info), NULL );
+    if (status) return status;
+    *tid = (DWORD)(ULONG_PTR)info.ClientId.UniqueThread;
+    return *tid ? STATUS_SUCCESS : STATUS_INVALID_HANDLE;
+}
+
+static struct macrunner_hb_x64_thread_context_entry *macrunner_hb_find_x64_thread_context_locked( DWORD tid,
+                                                                                                  BOOL create )
+{
+    struct macrunner_hb_x64_thread_context_entry *free_entry = NULL;
+    unsigned int i;
+
+    if (!tid) return NULL;
+    for (i = 0; i < MACRUNNER_HB_X64_THREAD_CONTEXT_MAX; i++)
+    {
+        struct macrunner_hb_x64_thread_context_entry *entry = &macrunner_hb_x64_thread_contexts[i];
+
+        if (entry->tid == tid) return entry;
+        if (!entry->tid && !free_entry) free_entry = entry;
+    }
+    if (!create || !free_entry) return NULL;
+    memset( free_entry, 0, sizeof(*free_entry) );
+    free_entry->tid = tid;
+    return free_entry;
+}
+
+static void macrunner_hb_fill_amd64_context_from_regs( AMD64_CONTEXT *context,
+                                                       const hb_regs_x64_t *regs,
+                                                       DWORD requested_flags )
+{
+    DWORD bits = macrunner_hb_amd64_context_bits( requested_flags );
+    unsigned int i;
+
+    if (!context || !regs) return;
+    context->ContextFlags = requested_flags | CONTEXT_AMD64;
+    context->MxCsr = 0x1f80;
+
+    if (bits & (CONTEXT_AMD64_CONTROL & ~CONTEXT_AMD64))
+    {
+        context->SegCs = 0x33;
+        context->SegSs = 0x2b;
+        context->EFlags = (DWORD)(regs->rflags ? regs->rflags : 0x202) | 2;
+        context->Rsp = regs->rsp;
+        context->Rip = regs->rip;
+    }
+    if (bits & (CONTEXT_AMD64_SEGMENTS & ~CONTEXT_AMD64))
+    {
+        context->SegDs = 0x2b;
+        context->SegEs = 0x2b;
+        context->SegFs = 0x53;
+        context->SegGs = 0x2b;
+    }
+    if (bits & (CONTEXT_AMD64_INTEGER & ~CONTEXT_AMD64))
+    {
+        context->Rax = regs->rax;
+        context->Rcx = regs->rcx;
+        context->Rdx = regs->rdx;
+        context->Rbx = regs->rbx;
+        context->Rsp = regs->rsp;
+        context->Rbp = regs->rbp;
+        context->Rsi = regs->rsi;
+        context->Rdi = regs->rdi;
+        context->R8  = regs->r8;
+        context->R9  = regs->r9;
+        context->R10 = regs->r10;
+        context->R11 = regs->r11;
+        context->R12 = regs->r12;
+        context->R13 = regs->r13;
+        context->R14 = regs->r14;
+        context->R15 = regs->r15;
+    }
+    if (bits & (CONTEXT_AMD64_FLOATING_POINT & ~CONTEXT_AMD64))
+    {
+        context->FltSave.ControlWord = 0x37f;
+        context->FltSave.MxCsr = 0x1f80;
+        context->FltSave.MxCsr_Mask = 0x2ffff;
+        for (i = 0; i < 16; i++)
+        {
+            context->FltSave.XmmRegisters[i].Low = regs->xmm[i][0];
+            context->FltSave.XmmRegisters[i].High = (LONGLONG)regs->xmm[i][1];
+        }
+    }
+}
+
+static void macrunner_hb_copy_amd64_context_fields( AMD64_CONTEXT *dst, const AMD64_CONTEXT *src,
+                                                    DWORD requested_flags )
+{
+    DWORD bits = macrunner_hb_amd64_context_bits( requested_flags );
+
+    if (!dst || !src) return;
+    dst->ContextFlags = requested_flags | CONTEXT_AMD64;
+    dst->MxCsr = src->MxCsr;
+    if (bits & (CONTEXT_AMD64_CONTROL & ~CONTEXT_AMD64))
+    {
+        dst->SegCs = src->SegCs;
+        dst->SegSs = src->SegSs;
+        dst->EFlags = src->EFlags;
+        dst->Rsp = src->Rsp;
+        dst->Rip = src->Rip;
+    }
+    if (bits & (CONTEXT_AMD64_SEGMENTS & ~CONTEXT_AMD64))
+    {
+        dst->SegDs = src->SegDs;
+        dst->SegEs = src->SegEs;
+        dst->SegFs = src->SegFs;
+        dst->SegGs = src->SegGs;
+    }
+    if (bits & (CONTEXT_AMD64_INTEGER & ~CONTEXT_AMD64))
+    {
+        dst->Rax = src->Rax;
+        dst->Rcx = src->Rcx;
+        dst->Rdx = src->Rdx;
+        dst->Rbx = src->Rbx;
+        dst->Rsp = src->Rsp;
+        dst->Rbp = src->Rbp;
+        dst->Rsi = src->Rsi;
+        dst->Rdi = src->Rdi;
+        dst->R8  = src->R8;
+        dst->R9  = src->R9;
+        dst->R10 = src->R10;
+        dst->R11 = src->R11;
+        dst->R12 = src->R12;
+        dst->R13 = src->R13;
+        dst->R14 = src->R14;
+        dst->R15 = src->R15;
+    }
+    if (bits & (CONTEXT_AMD64_FLOATING_POINT & ~CONTEXT_AMD64))
+        memcpy( &dst->FltSave, &src->FltSave, sizeof(dst->FltSave) );
+}
+
+static void macrunner_hb_update_x64_thread_snapshot_locked( struct macrunner_hb_x64_thread_context_entry *entry,
+                                                            hb_context_t *ctx )
+{
+    if (!entry || !ctx) return;
+    memset( &entry->snapshot, 0, sizeof(entry->snapshot) );
+    macrunner_hb_fill_amd64_context_from_regs( &entry->snapshot, &ctx->regs.x64, CONTEXT_AMD64_ALL );
+    entry->snapshot.Rip = ctx->pc ? ctx->pc : ctx->regs.x64.rip;
+}
+
+static BOOL macrunner_hb_should_register_x64_context_label( const char *label )
+{
+    return label && !strcmp( label, "thread" );
+}
+
+static void macrunner_hb_register_current_x64_context( hb_context_t *ctx, const char *label )
+{
+    struct macrunner_hb_x64_thread_context_entry *entry;
+    DWORD tid;
+
+    if (!ctx || !macrunner_hb_should_register_x64_context_label( label )) return;
+    tid = macrunner_hb_current_tid();
+    pthread_mutex_lock( &macrunner_hb_x64_thread_context_mutex );
+    entry = macrunner_hb_find_x64_thread_context_locked( tid, TRUE );
+    if (entry)
+    {
+        entry->ctx = ctx;
+        macrunner_hb_update_x64_thread_snapshot_locked( entry, ctx );
+    }
+    pthread_mutex_unlock( &macrunner_hb_x64_thread_context_mutex );
+}
+
+static void macrunner_hb_update_current_x64_context( hb_context_t *ctx, const char *label )
+{
+    struct macrunner_hb_x64_thread_context_entry *entry;
+    DWORD tid;
+
+    if (!ctx || !macrunner_hb_should_register_x64_context_label( label )) return;
+    tid = macrunner_hb_current_tid();
+    pthread_mutex_lock( &macrunner_hb_x64_thread_context_mutex );
+    entry = macrunner_hb_find_x64_thread_context_locked( tid, TRUE );
+    if (entry)
+    {
+        entry->ctx = ctx;
+        macrunner_hb_update_x64_thread_snapshot_locked( entry, ctx );
+    }
+    pthread_mutex_unlock( &macrunner_hb_x64_thread_context_mutex );
+}
+
+static void macrunner_hb_unregister_current_x64_context( hb_context_t *ctx, const char *label )
+{
+    struct macrunner_hb_x64_thread_context_entry *entry;
+    DWORD tid;
+
+    if (!ctx || !macrunner_hb_should_register_x64_context_label( label )) return;
+    tid = macrunner_hb_current_tid();
+    pthread_mutex_lock( &macrunner_hb_x64_thread_context_mutex );
+    entry = macrunner_hb_find_x64_thread_context_locked( tid, FALSE );
+    if (entry && entry->ctx == ctx) memset( entry, 0, sizeof(*entry) );
+    pthread_mutex_unlock( &macrunner_hb_x64_thread_context_mutex );
+}
+
+NTSTATUS macrunner_hb_get_x64_thread_context( HANDLE handle, AMD64_CONTEXT *context )
+{
+    struct macrunner_hb_x64_thread_context_entry *entry;
+    DWORD requested_flags, tid = 0;
+    NTSTATUS status;
+
+    if (!context) return STATUS_INVALID_PARAMETER;
+    requested_flags = context->ContextFlags;
+    if (!(requested_flags & CONTEXT_AMD64)) return STATUS_NOT_SUPPORTED;
+
+    status = macrunner_hb_tid_from_thread_handle( handle, &tid );
+    if (status) return status;
+
+    pthread_mutex_lock( &macrunner_hb_x64_thread_context_mutex );
+    entry = macrunner_hb_find_x64_thread_context_locked( tid, FALSE );
+    if (!entry)
+        status = STATUS_INVALID_HANDLE;
+    else if (entry->ctx)
+    {
+        macrunner_hb_fill_amd64_context_from_regs( context, &entry->ctx->regs.x64, requested_flags );
+        context->Rip = entry->ctx->pc ? entry->ctx->pc : entry->ctx->regs.x64.rip;
+        macrunner_hb_update_x64_thread_snapshot_locked( entry, entry->ctx );
+    }
+    else
+        macrunner_hb_copy_amd64_context_fields( context, &entry->snapshot, requested_flags );
+    pthread_mutex_unlock( &macrunner_hb_x64_thread_context_mutex );
+
+    if (macrunner_hb_trace_wait_semantic_budget_allows())
+    {
+        fprintf( stderr, "macrunner-hb-wait-semantic: nt-get-context guest-x64 "
+                 "handle=%p tid=%lu status=%08lx flags=%08lx rip=%p rsp=%p rbp=%p "
+                 "rax=%p rcx=%p rdx=%p xmm0=%016llx:%016llx sane=%u\n",
+                 handle, (unsigned long)tid, (unsigned long)status,
+                 (unsigned long)requested_flags, (void *)(uintptr_t)context->Rip,
+                 (void *)(uintptr_t)context->Rsp, (void *)(uintptr_t)context->Rbp,
+                 (void *)(uintptr_t)context->Rax, (void *)(uintptr_t)context->Rcx,
+                 (void *)(uintptr_t)context->Rdx,
+                 (unsigned long long)context->FltSave.XmmRegisters[0].High,
+                 (unsigned long long)context->FltSave.XmmRegisters[0].Low,
+                 !status && context->Rip && context->Rsp );
+        fflush( stderr );
+    }
+    return status;
+}
+
+NTSTATUS macrunner_hb_set_x64_thread_context( HANDLE handle, const AMD64_CONTEXT *context )
+{
+    struct macrunner_hb_x64_thread_context_entry *entry;
+    DWORD bits, tid = 0;
+    NTSTATUS status;
+    unsigned int i;
+
+    if (!context) return STATUS_INVALID_PARAMETER;
+    if (!(context->ContextFlags & CONTEXT_AMD64)) return STATUS_NOT_SUPPORTED;
+    bits = macrunner_hb_amd64_context_bits( context->ContextFlags );
+
+    status = macrunner_hb_tid_from_thread_handle( handle, &tid );
+    if (status) return status;
+
+    pthread_mutex_lock( &macrunner_hb_x64_thread_context_mutex );
+    entry = macrunner_hb_find_x64_thread_context_locked( tid, FALSE );
+    if (!entry || !entry->ctx)
+        status = STATUS_INVALID_HANDLE;
+    else
+    {
+        hb_regs_x64_t *regs = &entry->ctx->regs.x64;
+
+        if (bits & (CONTEXT_AMD64_CONTROL & ~CONTEXT_AMD64))
+        {
+            regs->rsp = context->Rsp;
+            regs->rip = context->Rip;
+            regs->rflags = context->EFlags | 2;
+            entry->ctx->pc = context->Rip;
+        }
+        if (bits & (CONTEXT_AMD64_INTEGER & ~CONTEXT_AMD64))
+        {
+            regs->rax = context->Rax;
+            regs->rcx = context->Rcx;
+            regs->rdx = context->Rdx;
+            regs->rbx = context->Rbx;
+            regs->rsp = context->Rsp;
+            regs->rbp = context->Rbp;
+            regs->rsi = context->Rsi;
+            regs->rdi = context->Rdi;
+            regs->r8  = context->R8;
+            regs->r9  = context->R9;
+            regs->r10 = context->R10;
+            regs->r11 = context->R11;
+            regs->r12 = context->R12;
+            regs->r13 = context->R13;
+            regs->r14 = context->R14;
+            regs->r15 = context->R15;
+        }
+        if (bits & (CONTEXT_AMD64_FLOATING_POINT & ~CONTEXT_AMD64))
+        {
+            for (i = 0; i < 16; i++)
+            {
+                regs->xmm[i][0] = context->FltSave.XmmRegisters[i].Low;
+                regs->xmm[i][1] = (uint64_t)context->FltSave.XmmRegisters[i].High;
+            }
+        }
+        macrunner_hb_update_x64_thread_snapshot_locked( entry, entry->ctx );
+    }
+    pthread_mutex_unlock( &macrunner_hb_x64_thread_context_mutex );
+
+    if (macrunner_hb_trace_wait_semantic_budget_allows())
+    {
+        fprintf( stderr, "macrunner-hb-wait-semantic: nt-set-context guest-x64 "
+                 "handle=%p tid=%lu status=%08lx flags=%08lx rip=%p rsp=%p rbp=%p "
+                 "rax=%p rcx=%p rdx=%p\n",
+                 handle, (unsigned long)tid, (unsigned long)status,
+                 (unsigned long)context->ContextFlags, (void *)(uintptr_t)context->Rip,
+                 (void *)(uintptr_t)context->Rsp, (void *)(uintptr_t)context->Rbp,
+                 (void *)(uintptr_t)context->Rax, (void *)(uintptr_t)context->Rcx,
+                 (void *)(uintptr_t)context->Rdx );
+        fflush( stderr );
+    }
+    return status;
 }
 
 static uint64_t macrunner_hb_trace_return_address( hb_context_t *ctx )
@@ -2011,6 +2355,9 @@ static BOOL macrunner_hb_kernel_export_has_local_semantic( const char *dll_name,
            macrunner_hb_strieq( import_name, "SetThreadDescription" ) ||
            macrunner_hb_strieq( import_name, "ResumeThread" ) ||
            macrunner_hb_strieq( import_name, "GetThreadContext" ) ||
+           macrunner_hb_strieq( import_name, "SetThreadContext" ) ||
+           macrunner_hb_strieq( import_name, "NtGetContextThread" ) ||
+           macrunner_hb_strieq( import_name, "NtSetContextThread" ) ||
            macrunner_hb_strieq( import_name, "SuspendThread" ) ||
            macrunner_hb_strieq( import_name, "CreateDirectoryA" ) ||
            macrunner_hb_strieq( import_name, "CreateDirectoryW" ) ||
@@ -10373,8 +10720,16 @@ static BOOL macrunner_hb_try_thread_creation_semantic( hb_context_t *ctx,
         return TRUE;
     }
 
-    if (macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ))
+    if (macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ) ||
+        macrunner_hb_strieq( thunk->import_name, "SetThreadContext" ) ||
+        macrunner_hb_strieq( thunk->import_name, "NtGetContextThread" ) ||
+        macrunner_hb_strieq( thunk->import_name, "NtSetContextThread" ))
     {
+        BOOL get_context = macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ) ||
+                           macrunner_hb_strieq( thunk->import_name, "NtGetContextThread" );
+        BOOL nt_context = macrunner_hb_strieq( thunk->import_name, "NtGetContextThread" ) ||
+                          macrunner_hb_strieq( thunk->import_name, "NtSetContextThread" );
+
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
             uint32_t requested_flags = 0;
@@ -10383,15 +10738,31 @@ static BOOL macrunner_hb_try_thread_creation_semantic( hb_context_t *ctx,
             if (ctx && ctx->memory && args[1])
                 flags_read = hb_memory_read_u32( ctx->memory, (hb_gva_t)args[1] + 0x30,
                                                  &requested_flags );
-            fprintf( stderr, "macrunner-hb-wait-semantic: get-context-before import=%s!%s "
+            fprintf( stderr, "macrunner-hb-wait-semantic: context-before import=%s!%s "
                      "pc=%p rsp=%p handle=%p context=%p requested_flags=%08x read=%s\n",
                      thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
                      (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)args[0],
                      (void *)(uintptr_t)args[1], requested_flags, hb_result_string( flags_read ) );
             fflush( stderr );
         }
-        *ret = macrunner_hb_call_arm64_pe_import12_for_ctx( ctx, thunk, args );
-        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        status = get_context ? NtGetContextThread( (HANDLE)(uintptr_t)args[0],
+                                                   (CONTEXT *)(uintptr_t)args[1] )
+                             : NtSetContextThread( (HANDLE)(uintptr_t)args[0],
+                                                   (const CONTEXT *)(uintptr_t)args[1] );
+        NtCurrentTeb()->LastStatusValue = status;
+        if (nt_context)
+            *ret = status;
+        else if (status)
+        {
+            RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
+            *ret = FALSE;
+        }
+        else
+        {
+            RtlSetLastWin32Error( ERROR_SUCCESS );
+            *ret = TRUE;
+        }
+        if (get_context && macrunner_hb_trace_wait_semantic_budget_allows())
             macrunner_hb_trace_guest_amd64_context( ctx, thunk, args, *ret );
         return TRUE;
     }
@@ -13995,8 +14366,14 @@ static unsigned int macrunner_hb_import_arg_count( const struct macrunner_hb_imp
          macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
         (macrunner_hb_strieq( thunk->import_name, "ResumeThread" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetThreadContext" ) ||
          macrunner_hb_strieq( thunk->import_name, "SuspendThread" )))
-        return macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ) ? 2 : 1;
+        return (macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ) ||
+                macrunner_hb_strieq( thunk->import_name, "SetThreadContext" )) ? 2 : 1;
+    if (macrunner_hb_strieq( thunk->dll_name, "ntdll.dll" ) &&
+        (macrunner_hb_strieq( thunk->import_name, "NtGetContextThread" ) ||
+         macrunner_hb_strieq( thunk->import_name, "NtSetContextThread" )))
+        return 2;
     if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
          macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
         macrunner_hb_strieq( thunk->import_name, "WaitForMultipleObjects" ))
@@ -15217,6 +15594,7 @@ static BOOL macrunner_hb_trace_import_interesting( const struct macrunner_hb_imp
          macrunner_hb_strieq( thunk->import_name, "CreateRemoteThreadEx" ) ||
          macrunner_hb_strieq( thunk->import_name, "ResumeThread" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetThreadContext" ) ||
          macrunner_hb_strieq( thunk->import_name, "SuspendThread" ) ||
          macrunner_hb_strieq( thunk->import_name, "SetThreadDescription" ) ||
          macrunner_hb_strieq( thunk->import_name, "WaitForMultipleObjects" ) ||
@@ -15233,6 +15611,8 @@ static BOOL macrunner_hb_trace_import_interesting( const struct macrunner_hb_imp
     if (macrunner_hb_strieq( thunk->dll_name, "ntdll.dll" ) &&
         (macrunner_hb_strieq( thunk->import_name, "RtlAddVectoredExceptionHandler" ) ||
          macrunner_hb_strieq( thunk->import_name, "RtlRemoveVectoredExceptionHandler" ) ||
+         macrunner_hb_strieq( thunk->import_name, "NtGetContextThread" ) ||
+         macrunner_hb_strieq( thunk->import_name, "NtSetContextThread" ) ||
          macrunner_hb_strieq( thunk->import_name, "RtlGetLastWin32Error" ) ||
          macrunner_hb_strieq( thunk->import_name, "RtlSetLastWin32Error" )))
         return TRUE;
@@ -16314,11 +16694,13 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     }
     ctx = hb_context_create( HB_ARCH_X64, backend );
     if (!ctx) return STATUS_NO_MEMORY;
+    macrunner_hb_register_current_x64_context( ctx, label );
     hb_context_set_block_limit( ctx, block_limit );
     hb_context_set_step_limit( ctx, step_limit );
     ctx->memory = hb_memory_create( 0 );
     if (!ctx->memory)
     {
+        macrunner_hb_unregister_current_x64_context( ctx, label );
         hb_context_destroy( ctx );
         return STATUS_NO_MEMORY;
     }
@@ -16435,6 +16817,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         fflush( stderr );
     }
     ret = hb_abi_x64_call( ctx, (uint64_t)(uintptr_t)entry, call, NULL );
+    macrunner_hb_update_current_x64_context( ctx, label );
     if (debug_enabled)
         ERR( "MacRunner HyperBridge after abi %s entry=%p result=%s pc=%p rsp=%p\n",
              label ? label : "x64", entry, hb_result_string(ret),
@@ -16503,6 +16886,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         struct macrunner_hb_import_thunk *import_thunk;
         uint64_t block_pc;
 
+        macrunner_hb_update_current_x64_context( ctx, label );
         if (trace_thread_run && !blocks && !steps)
         {
             fprintf( stderr, "macrunner-ui-input: stage=hb_run_x64_first_loop label=%s pc=%p rip=%p "
@@ -16846,6 +17230,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         }
         else
             ret = hb_runtime_run( ctx, func, HB_BACKEND_INTERP, &out );
+        macrunner_hb_update_current_x64_context( ctx, label );
         if (debug_enabled && blocks <= 200)
             ERR( "MacRunner HyperBridge after run %s block=%s ret=%s out=%s steps=%s pc=%p\n",
                  label ? label : "x64", wine_dbgstr_longlong(blocks),
@@ -16998,6 +17383,7 @@ done:
         teb->Tib.StackBase = old_teb_stack_base;
         teb->DeallocationStack = old_teb_deallocation_stack;
     }
+    macrunner_hb_unregister_current_x64_context( ctx, label );
     if (ctx) hb_context_destroy( ctx );
     if (stack_base)
     {

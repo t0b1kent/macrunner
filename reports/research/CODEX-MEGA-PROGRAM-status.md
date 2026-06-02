@@ -7,6 +7,20 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
+## ⚡ LANE A NEXT (operator 2026-06-02 update) — AOT cache is ON & filling; now answer "does Mono finish?"
+AOT cache is engaged and working (translation-cache.bin 16B→1.5MB; warm run hits=2345/stores=7785).
+But the window still doesn't appear in 90s (D3D11CreateDevice=0). Before more micro-opt, answer the
+key question with ONE experiment: **run Hollow Knight with a LONG timeout (e.g. 600–900s) AND the
+now-warm AOT cache** (run it 2–3 times so the cache warms across runs, then a long final run).
+- Track: does the heartbeat block count keep CLIMBING, and does `D3D11CreateDevice`/`GfxDevice`
+  EVER appear if given enough time? Does cache hit-rate rise run-over-run (hits/(hits+misses))?
+- If Mono init COMPLETES given time → it's pure throughput: keep warming + bulk-promote + enable
+  DIRECT_MEM and it'll fit smaller timeouts → window.
+- If it PLATEAUS again at a fixed block/rva even with a long timeout + warm cache → it's a NEW gate
+  (another wait/init dependency), not speed — diagnose that like the last gate.
+Also: DIRECT_MEM is still 0 — enable for safe paths and measure. Report blocks-per-wallclock and
+cache hit-rate before/after. Keep the JIT shift/SETcc flag correctness fix intact.
+
 ## ⚡ LANE A SPEED — turn ON the unused accelerators (operator 2026-06-02) — biggest lever
 Post-gate the main thread is throughput-bound in Mono managed-init (heartbeat ~705K blocks and
 climbing, no D3D11CreateDevice yet). Warming one hot loop per run is too slow. An audit found TWO
@@ -29,6 +43,130 @@ NOTE: there is NO public "map of hot JIT paths" — hot paths are unique to this
 levers are architectural (AOT cache, block chaining, direct-mem, bulk promotion), and #1+#2 above
 are currently OFF. Engage them first; that is the fastest route to finishing Mono init → main →
 GfxDevice → window. Keep correctness (the shift/SETcc JIT flag fix below) intact.
+
+**06:55 checkpoint (Codex): persistent translation cache is now wired into the Hollow Knight spike
+path; direct-mem global enable is unsafe.** Runtime changes: `hb_jit_runtime_run()` now opens the
+persistent translation cache from `MACRUNNER_HB_TRANSLATION_CACHE_ROOT`, keys blocks by guest bytes +
+mode/backend/direct-mem/direct-stack flags, loads helper-free native blobs into the current executable
+JIT buffer, stores helper-free compiled blobs back to disk, and prints cache hit/miss/store summaries.
+`hb_aot_cache.c` now keeps the cache file indexed in memory per process instead of rereading/scanning
+`translation-cache.bin` on every lookup/store. `scripts/mr-run.sh` wires the spike path to
+`engine/hyperbridge/build/hyperbridge-cache` with cache tracing on by default.
+
+Validation: `make && ./tests/hb_test_runner` -> `419 passed, 0 failed`;
+`hb_fuzz_diff.py --cases 10000 --batch 1024 --families shift_rotate_flags` ->
+`backend_mismatch_count=0`, `oracle_mismatch_count=0`; targeted ntdll relink/install succeeded.
+Cold/warm HK measurement with direct-mem OFF:
+- `run-20260602-cache-index-cold90`: clean (`runtime_fail=0`, `jit_fallback=0`), cache summary
+  `hits=1731 misses=23058 stores=5572 store_skips=17486`, hot-block total reached `600000` by 90s,
+  cache stats PASS with `8599` entries / `1323268` bytes.
+- `run-20260602-cache-index-warm90`: clean, cache summary
+  `hits=6874 misses=17945 stores=429 store_skips=17516`, hot-block total again `600000` by 90s,
+  cache stats PASS with `8601` entries / `1323536` bytes.
+
+Direct-mem measurement: global `MACRUNNER_HB_JIT_DIRECT_MEM=1` is still not safe. Cold run
+`run-20260602-cache-cold90` reproduced the known UnityPlayer RVA `0x649910` failure:
+`out=MEMORY_FAULT`, `rdx=0x10`, no JIT fallback/codegen failure. The runner default is therefore
+kept at `MACRUNNER_HB_JIT_DIRECT_MEM=0`; direct-mem must be narrowed to proven-safe ranges/forms
+before becoming default.
+
+**07:55 checkpoint (Codex): two safe accelerator batches landed, but Mono init is still
+throughput-bound.** Added `MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN=1` as a narrow direct-memory
+surface for existing helper-free scalar scan loops; global `MACRUNNER_HB_JIT_DIRECT_MEM` remains
+OFF after the Unity `0x649910` fault. Validation stayed clean:
+`make && ./tests/hb_test_runner` -> `419 passed, 0 failed`; `hb_fuzz_diff.py --cases 10000
+--batch 1024 --families shift_rotate_flags` -> backend/oracle mismatches `0`.
+
+Measurement:
+- Baseline indexed-cache warm run was `run-20260602-cache-index-warm90`: cache `hits=6874`,
+  `misses=17945`, `stores=429`, `store_skips=17516`, heartbeat `600000` blocks/90s.
+- Scalar-scan warm profile `run-20260602-scalar-scan-profile90`: cache `hits=7303`,
+  `misses=17516`, `stores=0`, `store_skips=17516`, heartbeat still `600000` blocks/90s.
+  The previous Mono string-scan hot rank disappeared, so the path works, but it is not enough.
+- Helper-stub cache v9 canonicalization landed for conservative single-block helper stubs
+  (`x1=current block`, `x23=allowlisted helper`, one `blr x23`; generic per-instruction helpers
+  still skipped). Warm run `run-20260602-helpercache-warm90`: cache `hits=7235`, `misses=17554`,
+  `stores=449`, `store_skips=17105`, heartbeat still `600000` blocks/90s. Clean run:
+  `runtime_fail=0`, `jit_fallback=0`, `JIT codegen failed=0`, `D3D11CreateDevice=0`,
+  `GfxDevice=0`.
+
+**08:30 correction (Codex): do not chase the `0x4e3440/0x4e3727` pair as a new family.** A targeted
+IR capture (`run-20260602-ir-mono-4e3440`) proved Mono RVA `0x4e3440` is a range guard
+(`LOAD r14,[r13]; CMP r14,rdx; JB 0x4e3727`) and the existing runtime already promotes the pair:
+`macrunner-hb-jit-fusion: kind=bounded-byte-scan guard=0x87ef1893727 body=0x87ef1893440`.
+A speculative linked-list promoter was removed after a no-fire profile; validation after removal:
+`make && ./tests/hb_test_runner` -> `419 passed, 0 failed`;
+`hb_fuzz_diff.py --cases 10000 --batch 1024 --families shift_rotate_flags` -> backend/oracle
+mismatches `0`; targeted ntdll relink/install succeeded.
+
+**08:45 checkpoint (Codex): cache warm-start is real but not yet enough; do not add more Mono
+loop warmers blindly.** Same-build warm run `run-20260602-current-warm2-90` was clean
+(`runtime_fail=0`, `jit_fallback=0`, `JIT codegen failed=0`) with cache summary `hits=7235`,
+`misses=17578`, `stores=449`, `store_skips=17129`; heartbeat stayed `600000` blocks/90s and no
+real `D3D11CreateDevice`/`GfxDevice` appeared. A second targeted IR capture
+(`run-20260602-ir-mono-6d920`) proved Mono `0x6d920/0x6d926` is also already handled by the
+existing bounded-byte-scan fusion (`guard=0x87ef141d920`, `body=0x87ef141d926`). The next issue is
+why these promoted/fused blocks still dominate hot ranks after cache replay.
+
+NEXT: investigate fused-loop persistence/accounting before writing any new Mono loop promoter. Current
+top real work is Unity `0x649910` (rank #1; global direct-mem faulted there with `rdx=0x10`) plus the
+Unity sort/comparator `0x283xxx` family. Focus on helper-free/native implementations or precise safe
+direct-memory guards for those families, then rerun a warm 90s profile and check real
+`D3D11CreateDevice`/`GfxDevice`. Keep global direct-mem OFF; only enable direct memory under specific
+proven-safe emitters.
+
+**09:45 checkpoint (Codex): persistent cache now covers the x1-instruction helper family and warm
+replays many more Mono-init stubs, but execution is still helper-bound.** Runtime promotion now runs
+after persistent-cache hits too, so already-known bounded scan fusions are rebuilt on warm start; the
+old hot `0x4e3440/0x6d920` bounded-scan pair disappeared from the warm top ranks. Cache canonicalizer
+format `v11` now supports single-instruction helper stubs (`x1=&block->instrs[i]`, `x23=allowlisted
+helper`) by storing an instruction-index sentinel and patching it back to the current block on load.
+Validation stayed clean: `make && ./tests/hb_test_runner` -> `419 passed, 0 failed`;
+`hb_fuzz_diff.py --cases 10000 --batch 1024 --families shift_rotate_flags` -> backend/oracle
+mismatches `0`; targeted ntdll relink/install succeeded.
+
+Measurement:
+- v9 warm (`run-20260602-current-warm2-90`): cache `hits=7235`, `misses=17578`, `stores=449`,
+  `store_skips=17129`, heartbeat `600000` blocks/90s.
+- v11 cold fill (`run-20260602-cache-v11-cold90`): cache `hits=2351`, `misses=22456`,
+  `stores=7785`, `store_skips=14670`, heartbeat `600000` blocks/90s.
+- v11 warm (`run-20260602-cache-v11-warm90`): cache `hits=9575`, `misses=15232`, `stores=562`,
+  `store_skips=14670`, heartbeat `600000` blocks/90s. Clean run: `runtime_fail=0`,
+  `jit_fallback=0`, `JIT codegen failed=0`, `D3D11CreateDevice=0`, `GfxDevice=0`.
+
+NEXT: persistent startup cache is materially better, but it did not move the 90s heartbeat yet. Work is
+now inside the helper-collapsed hot blocks: Unity pointer comparator `0x649910` / sort `0x282860`,
+Mono metadata helpers `0x183a10/0x183e00/0x184130`, and Mono string helpers `0x59870/0x59830`.
+Do not enable raw global direct-mem: Unity `0x649910` already proved invalid pointers are possible.
+Next safe accelerator is host-span fast paths inside the C helpers (validated memory range once, then
+loop over host bytes) or a guarded native path that falls back before any unsafe load.
+
+**10:20 checkpoint (Codex): helper read fast paths are safe but not a visible throughput lever yet.**
+Added validated host-span fast reads inside the Unity `u32_ptr_compare` helper and Mono string/metadata
+helpers. The fast path only uses direct host bytes after `hb_memory_find_region` proves a readable
+host-backed span; invalid/unbacked pointers still fall back to existing `hb_memory_read_*` /
+`hb_jit_read_guest_u64_result` semantics. Validation stayed clean (`419 passed, 0 failed`; 10k
+`shift_rotate_flags` backend/oracle mismatches `0`; ntdll relink/install succeeded). Measurements:
+`run-20260602-fastreads-refill90` clean refill cache `hits=2345`, `misses=22444`, `stores=7785`,
+`store_skips=14658`; `run-20260602-fastreads-warm90` clean warm cache `hits=9569`, `misses=15220`,
+`stores=562`, `store_skips=14658`. Heartbeat still `600000` blocks/90s, no
+`D3D11CreateDevice`/`GfxDevice`.
+
+NEXT: take a finer 50K-interval heartbeat to see whether the 200K snapshots hide a small speed delta.
+If still flat, stop optimizing helper read internals and move to the Unity comparator/sort control-flow
+shape: `0x649910` remains rank #1, while `0x282860/0x282876` repeatedly call it. A guarded native
+comparator path must check pointer validity before loads and fall back to the C helper for invalid
+pointers (`rdx=0x10` was observed under global direct-mem).
+
+**10:35 checkpoint (Codex): finer heartbeat confirms no hidden speed delta.**
+`run-20260602-fastreads-warm50k90` was clean with cache `hits=10139`, `misses=14674`, `stores=0`,
+`store_skips=14674`; 50K heartbeat ticks ended at `600000` (`250000..600000` tail), so the 200K
+interval was not hiding a near-`800000` run. Still no `D3D11CreateDevice`/`GfxDevice`.
+
+NEXT: stop helper-read micro-optimizing. Target the Unity sort/comparator control-flow family in bulk:
+`0x282860/0x282876` around the indirect comparator call and `0x649910` comparator itself. Keep raw
+global direct-mem OFF. Any native comparator/sort path must guard pointer validity before loading and
+fall back to the C helper on invalid/unbacked pointers.
 
 ## 🐞 LANE A — JIT CORRECTNESS BUG found by Lane B fuzzer (operator 2026-06-01, do alongside gate)
 Lane B's new differential fuzzer (`engine/hyperbridge/tests/hb_fuzz_diff.py`, merged) ran 1M cases:

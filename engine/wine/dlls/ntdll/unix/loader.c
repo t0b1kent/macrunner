@@ -257,7 +257,7 @@ static char *remove_tail( const char *str, const char *tail )
 
     if (len < tail_len) return NULL;
     if (strcmp( str + len - tail_len, tail )) return NULL;
-    ret = malloc( len - tail_len + 1 );
+    if (!(ret = malloc( len - tail_len + 1 ))) fatal_error( "out of memory building loader path\n" );
     memcpy( ret, str, len - tail_len );
     ret[len - tail_len] = 0;
     return ret;
@@ -267,7 +267,9 @@ static char *remove_tail( const char *str, const char *tail )
 static char *build_path( const char *dir, const char *name )
 {
     size_t len = strlen( dir );
-    char *ret = malloc( len + strlen( name ) + 2 );
+    char *ret;
+
+    if (!(ret = malloc( len + strlen( name ) + 2 ))) fatal_error( "out of memory building loader path\n" );
 
     if (len)
     {
@@ -306,7 +308,8 @@ static char *build_relative_path( const char *base, const char *from, const char
         break;
     }
 
-    ret = malloc( strlen(base) + 3 * dotdots + strlen(start) + 2 );
+    if (!(ret = malloc( strlen(base) + 3 * dotdots + strlen(start) + 2 )))
+        fatal_error( "out of memory building loader path\n" );
     strcpy( ret, base );
     while (dotdots--) strcat( ret, "/.." );
 
@@ -522,8 +525,8 @@ static void set_home_dir(void)
     }
     if ((p = strrchr( name, '/' ))) name = p + 1;
     if ((p = strrchr( name, '\\' ))) name = p + 1;
-    home_dir = strdup( home );
-    user_name = strdup( name );
+    if (home && !(home_dir = strdup( home ))) fatal_error( "out of memory setting home directory\n" );
+    if (!(user_name = strdup( name ))) fatal_error( "out of memory setting user name\n" );
 }
 
 
@@ -536,7 +539,7 @@ static void set_config_dir(void)
     {
         if (prefix[0] != '/')
             fatal_error( "invalid directory %s in WINEPREFIX: not an absolute path\n", prefix );
-        config_dir = dir = strdup( prefix );
+        if (!(config_dir = dir = strdup( prefix ))) fatal_error( "out of memory setting WINEPREFIX\n" );
         for (p = dir + strlen(dir) - 1; p > dir && *p == '/'; p--) *p = 0;
     }
     else

@@ -5351,6 +5351,24 @@ static hb_result_t hb_jit_helper_read_u64_fast(hb_context_t* ctx, uint64_t addr,
     return hb_jit_read_guest_u64_result(ctx, addr, out);
 }
 
+static hb_result_t hb_jit_helper_read_mono_metadata_node_fast(hb_context_t* ctx,
+                                                              uint64_t node,
+                                                              uint64_t* out_base,
+                                                              uint32_t* out_delta) {
+    size_t available = 0;
+    const uint8_t* span = hb_jit_helper_host_read_span(ctx, node + 16u, 16u, &available);
+    (void)available;
+    if (span) {
+        memcpy(out_base, span, sizeof(*out_base));
+        memcpy(out_delta, span + 12u, sizeof(*out_delta));
+        return HB_OK;
+    }
+
+    hb_result_t r = hb_jit_helper_read_u32_fast(ctx, node + 28u, out_delta);
+    if (r != HB_OK) return r;
+    return hb_jit_helper_read_u64_fast(ctx, node + 16u, out_base);
+}
+
 void hb_jit_helper_exec_mono_string_hash(hb_context_t* ctx,
                                           const hb_ir_block_t* block) {
     uint64_t rsp, ret_addr, rcx;
@@ -5546,6 +5564,8 @@ void hb_jit_helper_exec_mono_metadata_bsearch_loop(hb_context_t* ctx,
     uint64_t rax, rbx, rcx, rdx, rbp, r8, r9, r10;
     uint64_t loop_pc;
     uint64_t fallthrough_pc;
+    size_t table_available = 0;
+    const uint8_t* table_span;
     hb_result_t r = HB_OK;
     bool loop_taken = false;
 
@@ -5570,6 +5590,7 @@ void hb_jit_helper_exec_mono_metadata_bsearch_loop(hb_context_t* ctx,
     r8 = ctx->regs.x64.r8;
     r9 = ctx->regs.x64.r9;
     r10 = ctx->regs.x64.r10;
+    table_span = hb_jit_helper_host_read_span(ctx, rbx + 24u, sizeof(uint64_t), &table_available);
 
     for (uint64_t iter = 0; iter < (1u << 20); iter++) {
         uint32_t eax = (uint32_t)r9 + (uint32_t)rbp;
@@ -5586,14 +5607,23 @@ void hb_jit_helper_exec_mono_metadata_bsearch_loop(hb_context_t* ctx,
         rax = eax;
         rcx = (uint64_t)(int64_t)(int32_t)eax;
 
-        r = hb_jit_helper_read_u64_fast(ctx, rbx + rcx * 8u + 24u, &node);
-        if (r != HB_OK) break;
+        if (table_span && rcx <= ((uint64_t)(~(size_t)0) / 8u)) {
+            size_t table_offset = (size_t)(rcx * 8u);
+            if (table_available >= sizeof(node) &&
+                table_offset <= table_available - sizeof(node)) {
+                memcpy(&node, table_span + table_offset, sizeof(node));
+            } else {
+                r = hb_jit_helper_read_u64_fast(ctx, rbx + rcx * 8u + 24u, &node);
+                if (r != HB_OK) break;
+            }
+        } else {
+            r = hb_jit_helper_read_u64_fast(ctx, rbx + rcx * 8u + 24u, &node);
+            if (r != HB_OK) break;
+        }
         rcx = node;
-        r = hb_jit_helper_read_u32_fast(ctx, rcx + 28u, &tmp32);
+        r = hb_jit_helper_read_mono_metadata_node_fast(ctx, rcx, &rcx, &tmp32);
         if (r != HB_OK) break;
         r8 = (uint64_t)(int64_t)(int32_t)tmp32;
-        r = hb_jit_helper_read_u64_fast(ctx, rcx + 16u, &rcx);
-        if (r != HB_OK) break;
         r8 += rcx;
         ecx = eax;
 

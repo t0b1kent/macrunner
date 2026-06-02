@@ -4143,7 +4143,11 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
             void **old = teb->ThreadLocalStoragePointer;
             void **new = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY, tls_module_count * sizeof(*new));
 
-            if (!new) return FALSE;
+            if (!new)
+            {
+                NtClose( thread );
+                return FALSE;
+            }
             if (old) memcpy( new, old, old_module_count * sizeof(*new) );
             teb->ThreadLocalStoragePointer = new;
 #ifdef __x86_64__  /* macOS-specific hack */
@@ -4153,7 +4157,11 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
             /* FIXME: can't free old block here, should be freed at thread exit */
         }
 
-        if (!(new_ptr = RtlAllocateHeap( GetProcessHeap(), 0, size + dir->SizeOfZeroFill ))) return -1;
+        if (!(new_ptr = RtlAllocateHeap( GetProcessHeap(), 0, size + dir->SizeOfZeroFill )))
+        {
+            NtClose( thread );
+            return FALSE;
+        }
         memcpy( new_ptr, (void *)dir->StartAddressOfRawData, size );
         memset( (char *)new_ptr + size, 0, dir->SizeOfZeroFill );
 

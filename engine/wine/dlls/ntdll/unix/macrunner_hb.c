@@ -882,6 +882,54 @@ static int macrunner_hb_trace_wait_semantic_budget_allows(void)
     return 0;
 }
 
+static void macrunner_hb_trace_guest_amd64_context( hb_context_t *ctx,
+                                                    const struct macrunner_hb_import_thunk *thunk,
+                                                    const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                    uint64_t ret )
+{
+    static const hb_gva_t flags_off = 0x30;
+    static const hb_gva_t eflags_off = 0x44;
+    static const hb_gva_t rax_off = 0x78;
+    static const hb_gva_t rcx_off = 0x80;
+    static const hb_gva_t rdx_off = 0x88;
+    static const hb_gva_t rsp_off = 0x98;
+    static const hb_gva_t rip_off = 0xf8;
+    uint32_t flags = 0, eflags = 0;
+    uint64_t rax = 0, rcx = 0, rdx = 0, rsp = 0, rip = 0;
+    hb_gva_t context = (hb_gva_t)args[1];
+    hb_result_t flags_read, eflags_read, rax_read, rcx_read, rdx_read, rsp_read, rip_read;
+    int sane;
+
+    if (!ctx || !ctx->memory || !thunk || !args) return;
+
+    flags_read = hb_memory_read_u32( ctx->memory, context + flags_off, &flags );
+    eflags_read = hb_memory_read_u32( ctx->memory, context + eflags_off, &eflags );
+    rax_read = hb_memory_read_u64( ctx->memory, context + rax_off, &rax );
+    rcx_read = hb_memory_read_u64( ctx->memory, context + rcx_off, &rcx );
+    rdx_read = hb_memory_read_u64( ctx->memory, context + rdx_off, &rdx );
+    rsp_read = hb_memory_read_u64( ctx->memory, context + rsp_off, &rsp );
+    rip_read = hb_memory_read_u64( ctx->memory, context + rip_off, &rip );
+    sane = flags_read == HB_OK && rip_read == HB_OK && rsp_read == HB_OK &&
+           (flags & CONTEXT_AMD64) && rip && rsp;
+
+    fprintf( stderr, "macrunner-hb-wait-semantic: get-context import=%s!%s pc=%p rsp=%p "
+             "handle=%p context=%p ret=%p last_status=%08lx last_error=%lu "
+             "flags=%08x eflags=%08x rip=%p ctx_rsp=%p rax=%p rcx=%p rdx=%p sane=%u "
+             "read=%s/%s/%s/%s/%s/%s/%s\n",
+             thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+             (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)args[0],
+             (void *)(uintptr_t)context, (void *)(uintptr_t)ret,
+             (unsigned long)NtCurrentTeb()->LastStatusValue,
+             (unsigned long)NtCurrentTeb()->LastErrorValue, flags, eflags,
+             (void *)(uintptr_t)rip, (void *)(uintptr_t)rsp, (void *)(uintptr_t)rax,
+             (void *)(uintptr_t)rcx, (void *)(uintptr_t)rdx, sane,
+             hb_result_string( flags_read ), hb_result_string( eflags_read ),
+             hb_result_string( rip_read ), hb_result_string( rsp_read ),
+             hb_result_string( rax_read ), hb_result_string( rcx_read ),
+             hb_result_string( rdx_read ) );
+    fflush( stderr );
+}
+
 static uint64_t macrunner_hb_trace_return_address( hb_context_t *ctx )
 {
     uint64_t ret = 0;
@@ -1962,6 +2010,7 @@ static BOOL macrunner_hb_kernel_export_has_local_semantic( const char *dll_name,
            macrunner_hb_strieq( import_name, "WaitForMultipleObjectsEx" ) ||
            macrunner_hb_strieq( import_name, "SetThreadDescription" ) ||
            macrunner_hb_strieq( import_name, "ResumeThread" ) ||
+           macrunner_hb_strieq( import_name, "GetThreadContext" ) ||
            macrunner_hb_strieq( import_name, "SuspendThread" ) ||
            macrunner_hb_strieq( import_name, "CreateDirectoryA" ) ||
            macrunner_hb_strieq( import_name, "CreateDirectoryW" ) ||
@@ -10324,6 +10373,29 @@ static BOOL macrunner_hb_try_thread_creation_semantic( hb_context_t *ctx,
         return TRUE;
     }
 
+    if (macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ))
+    {
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            uint32_t requested_flags = 0;
+            hb_result_t flags_read = HB_ERR_INVALID_ARG;
+
+            if (ctx && ctx->memory && args[1])
+                flags_read = hb_memory_read_u32( ctx->memory, (hb_gva_t)args[1] + 0x30,
+                                                 &requested_flags );
+            fprintf( stderr, "macrunner-hb-wait-semantic: get-context-before import=%s!%s "
+                     "pc=%p rsp=%p handle=%p context=%p requested_flags=%08x read=%s\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)args[0],
+                     (void *)(uintptr_t)args[1], requested_flags, hb_result_string( flags_read ) );
+            fflush( stderr );
+        }
+        *ret = macrunner_hb_call_arm64_pe_import12_for_ctx( ctx, thunk, args );
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+            macrunner_hb_trace_guest_amd64_context( ctx, thunk, args, *ret );
+        return TRUE;
+    }
+
     if (macrunner_hb_strieq( thunk->import_name, "CreateThread" ))
     {
         sa_guest = args[0];
@@ -13922,8 +13994,9 @@ static unsigned int macrunner_hb_import_arg_count( const struct macrunner_hb_imp
     if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
          macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
         (macrunner_hb_strieq( thunk->import_name, "ResumeThread" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ) ||
          macrunner_hb_strieq( thunk->import_name, "SuspendThread" )))
-        return 1;
+        return macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ) ? 2 : 1;
     if ((macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
          macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
         macrunner_hb_strieq( thunk->import_name, "WaitForMultipleObjects" ))
@@ -15143,6 +15216,7 @@ static BOOL macrunner_hb_trace_import_interesting( const struct macrunner_hb_imp
          macrunner_hb_strieq( thunk->import_name, "CreateRemoteThread" ) ||
          macrunner_hb_strieq( thunk->import_name, "CreateRemoteThreadEx" ) ||
          macrunner_hb_strieq( thunk->import_name, "ResumeThread" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetThreadContext" ) ||
          macrunner_hb_strieq( thunk->import_name, "SuspendThread" ) ||
          macrunner_hb_strieq( thunk->import_name, "SetThreadDescription" ) ||
          macrunner_hb_strieq( thunk->import_name, "WaitForMultipleObjects" ) ||

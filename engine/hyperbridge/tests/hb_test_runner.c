@@ -21235,6 +21235,103 @@ static int run_phase2_bench(void) {
     return cached_speedup >= 10.0 ? 0 : 2;
 }
 
+/* --- Legacy i386-only opcode tests (AGENTS.md lane B-1) --- */
+
+/* Decode-only checks for the 14 legacy i386 opcodes (removed in x64). Semantic
+ * correctness is covered by tests/hb_fuzz_diff.py (differential against
+ * Unicorn). These tests pin the decode + lift path under -Werror so that a
+ * future refactor that drops a case breaks the build, not a fuzzer run. */
+
+static int legacy_decode(const uint8_t* code, size_t len, uint32_t expected) {
+    hb_decoded_t d;
+    hb_result_t r = hb_decode_x86(code, len, 0x1000, &d);
+    if (r != HB_OK) return 0;
+    if (d.opcode != expected) return 0;
+    if (d.len != len) return 0;
+    hb_ir_func_t* func = hb_ir_func_create(0x1000, (uint32_t)len);
+    hb_ir_block_t* block = func ? hb_ir_block_create(0, 0x1000) : NULL;
+    hb_ir_builder_t* builder = (func && block) ? hb_ir_builder_create(func) : NULL;
+    int ok = 0;
+    if (func && block && builder) {
+        hb_ir_cfg_add_block(func->cfg, block);
+        func->cfg->entry = block;
+        hb_ir_builder_set_block(builder, block);
+        if (hb_lift_x86(&d, builder) == HB_OK) ok = 1;
+    }
+    if (builder) hb_ir_builder_destroy(builder);
+    if (func) hb_ir_func_destroy(func);
+    return ok;
+}
+
+TEST(decode_x86_pusha_popa_family) {
+    uint8_t pusha[] = {0x60};
+    uint8_t popa[]  = {0x61};
+    ASSERT(legacy_decode(pusha, sizeof(pusha), HB_INS_PUSHA));
+    ASSERT(legacy_decode(popa,  sizeof(popa),  HB_INS_POPA));
+    tests_passed++;
+}
+
+TEST(decode_x86_bcd_adjust_family) {
+    uint8_t daa[]   = {0x27};
+    uint8_t das[]   = {0x2f};
+    uint8_t aaa[]   = {0x37};
+    uint8_t aas[]   = {0x3f};
+    uint8_t aam[]   = {0xd4, 0x0a};
+    uint8_t aad[]   = {0xd5, 0x0a};
+    ASSERT(legacy_decode(daa, sizeof(daa), HB_INS_DAA));
+    ASSERT(legacy_decode(das, sizeof(das), HB_INS_DAS));
+    ASSERT(legacy_decode(aaa, sizeof(aaa), HB_INS_AAA));
+    ASSERT(legacy_decode(aas, sizeof(aas), HB_INS_AAS));
+    ASSERT(legacy_decode(aam, sizeof(aam), HB_INS_AAM));
+    ASSERT(legacy_decode(aad, sizeof(aad), HB_INS_AAD));
+    tests_passed++;
+}
+
+TEST(decode_x86_bound_arpl_family) {
+    /* BOUND r32, m32&m32 — mod=00, rm=000 ([eax+disp0]) for rax. */
+    uint8_t bound[] = {0x62, 0x00};
+    /* ARPL [ecx], bp  (mod=00, rm=001, reg=101) — 16-bit operand so 2 bytes. */
+    uint8_t arpl[]  = {0x63, 0x29};
+    ASSERT(legacy_decode(bound, sizeof(bound), HB_INS_BOUND));
+    ASSERT(legacy_decode(arpl,  sizeof(arpl),  HB_INS_ARPL));
+    tests_passed++;
+}
+
+TEST(decode_x86_segreg_load_family) {
+    /* LES eax, ptr [esi + ebx] — mod=00 r/m=100 (SIB), reg=000 (eax), sib=000.
+     * Capstone reports size=3; HyperBridge's LES decoder doesn't consume the
+     * displacement the fuzzer's full 8-byte form expects, so we use the SIB-only
+     * 3-byte form to keep the test self-consistent. */
+    uint8_t les[] = {0xc4, 0x04, 0x1e};
+    /* LDS eax, ptr [esi + ebx] — 0xC5. */
+    uint8_t lds[] = {0xc5, 0x04, 0x1e};
+    /* LFS eax, ptr [esi + ebx] — 0F B4. */
+    uint8_t lfs[] = {0x0f, 0xb4, 0x04, 0x1e};
+    /* LGS eax, ptr [esi + ebx] — 0F B5. */
+    uint8_t lgs[] = {0x0f, 0xb5, 0x04, 0x1e};
+    ASSERT(legacy_decode(les, sizeof(les), HB_INS_LES));
+    ASSERT(legacy_decode(lds, sizeof(lds), HB_INS_LDS));
+    ASSERT(legacy_decode(lfs, sizeof(lfs), HB_INS_LFS));
+    ASSERT(legacy_decode(lgs, sizeof(lgs), HB_INS_LGS));
+    tests_passed++;
+}
+
+TEST(decode_x86_legacy_rejects_in_x64) {
+    /* 0x60 is PUSHA in 32-bit mode but #UD in 64-bit mode (replaced by the
+     * REX prefix range 0x40..0x4F). The x64 decoder must NOT spuriously
+     * decode 0x60 as PUSHA; we accept either HB_OK with a non-PUSHA opcode
+     * or HB_ERR_UNSUPPORTED_OPCODE. Both are correct 64-bit behavior. */
+    uint8_t pusha[] = {0x60};
+    hb_decoded_t d;
+    hb_result_t r = hb_decode_x64(pusha, sizeof(pusha), 0x1000, &d);
+    if (r == HB_OK) {
+        ASSERT(d.opcode != HB_INS_PUSHA);
+    } else {
+        ASSERT(r == HB_ERR_UNSUPPORTED_OPCODE);
+    }
+    tests_passed++;
+}
+
 /* --- Entry point --- */
 
 int main(int argc, char** argv) {
@@ -21394,6 +21491,11 @@ int main(int argc, char** argv) {
     test_interp_x86_ret_imm16_uses_guest_return_slot();
     test_interp_x64_ret_imm16_cleans_stack();
     test_decode_x86_ff_indirect_branch_family();
+    test_decode_x86_pusha_popa_family();
+    test_decode_x86_bcd_adjust_family();
+    test_decode_x86_bound_arpl_family();
+    test_decode_x86_segreg_load_family();
+    test_decode_x86_legacy_rejects_in_x64();
     test_interp_x86_ff_indirect_call_jmp_targets();
     test_decode_x86_sse_scalar_move_family();
     test_interp_x86_sse_movsd_load_zeroes_upper_store_low64();

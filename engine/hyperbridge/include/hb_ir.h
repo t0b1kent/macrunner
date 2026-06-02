@@ -366,6 +366,18 @@ typedef enum {
     HB_IR_X87_FRNDINT,
     HB_IR_X87_FNCLEX,
     HB_IR_X87_FNINIT,
+    /* Legacy i386-only ops (removed in x64). */
+    HB_IR_PUSHA,
+    HB_IR_POPA,
+    HB_IR_AAA,
+    HB_IR_AAS,
+    HB_IR_AAM,
+    HB_IR_AAD,
+    HB_IR_DAA,
+    HB_IR_DAS,
+    HB_IR_BOUND,
+    HB_IR_ARPL,
+    HB_IR_LDS, HB_IR_LES, HB_IR_LFS, HB_IR_LGS,
     HB_IR_HOST_CALL,
     HB_IR_FAULT,
     HB_IR_UNSUPPORTED

@@ -234,6 +234,27 @@ I386_TEMPLATES: list[Template] = [
     Template("fld1_fnstsw_ax", "x87", "d9e8dfe0"),
     Template("fldz_fnstsw_ax", "x87", "d9eedfe0"),
     Template("fld1_fstp_m64", "x87", "d9e8dd1f"),
+    # Legacy i386-only opcodes (removed in x64). CS_MODE_32-only.
+    Template("pusha", "legacy_pusha_popa", "60"),
+    Template("popa", "legacy_pusha_popa", "61"),
+    Template("daa", "legacy_bcd", "27"),
+    # NOTE: DAS/AAS are EXCLUDED from the Unicorn diff — HyperBridge follows the
+    # Intel SDM (real-silicon contract) and Unicorn 2.1.4 diverges (AAS: AH-=2 vs
+    # SDM AH-=1; DAS: drops the old_AL>99h second-adjust clause). Keeping them here
+    # would report false mismatches. See HB-I386-DECODE-COMPLETE "Oracle Divergences".
+    # Template("das", "legacy_bcd", "2f"),   # oracle-divergent (SDM-correct in HB)
+    Template("aaa", "legacy_bcd", "37"),
+    # Template("aas", "legacy_bcd", "3f"),   # oracle-divergent (SDM-correct in HB)
+    Template("aam_imm10", "legacy_bcd", "d40a"),
+    Template("aad_imm10", "legacy_bcd", "d50a"),
+    Template("bound_eax_mem", "legacy_bound_arpl", "6200", None, frozenset()),
+    Template("arpl_ax_cx", "legacy_bound_arpl", "632901"),
+    # LDS/LES/LFS/LGS need a far-pointer m48 at esi+disp; 8 bytes:
+    # [16-bit offset | 16-bit selector]. Use indirection through esi.
+    Template("les_eax_mem", "legacy_segreg_load", "c4041e0008007000"),
+    Template("lds_eax_mem", "legacy_segreg_load", "c5041e0008007000"),
+    Template("lfs_eax_mem", "legacy_segreg_load", "0fb4041e0008007000"),
+    Template("lgs_eax_mem", "legacy_segreg_load", "0fb5041e0008007000"),
 ]
 
 
@@ -491,7 +512,7 @@ def main() -> int:
                         exact = exact_oracle(template_i, row) if args.arch == "x64" and interp_ok else []
                         oracle_checked = bool(args.arch == "x64" and template_i.oracle and interp_ok)
                 else:
-                    exact = unicorn_diff_interpreter(row, oracle, template_i.defined_flags)
+                    exact = unicorn_diff_interpreter(row, oracle, template_i.defined_flags, args.arch)
                     if exact and template_i.family.startswith("avx"):
                         key = f"{template_i.family}:{template_i.name}:unicorn_vex_avx_semantics"
                         oracle_quirks[key] = oracle_quirks.get(key, 0) + 1

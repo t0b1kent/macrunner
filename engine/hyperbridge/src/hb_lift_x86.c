@@ -998,6 +998,78 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_X87_FNINIT:
             emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);
             return HB_OK;
+        case HB_INS_PUSHA: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PUSHA);
+            if (i) i->src1 = operand_from_dec(dec, 1);
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_POPA: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_POPA);
+            if (i) i->dst = operand_from_dec(dec, 1);
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_AAA:
+            emit(b, hb_ir_emit(b, HB_IR_AAA), dec);
+            return HB_OK;
+        case HB_INS_AAS:
+            emit(b, hb_ir_emit(b, HB_IR_AAS), dec);
+            return HB_OK;
+        case HB_INS_AAM: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_AAM);
+            if (i) i->src1 = operand_from_dec(dec, 1);
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_AAD: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_AAD);
+            if (i) i->src1 = operand_from_dec(dec, 1);
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_DAA:
+            emit(b, hb_ir_emit(b, HB_IR_DAA), dec);
+            return HB_OK;
+        case HB_INS_DAS:
+            emit(b, hb_ir_emit(b, HB_IR_DAS), dec);
+            return HB_OK;
+        case HB_INS_BOUND: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_BOUND);
+            if (i) { i->dst = operand_from_dec(dec, 1); i->src1 = operand_from_dec(dec, 2); }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_ARPL: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_ARPL);
+            if (i) { i->dst = operand_from_dec(dec, 1); i->src1 = operand_from_dec(dec, 2); }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_LDS: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_LDS);
+            if (i) { i->dst = operand_from_dec(dec, 1); i->src1 = operand_from_dec(dec, 2); }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_LES: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_LES);
+            if (i) { i->dst = operand_from_dec(dec, 1); i->src1 = operand_from_dec(dec, 2); }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_LFS: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_LFS);
+            if (i) { i->dst = operand_from_dec(dec, 1); i->src1 = operand_from_dec(dec, 2); }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_LGS: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_LGS);
+            if (i) { i->dst = operand_from_dec(dec, 1); i->src1 = operand_from_dec(dec, 2); }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         default:
             emit(b, hb_ir_emit_unsupported(b, hb_opcode_name(dec->opcode), dec->addr,
                                     (uint8_t*)dec->bytes, dec->len), dec);

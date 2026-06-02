@@ -1024,6 +1024,23 @@ static unsigned popcount_u64(uint64_t value) {
     return count;
 }
 
+static bool parity_even_u8(uint8_t v) {
+    return (popcount_u64(v) & 1u) == 0u;
+}
+
+static uint32_t hb_size_bytes(hb_size_t sz) {
+    switch (sz) {
+        case HB_SIZE_8:   return 1u;
+        case HB_SIZE_16:  return 2u;
+        case HB_SIZE_32:  return 4u;
+        case HB_SIZE_64:  return 8u;
+        case HB_SIZE_128: return 16u;
+        case HB_SIZE_256: return 32u;
+        case HB_SIZE_512: return 64u;
+        default: return 0u;
+    }
+}
+
 static void write_reg_sized(hb_context_t* ctx, int idx, uint64_t val, hb_size_t size) {
     if (ctx->mode == HB_MODE_32BIT) {
         if (size == HB_SIZE_8 || size == HB_SIZE_16) {
@@ -1820,6 +1837,20 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_X87_FRNDINT: return "X87_FRNDINT";
         case HB_IR_X87_FNCLEX: return "X87_FNCLEX";
         case HB_IR_X87_FNINIT: return "X87_FNINIT";
+        case HB_IR_PUSHA: return "PUSHA";
+        case HB_IR_POPA: return "POPA";
+        case HB_IR_AAA: return "AAA";
+        case HB_IR_AAS: return "AAS";
+        case HB_IR_AAM: return "AAM";
+        case HB_IR_AAD: return "AAD";
+        case HB_IR_DAA: return "DAA";
+        case HB_IR_DAS: return "DAS";
+        case HB_IR_BOUND: return "BOUND";
+        case HB_IR_ARPL: return "ARPL";
+        case HB_IR_LDS: return "LDS";
+        case HB_IR_LES: return "LES";
+        case HB_IR_LFS: return "LFS";
+        case HB_IR_LGS: return "LGS";
         case HB_IR_HOST_CALL: return "HOST_CALL";
         case HB_IR_FAULT: return "FAULT";
         case HB_IR_UNSUPPORTED: return "UNSUPPORTED";
@@ -3045,6 +3076,309 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
 
         case HB_IR_X87_FNINIT:
             return hb_x87_fninit(&ctx->regs.x86.x87);
+
+        case HB_IR_PUSHA: {
+            /* PUSHA / PUSHAD — push EAX/ECX/EDX/EBX/EBP/ESI/EDI then the original ESP.
+             * Order: EAX, ECX, EDX, EBX, original ESP, EBP, ESI, EDI. */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint16_t word_size = (instr->src1.size == HB_SIZE_16) ? 2 : 4;
+            uint32_t esp_save = ctx->regs.x86.esp;
+            uint32_t values[8];
+            values[0] = ctx->regs.x86.eax;
+            values[1] = ctx->regs.x86.ecx;
+            values[2] = ctx->regs.x86.edx;
+            values[3] = ctx->regs.x86.ebx;
+            values[4] = esp_save;
+            values[5] = ctx->regs.x86.ebp;
+            values[6] = ctx->regs.x86.esi;
+            values[7] = ctx->regs.x86.edi;
+            /* PUSHA pushes registers in the order EAX, ECX, EDX, EBX, original
+             * ESP, EBP, ESI, EDI. With ESP pre-decrement, the first push lands
+             * at the HIGHEST address of the 8-slot block and the last push lands
+             * at the LOWEST. So loop from i=0 to i=7 (NOT 7→0). */
+            for (int i = 0; i < 8; i++) {
+                if (word_size == 2) {
+                    ctx->regs.x86.esp -= 2;
+                    r = hb_memory_write_u16(ctx->memory, ctx->regs.x86.esp, (uint16_t)values[i]);
+                } else {
+                    ctx->regs.x86.esp -= 4;
+                    r = hb_memory_write_u32(ctx->memory, ctx->regs.x86.esp, values[i]);
+                }
+                if (r != HB_OK) return r;
+            }
+            return HB_OK;
+        }
+
+        case HB_IR_POPA: {
+            /* POPA / POPAD — reverse of PUSHA: pop EDI, ESI, EBP, (skip), EBX, EDX, ECX, EAX. */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint16_t word_size = (instr->dst.size == HB_SIZE_16) ? 2 : 4;
+            uint32_t values[8];
+            for (int i = 0; i < 8; i++) {
+                if (word_size == 2) {
+                    uint16_t v16 = 0;
+                    r = hb_memory_read_u16(ctx->memory, ctx->regs.x86.esp, &v16);
+                    if (r != HB_OK) return r;
+                    values[i] = v16;
+                    ctx->regs.x86.esp += 2;
+                } else {
+                    r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp, &values[i]);
+                    if (r != HB_OK) return r;
+                    ctx->regs.x86.esp += 4;
+                }
+            }
+            ctx->regs.x86.edi = values[0];
+            ctx->regs.x86.esi = values[1];
+            ctx->regs.x86.ebp = values[2];
+            /* values[3] is the discarded ESP value. */
+            ctx->regs.x86.ebx = values[4];
+            ctx->regs.x86.edx = values[5];
+            ctx->regs.x86.ecx = values[6];
+            ctx->regs.x86.eax = values[7];
+            return HB_OK;
+        }
+
+        case HB_IR_AAA: {
+            /* AAA — ASCII Adjust After Addition. Modifies AL/AH and AF/CF. */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint8_t al = (uint8_t)ctx->regs.x86.eax;
+            bool a = ((al & 0x0fu) > 9) || ctx->flags.af;
+            if (a) {
+                ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffffff00u) | ((al + 6) & 0x0fu);
+                ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffff00ffu) | (((ctx->regs.x86.eax >> 8) + 1) << 8);
+            } else {
+                ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffffff00u) | (al & 0x0fu);
+            }
+            ctx->flags.af = a;
+            ctx->flags.cf = a;
+            return HB_OK;
+        }
+
+        case HB_IR_AAS: {
+            /* AAS — ASCII Adjust After Subtraction (Intel SDM Vol.2A):
+             *   IF (AL AND 0Fh) > 9 OR AF:  AX -= 6; AH -= 1; AF=CF=1
+             *   ELSE                         AF=CF=0
+             *   AL := AL AND 0Fh
+             * NOTE: Unicorn 2.1.4 diverges (decrements AH by 2). We follow the
+             * SDM = real-silicon contract; AAS is EXCLUDED from the Unicorn diff
+             * (see HB-I386-DECODE-COMPLETE report, "Oracle Divergences"). */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint8_t al = (uint8_t)ctx->regs.x86.eax;
+            bool a = ((al & 0x0fu) > 9) || ctx->flags.af;
+            if (a) {
+                uint16_t ax = (uint16_t)((ctx->regs.x86.eax & 0xffffu) - 6u); /* AX -= 6 (borrow into AH) */
+                uint8_t ah = (uint8_t)((ax >> 8) - 1u);                       /* AH -= 1 */
+                uint8_t new_al = (uint8_t)(ax & 0x0fu);                       /* AL := AL AND 0Fh */
+                ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffff0000u) | ((uint32_t)ah << 8) | new_al;
+            } else {
+                ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffffff00u) | (al & 0x0fu);
+            }
+            ctx->flags.af = a;
+            ctx->flags.cf = a;
+            return HB_OK;
+        }
+
+        case HB_IR_AAM: {
+            /* AAM — ASCII Adjust After Multiply. AL = AL % imm8; AH = AL / imm8. */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint8_t base = (uint8_t)instr->src1.imm;
+            if (base == 0) return HB_ERR_EXEC_FAULT;  /* #DE on divide by zero */
+            uint8_t al = (uint8_t)ctx->regs.x86.eax;
+            uint8_t ah = (uint8_t)((al / base) & 0xffu);
+            uint8_t new_al = (uint8_t)(al % base);
+            ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffffff00u) | new_al;
+            ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffff00ffu) | ((uint32_t)ah << 8);
+            /* SF/ZF/PF are set based on the new AL. */
+            ctx->flags.sf = (new_al & 0x80u) != 0;
+            ctx->flags.zf = new_al == 0;
+            ctx->flags.pf = parity_even_u8(new_al);
+            ctx->flags.cf = false;
+            ctx->flags.of = false;
+            ctx->flags.af = false;
+            return HB_OK;
+        }
+
+        case HB_IR_AAD: {
+            /* AAD — ASCII Adjust Before Division. AL = (AH * imm8 + AL) & 0xff; AH = 0. */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint8_t base = (uint8_t)instr->src1.imm;
+            uint8_t al = (uint8_t)ctx->regs.x86.eax;
+            uint8_t ah = (uint8_t)(ctx->regs.x86.eax >> 8);
+            uint8_t new_al = (uint8_t)((ah * base + al) & 0xffu);
+            ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffffff00u) | new_al;
+            ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffff00ffu);
+            ctx->flags.sf = (new_al & 0x80u) != 0;
+            ctx->flags.zf = new_al == 0;
+            ctx->flags.pf = parity_even_u8(new_al);
+            ctx->flags.cf = false;
+            ctx->flags.of = false;
+            ctx->flags.af = false;
+            return HB_OK;
+        }
+
+        case HB_IR_DAA: {
+            /* DAA — Decimal Adjust AL After Addition. */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint8_t al = (uint8_t)ctx->regs.x86.eax;
+            bool cf_old = ctx->flags.cf;
+            bool old_cf = cf_old;
+            bool old_af = ctx->flags.af;
+            if (((al & 0x0fu) > 9) || old_af) {
+                ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffffff00u) | ((al + 6) & 0xffu);
+                ctx->flags.cf = old_cf || (al > 0xf9u);
+                ctx->flags.af = true;
+            } else {
+                ctx->flags.af = false;
+            }
+            uint8_t al_after = (uint8_t)ctx->regs.x86.eax;
+            if ((al_after > 0x99u) || old_cf) {
+                ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffffff00u) | ((al_after + 0x60u) & 0xffu);
+                ctx->flags.cf = true;
+            } else {
+                ctx->flags.cf = false;
+            }
+            uint8_t new_al = (uint8_t)ctx->regs.x86.eax;
+            ctx->flags.sf = (new_al & 0x80u) != 0;
+            ctx->flags.zf = new_al == 0;
+            ctx->flags.pf = parity_even_u8(new_al);
+            ctx->flags.of = false;
+            return HB_OK;
+        }
+
+        case HB_IR_DAS: {
+            /* DAS — Decimal Adjust AL After Subtraction (Intel SDM Vol.2A).
+             * Second-adjust condition: IF (old_AL > 99h) OR (old_CF) THEN AL -= 60h.
+             * NOTE: Unicorn 2.1.4 drops the old_AL>99h clause (gates on CF only);
+             * we follow the SDM = real-silicon contract; DAS is EXCLUDED from the
+             * Unicorn diff (see HB-I386-DECODE-COMPLETE report, "Oracle Divergences"). */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint8_t al = (uint8_t)ctx->regs.x86.eax;
+            bool old_cf = ctx->flags.cf;
+            bool old_af = ctx->flags.af;
+            if (((al & 0x0fu) > 9) || old_af) {
+                uint8_t new_al = (uint8_t)(al - 6);
+                ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffffff00u) | new_al;
+                ctx->flags.cf = old_cf || (al < 6);
+                ctx->flags.af = true;
+            } else {
+                ctx->flags.af = false;
+            }
+            /* Second adjust (SDM): gate on old_AL > 99h OR old_CF. */
+            if (al > 0x99u || old_cf) {
+                uint8_t al_after = (uint8_t)ctx->regs.x86.eax;
+                uint8_t newer_al = (uint8_t)(al_after - 0x60u);
+                ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xffffff00u) | newer_al;
+                ctx->flags.cf = true;
+            }
+            uint8_t new_al = (uint8_t)ctx->regs.x86.eax;
+            ctx->flags.sf = (new_al & 0x80u) != 0;
+            ctx->flags.zf = new_al == 0;
+            ctx->flags.pf = parity_even_u8(new_al);
+            ctx->flags.of = false;
+            return HB_OK;
+        }
+
+        case HB_IR_BOUND: {
+            /* BOUND r16/32, m16/32&16/32 — array bounds check. Out-of-range → #BR.
+             * dst = register, src1 = mBOUND (low, high pair). For the flat-memory
+             * games HyperBridge targets this rarely trips; we surface the trap. */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint64_t idx = 0;
+            r = read_operand_value(ctx, &instr->dst, &idx);
+            if (r != HB_OK) return r;
+            if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            uint64_t addr = resolve_addr(ctx, &instr->src1);
+            hb_size_t elem = (instr->dst.size == HB_SIZE_16) ? HB_SIZE_16 : HB_SIZE_32;
+            uint64_t lo = 0, hi = 0;
+            r = mem_read(ctx, addr, &lo, elem);
+            if (r != HB_OK) return r;
+            r = mem_read(ctx, addr + hb_size_bytes(elem), &hi, elem);
+            if (r != HB_OK) return r;
+            uint64_t ix = (elem == HB_SIZE_16) ? (idx & 0xffffu) : (idx & 0xffffffffu);
+            uint64_t l = (elem == HB_SIZE_16) ? (uint16_t)lo : (uint32_t)lo;
+            uint64_t h = (elem == HB_SIZE_16) ? (uint16_t)hi : (uint32_t)hi;
+            /* Intel: out-of-range if index < low OR index > high (both signed). */
+            int64_t s_ix = (elem == HB_SIZE_16) ? (int16_t)ix : (int32_t)ix;
+            int64_t s_lo = (elem == HB_SIZE_16) ? (int16_t)l : (int32_t)l;
+            int64_t s_hi = (elem == HB_SIZE_16) ? (int16_t)h : (int32_t)h;
+            if (s_ix < s_lo || s_ix > s_hi) {
+                return HB_ERR_EXEC_FAULT;  /* #BR equivalent. */
+            }
+            return HB_OK;
+        }
+
+        case HB_IR_ARPL: {
+            /* ARPL r/m16, r16 — Adjust RPL Field of Selector.
+             * If dst.RPL < src.RPL: ZF=1, dst.RPL = src.RPL. Else ZF=0. */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint16_t dst = 0, src = 0;
+            if (instr->src1.type == HB_OP_REG) src = (uint16_t)read_reg_sized(ctx, instr->src1.reg, HB_SIZE_16, 0);
+            else if (instr->src1.type == HB_OP_IMM) src = (uint16_t)instr->src1.imm;
+            else if (instr->src1.type == HB_OP_MEM) {
+                uint64_t addr = resolve_addr(ctx, &instr->src1);
+                r = hb_memory_read_u16(ctx->memory, addr, &src);
+                if (r != HB_OK) return r;
+            } else return HB_ERR_INTERNAL;
+            if (instr->dst.type == HB_OP_REG) dst = (uint16_t)read_reg_sized(ctx, instr->dst.reg, HB_SIZE_16, 0);
+            else if (instr->dst.type == HB_OP_MEM) {
+                uint64_t addr = resolve_addr(ctx, &instr->dst);
+                r = hb_memory_read_u16(ctx->memory, addr, &dst);
+                if (r != HB_OK) return r;
+            } else return HB_ERR_INTERNAL;
+            uint8_t dpl = dst & 0x3;
+            uint8_t rpl = src & 0x3;
+            if (rpl > dpl) {
+                uint16_t nd = (dst & ~0x3u) | rpl;
+                if (instr->dst.type == HB_OP_REG) write_reg_sized(ctx, instr->dst.reg, nd, HB_SIZE_16);
+                else if (instr->dst.type == HB_OP_MEM) {
+                    uint64_t addr = resolve_addr(ctx, &instr->dst);
+                    r = hb_memory_write_u16(ctx->memory, addr, nd);
+                    if (r != HB_OK) return r;
+                }
+                ctx->flags.zf = true;
+            } else {
+                ctx->flags.zf = false;
+            }
+            return HB_OK;
+        }
+
+        case HB_IR_LDS:
+        case HB_IR_LES:
+        case HB_IR_LFS:
+        case HB_IR_LGS: {
+            /* Far pointer load: dst GPR = m32 offset, segment = m16 selector.
+             * Memory operand is m48 (4 bytes offset + 2 bytes selector) OR m32 (FS/GS
+             * ignore the high half in some encodings — but standard encoding is the
+             * same 6-byte form). */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            uint64_t addr = resolve_addr(ctx, &instr->src1);
+            uint32_t off = 0;
+            uint16_t sel = 0;
+            r = hb_memory_read_u32(ctx->memory, addr, &off);
+            if (r != HB_OK) return r;
+            r = hb_memory_read_u16(ctx->memory, addr + 4, &sel);
+            if (r != HB_OK) return r;
+            if (instr->dst.type == HB_OP_REG) write_reg_sized(ctx, instr->dst.reg, off, HB_SIZE_32);
+            else return HB_ERR_INTERNAL;
+            /* Set the corresponding segment selector. For LDS/LES the visible seg is
+             * updated; for LFS/LGS we also update the segment base (flat-model assumes
+             * base 0; we just propagate the selector and let the rest of the translator
+             * continue with selector-based addressing). */
+            uint16_t which;
+            switch (instr->op) {
+                case HB_IR_LDS: which = 3; break;  /* DS = 3 */
+                case HB_IR_LES: which = 0; break;  /* ES = 0 */
+                case HB_IR_LFS: which = 4; break;  /* FS = 4 */
+                case HB_IR_LGS: which = 5; break;  /* GS = 5 */
+                default: return HB_ERR_INTERNAL;
+            }
+            r = write_seg_selector(ctx, which, sel);
+            if (r != HB_OK) return r;
+            if (instr->op == HB_IR_LFS) ctx->fs_base = 0;
+            if (instr->op == HB_IR_LGS) ctx->gs_base = 0;
+            return HB_OK;
+        }
 
         case HB_IR_PUSHF: {
             hb_size_t size = instr->src1.size ? instr->src1.size : HB_SIZE_32;

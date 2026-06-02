@@ -247,6 +247,13 @@ def normalize_hb(op: str) -> str:
     if low in {"pusha", "popa", "daa", "das", "aaa", "aas", "aam", "aad",
                "bound", "arpl", "les", "lds", "lfs", "lgs"}:
         return low
+    # HyperBridge uses CWD as the umbrella for CWD/CDQ/CQO; size is the
+    # discriminator. In 32-bit coverage it is reported as CDQ by Capstone.
+    if low == "cwd":
+        return "cdq"
+    # JRCXZ in our 32-bit decoder is actually JECXZ (CX vs ECX is sized via op1).
+    if low == "jrcxz":
+        return "jecxz"
     return low
 
 

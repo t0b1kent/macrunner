@@ -72,6 +72,11 @@ typedef struct {
     uint32_t eflags;
     hb_x87_state_t x87;
     uint64_t xmm[8][2];
+    /* Segment registers (i386-only — required by PUSH/POP ES/CS/SS/DS,
+     * far CALL/JMP, RETF, IRET, etc.). Lane A only consumes eax..edi so
+     * appending these at the END of the struct is safe (existing offsets
+     * preserved). seg[0]=ES, seg[1]=CS, seg[2]=SS, seg[3]=DS, seg[4]=FS, seg[5]=GS. */
+    uint16_t seg[6];
 } hb_regs_x86_t;
 
 /* Flags */

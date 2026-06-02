@@ -245,6 +245,28 @@ typedef enum {
     HB_IR_PUSHF,
     HB_IR_POPF,
     HB_IR_CALL,
+    HB_IR_CALLF,       /* 0x9A far CALL ptr16:32 (32-bit only) */
+    HB_IR_JMPF,        /* 0xEA far JMP ptr16:32 (32-bit only) */
+    HB_IR_RETF,        /* 0xCA/0xCB RETF / RETF imm16 (32-bit) */
+    HB_IR_IRET,        /* 0xCF IRET/IRETD */
+    HB_IR_INT3,        /* 0xCC INT3 — debug breakpoint (3-byte form) */
+    HB_IR_INT,         /* 0xCD imm8 INT n — vectored software interrupt */
+    HB_IR_INT1,        /* 0xF1 INT1 / ICEBP — debug breakpoint (1-byte form) */
+    HB_IR_INTO,        /* 0xCE INTO — overflow-trap if OF=1 */
+    HB_IR_HLT,         /* 0xF4 HLT — privileged, but acknowledged */
+    HB_IR_IN,          /* 0xE4/0xE5/0xEC/0xED IN — port I/O (privileged) */
+    HB_IR_OUT,         /* 0xE6/0xE7/0xEE/0xEF OUT — port I/O (privileged) */
+    HB_IR_XLAT,        /* 0xD7 XLATB — AL = [EBX+AL] */
+    HB_IR_PUSH_SEG,    /* 0x06/0x0E/0x16/0x1E PUSH ES/CS/SS/DS */
+    HB_IR_POP_SEG,     /* 0x07/0x17/0x1F POP ES/SS/DS (CS/FS/GS are privileged) */
+    HB_IR_CLC,         /* 0xF8 */
+    HB_IR_STC,         /* 0xF9 */
+    HB_IR_CMC,         /* 0xF5 */
+    HB_IR_CLD,         /* 0xFC */
+    HB_IR_STD,         /* 0xFD */
+    HB_IR_CLI,         /* 0xFA */
+    HB_IR_STI,         /* 0xFB */
+    HB_IR_ENTER,       /* 0xC8 ENTER imm16, imm8 */
     HB_IR_RET,
     HB_IR_JMP,
     HB_IR_Jcc,

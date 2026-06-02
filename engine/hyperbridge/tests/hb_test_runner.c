@@ -21332,6 +21332,137 @@ TEST(decode_x86_legacy_rejects_in_x64) {
     tests_passed++;
 }
 
+TEST(decode_x86_i386_decode_gaps_regression) {
+    /* Pins the bucket-(A) opcodes from the i386-decode-gaps work (Lane B,
+     * 2026-06-02). Each form was previously HB_ERR_UNSUPPORTED_OPCODE; the
+     * coverage-vs-Capstone matrix is in HB-I386-DECODE-GAPS-2026-06-02.md.
+     * This test makes the decode + lift + (where applicable) interpret
+     * path a -Werror build break, not a future silent regression. */
+    /* PUSH/POP FS/GS — 0F A0 / 0F A1 / 0F A8 / 0F A9. */
+    uint8_t pushfs[]  = {0x0f, 0xa0};
+    uint8_t popfs[]   = {0x0f, 0xa1};
+    uint8_t pushgs[]  = {0x0f, 0xa8};
+    uint8_t popgs[]   = {0x0f, 0xa9};
+    ASSERT(legacy_decode(pushfs,  sizeof(pushfs),  HB_INS_PUSH_SEG));
+    ASSERT(legacy_decode(popfs,   sizeof(popfs),   HB_INS_POP_SEG));
+    ASSERT(legacy_decode(pushgs,  sizeof(pushgs),  HB_INS_PUSH_SEG));
+    ASSERT(legacy_decode(popgs,   sizeof(popgs),   HB_INS_POP_SEG));
+
+    /* CWDE (32-bit) and SALC (Cyrix/legacy). */
+    uint8_t cwde[] = {0x98};
+    uint8_t salc[] = {0xd6};
+    ASSERT(legacy_decode(cwde, sizeof(cwde), HB_INS_CWDE));
+    ASSERT(legacy_decode(salc, sizeof(salc), HB_INS_SALC));
+
+    /* CDQ (32-bit CWD/CDQ/CQO umbrella; we always emit HB_INS_CWD). */
+    uint8_t cdq[] = {0x99};
+    ASSERT(legacy_decode(cdq, sizeof(cdq), HB_INS_CWD));
+
+    /* x87 FFREE / FFREEP (Pentium III-era). */
+    uint8_t ffree[]  = {0xdd, 0xc0};
+    uint8_t ffreep[] = {0xdf, 0xc0};
+    ASSERT(legacy_decode(ffree,  sizeof(ffree),  HB_INS_X87_FFREE));
+    ASSERT(legacy_decode(ffreep, sizeof(ffreep), HB_INS_X87_FFREEP));
+
+    /* x87 FCMOVNB / FCMOVNE / FCMOVNBE / FCMOVNU (0xDB mod=3, reg_op>=0). */
+    uint8_t fcmovnb[]  = {0xdb, 0xc0};
+    uint8_t fcmovne[]  = {0xdb, 0xc8};
+    uint8_t fcmovnbe[] = {0xdb, 0xd0};
+    uint8_t fcmovnu[]  = {0xdb, 0xd8};
+    ASSERT(legacy_decode(fcmovnb,  sizeof(fcmovnb),  HB_INS_X87_FCMOV));
+    ASSERT(legacy_decode(fcmovne,  sizeof(fcmovne),  HB_INS_X87_FCMOV));
+    ASSERT(legacy_decode(fcmovnbe, sizeof(fcmovnbe), HB_INS_X87_FCMOV));
+    ASSERT(legacy_decode(fcmovnu,  sizeof(fcmovnu),  HB_INS_X87_FCMOV));
+
+    /* x87 FCMOVB / FCMOVE / FCMOVBE / FCMOVU (0xDA mod=3). */
+    uint8_t fcmovb[]  = {0xda, 0xc0};
+    uint8_t fcmove[]  = {0xda, 0xc8};
+    uint8_t fcmovbe[] = {0xda, 0xd0};
+    uint8_t fcmovu[]  = {0xda, 0xd8};
+    ASSERT(legacy_decode(fcmovb,  sizeof(fcmovb),  HB_INS_X87_FCMOV));
+    ASSERT(legacy_decode(fcmove,  sizeof(fcmove),  HB_INS_X87_FCMOV));
+    ASSERT(legacy_decode(fcmovbe, sizeof(fcmovbe), HB_INS_X87_FCMOV));
+    ASSERT(legacy_decode(fcmovu,  sizeof(fcmovu),  HB_INS_X87_FCMOV));
+
+    /* x87 FNOP, FSTPNCE, FST, FSTP (D9 mod=3). 0xE0-0xEF are FCHS/FABS/FTST/
+     * FXAM/FLD1..FLDZ, NOT FUCOM/FUCOMP (those are at 0xDF mod=3). */
+    uint8_t fnop[]     = {0xd9, 0xd0};
+    uint8_t fstpnce[]  = {0xd9, 0xd1};
+    uint8_t fstp_d9[]  = {0xd9, 0xd8};
+    uint8_t fchs[]     = {0xd9, 0xe0};
+    uint8_t fabs[]     = {0xd9, 0xe1};
+    uint8_t fld1[]     = {0xd9, 0xe8};
+    ASSERT(legacy_decode(fnop,    sizeof(fnop),    HB_INS_X87_MISC));   /* FNOP */
+    ASSERT(legacy_decode(fstpnce, sizeof(fstpnce), HB_INS_X87_FSTP));   /* FSTPNCE = FSTP */
+    ASSERT(legacy_decode(fstp_d9, sizeof(fstp_d9), HB_INS_X87_FSTP));
+    ASSERT(legacy_decode(fchs,    sizeof(fchs),    HB_INS_X87_MISC));   /* FCHS */
+    ASSERT(legacy_decode(fabs,    sizeof(fabs),    HB_INS_X87_MISC));   /* FABS */
+    ASSERT(legacy_decode(fld1,    sizeof(fld1),    HB_INS_X87_FLD));    /* FLD1 constant */
+
+    /* x87 FUCOM / FUCOMP (DD mod=3, 0xE0-0xEF — DD E0 is FUCOM, NOT FNSTSW). */
+    uint8_t fucom[]    = {0xdd, 0xe0};
+    uint8_t fucomp[]   = {0xdd, 0xe8};
+    ASSERT(legacy_decode(fucom,   sizeof(fucom),   HB_INS_X87_FUCOM));
+    ASSERT(legacy_decode(fucomp,  sizeof(fucomp),  HB_INS_X87_FUCOMP));
+
+    /* x87 FUCOMI / FUCOMPI (DB mod=3, 0xE8-0xEF / DF mod=3, 0xE8-0xEF). */
+    uint8_t fucomi[]   = {0xdb, 0xe8};
+    uint8_t fcomi[]    = {0xdb, 0xf0};
+    uint8_t fucompi[]  = {0xdf, 0xe8};
+    uint8_t fcompi[]   = {0xdf, 0xf0};
+    ASSERT(legacy_decode(fucomi,  sizeof(fucomi),  HB_INS_X87_FUCOMI));
+    ASSERT(legacy_decode(fcomi,   sizeof(fcomi),   HB_INS_X87_FUCOMI));
+    ASSERT(legacy_decode(fucompi, sizeof(fucompi), HB_INS_X87_FUCOMPI));
+    ASSERT(legacy_decode(fcompi,  sizeof(fcompi),  HB_INS_X87_FUCOMPI));
+
+    /* INS / OUTS — privileged (will fault at runtime), but the decode +
+     * lift path must succeed so the user sees a clean #GP. */
+    uint8_t insb[]  = {0x6c};
+    uint8_t insd[]  = {0x6d};
+    uint8_t outsb[] = {0x6e};
+    uint8_t outsd[] = {0x6f};
+    ASSERT(legacy_decode(insb,  sizeof(insb),  HB_INS_INS));
+    ASSERT(legacy_decode(insd,  sizeof(insd),  HB_INS_INS));
+    ASSERT(legacy_decode(outsb, sizeof(outsb), HB_INS_OUTS));
+    ASSERT(legacy_decode(outsd, sizeof(outsd), HB_INS_OUTS));
+
+    /* SLDT / SGDT / SIDT / SMSW (privileged, decoded as MOV_SEG/MOV-shaped;
+     * runtime raises #GP). Verify the encoder shape is right. */
+    uint8_t sldt[]  = {0x0f, 0x00, 0xc0};
+    uint8_t sgdt[]  = {0x0f, 0x01, 0x00};   /* modrm=0x00, mod=00 rm=000 (mem) */
+    uint8_t lar[]   = {0x0f, 0x02, 0xc0};
+    uint8_t lsl[]   = {0x0f, 0x03, 0xc0};
+    ASSERT(legacy_decode(sldt, sizeof(sldt), HB_INS_MOV_SEG));
+    ASSERT(legacy_decode(sgdt, sizeof(sgdt), HB_INS_MOV_SEG));
+    ASSERT(legacy_decode(lar,  sizeof(lar),  HB_INS_MOV));
+    ASSERT(legacy_decode(lsl,  sizeof(lsl),  HB_INS_MOV));
+
+    /* SYSCALL / CLTS — #UD in 32-bit mode (privileged in 64-bit, not
+     * defined in i386). These must be rejected. */
+    hb_decoded_t d;
+    uint8_t syscall_[] = {0x0f, 0x05};
+    uint8_t clts[]     = {0x0f, 0x06};
+    ASSERT(hb_decode_x86(syscall_, sizeof(syscall_), 0x1000, &d) == HB_ERR_UNSUPPORTED_OPCODE);
+    ASSERT(hb_decode_x86(clts,     sizeof(clts),     0x1000, &d) == HB_ERR_UNSUPPORTED_OPCODE);
+
+    /* PAUSE — F3 90 decoded as NOP. */
+    uint8_t pause[] = {0xf3, 0x90};
+    ASSERT(legacy_decode(pause, sizeof(pause), HB_INS_NOP));
+
+    /* F2/F3 RET — BND/REPNE/REPZ are no-op prefixes on RET. The decoder
+     * used to drop these, causing Capstone to over-accept 3 extra cases
+     * per (F2/F3 × RET) form. */
+    uint8_t f2ret[] = {0xf2, 0xc3};
+    uint8_t f3ret[] = {0xf3, 0xc3};
+    ASSERT(legacy_decode(f2ret, sizeof(f2ret), HB_INS_RET));
+    ASSERT(legacy_decode(f3ret, sizeof(f3ret), HB_INS_RET));
+
+    /* JECXZ — 0xE3 in 32-bit is JECXZ, not JRCXZ. */
+    uint8_t jecxz[] = {0xe3, 0x00};
+    ASSERT(legacy_decode(jecxz, sizeof(jecxz), HB_INS_JRCXZ));
+    tests_passed++;
+}
+
 /* --- Entry point --- */
 
 int main(int argc, char** argv) {
@@ -21496,6 +21627,7 @@ int main(int argc, char** argv) {
     test_decode_x86_bound_arpl_family();
     test_decode_x86_segreg_load_family();
     test_decode_x86_legacy_rejects_in_x64();
+    test_decode_x86_i386_decode_gaps_regression();
     test_interp_x86_ff_indirect_call_jmp_targets();
     test_decode_x86_sse_scalar_move_family();
     test_interp_x86_sse_movsd_load_zeroes_upper_store_low64();

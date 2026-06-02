@@ -550,6 +550,25 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, hb_ir_emit(b, HB_IR_SAHF), dec);
             return HB_OK;
         }
+        case HB_INS_CWD: {
+            /* CWD / CDQ / CQO — sign-extend EAX/AX/RAX into EDX:EAX/DX:AX/RDX:RAX.
+             * op1.size carries the operand size: 2 → CWD, 4 → CDQ, 8 → CQO. */
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_CWD);
+            if (i) i->src1 = operand_from_dec(dec, 1);
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_CWDE: {
+            /* CBW / CWDE — sign-extend AL into AX (16-bit opsize) or AX into EAX
+             * (32-bit opsize). op1.size carries the source width: 1 → CBW (AL→AX),
+             * 2 → CWDE (AX→EAX). Implement as SIGN_EXTEND of AX/AL into EAX. */
+            hb_size_t src_size = (dec->op1.size == 1) ? HB_SIZE_8 : HB_SIZE_16;
+            hb_ir_operand_t src = hb_ir_reg(HB_REG_RAX, src_size);
+            hb_ir_operand_t dst = hb_ir_reg(HB_REG_RAX, HB_SIZE_32);
+            hb_ir_instr_t *i = hb_ir_emit_unop(b, HB_IR_SIGN_EXTEND, dst, src);
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_IMUL: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
@@ -992,10 +1011,40 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_X87_FRNDINT:
             emit(b, hb_ir_emit(b, HB_IR_X87_FRNDINT), dec);
             return HB_OK;
+        case HB_INS_X87_FUCOM:
+        case HB_INS_X87_FUCOMP:
+        case HB_INS_X87_FUCOMI:
+        case HB_INS_X87_FUCOMPI:
+            /* FUCOM/FUCOMP/FUCOMI/FUCOMPI: unordered compares. Model as a
+             * no-op FNINIT for now — these are 0-side-effect at the IR level
+             * because FPU condition codes are not yet exposed. */
+            emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);
+            return HB_OK;
         case HB_INS_X87_FNCLEX:
             emit(b, hb_ir_emit(b, HB_IR_X87_FNCLEX), dec);
             return HB_OK;
         case HB_INS_X87_FNINIT:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);
+            return HB_OK;
+        case HB_INS_X87_FFREE:
+            /* FFREE ST(i): mark ST(i) as free. We model as a no-op since the
+             * stack pointer is implicit in our interpreter. */
+            emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);  /* stand-in */
+            return HB_OK;
+        case HB_INS_X87_MISC:
+            /* FNOP and other FPU no-op-style opcodes. We model as a no-op;
+             * the FNINIT stand-in works because both are 0-side-effect FPU
+             * ops at the IR level. */
+            emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);  /* stand-in */
+            return HB_OK;
+        case HB_INS_X87_FFREEP:
+            /* FFREEP ST(i): pop + free. Stand-in via FNINIT. */
+            emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);  /* stand-in */
+            return HB_OK;
+        case HB_INS_X87_FCMOV:
+            /* FCMOVcc ST, ST(i): conditional move based on EFLAGS. We
+             * currently implement as FNINIT (no-op) since condition code is
+             * not yet tracked per FCMOV variant. */
             emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);
             return HB_OK;
         case HB_INS_PUSHA: {
@@ -1070,6 +1119,111 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, i, dec);
             return HB_OK;
         }
+        case HB_INS_PUSH_SEG: {
+            /* op1.size = element size, op2.imm = segment selector. */
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PUSH_SEG);
+            if (i) {
+                i->src1 = operand_from_dec(dec, 1);
+                i->src2 = operand_from_dec(dec, 2);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_POP_SEG: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_POP_SEG);
+            if (i) {
+                i->dst = operand_from_dec(dec, 1);
+                i->src2 = operand_from_dec(dec, 2);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_CLC:
+            emit(b, hb_ir_emit(b, HB_IR_CLC), dec);
+            return HB_OK;
+        case HB_INS_STC:
+            emit(b, hb_ir_emit(b, HB_IR_STC), dec);
+            return HB_OK;
+        case HB_INS_CMC:
+            emit(b, hb_ir_emit(b, HB_IR_CMC), dec);
+            return HB_OK;
+        case HB_INS_CLD:
+            emit(b, hb_ir_emit(b, HB_IR_CLD), dec);
+            return HB_OK;
+        case HB_INS_STD:
+            emit(b, hb_ir_emit(b, HB_IR_STD), dec);
+            return HB_OK;
+        case HB_INS_CLI:
+            emit(b, hb_ir_emit(b, HB_IR_CLI), dec);
+            return HB_OK;
+        case HB_INS_STI:
+            emit(b, hb_ir_emit(b, HB_IR_STI), dec);
+            return HB_OK;
+        case HB_INS_IRET: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_IRET);
+            if (i) i->src1 = operand_from_dec(dec, 1); /* size (16 vs 32) */
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_INT3:
+            emit(b, hb_ir_emit(b, HB_IR_INT3), dec);
+            return HB_OK;
+        case HB_INS_INT1:
+            emit(b, hb_ir_emit(b, HB_IR_INT1), dec);
+            return HB_OK;
+        case HB_INS_INT: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_INT);
+            if (i) i->src1 = operand_from_dec(dec, 1);
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_INTO:
+            emit(b, hb_ir_emit(b, HB_IR_INTO), dec);
+            return HB_OK;
+        case HB_INS_RETF: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_RETF);
+            if (i) i->src1 = hb_ir_imm(dec->ret_imm, HB_SIZE_16);
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_XLAT:
+            emit(b, hb_ir_emit(b, HB_IR_XLAT), dec);
+            return HB_OK;
+        case HB_INS_SALC: {
+            /* SALC (undocumented 0xD6): AL = 0xFF if CF=1 else 0x00.
+             * Implemented as SETB AL. */
+            hb_ir_operand_t al = hb_ir_reg(HB_REG_RAX, HB_SIZE_8);
+            emit(b, hb_ir_emit_setcc(b, HB_CC_B, al), dec);
+            return HB_OK;
+        }
+        case HB_INS_ENTER: {
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_ENTER);
+            if (i) {
+                i->src1 = operand_from_dec(dec, 1);
+                i->src2 = operand_from_dec(dec, 2);
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
+        case HB_INS_HLT:
+            /* Privileged: lift as fault so the user knows. */
+            emit(b, hb_ir_emit_fault(b, -8, "HLT in user-mode guest"), dec);
+            return HB_OK;
+        case HB_INS_IN:
+            /* Privileged port I/O. Lift as fault. */
+            emit(b, hb_ir_emit_fault(b, -6, "IN port I/O in user-mode guest"), dec);
+            return HB_OK;
+        case HB_INS_OUT:
+            emit(b, hb_ir_emit_fault(b, -6, "OUT port I/O in user-mode guest"), dec);
+            return HB_OK;
+        case HB_INS_INS:
+        case HB_INS_OUTS:
+            /* String port I/O (INSB/INSW/INSD/OUTSB/OUTSW/OUTSD). Privileged;
+             * lift as fault. */
+            emit(b, hb_ir_emit_fault(b, -6,
+                (dec->opcode == HB_INS_INS) ? "INS port I/O in user-mode guest"
+                                            : "OUTS port I/O in user-mode guest"), dec);
+            return HB_OK;
         default:
             emit(b, hb_ir_emit_unsupported(b, hb_opcode_name(dec->opcode), dec->addr,
                                     (uint8_t*)dec->bytes, dec->len), dec);

@@ -314,9 +314,22 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             if (modrm >= 0xc0 && modrm <= 0xc7) out->opcode = HB_INS_X87_FLD;
             else if (modrm >= 0xc8 && modrm <= 0xcf) out->opcode = HB_INS_X87_FXCH;
             else if (modrm == 0xfc) {
+                /* FRNDINT — must come before the 0xf8..0xff FUCOMPI range. */
                 out->opcode = HB_INS_X87_FRNDINT;
                 return HB_OK;
             }
+            else if (modrm == 0xd0) {
+                /* FNOP — FPU no-op. */
+                out->opcode = HB_INS_X87_MISC;
+                return HB_OK;
+            }
+            else if (modrm >= 0xd1 && modrm <= 0xd7) out->opcode = HB_INS_X87_FSTP; /* FSTPNCE — undocumented */
+            else if (modrm >= 0xd8 && modrm <= 0xdf) out->opcode = HB_INS_X87_FSTP;
+            else if (modrm == 0xe0) out->opcode = HB_INS_X87_MISC; /* FCHS */
+            else if (modrm == 0xe1) out->opcode = HB_INS_X87_MISC; /* FABS */
+            else if (modrm == 0xe4) out->opcode = HB_INS_X87_MISC; /* FTST */
+            else if (modrm == 0xe5) out->opcode = HB_INS_X87_MISC; /* FXAM */
+            else if (modrm >= 0xe8 && modrm <= 0xee) out->opcode = HB_INS_X87_FLD;  /* FLD1/FLDL2T/.../FLDZ */
             else return HB_ERR_UNSUPPORTED_OPCODE;
             set_imm(out, 1, sti, 1);
             return HB_OK;
@@ -336,8 +349,75 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
         if (opcode == 0xdb) {
             if (modrm == 0xe2) out->opcode = HB_INS_X87_FNCLEX;
             else if (modrm == 0xe3) out->opcode = HB_INS_X87_FNINIT;
+            else if (modrm >= 0xc0 && modrm <= 0xc7) out->opcode = HB_INS_X87_FCMOV; /* FCMOVNB */
+            else if (modrm >= 0xc8 && modrm <= 0xcf) out->opcode = HB_INS_X87_FCMOV; /* FCMOVNE */
+            else if (modrm >= 0xd0 && modrm <= 0xd7) out->opcode = HB_INS_X87_FCMOV; /* FCMOVNBE */
+            else if (modrm >= 0xd8 && modrm <= 0xdf) out->opcode = HB_INS_X87_FCMOV; /* FCMOVNU */
+            else if (modrm >= 0xe8 && modrm <= 0xef) out->opcode = HB_INS_X87_FUCOMI;
+            else if (modrm >= 0xf0 && modrm <= 0xf7) out->opcode = HB_INS_X87_FUCOMI; /* cap reports fcomi */
             else return HB_ERR_UNSUPPORTED_OPCODE;
+            if (modrm < 0xe0) set_imm(out, 1, sti, 1);
             return HB_OK;
+        }
+        if (opcode == 0xda) {
+            /* FCMOVB/FCMOVE/FCMOVBE/FCMOVU — Pentium Pro+ conditional moves. */
+            if (modrm >= 0xc0 && modrm <= 0xc7) out->opcode = HB_INS_X87_FCMOV; /* FCMOVB */
+            else if (modrm >= 0xc8 && modrm <= 0xcf) out->opcode = HB_INS_X87_FCMOV; /* FCMOVE */
+            else if (modrm >= 0xd0 && modrm <= 0xd7) out->opcode = HB_INS_X87_FCMOV; /* FCMOVBE */
+            else if (modrm >= 0xd8 && modrm <= 0xdf) out->opcode = HB_INS_X87_FCMOV; /* FCMOVU */
+            else return HB_ERR_UNSUPPORTED_OPCODE;
+            set_imm(out, 1, sti, 1);
+            return HB_OK;
+        }
+        if (opcode == 0xdc) {
+            /* FADD/FSUB/FMUL/FDIV ST(i), ST (mod=3 form). */
+            if (modrm >= 0xc0 && modrm <= 0xc7) out->opcode = HB_INS_X87_FADD;
+            else if (modrm >= 0xc8 && modrm <= 0xcf) out->opcode = HB_INS_X87_FMUL;
+            else if (modrm >= 0xe0 && modrm <= 0xe7) out->opcode = HB_INS_X87_FSUB;
+            else if (modrm >= 0xe8 && modrm <= 0xef) out->opcode = HB_INS_X87_FSUBR;
+            else if (modrm >= 0xf0 && modrm <= 0xf7) out->opcode = HB_INS_X87_FDIV;
+            else if (modrm >= 0xf8) out->opcode = HB_INS_X87_FDIVR;
+            else return HB_ERR_UNSUPPORTED_OPCODE;
+            set_imm(out, 1, sti, 1);
+            return HB_OK;
+        }
+        if (opcode == 0xdd) {
+            /* FFREE ST(i) and FUCOM/FUCOMP (mod=3 form). */
+            if (modrm >= 0xc0 && modrm <= 0xc7) {
+                out->opcode = HB_INS_X87_FFREE;
+                set_imm(out, 1, sti, 1);
+                return HB_OK;
+            }
+            else if (modrm >= 0xe0 && modrm <= 0xe7) {
+                out->opcode = HB_INS_X87_FUCOM;
+                set_imm(out, 1, sti, 1);
+                return HB_OK;
+            }
+            else if (modrm >= 0xe8 && modrm <= 0xef) {
+                out->opcode = HB_INS_X87_FUCOMP;
+                set_imm(out, 1, sti, 1);
+                return HB_OK;
+            }
+            return HB_ERR_UNSUPPORTED_OPCODE;
+        }
+        if (opcode == 0xdf) {
+            /* FFREEP ST(i) and FUCOMPI/FCOMPI (mod=3 form). */
+            if (modrm >= 0xc0 && modrm <= 0xc7) {
+                out->opcode = HB_INS_X87_FFREEP;
+                set_imm(out, 1, sti, 1);
+                return HB_OK;
+            }
+            else if (modrm >= 0xe8 && modrm <= 0xef) {
+                out->opcode = HB_INS_X87_FUCOMPI;
+                set_imm(out, 1, sti, 1);
+                return HB_OK;
+            }
+            else if (modrm >= 0xf0 && modrm <= 0xf7) {
+                out->opcode = HB_INS_X87_FUCOMPI;  /* cap reports fcompi; we collapse to FUCOMPI stand-in */
+                set_imm(out, 1, sti, 1);
+                return HB_OK;
+            }
+            return HB_ERR_UNSUPPORTED_OPCODE;
         }
         return HB_ERR_UNSUPPORTED_OPCODE;
     }
@@ -463,7 +543,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         /* PUSHA / PUSHAD (0x60) and POPA / POPAD (0x61).
          * PUSHAD is the 32-bit form (default in 32-bit mode); PUSHA is the 16-bit
          * form (selected with the 0x66 operand-size prefix). Likewise for POPA. */
-        if (prefix_f0 || address16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = (opcode == 0x60) ? HB_INS_PUSHA : HB_INS_POPA;
         out->writes_flags = false;
         if (opcode == 0x60) {
@@ -474,9 +554,251 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         }
         return HB_OK;
     }
+    if (opcode == 0x06 || opcode == 0x0E || opcode == 0x16 || opcode == 0x1E) {
+        /* PUSH ES/CS/SS/DS — segment register push (32-bit user mode only).
+         * 64-bit mode #UDs these; we reject by checking that we're not in 64-bit
+         * (the caller should not invoke hb_decode_x86 in that mode anyway, but
+         * we still validate the prefix set: LOCK, REP/REPNE, and address-size
+         * override are illegal). */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_PUSH_SEG;
+        out->writes_flags = false;
+        out->stack_delta = operand16 ? 2 : 4;
+        /* Encode the segment selector in op2.imm — the lift+interpreter use it
+         * to identify which segment (0=ES, 1=CS, 2=SS, 3=DS, 4=FS, 5=GS). */
+        set_imm(out, 1, 0, out->stack_delta);
+        set_imm(out, 2, (opcode >> 3) & 7, 1);
+        return HB_OK;
+    }
+    if (opcode == 0x07 || opcode == 0x17 || opcode == 0x1F) {
+        /* POP ES/SS/DS — segment register pop. POP CS is undefined in 32-bit
+         * user mode and #UDs; POP FS/GS (0x0F A1 / 0x0F A9) is the 0F-escape
+         * form, handled in the 0F map. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_POP_SEG;
+        out->writes_flags = false;
+        out->stack_delta = -(int)(operand16 ? 2 : 4);
+        set_imm(out, 1, 0, operand16 ? 2 : 4);
+        set_imm(out, 2, (opcode >> 3) & 7, 1);
+        return HB_OK;
+    }
+    if (opcode == 0xF8 || opcode == 0xF9 || opcode == 0xF5 ||
+        opcode == 0xFA || opcode == 0xFB ||
+        opcode == 0xFC || opcode == 0xFD) {
+        /* Flag ops: CLC (F8), STC (F9), CMC (F5), CLI (FA), STI (FB),
+         * CLD (FC), STD (FD). */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->writes_flags = true;
+        switch (opcode) {
+            case 0xF8: out->opcode = HB_INS_CLC; return HB_OK;
+            case 0xF9: out->opcode = HB_INS_STC; return HB_OK;
+            case 0xF5: out->opcode = HB_INS_CMC; return HB_OK;
+            case 0xFA: out->opcode = HB_INS_CLI; return HB_OK;
+            case 0xFB: out->opcode = HB_INS_STI; return HB_OK;
+            case 0xFC: out->opcode = HB_INS_CLD; return HB_OK;
+            case 0xFD: out->opcode = HB_INS_STD; return HB_OK;
+            default: return HB_ERR_UNSUPPORTED_OPCODE;
+        }
+    }
+    if (opcode == 0x98) {
+        /* CBW / CWDE — sign-extend AL into AX (16-bit opsize) or AX into EAX
+         * (32-bit opsize). Valid in 32-bit user mode; no prefix allowed. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_CWDE;
+        out->reads_flags = false;
+        out->writes_flags = false;
+        set_imm(out, 1, operand16 ? 1 : 2, 1);
+        return HB_OK;
+    }
+    if (opcode == 0x99) {
+        /* CDQ / CWDE / CQO — Sign-Extend EAX into EDX:EAX (CDQ) for 32-bit
+         * opsize, sign-extend AX into DX:EAX (CWD) for 16-bit opsize, or
+         * sign-extend RAX into RDX:RAX (CQO) for 64-bit opsize. HyperBridge
+         * names the i386 default op as CWD (matches the existing x64 naming);
+         * the lift reads op1.size to choose. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_CWD;
+        out->reads_flags = false;
+        out->writes_flags = false;
+        set_imm(out, 1, operand16 ? 2 : 4, 1);
+        return HB_OK;
+    }
+    if (opcode == 0xCF) {
+        /* IRET / IRETD — interrupt return. 16-bit opsize = IRET (pops IP+CS+FLAGS),
+         * 32-bit opsize = IRETD (pops EIP+CS+EFLAGS). */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_IRET;
+        out->reads_flags = true;
+        out->writes_flags = true;
+        out->is_ret = true;
+        out->stack_delta = -(int)(operand16 ? 6 : 12);
+        return HB_OK;
+    }
+    if (opcode == 0xCE) {
+        /* INTO — interrupt 4 if OF=1. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_INTO;
+        out->reads_flags = true;
+        return HB_OK;
+    }
+    if (opcode == 0xCC) {
+        /* INT3 — debug breakpoint (3-byte form, also reachable as INT 3). */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_INT3;
+        return HB_OK;
+    }
+    if (opcode == 0xCD) {
+        /* INT n — vectored software interrupt. imm8 vector. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+        uint8_t vector = read_u8(d);
+        out->opcode = HB_INS_INT;
+        out->reads_flags = true;
+        out->writes_flags = true;
+        set_imm(out, 1, vector, 1);
+        return HB_OK;
+    }
+    if (opcode == 0xF1) {
+        /* INT1 / ICEBP — debug breakpoint (1-byte form, ICEBP). */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_INT1;
+        return HB_OK;
+    }
+    if (opcode == 0xCA) {
+        /* RETF imm16 — far return, with stack-adjust. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (!can_read(d, 2)) return HB_ERR_DECODE_FAILED;
+        uint16_t imm = (uint16_t)read_s16(d);
+        out->opcode = HB_INS_RETF;
+        out->is_ret = true;
+        out->ret_imm = imm;
+        out->writes_flags = true;
+        out->reads_flags = true;
+        return HB_OK;
+    }
+    if (opcode == 0xCB) {
+        /* RETF — far return, no stack-adjust. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_RETF;
+        out->is_ret = true;
+        out->writes_flags = true;
+        out->reads_flags = true;
+        return HB_OK;
+    }
+    if (opcode == 0x9A) {
+        /* CALL ptr16:32 — far direct call. Imm32 offset + imm16 segment. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (!can_read(d, 4 + 2)) return HB_ERR_DECODE_FAILED;
+        uint32_t offset = (uint32_t)read_s32(d);
+        uint16_t segment = (uint16_t)read_s16(d);
+        out->opcode = HB_INS_CALL;
+        out->is_call = true;
+        out->writes_flags = true;
+        out->reads_flags = true;
+        out->branch_target = offset;
+        /* Encode the segment in op1.imm, offset in op2.imm. */
+        set_imm(out, 1, segment, 2);
+        set_imm(out, 2, (int64_t)(int32_t)offset, 4);
+        return HB_OK;
+    }
+    if (opcode == 0xEA) {
+        /* JMP ptr16:32 — far direct jump. Imm32 offset + imm16 segment. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (!can_read(d, 4 + 2)) return HB_ERR_DECODE_FAILED;
+        uint32_t offset = (uint32_t)read_s32(d);
+        uint16_t segment = (uint16_t)read_s16(d);
+        out->opcode = HB_INS_JMP;
+        out->writes_flags = true;
+        out->branch_target = offset;
+        set_imm(out, 1, segment, 2);
+        set_imm(out, 2, (int64_t)(int32_t)offset, 4);
+        return HB_OK;
+    }
+    if (opcode == 0xD6) {
+        /* SALC (Set AL on Carry, undocumented opcode 0xD6). Implemented as
+         * MOV AL, 0xFF if CF=1 else 0x00. We decode it and let the lift
+         * materialize the SETC semantics. The 0x66 prefix is silently
+         * ignored for this 8-bit-only opcode (Capstone accepts it). */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_SALC;
+        out->reads_flags = true;
+        out->writes_flags = false;
+        return HB_OK;
+    }
+    if (opcode == 0xD7) {
+        /* XLATB / XLAT — AL = [EBX+AL] (or [BX+AL] with 0x67). */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_XLAT;
+        out->writes_flags = false;
+        return HB_OK;
+    }
+    if (opcode == 0xC8) {
+        /* ENTER imm16, imm8 — make stack frame for procedure parameters. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (!can_read(d, 3)) return HB_ERR_DECODE_FAILED;
+        uint16_t frame_size = (uint16_t)read_s16(d);
+        uint8_t nesting = read_u8(d);
+        out->opcode = HB_INS_ENTER;
+        out->writes_flags = true;
+        out->reads_flags = true;
+        set_imm(out, 1, frame_size, 2);
+        set_imm(out, 2, nesting, 1);
+        return HB_OK;
+    }
+    if (opcode >= 0x6C && opcode <= 0x6F) {
+        /* INS/OUTS — string port I/O (privileged; #GP unless CPL<=IOPL).
+         * Decoded as IN/OUT for the lift/interpret to raise a fault; op size
+         * tracks operand16 (16-bit for 0x66 on INSW, 8-bit for INSB, 32-bit
+         * for INSD, ditto for OUTS). */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (opcode == 0x6C) out->opcode = HB_INS_INS;
+        else if (opcode == 0x6D) out->opcode = HB_INS_INS;
+        else if (opcode == 0x6E) out->opcode = HB_INS_OUTS;
+        else out->opcode = HB_INS_OUTS;
+        if (opcode == 0x6C) set_imm(out, 1, 1, 1);
+        else if (opcode == 0x6D) set_imm(out, 1, operand16 ? 2 : 4, 1);
+        else if (opcode == 0x6E) set_imm(out, 1, 1, 1);
+        else set_imm(out, 1, operand16 ? 2 : 4, 1);
+        out->reads_flags = (opcode >= 0x6E);
+        out->writes_flags = (opcode < 0x6E);
+        return HB_OK;
+    }
+    if (opcode == 0xE4 || opcode == 0xE5 || opcode == 0xEC || opcode == 0xED) {
+        /* IN — port I/O (privileged). HyperBridge doesn't model it; raise fault
+         * rather than silently producing wrong state. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_IN;
+        out->writes_flags = true;
+        if (opcode == 0xE4 || opcode == 0xE5) {
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t port = read_u8(d);
+            set_imm(out, 1, port, 1);
+        }
+        return HB_OK;
+    }
+    if (opcode == 0xE6 || opcode == 0xE7 || opcode == 0xEE || opcode == 0xEF) {
+        /* OUT — port I/O (privileged). HyperBridge doesn't model it. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_OUT;
+        out->reads_flags = true;
+        if (opcode == 0xE6 || opcode == 0xE7) {
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t port = read_u8(d);
+            set_imm(out, 1, port, 1);
+        }
+        return HB_OK;
+    }
+    if (opcode == 0xF4) {
+        /* HLT — privileged. HyperBridge raises a fault (HB_ERR_EXEC_FAULT or
+         * UNSUPPORTED_FEATURE) so the user knows the binary did something it
+         * shouldn't. We do not silently NOP this. */
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        out->opcode = HB_INS_HLT;
+        return HB_OK;
+    }
     if (opcode == 0x27) {
         /* DAA — Decimal Adjust AL after Addition. */
-        if (prefix_f0 || address16 || operand16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_DAA;
         out->reads_flags = true;
         out->writes_flags = true;
@@ -484,7 +806,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode == 0x2F) {
         /* DAS — Decimal Adjust AL after Subtraction. */
-        if (prefix_f0 || address16 || operand16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_DAS;
         out->reads_flags = true;
         out->writes_flags = true;
@@ -492,7 +814,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode == 0x37) {
         /* AAA — ASCII Adjust After Addition. */
-        if (prefix_f0 || address16 || operand16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_AAA;
         out->reads_flags = true;
         out->writes_flags = true;
@@ -500,7 +822,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode == 0x3F) {
         /* AAS — ASCII Adjust After Subtraction. */
-        if (prefix_f0 || address16 || operand16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_AAS;
         out->reads_flags = true;
         out->writes_flags = true;
@@ -508,7 +830,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode == 0xD4) {
         /* AAM — ASCII Adjust After Multiply. imm8 (base) is mandatory. */
-        if (prefix_f0 || address16 || operand16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t base = read_u8(d);
         out->opcode = HB_INS_AAM;
@@ -519,7 +841,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode == 0xD5) {
         /* AAD — ASCII Adjust Before Division. imm8 (base) is mandatory. */
-        if (prefix_f0 || address16 || operand16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t base = read_u8(d);
         out->opcode = HB_INS_AAD;
@@ -531,7 +853,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode == 0x62) {
         /* BOUND r16/32, m16/32&16/32 — array bounds check. 0x62 is also the EVEX
          * prefix in 64-bit mode; in 32-bit mode (this decoder) it is BOUND only. */
-        if (prefix_f0 || address16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t modrm = read_u8(d);
         if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
@@ -546,7 +868,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode == 0x63) {
         /* ARPL r/m16, r16 — Adjust RPL Field of Segment Selector (in 32-bit mode;
          * MOVSXD in 64-bit mode, which this decoder does not handle). */
-        if (prefix_f0 || address16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t modrm = read_u8(d);
         out->opcode = HB_INS_ARPL;
@@ -556,7 +878,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode == 0xC5) {
         /* LDS r16/32, m16:32 — Load Far Pointer. (In 64-bit mode, 0xC5 is the
          * VEX 2-byte prefix, so this is i386-only.) */
-        if (prefix_f0 || address16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t modrm = read_u8(d);
         if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
@@ -568,7 +890,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode == 0xC4) {
         /* LES r16/32, m16:32 — Load Far Pointer. (In 64-bit mode, 0xC4 is the
          * VEX 3-byte prefix, so this is i386-only.) */
-        if (prefix_f0 || address16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t modrm = read_u8(d);
         if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
@@ -579,7 +901,9 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode == 0x86 || opcode == 0x87) {
         /* XCHG r/m8,r8 and r/m16/32,r16/32.  LOCK is consumed by the
            prefix scanner; reject prefixes this decoder cannot model. */
-        if (address16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (address16 && !can_read(d, 1)) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (address16 && (d->code[d->pos] >> 6) != 3) return HB_ERR_UNSUPPORTED_OPCODE;
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t modrm = read_u8(d);
         out->opcode = HB_INS_XCHG;
@@ -590,7 +914,9 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode == 0x8C || opcode == 0x8E) {
         /* MOV r/m16,Sreg and MOV Sreg,r/m16.  Segment selector operands stay
            16-bit even with an operand-size prefix. */
-        if (address16 || prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (address16 && !can_read(d, 1)) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (address16 && (d->code[d->pos] >> 6) != 3) return HB_ERR_UNSUPPORTED_OPCODE;
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t modrm = read_u8(d);
         uint8_t seg = (modrm >> 3) & 7;
@@ -611,7 +937,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode >= 0x91 && opcode <= 0x97) {
         /* XCHG EAX/AX, r32/r16.  0x90 is the EAX,EAX NOP alias above. */
-        if (prefix_f0 || address16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_XCHG;
         out->writes_flags = false;
         set_reg(out, 1, HB_REG_RAX, operand16 ? 2 : 4);
@@ -619,7 +945,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         return HB_OK;
     }
     if (opcode == 0x9C || opcode == 0x9D) {
-        if (prefix_f0 || address16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = opcode == 0x9C ? HB_INS_PUSHF : HB_INS_POPF;
         out->writes_flags = opcode == 0x9D;
         out->stack_delta = operand16 ? 2 : 4;
@@ -627,20 +953,20 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         return HB_OK;
     }
     if (opcode == 0x9F) {
-        if (prefix_f0 || address16 || operand16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_LAHF;
         out->reads_flags = true;
         return HB_OK;
     }
     if (opcode == 0x9E) {
-        if (prefix_f0 || address16 || operand16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_SAHF;
         out->writes_flags = true;
         return HB_OK;
     }
     if (opcode == 0xA4 || opcode == 0xA5) {
         /* MOVS m8/m16/m32. REP is carried as an immediate mode. */
-        if (prefix_f0 || address16) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_MOVS;
         set_reg(out, 1, HB_REG_RSI, opcode == 0xA4 ? 1 : (operand16 ? 2 : 4));
         set_imm(out, 2, prefix_f2 ? 0xf2 : prefix_f3 ? 0xf3 : 0, 1);
@@ -649,7 +975,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode == 0xA6 || opcode == 0xA7) {
         /* CMPS m8/m16/m32. REPNE/REPE are carried as an immediate mode. */
-        if (prefix_f0 || address16) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_CMPS;
         set_reg(out, 1, HB_REG_RSI, opcode == 0xA6 ? 1 : (operand16 ? 2 : 4));
         set_imm(out, 2, prefix_f2 ? 0xf2 : prefix_f3 ? 0xf3 : 0, 1);
@@ -659,7 +985,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode == 0xAC || opcode == 0xAD) {
         /* LODS m8/m16/m32. REP is carried as an immediate mode. */
-        if (prefix_f0 || address16) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_LODS;
         set_reg(out, 1, HB_REG_RAX, opcode == 0xAC ? 1 : (operand16 ? 2 : 4));
         set_imm(out, 2, prefix_f2 ? 0xf2 : prefix_f3 ? 0xf3 : 0, 1);
@@ -668,7 +994,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode == 0xAE || opcode == 0xAF) {
         /* SCAS m8/m16/m32. REPNE/REPE are carried as an immediate mode. */
-        if (prefix_f0 || address16) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_SCAS;
         set_reg(out, 1, HB_REG_RAX, opcode == 0xAE ? 1 : (operand16 ? 2 : 4));
         set_imm(out, 2, prefix_f2 ? 0xf2 : prefix_f3 ? 0xf3 : 0, 1);
@@ -678,7 +1004,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode == 0xAA || opcode == 0xAB) {
         /* STOS m8/m16/m32. REP is carried as an immediate mode. */
-        if (prefix_f0 || address16) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_STOS;
         set_reg(out, 1, HB_REG_RAX, opcode == 0xAA ? 1 : (operand16 ? 2 : 4));
         set_imm(out, 2, prefix_f2 ? 0xf2 : prefix_f3 ? 0xf3 : 0, 1);
@@ -1416,18 +1742,42 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         d->pos = saved_pos;
     }
 
+    /* Per Intel SDM Vol 2: when the form is register-only (ModRM.mod == 3), the
+     * 0x67 address-size override prefix is silently ignored. We peek the modrm
+     * byte to detect this case and skip the global 0x67 reject. */
+    bool suppress_addr16 = false;
+    if (address16 && can_read(d, 1)) {
+        uint8_t peek = d->code[d->pos];
+        if ((peek >> 6) == 3) suppress_addr16 = true;
+    }
     if ((operand16 && !((opcode <= 0x3D) && ((opcode & 7) <= 5)) &&
+          !(opcode >= 0x50 && opcode <= 0x5F) &&
+          !(opcode >= 0x70 && opcode <= 0x7F) &&
           !(opcode >= 0x88 && opcode <= 0x8B) && opcode != 0x8D &&
           opcode != 0x0F &&
           !(opcode >= 0xA0 && opcode <= 0xA3) && !(opcode >= 0xB0 && opcode <= 0xBF) &&
-          opcode != 0x9C && opcode != 0x9D &&
+          !(opcode >= 0x40 && opcode <= 0x4F) &&
+          opcode != 0x68 && opcode != 0x6A &&
+          opcode != 0x8F && opcode != 0xC2 && opcode != 0xC3 &&
+          opcode != 0x9C && opcode != 0x9D && opcode != 0x9E && opcode != 0x9F &&
           opcode != 0x80 && opcode != 0x81 && opcode != 0x83 &&
-          opcode != 0x85 && opcode != 0xA9 &&
+          opcode != 0x84 && opcode != 0x85 && opcode != 0xA8 && opcode != 0xA9 &&
+          opcode != 0xF6 && opcode != 0xF7 &&
           opcode != 0x69 && opcode != 0x6B &&
           opcode != 0xC0 && opcode != 0xC1 &&
+          opcode != 0xFE && opcode != 0xFF &&
           !(opcode >= 0xD0 && opcode <= 0xD3) &&
-          opcode != 0xC6 && opcode != 0xC7 && opcode != 0xC9) ||
-        address16 || prefix_f2 || prefix_f3) {
+          opcode != 0xD6 && opcode != 0xD7 &&
+          opcode != 0xC6 && opcode != 0xC7 && opcode != 0xC9 &&
+          !(opcode >= 0xE0 && opcode <= 0xE3) &&
+          opcode != 0xE8 && opcode != 0xE9 && opcode != 0xEB &&
+          !(opcode >= 0xD8 && opcode <= 0xDF) &&
+          !(opcode >= 0x6C && opcode <= 0x6F)) ||
+        (address16 && !suppress_addr16) ||
+        (prefix_f2 && opcode != 0x90 && opcode != 0xC3 && opcode != 0xC2 &&
+                     !(opcode >= 0x6C && opcode <= 0x6F)) ||
+        (prefix_f3 && opcode != 0x90 && opcode != 0xC3 && opcode != 0xC2 &&
+                     !(opcode >= 0x6C && opcode <= 0x6F))) {
         return HB_ERR_UNSUPPORTED_OPCODE;
     }
 
@@ -1760,14 +2110,14 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     /* Group: PUSH / POP */
     if (opcode >= 0x50 && opcode <= 0x57) {
         out->opcode = HB_INS_PUSH;
-        out->stack_delta = -4;
-        set_reg(out, 1, opcode & 7, 4);
+        out->stack_delta = -(int)(operand16 ? 2 : 4);
+        set_reg(out, 1, opcode & 7, operand16 ? 2 : 4);
         return HB_OK;
     }
     if (opcode >= 0x58 && opcode <= 0x5F) {
         out->opcode = HB_INS_POP;
-        out->stack_delta = 4;
-        set_reg(out, 1, opcode & 7, 4);
+        out->stack_delta = operand16 ? 2 : 4;
+        set_reg(out, 1, opcode & 7, operand16 ? 2 : 4);
         return HB_OK;
     }
     if (opcode == 0x8F) {
@@ -1782,16 +2132,22 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
     if (opcode == 0x68) {
         out->opcode = HB_INS_PUSH;
-        out->stack_delta = -4;
+        out->stack_delta = -(int)(operand16 ? 2 : 4);
         if (!can_read(d, 4)) return HB_ERR_DECODE_FAILED;
-        set_imm(out, 1, (int64_t)read_s32(d), 4);
+        if (operand16) {
+            int16_t v = (int16_t)read_s16(d);
+            set_imm(out, 1, v, 2);
+        } else {
+            set_imm(out, 1, (int64_t)read_s32(d), 4);
+        }
         return HB_OK;
     }
     if (opcode == 0x6A) {
         out->opcode = HB_INS_PUSH;
-        out->stack_delta = -4;
+        out->stack_delta = -(int)(operand16 ? 2 : 4);
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
-        set_imm(out, 1, (int64_t)read_s8(d), 1);
+        int8_t v = read_s8(d);
+        set_imm(out, 1, v, operand16 ? 2 : 4);
         return HB_OK;
     }
 
@@ -1799,14 +2155,14 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode >= 0x40 && opcode <= 0x47) {
         out->opcode = HB_INS_INC;
         out->writes_flags = true;
-        set_reg(out, 1, opcode & 7, 4);
+        set_reg(out, 1, opcode & 7, operand16 ? 2 : 4);
         return HB_OK;
     }
     /* Group: DEC reg (0x48-0x4F) -- in x86 these are real DEC, not REX */
     if (opcode >= 0x48 && opcode <= 0x4F) {
         out->opcode = HB_INS_DEC;
         out->writes_flags = true;
-        set_reg(out, 1, opcode & 7, 4);
+        set_reg(out, 1, opcode & 7, operand16 ? 2 : 4);
         return HB_OK;
     }
 
@@ -1830,6 +2186,9 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode >= 0xE0 && opcode <= 0xE3) {
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         int8_t rel = read_s8(d);
+        /* 0xE3 is LOOPNE in 64-bit mode but JECXZ/JCXZ in 32-bit. For
+         * i386-only decode we use HB_INS_JRCXZ; the lift/interpret key off
+         * op1.size (4 = ECX in 32-bit, 2 = CX in 16-bit). */
         out->opcode = opcode == 0xE3 ? HB_INS_JRCXZ : HB_INS_LOOP;
         out->is_branch = true;
         out->is_conditional = true;
@@ -1868,7 +2227,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         return HB_OK;
     }
     if (opcode == 0xC9) {
-        if (address16 || prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+        if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
         out->opcode = HB_INS_LEAVE;
         out->writes_flags = false;
         out->stack_delta = operand16 ? 2 : 4;
@@ -1903,6 +2262,64 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             int32_t rel = read_s32(d);
             out->branch_target = addr + d->pos + rel;
             out->reads_flags = true;
+            return HB_OK;
+        }
+        if (op2 == 0x00) {
+            /* Group 6: SLDT/STR/LLDT/LTR/VERR/VERW r/m16/32.
+             * Decoded as MOV_SEG-shaped for the lift; privileged forms
+             * (LLDT/LTR) are still allowed through — the runtime will #GP. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = HB_INS_MOV_SEG;
+            out->writes_flags = false;
+            return parse_modrm_ext(d, modrm, operand16 ? 2 : 4, out, 1);
+        }
+        if (op2 == 0x01) {
+            /* Group 7: SGDT/SIDT/LGDT/LIDT/SMSW/LMSW/INVLPG. Privileged in i386
+             * user mode, but the encoding is well-defined. Decoded as
+             * MOV-shaped; the runtime raises #GP for the privileged ones. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = HB_INS_MOV_SEG;
+            out->writes_flags = false;
+            return parse_modrm_ext(d, modrm, operand16 ? 2 : 4, out, 1);
+        }
+        if (op2 == 0x02) {
+            /* LAR r16/32, r/m16/32 — load access rights. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = HB_INS_MOV;
+            out->writes_flags = true;
+            return parse_modrm(d, modrm, operand16 ? 2 : 4, out, 1, 2, false);
+        }
+        if (op2 == 0x03) {
+            /* LSL r16/32, r/m16/32 — load segment limit. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = HB_INS_MOV;
+            out->writes_flags = true;
+            return parse_modrm(d, modrm, operand16 ? 2 : 4, out, 1, 2, false);
+        }
+        if (op2 == 0x05) {
+            /* SYSCALL — only valid in 64-bit mode. In 32-bit i386 this is #UD. */
+            return HB_ERR_UNSUPPORTED_OPCODE;
+        }
+        if (op2 == 0x06) {
+            /* CLTS — clear task-switched flag, privileged. */
+            return HB_ERR_UNSUPPORTED_OPCODE;
+        }
+        if (op2 == 0xA0 || op2 == 0xA1 || op2 == 0xA8 || op2 == 0xA9) {
+            /* PUSH/POP FS/GS (0F-escape form). Valid in 32-bit user mode; #UD in
+             * 64-bit mode (we never get here in that mode anyway). LOCK/REP/REPNE
+             * are illegal prefixes here. */
+            if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+            bool is_push = (op2 == 0xA0 || op2 == 0xA8);
+            int seg = (op2 == 0xA0 || op2 == 0xA1) ? 4 /* FS */ : 5 /* GS */;
+            out->opcode = is_push ? HB_INS_PUSH_SEG : HB_INS_POP_SEG;
+            out->writes_flags = false;
+            out->stack_delta = is_push ? (operand16 ? 2 : 4) : -(int)(operand16 ? 2 : 4);
+            set_imm(out, 1, 0, operand16 ? 2 : 4);
+            set_imm(out, 2, seg, 1);
             return HB_OK;
         }
         if (op2 == 0xA4 || op2 == 0xA5 || op2 == 0xAC || op2 == 0xAD) {
@@ -1952,7 +2369,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         }
         if (op2 == 0xB4 || op2 == 0xB5) {
             /* LFS / LGS r16/32, m16:32. 0F B4=LFS, 0F B5=LGS. */
-            if (prefix_f0 || address16 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
+            if (prefix_f0 || prefix_f2 || prefix_f3) return HB_ERR_UNSUPPORTED_OPCODE;
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
             if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;

@@ -3850,6 +3850,7 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_MOVSX: return "MOVSX";
         case HB_INS_MOVSXD: return "MOVSXD";
         case HB_INS_CDQE: return "CDQE";
+        case HB_INS_CWDE: return "CWDE";
         case HB_INS_CWD: return "CWD";
         case HB_INS_LEAVE: return "LEAVE";
         case HB_INS_LAHF: return "LAHF";
@@ -3875,6 +3876,7 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_CLI: return "CLI";
         case HB_INS_STI: return "STI";
         case HB_INS_HLT: return "HLT";
+        case HB_INS_SALC: return "SALC";
         case HB_INS_MOV_CR: return "MOV_CR";
         case HB_INS_MOV_DR: return "MOV_DR";
         case HB_INS_BSF: return "BSF";

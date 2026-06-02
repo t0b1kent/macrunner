@@ -1716,6 +1716,28 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_PUSHF: return "PUSHF";
         case HB_IR_POPF: return "POPF";
         case HB_IR_CALL: return "CALL";
+        case HB_IR_CALLF: return "CALLF";
+        case HB_IR_JMPF: return "JMPF";
+        case HB_IR_RETF: return "RETF";
+        case HB_IR_IRET: return "IRET";
+        case HB_IR_INT3: return "INT3";
+        case HB_IR_INT: return "INT";
+        case HB_IR_INT1: return "INT1";
+        case HB_IR_INTO: return "INTO";
+        case HB_IR_HLT: return "HLT";
+        case HB_IR_IN: return "IN";
+        case HB_IR_OUT: return "OUT";
+        case HB_IR_XLAT: return "XLAT";
+        case HB_IR_PUSH_SEG: return "PUSH_SEG";
+        case HB_IR_POP_SEG: return "POP_SEG";
+        case HB_IR_CLC: return "CLC";
+        case HB_IR_STC: return "STC";
+        case HB_IR_CMC: return "CMC";
+        case HB_IR_CLD: return "CLD";
+        case HB_IR_STD: return "STD";
+        case HB_IR_CLI: return "CLI";
+        case HB_IR_STI: return "STI";
+        case HB_IR_ENTER: return "ENTER";
         case HB_IR_RET: return "RET";
         case HB_IR_JMP: return "JMP";
         case HB_IR_Jcc: return "Jcc";
@@ -3431,6 +3453,182 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             if (r != HB_OK) return r;
             if (ctx->mode == HB_MODE_64BIT)
                 trace_branch_event(ctx, instr, "popf", rsp_before, value, value);
+            return HB_OK;
+        }
+
+        case HB_IR_CLC: ctx->flags.cf = 0; return HB_OK;
+        case HB_IR_STC: ctx->flags.cf = 1; return HB_OK;
+        case HB_IR_CMC: ctx->flags.cf = !ctx->flags.cf; return HB_OK;
+        case HB_IR_CLD: {
+            /* Clear DF (bit 10 of EFLAGS). */
+            if (ctx->mode == HB_MODE_32BIT) ctx->regs.x86.eflags &= ~(1u << 10);
+            else ctx->regs.x64.rflags &= ~(1ULL << 10);
+            return HB_OK;
+        }
+        case HB_IR_STD: {
+            if (ctx->mode == HB_MODE_32BIT) ctx->regs.x86.eflags |= (1u << 10);
+            else ctx->regs.x64.rflags |= (1ULL << 10);
+            return HB_OK;
+        }
+        case HB_IR_CLI: /* Interrupt flag — HyperBridge runs with IF=1; ignore. */ return HB_OK;
+        case HB_IR_STI: return HB_OK;
+
+        case HB_IR_PUSH_SEG: {
+            /* i386-only: PUSH ES/CS/SS/DS (32-bit user mode).
+             * src1.size = element size, src2.imm = segment selector. */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint16_t seg = (uint16_t)instr->src2.imm;
+            uint16_t selector = ctx->regs.x86.seg[seg] & 0xFFFFu;
+            uint8_t size = (uint8_t)(instr->src1.size ? instr->src1.size : 4);
+            if (size == 2) {
+                ctx->regs.x86.esp -= 2;
+                r = hb_memory_write_u16(ctx->memory, ctx->regs.x86.esp, selector);
+            } else {
+                ctx->regs.x86.esp -= 4;
+                r = hb_memory_write_u32(ctx->memory, ctx->regs.x86.esp, (uint32_t)selector);
+            }
+            return r;
+        }
+
+        case HB_IR_POP_SEG: {
+            /* i386-only: POP ES/SS/DS (32-bit user mode). */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint16_t seg = (uint16_t)instr->src2.imm;
+            uint8_t size = (uint8_t)(instr->dst.size ? instr->dst.size : 4);
+            uint32_t value = 0;
+            if (size == 2) {
+                uint16_t v16 = 0;
+                r = hb_memory_read_u16(ctx->memory, ctx->regs.x86.esp, &v16);
+                if (r != HB_OK) return r;
+                value = v16;
+                ctx->regs.x86.esp += 2;
+            } else {
+                r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp, &value);
+                if (r != HB_OK) return r;
+                ctx->regs.x86.esp += 4;
+            }
+            ctx->regs.x86.seg[seg] = value & 0xFFFFu;
+            return HB_OK;
+        }
+
+        case HB_IR_RETF: {
+            /* Far return. src1.imm = stack-adjust after pop (CA form has it, CB form is 0). */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            int adjust = (int)instr->src1.imm;
+            uint32_t eip = 0, eflags = 0;
+            uint16_t cs = 0;
+            r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp, &eip);
+            if (r != HB_OK) return r;
+            r = hb_memory_read_u16(ctx->memory, ctx->regs.x86.esp + 4, &cs);
+            if (r != HB_OK) return r;
+            r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp + 6, &eflags);
+            if (r != HB_OK) return r;
+            ctx->regs.x86.esp += 12;
+            ctx->regs.x86.eip = eip;
+            ctx->regs.x86.seg[1] = cs;
+            r = write_flags_image(ctx, HB_SIZE_32, eflags);
+            if (r != HB_OK) return r;
+            if (adjust) ctx->regs.x86.esp += (uint32_t)adjust;
+            return HB_OK;
+        }
+
+        case HB_IR_IRET: {
+            /* Interrupt return. src1.size = 16 (IRET) or 32 (IRETD). */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint8_t size = (uint8_t)(instr->src1.size ? instr->src1.size : 4);
+            if (size == 2) {
+                uint16_t ip = 0, cs = 0, fl = 0;
+                r = hb_memory_read_u16(ctx->memory, ctx->regs.x86.esp, &ip);
+                if (r != HB_OK) return r;
+                r = hb_memory_read_u16(ctx->memory, ctx->regs.x86.esp + 2, &cs);
+                if (r != HB_OK) return r;
+                r = hb_memory_read_u16(ctx->memory, ctx->regs.x86.esp + 4, &fl);
+                if (r != HB_OK) return r;
+                ctx->regs.x86.esp += 6;
+                ctx->regs.x86.eip = ip;
+                ctx->regs.x86.seg[1] = cs;
+                r = write_flags_image(ctx, HB_SIZE_16, fl);
+            } else {
+                uint32_t eip = 0, eflags = 0;
+                uint16_t cs = 0;
+                r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp, &eip);
+                if (r != HB_OK) return r;
+                r = hb_memory_read_u16(ctx->memory, ctx->regs.x86.esp + 4, &cs);
+                if (r != HB_OK) return r;
+                r = hb_memory_read_u32(ctx->memory, ctx->regs.x86.esp + 6, &eflags);
+                if (r != HB_OK) return r;
+                ctx->regs.x86.esp += 12;
+                ctx->regs.x86.eip = eip;
+                ctx->regs.x86.seg[1] = cs;
+                r = write_flags_image(ctx, HB_SIZE_32, eflags);
+            }
+            return r;
+        }
+
+        case HB_IR_INT3:
+            /* Breakpoint. HyperBridge doesn't trap; treated as NOP. */
+            return HB_OK;
+
+        case HB_IR_INT1:
+            return HB_OK;
+
+        case HB_IR_INT: {
+            /* INT n. HyperBridge doesn't dispatch to a real IDT; fault so the
+             * user knows the guest used INT n. */
+            (void)instr;
+            return HB_ERR_UNSUPPORTED_OPCODE;
+        }
+
+        case HB_IR_INTO:
+            /* Trap if OF=1. HyperBridge has no #OF trap, so we just NOP. */
+            (void)instr;
+            return HB_OK;
+
+        case HB_IR_XLAT: {
+            /* XLATB: AL = [EBX+AL] (or [BX+AL] with 0x67). */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint8_t al = (uint8_t)ctx->regs.x86.eax;
+            uint32_t base = (uint32_t)ctx->regs.x86.ebx;
+            uint32_t addr = base + al;
+            uint8_t v = 0;
+            r = hb_memory_read_u8(ctx->memory, addr, &v);
+            if (r != HB_OK) return r;
+            ctx->regs.x86.eax = (ctx->regs.x86.eax & 0xFFFFFF00u) | v;
+            return HB_OK;
+        }
+
+        case HB_IR_ENTER: {
+            /* ENTER frame_size, nesting — push EBP, allocate locals. */
+            if (ctx->mode != HB_MODE_32BIT) return HB_ERR_UNSUPPORTED_OPCODE;
+            uint16_t frame_size = (uint16_t)instr->src1.imm;
+            uint8_t nesting = (uint8_t)instr->src2.imm;
+            uint32_t ebp = ctx->regs.x86.ebp;
+            /* Push EBP. */
+            ctx->regs.x86.esp -= 4;
+            r = hb_memory_write_u32(ctx->memory, ctx->regs.x86.esp, ebp);
+            if (r != HB_OK) return r;
+            uint32_t frame_ebp = ctx->regs.x86.esp;
+            if (nesting > 0) {
+                for (uint8_t i = 1; i < nesting; i++) {
+                    ebp -= 4;
+                    uint32_t tmp = 0;
+                    r = hb_memory_read_u32(ctx->memory, ebp, &tmp);
+                    if (r != HB_OK) return r;
+                    ctx->regs.x86.esp -= 4;
+                    r = hb_memory_write_u32(ctx->memory, ctx->regs.x86.esp, tmp);
+                    if (r != HB_OK) return r;
+                }
+                /* push frame_ebp. */
+                ctx->regs.x86.esp -= 4;
+                r = hb_memory_write_u32(ctx->memory, ctx->regs.x86.esp, frame_ebp);
+                if (r != HB_OK) return r;
+            } else {
+                ctx->regs.x86.esp -= 4;
+                r = hb_memory_write_u32(ctx->memory, ctx->regs.x86.esp, frame_ebp);
+                if (r != HB_OK) return r;
+            }
+            ctx->regs.x86.ebp = frame_ebp;
+            ctx->regs.x86.esp -= frame_size;
             return HB_OK;
         }
 

@@ -320,6 +320,131 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, i, dec);
             return HB_OK;
         }
+        case HB_INS_PHADDW: case HB_INS_PHADDD: case HB_INS_PHADDSW:
+        case HB_INS_PHSUBW: case HB_INS_PHSUBD: case HB_INS_PHSUBSW:
+        case HB_INS_PMADDUBSW:
+        case HB_INS_PSIGNB:  case HB_INS_PSIGNW:  case HB_INS_PSIGND:
+        case HB_INS_PMULHRSW:
+        case HB_INS_PABSB:   case HB_INS_PABSW:   case HB_INS_PABSD:
+        case HB_INS_PTEST:
+        case HB_INS_PMOVSXBW: case HB_INS_PMOVSXBD: case HB_INS_PMOVSXBQ:
+        case HB_INS_PMOVSXWD: case HB_INS_PMOVSXWQ: case HB_INS_PMOVSXDQ:
+        case HB_INS_PMULDQ: case HB_INS_PCMPEQQ: case HB_INS_PACKUSDW:
+        case HB_INS_PMOVZXBW: case HB_INS_PMOVZXBD: case HB_INS_PMOVZXBQ:
+        case HB_INS_PMOVZXWD: case HB_INS_PMOVZXWQ: case HB_INS_PMOVZXDQ:
+        case HB_INS_PCMPGTQ:
+        case HB_INS_PMINSB: case HB_INS_PMINSD: case HB_INS_PMINUW: case HB_INS_PMINUD:
+        case HB_INS_PMAXSB: case HB_INS_PMAXSD: case HB_INS_PMAXUW: case HB_INS_PMAXUD:
+        case HB_INS_PMULLD: case HB_INS_PHMINPOSUW:
+        case HB_INS_PALIGNR: case HB_INS_PBLENDW:
+        case HB_INS_BLENDPS: case HB_INS_BLENDPD:
+        case HB_INS_PBLENDVB: case HB_INS_BLENDVPS: case HB_INS_BLENDVPD:
+        case HB_INS_PCLMULQDQ: case HB_INS_AESKEYGENASSIST:
+        case HB_INS_AESIMC: case HB_INS_AESENC: case HB_INS_AESENCLAST:
+        case HB_INS_AESDEC: case HB_INS_AESDECLAST:
+        case HB_INS_GF2P8MULB:
+        case HB_INS_CRC32:
+        case HB_INS_ADCX:
+        case HB_INS_ADOX:
+        case HB_INS_SHA1NEXTE: case HB_INS_SHA1MSG1: case HB_INS_SHA1MSG2:
+        case HB_INS_SHA256RNDS2: case HB_INS_SHA256MSG1: case HB_INS_SHA256MSG2:
+        case HB_INS_SHA1RNDS4: {
+            /* Lift as a generic VEC_PACKED with the matching vec-op id.
+             * The interpreter executes it; if it can't, the IR will fault. */
+            static const struct { int ins; uint32_t vec; } kTable[] = {
+                { HB_INS_PHADDW, HB_VEC_PHADDW }, { HB_INS_PHADDD, HB_VEC_PHADDD },
+                { HB_INS_PHADDSW, HB_VEC_PHADDSW },
+                { HB_INS_PHSUBW, HB_VEC_PHSUBW }, { HB_INS_PHSUBD, HB_VEC_PHSUBD },
+                { HB_INS_PHSUBSW, HB_VEC_PHSUBSW },
+                { HB_INS_PMADDUBSW, HB_VEC_PMADDUBSW },
+                { HB_INS_PSIGNB, HB_VEC_PSIGNB }, { HB_INS_PSIGNW, HB_VEC_PSIGNW },
+                { HB_INS_PSIGND, HB_VEC_PSIGND },
+                { HB_INS_PMULHRSW, HB_VEC_PMULHRSW },
+                { HB_INS_PABSB, HB_VEC_PABSB }, { HB_INS_PABSW, HB_VEC_PABSW },
+                { HB_INS_PABSD, HB_VEC_PABSD },
+                { HB_INS_PTEST, HB_VEC_PTEST },
+                { HB_INS_PMOVSXBW, HB_VEC_PMOVSXBW },
+                { HB_INS_PMOVSXBD, HB_VEC_PMOVSXBD },
+                { HB_INS_PMOVSXBQ, HB_VEC_PMOVSXBQ },
+                { HB_INS_PMOVSXWD, HB_VEC_PMOVSXWD },
+                { HB_INS_PMOVSXWQ, HB_VEC_PMOVSXWQ },
+                { HB_INS_PMOVSXDQ, HB_VEC_PMOVSXDQ },
+                { HB_INS_PMULDQ, HB_VEC_PMULDQ },
+                { HB_INS_PCMPEQQ, HB_VEC_PCMPEQQ },
+                { HB_INS_PACKUSDW, HB_VEC_PACKUSDW },
+                { HB_INS_PMOVZXBW, HB_VEC_PMOVZXBW },
+                { HB_INS_PMOVZXBD, HB_VEC_PMOVZXBD },
+                { HB_INS_PMOVZXBQ, HB_VEC_PMOVZXBQ },
+                { HB_INS_PMOVZXWD, HB_VEC_PMOVZXWD },
+                { HB_INS_PMOVZXWQ, HB_VEC_PMOVZXWQ },
+                { HB_INS_PMOVZXDQ, HB_VEC_PMOVZXDQ },
+                { HB_INS_PCMPGTQ, HB_VEC_PCMPGTQ },
+                { HB_INS_PMINSB, HB_VEC_PMINSB }, { HB_INS_PMINSD, HB_VEC_PMINSD },
+                { HB_INS_PMINUW, HB_VEC_PMINUW }, { HB_INS_PMINUD, HB_VEC_PMINUD },
+                { HB_INS_PMAXSB, HB_VEC_PMAXSB }, { HB_INS_PMAXSD, HB_VEC_PMAXSD },
+                { HB_INS_PMAXUW, HB_VEC_PMAXUW }, { HB_INS_PMAXUD, HB_VEC_PMAXUD },
+                { HB_INS_PMULLD, HB_VEC_PMULLD },
+                { HB_INS_PHMINPOSUW, HB_VEC_PHMINPOSUW },
+                { HB_INS_PALIGNR, HB_VEC_PALIGNR }, { HB_INS_PBLENDW, HB_VEC_PBLENDW },
+                { HB_INS_BLENDPS, HB_VEC_BLENDPS }, { HB_INS_BLENDPD, HB_VEC_BLENDPD },
+                { HB_INS_PBLENDVB, HB_VEC_PBLENDVB },
+                { HB_INS_BLENDVPS, HB_VEC_BLENDVPS },
+                { HB_INS_BLENDVPD, HB_VEC_BLENDVPD },
+                { HB_INS_PCLMULQDQ, HB_VEC_PCLMULQDQ },
+                { HB_INS_AESKEYGENASSIST, HB_VEC_AESKEYGENASSIST },
+                { HB_INS_AESIMC, HB_VEC_AESIMC },
+                { HB_INS_AESENC, HB_VEC_AESENC }, { HB_INS_AESENCLAST, HB_VEC_AESENCLAST },
+                { HB_INS_AESDEC, HB_VEC_AESDEC }, { HB_INS_AESDECLAST, HB_VEC_AESDECLAST },
+                { HB_INS_GF2P8MULB, HB_VEC_GF2P8MULB },
+                { HB_INS_CRC32, 0 },  /* scalar; vec_op unused */
+                { HB_INS_ADCX, 0 },  /* scalar; vec_op unused */
+                { HB_INS_ADOX, 0 },  /* scalar; vec_op unused */
+                { HB_INS_SHA1NEXTE, HB_VEC_SHA1NEXTE },
+                { HB_INS_SHA1MSG1, HB_VEC_SHA1MSG1 },
+                { HB_INS_SHA1MSG2, HB_VEC_SHA1MSG2 },
+                { HB_INS_SHA256RNDS2, HB_VEC_SHA256RNDS2 },
+                { HB_INS_SHA256MSG1, HB_VEC_SHA256MSG1 },
+                { HB_INS_SHA256MSG2, HB_VEC_SHA256MSG2 },
+                { HB_INS_SHA1RNDS4, HB_VEC_SHA1RNDS4 },
+            };
+            uint32_t vec_op = 0;
+            for (size_t i = 0; i < sizeof(kTable)/sizeof(kTable[0]); ++i) {
+                if ((int)kTable[i].ins == (int)dec->opcode) { vec_op = kTable[i].vec; break; }
+            }
+            hb_ir_operand_t dst = operand_from_dec(dec, 1);
+            hb_ir_operand_t op2 = dec->op2.present ? operand_from_dec(dec, 2) : hb_ir_none();
+            uint8_t imm = 0;
+            if (dec->op3.present && dec->op3.is_imm) imm = (uint8_t)dec->op3.imm;
+            else if (dec->has_imm8) imm = dec->imm8;
+            /* For most of these (dst = src1 = xmm, src2 = xmm/m), default to
+             * dst = src1, src2 = op2.  A few (PABSB/W/D, PMOV*, PHMINPOSUW,
+             * AESKEYGENASSIST, AESIMC) are unary with src1 = op2. */
+            bool unary = dec->opcode == HB_INS_PABSB || dec->opcode == HB_INS_PABSW ||
+                         dec->opcode == HB_INS_PABSD ||
+                         dec->opcode == HB_INS_PMOVSXBW || dec->opcode == HB_INS_PMOVSXBD ||
+                         dec->opcode == HB_INS_PMOVSXBQ || dec->opcode == HB_INS_PMOVSXWD ||
+                         dec->opcode == HB_INS_PMOVSXWQ || dec->opcode == HB_INS_PMOVSXDQ ||
+                         dec->opcode == HB_INS_PMOVZXBW || dec->opcode == HB_INS_PMOVZXBD ||
+                         dec->opcode == HB_INS_PMOVZXBQ || dec->opcode == HB_INS_PMOVZXWD ||
+                         dec->opcode == HB_INS_PMOVZXWQ || dec->opcode == HB_INS_PMOVZXDQ ||
+                         dec->opcode == HB_INS_PHMINPOSUW ||
+                         dec->opcode == HB_INS_AESKEYGENASSIST ||
+                         dec->opcode == HB_INS_AESIMC;
+            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_VEC_PACKED);
+            if (i) {
+                i->dst = dst;
+                if (unary) {
+                    i->src1 = op2;
+                    i->src2 = hb_ir_none();
+                } else {
+                    i->src1 = dst;
+                    i->src2 = op2;
+                }
+                i->target = ((uint64_t)vec_op << 32) | imm;
+            }
+            emit(b, i, dec);
+            return HB_OK;
+        }
         case HB_INS_PINSRW: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PINSRW);
@@ -1208,6 +1333,15 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_HLT:
             /* Privileged: lift as fault so the user knows. */
             emit(b, hb_ir_emit_fault(b, -8, "HLT in user-mode guest"), dec);
+            return HB_OK;
+        case HB_INS_MOV_CR:
+        case HB_INS_MOV_DR:
+            /* Privileged: in 32-bit user mode, MOV CRn/DRn raises #GP(0).
+             * Lift as fault so the runtime can translate it correctly. */
+            emit(b, hb_ir_emit_fault(b, -8,
+                (dec->opcode == HB_INS_MOV_CR) ? "MOV CRn in user-mode guest"
+                                               : "MOV DRn in user-mode guest"),
+                dec);
             return HB_OK;
         case HB_INS_IN:
             /* Privileged port I/O. Lift as fault. */

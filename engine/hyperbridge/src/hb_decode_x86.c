@@ -44,6 +44,100 @@ static inline int reg8_idx(int base, uint8_t* byte_offset) {
     return base;
 }
 
+/* 0F38 map: SSSE3 family (subset that has a non-VEC HB_INS_*). */
+static int ssse3_0f38_opcode(uint8_t op) {
+    switch (op) {
+        case 0x00: return HB_INS_PSHUFB;
+        case 0x01: return HB_INS_PHADDW;
+        case 0x02: return HB_INS_PHADDD;
+        case 0x03: return HB_INS_PHADDSW;
+        case 0x04: return HB_INS_PMADDUBSW;
+        case 0x05: return HB_INS_PHSUBW;
+        case 0x06: return HB_INS_PHSUBD;
+        case 0x07: return HB_INS_PHSUBSW;
+        case 0x08: return HB_INS_PSIGNB;
+        case 0x09: return HB_INS_PSIGNW;
+        case 0x0a: return HB_INS_PSIGND;
+        case 0x0b: return HB_INS_PMULHRSW;
+        case 0x1c: return HB_INS_PABSB;
+        case 0x1d: return HB_INS_PABSW;
+        case 0x1e: return HB_INS_PABSD;
+        default: return 0;
+    }
+}
+
+/* 0F38 map: SSE4.1 / SSE4.2 / AES / GF2P8MULB user-mode subset. */
+static int sse41_0f38_opcode(uint8_t op) {
+    switch (op) {
+        case 0x10: return HB_INS_PBLENDVB;
+        case 0x14: return HB_INS_BLENDVPS;
+        case 0x15: return HB_INS_BLENDVPD;
+        case 0x17: return HB_INS_PTEST;
+        case 0x20: return HB_INS_PMOVSXBW;
+        case 0x21: return HB_INS_PMOVSXBD;
+        case 0x22: return HB_INS_PMOVSXBQ;
+        case 0x23: return HB_INS_PMOVSXWD;
+        case 0x24: return HB_INS_PMOVSXWQ;
+        case 0x25: return HB_INS_PMOVSXDQ;
+        case 0x28: return HB_INS_PMULDQ;
+        case 0x29: return HB_INS_PCMPEQQ;
+        case 0x2b: return HB_INS_PACKUSDW;
+        case 0x30: return HB_INS_PMOVZXBW;
+        case 0x31: return HB_INS_PMOVZXBD;
+        case 0x32: return HB_INS_PMOVZXBQ;
+        case 0x33: return HB_INS_PMOVZXWD;
+        case 0x34: return HB_INS_PMOVZXWQ;
+        case 0x35: return HB_INS_PMOVZXDQ;
+        case 0x37: return HB_INS_PCMPGTQ;
+        case 0x38: return HB_INS_PMINSB;
+        case 0x39: return HB_INS_PMINSD;
+        case 0x3a: return HB_INS_PMINUW;
+        case 0x3b: return HB_INS_PMINUD;
+        case 0x3c: return HB_INS_PMAXSB;
+        case 0x3d: return HB_INS_PMAXSD;
+        case 0x3e: return HB_INS_PMAXUW;
+        case 0x3f: return HB_INS_PMAXUD;
+        case 0x40: return HB_INS_PMULLD;
+        case 0x41: return HB_INS_PHMINPOSUW;
+        case 0xcf: return HB_INS_GF2P8MULB;
+        case 0xf0: return HB_INS_CRC32;
+        case 0xf1: return HB_INS_CRC32;
+        case 0xf6: return HB_INS_ADCX;
+        case 0xf7: return HB_INS_ADOX;
+        case 0xdb: return HB_INS_AESIMC;
+        case 0xdc: return HB_INS_AESENC;
+        case 0xdd: return HB_INS_AESENCLAST;
+        case 0xde: return HB_INS_AESDEC;
+        case 0xdf: return HB_INS_AESDECLAST;
+        /* SHA-NI */
+        case 0xc8: return HB_INS_SHA1NEXTE;
+        case 0xc9: return HB_INS_SHA1MSG1;
+        case 0xca: return HB_INS_SHA1MSG2;
+        case 0xcb: return HB_INS_SHA256RNDS2;
+        case 0xcc: return HB_INS_SHA256MSG1;
+        case 0xcd: return HB_INS_SHA256MSG2;
+        default: return 0;
+    }
+}
+
+/* 0F3A map: SSE4.1 imm8 forms + AES + PCLMULQDQ + SHA1RNDS4. */
+static int sse41_0f3a_opcode(uint8_t op) {
+    switch (op) {
+        case 0x0c: return HB_INS_BLENDPS;
+        case 0x0d: return HB_INS_BLENDPD;
+        case 0x0e: return HB_INS_PBLENDW;
+        case 0x0f: return HB_INS_PALIGNR;
+        case 0x44: return HB_INS_PCLMULQDQ;
+        case 0x60: return HB_INS_PCMPESTRM;
+        case 0x61: return HB_INS_PCMPESTRI;
+        case 0x62: return HB_INS_PCMPISTRM;
+        case 0x63: return HB_INS_PCMPISTRI;
+        case 0xcc: return HB_INS_SHA1RNDS4;
+        case 0xdf: return HB_INS_AESKEYGENASSIST;
+        default: return 0;
+    }
+}
+
 static inline void set_reg(hb_decoded_t* out, int slot, int r, uint8_t sz) {
     if (slot == 1) {
         out->op1.present = true;
@@ -330,6 +424,7 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             else if (modrm == 0xe4) out->opcode = HB_INS_X87_MISC; /* FTST */
             else if (modrm == 0xe5) out->opcode = HB_INS_X87_MISC; /* FXAM */
             else if (modrm >= 0xe8 && modrm <= 0xee) out->opcode = HB_INS_X87_FLD;  /* FLD1/FLDL2T/.../FLDZ */
+            else if (modrm >= 0xf0 && modrm <= 0xff) out->opcode = HB_INS_X87_MISC; /* F2XM1/FYL2X/.../FCOS */
             else return HB_ERR_UNSUPPORTED_OPCODE;
             set_imm(out, 1, sti, 1);
             return HB_OK;
@@ -382,9 +477,19 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             return HB_OK;
         }
         if (opcode == 0xdd) {
-            /* FFREE ST(i) and FUCOM/FUCOMP (mod=3 form). */
+            /* FFREE / FST / FSTP / FUCOM / FUCOMP (mod=3 form). */
             if (modrm >= 0xc0 && modrm <= 0xc7) {
                 out->opcode = HB_INS_X87_FFREE;
+                set_imm(out, 1, sti, 1);
+                return HB_OK;
+            }
+            else if (modrm >= 0xd0 && modrm <= 0xd7) {
+                out->opcode = HB_INS_X87_FST;
+                set_imm(out, 1, sti, 1);
+                return HB_OK;
+            }
+            else if (modrm >= 0xd8 && modrm <= 0xdf) {
+                out->opcode = HB_INS_X87_FSTP;
                 set_imm(out, 1, sti, 1);
                 return HB_OK;
             }
@@ -445,10 +550,36 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             else if (reg_op == 7) { out->opcode = HB_INS_X87_FNSTCW; size = 2; }
             else return HB_ERR_UNSUPPORTED_OPCODE;
             break;
+        case 0xda:
+            /* FIADD/FIMUL/FICOM/FICOMP/FISUB/FISUBR/FIDIV/FIDIVR m32int. */
+            switch (reg_op) {
+                case 0: out->opcode = HB_INS_X87_FI; size = 4; break;
+                case 1: out->opcode = HB_INS_X87_FI; size = 4; break;
+                case 2: out->opcode = HB_INS_X87_FI; size = 4; break;
+                case 3: out->opcode = HB_INS_X87_FI; size = 4; break;
+                case 4: out->opcode = HB_INS_X87_FI; size = 4; break;
+                case 5: out->opcode = HB_INS_X87_FI; size = 4; break;
+                case 6: out->opcode = HB_INS_X87_FI; size = 4; break;
+                case 7: out->opcode = HB_INS_X87_FI; size = 4; break;
+            }
+            break;
         case 0xdb:
             if (reg_op == 0) { out->opcode = HB_INS_X87_FILD; size = 4; }
             else if (reg_op == 3) { out->opcode = HB_INS_X87_FISTP; size = 4; }
             else return HB_ERR_UNSUPPORTED_OPCODE;
+            break;
+        case 0xde:
+            /* FIADD/FIMUL/FICOM/FICOMP/FISUB/FISUBR/FIDIV/FIDIVR m16int. */
+            switch (reg_op) {
+                case 0: out->opcode = HB_INS_X87_FI; size = 2; break;
+                case 1: out->opcode = HB_INS_X87_FI; size = 2; break;
+                case 2: out->opcode = HB_INS_X87_FI; size = 2; break;
+                case 3: out->opcode = HB_INS_X87_FI; size = 2; break;
+                case 4: out->opcode = HB_INS_X87_FI; size = 2; break;
+                case 5: out->opcode = HB_INS_X87_FI; size = 2; break;
+                case 6: out->opcode = HB_INS_X87_FI; size = 2; break;
+                case 7: out->opcode = HB_INS_X87_FI; size = 2; break;
+            }
             break;
         case 0xdd:
             if (reg_op == 0) { out->opcode = HB_INS_X87_FLD; size = 8; }
@@ -522,6 +653,23 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             d->pos++;
         }
         else break;
+    }
+
+    /* F2/F3 (REPNE/REPZ) are ignored on most non-string ops per Intel SDM
+     * Vol 2 (and used as XACQUIRE/XRELEASE for HLE; we don't model HLE).
+     * We KEEP prefix_f2/prefix_f3 for the 0F escape map and for string
+     * ops, since the 0F SSE/SSE2/SSE3 family uses F2/F3 as the operand-type
+     * selector (MOVSD vs MOVSS, HADDPS vs HSUBPS, ...). */
+    if (can_read(d, 1) && d->code[d->pos] != 0x0F) {
+        uint8_t o = d->code[d->pos];
+        bool is_string_op = (o >= 0x6C && o <= 0x6F) ||  /* INS/OUTS */
+                            (o >= 0xA4 && o <= 0xA7) ||  /* MOVS/CMPS */
+                            (o >= 0xAA && o <= 0xAF) ||  /* STOS/LODS/SCAS */
+                            o == 0x90;                   /* NOP/PAUSE */
+        if (!is_string_op) {
+            prefix_f2 = false;
+            prefix_f3 = false;
+        }
     }
 
     if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
@@ -1325,6 +1473,54 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             }
             return HB_OK;
         }
+        if (op2 == 0x38) {
+            /* F2/F3 0F 38 — CRC32 (F2 only), ADCX (66 only). The dispatch is
+             * the same shape as the no-prefix 0F 38 path: ssse3_0f38_opcode
+             * and sse41_0f38_opcode lookups. For F2 we accept CRC32 (F0/F1);
+             * for F3 we accept ADOX (F7). For unrecognized F2/F3 0F 38 forms
+             * we fall through to the next 0F 38 block (no prefix). */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t op3 = read_u8(d);
+            if (prefix_f2) {
+                if (op3 == 0xf0 || op3 == 0xf1) {
+                    /* CRC32 r32, r/m8 / CRC32 r32, r/m32. */
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = HB_INS_CRC32;
+                    out->writes_flags = true;
+                    hb_result_t r = parse_modrm(d, modrm, 4, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    /* Mark src as r/m8 (CRC32 F0) or r/m32 (CRC32 F1). */
+                    if (op3 == 0xf0 && out->op2.is_reg) {
+                        uint8_t ro = 0;
+                        out->op2.reg = reg8_idx(out->op2.reg, &ro);
+                        out->op2.reg_offset = ro;
+                        out->op2.size = 1;
+                    } else if (op3 == 0xf0) {
+                        out->op2.size = 1;
+                    }
+                    return HB_OK;
+                }
+            }
+            if (prefix_f3) {
+                if (op3 == 0xf6) {
+                    /* F3 0F 38 F6 = ADOX r32, r/m32. */
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = HB_INS_ADOX;
+                    out->writes_flags = true;
+                    return parse_modrm(d, modrm, 4, out, 1, 2, false);
+                }
+            }
+            /* Unrecognized F2/F3 0F 38: fall through to no-prefix dispatch. */
+            d->pos--;
+            return HB_ERR_UNSUPPORTED_OPCODE;
+        }
+        if (op2 == 0x3A) {
+            /* F2/F3 0F 3A: no defined forms (SSE4.1 imm8 + AESKEYGENASSIST
+             * use 66 prefix, not F2/F3). We reject. */
+            return HB_ERR_UNSUPPORTED_OPCODE;
+        }
         return HB_ERR_UNSUPPORTED_OPCODE;
     }
 
@@ -1332,14 +1528,16 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         size_t saved_pos = d->pos;
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t op2 = read_u8(d);
-        if (operand16 && op2 == 0x38) {
+        if (op2 == 0x38) {
+            /* 0F38: SSSE3 (no-prefix = MMX, 0x66 = SSE), SSE4.1, AES, GF2P8MULB. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t op3 = read_u8(d);
-            if (op3 == 0x00) {
-                /* SSSE3 PSHUFB xmm, xmm/m128. */
+            int vec_opcode = ssse3_0f38_opcode(op3);
+            if (!vec_opcode) vec_opcode = sse41_0f38_opcode(op3);
+            if (vec_opcode) {
                 if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
                 uint8_t modrm = read_u8(d);
-                out->opcode = HB_INS_PSHUFB;
+                out->opcode = vec_opcode;
                 out->writes_flags = false;
                 hb_result_t r = parse_modrm(d, modrm, 16, out, 1, 2, false);
                 if (r != HB_OK) return r;
@@ -1347,7 +1545,30 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                 mark_xmm_operand(out, 2);
                 return HB_OK;
             }
-            return HB_ERR_UNSUPPORTED_OPCODE;
+            /* Unrecognized 0F38 opcode: decode as a generic VEC. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = HB_INS_VEC;
+            hb_result_t r = parse_modrm(d, modrm, 16, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            return HB_OK;
+        }
+        if (op2 == 0x3A) {
+            /* 0F3A: SSE4.1 imm8 + AES + PCLMULQDQ (all SSE = 0x66 prefix). */
+            if (!can_read(d, 2)) return HB_ERR_DECODE_FAILED;
+            uint8_t op3 = read_u8(d);
+            uint8_t modrm = read_u8(d);
+            int vec_opcode = sse41_0f3a_opcode(op3);
+            out->opcode = vec_opcode ? vec_opcode : HB_INS_VEC;
+            hb_result_t r = parse_modrm(d, modrm, 16, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            set_imm(out, 3, read_u8(d), 1);
+            mark_xmm_operand(out, 1);
+            mark_xmm_operand(out, 2);
+            return HB_OK;
         }
         if (operand16 && op2 == 0x70) {
             /* PSHUFD xmm, xmm/m128, imm8. */
@@ -1743,8 +1964,11 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     }
 
     /* Per Intel SDM Vol 2: when the form is register-only (ModRM.mod == 3), the
-     * 0x67 address-size override prefix is silently ignored. We peek the modrm
-     * byte to detect this case and skip the global 0x67 reject. */
+     * 0x67 address-size override prefix is silently ignored. We also let 0x67
+     * through to the dispatcher for the shift/rotate groups (C0/C1/D0-D3)
+     * since the modrm parser will produce the correct base/index/width even
+     * with 16-bit addressing. Other 0x67 forms in 32-bit mode are still
+     * rejected. */
     bool suppress_addr16 = false;
     if (address16 && can_read(d, 1)) {
         uint8_t peek = d->code[d->pos];
@@ -1773,7 +1997,10 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
           opcode != 0xE8 && opcode != 0xE9 && opcode != 0xEB &&
           !(opcode >= 0xD8 && opcode <= 0xDF) &&
           !(opcode >= 0x6C && opcode <= 0x6F)) ||
-        (address16 && !suppress_addr16) ||
+        (address16 && !suppress_addr16 &&
+                       opcode != 0xC0 && opcode != 0xC1 &&
+                       !(opcode >= 0xD0 && opcode <= 0xD3) &&
+                       opcode != 0x0F) ||
         (prefix_f2 && opcode != 0x90 && opcode != 0xC3 && opcode != 0xC2 &&
                      !(opcode >= 0x6C && opcode <= 0x6F)) ||
         (prefix_f3 && opcode != 0x90 && opcode != 0xC3 && opcode != 0xC2 &&
@@ -2444,6 +2671,28 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             set_reg(out, 1, op2 - 0xC8, 4);
             return HB_OK;
         }
+        if (op2 == 0x20 || op2 == 0x21 || op2 == 0x22 || op2 == 0x23) {
+            /* MOV r32, CRn/DRn (0F 20/21 read) and MOV CRn/DRn, r32 (0F 22/23 write).
+             * Privileged in 32-bit user mode; runtime raises #GP. We decode as
+             * MOV_CR/MOV_DR; the lift/codegen route the privileged form. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            bool write = (op2 == 0x22 || op2 == 0x23);
+            out->opcode = (op2 == 0x20 || op2 == 0x22) ? HB_INS_MOV_CR : HB_INS_MOV_DR;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm_ext(d, modrm, 4, out, 1);
+            if (r != HB_OK) return r;
+            if (write) {
+                /* For write form (0F 22/23), ModRM.reg = CRn/DRn index and
+                 * ModRM.rm = r32. parse_modrm_ext gives r32 in op1, r/m in op2;
+                 * but for write the source is r32 and the destination is the
+                 * control register. Swap so dst = CRn/DRn, src = r32. */
+                __typeof__(out->op1) saved = out->op1;
+                out->op1 = out->op2;
+                out->op2 = saved;
+            }
+            return HB_OK;
+        }
         if (op2 == 0xB6 || op2 == 0xB7 || op2 == 0xBE || op2 == 0xBF) {
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
@@ -2474,6 +2723,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         else if (ext == 3) out->opcode = HB_INS_RCR;
         else if (ext == 4) out->opcode = HB_INS_SHL;
         else if (ext == 5) out->opcode = HB_INS_SHR;
+        else if (ext == 6) out->opcode = HB_INS_SHL; /* SAL alias for SHL (Intel SDM) */
         else if (ext == 7) out->opcode = HB_INS_SAR;
         else return HB_ERR_UNSUPPORTED_OPCODE;
         out->writes_flags = true;
@@ -2496,6 +2746,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         else if (ext == 3) out->opcode = HB_INS_RCR;
         else if (ext == 4) out->opcode = HB_INS_SHL;
         else if (ext == 5) out->opcode = HB_INS_SHR;
+        else if (ext == 6) out->opcode = HB_INS_SHL; /* SAL alias for SHL (Intel SDM) */
         else if (ext == 7) out->opcode = HB_INS_SAR;
         else return HB_ERR_UNSUPPORTED_OPCODE;
         out->writes_flags = true;
@@ -2517,6 +2768,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         else if (ext == 3) out->opcode = HB_INS_RCR;
         else if (ext == 4) out->opcode = HB_INS_SHL;
         else if (ext == 5) out->opcode = HB_INS_SHR;
+        else if (ext == 6) out->opcode = HB_INS_SHL; /* SAL alias for SHL (Intel SDM) */
         else if (ext == 7) out->opcode = HB_INS_SAR;
         else return HB_ERR_UNSUPPORTED_OPCODE;
         out->writes_flags = true;

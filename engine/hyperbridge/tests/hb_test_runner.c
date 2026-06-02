@@ -21463,6 +21463,135 @@ TEST(decode_x86_i386_decode_gaps_regression) {
     tests_passed++;
 }
 
+TEST(decode_x86_0f38_0f3a_sse4_sha) {
+    /* Lane B, 2026-06-02: 0F38/0F3A three-byte map (SSSE3/SSE4.1/SSE4.2/AES/
+     * PCLMULQDQ/SHA-NI) and the SAL alias for SHL. Each form was previously
+     * HB_ERR_UNSUPPORTED_OPCODE; the coverage matrix is in
+     * HB-I386-DECODE-100-2026-06-02.md. */
+    /* SSSE3 (no-prefix MMX form, e.g. PSHUFB mm0, mm0). */
+    uint8_t pshufb_mm[] = {0x0f, 0x38, 0x00, 0xc0};
+    ASSERT(legacy_decode(pshufb_mm, sizeof(pshufb_mm), HB_INS_PSHUFB));
+
+    /* SSSE3 (66-prefix XMM form, e.g. PSHUFB xmm0, xmm0). */
+    uint8_t pshufb_xmm[] = {0x66, 0x0f, 0x38, 0x00, 0xc0};
+    ASSERT(legacy_decode(pshufb_xmm, sizeof(pshufb_xmm), HB_INS_PSHUFB));
+
+    /* SSE4.1 BLENDPS / BLENDPD / PBLENDW. */
+    uint8_t blendps[] = {0x66, 0x0f, 0x3a, 0x0c, 0xc0, 0x00};
+    uint8_t blendpd[] = {0x66, 0x0f, 0x3a, 0x0d, 0xc0, 0x00};
+    uint8_t pblendw[] = {0x66, 0x0f, 0x3a, 0x0e, 0xc0, 0x00};
+    ASSERT(legacy_decode(blendps, sizeof(blendps), HB_INS_BLENDPS));
+    ASSERT(legacy_decode(blendpd, sizeof(blendpd), HB_INS_BLENDPD));
+    ASSERT(legacy_decode(pblendw, sizeof(pblendw), HB_INS_PBLENDW));
+
+    /* SSE4.1 PMOVSXBW / PMOVZXBW / PMINSB / PMAXUB. */
+    uint8_t pmovsxbw[] = {0x66, 0x0f, 0x38, 0x20, 0xc0};
+    uint8_t pmovzxbw[] = {0x66, 0x0f, 0x38, 0x30, 0xc0};
+    uint8_t pminsb[]   = {0x66, 0x0f, 0x38, 0x38, 0xc0};
+    uint8_t pmaxuw[]   = {0x66, 0x0f, 0x38, 0x3e, 0xc0};
+    ASSERT(legacy_decode(pmovsxbw, sizeof(pmovsxbw), HB_INS_PMOVSXBW));
+    ASSERT(legacy_decode(pmovzxbw, sizeof(pmovzxbw), HB_INS_PMOVZXBW));
+    ASSERT(legacy_decode(pminsb,   sizeof(pminsb),   HB_INS_PMINSB));
+    ASSERT(legacy_decode(pmaxuw,   sizeof(pmaxuw),   HB_INS_PMAXUW));
+
+    /* SSE4.1 PTEST. */
+    uint8_t ptest[] = {0x66, 0x0f, 0x38, 0x17, 0xc0};
+    ASSERT(legacy_decode(ptest, sizeof(ptest), HB_INS_PTEST));
+
+    /* AES — AESENC / AESENCLAST / AESDEC / AESDECLAST / AESIMC / AESKEYGENASSIST. */
+    uint8_t aesenc[]  = {0x66, 0x0f, 0x38, 0xdc, 0xc0};
+    uint8_t aesdecl[] = {0x66, 0x0f, 0x38, 0xdf, 0xc0};
+    uint8_t aesimc[]  = {0x66, 0x0f, 0x38, 0xdb, 0xc0};
+    uint8_t aeskey[]  = {0x66, 0x0f, 0x3a, 0xdf, 0xc0, 0x00};
+    ASSERT(legacy_decode(aesenc,  sizeof(aesenc),  HB_INS_AESENC));
+    ASSERT(legacy_decode(aesdecl, sizeof(aesdecl), HB_INS_AESDECLAST));
+    ASSERT(legacy_decode(aesimc,  sizeof(aesimc),  HB_INS_AESIMC));
+    ASSERT(legacy_decode(aeskey,  sizeof(aeskey),  HB_INS_AESKEYGENASSIST));
+
+    /* PCLMULQDQ. */
+    uint8_t pclmul[] = {0x66, 0x0f, 0x3a, 0x44, 0xc0, 0x00};
+    ASSERT(legacy_decode(pclmul, sizeof(pclmul), HB_INS_PCLMULQDQ));
+
+    /* CRC32. */
+    uint8_t crc32[]  = {0xf2, 0x0f, 0x38, 0xf1, 0xc0};
+    ASSERT(legacy_decode(crc32, sizeof(crc32), HB_INS_CRC32));
+
+    /* SHA-NI: SHA1NEXTE, SHA1MSG1, SHA1MSG2, SHA256RNDS2, SHA256MSG1, SHA256MSG2. */
+    uint8_t sha1nexte[]  = {0x0f, 0x38, 0xc8, 0xc0};
+    uint8_t sha1msg1[]   = {0x0f, 0x38, 0xc9, 0xc0};
+    uint8_t sha1msg2[]   = {0x0f, 0x38, 0xca, 0xc0};
+    uint8_t sha256rnds2[]= {0x0f, 0x38, 0xcb, 0xc0};
+    uint8_t sha256msg1[] = {0x0f, 0x38, 0xcc, 0xc0};
+    uint8_t sha256msg2[] = {0x0f, 0x38, 0xcd, 0xc0};
+    ASSERT(legacy_decode(sha1nexte,   sizeof(sha1nexte),   HB_INS_SHA1NEXTE));
+    ASSERT(legacy_decode(sha1msg1,    sizeof(sha1msg1),    HB_INS_SHA1MSG1));
+    ASSERT(legacy_decode(sha1msg2,    sizeof(sha1msg2),    HB_INS_SHA1MSG2));
+    ASSERT(legacy_decode(sha256rnds2, sizeof(sha256rnds2), HB_INS_SHA256RNDS2));
+    ASSERT(legacy_decode(sha256msg1,  sizeof(sha256msg1),  HB_INS_SHA256MSG1));
+    ASSERT(legacy_decode(sha256msg2,  sizeof(sha256msg2),  HB_INS_SHA256MSG2));
+
+    /* SHA1RNDS4 (0F 3A CC, imm8). */
+    uint8_t sha1rnds4[] = {0x0f, 0x3a, 0xcc, 0xc0, 0x00};
+    ASSERT(legacy_decode(sha1rnds4, sizeof(sha1rnds4), HB_INS_SHA1RNDS4));
+
+    /* ADCX / ADOX (SSE4.2 + ADX extension). */
+    uint8_t adcx[] = {0x66, 0x0f, 0x38, 0xf6, 0xc0};
+    uint8_t adox[] = {0xf3, 0x0f, 0x38, 0xf6, 0xc0};
+    ASSERT(legacy_decode(adcx, sizeof(adcx), HB_INS_ADCX));
+    ASSERT(legacy_decode(adox, sizeof(adox), HB_INS_ADOX));
+
+    /* SAL alias for SHL — ext=6 in the C0/C1/D0/D1/D2/D3 shift/rotate groups.
+     * Per Intel SDM, SAL is an alternate mnemonic for SHL (same opcode, same
+     * flags), so the decoder must accept ext=6 and emit HB_INS_SHL.
+     * Capstone decodes D1 F1 (mod=3) as `sal ecx, 1`. */
+    uint8_t d1f1_sal[]   = {0xd1, 0xf1};
+    uint8_t c0f0_sal[]   = {0xc0, 0xf0, 0x01};
+    uint8_t d3f1_sal[]   = {0xd3, 0xf1};
+    ASSERT(legacy_decode(d1f1_sal, sizeof(d1f1_sal), HB_INS_SHL));   /* D1 F1: SAL ECX, 1 */
+    ASSERT(legacy_decode(c0f0_sal, sizeof(c0f0_sal), HB_INS_SHL));   /* C0 F0 01: SAL AL, 1 */
+    ASSERT(legacy_decode(d3f1_sal, sizeof(d3f1_sal), HB_INS_SHL));   /* D3 F1: SAL ECX, CL */
+
+    /* PUSH/POP FS/GS with 0x67 address-size override. */
+    uint8_t pushfs67[] = {0x67, 0x0f, 0xa0};
+    uint8_t popfs67[]  = {0x67, 0x0f, 0xa1};
+    uint8_t pushgs67[] = {0x67, 0x0f, 0xa8};
+    uint8_t popgs67[]  = {0x67, 0x0f, 0xa9};
+    ASSERT(legacy_decode(pushfs67, sizeof(pushfs67), HB_INS_PUSH_SEG));
+    ASSERT(legacy_decode(popfs67,  sizeof(popfs67),  HB_INS_POP_SEG));
+    ASSERT(legacy_decode(pushgs67, sizeof(pushgs67), HB_INS_PUSH_SEG));
+    ASSERT(legacy_decode(popgs67,  sizeof(popgs67),  HB_INS_POP_SEG));
+
+    /* SHLD / SHRD with 0x67. */
+    uint8_t shld67[] = {0x67, 0x0f, 0xa4, 0xc0, 0x00};   /* SHLD eax, eax, 0  (modrm=0xC0 -> mod=3) */
+    /* Capstone decodes this as 16-bit-addressed form. Our decode path
+     * suppresses the 0x67 reject for mod=3 and accepts it. */
+    ASSERT(legacy_decode(shld67, sizeof(shld67), HB_INS_SHLD));
+
+    /* x87 FST / FSTP (DD D0+i / DD D8+i, mod=3). */
+    uint8_t fst_dd[]  = {0xdd, 0xd0};
+    uint8_t fstp_dd[] = {0xdd, 0xd8};
+    ASSERT(legacy_decode(fst_dd,  sizeof(fst_dd),  HB_INS_X87_FST));
+    ASSERT(legacy_decode(fstp_dd, sizeof(fstp_dd), HB_INS_X87_FSTP));
+
+    /* x87 F2XM1 / FYL2X / FPTAN / ... / FCOS (D9 F0..FF, mod=3). */
+    uint8_t f2xm1[]  = {0xd9, 0xf0};
+    uint8_t fyl2x[]  = {0xd9, 0xf1};
+    uint8_t fsqrt[]  = {0xd9, 0xfa};
+    uint8_t fcos[]   = {0xd9, 0xff};
+    ASSERT(legacy_decode(f2xm1,  sizeof(f2xm1),  HB_INS_X87_MISC));
+    ASSERT(legacy_decode(fyl2x,  sizeof(fyl2x),  HB_INS_X87_MISC));
+    ASSERT(legacy_decode(fsqrt,  sizeof(fsqrt),  HB_INS_X87_MISC));
+    ASSERT(legacy_decode(fcos,   sizeof(fcos),   HB_INS_X87_MISC));
+
+    /* MOV CR/DR (0F 20-23, mod=3) — privileged in user mode, but decode
+     * succeeds and the runtime raises #GP. */
+    uint8_t mov_cr0[] = {0x0f, 0x20, 0xc0};
+    uint8_t mov_dr0[] = {0x0f, 0x21, 0xc0};
+    ASSERT(legacy_decode(mov_cr0, sizeof(mov_cr0), HB_INS_MOV_CR));
+    ASSERT(legacy_decode(mov_dr0, sizeof(mov_dr0), HB_INS_MOV_DR));
+    tests_passed++;
+}
+
 /* --- Entry point --- */
 
 int main(int argc, char** argv) {
@@ -21628,6 +21757,7 @@ int main(int argc, char** argv) {
     test_decode_x86_segreg_load_family();
     test_decode_x86_legacy_rejects_in_x64();
     test_decode_x86_i386_decode_gaps_regression();
+    test_decode_x86_0f38_0f3a_sse4_sha();
     test_interp_x86_ff_indirect_call_jmp_targets();
     test_decode_x86_sse_scalar_move_family();
     test_interp_x86_sse_movsd_load_zeroes_upper_store_low64();

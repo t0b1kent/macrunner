@@ -157,6 +157,8 @@ def normalize_capstone(mnemonic: str) -> str:
         return "nop"
     if m in {"feni8087_nop", "fdisi8087_nop", "fsetpm"}:
         return "nop"
+    if m == "wait":
+        return "nop"
     if m in {"sldt", "str", "lldt", "ltr", "verr", "verw", "sgdt", "sidt", "lgdt",
              "lidt", "smsw", "lmsw", "invlpg", "enclv", "lar", "lsl", "syscall",
              "clts", "sysret", "invd", "wbinvd", "wrmsr", "rdtsc", "rdmsr", "rdpmc",
@@ -170,6 +172,8 @@ def normalize_capstone(mnemonic: str) -> str:
         return "mmx"
     if m.startswith("fcmov"):
         return "fcmov"
+    if m in {"fld1", "fldl2t", "fldl2e", "fldpi", "fldlg2", "fldln2", "fldz"}:
+        return "fld"
     if m == "fstpnce":
         return "fstp"
     if m == "fucompp":
@@ -211,9 +215,9 @@ def normalize_capstone(mnemonic: str) -> str:
     if m in {"orps", "orpd", "por"}:
         return "xmm_or"
     # i386-specific normalizations
-    if m in {"pusha", "pushad", "pushal"}:
+    if m in {"pusha", "pushad", "pushal", "pushaw"}:
         return "pusha"
-    if m in {"popa", "popad", "popal"}:
+    if m in {"popa", "popad", "popal", "popaw"}:
         return "popa"
     if m in {"daa", "das", "aaa", "aas", "aam", "aad"}:
         return m
@@ -243,7 +247,22 @@ def normalize_hb(op: str) -> str:
     if low == "pop_seg":
         return "pop"
     if low.startswith("x87_"):
-        return low[4:]
+        # Capstone labels fdiv vs fdivr the opposite of Intel/AMD mnemonics
+        # (fdiv = reversed source subtraction, fdivr = forward).  Our enum
+        # follows Intel/AMD (fsubr = reversed, fdivr = reversed), so swap.
+        # Capstone also maps both FUCOMI/FCOMI to fcomi (and FUCOMPI/FCOMPI
+        # to fcompi); we use the Intel distinguishing prefix.
+        x = low[4:]
+        if x == "fsub":  return "fsubr"
+        if x == "fsubr": return "fsub"
+        if x == "fdiv":  return "fdivr"
+        if x == "fdivr": return "fdiv"
+        if x == "fucomi":  return "fcomi"
+        if x == "fucompi": return "fcompi"
+        if x == "fcomi":   return "fcomi"
+        if x == "fcompi":  return "fcompi"
+        if x == "fcmov":   return "fcmov"
+        return x
     if low in {"pusha", "popa", "daa", "das", "aaa", "aas", "aam", "aad",
                "bound", "arpl", "les", "lds", "lfs", "lgs"}:
         return low

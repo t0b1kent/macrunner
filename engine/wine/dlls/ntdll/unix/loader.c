@@ -1998,6 +1998,7 @@ NTSTATUS load_start_exe( UNICODE_STRING *nt_name, void **module )
     SIZE_T size;
     WCHAR *image = malloc( sizeof("\\??\\C:\\windows\\system32\\start.exe") * sizeof(WCHAR) );
 
+    if (!image) return STATUS_NO_MEMORY;
     wcscpy( image, get_machine_wow64_dir( current_machine ));
     wcscat( image, startW );
     init_unicode_string( nt_name, image );

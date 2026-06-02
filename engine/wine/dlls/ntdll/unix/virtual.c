@@ -7695,6 +7695,7 @@ NTSTATUS WINAPI NtSetInformationVirtualMemory( HANDLE process,
         if (!ptr) return STATUS_INVALID_PARAMETER_5;
         if (size != sizeof(ULONG)) return STATUS_INVALID_PARAMETER_6;
         if (!count) return STATUS_INVALID_PARAMETER_3;
+        if (!addresses) return STATUS_ACCESS_VIOLATION;
         return prefetch_memory( process, count, addresses, *(ULONG *)ptr );
 
     case VmPageDirtyStateInformation:
@@ -7704,6 +7705,7 @@ NTSTATUS WINAPI NtSetInformationVirtualMemory( HANDLE process,
         if (size != sizeof(ULONG)) return STATUS_INVALID_PARAMETER_6;
         if (*(ULONG *)ptr) return STATUS_INVALID_PARAMETER_5;
         if (!count) return STATUS_INVALID_PARAMETER_3;
+        if (!addresses) return STATUS_ACCESS_VIOLATION;
         return set_dirty_state_information( count, addresses );
 
     default:

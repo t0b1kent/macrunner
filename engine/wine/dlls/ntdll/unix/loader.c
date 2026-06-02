@@ -618,7 +618,7 @@ static char *extract_exe_name(const char *exe_path)
     char *exe_name, *exe_path_copy, *p, *ret;
     size_t exe_name_len;
 
-    exe_path_copy = strdup(exe_path);
+    if (!(exe_path_copy = strdup(exe_path))) return NULL;
     exe_name = exe_path_copy;
 
     if ((p = strrchr(exe_name, '\\'))) exe_name = p + 1;
@@ -646,9 +646,11 @@ static char *extract_exe_name(const char *exe_path)
  */
 static char *create_tempdir(const char *wineloader_path)
 {
-    char *str, *ntdll, *p, *tempdir = malloc(MAX_PATH);
+    char *str = NULL, *ntdll = NULL, *p, *tempdir = malloc(MAX_PATH);
     struct stat st;
     size_t n;
+
+    if (!tempdir) return NULL;
 
     if (!confstr(_CS_DARWIN_USER_TEMP_DIR, tempdir, MAX_PATH))
         goto fail;
@@ -656,28 +658,33 @@ static char *create_tempdir(const char *wineloader_path)
     if (stat(wineloader_path, &st))
         goto fail;
 
-    if (!asprintf(&str, "/winetemp-%llu-%llu-%lu-%lu/", st.st_ino, st.st_size, st.st_mtimespec.tv_sec, st.st_mtimespec.tv_nsec))
+    if (asprintf(&str, "/winetemp-%llu-%llu-%lu-%lu/", st.st_ino, st.st_size, st.st_mtimespec.tv_sec, st.st_mtimespec.tv_nsec) < 0)
         goto fail;
 
     n = strlcat(tempdir, str, MAX_PATH);
     free(str);
+    str = NULL;
     if (n >= MAX_PATH)
         goto fail;
 
     /* mkdir may fail if the directory already exists but that's ok */
     mkdir(tempdir, 0700);
 
-    ntdll = malloc( strlen(wineloader_path) + sizeof("/ntdll.so") );
+    if (!(ntdll = malloc( strlen(wineloader_path) + sizeof("/ntdll.so") )))
+        goto fail;
     strcpy( ntdll, wineloader_path );
     if ((p = strrchr( ntdll, '/' ))) *p = 0;
     strcat( ntdll, "/ntdll.so" );
-    asprintf( &str, "%s/ntdll.so", tempdir );
+    if (asprintf( &str, "%s/ntdll.so", tempdir ) < 0)
+        goto fail;
     symlink( ntdll, str );
     free( str );
     free( ntdll);
     return tempdir;
 
 fail:
+    free(str);
+    free(ntdll);
     free(tempdir);
     return NULL;
 }

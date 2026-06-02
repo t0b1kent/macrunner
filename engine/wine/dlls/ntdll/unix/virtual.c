@@ -5688,14 +5688,17 @@ static BOOL force_laa(void)
     {
         ULONG len = wcslen( app_name ) + 1;
         nameW.Length = (len - 1) * sizeof(WCHAR);
-        nameW.Buffer = malloc( len * sizeof(WCHAR) );
-        wcscpy( nameW.Buffer, app_name );
-        InitializeObjectAttributes( &attr, &nameW, 0, root, NULL );
+        nameW.MaximumLength = len * sizeof(WCHAR);
+        if ((nameW.Buffer = malloc( nameW.MaximumLength )))
+        {
+            wcscpy( nameW.Buffer, app_name );
+            InitializeObjectAttributes( &attr, &nameW, 0, root, NULL );
 
-        /* @@ Wine registry key: HKCU\Software\Wine\AppDefaults\app.exe */
-        NtOpenKey( &app_key, KEY_ALL_ACCESS, &attr );
+            /* @@ Wine registry key: HKCU\Software\Wine\AppDefaults\app.exe */
+            NtOpenKey( &app_key, KEY_ALL_ACCESS, &attr );
+            free( nameW.Buffer );
+        }
         NtClose( root );
-        free( nameW.Buffer );
     }
 
     if (app_key)

@@ -6453,6 +6453,7 @@ static unsigned int get_basic_memory_info( HANDLE process, LPCVOID addr,
 
     if (len < sizeof(*info))
         return STATUS_INFO_LENGTH_MISMATCH;
+    if (!info) return STATUS_ACCESS_VIOLATION;
 
     if (process != NtCurrentProcess())
     {
@@ -6500,6 +6501,7 @@ static unsigned int get_memory_region_info( HANDLE process, LPCVOID addr, MEMORY
 
     if (len < FIELD_OFFSET(MEMORY_REGION_INFORMATION, CommitSize))
         return STATUS_INFO_LENGTH_MISMATCH;
+    if (!info) return STATUS_ACCESS_VIOLATION;
 
     if (process != NtCurrentProcess())
     {
@@ -6726,6 +6728,7 @@ static NTSTATUS get_working_set_ex( HANDLE process, LPCVOID addr,
     }
 
     if (len < sizeof(*info)) return STATUS_INFO_LENGTH_MISMATCH;
+    if (!info) return STATUS_ACCESS_VIOLATION;
 
     count = len / sizeof(*info);
 
@@ -6816,6 +6819,7 @@ static unsigned int get_memory_image_info( HANDLE process, LPCVOID addr, MEMORY_
     unsigned int status;
 
     if (len < sizeof(*info)) return STATUS_INFO_LENGTH_MISMATCH;
+    if (!info) return STATUS_ACCESS_VIOLATION;
     memset( info, 0, sizeof(*info) );
 
     SERVER_START_REQ( get_image_view_info )
@@ -6878,6 +6882,7 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
         case MemoryWineUnixFuncs:
         case MemoryWineUnixWow64Funcs:
             if (len != sizeof(unixlib_handle_t)) return STATUS_INFO_LENGTH_MISMATCH;
+            if (!buffer) return STATUS_ACCESS_VIOLATION;
             if (process == GetCurrentProcess())
             {
                 void *module = (void *)addr;

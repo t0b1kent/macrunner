@@ -5927,6 +5927,8 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
                                    | MEM_RESET | MEM_RESET_UNDO_FLAGS | MEM_LARGE_PAGES;
     ULONG_PTR limit;
 
+    if (!ret || !size_ptr) return STATUS_ACCESS_VIOLATION;
+
     TRACE("%p %p %08lx %x %08x\n", process, *ret, *size_ptr, type, protect );
 
     if (!*size_ptr) return STATUS_INVALID_PARAMETER;
@@ -6075,8 +6077,10 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
     USHORT machine = 0;
     unsigned int status;
 
+    if (!ret || !size_ptr) return STATUS_ACCESS_VIOLATION;
+
     TRACE( "%p %p %08lx %x %08x %p %u\n",
-          process, *ret, *size_ptr, type, protect, parameters, count );
+           process, *ret, *size_ptr, type, protect, parameters, count );
 
     status = get_extended_params( parameters, count, &limit_low, &limit_high,
                                   &align, &attributes, &machine );
@@ -6128,8 +6132,13 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
     char *base;
     sigset_t sigset;
     unsigned int status = STATUS_SUCCESS;
-    LPVOID addr = *addr_ptr;
-    SIZE_T size = *size_ptr;
+    LPVOID addr;
+    SIZE_T size;
+
+    if (!addr_ptr || !size_ptr) return STATUS_ACCESS_VIOLATION;
+
+    addr = *addr_ptr;
+    size = *size_ptr;
 
     TRACE("%p %p %08lx %x\n", process, addr, size, type );
 
@@ -6222,14 +6231,17 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
     unsigned int status = STATUS_SUCCESS;
     char *base;
     BYTE vprot;
-    SIZE_T size = *size_ptr;
-    LPVOID addr = *addr_ptr;
+    SIZE_T size;
+    LPVOID addr;
     DWORD old;
 
-    TRACE("%p %p %08lx %08x\n", process, addr, size, new_prot );
-
-    if (!old_prot)
+    if (!addr_ptr || !size_ptr || !old_prot)
         return STATUS_ACCESS_VIOLATION;
+
+    size = *size_ptr;
+    addr = *addr_ptr;
+
+    TRACE("%p %p %08lx %08x\n", process, addr, size, new_prot );
 
     if (process != NtCurrentProcess())
     {
@@ -6994,6 +7006,8 @@ NTSTATUS WINAPI NtMapViewOfSection( HANDLE handle, HANDLE process, PVOID *addr_p
 
     offset.QuadPart = offset_ptr ? offset_ptr->QuadPart : 0;
 
+    if (!addr_ptr || !size_ptr) return STATUS_ACCESS_VIOLATION;
+
     TRACE("handle=%p process=%p addr=%p off=%s size=0x%lx alloc_type=0x%x access=0x%x\n",
           handle, process, *addr_ptr, wine_dbgstr_longlong(offset.QuadPart), *size_ptr, alloc_type, protect );
 
@@ -7074,6 +7088,8 @@ NTSTATUS WINAPI NtMapViewOfSectionEx( HANDLE handle, HANDLE process, PVOID *addr
     LARGE_INTEGER offset;
 
     offset.QuadPart = offset_ptr ? offset_ptr->QuadPart : 0;
+
+    if (!addr_ptr || !size_ptr) return STATUS_ACCESS_VIOLATION;
 
     TRACE( "handle=%p process=%p addr=%p off=%s size=0x%lx alloc_type=0x%x access=0x%x\n",
            handle, process, *addr_ptr, wine_dbgstr_longlong(offset.QuadPart), *size_ptr, alloc_type, protect );
@@ -7854,6 +7870,8 @@ NTSTATUS WINAPI NtWow64AllocateVirtualMemory64( HANDLE process, ULONG64 *ret, UL
     void *base;
     SIZE_T size;
     unsigned int status;
+
+    if (!ret || !size_ptr) return STATUS_ACCESS_VIOLATION;
 
     TRACE("%p %s %s %x %08x\n", process,
           wine_dbgstr_longlong(*ret), wine_dbgstr_longlong(*size_ptr), type, protect );

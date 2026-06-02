@@ -434,7 +434,8 @@ void prepend_dll_path(const char *path)
     for (count = 0; dll_paths[count]; count++)
         ;
 
-    new_dll_paths = calloc(count + 2, sizeof(char *));
+    if (!(new_dll_paths = calloc(count + 2, sizeof(char *))))
+        fatal_error( "out of memory setting DLL search path\n" );
     new_dll_paths[0] = path;
     for (i = 0; dll_paths[i]; i++)
         new_dll_paths[i + 1] = dll_paths[i];
@@ -452,15 +453,21 @@ static void set_dll_path(void)
 
     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
 
-    dll_paths = malloc( (count + 2) * sizeof(*dll_paths) );
+    if (!(dll_paths = malloc( (count + 2) * sizeof(*dll_paths) )))
+        fatal_error( "out of memory setting DLL search path\n" );
     count = 0;
 
     if (!build_dir) dll_paths[count++] = dll_dir;
 
     if (path)
     {
-        path = strdup(path);
-        for (p = strtok( path, ":" ); p; p = strtok( NULL, ":" )) dll_paths[count++] = strdup( p );
+        if (!(path = strdup(path))) fatal_error( "out of memory setting DLL search path\n" );
+        for (p = strtok( path, ":" ); p; p = strtok( NULL, ":" ))
+        {
+            if (!(dll_paths[count] = strdup( p )))
+                fatal_error( "out of memory setting DLL search path\n" );
+            count++;
+        }
         free( path );
     }
 
@@ -476,14 +483,21 @@ static void set_system_dll_path(void)
 
     if (path && *path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
 
-    system_dll_paths = malloc( (count + 1) * sizeof(*system_dll_paths) );
+    if (!(system_dll_paths = malloc( (count + 1) * sizeof(*system_dll_paths) )))
+        fatal_error( "out of memory setting system DLL search path\n" );
     count = 0;
 
     if (path && *path)
     {
-        char *path_copy = strdup(path);
+        char *path_copy;
+
+        if (!(path_copy = strdup(path))) fatal_error( "out of memory setting system DLL search path\n" );
         for (p = strtok( path_copy, ":" ); p; p = strtok( NULL, ":" ))
-            system_dll_paths[count++] = strdup( p );
+        {
+            if (!(system_dll_paths[count] = strdup( p )))
+                fatal_error( "out of memory setting system DLL search path\n" );
+            count++;
+        }
         free( path_copy );
     }
     system_dll_paths[count] = NULL;

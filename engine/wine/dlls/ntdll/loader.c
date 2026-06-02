@@ -1109,13 +1109,20 @@ static ULONG hash_basename( const UNICODE_STRING *basename )
 }
 
 /* build NT name for dll in system directory */
-static void build_sysdir_nt_name( const WCHAR *name, UNICODE_STRING *nt_name )
+static NTSTATUS build_sysdir_nt_name( const WCHAR *name, UNICODE_STRING *nt_name )
 {
     nt_name->Length = (4 + wcslen(system_dir) + wcslen(name)) * sizeof(WCHAR);
-    nt_name->Buffer = RtlAllocateHeap( GetProcessHeap(), 0, nt_name->Length + sizeof(WCHAR) );
+    nt_name->MaximumLength = nt_name->Length + sizeof(WCHAR);
+    nt_name->Buffer = RtlAllocateHeap( GetProcessHeap(), 0, nt_name->MaximumLength );
+    if (!nt_name->Buffer)
+    {
+        nt_name->Length = nt_name->MaximumLength = 0;
+        return STATUS_NO_MEMORY;
+    }
     wcscpy( nt_name->Buffer, L"\\??\\" );
     wcscat( nt_name->Buffer, system_dir );
     wcscat( nt_name->Buffer, name );
+    return STATUS_SUCCESS;
 }
 
 /*************************************************************************
@@ -5776,7 +5783,12 @@ static NTSTATUS open_known_dll( const WCHAR *libname, UNICODE_STRING *nt_name, W
     RtlInitUnicodeString( &str, libname );
     InitializeObjectAttributes( &attr, &str, OBJ_CASE_INSENSITIVE, known_dlls_ntdir, NULL );
     if ((status = NtOpenSection( mapping, MAXIMUM_ALLOWED, &attr ))) return status;
-    build_sysdir_nt_name( libname, nt_name );
+    if ((status = build_sysdir_nt_name( libname, nt_name )))
+    {
+        NtClose( *mapping );
+        *mapping = NULL;
+        return status;
+    }
     if ((*pwm = find_fullname_module( nt_name )))
     {
         NtClose( *mapping );
@@ -6783,7 +6795,15 @@ static NTSTATUS find_builtin_without_file( const WCHAR *name, UNICODE_STRING *ne
 
 done:
     RtlFreeUnicodeString( new_name );
-    if (!status) build_sysdir_nt_name( name, new_name );
+    if (!status && (status = build_sysdir_nt_name( name, new_name )))
+    {
+        if (*mapping)
+        {
+            NtClose( *mapping );
+            *mapping = NULL;
+        }
+        *pwm = NULL;
+    }
     return status;
 }
 

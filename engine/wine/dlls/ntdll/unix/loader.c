@@ -2522,6 +2522,7 @@ static jstring wine_init_jni( JNIEnv *env, jobject obj, jobjectArray cmdline, jo
     }
 
     argv = malloc( (argc + 1) * sizeof(*argv) + length );
+    if (!argv) return (*env)->NewStringUTF( env, "out of memory" );
     str = (char *)(argv + argc + 1);
     for (i = 0; i < argc; i++)
     {

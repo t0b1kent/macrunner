@@ -12,6 +12,7 @@ Do not edit `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdl
 
 ## Closed In Checkpoints
 
+- 2026-06-03: Runtime delay-load no-INT fallback in `ntdll/loader.c`. `LdrResolveDelayLoadedAPI()` now mirrors normal import binding and uses the delay IAT as the import descriptor source when `ImportNameTableRVA` is absent.
 - 2026-06-02: Large-page allocation semantics in `ntdll/unix/virtual.c`. `MEM_LARGE_PAGES` is now accepted by the public type masks and returns explicit invalid-parameter vs privilege-not-held results instead of falling through the unknown-bit path.
 - 2026-06-02: Write-watch allocation validation in `ntdll/unix/virtual.c`. `MEM_WRITE_WATCH` now requires `MEM_RESERVE` so commit-only calls cannot implicitly create write-watch regions.
 - 2026-06-02: Reserved-area split hardening in `ntdll/unix/virtual.c`. Reserved-area removal now reports split bookkeeping allocation failure atomically, with virtual-heap callers restoring the reserved mapping before falling back.

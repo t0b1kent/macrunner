@@ -7499,7 +7499,7 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
 
     phmod = get_rva(base, desc->ModuleHandleRVA);
     pIAT = get_rva(base, desc->ImportAddressTableRVA);
-    pINT = get_rva(base, desc->ImportNameTableRVA);
+    pINT = desc->ImportNameTableRVA ? get_rva(base, desc->ImportNameTableRVA) : pIAT;
     name = get_rva(base, desc->DllNameRVA);
     id = addr - pIAT;
 

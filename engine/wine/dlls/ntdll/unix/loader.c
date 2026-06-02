@@ -2727,13 +2727,15 @@ static void reexec_loader( int argc, char *argv[], char *extra_arg )
 
     if (extra_arg)
     {
-        new_argv = malloc( (argc + 3) * sizeof(*argv) );
+        if (!(new_argv = malloc( (argc + 3) * sizeof(*argv) )))
+            fatal_error( "out of memory re-executing wine loader\n" );
         memcpy( new_argv + 3, argv + 1, argc * sizeof(*argv) );
         new_argv[2] = extra_arg;
     }
     else
     {
-        new_argv = malloc( (argc + 2) * sizeof(*argv) );
+        if (!(new_argv = malloc( (argc + 2) * sizeof(*argv) )))
+            fatal_error( "out of memory re-executing wine loader\n" );
         memcpy( new_argv + 2, argv + 1, argc * sizeof(*argv) );
     }
 

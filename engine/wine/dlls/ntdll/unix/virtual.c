@@ -5826,6 +5826,9 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
         return STATUS_INVALID_PARAMETER;
     }
 
+    if ((type & MEM_RESERVE_PLACEHOLDER) &&
+        (!(type & MEM_RESERVE) || (type & (MEM_COMMIT | MEM_RESET | MEM_RESET_UNDO_FLAGS | MEM_REPLACE_PLACEHOLDER))))
+        return STATUS_INVALID_PARAMETER;
     if ((type & MEM_WRITE_WATCH) && !(type & MEM_RESERVE)) return STATUS_INVALID_PARAMETER;
     if (type & MEM_RESERVE_PLACEHOLDER && (protect != PAGE_NOACCESS)) return STATUS_INVALID_PARAMETER;
     if (!arm64ec_view && (attributes & MEM_EXTENDED_PARAMETER_EC_CODE)) return STATUS_INVALID_PARAMETER;

@@ -12,6 +12,7 @@ Do not edit `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdl
 
 ## Closed In Checkpoints
 
+- 2026-06-03: Placeholder allocation validation in `ntdll/unix/virtual.c`. `MEM_RESERVE_PLACEHOLDER` creation now rejects contradictory commit/reset/replace combinations before creating a committed or reset placeholder view.
 - 2026-06-03: Runtime delay-load no-INT fallback in `ntdll/loader.c`. `LdrResolveDelayLoadedAPI()` now mirrors normal import binding and uses the delay IAT as the import descriptor source when `ImportNameTableRVA` is absent.
 - 2026-06-03: `NtAllocateVirtualMemoryEx` address-requirements validation in `ntdll/unix/virtual.c`. Null address-requirement pointers are rejected before dereference, and `HighestEndingAddress + 1` now uses the full page mask alignment check.
 - 2026-06-02: Large-page allocation semantics in `ntdll/unix/virtual.c`. `MEM_LARGE_PAGES` is now accepted by the public type masks and returns explicit invalid-parameter vs privilege-not-held results instead of falling through the unknown-bit path.

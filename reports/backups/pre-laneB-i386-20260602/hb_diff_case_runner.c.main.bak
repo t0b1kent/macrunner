@@ -24,26 +24,14 @@
 #define HB_DIFF_RFLAGS_FUZZ_MASK 0xcd5ULL
 
 typedef struct {
-    hb_arch_t arch;
     uint64_t gpr[16];
     uint64_t rip;
-    uint32_t eip;
     hb_flags_t flags;
     uint64_t rflags;
     uint32_t flag_mask;
     hb_result_t flag_status;
-    bool lazy_pending;
-    uint8_t lazy_kind;
-    uint8_t lazy_width;
-    uint64_t lazy_lhs;
-    uint64_t lazy_rhs;
-    uint64_t lazy_result;
-    uint64_t lazy_count;
     uint8_t xmm[16][16];
     uint8_t ymm_hi[16][16];
-    uint16_t x87_cw;
-    uint16_t x87_sw;
-    uint16_t x87_tag;
     uint8_t data[HB_DIFF_DATA_SIZE];
     uint8_t stack[HB_DIFF_STACK_SIZE];
     hb_result_t api_result;
@@ -103,9 +91,7 @@ static void set_flags_from_bits(hb_context_t* ctx, uint64_t bits) {
     ctx->flags.zf = (bits & 0x040) != 0;
     ctx->flags.sf = (bits & 0x080) != 0;
     ctx->flags.of = (bits & 0x800) != 0;
-    uint64_t image = (bits & HB_DIFF_RFLAGS_FUZZ_MASK) | 0x202ULL;
-    if (ctx->mode == HB_MODE_32BIT) ctx->regs.x86.eflags = (uint32_t)image;
-    else ctx->regs.x64.rflags = image;
+    ctx->regs.x64.rflags = (bits & HB_DIFF_RFLAGS_FUZZ_MASK) | 0x202ULL;
 }
 
 static uint64_t flags_to_bits(const hb_flags_t* f) {
@@ -164,54 +150,36 @@ static hb_result_t init_context(hb_context_t* ctx, uint64_t seed, const uint8_t*
     r = hb_memory_write(ctx->memory, HB_DIFF_STACK_BASE, stack, sizeof(stack));
     if (r != HB_OK) return r;
 
-    if (ctx->mode == HB_MODE_32BIT) {
-        ctx->regs.x86.eax = (uint32_t)(HB_DIFF_DATA_BASE + 0x1000);
-        ctx->regs.x86.ebx = (uint32_t)splitmix64_next(&rng);
-        ctx->regs.x86.ecx = (uint32_t)((splitmix64_next(&rng) & 0x0fU) + 1U);
-        ctx->regs.x86.edx = 0;
-        ctx->regs.x86.esi = (uint32_t)(HB_DIFF_DATA_BASE + 0x0800);
-        ctx->regs.x86.edi = (uint32_t)(HB_DIFF_DATA_BASE + 0x1000);
-        ctx->regs.x86.esp = (uint32_t)(HB_DIFF_STACK_BASE + 0x1000);
-        ctx->regs.x86.ebp = (uint32_t)(HB_DIFF_STACK_BASE + 0x1100);
-        ctx->regs.x86.eip = (uint32_t)HB_DIFF_CODE_BASE;
-    } else {
-        ctx->regs.x64.rax = HB_DIFF_DATA_BASE + 0x1000;
-        ctx->regs.x64.rbx = splitmix64_next(&rng);
-        ctx->regs.x64.rcx = (splitmix64_next(&rng) & 0x3fU) + 1U;
-        ctx->regs.x64.rdx = splitmix64_next(&rng);
-        ctx->regs.x64.rsi = HB_DIFF_DATA_BASE + 0x0400;
-        ctx->regs.x64.rdi = HB_DIFF_DATA_BASE + 0x1000;
-        ctx->regs.x64.rsp = HB_DIFF_STACK_BASE + 0x1000;
-        ctx->regs.x64.rbp = HB_DIFF_STACK_BASE + 0x1100;
-        ctx->regs.x64.r8 = splitmix64_next(&rng);
-        ctx->regs.x64.r9 = splitmix64_next(&rng);
-        ctx->regs.x64.r10 = splitmix64_next(&rng);
-        ctx->regs.x64.r11 = splitmix64_next(&rng);
-        ctx->regs.x64.r12 = splitmix64_next(&rng);
-        ctx->regs.x64.r13 = splitmix64_next(&rng);
-        ctx->regs.x64.r14 = splitmix64_next(&rng);
-        ctx->regs.x64.r15 = splitmix64_next(&rng);
-        ctx->regs.x64.rip = HB_DIFF_CODE_BASE;
-    }
+    ctx->regs.x64.rax = HB_DIFF_DATA_BASE + 0x1000;
+    ctx->regs.x64.rbx = splitmix64_next(&rng);
+    ctx->regs.x64.rcx = (splitmix64_next(&rng) & 0x3fU) + 1U;
+    ctx->regs.x64.rdx = splitmix64_next(&rng);
+    ctx->regs.x64.rsi = HB_DIFF_DATA_BASE + 0x0400;
+    ctx->regs.x64.rdi = HB_DIFF_DATA_BASE + 0x1000;
+    ctx->regs.x64.rsp = HB_DIFF_STACK_BASE + 0x1000;
+    ctx->regs.x64.rbp = HB_DIFF_STACK_BASE + 0x1100;
+    ctx->regs.x64.r8 = splitmix64_next(&rng);
+    ctx->regs.x64.r9 = splitmix64_next(&rng);
+    ctx->regs.x64.r10 = splitmix64_next(&rng);
+    ctx->regs.x64.r11 = splitmix64_next(&rng);
+    ctx->regs.x64.r12 = splitmix64_next(&rng);
+    ctx->regs.x64.r13 = splitmix64_next(&rng);
+    ctx->regs.x64.r14 = splitmix64_next(&rng);
+    ctx->regs.x64.r15 = splitmix64_next(&rng);
+    ctx->regs.x64.rip = HB_DIFF_CODE_BASE;
     ctx->pc = HB_DIFF_CODE_BASE;
     set_flags_from_bits(ctx, splitmix64_next(&rng));
     for (unsigned i = 0; i < 16; i++) {
-        if (ctx->mode == HB_MODE_32BIT) {
-            uint8_t tmp[16];
-            fill_random(&rng, tmp, sizeof(tmp));
-            if (i < 8) memcpy(ctx->regs.x86.xmm[i], tmp, sizeof(tmp));
-        } else {
-            fill_random(&rng, (uint8_t*)ctx->regs.x64.xmm[i], 16);
-        }
+        fill_random(&rng, (uint8_t*)ctx->regs.x64.xmm[i], 16);
         fill_random(&rng, (uint8_t*)ctx->ymm_hi[i], 16);
     }
     return HB_OK;
 }
 
-static hb_result_t lift_code(hb_arch_t arch, const uint8_t* code, size_t code_len, hb_ir_func_t** out_func) {
-    hb_decoder_t* dec = hb_decoder_create(arch, code, code_len, HB_DIFF_CODE_BASE);
+static hb_result_t lift_code(const uint8_t* code, size_t code_len, hb_ir_func_t** out_func) {
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, code_len, HB_DIFF_CODE_BASE);
     if (!dec) return HB_ERR_OUT_OF_MEMORY;
-    hb_result_t r = arch == HB_ARCH_X86 ? hb_lift_func_x86(dec, out_func) : hb_lift_func_x64(dec, out_func);
+    hb_result_t r = hb_lift_func_x64(dec, out_func);
     hb_decoder_destroy(dec);
     return r;
 }
@@ -219,42 +187,23 @@ static hb_result_t lift_code(hb_arch_t arch, const uint8_t* code, size_t code_le
 static void capture_snapshot(hb_context_t* ctx, hb_diff_snapshot_t* s,
                               hb_result_t api_result, hb_exec_result_t* exec) {
     memset(s, 0, sizeof(*s));
-    s->arch = ctx->arch;
-    s->lazy_pending = ctx->lazy_flags.pending;
-    s->lazy_kind = (uint8_t)ctx->lazy_flags.kind;
-    s->lazy_width = ctx->lazy_flags.width;
-    s->lazy_lhs = ctx->lazy_flags.lhs;
-    s->lazy_rhs = ctx->lazy_flags.rhs;
-    s->lazy_result = ctx->lazy_flags.result;
-    s->lazy_count = ctx->lazy_flags.count;
     s->flag_mask = ctx->lazy_flags.pending ? ctx->lazy_flags.valid_mask : HB_FLAG_BIT_ALL;
     s->flag_status = hb_lazy_flags_materialize(ctx, s->flag_mask);
-    if (ctx->mode == HB_MODE_32BIT) {
-        s->gpr[0] = ctx->regs.x86.eax; s->gpr[1] = ctx->regs.x86.ebx;
-        s->gpr[2] = ctx->regs.x86.ecx; s->gpr[3] = ctx->regs.x86.edx;
-        s->gpr[4] = ctx->regs.x86.esi; s->gpr[5] = ctx->regs.x86.edi;
-        s->gpr[6] = ctx->regs.x86.esp; s->gpr[7] = ctx->regs.x86.ebp;
-        s->eip = (uint32_t)ctx->pc;
-        s->rflags = ctx->regs.x86.eflags;
-        for (unsigned i = 0; i < 8; i++) memcpy(s->xmm[i], ctx->regs.x86.xmm[i], 16);
-        s->x87_cw = ctx->regs.x86.x87.control_word;
-        s->x87_sw = ctx->regs.x86.x87.status_word;
-        s->x87_tag = ctx->regs.x86.x87.tag_word;
-    } else {
-        s->gpr[0] = ctx->regs.x64.rax; s->gpr[1] = ctx->regs.x64.rbx;
-        s->gpr[2] = ctx->regs.x64.rcx; s->gpr[3] = ctx->regs.x64.rdx;
-        s->gpr[4] = ctx->regs.x64.rsi; s->gpr[5] = ctx->regs.x64.rdi;
-        s->gpr[6] = ctx->regs.x64.rsp; s->gpr[7] = ctx->regs.x64.rbp;
-        s->gpr[8] = ctx->regs.x64.r8;  s->gpr[9] = ctx->regs.x64.r9;
-        s->gpr[10] = ctx->regs.x64.r10; s->gpr[11] = ctx->regs.x64.r11;
-        s->gpr[12] = ctx->regs.x64.r12; s->gpr[13] = ctx->regs.x64.r13;
-        s->gpr[14] = ctx->regs.x64.r14; s->gpr[15] = ctx->regs.x64.r15;
-        s->rflags = ctx->regs.x64.rflags;
-        for (unsigned i = 0; i < 16; i++) memcpy(s->xmm[i], ctx->regs.x64.xmm[i], 16);
-    }
+    s->gpr[0] = ctx->regs.x64.rax; s->gpr[1] = ctx->regs.x64.rbx;
+    s->gpr[2] = ctx->regs.x64.rcx; s->gpr[3] = ctx->regs.x64.rdx;
+    s->gpr[4] = ctx->regs.x64.rsi; s->gpr[5] = ctx->regs.x64.rdi;
+    s->gpr[6] = ctx->regs.x64.rsp; s->gpr[7] = ctx->regs.x64.rbp;
+    s->gpr[8] = ctx->regs.x64.r8;  s->gpr[9] = ctx->regs.x64.r9;
+    s->gpr[10] = ctx->regs.x64.r10; s->gpr[11] = ctx->regs.x64.r11;
+    s->gpr[12] = ctx->regs.x64.r12; s->gpr[13] = ctx->regs.x64.r13;
+    s->gpr[14] = ctx->regs.x64.r14; s->gpr[15] = ctx->regs.x64.r15;
     s->rip = ctx->pc;
     s->flags = ctx->flags;
-    for (unsigned i = 0; i < 16; i++) memcpy(s->ymm_hi[i], ctx->ymm_hi[i], 16);
+    s->rflags = ctx->regs.x64.rflags;
+    for (unsigned i = 0; i < 16; i++) {
+        memcpy(s->xmm[i], ctx->regs.x64.xmm[i], 16);
+        memcpy(s->ymm_hi[i], ctx->ymm_hi[i], 16);
+    }
     if (ctx->memory) {
         (void)hb_memory_read(ctx->memory, HB_DIFF_DATA_BASE, s->data, sizeof(s->data));
         (void)hb_memory_read(ctx->memory, HB_DIFF_STACK_BASE, s->stack, sizeof(s->stack));
@@ -263,34 +212,13 @@ static void capture_snapshot(hb_context_t* ctx, hb_diff_snapshot_t* s,
     s->exec_result = exec ? exec->result : api_result;
 }
 
-static hb_result_t run_backend(hb_arch_t arch, const uint8_t* code, size_t code_len, uint64_t seed,
+static hb_result_t run_backend(const uint8_t* code, size_t code_len, uint64_t seed,
                                hb_backend_t backend, hb_diff_snapshot_t* initial,
                                hb_diff_snapshot_t* final) {
     hb_ir_func_t* func = NULL;
-    hb_result_t r = lift_code(arch, code, code_len, &func);
+    hb_result_t r = lift_code(code, code_len, &func);
     if (r != HB_OK) return r;
-    const char* dump_ir = getenv("HB_DIFF_DUMP_IR");
-    if (dump_ir && strcmp(dump_ir, "1") == 0) {
-        char* s = hb_ir_func_to_string(func);
-        if (s) {
-            fputs(s, stderr);
-            free(s);
-        }
-        if (func->cfg && func->cfg->entry) {
-            hb_ir_block_t* blk = func->cfg->entry;
-            for (size_t i = 0; i < blk->instr_count; i++) {
-                const hb_ir_instr_t* ins = &blk->instrs[i];
-                fprintf(stderr,
-                        "  instr %zu op=%u dst(type=%u reg=%u size=%u) src1(type=%u reg=%u size=%u) src2(type=%u reg=%u imm=%lld size=%u)\n",
-                        i, (unsigned)ins->op,
-                        (unsigned)ins->dst.type, (unsigned)ins->dst.reg, (unsigned)ins->dst.size,
-                        (unsigned)ins->src1.type, (unsigned)ins->src1.reg, (unsigned)ins->src1.size,
-                        (unsigned)ins->src2.type, (unsigned)ins->src2.reg,
-                        (long long)ins->src2.imm, (unsigned)ins->src2.size);
-            }
-        }
-    }
-    hb_context_t* ctx = hb_context_create(arch, backend);
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, backend);
     if (!ctx) {
         hb_ir_func_destroy(func);
         return HB_ERR_OUT_OF_MEMORY;
@@ -306,19 +234,12 @@ static hb_result_t run_backend(hb_arch_t arch, const uint8_t* code, size_t code_
     return api;
 }
 
-static const char* reg_name(hb_arch_t arch, unsigned i) {
-    static const char* names64[16] = {
+static const char* reg_name(unsigned i) {
+    static const char* names[16] = {
         "rax","rbx","rcx","rdx","rsi","rdi","rsp","rbp",
         "r8","r9","r10","r11","r12","r13","r14","r15"
     };
-    static const char* names32[8] = {
-        "eax","ebx","ecx","edx","esi","edi","esp","ebp"
-    };
-    return arch == HB_ARCH_X86 ? names32[i] : names64[i];
-}
-
-static unsigned reg_count(hb_arch_t arch) {
-    return arch == HB_ARCH_X86 ? 8u : 16u;
+    return names[i];
 }
 
 static bool snapshots_equal(const hb_diff_snapshot_t* a, const hb_diff_snapshot_t* b,
@@ -335,9 +256,9 @@ static bool snapshots_equal(const hb_diff_snapshot_t* a, const hb_diff_snapshot_
         snprintf(field, field_size, "flag_status:%d:%d", a->flag_status, b->flag_status);
         return false;
     }
-    for (unsigned i = 0; i < reg_count(a->arch); i++) {
+    for (unsigned i = 0; i < 16; i++) {
         if (a->gpr[i] != b->gpr[i]) {
-            snprintf(field, field_size, "reg:%s", reg_name(a->arch, i));
+            snprintf(field, field_size, "reg:%s", reg_name(i));
             return false;
         }
     }
@@ -377,13 +298,11 @@ static bool snapshots_equal(const hb_diff_snapshot_t* a, const hb_diff_snapshot_
 
 static void print_regs_json(const hb_diff_snapshot_t* s) {
     putchar('{');
-    for (unsigned i = 0; i < reg_count(s->arch); i++) {
+    for (unsigned i = 0; i < 16; i++) {
         if (i) putchar(',');
-        if (s->arch == HB_ARCH_X86) printf("\"%s\":\"0x%08" PRIx64 "\"", reg_name(s->arch, i), s->gpr[i] & 0xffffffffULL);
-        else printf("\"%s\":\"0x%016" PRIx64 "\"", reg_name(s->arch, i), s->gpr[i]);
+        printf("\"%s\":\"0x%016" PRIx64 "\"", reg_name(i), s->gpr[i]);
     }
-    if (s->arch == HB_ARCH_X86) printf(",\"eip\":\"0x%08" PRIx32 "\"}", s->eip);
-    else printf(",\"rip\":\"0x%016" PRIx64 "\"}", s->rip);
+    printf(",\"rip\":\"0x%016" PRIx64 "\"}", s->rip);
 }
 
 static void print_vec_array_json(const uint8_t v[16][16]) {
@@ -410,11 +329,6 @@ static void print_snapshot_json(const char* name, const hb_diff_snapshot_t* s) {
     printf(",\"flags\":");
     print_flags_json(&s->flags);
     printf(",\"flag_mask\":\"0x%02x\",\"flag_status\":%d", s->flag_mask, s->flag_status);
-    printf(",\"lazy\":{\"pending\":%u,\"kind\":%u,\"width\":%u,"
-           "\"lhs\":\"0x%016" PRIx64 "\",\"rhs\":\"0x%016" PRIx64 "\","
-           "\"result\":\"0x%016" PRIx64 "\",\"count\":\"0x%016" PRIx64 "\"}",
-           s->lazy_pending ? 1u : 0u, s->lazy_kind, s->lazy_width,
-           s->lazy_lhs, s->lazy_rhs, s->lazy_result, s->lazy_count);
     printf(",\"xmm\":");
     print_vec_array_json(s->xmm);
     printf(",\"ymm_hi\":");
@@ -426,10 +340,6 @@ static void print_snapshot_json(const char* name, const hb_diff_snapshot_t* s) {
     printf("\",\"ymm0_hi\":\"");
     print_hex_bytes(s->ymm_hi[0], 16);
     printf("\"");
-    if (s->arch == HB_ARCH_X86) {
-        printf(",\"x87\":{\"cw\":\"0x%04x\",\"sw\":\"0x%04x\",\"tag\":\"0x%04x\"}",
-               s->x87_cw, s->x87_sw, s->x87_tag);
-    }
     const char* dump_memory = getenv("HB_DIFF_DUMP_MEMORY");
     if (dump_memory && strcmp(dump_memory, "1") == 0) {
         printf(",\"data\":\"");
@@ -441,7 +351,7 @@ static void print_snapshot_json(const char* name, const hb_diff_snapshot_t* s) {
     printf("}");
 }
 
-static void run_case_line(hb_arch_t arch, uint64_t seed, const char* code_hex) {
+static void run_case_line(uint64_t seed, const char* code_hex) {
     uint8_t code[HB_DIFF_MAX_CODE];
     size_t code_len = 0;
     if (!parse_hex(code_hex, code, &code_len)) {
@@ -450,20 +360,19 @@ static void run_case_line(hb_arch_t arch, uint64_t seed, const char* code_hex) {
     }
     hb_diff_snapshot_t initial, interp, jit;
     memset(&initial, 0, sizeof(initial));
-    hb_result_t ri = run_backend(arch, code, code_len, seed, HB_BACKEND_INTERP, &initial, &interp);
+    hb_result_t ri = run_backend(code, code_len, seed, HB_BACKEND_INTERP, &initial, &interp);
     const char* interp_only_env = getenv("HB_DIFF_INTERP_ONLY");
     bool interp_only = interp_only_env && strcmp(interp_only_env, "1") == 0;
     hb_result_t rj = HB_OK;
     if (interp_only) {
         jit = interp;
     } else {
-        rj = run_backend(arch, code, code_len, seed, HB_BACKEND_JIT, NULL, &jit);
+        rj = run_backend(code, code_len, seed, HB_BACKEND_JIT, NULL, &jit);
     }
     char diff[64] = {0};
     bool ok = interp_only ? (ri == HB_OK) :
               (ri == HB_OK && rj == HB_OK && snapshots_equal(&interp, &jit, diff, sizeof(diff)));
-    printf("{\"ok\":%s,\"arch\":\"%s\",\"seed\":\"0x%016" PRIx64 "\",\"code\":\"",
-           ok ? "true" : "false", arch == HB_ARCH_X86 ? "x86" : "x64", seed);
+    printf("{\"ok\":%s,\"seed\":\"0x%016" PRIx64 "\",\"code\":\"", ok ? "true" : "false", seed);
     print_hex_bytes(code, code_len);
     printf("\",\"diff\":\"%s\",", diff);
     print_snapshot_json("initial", &initial);
@@ -475,8 +384,6 @@ static void run_case_line(hb_arch_t arch, uint64_t seed, const char* code_hex) {
 }
 
 int main(void) {
-    const char* arch_env = getenv("HB_DIFF_ARCH");
-    hb_arch_t arch = (arch_env && strcmp(arch_env, "x86") == 0) ? HB_ARCH_X86 : HB_ARCH_X64;
     char line[256];
     while (fgets(line, sizeof(line), stdin)) {
         char* p = line;
@@ -491,7 +398,7 @@ int main(void) {
         while (*p && !isspace((unsigned char)*p)) p++;
         *p = 0;
         uint64_t seed = strtoull(seed_s, NULL, 0);
-        run_case_line(arch, seed, code_s);
+        run_case_line(seed, code_s);
         fflush(stdout);
     }
     return 0;

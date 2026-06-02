@@ -1395,15 +1395,6 @@ static hb_result_t x87_st_index(const hb_ir_operand_t* op, unsigned* index) {
 static hb_result_t x87_fld_st(hb_context_t* ctx, const hb_ir_operand_t* op) {
     unsigned index;
     double value;
-    if (op && op->type == HB_OP_IMM && op->imm == -1) return hb_x87_push_f64(&ctx->regs.x86.x87, 1.0);
-    if (op && op->type == HB_OP_IMM && op->imm == -2) {
-        hb_result_t r = hb_x87_push_f64(&ctx->regs.x86.x87, 0.0);
-        if (r != HB_OK) return r;
-        uint16_t shift = (uint16_t)(ctx->regs.x86.x87.top * 2u);
-        ctx->regs.x86.x87.tag_word = (uint16_t)((ctx->regs.x86.x87.tag_word & ~(0x3u << shift)) |
-                                                (0x1u << shift));
-        return HB_OK;
-    }
     hb_result_t r = x87_st_index(op, &index);
     if (r != HB_OK) return r;
     r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &value);
@@ -3290,8 +3281,6 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             r = read_operand_value(ctx, &instr->src1, &value);
             if (r != HB_OK) return r;
             r = read_operand_value(ctx, &instr->src2, &raw_count);
-            if (r != HB_OK) return r;
-            r = hb_lazy_flags_materialize(ctx, HB_FLAG_BIT_CF);
             if (r != HB_OK) return r;
             hb_size_t size = instr->dst.size ? instr->dst.size : instr->src1.size;
             if (!size) size = HB_SIZE_64;

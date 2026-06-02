@@ -13,30 +13,6 @@ static hb_size_t size_from_dec(uint8_t sz) {
     }
 }
 
-static hb_reg_t map_x86_reg_to_ir(int reg) {
-    if (reg >= HB_REG_XMM0 && reg <= HB_REG_XMM7) return (hb_reg_t)reg;
-    switch (reg) {
-        case HB_REG_X86_EAX: return HB_REG_RAX;
-        case HB_REG_X86_ECX: return HB_REG_RCX;
-        case HB_REG_X86_EDX: return HB_REG_RDX;
-        case HB_REG_X86_EBX: return HB_REG_RBX;
-        case HB_REG_X86_ESP: return HB_REG_RSP;
-        case HB_REG_X86_EBP: return HB_REG_RBP;
-        case HB_REG_X86_ESI: return HB_REG_RSI;
-        case HB_REG_X86_EDI: return HB_REG_RDI;
-        case HB_REG_X86_EIP: return HB_REG_RIP;
-        case HB_REG_X86_XMM0: return HB_REG_XMM0;
-        case HB_REG_X86_XMM1: return HB_REG_XMM1;
-        case HB_REG_X86_XMM2: return HB_REG_XMM2;
-        case HB_REG_X86_XMM3: return HB_REG_XMM3;
-        case HB_REG_X86_XMM4: return HB_REG_XMM4;
-        case HB_REG_X86_XMM5: return HB_REG_XMM5;
-        case HB_REG_X86_XMM6: return HB_REG_XMM6;
-        case HB_REG_X86_XMM7: return HB_REG_XMM7;
-        default: return HB_REG_COUNT;
-    }
-}
-
 static hb_ir_operand_t operand_from_dec(const hb_decoded_t* dec, int slot) {
     const hb_decoded_t* d = dec;
     bool is_reg = (slot == 1) ? d->op1.is_reg : (slot == 2) ? d->op2.is_reg : d->op3.is_reg;
@@ -47,7 +23,7 @@ static hb_ir_operand_t operand_from_dec(const hb_decoded_t* dec, int slot) {
     hb_size_t sz = size_from_dec(sz_raw);
     if (is_reg) {
         int reg = (slot == 1) ? d->op1.reg : (slot == 2) ? d->op2.reg : d->op3.reg;
-        hb_ir_operand_t op = hb_ir_reg(map_x86_reg_to_ir(reg), sz);
+        hb_ir_operand_t op = hb_ir_reg((hb_reg_t)reg, sz);
         op.reg_offset = reg_offset;
         return op;
     }
@@ -63,8 +39,8 @@ static hb_ir_operand_t operand_from_dec(const hb_decoded_t* dec, int slot) {
         uint8_t segment = (slot == 1) ? d->op1.mem.segment : (slot == 2) ? d->op2.mem.segment : d->op3.mem.segment;
         bool addr32 = (slot == 1) ? d->op1.mem.addr32 : (slot == 2) ? d->op2.mem.addr32 : d->op3.mem.addr32;
         hb_ir_operand_t op = hb_ir_mem_segment(
-            base >= 0 ? map_x86_reg_to_ir(base) : HB_REG_COUNT,
-            index >= 0 ? map_x86_reg_to_ir(index) : HB_REG_COUNT,
+            (hb_reg_t)(base >= 0 ? base : HB_REG_COUNT),
+            (hb_reg_t)(index >= 0 ? index : HB_REG_COUNT),
             scale, disp, sz, segment);
         op.mem.addr32 = addr32;
         return op;
@@ -259,19 +235,6 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, i, dec);
             return HB_OK;
         }
-        case HB_INS_MOVMSKPS:
-        case HB_INS_MOVMSKPD: {
-            hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src = operand_from_dec(dec, 2);
-            hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_MOVMSK);
-            if (i) {
-                i->dst = dst;
-                i->src1 = src;
-                i->target = dec->opcode == HB_INS_MOVMSKPD ? 8 : 4;
-            }
-            emit(b, i, dec);
-            return HB_OK;
-        }
         case HB_INS_UNPCKLPS:
         case HB_INS_UNPCKLPD:
         case HB_INS_UNPCKHPS:
@@ -378,21 +341,6 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                 i->src2 = operand_from_dec(dec, 3);
                 i->target = dec->opcode == HB_INS_PSHUFD ? 4 : (dec->opcode == HB_INS_PSHUFLW ? 2 : 0x102);
             }
-            emit(b, i, dec);
-            return HB_OK;
-        }
-        case HB_INS_PMULLW:
-        case HB_INS_PMULHW:
-        case HB_INS_PMULHUW:
-        case HB_INS_PMADDWD: {
-            hb_ir_op_t op = HB_IR_PMULLW;
-            if (dec->opcode == HB_INS_PMULHW) op = HB_IR_PMULHW;
-            else if (dec->opcode == HB_INS_PMULHUW) op = HB_IR_PMULHUW;
-            else if (dec->opcode == HB_INS_PMADDWD) op = HB_IR_PMADDWD;
-            hb_ir_operand_t dst = operand_from_dec(dec, 1);
-            hb_ir_operand_t src = operand_from_dec(dec, 2);
-            hb_ir_instr_t *i = hb_ir_emit(b, op);
-            if (i) { i->dst = dst; i->src1 = dst; i->src2 = src; }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -508,17 +456,13 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_SHR:
         case HB_INS_SAR:
         case HB_INS_ROL:
-        case HB_INS_ROR:
-        case HB_INS_RCL:
-        case HB_INS_RCR: {
+        case HB_INS_ROR: {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_op_t ir_op = (dec->opcode == HB_INS_SHL) ? HB_IR_SHL :
                                (dec->opcode == HB_INS_SHR) ? HB_IR_SHR :
                                (dec->opcode == HB_INS_SAR) ? HB_IR_SAR :
-                               (dec->opcode == HB_INS_ROL) ? HB_IR_ROL :
-                               (dec->opcode == HB_INS_ROR) ? HB_IR_ROR :
-                               (dec->opcode == HB_INS_RCL) ? HB_IR_RCL : HB_IR_RCR;
+                               (dec->opcode == HB_INS_ROL) ? HB_IR_ROL : HB_IR_ROR;
             emit(b, hb_ir_emit_binop(b, ir_op, dst, dst, src), dec);
             return HB_OK;
         }

@@ -107,40 +107,6 @@ static uint32_t test_float_bits(float value) {
     return bits;
 }
 
-static int run_x86_interp_bytes(hb_context_t* ctx, const uint8_t* code, size_t len,
-                                uint32_t code_base, hb_exec_result_t* exec) {
-    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X86, code, len, code_base);
-    hb_ir_func_t* func = NULL;
-    if (!ctx || !code || !exec || !dec) return 0;
-    if (hb_lift_func_x86(dec, &func) != HB_OK) {
-        hb_decoder_destroy(dec);
-        return 0;
-    }
-    hb_decoder_destroy(dec);
-    if (!func) return 0;
-    if (!ctx->memory) {
-        ctx->memory = hb_memory_create(0);
-        if (!ctx->memory) {
-            hb_ir_func_destroy(func);
-            return 0;
-        }
-    }
-    if (hb_memory_guest32_map(ctx->memory, code_base, 4096,
-                              HB_PERM_READ | HB_PERM_WRITE | HB_PERM_EXEC) != HB_OK) {
-        hb_ir_func_destroy(func);
-        return 0;
-    }
-    if (hb_memory_write(ctx->memory, code_base, code, len) != HB_OK) {
-        hb_ir_func_destroy(func);
-        return 0;
-    }
-    ctx->pc = code_base;
-    ctx->regs.x86.eip = code_base;
-    hb_result_t r = hb_runtime_run(ctx, func, HB_BACKEND_INTERP, exec);
-    hb_ir_func_destroy(func);
-    return r == HB_OK && exec->result == HB_OK && !exec->faulted;
-}
-
 static int decode_riprel_target(const uint8_t* code, size_t len, uint64_t base,
                                 int slot, uint64_t* rip_base, uint64_t* target) {
     hb_decoded_t d;
@@ -995,65 +961,6 @@ TEST(interp_x86_call_boundary_exports_eip) {
     tests_passed++;
 }
 
-TEST(interp_x86_unicorn_diff_regressions_rcl_rcr) {
-    const uint32_t code_base = 0x00403000u;
-    uint8_t rcl_eax_cl[] = {0xd3, 0xd0};
-    hb_exec_result_t exec;
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X86, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-
-    ctx->regs.x86.eax = 0x70001000u;
-    ctx->regs.x86.ecx = 0x0000000du;
-    ctx->flags.cf = false;
-    ASSERT(run_x86_interp_bytes(ctx, rcl_eax_cl, sizeof(rcl_eax_cl), code_base, &exec));
-    ASSERT(ctx->regs.x86.eax == 0x02000700u);
-    ASSERT(ctx->regs.x86.eip == code_base + sizeof(rcl_eax_cl));
-    ASSERT(ctx->flags.cf == false);
-
-    hb_context_destroy(ctx);
-    tests_passed++;
-}
-
-TEST(interp_x86_unicorn_diff_regressions_sse2) {
-    const uint32_t code_base = 0x00404000u;
-    uint8_t movmskps[] = {0x0f, 0x50, 0xc0};
-    uint8_t shufps[] = {0x0f, 0xc6, 0xc1, 0x1b};
-    uint8_t pmullw[] = {0x66, 0x0f, 0xd5, 0xc1};
-    hb_exec_result_t exec;
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X86, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-
-    uint32_t mov_lanes[4] = {0x80000000u, 0x00000000u, 0x80000000u, 0x00000000u};
-    memcpy(ctx->regs.x86.xmm[0], mov_lanes, sizeof(mov_lanes));
-    ASSERT(run_x86_interp_bytes(ctx, movmskps, sizeof(movmskps), code_base, &exec));
-    ASSERT(ctx->regs.x86.eax == 0x5u);
-
-    hb_context_destroy(ctx);
-    ctx = hb_context_create(HB_ARCH_X86, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    uint32_t dst_lanes[4] = {0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u};
-    uint32_t src_lanes[4] = {0xaaaaaaaau, 0xbbbbbbbbu, 0xccccccccu, 0xddddddddu};
-    uint32_t expected_shuf[4] = {0x44444444u, 0x33333333u, 0xbbbbbbbbu, 0xaaaaaaaau};
-    memcpy(ctx->regs.x86.xmm[0], dst_lanes, sizeof(dst_lanes));
-    memcpy(ctx->regs.x86.xmm[1], src_lanes, sizeof(src_lanes));
-    ASSERT(run_x86_interp_bytes(ctx, shufps, sizeof(shufps), code_base, &exec));
-    ASSERT(memcmp(ctx->regs.x86.xmm[0], expected_shuf, sizeof(expected_shuf)) == 0);
-
-    hb_context_destroy(ctx);
-    ctx = hb_context_create(HB_ARCH_X86, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    uint16_t mul_a[8] = {2, 3, 4, 5, 6, 7, 8, 9};
-    uint16_t mul_b[8] = {10, 11, 12, 13, 14, 15, 16, 17};
-    uint16_t expected_mul[8] = {20, 33, 48, 65, 84, 105, 128, 153};
-    memcpy(ctx->regs.x86.xmm[0], mul_a, sizeof(mul_a));
-    memcpy(ctx->regs.x86.xmm[1], mul_b, sizeof(mul_b));
-    ASSERT(run_x86_interp_bytes(ctx, pmullw, sizeof(pmullw), code_base, &exec));
-    ASSERT(memcmp(ctx->regs.x86.xmm[0], expected_mul, sizeof(expected_mul)) == 0);
-
-    hb_context_destroy(ctx);
-    tests_passed++;
-}
-
 TEST(decode_ret_imm16_family) {
     hb_decoded_t d;
     uint8_t ret_near[] = {0xc3};
@@ -1255,33 +1162,6 @@ TEST(x86_context_x87_defaults) {
     ASSERT(ctx->regs.x86.x87.top == 0);
 
     hb_context_destroy(ctx);
-    tests_passed++;
-}
-
-TEST(interp_x86_unicorn_diff_regressions_x87_constants) {
-    const uint32_t code_base = 0x00405000u;
-    uint8_t fld1_fnstsw[] = {0xd9, 0xe8, 0xdf, 0xe0};
-    uint8_t fldz_fnstsw[] = {0xd9, 0xee, 0xdf, 0xe0};
-    hb_exec_result_t exec;
-
-    hb_context_t* ctx = hb_context_create(HB_ARCH_X86, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    ctx->regs.x86.eax = 0x70001000u;
-    ASSERT(run_x86_interp_bytes(ctx, fld1_fnstsw, sizeof(fld1_fnstsw), code_base, &exec));
-    ASSERT(ctx->regs.x86.eax == 0x70003800u);
-    ASSERT(ctx->regs.x86.x87.status_word == 0x3800u);
-    ASSERT(ctx->regs.x86.x87.tag_word == 0x3fffu);
-    hb_context_destroy(ctx);
-
-    ctx = hb_context_create(HB_ARCH_X86, HB_BACKEND_INTERP);
-    ASSERT(ctx != NULL);
-    ctx->regs.x86.eax = 0x70001000u;
-    ASSERT(run_x86_interp_bytes(ctx, fldz_fnstsw, sizeof(fldz_fnstsw), code_base, &exec));
-    ASSERT(ctx->regs.x86.eax == 0x70003800u);
-    ASSERT(ctx->regs.x86.x87.status_word == 0x3800u);
-    ASSERT(ctx->regs.x86.x87.tag_word == 0x7fffu);
-    hb_context_destroy(ctx);
-
     tests_passed++;
 }
 
@@ -21276,7 +21156,6 @@ int main(int argc, char** argv) {
         }
         if (!strcmp(argv[2], "x87")) {
             test_x86_context_x87_defaults();
-            test_interp_x86_unicorn_diff_regressions_x87_constants();
             test_x87_fldcw_fnstcw_fistp_rounding_modes();
             test_x87_environment_control_state_helpers();
             test_decode_x86_x87_environment_control_family();
@@ -21387,8 +21266,6 @@ int main(int argc, char** argv) {
     test_interp_x86_guest32_memory_operands_wrap_to_direct_window();
     test_decode_interp_x86_fs_absolute_store_advances_past_disp32();
     test_interp_x86_call_boundary_exports_eip();
-    test_interp_x86_unicorn_diff_regressions_rcl_rcr();
-    test_interp_x86_unicorn_diff_regressions_sse2();
     test_decode_ret_imm16_family();
     test_interp_x86_ret_imm16_cleans_stdcall_stack();
     test_interp_x86_ret_imm16_uses_guest_return_slot();
@@ -21404,7 +21281,6 @@ int main(int argc, char** argv) {
     test_interp_x86_movlps_low_qword_family_rsaenh();
     test_interp_x86_external_jcc_boundary_exports_eip();
     test_x86_context_x87_defaults();
-    test_interp_x86_unicorn_diff_regressions_x87_constants();
     test_x87_fldcw_fnstcw_fistp_rounding_modes();
     test_x87_environment_control_state_helpers();
     test_interp_x64_x87_fld_tbyte_memory_form();

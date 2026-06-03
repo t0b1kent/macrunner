@@ -441,6 +441,7 @@ NTSTATUS WINAPI RtlFindMessage( HMODULE hmod, ULONG type, ULONG lang,
     const IMAGE_RESOURCE_DATA_ENTRY *rsrc;
     LDR_RESOURCE_INFO info;
     NTSTATUS status;
+    ULONG size;
     void *ptr;
     unsigned int i;
 
@@ -450,20 +451,35 @@ NTSTATUS WINAPI RtlFindMessage( HMODULE hmod, ULONG type, ULONG lang,
 
     if ((status = LdrFindResource_U( hmod, &info, 3, &rsrc )) != STATUS_SUCCESS)
         return status;
-    if ((status = LdrAccessResource( hmod, rsrc, &ptr, NULL )) != STATUS_SUCCESS)
+    if ((status = LdrAccessResource( hmod, rsrc, &ptr, &size )) != STATUS_SUCCESS)
         return status;
 
     data = ptr;
+    if (size < offsetof( MESSAGE_RESOURCE_DATA, Blocks )) return STATUS_RESOURCE_DATA_NOT_FOUND;
+    if (data->NumberOfBlocks > (size - offsetof( MESSAGE_RESOURCE_DATA, Blocks )) / sizeof(*block))
+        return STATUS_RESOURCE_DATA_NOT_FOUND;
     block = data->Blocks;
     for (i = 0; i < data->NumberOfBlocks; i++, block++)
     {
         if (msg_id >= block->LowId && msg_id <= block->HighId)
         {
             const MESSAGE_RESOURCE_ENTRY *entry;
+            ULONG entry_index;
 
+            if (block->OffsetToEntries >= size) return STATUS_RESOURCE_DATA_NOT_FOUND;
             entry = (const MESSAGE_RESOURCE_ENTRY *)((const char *)data + block->OffsetToEntries);
-            for (i = msg_id - block->LowId; i > 0; i--)
+            for (entry_index = msg_id - block->LowId; entry_index > 0; entry_index--)
+            {
+                if (!resource_contains( data, size, entry, sizeof(*entry) ) ||
+                    entry->Length < sizeof(*entry) ||
+                    !resource_contains( data, size, entry, entry->Length ))
+                    return STATUS_RESOURCE_DATA_NOT_FOUND;
                 entry = (const MESSAGE_RESOURCE_ENTRY *)((const char *)entry + entry->Length);
+            }
+            if (!resource_contains( data, size, entry, sizeof(*entry) ) ||
+                entry->Length < sizeof(*entry) ||
+                !resource_contains( data, size, entry, entry->Length ))
+                return STATUS_RESOURCE_DATA_NOT_FOUND;
             *ret = entry;
             return STATUS_SUCCESS;
         }

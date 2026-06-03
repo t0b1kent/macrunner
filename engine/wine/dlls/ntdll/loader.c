@@ -2125,7 +2125,23 @@ static const char *macrunner_hb_coff_symbol_name( const IMAGE_SYMBOL *symbol, co
 
     offset = symbol->N.Name.Long;
     if (offset < sizeof(DWORD) || offset >= strings_size) return NULL;
+    if (!memchr( strings + offset, 0, strings_size - offset )) return NULL;
     return strings + offset;
+}
+
+static BOOL macrunner_hb_coff_symbol_slot_rva( const IMAGE_NT_HEADERS *nt,
+                                               const IMAGE_SECTION_HEADER *section,
+                                               const IMAGE_SYMBOL *symbol, ULONG_PTR *rva )
+{
+    SIZE_T sec_size = max( section->Misc.VirtualSize, section->SizeOfRawData );
+
+    if (symbol->Value > sec_size || sizeof(void *) > sec_size - symbol->Value) return FALSE;
+    if (section->VirtualAddress > nt->OptionalHeader.SizeOfImage ||
+        symbol->Value > nt->OptionalHeader.SizeOfImage - section->VirtualAddress ||
+        sizeof(void *) > nt->OptionalHeader.SizeOfImage - section->VirtualAddress - symbol->Value)
+        return FALSE;
+    *rva = section->VirtualAddress + symbol->Value;
+    return TRUE;
 }
 
 static void *macrunner_hb_find_disk_symbol_pointer_value( WINE_MODREF *target_mod, const char *name )
@@ -2143,7 +2159,7 @@ static void *macrunner_hb_find_disk_symbol_pointer_value( WINE_MODREF *target_mo
     DWORD strings_size;
     HANDLE file;
     BYTE *data;
-    SIZE_T size;
+    SIZE_T size, symbol_bytes;
     NTSTATUS status;
     void *ret = NULL;
     unsigned int i;
@@ -2170,13 +2186,18 @@ static void *macrunner_hb_find_disk_symbol_pointer_value( WINE_MODREF *target_mo
 
     dos = (IMAGE_DOS_HEADER *)data;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto done_data;
-    if ((SIZE_T)dos->e_lfanew + sizeof(*nt) > size) goto done_data;
+    if (dos->e_lfanew < 0 || size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
+        goto done_data;
     nt = (IMAGE_NT_HEADERS *)(data + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) goto done_data;
     if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) goto done_data;
     if (!nt->FileHeader.PointerToSymbolTable || !nt->FileHeader.NumberOfSymbols) goto done_data;
-    if ((SIZE_T)nt->FileHeader.PointerToSymbolTable +
-        (SIZE_T)nt->FileHeader.NumberOfSymbols * IMAGE_SIZEOF_SYMBOL + sizeof(DWORD) > size)
+    if (nt->FileHeader.NumberOfSymbols > (~(SIZE_T)0 - sizeof(DWORD)) / IMAGE_SIZEOF_SYMBOL)
+        goto done_data;
+    symbol_bytes = (SIZE_T)nt->FileHeader.NumberOfSymbols * IMAGE_SIZEOF_SYMBOL;
+    if ((SIZE_T)nt->FileHeader.PointerToSymbolTable > size ||
+        symbol_bytes > size - nt->FileHeader.PointerToSymbolTable ||
+        sizeof(DWORD) > size - nt->FileHeader.PointerToSymbolTable - symbol_bytes)
         goto done_data;
 
     sections = IMAGE_FIRST_SECTION( nt );
@@ -2201,9 +2222,8 @@ static void *macrunner_hb_find_disk_symbol_pointer_value( WINE_MODREF *target_mo
         if (strcmp( sym_name, name )) continue;
 
         section = &sections[symbol->SectionNumber - 1];
-        if (symbol->Value + sizeof(void *) > max( section->Misc.VirtualSize, section->SizeOfRawData )) continue;
-        rva = section->VirtualAddress + symbol->Value;
-        if (rva + sizeof(void *) > nt->OptionalHeader.SizeOfImage) continue;
+        if (!macrunner_hb_coff_symbol_slot_rva( nt, section, symbol, &rva )) continue;
+        if ((ULONG_PTR)target_mod->ldr.DllBase > ~(ULONG_PTR)0 - rva) continue;
 
         slot = (void **)((BYTE *)target_mod->ldr.DllBase + rva);
         if (*slot)
@@ -2240,7 +2260,7 @@ static unsigned int macrunner_hb_sync_disk_symbol_pointer_aliases( WINE_MODREF *
     DWORD strings_size;
     HANDLE file;
     BYTE *data;
-    SIZE_T size;
+    SIZE_T size, symbol_bytes;
     NTSTATUS status;
     unsigned int i, count = 0;
 
@@ -2266,13 +2286,18 @@ static unsigned int macrunner_hb_sync_disk_symbol_pointer_aliases( WINE_MODREF *
 
     dos = (IMAGE_DOS_HEADER *)data;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto done_data;
-    if ((SIZE_T)dos->e_lfanew + sizeof(*nt) > size) goto done_data;
+    if (dos->e_lfanew < 0 || size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
+        goto done_data;
     nt = (IMAGE_NT_HEADERS *)(data + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) goto done_data;
     if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) goto done_data;
     if (!nt->FileHeader.PointerToSymbolTable || !nt->FileHeader.NumberOfSymbols) goto done_data;
-    if ((SIZE_T)nt->FileHeader.PointerToSymbolTable +
-        (SIZE_T)nt->FileHeader.NumberOfSymbols * IMAGE_SIZEOF_SYMBOL + sizeof(DWORD) > size)
+    if (nt->FileHeader.NumberOfSymbols > (~(SIZE_T)0 - sizeof(DWORD)) / IMAGE_SIZEOF_SYMBOL)
+        goto done_data;
+    symbol_bytes = (SIZE_T)nt->FileHeader.NumberOfSymbols * IMAGE_SIZEOF_SYMBOL;
+    if ((SIZE_T)nt->FileHeader.PointerToSymbolTable > size ||
+        symbol_bytes > size - nt->FileHeader.PointerToSymbolTable ||
+        sizeof(DWORD) > size - nt->FileHeader.PointerToSymbolTable - symbol_bytes)
         goto done_data;
 
     sections = IMAGE_FIRST_SECTION( nt );
@@ -2299,9 +2324,8 @@ static unsigned int macrunner_hb_sync_disk_symbol_pointer_aliases( WINE_MODREF *
         if (strcmp( sym_name, name )) continue;
 
         section = &sections[symbol->SectionNumber - 1];
-        if (symbol->Value + sizeof(void *) > max( section->Misc.VirtualSize, section->SizeOfRawData )) continue;
-        rva = section->VirtualAddress + symbol->Value;
-        if (rva + sizeof(void *) > nt->OptionalHeader.SizeOfImage) continue;
+        if (!macrunner_hb_coff_symbol_slot_rva( nt, section, symbol, &rva )) continue;
+        if ((ULONG_PTR)target_mod->ldr.DllBase > ~(ULONG_PTR)0 - rva) continue;
 
         slot = (void **)((BYTE *)target_mod->ldr.DllBase + rva);
         old_value = *slot;

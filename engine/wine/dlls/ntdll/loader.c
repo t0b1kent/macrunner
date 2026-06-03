@@ -2697,8 +2697,11 @@ static DLLENTRYPROC macrunner_hb_get_native_arm64x_entry( WINE_MODREF *wm )
     if (!nt->OptionalHeader.AddressOfEntryPoint) return NULL;
 
     base = (ULONG_PTR)wm->ldr.DllBase;
+    if (nt->OptionalHeader.SizeOfImage > ~(ULONG_PTR)0 - base ||
+        nt->OptionalHeader.AddressOfEntryPoint >= nt->OptionalHeader.SizeOfImage ||
+        base > ~(ULONG_PTR)0 - nt->OptionalHeader.AddressOfEntryPoint)
+        return NULL;
     entry = base + nt->OptionalHeader.AddressOfEntryPoint;
-    if (entry < base || entry >= base + nt->OptionalHeader.SizeOfImage) return NULL;
     if (macrunner_hb_address_in_section( wm->ldr.DllBase, ".hexpthk", entry )) return NULL;
     return (DLLENTRYPROC)entry;
 }

@@ -3290,12 +3290,16 @@ static NTSTATUS coalesce_placeholders( struct file_view *view, char *base, size_
     curr_view = view;
     while (curr_view->protect & VPROT_FREE_PLACEHOLDER)
     {
+        char *curr_end;
+
+        if (!get_view_limit( curr_view, &curr_end ) || curr_view->size > ~(size_t)0 - views_size)
+            return STATUS_CONFLICTING_ADDRESSES;
         ++view_count;
         views_size += curr_view->size;
         if (views_size >= size) break;
         if (!(next = rb_next( &curr_view->entry ))) break;
         next_view = RB_ENTRY_VALUE( next, struct file_view, entry );
-        if ((char *)curr_view->base + curr_view->size != next_view->base) break;
+        if (curr_end != next_view->base) break;
         curr_view = next_view;
     }
 

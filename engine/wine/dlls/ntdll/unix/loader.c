@@ -1084,6 +1084,7 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     DWORD alignment = nt_descr->OptionalHeader.SectionAlignment;
     DWORD align_mask;
     INT_PTR delta_ptr;
+    ULONGLONG end;
     int delta, nb_sections = 2;  /* code + data */
     unsigned int i;
 
@@ -1123,16 +1124,24 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
 #ifdef __APPLE__
     {
         Dl_info dli;
+        BYTE *data_segment;
         unsigned long data_size;
         /* need the mach_header, not the PE header, to give to getsegmentdata(3) */
-        dladdr(addr, &dli);
-        code_end   = getsegmentdata(dli.dli_fbase, "__DATA", &data_size) - addr;
-        data_end   = (code_end + data_size + align_mask) & ~align_mask;
+        if (!dladdr(addr, &dli)) return STATUS_INVALID_IMAGE_FORMAT;
+        data_segment = getsegmentdata(dli.dli_fbase, "__DATA", &data_size);
+        if (!data_segment || (ULONG_PTR)data_segment < (ULONG_PTR)addr) return STATUS_INVALID_IMAGE_FORMAT;
+        end = (ULONGLONG)((ULONG_PTR)data_segment - (ULONG_PTR)addr) + data_size + align_mask;
+        if (end > UINT_MAX) return STATUS_INVALID_IMAGE_FORMAT;
+        code_end   = (ULONG_PTR)data_segment - (ULONG_PTR)addr;
+        data_end   = end & ~align_mask;
     }
 #else
     code_end   = data_start;
-    data_end   = (nt->OptionalHeader.SizeOfImage + delta + align_mask) & ~align_mask;
+    end = (ULONGLONG)nt->OptionalHeader.SizeOfImage + delta + align_mask;
+    if (end > UINT_MAX) return STATUS_INVALID_IMAGE_FORMAT;
+    data_end   = end & ~align_mask;
 #endif
+    if (code_end < code_start || data_end < data_start) return STATUS_INVALID_IMAGE_FORMAT;
 
     fixup_rva_ptrs( &nt->OptionalHeader.AddressOfEntryPoint, addr, 1 );
 

@@ -1999,7 +1999,8 @@ static DWORD get_core_id_regs_arm64( struct smbios_wine_id_reg_value_arm64 *regs
 static DWORD get_core_id_regs_arm64( struct smbios_wine_id_reg_value_arm64 *regs,
                                      WORD logical_thread_id )
 {
-    FIXME("stub\n");
+    TRACE("ID register population is not available on this platform, regs %p, thread %u.\n",
+          regs, logical_thread_id);
     return 0;
 }
 

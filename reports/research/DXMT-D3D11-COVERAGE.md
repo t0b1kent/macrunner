@@ -81,8 +81,8 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Textures 1D/2D/3D | Implemented | Texture creation routes through device, staging, linear, dynamic helpers. |
 | SRV/RTV/DSV/UAV | Implemented | View creation normalizes descriptors and creates Metal texture views. |
 | VS/PS/CS | Implemented | Pipeline cache add paths exist. |
-| GS/HS/DS | Partial | Headless smoke compiles and creates GS, GS+stream-output, HS, and DS shaders; standalone Unity default-resource and asset-aware HK D3D11 DXBC corpora translate through `airconv`; still needs runtime capture once the real Unity process reaches D3D11. |
-| Stream output | Partial | Smoke creates SO layout/buffer, binds SO targets, draws, unbinds, copies to staging, and verifies output; broader game behavior remains partial. |
+| GS/HS/DS | Implemented | Headless smoke compiles/creates GS, GS+stream-output, HS, and DS shaders; GS draw passes, HS/DS patch draw readback returns `pixel0_bgra=0,255,0,255`, and standalone Unity/HK D3D11 DXBC corpora translate through `airconv`. |
+| Stream output | Implemented | Smoke creates SO layout/buffer, binds SO targets, draws, unbinds, copies to staging, and verifies output with `StreamOutputVerify=PASS first_word=0xbf800000`. |
 | Blend/rasterizer/depth-stencil/sampler states | Implemented | Smoke covers alpha/opaque blend, cull-none/cull-back rasterizer, depth/stencil/disabled depth, and linear/comparison/anisotropic samplers. |
 | Queries/counters | Partial | Event, timestamp, occlusion query data, and occlusion predicate smoke pass; `CheckCounterInfo`, `CheckCounter`, and `CreateCounter` return clean unsupported counter semantics (`DXGI_ERROR_UNSUPPORTED` with zeroed strings/counters), not `E_NOTIMPL`. |
 | Deferred/context methods | Partial | Empty deferred command-list, deferred RTV clear/readback, deferred draw recording/playback, and deferred resource update/map/copy/readback pass; broader deferred command surface still needs game coverage. |

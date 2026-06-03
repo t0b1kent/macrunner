@@ -2510,6 +2510,7 @@ static void load_apiset_dll(void)
                            's','y','s','t','e','m','3','2','\\',
                            'a','p','i','s','e','t','s','c','h','e','m','a','.','d','l','l',0};
     const char *pe_dir = get_pe_dir( current_machine );
+    const IMAGE_DOS_HEADER *dos;
     const IMAGE_NT_HEADERS *nt;
     const IMAGE_SECTION_HEADER *sec;
     API_SET_NAMESPACE *map;
@@ -2545,17 +2546,49 @@ static void load_apiset_dll(void)
     }
     if (!status)
     {
-        nt = get_rva( ptr, ((IMAGE_DOS_HEADER *)ptr)->e_lfanew );
-        sec = IMAGE_FIRST_SECTION( nt );
+        SIZE_T nt_offset, optional_offset, section_offset;
+
+        dos = ptr;
+        if (size < sizeof(*dos) || dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0 ||
+            (nt_offset = dos->e_lfanew) > size - offsetof( IMAGE_NT_HEADERS, OptionalHeader ))
+        {
+            status = STATUS_INVALID_IMAGE_FORMAT;
+            goto done;
+        }
+        nt = get_rva( ptr, nt_offset );
+        optional_offset = nt_offset + offsetof( IMAGE_NT_HEADERS, OptionalHeader );
+        if (nt->Signature != IMAGE_NT_SIGNATURE ||
+            nt->FileHeader.SizeOfOptionalHeader > size - optional_offset)
+        {
+            status = STATUS_INVALID_IMAGE_FORMAT;
+            goto done;
+        }
+        section_offset = optional_offset + nt->FileHeader.SizeOfOptionalHeader;
+        sec = (const IMAGE_SECTION_HEADER *)((const char *)ptr + section_offset);
+        if (section_offset > size ||
+            nt->FileHeader.NumberOfSections > (size - section_offset) / sizeof(*sec))
+        {
+            status = STATUS_INVALID_IMAGE_FORMAT;
+            goto done;
+        }
+        status = STATUS_APISET_NOT_PRESENT;
 
         for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
         {
+            SIZE_T raw, raw_size, section_size;
+
             if (memcmp( (char *)sec->Name, ".apiset", 8 )) continue;
-            map = (API_SET_NAMESPACE *)((char *)ptr + sec->PointerToRawData);
-            if (sec->PointerToRawData < size &&
-                size - sec->PointerToRawData >= sec->Misc.VirtualSize &&
-                map->Version == 6 &&
-                map->Size <= sec->Misc.VirtualSize)
+            raw = sec->PointerToRawData;
+            raw_size = sec->SizeOfRawData;
+            section_size = sec->Misc.VirtualSize;
+            if (!section_size || raw_size < section_size) section_size = raw_size;
+            if (raw >= size || raw_size > size - raw || section_size < sizeof(*map))
+            {
+                status = STATUS_INVALID_IMAGE_FORMAT;
+                break;
+            }
+            map = (API_SET_NAMESPACE *)((char *)ptr + raw);
+            if (map->Version == 6 && map->Size >= sizeof(*map) && map->Size <= section_size)
             {
                 peb->ApiSetMap = map;
                 if (wow_peb) wow_peb->ApiSetMap = PtrToUlong(map);
@@ -2564,8 +2597,8 @@ static void load_apiset_dll(void)
             }
             break;
         }
+done:
         NtUnmapViewOfSection( NtCurrentProcess(), ptr );
-        status = STATUS_APISET_NOT_PRESENT;
     }
     ERR( "failed to load apiset: %x\n", status );
 }

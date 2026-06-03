@@ -1,7 +1,8 @@
 # D3D8/D3D9 Future Path Note
 
 This is a future-lane note only. Lane D should not build the D3D8/D3D9 path until
-the D3D11 DXMT->Metal route is stable on real Unity/game workloads.
+the operator assigns older-game ownership and Lane C's PE32/WOW64 path is ready
+to run 32-bit-era game targets.
 
 ## Target Shape
 
@@ -41,7 +42,11 @@ the D3D11 DXMT->Metal route is stable on real Unity/game workloads.
 ## Prerequisites
 
 - DXMT D3D11 headless smoke remains green through feature levels 10_0-11_1,
-  resources, views, shader stages, MSAA, mips, queries, and stability loops.
+  resources, views, shader stages, MSAA, mips, queries, BC formats, and stability
+  loops.
+- x64 guest DXMT binding remains strict-native green for `d3d11`, `dxgi`, and
+  `winemetal=n` before older-game routing borrows the same prefix/deployment
+  machinery.
 - PE32/WOW64 is stable enough for 32-bit-era D3D8/D3D9 titles before using real
   game targets as graphics validation.
 - A D3D9 coverage matrix exists before implementation starts.
@@ -52,6 +57,8 @@ the D3D11 DXMT->Metal route is stable on real Unity/game workloads.
 
 As of the 2026-06-03 Lane D checkpoints, the DXMT D3D11 owned smoke suite is green
 across device creation, resources, shader stages, draw/dispatch, present/readback,
-fullscreen, MSAA, queries, deferred contexts, and stability. D3D8/D3D9 work should
-still wait until the real x64 Unity path reaches D3D11/DXGI and produces pixels, and
-until the PE32/WOW64 lane can run 32-bit game targets without CPU/loader blockers.
+fullscreen, MSAA, queries, deferred contexts, BC formats, two-pass stability, and
+strict-native x64 guest `winemetal=n` binding. Real Unity present is currently
+blocked before D3D11/DXGI by Lane A CPU/TSO work, so it is not a D3D8/D3D9
+implementation gate. D3D8/D3D9 work should still wait for future ownership plus
+Lane C PE32/WOW64 readiness for 32-bit game targets.

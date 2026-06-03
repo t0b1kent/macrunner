@@ -1003,6 +1003,22 @@ static void dump_free_ranges(void)
         TRACE_(virtual_ranges)("%p - %p.\n", r->base, r->end);
 }
 
+static BOOL get_view_granularity_range( const struct file_view *view, void **base, void **end, void **limit )
+{
+    UINT_PTR addr = (UINT_PTR)view->base;
+    UINT_PTR rounded_base = addr & ~(UINT_PTR)granularity_mask;
+    SIZE_T rounded_size;
+
+    if ((UINT_PTR)view->size > ~(UINT_PTR)0 - addr) return FALSE;
+    if (!round_size_checked( addr, view->size, granularity_mask, &rounded_size )) return FALSE;
+    if (rounded_size > ~(UINT_PTR)0 - rounded_base) return FALSE;
+
+    *base = (void *)rounded_base;
+    *end = (void *)(rounded_base + rounded_size);
+    if (limit) *limit = (void *)(addr + view->size);
+    return TRUE;
+}
+
 /***********************************************************************
  *           free_ranges_insert_view
  *
@@ -1010,10 +1026,18 @@ static void dump_free_ranges(void)
  */
 static void free_ranges_insert_view( struct file_view *view )
 {
-    void *view_base = ROUND_ADDR( view->base, granularity_mask );
-    void *view_end = ROUND_ADDR( (char *)view->base + view->size + granularity_mask, granularity_mask );
-    struct range_entry *range = free_ranges_lower_bound( view_base );
-    struct range_entry *next = range + 1;
+    void *view_base, *view_end, *view_limit;
+    struct range_entry *range, *next;
+
+    if (!get_view_granularity_range( view, &view_base, &view_end, &view_limit ))
+    {
+        ERR( "view range overflow base %p size %zx\n", view->base, view->size );
+        VIRTUAL_DEBUG_DUMP_RANGES();
+        return;
+    }
+
+    range = free_ranges_lower_bound( view_base );
+    next = range + 1;
 
     /* free_ranges initial value is such that the view is either inside range or before another one. */
     assert( range != free_ranges_end );
@@ -1029,7 +1053,7 @@ static void free_ranges_insert_view( struct file_view *view )
         view_end = view_base;
 
     TRACE_(virtual_ranges)( "%p - %p, aligned %p - %p.\n",
-                            view->base, (char *)view->base + view->size, view_base, view_end );
+                            view->base, view_limit, view_base, view_end );
 
     if (view_end <= view_base)
     {
@@ -1083,18 +1107,26 @@ static void free_ranges_insert_view( struct file_view *view )
  */
 static void free_ranges_remove_view( struct file_view *view )
 {
-    void *view_base = ROUND_ADDR( view->base, granularity_mask );
-    void *view_end = ROUND_ADDR( (char *)view->base + view->size + granularity_mask, granularity_mask );
-    struct range_entry *range = free_ranges_lower_bound( view_base );
-    struct range_entry *next = range + 1;
-
-    /* Free ranges addresses are aligned at granularity_mask while the views may be not. */
     struct file_view *prev_view = RB_ENTRY_VALUE( rb_prev( &view->entry ), struct file_view, entry );
     struct file_view *next_view = RB_ENTRY_VALUE( rb_next( &view->entry ), struct file_view, entry );
-    void *prev_view_base = prev_view ? ROUND_ADDR( prev_view->base, granularity_mask ) : NULL;
-    void *prev_view_end = prev_view ? ROUND_ADDR( (char *)prev_view->base + prev_view->size + granularity_mask, granularity_mask ) : NULL;
-    void *next_view_base = next_view ? ROUND_ADDR( next_view->base, granularity_mask ) : NULL;
-    void *next_view_end = next_view ? ROUND_ADDR( (char *)next_view->base + next_view->size + granularity_mask, granularity_mask ) : NULL;
+    void *view_base, *view_end, *view_limit;
+    void *prev_view_base = NULL, *prev_view_end = NULL;
+    void *next_view_base = NULL, *next_view_end = NULL;
+    struct range_entry *range, *next;
+
+    if (!get_view_granularity_range( view, &view_base, &view_end, &view_limit ) ||
+        (prev_view && !get_view_granularity_range( prev_view, &prev_view_base, &prev_view_end, NULL )) ||
+        (next_view && !get_view_granularity_range( next_view, &next_view_base, &next_view_end, NULL )))
+    {
+        ERR( "view range overflow base %p size %zx\n", view->base, view->size );
+        VIRTUAL_DEBUG_DUMP_RANGES();
+        return;
+    }
+
+    range = free_ranges_lower_bound( view_base );
+    next = range + 1;
+
+    /* Free ranges addresses are aligned at granularity_mask while the views may be not. */
 
     if (prev_view_end && prev_view_end > view_base && prev_view_base < view_end)
         view_base = prev_view_end;
@@ -1102,7 +1134,7 @@ static void free_ranges_remove_view( struct file_view *view )
         view_end = next_view_base;
 
     TRACE_(virtual_ranges)( "%p - %p, aligned %p - %p.\n",
-                            view->base, (char *)view->base + view->size, view_base, view_end );
+                            view->base, view_limit, view_base, view_end );
 
     if (view_end <= view_base)
     {

@@ -1,0 +1,44 @@
+diff --git a/libs/vkd3d-shader/hlsl_codegen.c b/libs/vkd3d-shader/hlsl_codegen.c
+index 0000000..0000000 100644
+--- a/libs/vkd3d-shader/hlsl_codegen.c
++++ b/libs/vkd3d-shader/hlsl_codegen.c
+@@ -11991,17 +11991,32 @@ static bool sm4_generate_vsir_instr_resource_store(struct hlsl_ctx *ctx,
+         return false;
+     }
+ 
+-    if (resource_type->sampler_dim == HLSL_SAMPLER_DIM_STRUCTURED_BUFFER)
+-    {
+-        hlsl_fixme(ctx, &store->node.loc, "Structured buffers store is not implemented.");
+-        return false;
+-    }
+-
+     if (tgsm && !hlsl_is_numeric_type(resource_type))
+     {
+         hlsl_fixme(ctx, &store->node.loc, "Store to structured TGSM.");
+         return false;
+     }
+ 
++    if (resource_type->sampler_dim == HLSL_SAMPLER_DIM_STRUCTURED_BUFFER)
++    {
++        struct hlsl_constant_value offset;
++
++        if (!(ins = generate_vsir_add_program_instruction(ctx, program, &instr->loc, VSIR_OP_STORE_STRUCTURED, 1, 3)))
++            return false;
++
++        if (!sm4_generate_vsir_init_dst_operand_from_deref(ctx, program,
++                &ins->dst[0], &store->resource, &instr->loc, store->writemask))
++            return false;
++
++        vsir_src_from_hlsl_node(&ins->src[0], ctx, coords, VKD3DSP_WRITEMASK_0);
++
++        memset(&offset, 0, sizeof(offset));
++        vsir_src_from_hlsl_constant_value(&ins->src[1], ctx, &offset,
++                VSIR_DATA_U32, 1, VKD3DSP_WRITEMASK_0);
++
++        vsir_src_from_hlsl_node(&ins->src[2], ctx, value, VKD3DSP_WRITEMASK_ALL);
++        return true;
++    }
++
+     if (tgsm || resource_type->sampler_dim == HLSL_SAMPLER_DIM_RAW_BUFFER)
+     {
+         if (!(ins = generate_vsir_add_program_instruction(ctx, program, &instr->loc, VSIR_OP_STORE_RAW, 1, 2)))

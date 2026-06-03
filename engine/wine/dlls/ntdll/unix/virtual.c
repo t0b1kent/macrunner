@@ -7995,9 +7995,15 @@ NTSTATUS WINAPI NtFlushVirtualMemory( HANDLE process, LPCVOID *addr_ptr,
     if (!(view = find_view( addr, *size_ptr ))) status = STATUS_INVALID_PARAMETER;
     else
     {
+        char *view_end;
         SIZE_T host_size;
 
-        if (!*size_ptr) *size_ptr = view->size;
+        if (!get_view_limit( view, &view_end ))
+        {
+            status = STATUS_INVALID_PARAMETER;
+            goto done;
+        }
+        if (!*size_ptr) *size_ptr = view_end - (char *)addr;
         if (!round_size_checked( (UINT_PTR)addr, *size_ptr, host_page_mask, &host_size ))
         {
             status = STATUS_INVALID_PARAMETER;

@@ -1213,20 +1213,35 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
     if (dir->Size)
     {
-        IMAGE_DELAYLOAD_DESCRIPTOR *imports = (IMAGE_DELAYLOAD_DESCRIPTOR *)(addr + dir->VirtualAddress);
+        IMAGE_DELAYLOAD_DESCRIPTOR *imports;
+        DWORD count;
 
-        while (imports->DllNameRVA)
+        if (dir->VirtualAddress >= nt->OptionalHeader.SizeOfImage ||
+            dir->Size > nt->OptionalHeader.SizeOfImage - dir->VirtualAddress ||
+            dir->Size < sizeof(*imports))
+            return STATUS_INVALID_IMAGE_FORMAT;
+        imports = (IMAGE_DELAYLOAD_DESCRIPTOR *)(addr + dir->VirtualAddress);
+        count = dir->Size / sizeof(*imports);
+
+        for (i = 0; i < count && imports[i].DllNameRVA; i++)
         {
-            fixup_rva_dwords( &imports->DllNameRVA, delta, 1 );
-            fixup_rva_dwords( &imports->ModuleHandleRVA, delta, 1 );
-            fixup_rva_dwords( &imports->ImportAddressTableRVA, delta, 1 );
-            fixup_rva_dwords( &imports->ImportNameTableRVA, delta, 1 );
-            fixup_rva_dwords( &imports->BoundImportAddressTableRVA, delta, 1 );
-            fixup_rva_dwords( &imports->UnloadInformationTableRVA, delta, 1 );
-            if (imports->ImportNameTableRVA)
-                fixup_rva_names( (UINT_PTR *)(addr + imports->ImportNameTableRVA), delta );
-            imports++;
+            fixup_rva_dwords( &imports[i].DllNameRVA, delta, 1 );
+            fixup_rva_dwords( &imports[i].ModuleHandleRVA, delta, 1 );
+            fixup_rva_dwords( &imports[i].ImportAddressTableRVA, delta, 1 );
+            fixup_rva_dwords( &imports[i].ImportNameTableRVA, delta, 1 );
+            fixup_rva_dwords( &imports[i].BoundImportAddressTableRVA, delta, 1 );
+            fixup_rva_dwords( &imports[i].UnloadInformationTableRVA, delta, 1 );
+            if (!builtin_rva_string_fits_image( addr, nt->OptionalHeader.SizeOfImage,
+                                                imports[i].DllNameRVA ))
+                return STATUS_INVALID_IMAGE_FORMAT;
+            if (imports[i].ImportNameTableRVA &&
+                !builtin_thunk_array_fits_image( addr, nt->OptionalHeader.SizeOfImage,
+                                                 imports[i].ImportNameTableRVA ))
+                return STATUS_INVALID_IMAGE_FORMAT;
+            if (imports[i].ImportNameTableRVA)
+                fixup_rva_names( (UINT_PTR *)(addr + imports[i].ImportNameTableRVA), delta );
         }
+        if (i == count) return STATUS_INVALID_IMAGE_FORMAT;
     }
 
     return STATUS_SUCCESS;

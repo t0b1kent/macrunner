@@ -8821,6 +8821,12 @@ PVOID WINAPI RtlImageDirectoryEntryToData( HMODULE module, BOOL image, WORD dir,
 /***********************************************************************
  *           RtlImageRvaToSection   (NTDLL.@)
  */
+static BOOL image_section_contains_raw_rva( const IMAGE_SECTION_HEADER *sec, DWORD rva )
+{
+    return sec->SizeOfRawData && rva >= sec->VirtualAddress &&
+           rva - sec->VirtualAddress < sec->SizeOfRawData;
+}
+
 PIMAGE_SECTION_HEADER WINAPI RtlImageRvaToSection( const IMAGE_NT_HEADERS *nt,
                                                    HMODULE module, DWORD rva )
 {
@@ -8829,8 +8835,7 @@ PIMAGE_SECTION_HEADER WINAPI RtlImageRvaToSection( const IMAGE_NT_HEADERS *nt,
 
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
     {
-        if ((sec->VirtualAddress <= rva) && (sec->VirtualAddress + sec->SizeOfRawData > rva))
-            return (PIMAGE_SECTION_HEADER)sec;
+        if (image_section_contains_raw_rva( sec, rva )) return (PIMAGE_SECTION_HEADER)sec;
     }
     return NULL;
 }
@@ -8847,11 +8852,13 @@ PVOID WINAPI RtlImageRvaToVa( const IMAGE_NT_HEADERS *nt, HMODULE module,
     if (section && *section)  /* try this section first */
     {
         sec = *section;
-        if ((sec->VirtualAddress <= rva) && (sec->VirtualAddress + sec->SizeOfRawData > rva))
-            goto found;
+        if (image_section_contains_raw_rva( sec, rva )) goto found;
     }
     if (!(sec = RtlImageRvaToSection( nt, module, rva ))) return NULL;
  found:
+    if (sec->PointerToRawData > ~(ULONG_PTR)0 - (rva - sec->VirtualAddress) ||
+        (ULONG_PTR)module > ~(ULONG_PTR)0 - sec->PointerToRawData - (rva - sec->VirtualAddress))
+        return NULL;
     if (section) *section = sec;
     return (char *)module + sec->PointerToRawData + (rva - sec->VirtualAddress);
 }

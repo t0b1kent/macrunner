@@ -996,9 +996,28 @@ static BOOL builtin_ptr_array_fits_image( BYTE *base, DWORD image_size, void *ar
 }
 
 /* fixup an array of RVAs by adding the specified delta */
-static inline void fixup_rva_dwords( DWORD *ptr, int delta, unsigned int count )
+static inline BOOL fixup_rva_dwords( DWORD *ptr, int delta, unsigned int count )
 {
-    for ( ; count; count--, ptr++) if (*ptr) *ptr += delta;
+    for ( ; count; count--, ptr++)
+    {
+        UINT_PTR value = *ptr;
+
+        if (!value) continue;
+        if (delta >= 0)
+        {
+            if (value > UINT_MAX - (UINT_PTR)delta) return FALSE;
+            value += (UINT_PTR)delta;
+        }
+        else
+        {
+            UINT_PTR abs_delta = (UINT_PTR)(-(delta + 1)) + 1;
+
+            if (value < abs_delta) return FALSE;
+            value -= abs_delta;
+        }
+        *ptr = (DWORD)value;
+    }
+    return TRUE;
 }
 
 
@@ -1328,7 +1347,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     sec++;
 
     for (i = 0; i < nt->OptionalHeader.NumberOfRvaAndSizes; i++)
-        fixup_rva_dwords( &nt->OptionalHeader.DataDirectory[i].VirtualAddress, delta, 1 );
+        if (!fixup_rva_dwords( &nt->OptionalHeader.DataDirectory[i].VirtualAddress, delta, 1 ))
+            return STATUS_INVALID_IMAGE_FORMAT;
 
     /* build the import directory */
 
@@ -1347,9 +1367,10 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
 
         for (i = 0; i < count && imports[i].Name; i++)
         {
-            fixup_rva_dwords( &imports[i].OriginalFirstThunk, delta, 1 );
-            fixup_rva_dwords( &imports[i].Name, delta, 1 );
-            fixup_rva_dwords( &imports[i].FirstThunk, delta, 1 );
+            if (!fixup_rva_dwords( &imports[i].OriginalFirstThunk, delta, 1 ) ||
+                !fixup_rva_dwords( &imports[i].Name, delta, 1 ) ||
+                !fixup_rva_dwords( &imports[i].FirstThunk, delta, 1 ))
+                return STATUS_INVALID_IMAGE_FORMAT;
             if (!builtin_rva_string_fits_image( addr, nt->OptionalHeader.SizeOfImage, imports[i].Name ))
                 return STATUS_INVALID_IMAGE_FORMAT;
             if (imports[i].OriginalFirstThunk &&
@@ -1406,9 +1427,10 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
         exports = (IMAGE_EXPORT_DIRECTORY *)(addr + dir->VirtualAddress);
         if (!fixup_rva_strings( addr, nt->OptionalHeader.SizeOfImage, &exports->Name, delta, 1 ))
             return STATUS_INVALID_IMAGE_FORMAT;
-        fixup_rva_dwords( &exports->AddressOfFunctions, delta, 1 );
-        fixup_rva_dwords( &exports->AddressOfNames, delta, 1 );
-        fixup_rva_dwords( &exports->AddressOfNameOrdinals, delta, 1 );
+        if (!fixup_rva_dwords( &exports->AddressOfFunctions, delta, 1 ) ||
+            !fixup_rva_dwords( &exports->AddressOfNames, delta, 1 ) ||
+            !fixup_rva_dwords( &exports->AddressOfNameOrdinals, delta, 1 ))
+            return STATUS_INVALID_IMAGE_FORMAT;
         if (!builtin_rva_array_fits_image( nt->OptionalHeader.SizeOfImage, exports->AddressOfNames,
                                            exports->NumberOfNames, sizeof(DWORD) ) ||
             !builtin_rva_array_fits_image( nt->OptionalHeader.SizeOfImage, exports->AddressOfNameOrdinals,
@@ -1442,12 +1464,13 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
 
         for (i = 0; i < count && imports[i].DllNameRVA; i++)
         {
-            fixup_rva_dwords( &imports[i].DllNameRVA, delta, 1 );
-            fixup_rva_dwords( &imports[i].ModuleHandleRVA, delta, 1 );
-            fixup_rva_dwords( &imports[i].ImportAddressTableRVA, delta, 1 );
-            fixup_rva_dwords( &imports[i].ImportNameTableRVA, delta, 1 );
-            fixup_rva_dwords( &imports[i].BoundImportAddressTableRVA, delta, 1 );
-            fixup_rva_dwords( &imports[i].UnloadInformationTableRVA, delta, 1 );
+            if (!fixup_rva_dwords( &imports[i].DllNameRVA, delta, 1 ) ||
+                !fixup_rva_dwords( &imports[i].ModuleHandleRVA, delta, 1 ) ||
+                !fixup_rva_dwords( &imports[i].ImportAddressTableRVA, delta, 1 ) ||
+                !fixup_rva_dwords( &imports[i].ImportNameTableRVA, delta, 1 ) ||
+                !fixup_rva_dwords( &imports[i].BoundImportAddressTableRVA, delta, 1 ) ||
+                !fixup_rva_dwords( &imports[i].UnloadInformationTableRVA, delta, 1 ))
+                return STATUS_INVALID_IMAGE_FORMAT;
             if (!builtin_rva_string_fits_image( addr, nt->OptionalHeader.SizeOfImage,
                                                 imports[i].DllNameRVA ))
                 return STATUS_INVALID_IMAGE_FORMAT;

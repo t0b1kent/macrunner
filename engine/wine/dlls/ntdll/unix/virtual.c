@@ -2310,7 +2310,14 @@ static void *map_reserved_area( void *limit_low, void *limit_high, size_t size, 
 
             if (start >= limit_high) continue;
             if (end <= limit_low) return NULL;
-            if (start < limit_low) start = (void *)ROUND_SIZE( 0, limit_low, host_page_mask );
+            if (start < limit_low)
+            {
+                SIZE_T rounded_start;
+
+                if (!round_size_checked( 0, (SIZE_T)limit_low, host_page_mask, &rounded_start ))
+                    return NULL;
+                start = (void *)rounded_start;
+            }
             if (end > limit_high) end = ROUND_ADDR( limit_high, host_page_mask );
             ptr = find_reserved_free_area_outside_preloader( start, end, size, top_down, align_mask );
             if (ptr) break;
@@ -2325,7 +2332,14 @@ static void *map_reserved_area( void *limit_low, void *limit_high, size_t size, 
 
             if (start >= limit_high) return NULL;
             if (end <= limit_low) continue;
-            if (start < limit_low) start = (void *)ROUND_SIZE( 0, limit_low, host_page_mask );
+            if (start < limit_low)
+            {
+                SIZE_T rounded_start;
+
+                if (!round_size_checked( 0, (SIZE_T)limit_low, host_page_mask, &rounded_start ))
+                    return NULL;
+                start = (void *)rounded_start;
+            }
             if (end > limit_high) end = ROUND_ADDR( limit_high, host_page_mask );
             ptr = find_reserved_free_area_outside_preloader( start, end, size, top_down, align_mask );
             if (ptr) break;

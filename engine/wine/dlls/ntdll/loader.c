@@ -2015,6 +2015,20 @@ static char *macrunner_hb_file_rva_to_string( BYTE *data, SIZE_T size, IMAGE_SEC
     return NULL;
 }
 
+static IMAGE_SECTION_HEADER *macrunner_hb_disk_sections( BYTE *data, SIZE_T size, IMAGE_NT_HEADERS *nt )
+{
+    SIZE_T nt_offset, optional_offset, section_offset;
+
+    if ((BYTE *)nt < data) return NULL;
+    nt_offset = (BYTE *)nt - data;
+    if (nt_offset > size || offsetof( IMAGE_NT_HEADERS, OptionalHeader ) > size - nt_offset) return NULL;
+    optional_offset = nt_offset + offsetof( IMAGE_NT_HEADERS, OptionalHeader );
+    if (nt->FileHeader.SizeOfOptionalHeader > size - optional_offset) return NULL;
+    section_offset = optional_offset + nt->FileHeader.SizeOfOptionalHeader;
+    if (nt->FileHeader.NumberOfSections > (size - section_offset) / sizeof(IMAGE_SECTION_HEADER)) return NULL;
+    return (IMAGE_SECTION_HEADER *)(data + section_offset);
+}
+
 static void *macrunner_hb_find_disk_export_outside_section( WINE_MODREF *target_mod, const char *name,
                                                             const char *section )
 {
@@ -2059,15 +2073,14 @@ static void *macrunner_hb_find_disk_export_outside_section( WINE_MODREF *target_
 
     dos = (IMAGE_DOS_HEADER *)data;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto done_data;
-    if (dos->e_lfanew < 0 || size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
+    if (size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
         goto done_data;
     nt = (IMAGE_NT_HEADERS *)(data + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) goto done_data;
     if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) goto done_data;
     export_dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
     if (!export_dir->VirtualAddress) goto done_data;
-    sections = IMAGE_FIRST_SECTION( nt );
-    if ((BYTE *)(sections + nt->FileHeader.NumberOfSections) > data + size) goto done_data;
+    if (!(sections = macrunner_hb_disk_sections( data, size, nt ))) goto done_data;
 
     exports = macrunner_hb_file_rva_to_ptr( data, size, sections, nt->FileHeader.NumberOfSections,
                                             export_dir->VirtualAddress, sizeof(*exports) );
@@ -2190,7 +2203,7 @@ static void *macrunner_hb_find_disk_symbol_pointer_value( WINE_MODREF *target_mo
 
     dos = (IMAGE_DOS_HEADER *)data;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto done_data;
-    if (dos->e_lfanew < 0 || size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
+    if (size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
         goto done_data;
     nt = (IMAGE_NT_HEADERS *)(data + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) goto done_data;
@@ -2204,8 +2217,7 @@ static void *macrunner_hb_find_disk_symbol_pointer_value( WINE_MODREF *target_mo
         sizeof(DWORD) > size - nt->FileHeader.PointerToSymbolTable - symbol_bytes)
         goto done_data;
 
-    sections = IMAGE_FIRST_SECTION( nt );
-    if ((BYTE *)(sections + nt->FileHeader.NumberOfSections) > data + size) goto done_data;
+    if (!(sections = macrunner_hb_disk_sections( data, size, nt ))) goto done_data;
     symbols = (IMAGE_SYMBOL *)(data + nt->FileHeader.PointerToSymbolTable);
     strings = (const char *)(symbols + nt->FileHeader.NumberOfSymbols);
     strings_size = *(const DWORD *)strings;
@@ -2290,7 +2302,7 @@ static unsigned int macrunner_hb_sync_disk_symbol_pointer_aliases( WINE_MODREF *
 
     dos = (IMAGE_DOS_HEADER *)data;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto done_data;
-    if (dos->e_lfanew < 0 || size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
+    if (size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
         goto done_data;
     nt = (IMAGE_NT_HEADERS *)(data + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) goto done_data;
@@ -2304,8 +2316,7 @@ static unsigned int macrunner_hb_sync_disk_symbol_pointer_aliases( WINE_MODREF *
         sizeof(DWORD) > size - nt->FileHeader.PointerToSymbolTable - symbol_bytes)
         goto done_data;
 
-    sections = IMAGE_FIRST_SECTION( nt );
-    if ((BYTE *)(sections + nt->FileHeader.NumberOfSections) > data + size) goto done_data;
+    if (!(sections = macrunner_hb_disk_sections( data, size, nt ))) goto done_data;
     symbols = (IMAGE_SYMBOL *)(data + nt->FileHeader.PointerToSymbolTable);
     strings = (const char *)(symbols + nt->FileHeader.NumberOfSymbols);
     strings_size = *(const DWORD *)strings;
@@ -2429,14 +2440,13 @@ static DLLENTRYPROC macrunner_hb_find_disk_native_entry( WINE_MODREF *target_mod
 
     dos = (IMAGE_DOS_HEADER *)data;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto done_data;
-    if (dos->e_lfanew < 0 || size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
+    if (size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
         goto done_data;
     nt = (IMAGE_NT_HEADERS *)(data + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) goto done_data;
     if (nt->FileHeader.Machine != IMAGE_FILE_MACHINE_ARM64) goto done_data;
     if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) goto done_data;
-    sections = IMAGE_FIRST_SECTION( nt );
-    if ((BYTE *)(sections + nt->FileHeader.NumberOfSections) > data + size) goto done_data;
+    if (!(sections = macrunner_hb_disk_sections( data, size, nt ))) goto done_data;
     cfg = macrunner_hb_file_rva_to_ptr( data, size, sections, nt->FileHeader.NumberOfSections,
                                         nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].VirtualAddress,
                                         sizeof(*cfg) );

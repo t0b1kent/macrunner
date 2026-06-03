@@ -21,6 +21,35 @@ now-warm AOT cache** (run it 2–3 times so the cache warms across runs, then a 
 Also: DIRECT_MEM is still 0 — enable for safe paths and measure. Report blocks-per-wallclock and
 cache hit-rate before/after. Keep the JIT shift/SETcc flag correctness fix intact.
 
+**2026-06-03 wait-semantic verdict (Codex Lane A): `0x5158b4` is NOT a wait primitive.**
+Checkpoint commit made first as requested: `aa76fd5 checkpoint(lane-a): pass 0x14f180 barrier`.
+Fresh trace run:
+`reports/phase4-hollow-knight/run-20260603-100029-wait-semantic-5158b4-900/`
+(`MACRUNNER_HB_TRACE_WAIT_SEMANTIC=1`, heartbeat, wait budget `200000`, `run_rc=143`,
+`clean_rc=0`). Samples: 60s `blocks=0xba7b5 rva=0x184130` with HK at ~98% CPU; 300/600/900s
+freeze exactly at `blocks=0x1a8465 rva=0x5158b4`, CPU 0.0. Wait counters are unchanged from
+300s through 900s: `addr_wait_before=0`, `addr_wait_after=0`, `addr_wake=0`,
+`wait_before=25`, `wait_after=18`, `event_signal=10`, `event_create=6`.
+
+Disassembly maps `block_pc=0x87ef18c58b4` to `mono-2.0-bdwgc.dll` RVA `0x5158b4`, instruction
+`mov %al,(%rbx)` inside a byte-copy/assertion formatting loop, not `WaitOnAddress`,
+`WaitForSingleObject`, or any kernel wait thunk. The log then prints two Mono assertions:
+`mini-runtime.c:4657` and `threads.c:723`, both `Type System.RuntimeType has invalid vtable method
+slot 16 with method System.Reflection.MemberInfo:get_Name()`, followed by
+`macrunner-hb-runtime-fail` in `mono-2.0-bdwgc.dll` at `rva=0x1f71a3`, `reason=JIT helper fault`,
+`bytes=48 8b 07 ...`, `rdi=0`.
+
+Unmatched waits are only seven `AssetGarbageCollectorHelper` worker semaphores
+(`0x44,0x50,0x5c,0x68,0x74,0x80,0x8c`) from caller `0x87efcad7c92`; host sample
+`sample-hoststack-after300.txt` shows those helper threads parked in
+`macrunner_hb_try_kernel32_handle_semantic -> NtWaitForSingleObject -> server_wait`. These are idle
+workers after the main Mono init path has faulted, not the thread at `0x5158b4`, and no
+`SetEvent`/`ReleaseSemaphore` should target `0x5158b4` because there is no wait object there.
+NEXT remains the existing root: Mono init does not reach the worker/render signal condition because
+the RuntimeType vtable is already wrong. Prior branch proof points at Lane B-owned 16-bit
+`TEST`/Jcc semantics (`testw %cx,%cx; jne` with `ecx=0x01010000`, low 16 bits zero) causing the
+override store at `0xd4aa9` not to fire. Do not chase the wait layer for this gate.
+
 **2026-06-03 operator-corrected Lane A checkpoint: old `0x14f180`/`~0x9456f` gate is cleared; new
 gate is a hard park at `rva=0x5158b4`.** Fresh 900s samples from
 `reports/phase4-hollow-knight/run-20260603-livelock-settle900-clean-head/samples.tsv` climb

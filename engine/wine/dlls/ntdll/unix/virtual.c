@@ -7764,7 +7764,8 @@ NTSTATUS WINAPI NtResetWriteWatch( HANDLE process, PVOID base, SIZE_T size )
     NTSTATUS status = STATUS_SUCCESS;
     sigset_t sigset;
 
-    size = ROUND_SIZE( base, size, page_mask );
+    if (!round_size_checked( (UINT_PTR)base, size, page_mask, &size ))
+        return STATUS_INVALID_PARAMETER;
     base = ROUND_ADDR( base, page_mask );
 
     TRACE( "%p %p-%p\n", process, base, (char *)base + size );

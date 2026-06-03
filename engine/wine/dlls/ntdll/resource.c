@@ -382,8 +382,11 @@ static inline NTSTATUS access_resource( HMODULE hmod, const IMAGE_RESOURCE_DATA_
     __TRY
     {
         ULONG dirsize;
+        void *root;
 
-        if (!RtlImageDirectoryEntryToData( hmod, TRUE, IMAGE_DIRECTORY_ENTRY_RESOURCE, &dirsize ))
+        if (!(root = RtlImageDirectoryEntryToData( hmod, TRUE, IMAGE_DIRECTORY_ENTRY_RESOURCE, &dirsize )))
+            status = STATUS_RESOURCE_DATA_NOT_FOUND;
+        else if (!resource_contains( root, dirsize, entry, sizeof(*entry) ))
             status = STATUS_RESOURCE_DATA_NOT_FOUND;
         else
         {

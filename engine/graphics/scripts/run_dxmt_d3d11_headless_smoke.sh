@@ -19,8 +19,7 @@ APP_DIR="$PREFIX/drive_c/dxmt-smoke"
 OVERLAY_DIR="$PREFIX/dxmt-builtin-overlay"
 LOG_DIR="$PROJECT_ROOT/artifacts/dxmt-smoke-logs"
 LOG="$LOG_DIR/dx11-headless-${ARCH}.log"
-WINEBOOT_TIMEOUT_SECONDS="${WINEBOOT_TIMEOUT_SECONDS:-60}"
-TIMEOUT_BIN="${TIMEOUT_BIN:-$(command -v gtimeout || command -v timeout || true)}"
+SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-120}"
 POSTPROCESS_WINEMETAL_ONLY=false
 
 case "$DXMT_SMOKE_BIND_MODE" in
@@ -54,17 +53,6 @@ OVERLAY_MACHINE_DIR="$OVERLAY_DIR/$MACHINE_DIR"
 OVERLAY_UNIX_DIR="$OVERLAY_DIR/$UNIX_DIR"
 WINE_MACHINE_DIR="$WINE_DIST/lib/wine/$MACHINE_DIR"
 WINE_UNIX_DIR="$WINE_DIST/lib/wine/$UNIX_DIR"
-
-run_with_timeout() {
-  local timeout_seconds="$1"
-  shift
-
-  if [[ -n "$TIMEOUT_BIN" ]]; then
-    "$TIMEOUT_BIN" "$timeout_seconds" "$@"
-  else
-    "$@"
-  fi
-}
 
 ensure_build_tools
 ensure_llvm_mingw
@@ -118,7 +106,6 @@ fi
 
 mkdir -p "$PREFIX" "$LOG_DIR"
 WINEPREFIX="$PREFIX" "$WINESERVER" -k >/dev/null 2>&1 || true
-WINEPREFIX="$PREFIX" WINEDEBUG=-all run_with_timeout "$WINEBOOT_TIMEOUT_SECONDS" "$WINE" wineboot -u >/dev/null 2>&1 || true
 
 mkdir -p "$PREFIX_SYSTEM32" "$APP_DIR" "$OVERLAY_MACHINE_DIR" "$OVERLAY_UNIX_DIR"
 find "$OVERLAY_MACHINE_DIR" -mindepth 1 -maxdepth 1 -exec rm -f {} +
@@ -130,6 +117,7 @@ rm -f "$OVERLAY_UNIX_DIR/winemetal.so" \
   "$OVERLAY_MACHINE_DIR/winemetal.so" "$OVERLAY_MACHINE_DIR/winemetal.dll.so" \
   "$APP_DIR/winemetal.so" "$APP_DIR/winemetal.dll.so" \
   "$PREFIX_SYSTEM32/winemetal.so" "$PREFIX_SYSTEM32/winemetal.dll.so"
+mkdir -p "$PREFIX_SYSTEM32" "$APP_DIR" "$OVERLAY_MACHINE_DIR" "$OVERLAY_UNIX_DIR"
 cp -f "$D3D11_DLL" "$PREFIX_SYSTEM32/d3d11.dll"
 cp -f "$DXGI_DLL" "$PREFIX_SYSTEM32/dxgi.dll"
 cp -f "$WINEMETAL_DLL" "$PREFIX_SYSTEM32/winemetal.dll"
@@ -162,22 +150,19 @@ echo "log=$LOG"
 
 set +e
 (
-  cd "$APP_DIR"
-  # Keep build-tool environment out of the Wine process; it changes native DLL binding.
   env -i \
     HOME="$HOME" \
     USER="${USER:-}" \
     LOGNAME="${LOGNAME:-${USER:-}}" \
     PATH="$PATH" \
     TMPDIR="${TMPDIR:-/tmp}" \
-    WINEPREFIX="$PREFIX" \
     MACRUNNER_DXMT_ROOT="$OVERLAY_DIR" \
     WINEDLLOVERRIDES="$DXMT_SMOKE_DLL_OVERRIDES" \
     WINEDLLDIR0="$OVERLAY_DIR" \
     WINEDLLPATH="$OVERLAY_MACHINE_DIR:$OVERLAY_UNIX_DIR:$WINE_MACHINE_DIR:$WINE_UNIX_DIR" \
     WINESYSTEMDLLPATH="$OVERLAY_MACHINE_DIR" \
     WINEDEBUG="${WINEDEBUG_SMOKE:--all,+loaddll}" \
-    "$WINE" dx11_headless_smoke.exe
+    "$PROJECT_ROOT/scripts/mr-run.sh" "$WINE_DIST" "$APP_DIR/dx11_headless_smoke.exe" "$SMOKE_TIMEOUT_SECONDS"
 ) >"$LOG" 2>&1
 SMOKE_RC=$?
 set -e

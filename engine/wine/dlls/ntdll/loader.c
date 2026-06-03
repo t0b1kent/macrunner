@@ -8775,15 +8775,33 @@ static BOOL is_macos(void)
 void loader_init( CONTEXT *context, void **entry )
 {
     static int attach_done;
+    static unsigned int macrunner_trace_count;
     NTSTATUS status;
     ULONG_PTR cookie, port = 0;
     WINE_MODREF *wm;
+    unsigned int trace_index = macrunner_trace_count++;
+    BOOL trace_bootstrap = trace_index < 64 || macrunner_hb_trace_bootstrap();
 
+    if (trace_bootstrap)
+        MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=enter index=%u attach_done=%d imports=%d "
+                 "skip=%u context=%p entry_slot=%p entry=%p\n",
+                 trace_index, attach_done, imports_fixup_done, NtCurrentTeb()->SkipLoaderInit,
+                 context, entry, entry ? *entry : NULL );
     if (process_detaching) NtTerminateThread( GetCurrentThread(), 0 );
 
-    if (NtCurrentTeb()->SkipLoaderInit) return;
+    if (NtCurrentTeb()->SkipLoaderInit)
+    {
+        if (trace_bootstrap)
+            MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=skip-loader-init\n" );
+        return;
+    }
 
+    if (trace_bootstrap)
+        MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=before-loader-lock\n" );
     RtlEnterCriticalSection( &loader_section );
+    if (trace_bootstrap)
+        MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-loader-lock imports=%d\n",
+                 imports_fixup_done );
 
     if (!imports_fixup_done)
     {
@@ -8808,6 +8826,9 @@ void loader_init( CONTEXT *context, void **entry )
         }
 
         peb->ProcessHeap        = RtlCreateHeap( heap_flags, NULL, 0, 0, NULL, NULL );
+        if (trace_bootstrap)
+            MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-process-heap heap=%p flags=%lx\n",
+                     peb->ProcessHeap, heap_flags );
 
         RtlInitializeBitMap( &tls_bitmap, peb->TlsBitmapBits, sizeof(peb->TlsBitmapBits) * 8 );
         RtlInitializeBitMap( &tls_expansion_bitmap, peb->TlsExpansionBitmapBits,
@@ -8822,18 +8843,37 @@ void loader_init( CONTEXT *context, void **entry )
         for (i = 0; i < HASH_MAP_SIZE; i++)
             InitializeListHead( &hash_table[i] );
 
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=before-process-params\n" );
         init_user_process_params();
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-process-params\n" );
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=before-global-options\n" );
         load_global_options();
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-global-options\n" );
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=before-version-init\n" );
         version_init();
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-version-init\n" );
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=before-known-dll-dir\n" );
         open_known_dll_ntdir();
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-known-dll-dir\n" );
 
         default_load_path = peb->ProcessParameters->DllPath.Buffer;
         if (!default_load_path)
             get_dll_load_path( peb->ProcessParameters->ImagePathName.Buffer, NULL, dll_safe_mode, &default_load_path );
+        if (trace_bootstrap)
+            MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-default-load-path path=%s\n",
+                     debugstr_w(default_load_path) );
 
         if (NtCurrentTeb()->WowTebOffset) init_wow64( context );
+        if (trace_bootstrap)
+            MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-wow64-init wow_offset=%lx\n",
+                     NtCurrentTeb()->WowTebOffset );
 
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=before-build-main-module\n" );
         wm = build_main_module();
+        if (trace_bootstrap)
+            MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-build-main-module wm=%p base=%p entry=%p flags=%lx\n",
+                     wm, wm ? wm->ldr.DllBase : NULL, wm ? wm->ldr.EntryPoint : NULL,
+                     wm ? wm->ldr.Flags : 0 );
         if (macrunner_hb_amd64_main_on_arm64 && wm && wm->ldr.EntryPoint && entry)
         {
             if (macrunner_hb_trace_bootstrap())
@@ -8846,19 +8886,31 @@ void loader_init( CONTEXT *context, void **entry )
                          (void *)context->Pc, (void *)context->X0, (void *)context->X1, *entry );
 #endif
         }
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=before-build-ntdll-module\n" );
         build_ntdll_module();
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-build-ntdll-module\n" );
 #ifdef __arm64ec__
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=before-load-arm64ec-module\n" );
         load_arm64ec_module();
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-load-arm64ec-module\n" );
         update_load_config( wm->ldr.DllBase );
 #elif defined(__aarch64__)
+        if (trace_bootstrap)
+            MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=before-load-arm64ec-module-if-needed amd64_main=%u\n",
+                     macrunner_hb_amd64_main_on_arm64 );
         if (macrunner_hb_amd64_main_on_arm64) load_arm64ec_module();
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-load-arm64ec-module-if-needed\n" );
 #endif
 
+        if (trace_bootstrap) MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=before-load-kernel32\n" );
         if ((status = load_dll( NULL, L"kernel32.dll", 0, &kernel32, FALSE )) != STATUS_SUCCESS)
         {
             MESSAGE( "wine: could not load kernel32.dll, status %lx\n", status );
             NtTerminateProcess( GetCurrentProcess(), status );
         }
+        if (trace_bootstrap)
+            MESSAGE( "macrunner-hb-bootstrap-loader-init: phase=after-load-kernel32 kernel32=%p base=%p\n",
+                     kernel32, kernel32 ? kernel32->ldr.DllBase : NULL );
         node_kernel32 = kernel32->ldr.DdagNode;
         pBaseThreadInitThunk = RtlFindExportedRoutineByName( kernel32->ldr.DllBase, "BaseThreadInitThunk" );
         LdrGetProcedureAddress( kernel32->ldr.DllBase, &ctrl_routine, 0, (void **)&pCtrlRoutine );

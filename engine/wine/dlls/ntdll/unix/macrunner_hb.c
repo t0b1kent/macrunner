@@ -1295,6 +1295,85 @@ static uint64_t macrunner_hb_trace_stack_address( hb_context_t *ctx, unsigned in
     return value;
 }
 
+static void macrunner_hb_trace_host_bytes_once(void)
+{
+    enum { max_host_byte_addrs = 24 };
+    static int parsed;
+    static uint64_t addrs[max_host_byte_addrs];
+    static unsigned char dumped[max_host_byte_addrs];
+    static unsigned int addr_count;
+    static size_t len;
+    MEMORY_BASIC_INFORMATION info;
+    SIZE_T result = 0;
+    BYTE bytes[256];
+    ULONG protect;
+    NTSTATUS status;
+    const char *env;
+
+    if (!parsed)
+    {
+        env = getenv( "MACRUNNER_HB_TRACE_HOST_BYTES_ADDRS" );
+        if (env && *env)
+        {
+            const char *p = env;
+
+            while (*p && addr_count < max_host_byte_addrs)
+            {
+                char *end;
+                uint64_t addr = strtoull( p, &end, 0 );
+
+                if (end == p)
+                {
+                    p++;
+                    continue;
+                }
+                if (addr) addrs[addr_count++] = addr;
+                p = end;
+                while (*p == ',' || *p == ';' || *p == ' ' || *p == '\t' || *p == '\n') p++;
+            }
+        }
+        if (!addr_count)
+        {
+            env = getenv( "MACRUNNER_HB_TRACE_HOST_BYTES_ADDR" );
+            if (env && *env) addrs[addr_count++] = strtoull( env, NULL, 0 );
+        }
+        env = getenv( "MACRUNNER_HB_TRACE_HOST_BYTES_LEN" );
+        len = env && *env ? strtoul( env, NULL, 0 ) : 64;
+        if (len > sizeof(bytes)) len = sizeof(bytes);
+        parsed = 1;
+    }
+    if (!addr_count || !len) return;
+
+    for (unsigned int index = 0; index < addr_count; index++)
+    {
+        uint64_t addr = addrs[index];
+        size_t dump_len = len;
+
+        if (!addr || dumped[index]) continue;
+
+        status = NtQueryVirtualMemory( NtCurrentProcess(), (const void *)(uintptr_t)addr,
+                                       MemoryBasicInformation, &info, sizeof(info), &result );
+        if (status || info.State != MEM_COMMIT) continue;
+        protect = info.Protect & 0xff;
+        if ((info.Protect & PAGE_GUARD) || protect == PAGE_NOACCESS || protect == PAGE_EXECUTE) continue;
+
+        if ((char *)(uintptr_t)addr + dump_len > (char *)info.BaseAddress + info.RegionSize)
+            dump_len = (char *)info.BaseAddress + info.RegionSize - (char *)(uintptr_t)addr;
+        if (!dump_len) continue;
+
+        memcpy( bytes, (const void *)(uintptr_t)addr, dump_len );
+        fprintf( stderr, "macrunner-hb-host-bytes: index=%u addr=%p len=%zu region_base=%p "
+                 "region_size=%#zx protect=%#lx bytes=",
+                 index, (void *)(uintptr_t)addr, dump_len, info.BaseAddress,
+                 (size_t)info.RegionSize, (unsigned long)info.Protect );
+        for (size_t i = 0; i < dump_len; i++)
+            fprintf( stderr, "%s%02x", i ? " " : "", bytes[i] );
+        fprintf( stderr, "\n" );
+        fflush( stderr );
+        dumped[index] = 1;
+    }
+}
+
 static void macrunner_hb_trace_special_vm_fault( const char *op, hb_gva_t original,
                                                  mach_vm_address_t cur, size_t remaining,
                                                  kern_return_t kr, mach_vm_address_t region,
@@ -17334,6 +17413,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                          (void *)(uintptr_t)ctx->regs.x64.rsi,
                          (void *)(uintptr_t)ctx->regs.x64.rdi );
                 fflush( stderr );
+                macrunner_hb_trace_host_bytes_once();
                 heartbeat_last_us = now_us ? now_us : heartbeat_last_us;
                 heartbeat_next_block = blocks + 1000;
             }

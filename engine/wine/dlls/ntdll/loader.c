@@ -5009,9 +5009,12 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
                          debugstr_w(wm->ldr.BaseDllName.Buffer), entry, reason_names[reason], module );
             if (macrunner_hb_trace_bootstrap() && wm->ldr.BaseDllName.Buffer &&
                 !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemetal.dll" ))
+            {
+                void **ref50d8 = image_rva_range( module, 0x50d8, sizeof(*ref50d8) );
+
                 MESSAGE( "macrunner-hb-bootstrap-reloc-probe: module=%s ref50d8=%p\n",
-                         debugstr_w(wm->ldr.BaseDllName.Buffer),
-                         *(void **)((char *)module + 0x50d8) );
+                         debugstr_w(wm->ldr.BaseDllName.Buffer), ref50d8 ? *ref50d8 : NULL );
+            }
             status = WINE_UNIX_CALL( unix_macrunner_hb_x64_dll_entry, &params );
             retv = params.ret;
             if (macrunner_hb_trace_bootstrap())

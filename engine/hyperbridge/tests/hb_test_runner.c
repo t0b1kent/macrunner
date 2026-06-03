@@ -5228,6 +5228,47 @@ TEST(decode_x64_alu_operand16_family) {
     tests_passed++;
 }
 
+TEST(decode_x64_test_operand16_family) {
+    hb_decoded_t d;
+
+    uint8_t test_cx_cx[] = {0x66, 0x85, 0xc9}; /* test %cx, %cx */
+    ASSERT(hb_decode_x64(test_cx_cx, sizeof(test_cx_cx), 0x140408cf8ULL, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST);
+    ASSERT(d.len == 3);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 2);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RCX && d.op2.size == 2);
+
+    uint8_t test_ecx_ecx[] = {0x85, 0xc9}; /* test %ecx, %ecx */
+    ASSERT(hb_decode_x64(test_ecx_ecx, sizeof(test_ecx_ecx), 0x140408cf8ULL, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST);
+    ASSERT(d.len == 2);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 4);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RCX && d.op2.size == 4);
+
+    uint8_t test_rcx_rcx[] = {0x48, 0x85, 0xc9}; /* test %rcx, %rcx */
+    ASSERT(hb_decode_x64(test_rcx_rcx, sizeof(test_rcx_rcx), 0x140408cf8ULL, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST);
+    ASSERT(d.len == 3);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 8);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RCX && d.op2.size == 8);
+
+    uint8_t test_cx_imm16[] = {0x66, 0xf7, 0xc1, 0x34, 0x12}; /* test $0x1234, %cx */
+    ASSERT(hb_decode_x64(test_cx_imm16, sizeof(test_cx_imm16), 0x140408cf8ULL, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST);
+    ASSERT(d.len == 5);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 2);
+    ASSERT(d.op2.is_imm && d.op2.size == 2 && (uint16_t)d.op2.imm == 0x1234U);
+
+    uint8_t test_cl_imm8[] = {0xf6, 0xc1, 0x7f}; /* test $0x7f, %cl */
+    ASSERT(hb_decode_x64(test_cl_imm8, sizeof(test_cl_imm8), 0x140408cf8ULL, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST);
+    ASSERT(d.len == 3);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 1);
+    ASSERT(d.op2.is_imm && d.op2.size == 1 && (uint8_t)d.op2.imm == 0x7fU);
+
+    tests_passed++;
+}
+
 TEST(interp_x64_cmp_word_mem_reg_notepadpp_je_taken) {
     uint8_t code[] = {
         0x66, 0x41, 0x39, 0x28,             /* cmp %bp, (%r8) */
@@ -13299,6 +13340,64 @@ TEST(jit_x64_native_scalar_test32_zero_flags) {
 
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_test_rm_reg_operand16_jne_uses_low16) {
+    struct {
+        const uint8_t* code;
+        size_t len;
+        uint64_t base;
+        uint64_t expected_rax;
+    } cases[] = {
+        {
+            (const uint8_t[]){
+                0x66, 0x85, 0xc9,       /* test %cx, %cx */
+                0x75, 0x07,             /* jne taken */
+                0xb8, 0x22, 0, 0, 0,    /* mov $0x22, %eax */
+                0xeb, 0x05,             /* jmp done */
+                0xb8, 0x99, 0, 0, 0     /* taken: mov $0x99, %eax */
+            },
+            17, 0x6d1000, 0x22
+        },
+        {
+            (const uint8_t[]){
+                0x85, 0xc9,             /* test %ecx, %ecx */
+                0x75, 0x07,             /* jne taken */
+                0xb8, 0x22, 0, 0, 0,    /* mov $0x22, %eax */
+                0xeb, 0x05,             /* jmp done */
+                0xb8, 0x99, 0, 0, 0     /* taken: mov $0x99, %eax */
+            },
+            16, 0x6d2000, 0x99
+        }
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, cases[i].code, cases[i].len, cases[i].base);
+        hb_ir_func_t* func = NULL;
+        ASSERT(dec != NULL);
+        ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+        hb_decoder_destroy(dec);
+        ASSERT(func != NULL);
+
+        hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+        ASSERT(ctx != NULL);
+        ctx->memory = hb_memory_create(0);
+        ASSERT(ctx->memory != NULL);
+        ctx->pc = cases[i].base;
+        ctx->regs.x64.rip = cases[i].base;
+        ctx->regs.x64.rcx = 0x01010000ULL;
+
+        hb_exec_result_t out;
+        ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+        ASSERT(out.result == HB_OK);
+        ASSERT(ctx->regs.x64.rax == cases[i].expected_rax);
+        ASSERT(ctx->pc == cases[i].base + cases[i].len);
+
+        hb_context_destroy(ctx);
+        hb_ir_func_destroy(func);
+    }
+
     tests_passed++;
 }
 
@@ -23352,6 +23451,7 @@ int main(int argc, char** argv) {
     test_interp_x64_neg_mem32_notepadpp_pointer_math();
     test_decode_x64_cmp_operand16_notepadpp_mode_parser();
     test_decode_x64_alu_operand16_family();
+    test_decode_x64_test_operand16_family();
     test_interp_x64_cmp_word_mem_reg_notepadpp_je_taken();
     test_interp_x64_cmp_word_mem_reg_notepadpp_je_not_taken();
     test_decode_x64_fe_byte_inc_dec_family();
@@ -23393,6 +23493,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_scalar_add8_partial_flags();
     test_jit_x64_native_scalar_sub64_flags();
     test_jit_x64_native_scalar_test32_zero_flags();
+    test_jit_x64_test_rm_reg_operand16_jne_uses_low16();
     test_jit_x64_native_scalar_sub_jcc_pair_taken();
     test_jit_x64_native_scalar_test_jcc_pair_taken();
     test_jit_x64_native_copy_scan_body_fallthrough();

@@ -47,6 +47,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Unity optional BC probes | PASS | `BC1_UNORM`, `BC3_UNORM`, and `BC7_UNORM` report Texture2D + shader-sample support. |
 | Unity feature probes | PASS | `THREADING`, `D3D11_OPTIONS`, `ARCHITECTURE_INFO`, `DOUBLES`, `D3D10_X_HARDWARE_OPTIONS`, and MSAA quality matrix all return `hr=0x00000000`; sampled formats support 1/2/4x and report 0 quality for 8x on this Metal device. |
 | Unity resource probes | PASS | Color texture + SRV/RTV/update/copy/readback, dynamic vertex buffer map, immutable constant buffer, depth DSV, R32_UINT UAV, 3D texture SRV, cubemap SRV, and structured buffer SRV/UAV all return success. |
+| Depth format family probe | PASS | Resource smoke creates DSVs and clears `D24_UNORM_S8_UINT`, `D16_UNORM`, `D32_FLOAT`, `D32_FLOAT_S8X24_UINT`, plus typeless `R24G8_TYPELESS` with DSV/SRV views. |
 | Unity shader/draw probes | PASS | Dynamic `d3dcompiler_47` load, VS/PS/GS compile, GS stream-output creation, shader creation, input layout with per-instance slot, vertex/index/instance/indirect/SO buffers, fullscreen draw, texture-sample draw, present, stream-output readback, and green-pixel readback pass. |
 | Unity shader corpus probe | PASS | `UnityShaderCorpusProbe` compiles/creates `vs_vertex_id`, `vs_instance_matrix`, `ps_texture_array_clip`, `ps_derivative_frontface`, and `cs_texture_intrinsics`; this also covers DXBC `UNDEFINED` interpolation as flat for system-value inputs. |
 | Hollow Knight DXBC corpus smoke | PASS | `engine/graphics/scripts/run_hk_dxbc_airconv_corpus_smoke.sh aarch64` extracted 24 standalone DXBC containers from Unity default resources and translated all 24 through native `airconv -S`; HK `resources.assets`, `sharedassets0.assets`, and `globalgamemanagers.assets` contain DXBC markers but need Unity asset-aware extraction before they count as real-game shader corpus coverage. |
@@ -96,7 +97,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | `R16G16B16A16_FLOAT` | Implemented | Mapped and marked backbuffer-capable. |
 | 16/32-bit float/int scalar/vector | Implemented | Generic mappings plus Metal capability inspector. |
 | BC1-BC7 | Partial | Mapped when Metal device reports BC texture compression. |
-| D16/D24S8/D32/D32S8 | Partial | D24 is emulated over Depth32Float_Stencil8. |
+| D16/D24S8/D32/D32S8 | Implemented | Smoke creates textures/DSVs and clears `D16_UNORM`, `D24_UNORM_S8_UINT`, `D32_FLOAT`, and `D32_FLOAT_S8X24_UINT`; D24 remains internally emulated over Depth32Float_Stencil8. |
 | YUV 4:2:2 | Partial | GBGR/BGRG mapped as filter-capable only. |
 | MSAA | Partial | `R8G8B8A8`, `B8G8R8A8`, and `R16G16B16A16_FLOAT` report 1/2/4x quality=1 and 8x quality=0; smoke covers 4x color/depth render, resolve, and readback. |
 | `CheckFormatSupport` | Implemented | Computes D3D11 flags from `MTLQueryDXGIFormat` and capability bits. |

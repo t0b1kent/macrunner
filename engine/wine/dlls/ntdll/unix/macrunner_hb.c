@@ -11913,9 +11913,16 @@ static NTSTATUS macrunner_hb_critical_section_delete( RTL_CRITICAL_SECTION *cs )
 static NTSTATUS macrunner_hb_critical_section_enter( RTL_CRITICAL_SECTION *cs )
 {
     HANDLE tid = ULongToHandle( GetCurrentThreadId() );
+    BOOL trace = macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CRITICAL_SECTION" );
     ULONG count;
 
     if (!cs) return STATUS_INVALID_PARAMETER;
+
+    if (trace)
+        fprintf( stderr, "macrunner-hb-critical-section: phase=enter-start cs=%p tid=%p "
+                 "lock=%ld recursion=%ld owner=%p sem=%p spin=%lx\n",
+                 cs, tid, (long)cs->LockCount, (long)cs->RecursionCount, cs->OwningThread,
+                 cs->LockSemaphore, cs->SpinCount );
 
     if (cs->SpinCount)
     {
@@ -11939,6 +11946,11 @@ static NTSTATUS macrunner_hb_critical_section_enter( RTL_CRITICAL_SECTION *cs )
         if (cs->OwningThread == tid)
         {
             cs->RecursionCount++;
+            if (trace)
+                fprintf( stderr, "macrunner-hb-critical-section: phase=enter-recursive cs=%p tid=%p "
+                         "lock=%ld recursion=%ld owner=%p sem=%p\n",
+                         cs, tid, (long)cs->LockCount, (long)cs->RecursionCount, cs->OwningThread,
+                         cs->LockSemaphore );
             return STATUS_SUCCESS;
         }
 
@@ -11947,6 +11959,14 @@ static NTSTATUS macrunner_hb_critical_section_enter( RTL_CRITICAL_SECTION *cs )
         {
             InterlockedDecrement( &cs->LockCount );
             return STATUS_NO_MEMORY;
+        }
+        if (trace)
+        {
+            fprintf( stderr, "macrunner-hb-critical-section: phase=enter-wait cs=%p tid=%p "
+                     "lock=%ld recursion=%ld owner=%p sem=%p spin=%lx\n",
+                     cs, tid, (long)cs->LockCount, (long)cs->RecursionCount, cs->OwningThread,
+                     sem, cs->SpinCount );
+            fflush( stderr );
         }
         status = NtWaitForSingleObject( sem, FALSE, NULL );
         if (status)
@@ -11959,6 +11979,11 @@ static NTSTATUS macrunner_hb_critical_section_enter( RTL_CRITICAL_SECTION *cs )
 acquired:
     cs->OwningThread = tid;
     cs->RecursionCount = 1;
+    if (trace)
+        fprintf( stderr, "macrunner-hb-critical-section: phase=enter-acquired cs=%p tid=%p "
+                 "lock=%ld recursion=%ld owner=%p sem=%p\n",
+                 cs, tid, (long)cs->LockCount, (long)cs->RecursionCount, cs->OwningThread,
+                 cs->LockSemaphore );
     return STATUS_SUCCESS;
 }
 
@@ -11984,11 +12009,24 @@ static BOOL macrunner_hb_critical_section_try_enter( RTL_CRITICAL_SECTION *cs )
 
 static NTSTATUS macrunner_hb_critical_section_leave( RTL_CRITICAL_SECTION *cs )
 {
+    BOOL trace = macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CRITICAL_SECTION" );
+
     if (!cs) return STATUS_INVALID_PARAMETER;
+
+    if (trace)
+        fprintf( stderr, "macrunner-hb-critical-section: phase=leave-start cs=%p tid=%p "
+                 "lock=%ld recursion=%ld owner=%p sem=%p\n",
+                 cs, ULongToHandle( GetCurrentThreadId() ), (long)cs->LockCount,
+                 (long)cs->RecursionCount, cs->OwningThread, cs->LockSemaphore );
 
     if (--cs->RecursionCount)
     {
         if (cs->RecursionCount > 0) InterlockedDecrement( &cs->LockCount );
+        if (trace)
+            fprintf( stderr, "macrunner-hb-critical-section: phase=leave-recursive cs=%p "
+                     "lock=%ld recursion=%ld owner=%p sem=%p\n",
+                     cs, (long)cs->LockCount, (long)cs->RecursionCount, cs->OwningThread,
+                     cs->LockSemaphore );
         return STATUS_SUCCESS;
     }
 
@@ -11997,8 +12035,17 @@ static NTSTATUS macrunner_hb_critical_section_leave( RTL_CRITICAL_SECTION *cs )
     {
         HANDLE sem = macrunner_hb_critical_section_semaphore( cs );
         if (!sem) return STATUS_NO_MEMORY;
+        if (trace)
+            fprintf( stderr, "macrunner-hb-critical-section: phase=leave-release cs=%p "
+                     "lock=%ld recursion=%ld owner=%p sem=%p\n",
+                     cs, (long)cs->LockCount, (long)cs->RecursionCount, cs->OwningThread, sem );
         return NtReleaseSemaphore( sem, 1, NULL );
     }
+    if (trace)
+        fprintf( stderr, "macrunner-hb-critical-section: phase=leave-free cs=%p "
+                 "lock=%ld recursion=%ld owner=%p sem=%p\n",
+                 cs, (long)cs->LockCount, (long)cs->RecursionCount, cs->OwningThread,
+                 cs->LockSemaphore );
     return STATUS_SUCCESS;
 }
 

@@ -5862,6 +5862,7 @@ static ULONG read_image_directory( HANDLE file, const SECTION_IMAGE_INFORMATION 
     IMAGE_SECTION_HEADER *sec;
     unsigned int i, count;
     DWORD va, size;
+    SIZE_T section_bytes, read_size;
     union
     {
         IMAGE_NT_HEADERS32 nt32;
@@ -5872,6 +5873,7 @@ static ULONG read_image_directory( HANDLE file, const SECTION_IMAGE_INFORMATION 
     if (NtReadFile( file, 0, NULL, NULL, &io, &mz, sizeof(mz), &offset, NULL )) return 0;
     if (io.Information != sizeof(mz)) return 0;
     if (mz.e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    if (mz.e_lfanew < 0) return 0;
     offset.QuadPart = mz.e_lfanew;
     if (NtReadFile( file, 0, NULL, NULL, &io, &nt, sizeof(nt), &offset, NULL )) return 0;
     if (io.Information != sizeof(nt)) return 0;
@@ -5880,10 +5882,12 @@ static ULONG read_image_directory( HANDLE file, const SECTION_IMAGE_INFORMATION 
     switch (nt.nt32.OptionalHeader.Magic)
     {
     case IMAGE_NT_OPTIONAL_HDR32_MAGIC:
+        if (dir >= nt.nt32.OptionalHeader.NumberOfRvaAndSizes) return 0;
         va = nt.nt32.OptionalHeader.DataDirectory[dir].VirtualAddress;
         size = nt.nt32.OptionalHeader.DataDirectory[dir].Size;
         break;
     case IMAGE_NT_OPTIONAL_HDR64_MAGIC:
+        if (dir >= nt.nt64.OptionalHeader.NumberOfRvaAndSizes) return 0;
         va = nt.nt64.OptionalHeader.DataDirectory[dir].VirtualAddress;
         size = nt.nt64.OptionalHeader.DataDirectory[dir].Size;
         break;
@@ -5893,15 +5897,22 @@ static ULONG read_image_directory( HANDLE file, const SECTION_IMAGE_INFORMATION 
     if (!va) return 0;
     offset.QuadPart += offsetof( IMAGE_NT_HEADERS32, OptionalHeader ) + nt.nt32.FileHeader.SizeOfOptionalHeader;
     count = nt.nt32.FileHeader.NumberOfSections;
-    if (!(sec = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(*sec) * count ))) return 0;
-    if (NtReadFile( file, 0, NULL, NULL, &io, sec, count * sizeof(*sec), &offset, NULL )) goto done;
-    if (io.Information != count * sizeof(*sec)) goto done;
+    if (!count || count > (SIZE_T)-1 / sizeof(*sec)) return 0;
+    section_bytes = (SIZE_T)count * sizeof(*sec);
+    if (!(sec = RtlAllocateHeap( GetProcessHeap(), 0, section_bytes ))) return 0;
+    if (NtReadFile( file, 0, NULL, NULL, &io, sec, section_bytes, &offset, NULL )) goto done;
+    if (io.Information != section_bytes) goto done;
+    read_size = min( maxlen, size );
     for (i = 0; i < count; i++)
     {
+        DWORD delta;
+
         if (va < sec[i].VirtualAddress) continue;
-        if (sec[i].Misc.VirtualSize && va - sec[i].VirtualAddress >= sec[i].Misc.VirtualSize) continue;
-        offset.QuadPart = sec[i].PointerToRawData + va - sec[i].VirtualAddress;
-        if (NtReadFile( file, 0, NULL, NULL, &io, buffer, min( maxlen, size ), &offset, NULL )) goto done;
+        delta = va - sec[i].VirtualAddress;
+        if (sec[i].Misc.VirtualSize && delta >= sec[i].Misc.VirtualSize) continue;
+        if (delta >= sec[i].SizeOfRawData || read_size > sec[i].SizeOfRawData - delta) continue;
+        offset.QuadPart = (ULONGLONG)sec[i].PointerToRawData + delta;
+        if (NtReadFile( file, 0, NULL, NULL, &io, buffer, read_size, &offset, NULL )) goto done;
         RtlFreeHeap( GetProcessHeap(), 0, sec );
         return io.Information;
     }

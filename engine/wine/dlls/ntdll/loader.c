@@ -5318,6 +5318,17 @@ static void update_load_config( void *module )
 }
 
 
+static BOOL image_section_raw_range_fits( const IMAGE_SECTION_HEADER *sec, SIZE_T image_size,
+                                          SIZE_T *size )
+{
+    SIZE_T rva = sec->VirtualAddress;
+
+    *size = sec->SizeOfRawData;
+    if (!*size) return TRUE;
+    return rva < image_size && *size <= image_size - rva;
+}
+
+
 static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T len )
 {
     char *base;
@@ -5364,9 +5375,18 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
     sec = IMAGE_FIRST_SECTION( nt );
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
-        void *addr = get_rva( module, sec[i].VirtualAddress );
-        SIZE_T size = sec[i].SizeOfRawData;
+        void *addr;
+        SIZE_T size;
+
+        if (!image_section_raw_range_fits( &sec[i], len, &size ))
+        {
+            WARN( "invalid relocation section %lu va %lx raw size %lx image size %Iu\n",
+                  i, sec[i].VirtualAddress, sec[i].SizeOfRawData, len );
+            status = STATUS_INVALID_IMAGE_FORMAT;
+            goto done;
+        }
         if (!size) continue;
+        addr = get_rva( module, sec[i].VirtualAddress );
         status = NtProtectVirtualMemory( NtCurrentProcess(), &addr,
                                          &size, PAGE_READWRITE, &protect_old[i] );
         if (status)
@@ -5419,10 +5439,16 @@ done:
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
         NTSTATUS restore_status;
-        void *addr = get_rva( module, sec[i].VirtualAddress );
-        SIZE_T size = sec[i].SizeOfRawData;
+        void *addr;
+        SIZE_T size;
 
         if (!protect_old[i]) continue;
+        if (!image_section_raw_range_fits( &sec[i], len, &size ))
+        {
+            if (!status) status = STATUS_INVALID_IMAGE_FORMAT;
+            continue;
+        }
+        addr = get_rva( module, sec[i].VirtualAddress );
         restore_status = NtProtectVirtualMemory( NtCurrentProcess(), &addr,
                                                  &size, protect_old[i], &protect_old[i] );
         if (restore_status)

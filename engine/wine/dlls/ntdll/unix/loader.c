@@ -444,14 +444,16 @@ static WORD get_alt_machine( WORD machine )
 __attribute__((visibility("default")))
 void prepend_dll_path(const char *path)
 {
-    unsigned int i, count;
+    size_t i, count;
     const char **new_dll_paths;
     size_t path_len = strlen(path);
 
     for (count = 0; dll_paths[count]; count++)
         ;
 
-    if (!(new_dll_paths = calloc(count + 2, sizeof(char *))))
+    if (count > ~(size_t)0 / sizeof(*new_dll_paths) - 2)
+        fatal_error( "too many DLL search paths\n" );
+    if (!(new_dll_paths = calloc(count + 2, sizeof(*new_dll_paths))))
         fatal_error( "out of memory setting DLL search path\n" );
     new_dll_paths[0] = path;
     for (i = 0; dll_paths[i]; i++)
@@ -466,10 +468,12 @@ void prepend_dll_path(const char *path)
 static void set_dll_path(void)
 {
     char *p, *path = getenv( "WINEDLLPATH" );
-    int i, count = 0;
+    size_t i, count = 0;
 
     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
 
+    if (count > ~(size_t)0 / sizeof(*dll_paths) - 2)
+        fatal_error( "too many DLL search paths\n" );
     if (!(dll_paths = malloc( (count + 2) * sizeof(*dll_paths) )))
         fatal_error( "out of memory setting DLL search path\n" );
     count = 0;
@@ -496,10 +500,12 @@ static void set_dll_path(void)
 static void set_system_dll_path(void)
 {
     const char *p, *path = SYSTEMDLLPATH;
-    int count = 0;
+    size_t count = 0;
 
     if (path && *path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
 
+    if (count > ~(size_t)0 / sizeof(*system_dll_paths) - 1)
+        fatal_error( "too many system DLL search paths\n" );
     if (!(system_dll_paths = malloc( (count + 1) * sizeof(*system_dll_paths) )))
         fatal_error( "out of memory setting system DLL search path\n" );
     count = 0;

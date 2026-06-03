@@ -27,6 +27,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -3210,6 +3211,14 @@ static void alloc_arm64ec_map(void)
     peb->EcCodeBitMap = arm64ec_view->base;
 }
 
+static BOOL arm64ec_rva_array_fits_view( const struct file_view *view, ULONG rva, ULONG count,
+                                          size_t elem_size )
+{
+    if (!count) return TRUE;
+    if (!rva || view->size < elem_size || rva > view->size - elem_size) return FALSE;
+    return count <= (view->size - rva) / elem_size;
+}
+
 
 /***********************************************************************
  *           update_arm64ec_ranges
@@ -3221,17 +3230,32 @@ static void update_arm64ec_ranges( struct file_view *view, IMAGE_NT_HEADERS *nt,
     const IMAGE_CHPE_RANGE_ENTRY *map;
     char *base = view->base;
     const IMAGE_LOAD_CONFIG_DIRECTORY *cfg = (void *)(base + dir->VirtualAddress);
+    ULONGLONG metadata_va, metadata_rva;
     ULONG i, size;
 
     if (dir->Size < sizeof(cfg->Size)) return;
     size = min( dir->Size, cfg->Size );
-    if (size <= offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, CHPEMetadataPointer )) return;
-    if (!cfg->CHPEMetadataPointer) return;
+    if (size < offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, CHPEMetadataPointer ) +
+               sizeof(cfg->CHPEMetadataPointer)) return;
+    metadata_va = cfg->CHPEMetadataPointer;
+    if (!metadata_va || metadata_va < nt->OptionalHeader.ImageBase) return;
+    metadata_rva = metadata_va - nt->OptionalHeader.ImageBase;
+    if (view->size < sizeof(*metadata) || metadata_rva > view->size - sizeof(*metadata)) return;
+    metadata = (void *)(base + metadata_rva);
+    if (metadata->RedirectionMetadataCount > INT_MAX) return;
+    if (!arm64ec_rva_array_fits_view( view, metadata->RedirectionMetadata,
+                                      metadata->RedirectionMetadataCount,
+                                      sizeof(IMAGE_ARM64EC_REDIRECTION_ENTRY) ))
+        return;
     if (!arm64ec_view) alloc_arm64ec_map();
     commit_arm64ec_map( view );
-    metadata = (void *)(base + (cfg->CHPEMetadataPointer - nt->OptionalHeader.ImageBase));
-    *entry_point = redirect_arm64ec_rva( base, nt->OptionalHeader.AddressOfEntryPoint, metadata );
-    if (!metadata->CodeMap) return;
+    *entry_point = metadata->RedirectionMetadataCount
+                   ? redirect_arm64ec_rva( base, nt->OptionalHeader.AddressOfEntryPoint, metadata )
+                   : nt->OptionalHeader.AddressOfEntryPoint;
+    if (!metadata->CodeMap || !metadata->CodeMapCount) return;
+    if (!arm64ec_rva_array_fits_view( view, metadata->CodeMap, metadata->CodeMapCount,
+                                      sizeof(*map) ))
+        return;
     map = (void *)(base + metadata->CodeMap);
 
     for (i = 0; i < metadata->CodeMapCount; i++)

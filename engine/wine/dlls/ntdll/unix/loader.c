@@ -2948,7 +2948,8 @@ static void start_main_thread(void)
         void *cxcompatdb = NULL;
         char *name = NULL;
 
-        asprintf( &name, "%s/cxcompatdb.so", ntdll_dir );
+        if (asprintf( &name, "%s/cxcompatdb.so", ntdll_dir ) < 0)
+            fatal_error( "out of memory loading cxcompatdb.so\n" );
         if (name)
         {
             if (!access( name, R_OK ))

@@ -1752,7 +1752,9 @@ static BOOL remove_reserved_area( void *addr, size_t size )
         if ((char *)view->base + view->size <= (char *)addr) continue;
         if (view->base > addr) munmap( addr, (char *)view->base - (char *)addr );
         if ((char *)view->base + view->size > (char *)addr + size) return TRUE;
-        view_size = ROUND_SIZE( view->base, view->size, host_page_mask );
+        if (!round_size_checked( (UINT_PTR)view->base, view->size, host_page_mask, &view_size ) ||
+            view_size > ~(SIZE_T)0 - (SIZE_T)view->base)
+            return FALSE;
         size = (char *)addr + size - ((char *)view->base + view_size);
         addr = (char *)view->base + view_size;
     }
@@ -1773,7 +1775,12 @@ static void unmap_area( void *start, size_t size )
     void *end;
 
     assert( !((UINT_PTR)start & host_page_mask) );
-    size = ROUND_SIZE( 0, size, host_page_mask );
+    if (!round_size_checked( 0, size, host_page_mask, &size ) ||
+        size > ~(SIZE_T)0 - (SIZE_T)start)
+    {
+        ERR( "unmap range overflow base %p size %zx\n", start, size );
+        return;
+    }
 
     if (!(size = unmap_area_above_user_limit( start, size ))) return;
 

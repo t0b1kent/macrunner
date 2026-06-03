@@ -3225,7 +3225,11 @@ static void alloc_arm64ec_map(void)
     unsigned int status;
     SIZE_T size = ((ULONG_PTR)address_space_limit + page_size) >> (page_shift + 3);  /* one bit per page */
 
-    size = ROUND_SIZE( 0, size, host_page_mask );
+    if (!round_size_checked( 0, size, host_page_mask, &size ))
+    {
+        ERR( "failed to round ARM64EC map size\n" );
+        exit(1);
+    }
     status = map_view( &arm64ec_view, NULL, size, MEM_TOP_DOWN, VPROT_READ | VPROT_COMMITTED, 0, 0, 0 );
     if (status)
     {

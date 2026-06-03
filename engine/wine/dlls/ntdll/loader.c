@@ -9143,6 +9143,18 @@ static BOOL image_section_table_fits( const IMAGE_NT_HEADERS *nt, HMODULE module
     return nt->FileHeader.NumberOfSections <= (limit - table) / sizeof(*sec);
 }
 
+static BOOL image_section_pointer_in_table( const IMAGE_NT_HEADERS *nt, HMODULE module,
+                                            const IMAGE_SECTION_HEADER *sec )
+{
+    ULONG_PTR first = (ULONG_PTR)IMAGE_FIRST_SECTION( nt );
+    ULONG_PTR ptr = (ULONG_PTR)sec;
+
+    if (!image_section_table_fits( nt, module )) return FALSE;
+    if (ptr < first) return FALSE;
+    if ((ptr - first) % sizeof(*sec)) return FALSE;
+    return (ptr - first) / sizeof(*sec) < nt->FileHeader.NumberOfSections;
+}
+
 PIMAGE_SECTION_HEADER WINAPI RtlImageRvaToSection( const IMAGE_NT_HEADERS *nt,
                                                    HMODULE module, DWORD rva )
 {
@@ -9169,7 +9181,9 @@ PVOID WINAPI RtlImageRvaToVa( const IMAGE_NT_HEADERS *nt, HMODULE module,
     if (section && *section)  /* try this section first */
     {
         sec = *section;
-        if (image_section_contains_raw_rva( sec, rva )) goto found;
+        if (image_section_pointer_in_table( nt, module, sec ) &&
+            image_section_contains_raw_rva( sec, rva ))
+            goto found;
     }
     if (!(sec = RtlImageRvaToSection( nt, module, rva ))) return NULL;
  found:

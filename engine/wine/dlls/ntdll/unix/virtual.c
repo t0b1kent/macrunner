@@ -2723,11 +2723,15 @@ static unsigned int macrunner_hb_x64_guest_range_count;
 static BOOL macrunner_hb_range_overlaps( const void *base, size_t size, const void *range_base, size_t range_size )
 {
     const char *start = base;
-    const char *end = start + size;
     const char *range_start = range_base;
-    const char *range_end = range_start + range_size;
+    const char *end, *range_end;
 
     if (!size || !range_size) return FALSE;
+    if (size > ~(SIZE_T)0 - (UINT_PTR)start ||
+        range_size > ~(SIZE_T)0 - (UINT_PTR)range_start)
+        return FALSE;
+    end = start + size;
+    range_end = range_start + range_size;
     return start < range_end && end > range_start;
 }
 

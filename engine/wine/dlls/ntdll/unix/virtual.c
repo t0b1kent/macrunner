@@ -1580,19 +1580,33 @@ static void VIRTUAL_Dump(void)
  *	View: Success
  *	NULL: Failure
  */
+static BOOL get_view_limit( const struct file_view *view, char **limit )
+{
+    UINT_PTR base = (UINT_PTR)view->base;
+
+    if ((UINT_PTR)view->size > ~(UINT_PTR)0 - base) return FALSE;
+    *limit = (char *)(base + view->size);
+    return TRUE;
+}
+
 static struct file_view *find_view( const void *addr, size_t size )
 {
     struct wine_rb_entry *ptr = views_tree.root;
+    const char *addr_end;
 
-    if ((const char *)addr + size < (const char *)addr) return NULL; /* overflow */
+    if ((UINT_PTR)size > ~(UINT_PTR)0 - (UINT_PTR)addr) return NULL; /* overflow */
+    addr_end = (const char *)addr + size;
 
     while (ptr)
     {
         struct file_view *view = WINE_RB_ENTRY_VALUE( ptr, struct file_view, entry );
+        char *view_end;
 
-        if (view->base > addr) ptr = ptr->left;
-        else if ((const char *)view->base + view->size <= (const char *)addr) ptr = ptr->right;
-        else if ((const char *)view->base + view->size < (const char *)addr + size) break;  /* size too large */
+        if (!get_view_limit( view, &view_end )) return NULL;
+
+        if ((const char *)view->base > (const char *)addr) ptr = ptr->left;
+        else if (view_end <= (const char *)addr) ptr = ptr->right;
+        else if (view_end < addr_end) break;  /* size too large */
         else return view;
     }
     return NULL;
@@ -1618,15 +1632,20 @@ static inline BOOL is_write_watch_range( const void *addr, size_t size )
 static struct file_view *find_view_range( const void *addr, size_t size )
 {
     struct wine_rb_entry *ptr = views_tree.root;
+    const char *addr_end;
 
-    if ((UINT_PTR)addr + size < (UINT_PTR)addr) return NULL; /* overflow */
+    if ((UINT_PTR)size > ~(UINT_PTR)0 - (UINT_PTR)addr) return NULL; /* overflow */
+    addr_end = (const char *)addr + size;
 
     while (ptr)
     {
         struct file_view *view = WINE_RB_ENTRY_VALUE( ptr, struct file_view, entry );
+        char *view_end;
 
-        if ((const char *)view->base >= (const char *)addr + size) ptr = ptr->left;
-        else if ((const char *)view->base + view->size <= (const char *)addr) ptr = ptr->right;
+        if (!get_view_limit( view, &view_end )) return NULL;
+
+        if ((const char *)view->base >= addr_end) ptr = ptr->left;
+        else if (view_end <= (const char *)addr) ptr = ptr->right;
         else return view;
     }
     return NULL;
@@ -1648,14 +1667,23 @@ static struct wine_rb_entry *find_view_inside_range( void **base_ptr, void **end
     while (ptr)
     {
         struct file_view *view = WINE_RB_ENTRY_VALUE( ptr, struct file_view, entry );
-        if ((char *)view->base + view->size >= (char *)end)
+        char *view_end;
+
+        if (!get_view_limit( view, &view_end ))
+        {
+            ERR( "view range overflow base %p size %zx\n", view->base, view->size );
+            *base_ptr = *end_ptr;
+            return NULL;
+        }
+
+        if (view_end >= (char *)end)
         {
             end = min( end, view->base );
             ptr = ptr->left;
         }
         else if (view->base <= base)
         {
-            base = max( (char *)base, (char *)view->base + view->size );
+            base = max( (char *)base, view_end );
             ptr = ptr->right;
         }
         else
@@ -1727,8 +1755,12 @@ static void *map_free_area( void *base, void *end, size_t size, int top_down, in
         while (first)
         {
             struct file_view *view = WINE_RB_ENTRY_VALUE( first, struct file_view, entry );
-            if ((start = try_map_free_area( (char *)view->base + view->size, (char *)start + size, step,
-                                            start, size, unix_prot ))) break;
+            char *view_end, *start_end;
+
+            if (!get_view_limit( view, &view_end )) return NULL;
+            if ((UINT_PTR)size > ~(UINT_PTR)0 - (UINT_PTR)start) return NULL;
+            start_end = (char *)start + size;
+            if ((start = try_map_free_area( view_end, start_end, step, start, size, unix_prot ))) break;
             if ((SIZE_T)((char *)view->base - (char *)base) < size) return NULL;
             start = ROUND_ADDR( (char *)view->base - size, align_mask );
             /* stop if remaining space is not large enough */
@@ -1745,8 +1777,9 @@ static void *map_free_area( void *base, void *end, size_t size, int top_down, in
         while (first)
         {
             struct file_view *view = WINE_RB_ENTRY_VALUE( first, struct file_view, entry );
-            char *view_end = (char *)view->base + view->size;
+            char *view_end;
 
+            if (!get_view_limit( view, &view_end )) return NULL;
             if ((start = try_map_free_area( start, view->base, step,
                                             start, size, unix_prot ))) break;
             if (align_mask > ~(UINT_PTR)0 - (UINT_PTR)view_end) return NULL;

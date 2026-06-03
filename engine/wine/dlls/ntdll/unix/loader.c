@@ -2084,14 +2084,26 @@ static const void *get_module_data_dir( HMODULE module, ULONG dir, ULONG *size )
 {
     const IMAGE_NT_HEADERS *nt = get_rva( module, ((IMAGE_DOS_HEADER *)module)->e_lfanew );
     const IMAGE_DATA_DIRECTORY *data;
+    ULONG image_size;
 
     if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
+        const IMAGE_OPTIONAL_HEADER64 *opt = &((const IMAGE_NT_HEADERS64 *)nt)->OptionalHeader;
+        if (dir >= opt->NumberOfRvaAndSizes) return NULL;
+        image_size = opt->SizeOfImage;
         data = &((const IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.DataDirectory[dir];
+    }
     else if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+    {
+        const IMAGE_OPTIONAL_HEADER32 *opt = &((const IMAGE_NT_HEADERS32 *)nt)->OptionalHeader;
+        if (dir >= opt->NumberOfRvaAndSizes) return NULL;
+        image_size = opt->SizeOfImage;
         data = &((const IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.DataDirectory[dir];
+    }
     else
         return NULL;
     if (!data->VirtualAddress || !data->Size) return NULL;
+    if (data->VirtualAddress >= image_size || data->Size > image_size - data->VirtualAddress) return NULL;
     if (size) *size = data->Size;
     return get_rva( module, data->VirtualAddress );
 }

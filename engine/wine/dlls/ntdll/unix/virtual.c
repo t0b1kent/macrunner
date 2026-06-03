@@ -3628,6 +3628,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
         {
             BOOL executable = !!(sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE);
             BOOL host_executable = executable && !macrunner_hb_strip_host_exec_for_image( image_info );
+            SIZE_T section_end = end;
 
             TRACE_(module)( "%s mapping shared section %.8s at %p off %x (%x) size %lx (%lx) flags %x\n",
                             debugstr_us(nt_name), sec[i].Name, ptr + sec[i].VirtualAddress,
@@ -3643,11 +3644,15 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
 
             /* check if the import directory falls inside this section */
             if (imports && imports->VirtualAddress >= sec[i].VirtualAddress &&
-                imports->VirtualAddress < sec[i].VirtualAddress + map_size)
+                imports->VirtualAddress - sec[i].VirtualAddress < map_size)
             {
                 UINT_PTR base = imports->VirtualAddress & ~host_page_mask;
-                UINT_PTR end = base + ROUND_SIZE( imports->VirtualAddress, imports->Size, host_page_mask );
-                if (end > sec[i].VirtualAddress + map_size) end = sec[i].VirtualAddress + map_size;
+                SIZE_T size = ROUND_SIZE( imports->VirtualAddress, imports->Size, host_page_mask );
+                UINT_PTR end;
+
+                if (base < sec[i].VirtualAddress) base = sec[i].VirtualAddress;
+                end = (size > ~(UINT_PTR)0 - base) ? section_end : base + size;
+                if (end > section_end) end = section_end;
                 if (end > base)
                     map_file_into_view( view, shared_fd, base, end - base,
                                         pos + (base - sec[i].VirtualAddress),

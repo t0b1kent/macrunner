@@ -7340,6 +7340,37 @@ static int compare_working_set_info_ref( const void *a, const void *b )
     return r1->addr > r2->addr;
 }
 
+static NTSTATUS get_remote_working_set_ex( HANDLE process, MEMORY_WORKING_SET_EX_INFORMATION *info,
+                                           SIZE_T len, SIZE_T *res_len )
+{
+    SIZE_T i, count = len / sizeof(*info);
+
+    for (i = 0; i < count; ++i)
+    {
+        MEMORY_BASIC_INFORMATION basic_info;
+        unsigned int status;
+
+        status = get_basic_memory_info( process, info[i].VirtualAddress, &basic_info, sizeof(basic_info), NULL );
+        info[i].VirtualAttributes.Flags = 0;
+        if (status == STATUS_INVALID_PARAMETER || status == STATUS_WORKING_SET_LIMIT_RANGE) continue;
+        if (status) return status;
+        if (basic_info.State != MEM_COMMIT || !basic_info.Protect ||
+            (basic_info.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            continue;
+
+        info[i].VirtualAttributes.Valid = 1;
+        info[i].VirtualAttributes.Win32Protection = basic_info.Protect;
+        if (basic_info.Type != MEM_PRIVATE)
+        {
+            info[i].VirtualAttributes.Shared = 1;
+            info[i].VirtualAttributes.ShareCount = 1; /* FIXME */
+        }
+    }
+
+    if (res_len) *res_len = len;
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS get_working_set_ex( HANDLE process, LPCVOID addr,
                                     MEMORY_WORKING_SET_EX_INFORMATION *info,
                                     SIZE_T len, SIZE_T *res_len )
@@ -7353,14 +7384,9 @@ static NTSTATUS get_working_set_ex( HANDLE process, LPCVOID addr,
     sigset_t sigset;
     BYTE vprot;
 
-    if (process != NtCurrentProcess())
-    {
-        FIXME( "(process=%p,addr=%p) Unimplemented information class: MemoryWorkingSetExInformation\n", process, addr );
-        return STATUS_INVALID_INFO_CLASS;
-    }
-
     if (len < sizeof(*info)) return STATUS_INFO_LENGTH_MISMATCH;
     if (!info) return STATUS_ACCESS_VIOLATION;
+    if (process != NtCurrentProcess()) return get_remote_working_set_ex( process, info, len, res_len );
 
     count = len / sizeof(*info);
 

@@ -487,6 +487,13 @@ static void *reserved_area_end( void *addr, SIZE_T *size )
     return (void *)(start + *size);
 }
 
+static void *reserved_area_limit( const struct reserved_area *area )
+{
+    SIZE_T size = area->size;
+
+    return reserved_area_end( area->base, &size );
+}
+
 
 static void mmap_add_reserved_area( void *addr, SIZE_T size )
 {
@@ -503,7 +510,7 @@ static void mmap_add_reserved_area( void *addr, SIZE_T size )
     LIST_FOR_EACH( ptr, &reserved_areas )
     {
         area = LIST_ENTRY( ptr, struct reserved_area, entry );
-        area_end = (char *)area->base + area->size;
+        area_end = reserved_area_limit( area );
 
         if (area->base > end) break;
         if (area_end < addr) continue;
@@ -518,7 +525,7 @@ static void mmap_add_reserved_area( void *addr, SIZE_T size )
         while ((next = list_next( &reserved_areas, ptr )))
         {
             struct reserved_area *area_next = LIST_ENTRY( next, struct reserved_area, entry );
-            void *next_end = (char *)area_next->base + area_next->size;
+            void *next_end = reserved_area_limit( area_next );
 
             if (area_next->base > end) break;
             list_remove( next );
@@ -558,7 +565,7 @@ static BOOL mmap_remove_reserved_area( void *addr, SIZE_T size )
     while (ptr)
     {
         area = LIST_ENTRY( ptr, struct reserved_area, entry );
-        area_end = (char *)area->base + area->size;
+        area_end = reserved_area_limit( area );
         if (area->base >= end) break;  /* outside the range */
         if (area_end > addr)  /* overlaps range */
         {
@@ -615,7 +622,7 @@ static int mmap_is_in_reserved_area( void *addr, SIZE_T size )
     LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
     {
         if (area->base > addr) break;
-        area_end = (char *)area->base + area->size;
+        area_end = reserved_area_limit( area );
         if (area_end <= addr) continue;
         /* area must contain block completely */
         if (area_end < end) return -1;

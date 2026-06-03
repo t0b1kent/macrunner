@@ -1289,9 +1289,22 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
             if (!builtin_rva_string_fits_image( addr, nt->OptionalHeader.SizeOfImage,
                                                 imports[i].DllNameRVA ))
                 return STATUS_INVALID_IMAGE_FORMAT;
+            if (!builtin_rva_array_fits_image( nt->OptionalHeader.SizeOfImage,
+                                               imports[i].ModuleHandleRVA, 1, sizeof(UINT_PTR) ) ||
+                !builtin_thunk_array_fits_image( addr, nt->OptionalHeader.SizeOfImage,
+                                                 imports[i].ImportAddressTableRVA ))
+                return STATUS_INVALID_IMAGE_FORMAT;
             if (imports[i].ImportNameTableRVA &&
                 !builtin_thunk_array_fits_image( addr, nt->OptionalHeader.SizeOfImage,
                                                  imports[i].ImportNameTableRVA ))
+                return STATUS_INVALID_IMAGE_FORMAT;
+            if (imports[i].BoundImportAddressTableRVA &&
+                !builtin_thunk_array_fits_image( addr, nt->OptionalHeader.SizeOfImage,
+                                                 imports[i].BoundImportAddressTableRVA ))
+                return STATUS_INVALID_IMAGE_FORMAT;
+            if (imports[i].UnloadInformationTableRVA &&
+                !builtin_thunk_array_fits_image( addr, nt->OptionalHeader.SizeOfImage,
+                                                 imports[i].UnloadInformationTableRVA ))
                 return STATUS_INVALID_IMAGE_FORMAT;
             if (imports[i].ImportNameTableRVA)
                 fixup_rva_names( (UINT_PTR *)(addr + imports[i].ImportNameTableRVA), delta );

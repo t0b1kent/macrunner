@@ -2516,14 +2516,17 @@ static void load_ntdll_wow64_functions( HMODULE module )
         if (!(pLdrSystemDllInitBlock->p##name = find_named_export( module, image_size, exports, #name ))) \
             fatal_error( "wow64 ntdll export %s not found\n", #name ); \
     } while (0)
+#define GET_OPTIONAL_FUNC(name) \
+    pLdrSystemDllInitBlock->p##name = find_named_export( module, image_size, exports, #name )
     GET_FUNC( KiUserApcDispatcher );
     GET_FUNC( KiUserCallbackDispatcher );
     GET_FUNC( KiUserExceptionDispatcher );
     GET_FUNC( LdrInitializeThunk );
     GET_FUNC( LdrSystemDllInitBlock );
     GET_FUNC( RtlUserThreadStart );
-    GET_FUNC( RtlpFreezeTimeBias );
-    GET_FUNC( RtlpQueryProcessDebugInformationRemote );
+    GET_OPTIONAL_FUNC( RtlpFreezeTimeBias );
+    GET_OPTIONAL_FUNC( RtlpQueryProcessDebugInformationRemote );
+#undef GET_OPTIONAL_FUNC
 #undef GET_FUNC
 
     if (!(p__wine_ctrl_routine = (void *)find_named_export( module, image_size, exports,

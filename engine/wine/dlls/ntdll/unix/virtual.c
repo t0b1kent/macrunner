@@ -4490,6 +4490,8 @@ NTSTATUS virtual_create_builtin_view( void *module, const UNICODE_STRING *nt_nam
     void *base = wine_server_get_ptr( info->base );
     int i;
 
+    if (size > ~(ULONG_PTR)0 - (ULONG_PTR)base) return STATUS_INVALID_IMAGE_FORMAT;
+
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     status = create_view( &view, base, size, SEC_IMAGE | SEC_FILE | VPROT_SYSTEM |
                           VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY | VPROT_EXEC );
@@ -4508,16 +4510,24 @@ NTSTATUS virtual_create_builtin_view( void *module, const UNICODE_STRING *nt_nam
             if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) flags |= VPROT_EXEC;
             if (sec[i].Characteristics & IMAGE_SCN_MEM_READ) flags |= VPROT_READ;
             if (sec[i].Characteristics & IMAGE_SCN_MEM_WRITE) flags |= VPROT_WRITE;
+            if (sec[i].VirtualAddress > size || sec[i].Misc.VirtualSize > size - sec[i].VirtualAddress)
+            {
+                status = STATUS_INVALID_IMAGE_FORMAT;
+                break;
+            }
             set_page_vprot( (char *)base + sec[i].VirtualAddress, sec[i].Misc.VirtualSize, flags );
         }
 
-        SERVER_START_REQ( map_builtin_view )
+        if (!status)
         {
-            wine_server_add_data( req, info, sizeof(*info) );
-            wine_server_add_data( req, nt_name->Buffer, nt_name->Length );
-            status = wine_server_call( req );
+            SERVER_START_REQ( map_builtin_view )
+            {
+                wine_server_add_data( req, info, sizeof(*info) );
+                wine_server_add_data( req, nt_name->Buffer, nt_name->Length );
+                status = wine_server_call( req );
+            }
+            SERVER_END_REQ;
         }
-        SERVER_END_REQ;
 
         if (!status)
         {

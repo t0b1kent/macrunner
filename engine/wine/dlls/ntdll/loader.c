@@ -3434,13 +3434,91 @@ static WCHAR *append_dll_ext( const WCHAR *name )
 }
 
 
+static BOOL image_contains_range( HMODULE module, const void *ptr, SIZE_T size )
+{
+    IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
+    ULONG_PTR base = (ULONG_PTR)module, addr = (ULONG_PTR)ptr, end;
+
+    if (!nt) return FALSE;
+    end = base + nt->OptionalHeader.SizeOfImage;
+    if (end < base || addr < base || addr > end) return FALSE;
+    return size <= end - addr;
+}
+
+static BOOL image_contains_array( HMODULE module, const void *ptr, SIZE_T count, SIZE_T elem_size )
+{
+    if (elem_size && count > (SIZE_T)-1 / elem_size) return FALSE;
+    return image_contains_range( module, ptr, count * elem_size );
+}
+
+static const char *image_rva_string( HMODULE module, DWORD rva )
+{
+    IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
+    const char *str;
+    SIZE_T len;
+
+    if (!nt || rva >= nt->OptionalHeader.SizeOfImage) return NULL;
+    str = (const char *)module + rva;
+    len = nt->OptionalHeader.SizeOfImage - rva;
+    return memchr( str, 0, len ) ? str : NULL;
+}
+
+static NTSTATUS get_import_descriptor_count( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *imports,
+                                             DWORD size, DWORD *count )
+{
+    DWORD i, max = size / sizeof(*imports);
+
+    *count = 0;
+    if (!max || !image_contains_array( module, imports, max, sizeof(*imports) ))
+        return STATUS_INVALID_IMAGE_FORMAT;
+
+    for (i = 0; i < max; i++)
+    {
+        if (!imports[i].Name || !imports[i].FirstThunk)
+        {
+            *count = i;
+            return STATUS_SUCCESS;
+        }
+    }
+
+    WARN( "import descriptor table at %p is not terminated within directory size %lu\n",
+          imports, size );
+    return STATUS_INVALID_IMAGE_FORMAT;
+}
+
+static NTSTATUS get_import_thunk_count( HMODULE module, const IMAGE_THUNK_DATA *thunks, SIZE_T *count )
+{
+    IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
+    ULONG_PTR base = (ULONG_PTR)module, addr = (ULONG_PTR)thunks, end;
+    SIZE_T i, max;
+
+    *count = 0;
+    if (!nt) return STATUS_INVALID_IMAGE_FORMAT;
+    end = base + nt->OptionalHeader.SizeOfImage;
+    if (end < base || addr < base || addr > end) return STATUS_INVALID_IMAGE_FORMAT;
+
+    max = (end - addr) / sizeof(*thunks);
+    for (i = 0; i < max; i++)
+    {
+        if (!thunks[i].u1.Ordinal)
+        {
+            *count = i;
+            return STATUS_SUCCESS;
+        }
+    }
+
+    WARN( "import thunk table at %p is not terminated within image\n", thunks );
+    return STATUS_INVALID_IMAGE_FORMAT;
+}
+
 /***********************************************************************
  *           is_import_dll_system
  */
 static BOOL is_import_dll_system( LDR_DATA_TABLE_ENTRY *mod, const IMAGE_IMPORT_DESCRIPTOR *import )
 {
-    const char *name = get_rva( mod->DllBase, import->Name );
+    const char *name = image_rva_string( mod->DllBase, import->Name );
 
+    if (!name) return FALSE;
     return !_stricmp( name, "ntdll.dll" ) || !_stricmp( name, "kernel32.dll" );
 }
 
@@ -3844,20 +3922,37 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
     DWORD exp_size;
     const IMAGE_THUNK_DATA *import_list;
     IMAGE_THUNK_DATA *thunk_list;
+    SIZE_T import_count;
     WCHAR buffer[256];
-    const char *name = get_rva( module, descr->Name );
-    DWORD len = strlen(name);
+    const char *name = image_rva_string( module, descr->Name );
+    DWORD len;
     PVOID protect_base;
     SIZE_T protect_size = 0;
     DWORD protect_old;
     BOOL force_native_imports = FALSE;
     BOOL trace_pe32_loader = (current_machine == IMAGE_FILE_MACHINE_I386) || macrunner_hb_trace_pe32_loader();
 
+    if (!name)
+    {
+        WARN( "invalid import dll name rva %08lx in %s\n",
+              (ULONG)descr->Name, debugstr_w(wm->ldr.FullDllName.Buffer) );
+        return FALSE;
+    }
+    len = strlen(name);
+
     thunk_list = get_rva( module, (DWORD)descr->FirstThunk );
     if (descr->OriginalFirstThunk)
         import_list = get_rva( module, (DWORD)descr->OriginalFirstThunk );
     else
         import_list = thunk_list;
+
+    if (get_import_thunk_count( module, import_list, &import_count ) ||
+        !image_contains_array( module, thunk_list, import_count + 1, sizeof(*thunk_list) ))
+    {
+        WARN( "invalid import thunk table for %s imported from %s\n",
+              name, debugstr_w(wm->ldr.FullDllName.Buffer) );
+        return FALSE;
+    }
 
     if (trace_pe32_loader)
         MESSAGE( "macrunner-pe32-loader: import_dll module=%s base=%p dll=%s oft=%08lx ft=%08lx first=%08Ix flags=%lx\n",
@@ -3923,9 +4018,8 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
 
     /* unprotect the import address table since it can be located in
      * readonly section */
-    while (import_list[protect_size].u1.Ordinal) protect_size++;
     protect_base = thunk_list;
-    protect_size *= sizeof(*thunk_list);
+    protect_size = import_count * sizeof(*thunk_list);
     status = NtProtectVirtualMemory( NtCurrentProcess(), &protect_base,
                                      &protect_size, PAGE_READWRITE, &protect_old );
     if (status)
@@ -3952,7 +4046,7 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
     if (!exports)
     {
         /* set all imported function to deadbeef */
-        while (import_list->u1.Ordinal)
+        while (import_count--)
         {
             if (IMAGE_SNAP_BY_ORDINAL(import_list->u1.Ordinal))
             {
@@ -3975,7 +4069,7 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
         goto done;
     }
 
-    while (import_list->u1.Ordinal)
+    while (import_count--)
     {
         if (IMAGE_SNAP_BY_ORDINAL(import_list->u1.Ordinal))
         {
@@ -4083,7 +4177,14 @@ static BOOL is_dll_native_subsystem( LDR_DATA_TABLE_ENTRY *mod, const IMAGE_NT_H
     if ((imports = RtlImageDirectoryEntryToData( mod->DllBase, TRUE,
                                                  IMAGE_DIRECTORY_ENTRY_IMPORT, &size )))
     {
-        for (i = 0; imports[i].Name; i++)
+        DWORD nb_imports;
+
+        if (get_import_descriptor_count( mod->DllBase, imports, size, &nb_imports ))
+        {
+            WARN( "%s has invalid import descriptors, assuming native subsystem\n", debugstr_w(filename) );
+            return TRUE;
+        }
+        for (i = 0; i < nb_imports; i++)
             if (is_import_dll_system( mod, &imports[i] ))
             {
                 TRACE( "%s imports system dll, assuming not native\n", debugstr_w(filename) );
@@ -4266,7 +4367,7 @@ static NTSTATUS fixup_imports( WINE_MODREF *wm, LPCWSTR load_path )
     const IMAGE_IMPORT_DESCRIPTOR *imports;
     SINGLE_LIST_ENTRY *dep_after;
     WINE_MODREF *imp;
-    int i, nb_imports;
+    DWORD i, nb_imports;
     DWORD size;
     NTSTATUS status;
     ULONG_PTR cookie;
@@ -4297,11 +4398,14 @@ static NTSTATUS fixup_imports( WINE_MODREF *wm, LPCWSTR load_path )
         return STATUS_SUCCESS;
     }
 
-    nb_imports = 0;
-    while (imports[nb_imports].Name && imports[nb_imports].FirstThunk) nb_imports++;
+    if ((status = get_import_descriptor_count( wm->ldr.DllBase, imports, size, &nb_imports )))
+    {
+        WARN( "invalid import descriptor table in %s\n", debugstr_w(wm->ldr.FullDllName.Buffer) );
+        return status;
+    }
 
     if (trace_pe32_loader)
-        MESSAGE( "macrunner-pe32-loader: fixup_imports descriptors module=%s count=%d size=%lu\n",
+        MESSAGE( "macrunner-pe32-loader: fixup_imports descriptors module=%s count=%lu size=%lu\n",
                  debugstr_w(wm->ldr.BaseDllName.Buffer), nb_imports, size );
 
     if (!nb_imports) return STATUS_SUCCESS;  /* no imports */

@@ -14,6 +14,7 @@ Do not edit `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdl
 
 ## Closed In Checkpoints
 
+- 2026-06-03: Import metadata bounds in `ntdll/loader.c`. Import descriptor arrays now must terminate within the PE import directory, imported DLL names must be NUL-terminated inside the image, and INT/IAT thunk walks are bounded by `SizeOfImage`; malformed import metadata returns loader invalid-image handling instead of unbounded scans. Validation: `reports/build/lane-c-import-metadata-manual-clang-20260603-113011.log` (`loader.c` temp-object compile rc=0 for aarch64/x64/x86).
 - 2026-06-03: TLS callback array guard in `ntdll/loader.c`. `call_tls_callbacks()` now reads each callback pointer inside the existing SEH protection path, so malformed TLS callback arrays fail as loader-handled callback exceptions instead of dereferencing before the guard.
 - 2026-06-03: HIGHADJ relocation support in `ntdll/loader.c` and `ntdll/unix/virtual.c`. Both PE relocation paths now handle standard two-slot `IMAGE_REL_BASED_HIGHADJ` fixups and reject truncated HIGHADJ blocks instead of treating the relocation type as unsupported.
 - 2026-06-03: `NtQueryVirtualMemory` buffer validation in `ntdll/unix/virtual.c`. Supported query classes now reject null result buffers with `STATUS_ACCESS_VIOLATION` before filling basic, region, working-set, image, or Wine Unix function outputs.

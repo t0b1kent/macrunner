@@ -1013,6 +1013,32 @@ static BOOL builtin_rva_string_fits_image( BYTE *base, DWORD image_size, DWORD r
     return memchr( base + rva, 0, image_size - rva ) != NULL;
 }
 
+static BOOL fixup_rva_strings( BYTE *base, DWORD image_size, DWORD *ptr, int delta, DWORD count )
+{
+    UINT_PTR value;
+
+    for ( ; count; count--, ptr++ )
+    {
+        if (!*ptr) return FALSE;
+        value = *ptr;
+        if (delta >= 0)
+        {
+            if (value > ~(UINT_PTR)0 - (UINT_PTR)delta) return FALSE;
+            value += delta;
+        }
+        else
+        {
+            UINT_PTR neg_delta = 0 - (UINT_PTR)delta;
+            if (value < neg_delta) return FALSE;
+            value -= neg_delta;
+        }
+        if (value > ~(DWORD)0 || !builtin_rva_string_fits_image( base, image_size, value ))
+            return FALSE;
+        *ptr = value;
+    }
+    return TRUE;
+}
+
 static BOOL builtin_import_by_name_fits_image( BYTE *base, DWORD image_size, DWORD rva )
 {
     DWORD name_rva;
@@ -1289,7 +1315,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
                                            1, sizeof(*exports) ))
             return STATUS_INVALID_IMAGE_FORMAT;
         exports = (IMAGE_EXPORT_DIRECTORY *)(addr + dir->VirtualAddress);
-        fixup_rva_dwords( &exports->Name, delta, 1 );
+        if (!fixup_rva_strings( addr, nt->OptionalHeader.SizeOfImage, &exports->Name, delta, 1 ))
+            return STATUS_INVALID_IMAGE_FORMAT;
         fixup_rva_dwords( &exports->AddressOfFunctions, delta, 1 );
         fixup_rva_dwords( &exports->AddressOfNames, delta, 1 );
         fixup_rva_dwords( &exports->AddressOfNameOrdinals, delta, 1 );
@@ -1300,7 +1327,9 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
             !builtin_rva_array_fits_image( nt->OptionalHeader.SizeOfImage, exports->AddressOfFunctions,
                                            exports->NumberOfFunctions, sizeof(UINT_PTR) ))
             return STATUS_INVALID_IMAGE_FORMAT;
-        fixup_rva_dwords( (DWORD *)(addr + exports->AddressOfNames), delta, exports->NumberOfNames );
+        if (!fixup_rva_strings( addr, nt->OptionalHeader.SizeOfImage,
+                                (DWORD *)(addr + exports->AddressOfNames), delta, exports->NumberOfNames ))
+            return STATUS_INVALID_IMAGE_FORMAT;
         fixup_rva_ptrs( addr + exports->AddressOfFunctions, addr, exports->NumberOfFunctions );
     }
 

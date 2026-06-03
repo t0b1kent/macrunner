@@ -3237,22 +3237,26 @@ static void reexec_loader( int argc, char *argv[], char *extra_arg )
 {
     WORD machine = current_machine;
     char **new_argv;
+    size_t extra_count = extra_arg ? 3 : 2;
 
     /* have to exec if we have a preloader, or an argument, or if we are the initial wrapper */
     if (!pre_exec() && !extra_arg && dlsym( RTLD_DEFAULT, "wine_main_preload_info" )) return;
 
+    if (argc < 0 || (size_t)argc > ~(size_t)0 / sizeof(*new_argv) - extra_count)
+        fatal_error( "too many arguments re-executing wine loader\n" );
+
     if (extra_arg)
     {
-        if (!(new_argv = malloc( (argc + 3) * sizeof(*argv) )))
+        if (!(new_argv = malloc( ((size_t)argc + extra_count) * sizeof(*new_argv) )))
             fatal_error( "out of memory re-executing wine loader\n" );
-        memcpy( new_argv + 3, argv + 1, argc * sizeof(*argv) );
+        memcpy( new_argv + 3, argv + 1, (size_t)argc * sizeof(*argv) );
         new_argv[2] = extra_arg;
     }
     else
     {
-        if (!(new_argv = malloc( (argc + 2) * sizeof(*argv) )))
+        if (!(new_argv = malloc( ((size_t)argc + extra_count) * sizeof(*new_argv) )))
             fatal_error( "out of memory re-executing wine loader\n" );
-        memcpy( new_argv + 2, argv + 1, argc * sizeof(*argv) );
+        memcpy( new_argv + 2, argv + 1, (size_t)argc * sizeof(*argv) );
     }
 
     /* default to 32-bit loader to support 32-bit prefixes */

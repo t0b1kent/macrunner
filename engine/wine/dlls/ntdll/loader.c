@@ -2100,6 +2100,10 @@ static void *macrunner_hb_find_disk_export_outside_section( WINE_MODREF *target_
             break;
         if (macrunner_hb_file_rva_in_section( sections, nt->FileHeader.NumberOfSections, section, func_rva ))
             break;
+        if (target_mod->ldr.SizeOfImage > ~(ULONG_PTR)0 - (ULONG_PTR)target_mod->ldr.DllBase ||
+            func_rva >= target_mod->ldr.SizeOfImage ||
+            (ULONG_PTR)target_mod->ldr.DllBase > ~(ULONG_PTR)0 - func_rva)
+            break;
         ret = (BYTE *)target_mod->ldr.DllBase + func_rva;
         break;
     }

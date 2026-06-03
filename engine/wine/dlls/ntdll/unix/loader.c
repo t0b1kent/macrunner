@@ -1032,6 +1032,12 @@ static BOOL builtin_thunk_array_fits_image( BYTE *base, DWORD image_size, DWORD 
     return FALSE;
 }
 
+static IMAGE_DATA_DIRECTORY *builtin_get_data_dir( IMAGE_NT_HEADERS *nt, DWORD dir )
+{
+    if (dir >= nt->OptionalHeader.NumberOfRvaAndSizes) return NULL;
+    return &nt->OptionalHeader.DataDirectory[dir];
+}
+
 /***********************************************************************
  *           fill_builtin_image_info
  */
@@ -1134,6 +1140,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     nt->OptionalHeader.SizeOfUninitializedData     = 0;
     nt->OptionalHeader.SizeOfImage                 = data_end;
     nt->OptionalHeader.ImageBase                   = (ULONG_PTR)addr;
+    nt->OptionalHeader.NumberOfRvaAndSizes         = min( nt->OptionalHeader.NumberOfRvaAndSizes,
+                                                          IMAGE_NUMBEROF_DIRECTORY_ENTRIES );
 
     /* build the code section */
 
@@ -1161,8 +1169,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
 
     /* build the import directory */
 
-    dir = &nt->OptionalHeader.DataDirectory[IMAGE_FILE_IMPORT_DIRECTORY];
-    if (dir->Size)
+    dir = builtin_get_data_dir( nt, IMAGE_FILE_IMPORT_DIRECTORY );
+    if (dir && dir->Size)
     {
         IMAGE_IMPORT_DESCRIPTOR *imports;
         DWORD count;
@@ -1199,8 +1207,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
 
     /* build the resource directory */
 
-    dir = &nt->OptionalHeader.DataDirectory[IMAGE_FILE_RESOURCE_DIRECTORY];
-    if (dir->Size)
+    dir = builtin_get_data_dir( nt, IMAGE_FILE_RESOURCE_DIRECTORY );
+    if (dir && dir->Size)
     {
         void *ptr;
 
@@ -1213,8 +1221,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
 
     /* build the export directory */
 
-    dir = &nt->OptionalHeader.DataDirectory[IMAGE_FILE_EXPORT_DIRECTORY];
-    if (dir->Size)
+    dir = builtin_get_data_dir( nt, IMAGE_FILE_EXPORT_DIRECTORY );
+    if (dir && dir->Size)
     {
         IMAGE_EXPORT_DIRECTORY *exports;
 
@@ -1241,8 +1249,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
 
     /* build the delay import directory */
 
-    dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
-    if (dir->Size)
+    dir = builtin_get_data_dir( nt, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT );
+    if (dir && dir->Size)
     {
         IMAGE_DELAYLOAD_DESCRIPTOR *imports;
         DWORD count;

@@ -8585,7 +8585,8 @@ NTSTATUS WINAPI NtWow64ReadVirtualMemory64( HANDLE process, ULONG64 addr, void *
             req->handle = wine_server_obj_handle( process );
             req->addr   = addr;
             wine_server_set_reply( req, buffer, size );
-            if ((status = wine_server_call( req ))) size = 0;
+            status = wine_server_call( req );
+            size = status ? 0 : wine_server_reply_size( reply );
         }
         SERVER_END_REQ;
     }
@@ -8617,7 +8618,8 @@ NTSTATUS WINAPI NtWow64WriteVirtualMemory64( HANDLE process, ULONG64 addr, const
             req->handle     = wine_server_obj_handle( process );
             req->addr       = addr;
             wine_server_add_data( req, buffer, size );
-            if ((status = wine_server_call( req ))) size = 0;
+            status = wine_server_call( req );
+            size = status ? 0 : reply->written;
         }
         SERVER_END_REQ;
     }

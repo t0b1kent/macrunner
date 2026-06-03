@@ -25,7 +25,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | WARP adapter | Implemented | `EnumWarpAdapter` returns the default DXMT Metal adapter as the WARP fallback; this is not a CPU WARP rasterizer. |
 | `CreateSwapChain` / `ForHwnd` | Implemented | Legacy desc converts to desc1 and routes through `IMTLDXGIDevice::CreateSwapChain`. |
 | CoreWindow/composition swapchains | Clean unsupported | `CreateSwapChainForCoreWindow` and `CreateSwapChainForComposition` return `DXGI_ERROR_UNSUPPORTED` with null swapchains for valid owned-device inputs and `DXGI_ERROR_INVALID_CALL` for invalid inputs; smoke reports `unsupported_swapchains=PASS`. |
-| Backbuffer `GetBuffer(0)` | Partial | Index 0 supported; non-zero buffers return unsupported. |
+| Backbuffer `GetBuffer` | Implemented | Valid logical indices below `BufferCount` query the DXMT backing texture; out-of-range indices return `DXGI_ERROR_INVALID_CALL` with null output. Bitblt and flip smoke verify `GetBuffer(1) hr=0x00000000` and `GetBuffer(2) hr=0x887a0001`. |
 | RTV clear | Implemented | `ClearRenderTargetView` emits DXMT render clear commands. |
 | Present | Implemented | `IDXGISwapChain::Present` routes to `Present1`/Presenter. |
 | Pixel readback smoke | Added | `tests/dx11/dx11_headless_smoke.cpp` copies backbuffer to staging and maps pixel 0. |
@@ -115,7 +115,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Phase 3 resource probes | PASS | Texture/buffer/view/update/map/copy/UAV, 3D texture, cubemap, and structured SRV/UAV probes pass in the headless smoke. |
 | Phase 4 shaders/draw | PASS | Embedded HLSL VS/PS/CS compiles via `d3dcompiler_47`; shader/input-layout creation succeeds with per-instance input data; direct/indirect draw and dispatch variants pass; expanded state matrix, event/timestamp/occlusion query data, predicate, deferred command list, deferred clear, and deferred draw pass; readback returns `pixel0_bgra=0,255,0,255`, deferred clear returns `255,0,64,255`, deferred draw returns green, and compute returns `staging_value=42`. |
 | Phase 5 Unity probe expansion | PASS | State object matrix, texture sampling, gamma/output state, forced-message fullscreen enter/restore, visible fullscreen display capture, `ResizeBuffers`, post-resize RTV/present/readback, indexed/indirect variants, query/predicate, empty deferred playback, 2x/4x MSAA resolve family, and bitblt/flip swapchains are green. |
-| Swapchain variants | PASS | Basic headless message-HWND swapchain/present, resize, `DISCARD`, and `FLIP_DISCARD` variant present/readback are green. |
+| Swapchain variants | PASS | Basic headless message-HWND swapchain/present, resize, `DISCARD`, and `FLIP_DISCARD` variant present/readback are green; both variants expose logical `GetBuffer(1)` and reject out-of-range `GetBuffer(2)`. |
 | Adapter/output enumeration | PASS | `EnumOutputs`, monitor desc, and display mode list pass in the smoke. |
 | State object breadth | PASS | Alpha/opaque blend, cull-none/cull-back rasterizer, depth/stencil/disabled depth, and linear/comparison/anisotropic sampler variants pass. |
 | Next Phase 4/5 evidence | Next | Add runtime shader capture and real Unity present once the external x64 runtime blocker clears. |

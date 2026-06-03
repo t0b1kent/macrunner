@@ -2721,7 +2721,7 @@ static void load_apiset_dll(void)
         SIZE_T nt_offset, optional_offset, section_offset;
 
         dos = ptr;
-        if (size < sizeof(*dos) || dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0 ||
+        if (size < sizeof(*dos) || dos->e_magic != IMAGE_DOS_SIGNATURE ||
             (nt_offset = dos->e_lfanew) > size - offsetof( IMAGE_NT_HEADERS, OptionalHeader ))
         {
             status = STATUS_INVALID_IMAGE_FORMAT;

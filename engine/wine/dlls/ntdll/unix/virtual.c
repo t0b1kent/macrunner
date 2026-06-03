@@ -4330,7 +4330,7 @@ static void *alloc_virtual_heap( SIZE_T size )
     struct reserved_area *area;
     void *ret;
 
-    size = ROUND_SIZE( 0, size, host_page_mask );
+    if (!round_size_checked( 0, size, host_page_mask, &size )) return MAP_FAILED;
 
     LIST_FOR_EACH_ENTRY_REV( area, &reserved_areas, struct reserved_area, entry )
     {
@@ -4425,7 +4425,10 @@ void virtual_init(void)
     /* try to find space in a reserved area for the views and pages protection table */
 #ifdef _WIN64
     pages_vprot_size = ((size_t)host_addr_space_limit >> page_shift >> pages_vprot_shift) + 1;
-    size = 2 * view_block_size + pages_vprot_size * sizeof(*pages_vprot);
+    if (pages_vprot_size > (~(SIZE_T)0 - 2 * view_block_size) / sizeof(*pages_vprot))
+        size = ~(SIZE_T)0;
+    else
+        size = 2 * view_block_size + pages_vprot_size * sizeof(*pages_vprot);
 #else
     size = 2 * view_block_size + (1U << (32 - page_shift));
 #endif

@@ -5952,7 +5952,6 @@ static ULONG read_image_directory( HANDLE file, const SECTION_IMAGE_INFORMATION 
     if (NtReadFile( file, 0, NULL, NULL, &io, &mz, sizeof(mz), &offset, NULL )) return 0;
     if (io.Information != sizeof(mz)) return 0;
     if (mz.e_magic != IMAGE_DOS_SIGNATURE) return 0;
-    if (mz.e_lfanew < 0) return 0;
     offset.QuadPart = mz.e_lfanew;
     if (NtReadFile( file, 0, NULL, NULL, &io, &nt, sizeof(nt), &offset, NULL )) return 0;
     if (io.Information != sizeof(nt)) return 0;

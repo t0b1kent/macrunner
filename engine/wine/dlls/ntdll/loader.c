@@ -2515,17 +2515,31 @@ static void __attribute__((naked)) macrunner_hb_arm64x_native_dispatch_ret(void)
          "ret" );
 }
 
+static BOOL macrunner_hb_section_contains_virtual_rva( const IMAGE_SECTION_HEADER *sec, DWORD rva,
+                                                       SIZE_T len )
+{
+    DWORD delta;
+
+    if (rva < sec->VirtualAddress) return FALSE;
+    delta = rva - sec->VirtualAddress;
+    return delta <= sec->Misc.VirtualSize && len <= sec->Misc.VirtualSize - delta;
+}
+
 static void macrunner_hb_update_arm64x_pointer( void *module, const IMAGE_SECTION_HEADER *sec,
                                                 UINT rva, void *ptr, unsigned int *count )
 {
+    void *slot;
+
     if (!rva) return;
-    if (rva < sec->VirtualAddress || rva >= sec->VirtualAddress + sec->Misc.VirtualSize)
+    if (!macrunner_hb_section_contains_virtual_rva( sec, rva, sizeof(void *) ) ||
+        (ULONG_PTR)module > ~(ULONG_PTR)0 - rva)
     {
-        TRACE( "MacRunner HyperBridge ARM64X metadata rva %x outside section %s (%lx-%lx)\n",
-               rva, sec->Name, sec->VirtualAddress, sec->VirtualAddress + sec->Misc.VirtualSize );
+        TRACE( "MacRunner HyperBridge ARM64X metadata rva %x outside section %s va=%lx size=%lx\n",
+               rva, sec->Name, sec->VirtualAddress, sec->Misc.VirtualSize );
         return;
     }
-    *(void **)get_rva( module, rva ) = ptr;
+    slot = get_rva( module, rva );
+    *(void **)slot = ptr;
     if (count) (*count)++;
 }
 
@@ -2553,8 +2567,9 @@ static void macrunner_hb_update_arm64x_native_dispatch_metadata( WINE_MODREF *wm
     sec = IMAGE_FIRST_SECTION( nt );
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
     {
-        if (sec->VirtualAddress <= metadata->__os_arm64x_dispatch_icall &&
-            sec->VirtualAddress + sec->Misc.VirtualSize > metadata->__os_arm64x_dispatch_icall)
+        if (macrunner_hb_section_contains_virtual_rva( sec, metadata->__os_arm64x_dispatch_icall,
+                                                       sizeof(void *) ) &&
+            (ULONG_PTR)wm->ldr.DllBase <= ~(ULONG_PTR)0 - sec->VirtualAddress)
         {
             void *base = get_rva( wm->ldr.DllBase, sec->VirtualAddress );
             SIZE_T size = sec->Misc.VirtualSize;
@@ -2597,7 +2612,8 @@ static WINE_MODREF *macrunner_hb_find_module_from_address( ULONG_PTR addr )
         ULONG_PTR base = (ULONG_PTR)mod->DllBase;
 
         if (!nt) continue;
-        if (addr >= base && addr < base + nt->OptionalHeader.SizeOfImage)
+        if (nt->OptionalHeader.SizeOfImage <= ~(ULONG_PTR)0 - base &&
+            addr >= base && addr < base + nt->OptionalHeader.SizeOfImage)
             return CONTAINING_RECORD( mod, WINE_MODREF, ldr );
     }
     return NULL;

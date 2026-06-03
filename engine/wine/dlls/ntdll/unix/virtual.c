@@ -1729,9 +1729,19 @@ static void* try_map_free_area( void *base, void *end, ptrdiff_t step,
         TRACE( "Found free area is already mapped, start %p.\n", start );
         if (errno != EEXIST)
         {
-            ERR( "mmap() error %s, range %p-%p, unix_prot %#x.\n",
-                 strerror(errno), start, map_end, unix_prot );
-            return NULL;
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_WIN64)
+            if (errno == ENOMEM && (ULONG_PTR)start == limit_4g)
+            {
+                TRACE( "treating unmappable 4GB boundary as occupied, range %p-%p.\n", start, map_end );
+                errno = EEXIST;
+            }
+            else
+#endif
+            {
+                ERR( "mmap() error %s, range %p-%p, unix_prot %#x.\n",
+                     strerror(errno), start, map_end, unix_prot );
+                return NULL;
+            }
         }
         if ((step > 0 && (char *)end - (char *)start < step) ||
             (step < 0 && (char *)start - (char *)base < -step) ||

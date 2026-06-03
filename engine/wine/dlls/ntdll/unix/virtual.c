@@ -1882,8 +1882,7 @@ static BOOL remove_reserved_area( void *addr, size_t size )
     {
         char *view_end, *view_host_end;
 
-        if (view->size > ~(SIZE_T)0 - (UINT_PTR)view->base) return FALSE;
-        view_end = (char *)view->base + view->size;
+        if (!get_view_limit( view, &view_end )) return FALSE;
         if ((char *)view->base >= end) break;
         if (view_end <= (char *)addr) continue;
         if (view->base > addr) munmap( addr, (char *)view->base - (char *)addr );
@@ -2048,8 +2047,7 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
     {
         char *view_end;
 
-        if (view->size > ~(SIZE_T)0 - (UINT_PTR)view->base) return STATUS_CONFLICTING_ADDRESSES;
-        view_end = (char *)view->base + view->size;
+        if (!get_view_limit( view, &view_end )) return STATUS_CONFLICTING_ADDRESSES;
         TRACE( "overlapping view %p-%p for %p-%p\n",
                view->base, view_end, base, end );
         assert( view->protect & VPROT_SYSTEM );

@@ -1804,22 +1804,31 @@ static BOOL remove_reserved_area( void *addr, size_t size )
 {
     struct file_view *view;
     size_t view_size;
+    char *end;
 
-    TRACE( "removing %p-%p\n", addr, (char *)addr + size );
+    if (size > ~(SIZE_T)0 - (UINT_PTR)addr) return FALSE;
+    end = (char *)addr + size;
+
+    TRACE( "removing %p-%p\n", addr, end );
     if (!mmap_remove_reserved_area( addr, size )) return FALSE;
 
     /* unmap areas not covered by an existing view */
     WINE_RB_FOR_EACH_ENTRY( view, &views_tree, struct file_view, entry )
     {
-        if ((char *)view->base >= (char *)addr + size) break;
-        if ((char *)view->base + view->size <= (char *)addr) continue;
+        char *view_end, *view_host_end;
+
+        if (view->size > ~(SIZE_T)0 - (UINT_PTR)view->base) return FALSE;
+        view_end = (char *)view->base + view->size;
+        if ((char *)view->base >= end) break;
+        if (view_end <= (char *)addr) continue;
         if (view->base > addr) munmap( addr, (char *)view->base - (char *)addr );
-        if ((char *)view->base + view->size > (char *)addr + size) return TRUE;
+        if (view_end > end) return TRUE;
         if (!round_size_checked( (UINT_PTR)view->base, view->size, host_page_mask, &view_size ) ||
             view_size > ~(SIZE_T)0 - (SIZE_T)view->base)
             return FALSE;
-        size = (char *)addr + size - ((char *)view->base + view_size);
-        addr = (char *)view->base + view_size;
+        view_host_end = (char *)view->base + view_size;
+        size = end - view_host_end;
+        addr = view_host_end;
     }
     munmap( addr, size );
     return TRUE;

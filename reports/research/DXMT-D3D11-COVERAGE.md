@@ -45,6 +45,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | BGRA render-target support | PASS | `CheckFormatSupport(B8G8R8A8_UNORM) hr=0x00000000`; `format_support=0x02fef3f3`. |
 | Unity core format probes | PASS | `R8G8B8A8`, `B8G8R8A8`, `R16G16B16A16_FLOAT`, `R11G11B10_FLOAT`, `R32_FLOAT`, `R16_FLOAT`, `R8_UNORM`, `D24S8`, and `D32_FLOAT` meet required Texture2D/sample/RT/depth flags. |
 | Unity optional BC probes | PASS | `BC1_UNORM`, `BC3_UNORM`, and `BC7_UNORM` report Texture2D + shader-sample support. |
+| Unity optional YUV 4:2:2 probes | PASS | `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` report Texture2D + shader-sample support (`support=0x00d233f1`, required `0x00000220`) in `artifacts/dxmt-smoke-logs/lane-d-yuv422-20260603-212449.outer.log`. |
 | Unity feature probes | PASS | `THREADING`, `D3D11_OPTIONS`, `ARCHITECTURE_INFO`, `DOUBLES`, `D3D10_X_HARDWARE_OPTIONS`, and MSAA quality matrix all return `hr=0x00000000`; sampled formats support 1/2/4x and report 0 quality for 8x on this Metal device. |
 | Unity resource probes | PASS | Color texture + SRV/RTV/update/copy/readback, dynamic vertex buffer map, immutable constant buffer, depth DSV, R32_UINT UAV, 3D texture SRV, cubemap SRV, and structured buffer SRV/UAV all return success. |
 | Depth format family probe | PASS | Resource smoke creates DSVs and clears `D24_UNORM_S8_UINT`, `D16_UNORM`, `D32_FLOAT`, `D32_FLOAT_S8X24_UINT`, plus typeless `R24G8_TYPELESS` with DSV/SRV views. |
@@ -99,7 +100,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | 16/32-bit float/int scalar/vector | Implemented | Generic mappings plus Metal capability inspector. |
 | BC1-BC7 | Partial | Mapped when Metal device reports BC texture compression; smoke validates BC1 copy paths plus BC3/BC7 texture creation, SRV creation, staging copy, and byte readback on this host. |
 | D16/D24S8/D32/D32S8 | Implemented | Smoke creates textures/DSVs and clears `D16_UNORM`, `D24_UNORM_S8_UINT`, `D32_FLOAT`, and `D32_FLOAT_S8X24_UINT`; D24 remains internally emulated over Depth32Float_Stencil8. |
-| YUV 4:2:2 | Partial | GBGR/BGRG mapped as filter-capable only. |
+| YUV 4:2:2 | Partial | `R8G8_B8G8_UNORM`/`G8R8_G8B8_UNORM` map to BGRG/GBGR 4:2:2 and smoke-verify Texture2D + shader-sample/filter-only support; no RT/storage capability is advertised. |
 | MSAA | Partial | `R8G8B8A8`, `B8G8R8A8`, and `R16G16B16A16_FLOAT` report 1/2/4x quality=1 and 8x quality=0; smoke covers 4x color/depth render, resolve, and readback. |
 | `CheckFormatSupport` | Implemented | Computes D3D11 flags from `MTLQueryDXGIFormat` and capability bits. |
 | `CheckFormatSupport2` | Implemented | UAV/load/store/atomic/tiled flags populated from Metal capability bits. |
@@ -109,7 +110,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Probe | Current state | Next evidence needed |
 |---|---:|---|
 | Unity FL 11_0 + BGRA support | PASS | `D3D11CreateDevice hr=0x00000000`, `feature_level=0xb100`, BGRA flags `0x02fef3f3`. |
-| Unity format probes | PASS | Core Unity color/depth formats plus optional BC1/BC3/BC7 probes pass in the headless smoke. |
+| Unity format probes | PASS | Core Unity color/depth formats plus optional BC1/BC3/BC7 and YUV 4:2:2 probes pass in the headless smoke. |
 | Phase 3 resource probes | PASS | Texture/buffer/view/update/map/copy/UAV, 3D texture, cubemap, and structured SRV/UAV probes pass in the headless smoke. |
 | Phase 4 shaders/draw | PASS | Embedded HLSL VS/PS/CS compiles via `d3dcompiler_47`; shader/input-layout creation succeeds with per-instance input data; direct/indirect draw and dispatch variants pass; expanded state matrix, event/timestamp/occlusion query data, predicate, deferred command list, deferred clear, and deferred draw pass; readback returns `pixel0_bgra=0,255,0,255`, deferred clear returns `255,0,64,255`, deferred draw returns green, and compute returns `staging_value=42`. |
 | Phase 5 Unity probe expansion | PASS | State object matrix, texture sampling, gamma/output state, forced-message fullscreen enter/restore, visible fullscreen display capture, `ResizeBuffers`, post-resize RTV/present/readback, indexed/indirect variants, query/predicate, empty deferred playback, and bitblt/flip swapchains are green. |

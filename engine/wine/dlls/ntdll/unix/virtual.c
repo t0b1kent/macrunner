@@ -784,10 +784,14 @@ static void mmap_init( const struct preload_info *preload_info )
         /* to avoid wasting time trying to allocate it again */
         for (i = 0; preload_info[i].size; i++)
         {
+            SIZE_T size = preload_info[i].size;
+            char *preload_end;
+
             if ((char *)preload_info[i].addr > user_space_limit) break;
-            if ((char *)preload_info[i].addr + preload_info[i].size > user_space_limit)
+            preload_end = reserved_area_end( preload_info[i].addr, &size );
+            if (preload_end > user_space_limit)
             {
-                user_space_limit = (char *)preload_info[i].addr + preload_info[i].size;
+                user_space_limit = preload_end;
                 break;
             }
         }

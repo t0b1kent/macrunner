@@ -2080,6 +2080,17 @@ static inline void *get_rva( void *module, ULONG_PTR addr )
     return (BYTE *)module + addr;
 }
 
+static ULONG get_module_image_size( HMODULE module )
+{
+    const IMAGE_NT_HEADERS *nt = get_rva( module, ((IMAGE_DOS_HEADER *)module)->e_lfanew );
+
+    if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+        return ((const IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.SizeOfImage;
+    if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+        return ((const IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.SizeOfImage;
+    return 0;
+}
+
 static const void *get_module_data_dir( HMODULE module, ULONG dir, ULONG *size )
 {
     const IMAGE_NT_HEADERS *nt = get_rva( module, ((IMAGE_DOS_HEADER *)module)->e_lfanew );
@@ -2216,6 +2227,22 @@ ULONG_PTR redirect_arm64ec_rva( void *base, ULONG_PTR rva, const IMAGE_ARM64EC_M
 }
 
 
+static BOOL module_ptr_fits_image( HMODULE module, ULONG image_size, const void *ptr, size_t size )
+{
+    ULONG_PTR base = (ULONG_PTR)module, addr = (ULONG_PTR)ptr;
+
+    if (addr < base || image_size < size) return FALSE;
+    return addr - base <= image_size - size;
+}
+
+static BOOL module_rva_array_fits_image( ULONG image_size, ULONG rva, ULONG count, size_t elem_size )
+{
+    if (!count) return TRUE;
+    if (!rva || image_size < elem_size || rva > image_size - elem_size) return FALSE;
+    return count <= (image_size - rva) / elem_size;
+}
+
+
 /***********************************************************************
  *           redirect_ntdll_functions
  *
@@ -2225,9 +2252,19 @@ static void redirect_ntdll_functions( HMODULE module )
 {
     const IMAGE_LOAD_CONFIG_DIRECTORY *loadcfg;
     const IMAGE_ARM64EC_METADATA *metadata;
+    ULONG image_size, loadcfg_size;
 
-    if (!(loadcfg = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG, NULL ))) return;
-    if (!(metadata = (void *)loadcfg->CHPEMetadataPointer)) return;
+    if (!(image_size = get_module_image_size( module ))) return;
+    if (!(loadcfg = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG, &loadcfg_size ))) return;
+    if (loadcfg_size < offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, CHPEMetadataPointer ) +
+                       sizeof(loadcfg->CHPEMetadataPointer)) return;
+    if (!(metadata = (void *)(ULONG_PTR)loadcfg->CHPEMetadataPointer)) return;
+    if (!module_ptr_fits_image( module, image_size, metadata, sizeof(*metadata) )) return;
+    if (metadata->RedirectionMetadataCount > INT_MAX) return;
+    if (!module_rva_array_fits_image( image_size, metadata->RedirectionMetadata,
+                                      metadata->RedirectionMetadataCount,
+                                      sizeof(IMAGE_ARM64EC_REDIRECTION_ENTRY) ))
+        return;
 #define REDIRECT(name) \
     p##name = get_rva( module, redirect_arm64ec_rva( module, (char *)p##name - (char *)module, metadata ))
     REDIRECT( DbgUiRemoteBreakin );

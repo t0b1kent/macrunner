@@ -1747,6 +1747,8 @@ static void *find_reserved_free_area( void *base, void *end, size_t size, int to
     struct range_entry *range;
     void *start;
 
+    if (end <= base || (SIZE_T)((char *)end - (char *)base) < size) return NULL;
+    if (align_mask > ~(UINT_PTR)0 - (UINT_PTR)base) return NULL;
     base = ROUND_ADDR( (char *)base + align_mask, align_mask );
     end = (char *)ROUND_ADDR( (char *)end - size, align_mask ) + size;
 
@@ -1756,13 +1758,16 @@ static void *find_reserved_free_area( void *base, void *end, size_t size, int to
         range = free_ranges_lower_bound( start );
         assert(range != free_ranges_end && range->end >= start);
 
-        if ((char *)range->end - (char *)start < size) start = ROUND_ADDR( (char *)range->end - size, align_mask );
+        if ((char *)range->end - (char *)start < size)
+            start = (range->end > base && (SIZE_T)((char *)range->end - (char *)base) >= size)
+                ? ROUND_ADDR( (char *)range->end - size, align_mask ) : NULL;
         do
         {
-            if (start >= end || start < base || (char *)end - (char *)start < size) return NULL;
+            if (!start || start >= end || start < base || (char *)end - (char *)start < size) return NULL;
             if (start < range->end && start >= range->base && (char *)range->end - (char *)start >= size) break;
             if (--range < free_ranges) return NULL;
-            start = ROUND_ADDR( (char *)range->end - size, align_mask );
+            start = (range->end > base && (SIZE_T)((char *)range->end - (char *)base) >= size)
+                ? ROUND_ADDR( (char *)range->end - size, align_mask ) : NULL;
         }
         while (1);
     }
@@ -1772,13 +1777,16 @@ static void *find_reserved_free_area( void *base, void *end, size_t size, int to
         range = free_ranges_lower_bound( start );
         assert(range != free_ranges_end && range->end >= start);
 
-        if (start < range->base) start = ROUND_ADDR( (char *)range->base + align_mask, align_mask );
+        if (start < range->base)
+            start = (align_mask <= ~(UINT_PTR)0 - (UINT_PTR)range->base)
+                ? ROUND_ADDR( (char *)range->base + align_mask, align_mask ) : NULL;
         do
         {
-            if (start >= end || start < base || (char *)end - (char *)start < size) return NULL;
+            if (!start || start >= end || start < base || (char *)end - (char *)start < size) return NULL;
             if (start < range->end && start >= range->base && (char *)range->end - (char *)start >= size) break;
             if (++range == free_ranges_end) return NULL;
-            start = ROUND_ADDR( (char *)range->base + align_mask, align_mask );
+            start = (align_mask <= ~(UINT_PTR)0 - (UINT_PTR)range->base)
+                ? ROUND_ADDR( (char *)range->base + align_mask, align_mask ) : NULL;
         }
         while (1);
     }

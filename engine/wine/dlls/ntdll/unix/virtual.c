@@ -7706,10 +7706,10 @@ NTSTATUS WINAPI NtGetWriteWatch( HANDLE process, ULONG flags, PVOID base, SIZE_T
     NTSTATUS status = STATUS_SUCCESS;
     sigset_t sigset;
 
-    size = ROUND_SIZE( base, size, page_mask );
-    base = ROUND_ADDR( base, page_mask );
-
     if (!count || !granularity) return STATUS_ACCESS_VIOLATION;
+    if (!round_size_checked( (UINT_PTR)base, size, page_mask, &size ))
+        return STATUS_INVALID_PARAMETER;
+    base = ROUND_ADDR( base, page_mask );
     if (!*count || !size) return STATUS_INVALID_PARAMETER;
     if (flags & ~WRITE_WATCH_FLAG_RESET) return STATUS_INVALID_PARAMETER;
 
@@ -7969,7 +7969,12 @@ static NTSTATUS prefetch_memory( HANDLE process, ULONG_PTR count,
 
     for (i = 0; i < count; i++)
     {
-        if (!addresses[i].NumberOfBytes) return STATUS_INVALID_PARAMETER_4;
+        SIZE_T size;
+
+        if (!addresses[i].NumberOfBytes ||
+            !round_size_checked( (UINT_PTR)addresses[i].VirtualAddress,
+                                 addresses[i].NumberOfBytes, host_page_mask, &size ))
+            return STATUS_INVALID_PARAMETER_4;
     }
 
     if (process != NtCurrentProcess()) return STATUS_SUCCESS;
@@ -7977,7 +7982,9 @@ static NTSTATUS prefetch_memory( HANDLE process, ULONG_PTR count,
     for (i = 0; i < count; i++)
     {
         base = ROUND_ADDR( addresses[i].VirtualAddress, host_page_mask );
-        size = ROUND_SIZE( addresses[i].VirtualAddress, addresses[i].NumberOfBytes, host_page_mask );
+        if (!round_size_checked( (UINT_PTR)addresses[i].VirtualAddress,
+                                 addresses[i].NumberOfBytes, host_page_mask, &size ))
+            return STATUS_INVALID_PARAMETER_4;
         madvise( base, size, MADV_WILLNEED );
     }
 
@@ -7994,8 +8001,16 @@ static NTSTATUS set_dirty_state_information( ULONG_PTR count, MEMORY_RANGE_ENTRY
     for (i = 0; i < count; i++)
     {
         void *base = ROUND_ADDR( addresses[i].VirtualAddress, page_mask );
-        SIZE_T size = ROUND_SIZE( addresses[i].VirtualAddress, addresses[i].NumberOfBytes, page_mask );
-        struct file_view *view = find_view( base, size );
+        SIZE_T size;
+        struct file_view *view;
+
+        if (!round_size_checked( (UINT_PTR)addresses[i].VirtualAddress,
+                                 addresses[i].NumberOfBytes, page_mask, &size ))
+        {
+            ret = STATUS_INVALID_PARAMETER_4;
+            break;
+        }
+        view = find_view( base, size );
 
         if (!view)
         {

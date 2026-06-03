@@ -988,6 +988,24 @@ static BOOL builtin_rva_array_fits_image( DWORD image_size, DWORD rva, DWORD cou
     return count <= (image_size - rva) / elem_size;
 }
 
+static BOOL builtin_rva_string_fits_image( BYTE *base, DWORD image_size, DWORD rva )
+{
+    if (!rva || rva >= image_size) return FALSE;
+    return memchr( base + rva, 0, image_size - rva ) != NULL;
+}
+
+static BOOL builtin_thunk_array_fits_image( BYTE *base, DWORD image_size, DWORD rva )
+{
+    UINT_PTR *ptr;
+    DWORD count, i;
+
+    if (!builtin_rva_array_fits_image( image_size, rva, 1, sizeof(*ptr) )) return FALSE;
+    ptr = (UINT_PTR *)(base + rva);
+    count = (image_size - rva) / sizeof(*ptr);
+    for (i = 0; i < count; i++) if (!ptr[i]) return TRUE;
+    return FALSE;
+}
+
 /***********************************************************************
  *           fill_builtin_image_info
  */
@@ -1120,19 +1138,37 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     dir = &nt->OptionalHeader.DataDirectory[IMAGE_FILE_IMPORT_DIRECTORY];
     if (dir->Size)
     {
-        IMAGE_IMPORT_DESCRIPTOR *imports = (IMAGE_IMPORT_DESCRIPTOR *)(addr + dir->VirtualAddress);
+        IMAGE_IMPORT_DESCRIPTOR *imports;
+        DWORD count;
 
-        while (imports->Name)
+        if (dir->VirtualAddress >= nt->OptionalHeader.SizeOfImage ||
+            dir->Size > nt->OptionalHeader.SizeOfImage - dir->VirtualAddress ||
+            dir->Size < sizeof(*imports))
+            return STATUS_INVALID_IMAGE_FORMAT;
+        imports = (IMAGE_IMPORT_DESCRIPTOR *)(addr + dir->VirtualAddress);
+        count = dir->Size / sizeof(*imports);
+
+        for (i = 0; i < count && imports[i].Name; i++)
         {
-            fixup_rva_dwords( &imports->OriginalFirstThunk, delta, 1 );
-            fixup_rva_dwords( &imports->Name, delta, 1 );
-            fixup_rva_dwords( &imports->FirstThunk, delta, 1 );
-            if (imports->OriginalFirstThunk)
-                fixup_rva_names( (UINT_PTR *)(addr + imports->OriginalFirstThunk), delta );
-            if (imports->FirstThunk)
-                fixup_rva_names( (UINT_PTR *)(addr + imports->FirstThunk), delta );
-            imports++;
+            fixup_rva_dwords( &imports[i].OriginalFirstThunk, delta, 1 );
+            fixup_rva_dwords( &imports[i].Name, delta, 1 );
+            fixup_rva_dwords( &imports[i].FirstThunk, delta, 1 );
+            if (!builtin_rva_string_fits_image( addr, nt->OptionalHeader.SizeOfImage, imports[i].Name ))
+                return STATUS_INVALID_IMAGE_FORMAT;
+            if (imports[i].OriginalFirstThunk &&
+                !builtin_thunk_array_fits_image( addr, nt->OptionalHeader.SizeOfImage,
+                                                 imports[i].OriginalFirstThunk ))
+                return STATUS_INVALID_IMAGE_FORMAT;
+            if (imports[i].FirstThunk &&
+                !builtin_thunk_array_fits_image( addr, nt->OptionalHeader.SizeOfImage,
+                                                 imports[i].FirstThunk ))
+                return STATUS_INVALID_IMAGE_FORMAT;
+            if (imports[i].OriginalFirstThunk)
+                fixup_rva_names( (UINT_PTR *)(addr + imports[i].OriginalFirstThunk), delta );
+            if (imports[i].FirstThunk)
+                fixup_rva_names( (UINT_PTR *)(addr + imports[i].FirstThunk), delta );
         }
+        if (i == count) return STATUS_INVALID_IMAGE_FORMAT;
     }
 
     /* build the resource directory */

@@ -3269,41 +3269,67 @@ static void update_arm64ec_ranges( struct file_view *view, IMAGE_NT_HEADERS *nt,
 /***********************************************************************
  *           apply_arm64x_relocations
  */
-static void apply_arm64x_relocations( char *base, const IMAGE_BASE_RELOCATION *reloc, size_t size )
+static BOOL arm64x_fixup_fits_view( size_t total_size, ULONG page_rva, USHORT offset, size_t size )
 {
-    const IMAGE_BASE_RELOCATION *reloc_end = (const IMAGE_BASE_RELOCATION *)((const char *)reloc + size);
+    if (page_rva >= total_size || offset >= total_size - page_rva) return FALSE;
+    return size <= total_size - page_rva - offset;
+}
 
-    while (reloc < reloc_end - 1 && reloc->SizeOfBlock)
+static BOOL apply_arm64x_relocations( char *base, const IMAGE_BASE_RELOCATION *reloc, size_t size,
+                                      size_t total_size )
+{
+    const char *end = (const char *)reloc + size;
+
+    while ((const char *)reloc + sizeof(*reloc) <= end && reloc->SizeOfBlock)
     {
+        size_t remaining = end - (const char *)reloc;
         const USHORT *rel = (const USHORT *)(reloc + 1);
-        const USHORT *rel_end = (const USHORT *)reloc + reloc->SizeOfBlock / sizeof(USHORT);
-        char *page = base + reloc->VirtualAddress;
+        const USHORT *rel_end;
+        char *page;
+
+        if (reloc->SizeOfBlock < sizeof(*reloc) || reloc->SizeOfBlock > remaining ||
+            (reloc->SizeOfBlock - sizeof(*reloc)) % sizeof(USHORT) ||
+            reloc->VirtualAddress >= total_size)
+            return FALSE;
+        rel_end = (const USHORT *)((const char *)reloc + reloc->SizeOfBlock);
+        page = base + reloc->VirtualAddress;
 
         while (rel < rel_end && *rel)
         {
             USHORT offset = *rel & 0xfff;
             USHORT type = (*rel >> 12) & 3;
             USHORT arg = *rel >> 14;
+            size_t fixup_size = type == IMAGE_DVRT_ARM64X_FIXUP_TYPE_DELTA
+                                ? sizeof(int) : 1u << arg;
             int val;
             rel++;
+            if (!arm64x_fixup_fits_view( total_size, reloc->VirtualAddress, offset, fixup_size )) return FALSE;
             switch (type)
             {
             case IMAGE_DVRT_ARM64X_FIXUP_TYPE_ZEROFILL:
-                memset( page + offset, 0, 1 << arg );
+                memset( page + offset, 0, fixup_size );
                 break;
             case IMAGE_DVRT_ARM64X_FIXUP_TYPE_VALUE:
-                memcpy( page + offset, rel, 1 << arg );
-                rel += (1 << arg) / sizeof(USHORT);
+            {
+                size_t value_words = (fixup_size + sizeof(USHORT) - 1) / sizeof(USHORT);
+                if ((size_t)(rel_end - rel) < value_words) return FALSE;
+                memcpy( page + offset, rel, fixup_size );
+                rel += value_words;
                 break;
+            }
             case IMAGE_DVRT_ARM64X_FIXUP_TYPE_DELTA:
+                if (rel >= rel_end) return FALSE;
                 val = (unsigned int)*rel++ * ((arg & 2) ? 8 : 4);
                 if (arg & 1) val = -val;
                 *(int *)(page + offset) += val;
                 break;
+            default:
+                return FALSE;
             }
         }
         reloc = (const IMAGE_BASE_RELOCATION *)rel_end;
     }
+    return TRUE;
 }
 
 
@@ -3317,17 +3343,22 @@ static void update_arm64x_mapping( struct file_view *view, IMAGE_NT_HEADERS *nt,
     const char *ptr, *end;
     char *base = view->base;
     const IMAGE_LOAD_CONFIG_DIRECTORY *cfg = (void *)(base + dir->VirtualAddress);
-    ULONG sec, offset, size;
+    ULONG sec, offset, size, section_rva, section_size;
 
     if (dir->Size < sizeof(cfg->Size)) return;
     size = min( dir->Size, cfg->Size );
-    if (size <= offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, DynamicValueRelocTableSection )) return;
+    if (size < offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, DynamicValueRelocTableSection ) +
+               sizeof(cfg->DynamicValueRelocTableSection)) return;
     offset = cfg->DynamicValueRelocTableOffset;
     sec = cfg->DynamicValueRelocTableSection;
     if (!sec || sec > nt->FileHeader.NumberOfSections) return;
-    if (offset >= sections[sec - 1].Misc.VirtualSize) return;
-    table = (const IMAGE_DYNAMIC_RELOCATION_TABLE *)(base + sections[sec - 1].VirtualAddress + offset);
+    section_rva = sections[sec - 1].VirtualAddress;
+    section_size = sections[sec - 1].Misc.VirtualSize;
+    if (section_rva >= view->size || section_size > view->size - section_rva) return;
+    if (section_size < sizeof(*table) || offset > section_size - sizeof(*table)) return;
+    table = (const IMAGE_DYNAMIC_RELOCATION_TABLE *)(base + section_rva + offset);
     ptr = (const char *)(table + 1);
+    if (table->Size > section_size - offset - sizeof(*table)) return;
     end = ptr + table->Size;
     switch (table->Version)
     {
@@ -3335,10 +3366,13 @@ static void update_arm64x_mapping( struct file_view *view, IMAGE_NT_HEADERS *nt,
         while (ptr < end)
         {
             const IMAGE_DYNAMIC_RELOCATION64 *dyn = (const IMAGE_DYNAMIC_RELOCATION64 *)ptr;
+            size_t remaining = end - ptr;
+            if (remaining < sizeof(*dyn) || dyn->BaseRelocSize > remaining - sizeof(*dyn)) return;
             if (dyn->Symbol == IMAGE_DYNAMIC_RELOCATION_ARM64X)
             {
-                apply_arm64x_relocations( base, (const IMAGE_BASE_RELOCATION *)(dyn + 1),
-                                          dyn->BaseRelocSize );
+                if (!apply_arm64x_relocations( base, (const IMAGE_BASE_RELOCATION *)(dyn + 1),
+                                               dyn->BaseRelocSize, view->size ))
+                    return;
                 break;
             }
             ptr += sizeof(*dyn) + dyn->BaseRelocSize;
@@ -3348,10 +3382,15 @@ static void update_arm64x_mapping( struct file_view *view, IMAGE_NT_HEADERS *nt,
         while (ptr < end)
         {
             const IMAGE_DYNAMIC_RELOCATION64_V2 *dyn = (const IMAGE_DYNAMIC_RELOCATION64_V2 *)ptr;
+            size_t remaining = end - ptr;
+            if (remaining < sizeof(*dyn) || dyn->HeaderSize < sizeof(*dyn) ||
+                dyn->HeaderSize > remaining || dyn->FixupInfoSize > remaining - dyn->HeaderSize)
+                return;
             if (dyn->Symbol == IMAGE_DYNAMIC_RELOCATION_ARM64X)
             {
-                apply_arm64x_relocations( base, (const IMAGE_BASE_RELOCATION *)(dyn + 1),
-                                          dyn->FixupInfoSize );
+                if (!apply_arm64x_relocations( base, (const IMAGE_BASE_RELOCATION *)(ptr + dyn->HeaderSize),
+                                               dyn->FixupInfoSize, view->size ))
+                    return;
                 break;
             }
             ptr += dyn->HeaderSize + dyn->FixupInfoSize;

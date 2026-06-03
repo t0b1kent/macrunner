@@ -1185,6 +1185,7 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     DWORD code_start, code_end, data_start, data_end;
     DWORD alignment = nt_descr->OptionalHeader.SectionAlignment;
     DWORD align_mask;
+    ULONGLONG header_end;
     INT_PTR delta_ptr;
     ULONGLONG end;
     int delta, nb_sections = 2;  /* code + data */
@@ -1192,11 +1193,12 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
 
     if (!alignment || (alignment & (alignment - 1))) return STATUS_INVALID_IMAGE_FORMAT;
     align_mask = alignment - 1;
-    code_start = (sizeof(IMAGE_DOS_HEADER)
-                  + sizeof(builtin_signature)
-                  + sizeof(IMAGE_NT_HEADERS)
-                  + nb_sections * sizeof(IMAGE_SECTION_HEADER)
-                  + align_mask) & ~align_mask;
+    header_end = sizeof(IMAGE_DOS_HEADER)
+                 + sizeof(builtin_signature)
+                 + sizeof(IMAGE_NT_HEADERS)
+                 + nb_sections * sizeof(IMAGE_SECTION_HEADER);
+    if (header_end > UINT_MAX - align_mask) return STATUS_INVALID_IMAGE_FORMAT;
+    code_start = (header_end + align_mask) & ~align_mask;
 
     if (anon_mmap_fixed( addr, code_start, PROT_READ | PROT_WRITE, 0 ) != addr) return STATUS_NO_MEMORY;
 

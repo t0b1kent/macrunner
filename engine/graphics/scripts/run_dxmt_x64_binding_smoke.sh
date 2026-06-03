@@ -26,8 +26,9 @@ set +e
   MACRUNNER_PREFIX_SYSTEM32_ARCH=x86_64-windows \
   MACRUNNER_MR_RUN_USE_WARM_PREFIX=1 \
   MACRUNNER_MR_RUN_SKIP_WINEBOOT=1 \
+  MACRUNNER_HB_SKIP_WINEBOOT="${MACRUNNER_HB_SKIP_WINEBOOT:-1}" \
   WINEDEBUG="${WINEDEBUG_SMOKE:--all,+loaddll}" \
-  WINEDLLOVERRIDES="${DXMT_X64_BINDING_OVERRIDES:-d3d11,dxgi,d3d10core,winemetal=n,b}" \
+  WINEDLLOVERRIDES="${DXMT_X64_BINDING_OVERRIDES:-d3d11,dxgi,d3d10core,winemetal=n}" \
   "$PROJECT_ROOT/scripts/mr-run.sh" "$PROJECT_ROOT/engine/wine/dist-arm64ec-spike" "$EXE" "$TIMEOUT_SECONDS"
 ) >"$LOG" 2>&1
 run_rc=$?
@@ -49,6 +50,11 @@ checks = {
     "dxmt_sync": "engine/graphics/dist/dxmt/x86_64-windows/d3d11.dll" in text
                  and "engine/graphics/dist/dxmt/x86_64-windows/dxgi.dll" in text
                  and "engine/graphics/dist/dxmt/x86_64-windows/winemetal.dll" in text,
+    "unixlib": not re.search(
+        r'winemetal_init_unix_call|__wine_init_unix_call|c0000135|LoadLibraryExW\(winemetal\).*gle=(?:126|1114)',
+        text,
+        re.I,
+    ),
 }
 present_reached = bool(re.search(r'D3D11CreateDevice|CreateDXGIFactory|CreateSwapChain|Present\(', text, re.I))
 missing = [name for name, ok in checks.items() if not ok]
@@ -59,6 +65,7 @@ print(f"dxmt_sync={'PASS' if checks['dxmt_sync'] else 'FAIL'}")
 print(f"load_winemetal={'PASS' if checks['winemetal'] else 'FAIL'}")
 print(f"load_dxgi={'PASS' if checks['dxgi'] else 'FAIL'}")
 print(f"load_d3d11={'PASS' if checks['d3d11'] else 'FAIL'}")
+print(f"unixlib_binding={'PASS' if checks['unixlib'] else 'FAIL'}")
 print(f"present_reached={'YES' if present_reached else 'NO'}")
 if missing:
     print(f"binding_result=FAIL missing={','.join(missing)}")

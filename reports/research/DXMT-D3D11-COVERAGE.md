@@ -8,7 +8,8 @@ render/resolve, shader corpus coverage, Hollow Knight DXBC corpus extraction,
 asset-aware Hollow Knight Unity ShaderProgram DXBC extraction, bitblt/flip
 swapchain variants, live-window present, visible fullscreen enter/restore with
 display capture, resize, readback, two-pass long-run stability, and vkd3d
-prefix deployment.
+prefix deployment. The x64 guest binding smoke now defaults to strict native
+`winemetal=n` and rejects the old Unixlib `c0000135` failure signature.
 Status is evidence-based: `Implemented` means an entry point exists and routes to
 DXMT/Metal code; `Partial` means the path exists with known limits; `Gap` means
 the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
@@ -37,7 +38,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | DXMT smoke build | PASS | `engine/graphics/scripts/run_dxmt_d3d11_headless_smoke.sh aarch64` builds `dx11_headless_smoke.exe`, `d3d11.dll`, `dxgi.dll`, `winemetal.dll`, and `winemetal.so`. |
 | Isolated prefix install | PASS | Runner owns `artifacts/dxmt-smoke-prefix/`, installs built DLLs into `system32`, the app dir, and a prefix-local builtin overlay. |
 | Mixed DXMT binding | PASS | `bind_mode=mixed`, `WINEDLLOVERRIDES=d3d11,dxgi=n;winemetal=b,n`; loaded paths point to the prefix overlay for `winemetal.dll`, `dxgi.dll`, and `d3d11.dll`. |
-| x64 DXMT PE binding | PASS | `engine/graphics/scripts/run_dxmt_x64_binding_smoke.sh` confirms x64 `winemetal.dll`, `DXGI.DLL`, and `d3d11.dll` load native from the synchronized graphics prefix; current runtime stops before present in HyperBridge, outside Lane D. |
+| x64 DXMT PE binding | PASS | `engine/graphics/scripts/run_dxmt_x64_binding_smoke.sh` now defaults to `WINEDLLOVERRIDES=d3d11,dxgi,d3d10core,winemetal=n`; `artifacts/dxmt-x64-binding/run-20260603-230044/dxmt-x64-binding.log` reports `dxmt_sync=PASS`, native `winemetal.dll`/`DXGI.DLL`/`d3d11.dll` loads, and `unixlib_binding=PASS`. Current runtime stops before present in HyperBridge, outside Lane D. |
 | DXGI factory/adapter probe | PASS | `CreateDXGIFactory1(probe) hr=0x00000000`; `IDXGIFactory::EnumAdapters(0 probe) hr=0x00000000`; `IDXGIFactory4::EnumWarpAdapter hr=0x00000000` returns a non-null adapter and `GetDesc hr=0x00000000`. |
 | Adapter/output enumeration | PASS | `EnumAdapters1`, `GetDesc1`, `EnumOutputs`, `GetDesc`, and `GetDisplayModeList` pass; first mode `640x480`, fetched `3` modes. |
 | Output gamma/fullscreen state probes | PASS | `UnityGammaProbe` covers gamma capabilities, set/get/restore gamma ramp, display-surface unsupported cases, `GetFullscreenDesc`, `GetFullscreenState`, `SetFullscreenState(FALSE)`, and opt-in forced-message `SetFullscreenState(TRUE)` plus restore. |
@@ -70,7 +71,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Headless Metal layer fallback | PASS | When Wine macdrv Metal-view symbols are unavailable, `winemetal` creates a retained fallback `CAMetalLayer` for the smoke HWND. |
 | Swapchain/present | PASS | Message HWND path prints `CreateSwapChainForHwnd hr=0x00000000`, `IDXGISwapChain::GetBuffer hr=0x00000000`, `Present hr=0x00000000`. |
 | RTV clear/readback | PASS | Swapchain backbuffer clears to RGBA `(0.125,0.5,0.875,1.0)`; readback prints `pixel0_bgra=223,128,32,255`, `pixel_readback=PASS`. |
-| Strict native `winemetal=n` | Gap | Raw native `winemetal.dll` still fails `__wine_init_unix_call` with `status=0xc0000135`; manual `winebuild --builtin` postprocess changes the failure to native `LoadLibraryExW(... gle=126)`, so mixed `d3d11,dxgi=n;winemetal=b,n` remains the green path. Tracked in `reports/research/LANE-D-NEEDS.md`. |
+| Strict native `winemetal=n` | Implemented | x64 guest binding is strict-native green: the Lane D runner skips automatic prefix-update wineboot for this focused probe, loads the synchronized x64 DXMT PE DLLs with `winemetal=n`, and parser-gates against `winemetal_init_unix_call`, `__wine_init_unix_call`, `c0000135`, and `LoadLibraryExW(winemetal)` regressions. Evidence: `artifacts/dxmt-x64-binding/run-20260603-230044/dxmt-x64-binding.log`. |
 | Top-level HWND creation | Implemented | Owned live/fullscreen smokes create non-null overlapped Wine HWNDs and present through them; stale `GetLastError=1400` after a successful `CreateWindowExW` is ignored. Message-HWND fallback remains available for headless coverage. |
 
 ## D3D11 Device Surface

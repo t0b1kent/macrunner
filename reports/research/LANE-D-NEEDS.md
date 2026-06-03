@@ -2,18 +2,23 @@
 
 Updated: 2026-06-03
 
-This file records cross-lane needs only after Lane D has exhausted in-scope graphics workarounds. Lane D continues with DXMT coverage using the isolated smoke prefix and mixed binding path.
+This file records cross-lane needs only after Lane D has exhausted in-scope graphics workarounds. Lane D continues with DXMT coverage using the isolated smoke prefix and strict x64 guest binding path where available.
 
 ## Native `winemetal=n` Unix-func registration
 
-Status: tracked gap, not a Lane D stop.
+Status: resolved for the x64 guest binding path on 2026-06-03; no active Lane A/C need for this path.
 
 Evidence:
 
 ```text
-WINEDLLOVERRIDES=d3d11,dxgi,winemetal=n
-winemetal_init_unix_call status=0xc0000135
-LoadLibraryExW(winemetal) module=0 gle=1114
+engine/graphics/scripts/run_dxmt_x64_binding_smoke.sh
+WINEDLLOVERRIDES=d3d11,dxgi,d3d10core,winemetal=n
+artifacts/dxmt-x64-binding/run-20260603-230044/dxmt-x64-binding.log
+dxmt_sync=PASS
+load_winemetal=PASS
+load_dxgi=PASS
+load_d3d11=PASS
+unixlib_binding=PASS
 ```
 
 Lane D attempts completed:
@@ -30,10 +35,16 @@ Lane D attempts completed:
   init status but then strict native load fails as `LoadLibraryExW(winemetal)
   module=0 gle=126`, confirming the postprocessed PE is only viable via
   builtin/mixed binding, not `winemetal=n`.
+- Patched the x64 binding smoke to skip automatic prefix-update wineboot for the
+  focused binding probe, default to strict `winemetal=n`, and fail on any return
+  of the old Unixlib status/load signatures.
 
-Need:
+Resolution:
 
-Native ARM64 PE loading needs a supported way to register `winemetal` Unix funcs for raw `winemetal.dll`, or the existing `MACRUNNER_DXMT_ROOT` Unix-func fallback needs to apply to the native ARM64 `NtQueryVirtualMemory(MemoryWineUnixFuncs)` path. Lane D will keep the mixed binding path green while this is resolved.
+The x64 guest path now binds the raw x64 `winemetal.dll`, `DXGI.DLL`, and
+`d3d11.dll` from `engine/graphics/dist/dxmt/x86_64-windows` under strict native
+overrides. The smoke parser explicitly rejects `winemetal_init_unix_call`,
+`__wine_init_unix_call`, `c0000135`, and `LoadLibraryExW(winemetal)` regressions.
 
 ## Real Hollow Knight Unity present blocked before D3D/DXGI
 

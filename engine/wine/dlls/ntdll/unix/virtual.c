@@ -7075,6 +7075,54 @@ static unsigned int get_basic_memory_info( HANDLE process, LPCVOID addr,
     return STATUS_SUCCESS;
 }
 
+static unsigned int get_remote_memory_region_info( HANDLE process, LPCVOID addr, MEMORY_REGION_INFORMATION *info,
+                                                   SIZE_T len, SIZE_T *res_len )
+{
+    MEMORY_BASIC_INFORMATION basic_info, entry_info;
+    char *base, *region_start, *region_end, *next;
+    SIZE_T commit_size = 0;
+    unsigned int status;
+
+    status = get_basic_memory_info( process, addr, &basic_info, sizeof(basic_info), NULL );
+    if (status) return status;
+    if (basic_info.State == MEM_FREE || !basic_info.AllocationBase) return STATUS_INVALID_ADDRESS;
+
+    region_start = basic_info.AllocationBase;
+    region_end = region_start;
+    base = region_start;
+
+    for (;;)
+    {
+        status = get_basic_memory_info( process, base, &entry_info, sizeof(entry_info), NULL );
+        if (status || entry_info.State == MEM_FREE || entry_info.AllocationBase != basic_info.AllocationBase)
+            break;
+
+        if (entry_info.RegionSize > ~(UINT_PTR)0 - (UINT_PTR)entry_info.BaseAddress)
+            return STATUS_INVALID_PARAMETER;
+        next = (char *)entry_info.BaseAddress + entry_info.RegionSize;
+        if (next <= base) break;
+
+        if (entry_info.State == MEM_COMMIT)
+        {
+            if (commit_size > ~(SIZE_T)0 - entry_info.RegionSize) return STATUS_INVALID_PARAMETER;
+            commit_size += entry_info.RegionSize;
+        }
+        region_end = next;
+        base = next;
+    }
+
+    info->AllocationBase = basic_info.AllocationBase;
+    info->AllocationProtect = basic_info.AllocationProtect;
+    info->RegionType = 0; /* FIXME */
+    if (len >= FIELD_OFFSET(MEMORY_REGION_INFORMATION, CommitSize))
+        info->RegionSize = region_end - region_start;
+    if (len >= FIELD_OFFSET(MEMORY_REGION_INFORMATION, PartitionId))
+        info->CommitSize = commit_size;
+
+    if (res_len) *res_len = sizeof(*info);
+    return STATUS_SUCCESS;
+}
+
 static unsigned int get_memory_region_info( HANDLE process, LPCVOID addr, MEMORY_REGION_INFORMATION *info,
                                             SIZE_T len, SIZE_T *res_len )
 {
@@ -7090,10 +7138,7 @@ static unsigned int get_memory_region_info( HANDLE process, LPCVOID addr, MEMORY
     if (!info) return STATUS_ACCESS_VIOLATION;
 
     if (process != NtCurrentProcess())
-    {
-        FIXME("Unimplemented for other processes.\n");
-        return STATUS_NOT_IMPLEMENTED;
-    }
+        return get_remote_memory_region_info( process, addr, info, len, res_len );
 
     base = ROUND_ADDR( addr, page_mask );
 

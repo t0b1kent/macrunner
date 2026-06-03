@@ -4276,7 +4276,7 @@ static unsigned int virtual_map_section( HANDLE handle, PVOID *addr_ptr, ULONG_P
             return STATUS_INVALID_PARAMETER;
         }
     }
-    if (!(size = ROUND_SIZE( 0, size, page_mask ))) return STATUS_INVALID_PARAMETER;  /* wrap-around */
+    if (!round_size_checked( 0, size, page_mask, &size ) || !size) return STATUS_INVALID_PARAMETER;
 
     get_vprot_flags( protect, &vprot, FALSE );
     vprot |= sec_flags;

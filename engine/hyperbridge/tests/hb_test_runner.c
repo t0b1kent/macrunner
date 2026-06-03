@@ -524,6 +524,7 @@ TEST(decode_x64_operand16_immediate_lengths) {
     uint8_t pushw[] = {0x66, 0x68, 0xC0, 0x7F, 0x34, 0x12};
     uint8_t imulw[] = {0x66, 0x69, 0xC0, 0x7F, 0x34, 0x12};
     uint8_t testw[] = {0x66, 0xA9, 0xC0, 0x7F, 0x34, 0x12};
+    uint8_t testw_reg[] = {0x66, 0x85, 0xC9}; /* test cx, cx */
     uint8_t jow[] = {0x66, 0x0F, 0x80, 0xC0, 0x7F, 0x34, 0x12};
     uint8_t jbw[] = {0x66, 0x0F, 0x82, 0xC0, 0x7F, 0x34, 0x12};
     hb_decoded_t d;
@@ -536,6 +537,11 @@ TEST(decode_x64_operand16_immediate_lengths) {
 
     ASSERT(hb_decode_x64(testw, sizeof(testw), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_TEST && d.len == 4 && d.op1.size == 2 && d.op2.size == 2);
+
+    ASSERT(hb_decode_x64(testw_reg, sizeof(testw_reg), 0x1000, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST && d.len == 3);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 2);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RCX && d.op2.size == 2);
 
     ASSERT(hb_decode_x64(jow, sizeof(jow), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_Jcc && d.len == 5);
@@ -8365,6 +8371,7 @@ TEST(decode_x86_test_operand16_family) {
     uint8_t test_r16_r16[] = {0x66, 0x85, 0xff};       /* test di, di */
     uint8_t test_rm8_r8[] = {0x84, 0xc9};              /* test cl, cl */
     uint8_t test_ax_imm16[] = {0x66, 0xa9, 0x34, 0x12}; /* test ax, 0x1234 */
+    uint8_t test_rm16_imm16[] = {0x66, 0xf7, 0xc1, 0x34, 0x12}; /* test cx, 0x1234 */
     uint8_t test_eax_imm32[] = {0xa9, 0x78, 0x56, 0x34, 0x12};
 
     ASSERT(hb_decode_x86(test_r16_r16, sizeof(test_r16_r16), 0x7bd7e1fa, &d) == HB_OK);
@@ -8377,6 +8384,11 @@ TEST(decode_x86_test_operand16_family) {
 
     ASSERT(hb_decode_x86(test_ax_imm16, sizeof(test_ax_imm16), 0x1000, &d) == HB_OK);
     ASSERT(d.opcode == HB_INS_TEST && d.op1.reg == HB_REG_RAX && d.op1.size == 2);
+    ASSERT(d.op2.is_imm && d.op2.imm == 0x1234 && d.op2.size == 2);
+
+    ASSERT(hb_decode_x86(test_rm16_imm16, sizeof(test_rm16_imm16), 0x1000, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST && d.len == 5);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 2);
     ASSERT(d.op2.is_imm && d.op2.imm == 0x1234 && d.op2.size == 2);
 
     ASSERT(hb_decode_x86(test_eax_imm32, sizeof(test_eax_imm32), 0x1000, &d) == HB_OK);
@@ -12732,6 +12744,92 @@ TEST(jit_x64_helper_unity_string_bsearch_loop_promotes_block) {
     tests_passed++;
 }
 
+TEST(jit_x64_helper_mono_metadata_bsearch_preserves_cmp_cf_across_inc) {
+    uint8_t code[] = {
+        0x41, 0x8d, 0x04, 0x29,       /* lea eax, [r9 + rbp] */
+        0x99,                         /* cdq */
+        0x2b, 0xc2,                   /* sub eax, edx */
+        0xd1, 0xf8,                   /* sar eax, 1 */
+        0x48, 0x63, 0xc8,             /* movsxd rcx, eax */
+        0x48, 0x8b, 0x4c, 0xcb, 0x18, /* mov rcx, [rbx + rcx*8 + 0x18] */
+        0x4c, 0x63, 0x41, 0x1c,       /* movsxd r8, dword [rcx + 0x1c] */
+        0x48, 0x8b, 0x49, 0x10,       /* mov rcx, [rcx + 0x10] */
+        0x4c, 0x03, 0xc1,             /* add r8, rcx */
+        0x8b, 0xc8,                   /* mov ecx, eax */
+        0x4d, 0x3b, 0xd0,             /* cmp r10, r8 */
+        0xff, 0xc0,                   /* inc eax; preserves CF from cmp */
+        0x41, 0x0f, 0x43, 0xc9,       /* cmovae ecx, r9d */
+        0x4d, 0x3b, 0xd0,             /* cmp r10, r8 */
+        0x44, 0x8b, 0xc9,             /* mov r9d, ecx */
+        0x0f, 0x43, 0xe8,             /* cmovae ebp, eax */
+        0x3b, 0xe9,                   /* cmp ebp, ecx */
+        0x7c, 0xcc                    /* jl loop */
+    };
+    struct mono_node_fixture {
+        uint8_t pad0[16];
+        uint64_t base;
+        uint32_t pad1;
+        uint32_t delta;
+    } nodes[4];
+    struct mono_table_fixture {
+        uint8_t pad0[4];
+        uint32_t count;
+        uint8_t pad1[16];
+        uint64_t ptrs[4];
+    } table;
+    const uint64_t base = 0x87ef14ff180ULL;
+    uint64_t values[] = {10, 20, 30, 40};
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+    ASSERT(func->cfg && func->cfg->entry);
+    ASSERT(func->cfg->entry->instr_count == 18);
+
+    memset(&table, 0, sizeof(table));
+    memset(nodes, 0, sizeof(nodes));
+    table.count = 4;
+    for (size_t i = 0; i < 4; i++) {
+        nodes[i].base = values[i];
+        nodes[i].delta = 0;
+        table.ptrs[i] = (uint64_t)(uintptr_t)&nodes[i];
+    }
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&table, sizeof(table), HB_PERM_READ) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)nodes, sizeof(nodes), HB_PERM_READ) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rbx = (uint64_t)(uintptr_t)&table;
+    ctx->regs.x64.rbp = 0;
+    ctx->regs.x64.r9 = 4;
+    ctx->regs.x64.r10 = 15;
+
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "0", 1);
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT_EQ(ctx->pc, base + sizeof(code));
+    ASSERT_EQ(ctx->regs.x64.rbp, 1);
+    ASSERT_EQ(ctx->regs.x64.r9, 1);
+    ASSERT_EQ(ctx->regs.x64.rcx, 1);
+
+    bool less = true;
+    ASSERT(hb_flags_eval_cond(ctx, HB_CC_L, &less) == HB_OK);
+    ASSERT(!less);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(jit_x64_helper_load_cmp_jcc_block) {
     uint32_t lhs = 0x12345678;
     uint32_t rhs = 0x12345678;
@@ -14486,6 +14584,44 @@ TEST(jit_x64_native_test_same_reg_jcc_pair) {
     ASSERT(code_buf->size <= 160);
     hb_arm64_codegen_destroy(cg);
     hb_codegen_buffer_destroy(code_buf);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_testw_same_reg_jne_uses_16bit_zf) {
+    uint8_t code[] = {
+        0x66, 0x85, 0xc9, /* test cx, cx */
+        0x75, 0x05        /* jne base+10 */
+    };
+    uint64_t base = 0x5380;
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+    ASSERT(func->cfg && func->cfg->entry);
+    ASSERT(func->cfg->entry->instr_count == 2);
+    ASSERT(func->cfg->entry->instrs[0].op == HB_IR_TEST);
+    ASSERT(func->cfg->entry->instrs[0].src1.size == HB_SIZE_16);
+    ASSERT(func->cfg->entry->instrs[1].op == HB_IR_Jcc);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->pc = base;
+    ctx->regs.x64.rcx = 0x01010000ULL;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    ASSERT(ctx->pc == base + sizeof(code));
+
+    bool not_equal = true;
+    ASSERT(hb_flags_eval_cond(ctx, HB_CC_NE, &not_equal) == HB_OK);
+    ASSERT(!not_equal);
 
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
@@ -22039,6 +22175,7 @@ int main(int argc, char** argv) {
     test_jit_x64_helper_copy_scan_counted_loop_promotes_cache_pair();
     test_jit_x64_helper_byte_compare_loop_promotes_cache_pair();
     test_jit_x64_helper_unity_string_bsearch_loop_promotes_block();
+    test_jit_x64_helper_mono_metadata_bsearch_preserves_cmp_cf_across_inc();
     test_jit_x64_helper_load_cmp_jcc_block();
     test_jit_x64_helper_cmp_setcc_ret_block();
     test_jit_x64_helper_store_stride_self_loop();
@@ -22065,6 +22202,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_xmm_load_store_pair();
     test_jit_x64_native_scalar_load_store_pair();
     test_jit_x64_native_test_same_reg_jcc_pair();
+    test_jit_x64_testw_same_reg_jne_uses_16bit_zf();
     test_jit_x64_hot_word_scan_loop_native();
     test_jit_x64_cmp_mem_operand_routes_to_helper();
     test_jit_x64_mul_div_family_routes_to_helper();

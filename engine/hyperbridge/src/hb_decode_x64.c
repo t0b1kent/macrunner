@@ -3568,8 +3568,9 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode == 0x85) {
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t modrm = read_u8(d);
+        uint8_t sz = rex_w ? 8 : (operand16 ? 2 : 4);
         out->opcode = HB_INS_TEST; out->writes_flags = true;
-        return parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b, 4, out, 1, 2, true);
+        return parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b, sz, out, 1, 2, true);
     }
     if (opcode == 0xA8) {
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;

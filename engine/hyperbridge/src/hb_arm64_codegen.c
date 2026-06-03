@@ -5597,7 +5597,6 @@ void hb_jit_helper_exec_mono_metadata_bsearch_loop(hb_context_t* ctx,
         uint32_t ecx;
         uint32_t tmp32 = 0;
         uint64_t node = 0;
-        bool add_no_carry;
         bool cmp_above_or_equal;
 
         rax = eax;
@@ -5627,11 +5626,10 @@ void hb_jit_helper_exec_mono_metadata_bsearch_loop(hb_context_t* ctx,
         r8 += rcx;
         ecx = eax;
 
-        add_no_carry = eax != 0xffffffffu;
         cmp_above_or_equal = r10 >= r8;
         eax = (uint32_t)(eax + 1u);
         rax = eax;
-        if (add_no_carry) ecx = (uint32_t)r9;
+        if (cmp_above_or_equal) ecx = (uint32_t)r9;
         r9 = ecx;
         if (cmp_above_or_equal) rbp = eax;
         rcx = ecx;

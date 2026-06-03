@@ -7,19 +7,32 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
-## ⚡ LANE A NEXT (operator 2026-06-02 update) — AOT cache is ON & filling; now answer "does Mono finish?"
-AOT cache is engaged and working (translation-cache.bin 16B→1.5MB; warm run hits=2345/stores=7785).
-But the window still doesn't appear in 90s (D3D11CreateDevice=0). Before more micro-opt, answer the
-key question with ONE experiment: **run Hollow Knight with a LONG timeout (e.g. 600–900s) AND the
-now-warm AOT cache** (run it 2–3 times so the cache warms across runs, then a long final run).
-- Track: does the heartbeat block count keep CLIMBING, and does `D3D11CreateDevice`/`GfxDevice`
-  EVER appear if given enough time? Does cache hit-rate rise run-over-run (hits/(hits+misses))?
-- If Mono init COMPLETES given time → it's pure throughput: keep warming + bulk-promote + enable
-  DIRECT_MEM and it'll fit smaller timeouts → window.
-- If it PLATEAUS again at a fixed block/rva even with a long timeout + warm cache → it's a NEW gate
-  (another wait/init dependency), not speed — diagnose that like the last gate.
-Also: DIRECT_MEM is still 0 — enable for safe paths and measure. Report blocks-per-wallclock and
-cache hit-rate before/after. Keep the JIT shift/SETcc flag correctness fix intact.
+## ⚡ LANE A NEXT (Codex 2026-06-03 update) — `0x14f180` and `0x5158b4` are cleared; profile the new CPU-hot Mono gate
+Current checkpoint: `0x5158b4` was proven not to be a wait primitive, and a fresh-cache run after
+the Mono metadata bsearch helper fix now passes both `0x14f180` and `0x5158b4`. The old shared
+`engine/hyperbridge/build/hyperbridge-cache` masked this: after archiving it to
+`reports/phase4-hollow-knight/hyperbridge-cache-before-testw-fix-20260603-103641`, TEST-only code
+fell back to the old `0x14f180` plateau. Root cause was the promoted Mono bsearch helper, not Mono
+metadata itself: `mono_jit_info_table_find` does `cmp r10,r8; inc eax; cmovae ecx,r9d`, and x86
+`INC` preserves CF. `hb_jit_helper_exec_mono_metadata_bsearch_loop` incorrectly used the ADD-style
+carry from `inc eax`; it must use the prior CMP carry for the first `CMOVAE`.
+
+Fix/validation checkpoint: HyperBridge rebuild succeeded, `ntdll.so` was relinked/installed/signed
+(`reports/phase4-hollow-knight/mono-bsearch-cf-relink-20260603-105332/relink.log`, rc=0), and
+`hb_test_runner` is `428 passed, 3 failed` with the same known unrelated failures. Added coverage:
+`decode_x64_operand16_immediate_lengths`, `decode_x86_test_operand16_family`,
+`jit_x64_testw_same_reg_jne_uses_16bit_zf`, and
+`jit_x64_helper_mono_metadata_bsearch_preserves_cmp_cf_across_inc`.
+
+HK fresh-cache proof:
+`reports/phase4-hollow-knight/run-20260603-105413-mono-bsearch-cf-fresh420/` reaches
+`blocks=0x1e60c0` (`1,990,848`) by 180s and no longer parks at `0x14f180` or `0x5158b4`. The next
+surface is CPU-hot/moving Mono throughput, not a no-wake deadlock: observed RVAs include `0x53fa54`
+(`HeapFree` wrapper), `0xd140f` (finite class cleanup/free loop), `0x150d70` (lock/TLS wrapper),
+and under direct-native lock tracing `0x284b34`. Wait-semantic logs only show ordinary worker
+waits/signals; no `WaitOnAddress`/event/semaphore target corresponds to these PCs. NEXT: inspect
+and profile `mono-2.0-bdwgc.dll+0x284b34`, then promote/fix the hottest concrete loop/helper by
+evidence. Do not return to the wait layer for `0x5158b4`.
 
 **2026-06-03 wait-semantic verdict (Codex Lane A): `0x5158b4` is NOT a wait primitive.**
 Checkpoint commit made first as requested: `aa76fd5 checkpoint(lane-a): pass 0x14f180 barrier`.

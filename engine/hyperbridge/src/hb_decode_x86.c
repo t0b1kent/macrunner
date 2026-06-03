@@ -2796,7 +2796,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t modrm = read_u8(d);
         uint8_t ext = (modrm >> 3) & 7;
-        uint8_t sz = (opcode == 0xF6) ? 1 : 4;
+        uint8_t sz = (opcode == 0xF6) ? 1 : (operand16 ? 2 : 4);
         if (ext == 0) {
             out->opcode = HB_INS_TEST;
             out->writes_flags = true;
@@ -2805,9 +2805,12 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             if (opcode == 0xF6) {
                 if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
                 set_imm(out, 2, read_s8(d), 1);
+            } else if (sz == 2) {
+                if (!can_read(d, 2)) return HB_ERR_DECODE_FAILED;
+                set_imm(out, 2, (int64_t)read_s16(d), sz);
             } else {
                 if (!can_read(d, 4)) return HB_ERR_DECODE_FAILED;
-                set_imm(out, 2, (int64_t)read_s32(d), 4);
+                set_imm(out, 2, (int64_t)read_s32(d), sz);
             }
             return HB_OK;
         }

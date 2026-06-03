@@ -4536,6 +4536,16 @@ NTSTATUS virtual_create_builtin_view( void *module, const UNICODE_STRING *nt_nam
 /***********************************************************************
  *           virtual_relocate_module
  */
+static BOOL virtual_section_raw_range_fits( const IMAGE_SECTION_HEADER *sec, ULONG image_size,
+                                            SIZE_T *size )
+{
+    ULONG rva = sec->VirtualAddress;
+
+    *size = sec->SizeOfRawData;
+    if (!*size) return TRUE;
+    return rva < image_size && *size <= image_size - rva;
+}
+
 NTSTATUS virtual_relocate_module( void *module )
 {
     char *ptr = module;
@@ -4574,15 +4584,25 @@ NTSTATUS virtual_relocate_module( void *module )
 
     if (!(relocs = get_data_dir( nt, total_size, IMAGE_DIRECTORY_ENTRY_BASERELOC ))) return STATUS_SUCCESS;
 
-    if (!(protect_old = malloc( nt->FileHeader.NumberOfSections * sizeof(*protect_old ))))
+    if (!(protect_old = calloc( nt->FileHeader.NumberOfSections, sizeof(*protect_old) )))
         return STATUS_NO_MEMORY;
 
     sec = IMAGE_FIRST_SECTION( nt );
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
-        void *addr = (char *)module + sec[i].VirtualAddress;
-        SIZE_T size = sec[i].SizeOfRawData;
-        NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &protect_old[i] );
+        void *addr;
+        SIZE_T size;
+
+        if (!virtual_section_raw_range_fits( &sec[i], total_size, &size ))
+        {
+            status = STATUS_INVALID_IMAGE_FORMAT;
+            goto done;
+        }
+        if (!size) continue;
+        addr = (char *)module + sec[i].VirtualAddress;
+        if ((status = NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size,
+                                              PAGE_READWRITE, &protect_old[i] )))
+            goto done;
     }
 
 
@@ -4599,10 +4619,17 @@ NTSTATUS virtual_relocate_module( void *module )
         }
     }
 
+done:
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
-        void *addr = (char *)module + sec[i].VirtualAddress;
-        SIZE_T size = sec[i].SizeOfRawData;
+        void *addr;
+        SIZE_T size;
+
+        if (!protect_old[i]) continue;
+        if (!virtual_section_raw_range_fits( &sec[i], total_size, &size ))
+            continue;
+        if (!size) continue;
+        addr = (char *)module + sec[i].VirtualAddress;
         NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, protect_old[i], &protect_old[i] );
     }
     free( protect_old );

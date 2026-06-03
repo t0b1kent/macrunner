@@ -3260,8 +3260,13 @@ static void update_arm64ec_ranges( struct file_view *view, IMAGE_NT_HEADERS *nt,
 
     for (i = 0; i < metadata->CodeMapCount; i++)
     {
+        ULONG rva = map[i].StartOffset & ~3;
+
         if ((map[i].StartOffset & 0x3) != 1 /* arm64ec */) continue;
-        set_arm64ec_range( base + (map[i].StartOffset & ~3), map[i].Length );
+        if (rva > view->size || map[i].Length > view->size - rva ||
+            (ULONG_PTR)base > ~(ULONG_PTR)0 - rva)
+            continue;
+        set_arm64ec_range( base + rva, map[i].Length );
     }
 }
 

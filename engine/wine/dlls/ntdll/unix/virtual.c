@@ -283,7 +283,10 @@ static struct range_entry *free_ranges_end;
 
 static inline BOOL is_beyond_limit( const void *addr, size_t size, const void *limit )
 {
-    return (addr >= limit || (const char *)addr + size > (const char *)limit);
+    UINT_PTR start = (UINT_PTR)addr, end = start + size;
+    UINT_PTR max = (UINT_PTR)limit;
+
+    return start >= max || end < start || end > max;
 }
 
 static inline BOOL is_vprot_exec_write( BYTE vprot )

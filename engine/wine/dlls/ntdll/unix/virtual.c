@@ -5410,6 +5410,7 @@ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, UL
     NTSTATUS status;
     sigset_t sigset;
     SIZE_T size;
+    char *stack_limit, *view_end;
 
     if (!reserve_size) reserve_size = main_image_info.MaximumStackSize;
     if (!commit_size) commit_size = main_image_info.CommittedStackSize;
@@ -5434,18 +5435,40 @@ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, UL
     status = map_view( &view, NULL, size, 0, VPROT_READ | VPROT_WRITE | VPROT_COMMITTED,
                        limit_low, limit_high, 0 );
     if (status != STATUS_SUCCESS) goto done;
+    if (!get_view_limit( view, &view_end ))
+    {
+        delete_view( view );
+        status = STATUS_NO_MEMORY;
+        goto done;
+    }
+    stack_limit = view->base;
 
 #ifdef VALGRIND_STACK_REGISTER
-    VALGRIND_STACK_REGISTER( view->base, (char *)view->base + view->size );
+    VALGRIND_STACK_REGISTER( view->base, view_end );
 #endif
 
     /* setup no access guard page */
     if (guard_page)
     {
+        char *guard_base;
+
+        if (host_page_size > ~(UINT_PTR)0 - (UINT_PTR)view->base)
+        {
+            delete_view( view );
+            status = STATUS_NO_MEMORY;
+            goto done;
+        }
+        guard_base = (char *)view->base + host_page_size;
+        if (host_page_size > ~(UINT_PTR)0 - (UINT_PTR)guard_base)
+        {
+            delete_view( view );
+            status = STATUS_NO_MEMORY;
+            goto done;
+        }
+        stack_limit = guard_base + host_page_size;
         set_page_vprot( view->base, host_page_size, 0 );
-        set_page_vprot( (char *)view->base + host_page_size, host_page_size,
-                        VPROT_READ | VPROT_WRITE | VPROT_COMMITTED | VPROT_GUARD );
-        mprotect_range( view->base, 2 * host_page_size , 0, 0 );
+        set_page_vprot( guard_base, host_page_size, VPROT_READ | VPROT_WRITE | VPROT_COMMITTED | VPROT_GUARD );
+        mprotect_range( view->base, stack_limit - (char *)view->base, 0, 0 );
     }
     VIRTUAL_DEBUG_DUMP_VIEW( view );
 
@@ -5453,8 +5476,8 @@ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, UL
     stack->OldStackBase = 0;
     stack->OldStackLimit = 0;
     stack->DeallocationStack = view->base;
-    stack->StackBase = (char *)view->base + view->size;
-    stack->StackLimit = (char *)view->base + (guard_page ? 2 * host_page_size : 0);
+    stack->StackBase = view_end;
+    stack->StackLimit = stack_limit;
 done:
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
     return status;

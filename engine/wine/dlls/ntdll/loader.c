@@ -1991,6 +1991,30 @@ static BOOL macrunner_hb_file_rva_in_section( IMAGE_SECTION_HEADER *sections, un
     return FALSE;
 }
 
+static char *macrunner_hb_file_rva_to_string( BYTE *data, SIZE_T size, IMAGE_SECTION_HEADER *sections,
+                                              unsigned int count, DWORD rva )
+{
+    unsigned int i;
+
+    for (i = 0; i < count; i++)
+    {
+        DWORD sec_size = max( sections[i].Misc.VirtualSize, sections[i].SizeOfRawData );
+        DWORD delta;
+        SIZE_T raw, remaining;
+        char *str;
+
+        if (rva < sections[i].VirtualAddress) continue;
+        delta = rva - sections[i].VirtualAddress;
+        if (delta >= sec_size || delta >= sections[i].SizeOfRawData) continue;
+        raw = sections[i].PointerToRawData;
+        if (raw > size || delta > size - raw) return NULL;
+        remaining = min( (SIZE_T)sections[i].SizeOfRawData - delta, size - raw - delta );
+        str = (char *)data + raw + delta;
+        return memchr( str, 0, remaining ) ? str : NULL;
+    }
+    return NULL;
+}
+
 static void *macrunner_hb_find_disk_export_outside_section( WINE_MODREF *target_mod, const char *name,
                                                             const char *section )
 {
@@ -2064,8 +2088,8 @@ static void *macrunner_hb_find_disk_export_outside_section( WINE_MODREF *target_
 
     for (i = 0; i < exports->NumberOfNames; i++)
     {
-        char *export_name = macrunner_hb_file_rva_to_ptr( data, size, sections,
-                                                          nt->FileHeader.NumberOfSections, names[i], 1 );
+        char *export_name = macrunner_hb_file_rva_to_string( data, size, sections,
+                                                             nt->FileHeader.NumberOfSections, names[i] );
         WORD ordinal;
 
         if (!export_name || strcmp( export_name, name )) continue;

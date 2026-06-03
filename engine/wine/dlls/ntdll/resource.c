@@ -480,8 +480,9 @@ NTSTATUS WINAPI RtlFindMessage( HMODULE hmod, ULONG type, ULONG lang,
             const MESSAGE_RESOURCE_ENTRY *entry;
             ULONG entry_index;
 
-            if (block->OffsetToEntries >= size) return STATUS_RESOURCE_DATA_NOT_FOUND;
-            entry = (const MESSAGE_RESOURCE_ENTRY *)((const char *)data + block->OffsetToEntries);
+            if (!resource_offset_ptr( data, size, block->OffsetToEntries, sizeof(*entry),
+                                      (const void **)&entry ))
+                return STATUS_RESOURCE_DATA_NOT_FOUND;
             for (entry_index = msg_id - block->LowId; entry_index > 0; entry_index--)
             {
                 if (!resource_contains( data, size, entry, sizeof(*entry) ) ||

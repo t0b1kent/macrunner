@@ -6748,6 +6748,7 @@ static NTSTATUS get_working_set_ex( HANDLE process, LPCVOID addr,
     struct working_set_info_ref ref_buffer[256], *ref = ref_buffer, *r;
     struct fill_working_set_info_data data;
     char *start, *end;
+    UINT_PTR last, limit;
     SIZE_T i, count;
     struct file_view *view, *prev_view;
     sigset_t sigset;
@@ -6774,7 +6775,17 @@ static NTSTATUS get_working_set_ex( HANDLE process, LPCVOID addr,
     }
     qsort( ref, count, sizeof(*ref), compare_working_set_info_ref );
     start = ref[0].addr;
-    end = ref[count - 1].addr + page_size;
+    last = (UINT_PTR)ref[count - 1].addr;
+    limit = (UINT_PTR)working_set_limit;
+    if (last >= limit || page_size > limit - last) end = working_set_limit;
+    else end = (char *)(last + page_size);
+
+    if ((UINT_PTR)start >= (UINT_PTR)end)
+    {
+        if (ref != ref_buffer) free( ref );
+        if (res_len) *res_len = len;
+        return STATUS_SUCCESS;
+    }
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     init_fill_working_set_info_data( &data, end );

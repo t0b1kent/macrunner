@@ -267,15 +267,22 @@ static char *remove_tail( const char *str, const char *tail )
 static char *build_path( const char *dir, const char *name )
 {
     size_t len = strlen( dir );
+    size_t name_len = strlen( name );
     char *ret;
 
-    if (!(ret = malloc( len + strlen( name ) + 2 ))) fatal_error( "out of memory building loader path\n" );
+    if (len)
+    {
+        if (name[0] == '/') name++;
+        name_len = strlen( name );
+    }
+    if (name_len > ~(size_t)0 - 2 || len > ~(size_t)0 - name_len - 2)
+        fatal_error( "loader path too long\n" );
+    if (!(ret = malloc( len + name_len + 2 ))) fatal_error( "out of memory building loader path\n" );
 
     if (len)
     {
         memcpy( ret, dir, len );
         if (ret[len - 1] != '/') ret[len++] = '/';
-        if (name[0] == '/') name++;
     }
     strcpy( ret + len, name );
     return ret;
@@ -286,6 +293,7 @@ static char *build_relative_path( const char *base, const char *from, const char
 {
     const char *start;
     char *ret;
+    size_t base_len, start_len, alloc_size;
     unsigned int dotdots = 0;
 
     for (;;)
@@ -308,7 +316,13 @@ static char *build_relative_path( const char *base, const char *from, const char
         break;
     }
 
-    if (!(ret = malloc( strlen(base) + 3 * dotdots + strlen(start) + 2 )))
+    base_len = strlen( base );
+    start_len = strlen( start );
+    if (start_len > ~(size_t)0 - 2 || base_len > ~(size_t)0 - start_len - 2 ||
+        dotdots > (~(size_t)0 - base_len - start_len - 2) / 3)
+        fatal_error( "loader path too long\n" );
+    alloc_size = base_len + 3 * dotdots + start_len + 2;
+    if (!(ret = malloc( alloc_size )))
         fatal_error( "out of memory building loader path\n" );
     strcpy( ret, base );
     while (dotdots--) strcat( ret, "/.." );
@@ -652,7 +666,7 @@ static char *create_tempdir(const char *wineloader_path)
 {
     char *str = NULL, *ntdll = NULL, *p, *tempdir = malloc(MAX_PATH);
     struct stat st;
-    size_t n;
+    size_t n, wineloader_len;
 
     if (!tempdir) return NULL;
 
@@ -674,7 +688,10 @@ static char *create_tempdir(const char *wineloader_path)
     /* mkdir may fail if the directory already exists but that's ok */
     mkdir(tempdir, 0700);
 
-    if (!(ntdll = malloc( strlen(wineloader_path) + sizeof("/ntdll.so") )))
+    wineloader_len = strlen( wineloader_path );
+    if (wineloader_len > ~(size_t)0 - sizeof("/ntdll.so"))
+        goto fail;
+    if (!(ntdll = malloc( wineloader_len + sizeof("/ntdll.so") )))
         goto fail;
     strcpy( ntdll, wineloader_path );
     if ((p = strrchr( ntdll, '/' ))) *p = 0;

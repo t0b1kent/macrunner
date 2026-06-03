@@ -16,6 +16,34 @@ ensure_llvm_mingw
 
 mkdir -p "$GRAPHICS_BUILD/cross" "$GRAPHICS_DIST/vkd3d" "$GRAPHICS_DIST/manifest"
 
+prepare_glslang_tool() {
+  local source_bin tool_dir tool_bin glslang_lib default_limits_lib
+  source_bin="${GLSLANG_BIN:-}"
+  if [[ -z "$source_bin" ]]; then
+    source_bin="$(command -v glslang || command -v glslangValidator || true)"
+  fi
+  require_file "$source_bin"
+
+  tool_dir="$GRAPHICS_BUILD/tools/glslang"
+  tool_bin="$tool_dir/glslang"
+  glslang_lib="/opt/homebrew/opt/glslang/lib/libglslang.16.dylib"
+  default_limits_lib="/opt/homebrew/opt/glslang/lib/libglslang-default-resource-limits.16.dylib"
+  require_file "$glslang_lib"
+  require_file "$default_limits_lib"
+
+  mkdir -p "$tool_dir"
+  cp -f "$source_bin" "$tool_bin"
+  chmod +w "$tool_bin"
+  install_name_tool -change @rpath/libglslang.16.dylib "$glslang_lib" "$tool_bin" || true
+  install_name_tool -change @rpath/libglslang-default-resource-limits.16.dylib "$default_limits_lib" "$tool_bin" || true
+  codesign -s - -f "$tool_bin" >/dev/null 2>&1 || true
+
+  "$tool_bin" --version >/dev/null
+  export PATH="$tool_dir:$PATH"
+}
+
+prepare_glslang_tool
+
 echo "MacRunner graphics: vkd3d-proton D3D12 build"
 echo "source: $VKD3D_SRC"
 

@@ -2700,12 +2700,13 @@ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start
                                     BOOL host_executable )
 {
     char *map_addr, *host_addr;
+    char *view_end;
     size_t map_size, host_size;
     int prot = PROT_READ | PROT_WRITE;
     unsigned int flags = MAP_FIXED;
 
-    assert( start < view->size );
-    assert( start + size <= view->size );
+    if (start >= view->size || size > view->size - start) return STATUS_INVALID_PARAMETER;
+    if (!round_size_checked( start, size, page_mask, &map_size )) return STATUS_INVALID_PARAMETER;
 
     if (vprot & VPROT_WRITE) flags |= MAP_SHARED;
     else if (vprot & VPROT_WRITECOPY) flags |= MAP_PRIVATE;
@@ -2727,15 +2728,17 @@ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start
 #endif
     }
 
-    map_size = ROUND_SIZE( start, size, page_mask );
     map_addr = ROUND_ADDR( (char *)view->base + start, page_mask );
+    if (map_size > ~(UINT_PTR)0 - (UINT_PTR)map_addr) return STATUS_INVALID_PARAMETER;
     if (macrunner_hb_trace_host_exec() && executable)
         fprintf( stderr, "macrunner-host-exec-map-file: pid=%d view=%p base=%p start=%zx size=%zx vprot=%#x exec=%d host_exec=%d protect=%#x\n",
                  getpid(), view, map_addr, start, size, vprot, executable, host_executable, view->protect );
     host_addr = ROUND_ADDR( (char *)view->base + start, host_page_mask );
     /* last page doesn't need to be a full page */
-    if (map_addr + map_size >= (char *)view->base + view->size) host_size = map_size;
-    else host_size = ROUND_SIZE( 0, map_size, host_page_mask );
+    if (view->size > ~(UINT_PTR)0 - (UINT_PTR)view->base) return STATUS_INVALID_PARAMETER;
+    view_end = (char *)view->base + view->size;
+    if (map_addr + map_size >= view_end) host_size = map_size;
+    else if (!round_size_checked( 0, map_size, host_page_mask, &host_size )) return STATUS_INVALID_PARAMETER;
 
 #if defined(__APPLE__) && defined(__aarch64__)
     if (host_executable)

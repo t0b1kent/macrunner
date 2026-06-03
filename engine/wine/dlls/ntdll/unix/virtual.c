@@ -1936,7 +1936,7 @@ static void unmap_area( void *start, size_t size )
     LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
     {
         void *area_start = area->base;
-        void *area_end = (char *)area_start + area->size;
+        void *area_end = reserved_area_limit( area );
 
         if (area_start >= end) break;
         if (area_end <= start) continue;
@@ -2538,10 +2538,8 @@ static NTSTATUS map_fixed_area( void *base, size_t size, int unix_prot )
     LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
     {
         char *area_start = area->base;
-        char *area_end;
+        char *area_end = reserved_area_limit( area );
 
-        if (area->size > ~(SIZE_T)0 - (UINT_PTR)area_start) return STATUS_INVALID_PARAMETER;
-        area_end = area_start + area->size;
         if (area_start >= end) break;
         if (area_end <= start) continue;
         if (area_start > start)
@@ -6207,7 +6205,7 @@ static void free_reserved_memory( char *base, char *limit )
         LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
         {
             char *area_base = area->base;
-            char *area_end = area_base + area->size;
+            char *area_end = reserved_area_limit( area );
 
             if (area_end <= base) continue;
             if (area_base >= limit) return;
@@ -6937,7 +6935,7 @@ static struct file_view *get_memory_region_size( char *base, char **region_start
         LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
         {
             char *area_start = area->base;
-            char *area_end = area_start + area->size;
+            char *area_end = reserved_area_limit( area );
 
             if (area_end <= base)
             {

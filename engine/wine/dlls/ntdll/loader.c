@@ -5244,10 +5244,10 @@ NTSTATUS WINAPI LdrDisableThreadCalloutsForDll(HMODULE hModule)
 static int module_address_search_compare( const void *key, const RTL_BALANCED_NODE *entry )
 {
     const LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, BaseAddressIndexNode);
-    const char *addr = key;
+    ULONG_PTR addr = (ULONG_PTR)key, base = (ULONG_PTR)mod->DllBase;
 
-    if (addr < (char *)mod->DllBase) return -1;
-    if (addr >= (char *)mod->DllBase + mod->SizeOfImage) return 1;
+    if (addr < base) return -1;
+    if (mod->SizeOfImage > ~(ULONG_PTR)0 - base || addr >= base + mod->SizeOfImage) return 1;
     return 0;
 }
 

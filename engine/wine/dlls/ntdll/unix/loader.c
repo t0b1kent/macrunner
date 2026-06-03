@@ -2048,27 +2048,58 @@ NTSTATUS load_start_exe( UNICODE_STRING *nt_name, void **module )
     return status;
 }
 
-static ULONG_PTR find_ordinal_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *exports, DWORD ordinal )
+static BOOL module_rva_array_fits_image( ULONG image_size, ULONG rva, ULONG count, size_t elem_size )
 {
-    const DWORD *functions = (const DWORD *)((BYTE *)module + exports->AddressOfFunctions);
+    if (!count) return TRUE;
+    if (!rva || image_size < elem_size || rva > image_size - elem_size) return FALSE;
+    return count <= (image_size - rva) / elem_size;
+}
 
+static BOOL module_string_fits_image( HMODULE module, ULONG image_size, ULONG rva )
+{
+    if (rva >= image_size) return FALSE;
+    return memchr( (BYTE *)module + rva, 0, image_size - rva ) != NULL;
+}
+
+static ULONG_PTR find_ordinal_export( HMODULE module, ULONG image_size,
+                                      const IMAGE_EXPORT_DIRECTORY *exports, DWORD ordinal )
+{
+    const DWORD *functions;
+
+    if (!module_rva_array_fits_image( image_size, exports->AddressOfFunctions,
+                                      exports->NumberOfFunctions, sizeof(*functions) ))
+        return 0;
     if (ordinal >= exports->NumberOfFunctions) return 0;
-    if (!functions[ordinal]) return 0;
+    functions = (const DWORD *)((BYTE *)module + exports->AddressOfFunctions);
+    if (!functions[ordinal] || functions[ordinal] >= image_size) return 0;
     return (ULONG_PTR)module + functions[ordinal];
 }
 
-static ULONG_PTR find_named_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *exports,
-                                    const char *name )
+static ULONG_PTR find_named_export( HMODULE module, ULONG image_size,
+                                    const IMAGE_EXPORT_DIRECTORY *exports, const char *name )
 {
-    const WORD *ordinals = (const WORD *)((BYTE *)module + exports->AddressOfNameOrdinals);
-    const DWORD *names = (const DWORD *)((BYTE *)module + exports->AddressOfNames);
-    int min = 0, max = exports->NumberOfNames - 1;
+    const WORD *ordinals;
+    const DWORD *names;
+    int min = 0, max;
 
+    if (!exports->NumberOfNames || exports->NumberOfNames > INT_MAX) return 0;
+    if (!module_rva_array_fits_image( image_size, exports->AddressOfNameOrdinals,
+                                      exports->NumberOfNames, sizeof(*ordinals) ))
+        return 0;
+    if (!module_rva_array_fits_image( image_size, exports->AddressOfNames,
+                                      exports->NumberOfNames, sizeof(*names) ))
+        return 0;
+    ordinals = (const WORD *)((BYTE *)module + exports->AddressOfNameOrdinals);
+    names = (const DWORD *)((BYTE *)module + exports->AddressOfNames);
+    max = exports->NumberOfNames - 1;
     while (min <= max)
     {
         int res, pos = (min + max) / 2;
-        char *ename = (char *)module + names[pos];
-        if (!(res = strcmp( ename, name ))) return find_ordinal_export( module, exports, ordinals[pos] );
+        char *ename;
+        if (!module_string_fits_image( module, image_size, names[pos] )) return 0;
+        ename = (char *)module + names[pos];
+        if (!(res = strcmp( ename, name )))
+            return find_ordinal_export( module, image_size, exports, ordinals[pos] );
         if (res > 0) max = pos - 1;
         else min = pos + 1;
     }
@@ -2129,13 +2160,21 @@ static void load_ntdll_functions( HMODULE module )
     void **p__wine_unix_call_dispatcher_arm64ec = NULL;
     unixlib_handle_t *p__wine_unixlib_handle;
     const IMAGE_EXPORT_DIRECTORY *exports;
+    ULONG image_size, exports_size;
 
-    exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, NULL );
-    assert( exports );
+    image_size = get_module_image_size( module );
+    exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, &exports_size );
+    assert( image_size && exports && exports_size >= sizeof(*exports) );
+    if (!image_size || !exports || exports_size < sizeof(*exports)) return;
 
 #define GET_FUNC(name) \
-    if (!(p##name = (void *)find_named_export( module, exports, #name ))) \
-        ERR( "%s not found\n", #name )
+    do { \
+        if (!(p##name = (void *)find_named_export( module, image_size, exports, #name ))) \
+        { \
+            ERR( "%s not found\n", #name ); \
+            return; \
+        } \
+    } while (0)
 
     GET_FUNC( DbgUiRemoteBreakin );
     GET_FUNC( KiRaiseUserExceptionDispatcher );
@@ -2173,13 +2212,23 @@ static void load_ntdll_functions( HMODULE module )
 static void load_ntdll_wow64_functions( HMODULE module )
 {
     const IMAGE_EXPORT_DIRECTORY *exports;
+    ULONG image_size, exports_size;
 
-    exports = get_module_data_dir( module, IMAGE_FILE_EXPORT_DIRECTORY, NULL );
-    assert( exports );
+    image_size = get_module_image_size( module );
+    exports = get_module_data_dir( module, IMAGE_FILE_EXPORT_DIRECTORY, &exports_size );
+    assert( image_size && exports && exports_size >= sizeof(*exports) );
+    if (!image_size || !exports || exports_size < sizeof(*exports)) return;
 
     pLdrSystemDllInitBlock->ntdll_handle = (ULONG_PTR)module;
 
-#define GET_FUNC(name) pLdrSystemDllInitBlock->p##name = find_named_export( module, exports, #name )
+#define GET_FUNC(name) \
+    do { \
+        if (!(pLdrSystemDllInitBlock->p##name = find_named_export( module, image_size, exports, #name ))) \
+        { \
+            ERR( "%s not found\n", #name ); \
+            return; \
+        } \
+    } while (0)
     GET_FUNC( KiUserApcDispatcher );
     GET_FUNC( KiUserCallbackDispatcher );
     GET_FUNC( KiUserExceptionDispatcher );
@@ -2190,12 +2239,22 @@ static void load_ntdll_wow64_functions( HMODULE module )
     GET_FUNC( RtlpQueryProcessDebugInformationRemote );
 #undef GET_FUNC
 
-    p__wine_ctrl_routine = (void *)find_named_export( module, exports, "__wine_ctrl_routine" );
+    if (!(p__wine_ctrl_routine = (void *)find_named_export( module, image_size, exports,
+                                                            "__wine_ctrl_routine" )))
+    {
+        ERR( "__wine_ctrl_routine not found\n" );
+        return;
+    }
 
 #ifdef _WIN64
     {
-        unixlib_handle_t *p__wine_unixlib_handle = (void *)find_named_export( module, exports,
+        unixlib_handle_t *p__wine_unixlib_handle = (void *)find_named_export( module, image_size, exports,
                                                                               "__wine_unixlib_handle" );
+        if (!p__wine_unixlib_handle)
+        {
+            ERR( "__wine_unixlib_handle not found\n" );
+            return;
+        }
         *p__wine_unixlib_handle = (UINT_PTR)unix_call_wow64_funcs;
     }
 #endif
@@ -2234,14 +2293,6 @@ static BOOL module_ptr_fits_image( HMODULE module, ULONG image_size, const void 
     if (addr < base || image_size < size) return FALSE;
     return addr - base <= image_size - size;
 }
-
-static BOOL module_rva_array_fits_image( ULONG image_size, ULONG rva, ULONG count, size_t elem_size )
-{
-    if (!count) return TRUE;
-    if (!rva || image_size < elem_size || rva > image_size - elem_size) return FALSE;
-    return count <= (image_size - rva) / elem_size;
-}
-
 
 /***********************************************************************
  *           redirect_ntdll_functions

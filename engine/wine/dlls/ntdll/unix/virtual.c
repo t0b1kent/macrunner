@@ -3596,7 +3596,8 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     struct stat st;
     char *header_end;
     char *ptr = view->base;
-    SIZE_T header_size, header_map_size, rounded_size, total_size = view->size;
+    SIZE_T file_host_size, file_page_size, file_sector_size, header_size, header_map_size, header_span;
+    SIZE_T rounded_size, total_size = view->size;
     SIZE_T align_mask;
     INT_PTR delta;
 
@@ -3609,18 +3610,20 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
 
     if (fstat( fd, &st )) return errno_to_status( errno );
     if (st.st_size < 0) return STATUS_INVALID_IMAGE_FORMAT;
-    if (!round_size_checked( 0, st.st_size, host_page_mask, &rounded_size ))
+    if (!round_size_checked( 0, st.st_size, host_page_mask, &file_host_size ) ||
+        !round_size_checked( 0, st.st_size, page_mask, &file_page_size ) ||
+        !round_size_checked( 0, st.st_size, 0x1ff, &file_sector_size ))
         return STATUS_INVALID_IMAGE_FORMAT;
     header_size = min( image_info->header_size, st.st_size );
-    header_map_size = min( image_info->header_map_size, rounded_size );
+    header_map_size = min( image_info->header_map_size, file_host_size );
     if ((status = map_pe_header( view->base, header_size, header_map_size, fd, &removable )))
         return status;
 
     status = STATUS_INVALID_IMAGE_FORMAT;  /* generic error */
     dos = (IMAGE_DOS_HEADER *)ptr;
-    if (!round_size_checked( 0, header_size, align_mask, &rounded_size ) || rounded_size > total_size)
+    if (!round_size_checked( 0, header_size, align_mask, &header_span ) || header_span > total_size)
         return status;
-    header_end = ptr + rounded_size;
+    header_end = ptr + header_span;
     memset( ptr + header_size, 0, header_end - (ptr + header_size) );
     if (header_end - ptr < sizeof(*nt) ||
         (SIZE_T)dos->e_lfanew > header_end - ptr - sizeof(*nt))
@@ -3646,7 +3649,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
         /* unaligned sections, this happens for native subsystem binaries */
         /* in that case Windows simply maps in the whole file */
 
-        total_size = min( total_size, ROUND_SIZE( 0, st.st_size, page_mask ));
+        total_size = min( total_size, file_page_size );
         if (map_file_into_view( view, fd, 0, total_size, 0, VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY,
                                 removable, TRUE,
                                 !macrunner_hb_strip_host_exec_for_image( image_info ) ) != STATUS_SUCCESS)
@@ -3732,9 +3735,11 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
                 imports->VirtualAddress - sec[i].VirtualAddress < map_size)
             {
                 UINT_PTR base = imports->VirtualAddress & ~host_page_mask;
-                SIZE_T size = ROUND_SIZE( imports->VirtualAddress, imports->Size, host_page_mask );
+                SIZE_T size;
                 UINT_PTR end;
 
+                if (!round_size_checked( imports->VirtualAddress, imports->Size, host_page_mask, &size ))
+                    goto done;
                 if (base < sec[i].VirtualAddress) base = sec[i].VirtualAddress;
                 end = (size > ~(UINT_PTR)0 - base) ? section_end : base + size;
                 if (end > section_end) end = section_end;
@@ -3763,7 +3768,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
             BOOL host_executable = executable && !macrunner_hb_strip_host_exec_for_image( image_info );
 
         if (sec[i].PointerToRawData >= st.st_size ||
-            end > ((st.st_size + sector_align) & ~sector_align) ||
+            end > file_sector_size ||
             end < file_start ||
             map_file_into_view( view, fd, sec[i].VirtualAddress, file_size, file_start,
                                 VPROT_COMMITTED | VPROT_READ | VPROT_WRITECOPY,
@@ -3777,7 +3782,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
 
         if (file_size & align_mask)
         {
-            end = ROUND_SIZE( 0, file_size, align_mask );
+            if (!round_size_checked( 0, file_size, align_mask, &end )) goto done;
             if (end > map_size) end = map_size;
             TRACE_(module)("clearing %p - %p\n",
                            ptr + sec[i].VirtualAddress + file_size,
@@ -3868,9 +3873,8 @@ no_dynamic_reloc:
 
     /* set the image protections */
 
-    set_vprot( view, ptr, ROUND_SIZE( 0, header_size, align_mask ), VPROT_COMMITTED | VPROT_READ );
-    macrunner_hb_protect_wow64_guest32_image_range( image_info, ptr,
-                                                    ROUND_SIZE( 0, header_size, align_mask ),
+    set_vprot( view, ptr, header_span, VPROT_COMMITTED | VPROT_READ );
+    macrunner_hb_protect_wow64_guest32_image_range( image_info, ptr, header_span,
                                                     VPROT_COMMITTED | VPROT_READ,
                                                     view->protect );
 
@@ -3880,9 +3884,21 @@ no_dynamic_reloc:
         BYTE vprot = VPROT_COMMITTED;
 
         if (sec[i].Misc.VirtualSize)
-            size = ROUND_SIZE( sec[i].VirtualAddress, sec[i].Misc.VirtualSize, align_mask );
+        {
+            if (!round_size_checked( sec[i].VirtualAddress, sec[i].Misc.VirtualSize, align_mask, &size ))
+            {
+                status = STATUS_INVALID_IMAGE_FORMAT;
+                goto done;
+            }
+        }
         else
-            size = ROUND_SIZE( sec[i].VirtualAddress, sec[i].SizeOfRawData, align_mask );
+        {
+            if (!round_size_checked( sec[i].VirtualAddress, sec[i].SizeOfRawData, align_mask, &size ))
+            {
+                status = STATUS_INVALID_IMAGE_FORMAT;
+                goto done;
+            }
+        }
         if (sec[i].VirtualAddress > total_size || size > total_size - sec[i].VirtualAddress)
         {
             status = STATUS_INVALID_IMAGE_FORMAT;

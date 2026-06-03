@@ -552,6 +552,7 @@ static void set_config_dir(void)
 
 static void init_paths(void)
 {
+    char *wow64_path;
     Dl_info info;
 
     if (!dladdr( init_paths, &info ) || !(ntdll_dir = realpath_dirname( info.dli_fname )))
@@ -560,7 +561,9 @@ static void init_paths(void)
     if ((build_dir = remove_tail( ntdll_dir, "/dlls/ntdll" )))
     {
         wineloader = build_path( build_dir, "loader/wine" );
-        alt_build_dir = realpath_dirname( build_path( build_dir, "loader-wow64" ));
+        wow64_path = build_path( build_dir, "loader-wow64" );
+        alt_build_dir = realpath_dirname( wow64_path );
+        free( wow64_path );
     }
     else
     {
@@ -598,9 +601,10 @@ char *get_alternate_wineloader( WORD machine )
     }
 
     if (!build_dir)
-        asprintf( &ret, "%s%s/wine", dll_dir, get_so_dir( machine ));
-    else if (alt_build_dir)
-        asprintf( &ret, "%s/loader/wine", alt_build_dir );
+    {
+        if (asprintf( &ret, "%s%s/wine", dll_dir, get_so_dir( machine )) < 0) return NULL;
+    }
+    else if (alt_build_dir && asprintf( &ret, "%s/loader/wine", alt_build_dir ) < 0) return NULL;
 
     return ret;
 }

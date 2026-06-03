@@ -2705,8 +2705,13 @@ static void load_apiset_dll(void)
     init_unicode_string( &str, path );
     InitializeObjectAttributes( &attr, &str, 0, 0, NULL );
 
-    if (build_dir) asprintf( &name, "%s/dlls/apisetschema%s/apisetschema.dll", build_dir, pe_dir );
-    else asprintf( &name, "%s%s/apisetschema.dll", dll_dir, pe_dir );
+    if (build_dir)
+    {
+        if (asprintf( &name, "%s/dlls/apisetschema%s/apisetschema.dll", build_dir, pe_dir ) < 0)
+            fatal_error( "out of memory building apisetschema path\n" );
+    }
+    else if (asprintf( &name, "%s%s/apisetschema.dll", dll_dir, pe_dir ) < 0)
+        fatal_error( "out of memory building apisetschema path\n" );
     status = open_unix_file( &handle, name, GENERIC_READ | SYNCHRONIZE, &attr, 0,
                              FILE_SHARE_READ | FILE_SHARE_DELETE, FILE_OPEN,
                              FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0 );
@@ -3170,10 +3175,18 @@ static int pre_exec(void)
 {
     if (build_dir)
     {
-        char *path = getenv( "DYLD_LIBRARY_PATH" );
-        if (path) asprintf( &path, "%s/dlls/ntdll:%s/dlls/win32u:%s", build_dir, build_dir, path );
-        else asprintf( &path, "%s/dlls/ntdll:%s/dlls/win32u", build_dir, build_dir );
+        char *path;
+        const char *old_path = getenv( "DYLD_LIBRARY_PATH" );
+
+        if (old_path)
+        {
+            if (asprintf( &path, "%s/dlls/ntdll:%s/dlls/win32u:%s", build_dir, build_dir, old_path ) < 0)
+                fatal_error( "out of memory setting DYLD_LIBRARY_PATH\n" );
+        }
+        else if (asprintf( &path, "%s/dlls/ntdll:%s/dlls/win32u", build_dir, build_dir ) < 0)
+            fatal_error( "out of memory setting DYLD_LIBRARY_PATH\n" );
         setenv( "DYLD_LIBRARY_PATH", path, 1 );
+        free( path );
         return 1;
     }
 #ifdef HAVE_WINE_PRELOADER

@@ -86,7 +86,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Blend/rasterizer/depth-stencil/sampler states | Implemented | Smoke covers alpha/opaque blend, cull-none/cull-back rasterizer, depth/stencil/disabled depth, and linear/comparison/anisotropic samplers. |
 | Queries/counters | Implemented | Event, timestamp, timestamp-disjoint, occlusion, pipeline statistics, SO statistics, SO overflow predicates, deferred query playback, and occlusion predicate smoke pass; device-dependent counters return clean unsupported semantics (`DXGI_ERROR_UNSUPPORTED` with zeroed strings/counters), not `E_NOTIMPL`. |
 | Deferred/context methods | Implemented | Empty command lists, deferred RTV clear/readback, deferred draw recording/playback, deferred query playback, and deferred resource update/map/copy/readback pass; `UnityDeferredResourceProbe result=PASS`. |
-| Multithread/render stability | Partial | `ID3D10Multithread` protection, two worker-thread deferred command lists, command batching, and two 60s stability runs pass; still needs real Unity render-thread validation once the runtime reaches D3D11. |
+| Multithread/render stability | Implemented | `ID3D10Multithread` protection, two worker-thread deferred command lists, command batching, and two 60s stability runs pass; stability smoke presented `7175` and `7198` frames with final green readback. |
 | Draw/DrawIndexed/instanced/indirect | Implemented | Smoke covers direct, indexed, instanced, indexed-instanced, and indirect variants. |
 | Dispatch/DispatchIndirect | Implemented | Smoke covers direct and indirect compute dispatch with UAV readback value `42`. |
 | Copy/resolve/mips | Implemented | `CopyResource`, `ResolveSubresource`, `GenerateMips` paths exist. |

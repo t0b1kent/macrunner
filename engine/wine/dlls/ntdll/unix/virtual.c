@@ -6435,7 +6435,8 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
 
     /* Fix the parameters */
 
-    if (size) size = ROUND_SIZE( addr, size, page_mask );
+    if (size && !round_size_checked( (UINT_PTR)addr, size, page_mask, &size ))
+        return STATUS_INVALID_PARAMETER;
     base = ROUND_ADDR( addr, page_mask );
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
@@ -6538,7 +6539,8 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
 
     /* Fix the parameters */
 
-    size = ROUND_SIZE( addr, size, page_mask );
+    if (!round_size_checked( (UINT_PTR)addr, size, page_mask, &size ))
+        return STATUS_INVALID_PARAMETER;
     base = ROUND_ADDR( addr, page_mask );
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );

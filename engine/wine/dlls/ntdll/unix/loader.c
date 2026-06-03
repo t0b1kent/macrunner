@@ -1081,10 +1081,13 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     IMAGE_SECTION_HEADER *sec;
     BYTE *addr = (BYTE *)module;
     DWORD code_start, code_end, data_start, data_end;
-    DWORD align_mask = nt_descr->OptionalHeader.SectionAlignment - 1;
+    DWORD alignment = nt_descr->OptionalHeader.SectionAlignment;
+    DWORD align_mask;
     int delta, nb_sections = 2;  /* code + data */
     unsigned int i;
 
+    if (!alignment || (alignment & (alignment - 1))) return STATUS_INVALID_IMAGE_FORMAT;
+    align_mask = alignment - 1;
     code_start = (sizeof(IMAGE_DOS_HEADER)
                   + sizeof(builtin_signature)
                   + sizeof(IMAGE_NT_HEADERS)

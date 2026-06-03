@@ -52,6 +52,13 @@ static BOOL resource_contains( const void *root, ULONG size, const void *ptr, SI
     return len <= end - addr;
 }
 
+static BOOL resource_offset_ptr( const void *root, ULONG size, ULONG offset, SIZE_T len, const void **ptr )
+{
+    if (offset > size || len > size - offset) return FALSE;
+    *ptr = (const char *)root + offset;
+    return TRUE;
+}
+
 static BOOL get_resource_entries( const IMAGE_RESOURCE_DIRECTORY *dir, const void *root, ULONG size,
                                   const IMAGE_RESOURCE_DIRECTORY_ENTRY **entry, ULONG *count )
 {
@@ -72,8 +79,9 @@ static const IMAGE_RESOURCE_DIR_STRING_U *get_resource_name_string( const IMAGE_
     const IMAGE_RESOURCE_DIR_STRING_U *str;
 
     if (!entry->NameIsString) return NULL;
-    str = (const IMAGE_RESOURCE_DIR_STRING_U *)((const char *)root + entry->NameOffset);
-    if (!resource_contains( root, size, str, FIELD_OFFSET( IMAGE_RESOURCE_DIR_STRING_U, NameString ) ))
+    if (!resource_offset_ptr( root, size, entry->NameOffset,
+                              FIELD_OFFSET( IMAGE_RESOURCE_DIR_STRING_U, NameString ),
+                              (const void **)&str ))
         return NULL;
     if (!resource_contains( root, size, str->NameString, str->Length * sizeof(WCHAR) ))
         return NULL;
@@ -87,8 +95,7 @@ static const void *get_resource_entry_data( const IMAGE_RESOURCE_DIRECTORY_ENTRY
     SIZE_T min_size = want_dir ? sizeof(IMAGE_RESOURCE_DIRECTORY) : sizeof(IMAGE_RESOURCE_DATA_ENTRY);
 
     if (!!entry->DataIsDirectory != !!want_dir) return NULL;
-    ret = (const char *)root + entry->OffsetToDirectory;
-    if (!resource_contains( root, size, ret, min_size )) return NULL;
+    if (!resource_offset_ptr( root, size, entry->OffsetToDirectory, min_size, &ret )) return NULL;
     return ret;
 }
 

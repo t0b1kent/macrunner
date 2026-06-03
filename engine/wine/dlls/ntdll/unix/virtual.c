@@ -3231,6 +3231,7 @@ static void update_arm64ec_ranges( struct file_view *view, IMAGE_NT_HEADERS *nt,
     char *base = view->base;
     const IMAGE_LOAD_CONFIG_DIRECTORY *cfg = (void *)(base + dir->VirtualAddress);
     ULONGLONG metadata_va, metadata_rva;
+    ULONG_PTR redirected_entry;
     ULONG i, size;
 
     if (dir->Size < sizeof(cfg->Size)) return;
@@ -3249,9 +3250,11 @@ static void update_arm64ec_ranges( struct file_view *view, IMAGE_NT_HEADERS *nt,
         return;
     if (!arm64ec_view) alloc_arm64ec_map();
     commit_arm64ec_map( view );
-    *entry_point = metadata->RedirectionMetadataCount
-                   ? redirect_arm64ec_rva( base, nt->OptionalHeader.AddressOfEntryPoint, metadata )
-                   : nt->OptionalHeader.AddressOfEntryPoint;
+    redirected_entry = metadata->RedirectionMetadataCount
+                       ? redirect_arm64ec_rva( base, nt->OptionalHeader.AddressOfEntryPoint, metadata )
+                       : nt->OptionalHeader.AddressOfEntryPoint;
+    if (redirected_entry > UINT_MAX || redirected_entry >= view->size) return;
+    *entry_point = redirected_entry;
     if (!metadata->CodeMap || !metadata->CodeMapCount) return;
     if (!arm64ec_rva_array_fits_view( view, metadata->CodeMap, metadata->CodeMapCount,
                                       sizeof(*map) ))

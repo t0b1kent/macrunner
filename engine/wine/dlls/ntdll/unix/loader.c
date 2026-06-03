@@ -2435,6 +2435,18 @@ static BOOL module_ptr_fits_image( HMODULE module, ULONG image_size, const void 
     return addr - base <= image_size - size;
 }
 
+static void *redirect_arm64ec_proc( HMODULE module, ULONG image_size, void *proc,
+                                    const IMAGE_ARM64EC_METADATA *metadata )
+{
+    ULONG_PTR base = (ULONG_PTR)module, addr = (ULONG_PTR)proc;
+    ULONG_PTR target;
+
+    if (addr < base || addr - base >= image_size) return NULL;
+    target = redirect_arm64ec_rva( module, addr - base, metadata );
+    if (target >= image_size) return NULL;
+    return module_rva_ptr( module, image_size, target, 1 );
+}
+
 /***********************************************************************
  *           redirect_ntdll_functions
  *
@@ -2457,8 +2469,11 @@ static void redirect_ntdll_functions( HMODULE module )
                                       metadata->RedirectionMetadataCount,
                                       sizeof(IMAGE_ARM64EC_REDIRECTION_ENTRY) ))
         return;
-#define REDIRECT(name) \
-    p##name = get_rva( module, redirect_arm64ec_rva( module, (char *)p##name - (char *)module, metadata ))
+#define REDIRECT(name) do { \
+    void *redirected = redirect_arm64ec_proc( module, image_size, p##name, metadata ); \
+    if (!redirected) return; \
+    p##name = redirected; \
+} while (0)
     REDIRECT( DbgUiRemoteBreakin );
     REDIRECT( KiRaiseUserExceptionDispatcher );
     REDIRECT( KiUserExceptionDispatcher );

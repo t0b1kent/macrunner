@@ -6092,7 +6092,7 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
     else
     {
         base = NULL;
-        size = ROUND_SIZE( 0, size, page_mask );
+        if (!round_size_checked( 0, size, page_mask, &size )) return STATUS_INVALID_PARAMETER;
     }
 
     /* Compute the alloc type flags */

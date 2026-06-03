@@ -1272,3 +1272,38 @@ still requires green CI across the full game/regression suite after Phase 4 asse
 Plain x86_64 PE runs end-to-end (run_exit=0) via ARM64EC. Archived:
 `archives/milestone-arm64ec-x64-e2e-20260530.tar.gz` (local + external MacRunner-ARCHIVES,
 sha ccb34a25…). If any phase risks regressing this, STOP and escalate.
+
+---
+
+## Lane A checkpoint — 2026-06-03 TESTW gate cleared, still climbing
+
+- Root cause fixed: x64 decoder opcode `0x85 /r` ignored operand-size override and decoded
+  `66 85 c9` (`test %cx,%cx`) as 32-bit TEST. In Hollow Knight Mono, `ecx=0x01010000`
+  must produce ZF=1 for the low 16 bits; the old decode let `jne` take the wrong path and
+  produced the invalid `RuntimeType` vtable slot-16 signature.
+- Code fix: `engine/hyperbridge/src/hb_decode_x64.c` now passes `op_size` to `parse_modrm`
+  for `0x85 /r`. Regression coverage added in `engine/hyperbridge/tests/hb_test_runner.c`
+  for `66 85`, default `85`, `48 85`, `66 F7 /0`, and `F6 /0`, plus a JIT branch test proving
+  `66 85 c9; jne` uses low16 while the 32-bit sibling still branches.
+- Loader gate kept moving: `engine/wine/dlls/ntdll/unix/loader.c` treats
+  `RtlpFreezeTimeBias` and `RtlpQueryProcessDebugInformationRemote` as optional wow64 ntdll
+  exports; current PE ntdll lacks `RtlpFreezeTimeBias`.
+- Validation:
+  `make -C engine/hyperbridge` PASS. `engine/hyperbridge/tests/hb_test_runner` reached
+  `443 passed, 2 failed`; the two failures are pre-existing (`out.blocks_executed == 8` and
+  PE mprotect/expected-2-got-1), and the new TEST tests passed.
+- App proof: `reports/phase4-hollow-knight/run-20260603-173400-testw85-clean420/` ran 420s
+  with heartbeat + wait-semantic trace. Result timed out by wrapper (`rc=143`) while still
+  progressing: final heartbeat `label=thread blocks=0x1e5c2d steps=0xbc36cf rva=0xd5234`.
+  No `RuntimeType`, invalid vtable, assertion, or runtime-fail appeared. Stdout reached Unity
+  memory configuration plus Mono path/config. This is past the old 1.737M barrier and is not
+  a hard park in this run.
+- Diagnostic note: a transient sample at 35s showed `EnterCriticalSection` inside
+  `macrunner_hb_try_kernel32_handle_semantic`, but env-gated critical-section trace later showed
+  zero `enter-wait` events and sustained heartbeat progress. Treat that as a transient wait,
+  not current root cause.
+
+NEXT: run a longer clean settle (900s+) with heartbeat + wait-semantic and late samples. If it
+parks, diagnose the final stable `rva`/wait target. If it keeps moving, shift to throughput
+acceleration and/or graphics/D3D arrival probes. Current STOP conditions are unchanged: main menu
+with rendered frame/input/audio, or a reproducible hard park/runtime-fail with exact signal target.

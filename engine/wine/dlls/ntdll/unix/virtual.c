@@ -7313,18 +7313,22 @@ static NTSTATUS get_working_set_ex( HANDLE process, LPCVOID addr,
     view = find_view_range( start, end - start );
     while (view && (char *)view->base > start)
     {
+        char *prev_end;
+
         prev_view = RB_ENTRY_VALUE( rb_prev( &view->entry ), struct file_view, entry );
-        if (!prev_view || (char *)prev_view->base + prev_view->size <= start) break;
+        if (!prev_view || !get_view_limit( prev_view, &prev_end ) || prev_end <= start) break;
         view = prev_view;
     }
 
     r = ref;
     while (view && (char *)view->base < end)
     {
+        char *view_end;
+
+        if (!get_view_limit( view, &view_end )) break;
         if (start < (char *)view->base) start = view->base;
         while (r != ref + count && r->addr < start) ++r;
-        while (start != (char *)view->base + view->size && r != ref + count
-               && r->addr < (char *)view->base + view->size)
+        while (start != view_end && r != ref + count && r->addr < view_end)
         {
             start += get_committed_size( view, start, end - start, &vprot, ~VPROT_WRITEWATCH );
             i = 0;

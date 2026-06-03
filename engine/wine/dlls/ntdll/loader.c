@@ -5947,16 +5947,23 @@ static ULONG read_image_directory( HANDLE file, const SECTION_IMAGE_INFORMATION 
     if (NtReadFile( file, 0, NULL, NULL, &io, &nt, sizeof(nt), &offset, NULL )) return 0;
     if (io.Information != sizeof(nt)) return 0;
     if (nt.nt32.Signature != IMAGE_NT_SIGNATURE) return 0;
+    if (dir >= IMAGE_NUMBEROF_DIRECTORY_ENTRIES) return 0;
     *magic = nt.nt32.OptionalHeader.Magic;
     switch (nt.nt32.OptionalHeader.Magic)
     {
     case IMAGE_NT_OPTIONAL_HDR32_MAGIC:
         if (dir >= nt.nt32.OptionalHeader.NumberOfRvaAndSizes) return 0;
+        if (nt.nt32.FileHeader.SizeOfOptionalHeader <
+            offsetof( IMAGE_OPTIONAL_HEADER32, DataDirectory ) + (dir + 1) * sizeof(IMAGE_DATA_DIRECTORY))
+            return 0;
         va = nt.nt32.OptionalHeader.DataDirectory[dir].VirtualAddress;
         size = nt.nt32.OptionalHeader.DataDirectory[dir].Size;
         break;
     case IMAGE_NT_OPTIONAL_HDR64_MAGIC:
         if (dir >= nt.nt64.OptionalHeader.NumberOfRvaAndSizes) return 0;
+        if (nt.nt64.FileHeader.SizeOfOptionalHeader <
+            offsetof( IMAGE_OPTIONAL_HEADER64, DataDirectory ) + (dir + 1) * sizeof(IMAGE_DATA_DIRECTORY))
+            return 0;
         va = nt.nt64.OptionalHeader.DataDirectory[dir].VirtualAddress;
         size = nt.nt64.OptionalHeader.DataDirectory[dir].Size;
         break;
@@ -9053,11 +9060,15 @@ PVOID WINAPI RtlImageDirectoryEntryToData( HMODULE module, BOOL image, WORD dir,
     if ((ULONG_PTR)module & 1) image = FALSE;  /* mapped as data file */
     module = (HMODULE)((ULONG_PTR)module & ~3);
     if (!(nt = RtlImageNtHeader( module ))) return NULL;
+    if (dir >= IMAGE_NUMBEROF_DIRECTORY_ENTRIES) return NULL;
     if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
     {
         const IMAGE_NT_HEADERS64 *nt64 = (const IMAGE_NT_HEADERS64 *)nt;
 
         if (dir >= nt64->OptionalHeader.NumberOfRvaAndSizes) return NULL;
+        if (nt64->FileHeader.SizeOfOptionalHeader <
+            offsetof( IMAGE_OPTIONAL_HEADER64, DataDirectory ) + (dir + 1) * sizeof(IMAGE_DATA_DIRECTORY))
+            return NULL;
         data = &nt64->OptionalHeader.DataDirectory[dir];
         headers_size = nt64->OptionalHeader.SizeOfHeaders;
         image_size = nt64->OptionalHeader.SizeOfImage;
@@ -9067,6 +9078,9 @@ PVOID WINAPI RtlImageDirectoryEntryToData( HMODULE module, BOOL image, WORD dir,
         const IMAGE_NT_HEADERS32 *nt32 = (const IMAGE_NT_HEADERS32 *)nt;
 
         if (dir >= nt32->OptionalHeader.NumberOfRvaAndSizes) return NULL;
+        if (nt32->FileHeader.SizeOfOptionalHeader <
+            offsetof( IMAGE_OPTIONAL_HEADER32, DataDirectory ) + (dir + 1) * sizeof(IMAGE_DATA_DIRECTORY))
+            return NULL;
         data = &nt32->OptionalHeader.DataDirectory[dir];
         headers_size = nt32->OptionalHeader.SizeOfHeaders;
         image_size = nt32->OptionalHeader.SizeOfImage;

@@ -3419,14 +3419,21 @@ static IMAGE_DATA_DIRECTORY *get_data_dir( IMAGE_NT_HEADERS *nt, SIZE_T total_si
 {
     IMAGE_DATA_DIRECTORY *data;
 
+    if (dir >= IMAGE_NUMBEROF_DIRECTORY_ENTRIES) return NULL;
     switch (nt->OptionalHeader.Magic)
     {
     case IMAGE_NT_OPTIONAL_HDR64_MAGIC:
         if (dir >= ((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.NumberOfRvaAndSizes) return NULL;
+        if (((IMAGE_NT_HEADERS64 *)nt)->FileHeader.SizeOfOptionalHeader <
+            offsetof( IMAGE_OPTIONAL_HEADER64, DataDirectory ) + (dir + 1) * sizeof(IMAGE_DATA_DIRECTORY))
+            return NULL;
         data = &((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.DataDirectory[dir];
         break;
     case IMAGE_NT_OPTIONAL_HDR32_MAGIC:
         if (dir >= ((IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.NumberOfRvaAndSizes) return NULL;
+        if (((IMAGE_NT_HEADERS32 *)nt)->FileHeader.SizeOfOptionalHeader <
+            offsetof( IMAGE_OPTIONAL_HEADER32, DataDirectory ) + (dir + 1) * sizeof(IMAGE_DATA_DIRECTORY))
+            return NULL;
         data = &((IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.DataDirectory[dir];
         break;
     default:

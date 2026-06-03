@@ -1034,6 +1034,7 @@ static BOOL builtin_thunk_array_fits_image( BYTE *base, DWORD image_size, DWORD 
 
 static IMAGE_DATA_DIRECTORY *builtin_get_data_dir( IMAGE_NT_HEADERS *nt, DWORD dir )
 {
+    if (dir >= IMAGE_NUMBEROF_DIRECTORY_ENTRIES) return NULL;
     if (dir >= nt->OptionalHeader.NumberOfRvaAndSizes) return NULL;
     return &nt->OptionalHeader.DataDirectory[dir];
 }
@@ -2279,10 +2280,14 @@ static const void *get_module_data_dir( HMODULE module, ULONG dir, ULONG *size )
     const IMAGE_DATA_DIRECTORY *data;
     ULONG image_size;
 
+    if (dir >= IMAGE_NUMBEROF_DIRECTORY_ENTRIES) return NULL;
     if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
     {
         const IMAGE_OPTIONAL_HEADER64 *opt = &((const IMAGE_NT_HEADERS64 *)nt)->OptionalHeader;
         if (dir >= opt->NumberOfRvaAndSizes) return NULL;
+        if (nt->FileHeader.SizeOfOptionalHeader <
+            offsetof( IMAGE_OPTIONAL_HEADER64, DataDirectory ) + (dir + 1) * sizeof(IMAGE_DATA_DIRECTORY))
+            return NULL;
         image_size = opt->SizeOfImage;
         data = &((const IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.DataDirectory[dir];
     }
@@ -2290,6 +2295,9 @@ static const void *get_module_data_dir( HMODULE module, ULONG dir, ULONG *size )
     {
         const IMAGE_OPTIONAL_HEADER32 *opt = &((const IMAGE_NT_HEADERS32 *)nt)->OptionalHeader;
         if (dir >= opt->NumberOfRvaAndSizes) return NULL;
+        if (nt->FileHeader.SizeOfOptionalHeader <
+            offsetof( IMAGE_OPTIONAL_HEADER32, DataDirectory ) + (dir + 1) * sizeof(IMAGE_DATA_DIRECTORY))
+            return NULL;
         image_size = opt->SizeOfImage;
         data = &((const IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.DataDirectory[dir];
     }

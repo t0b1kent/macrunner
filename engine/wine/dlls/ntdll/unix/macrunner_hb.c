@@ -17009,6 +17009,20 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
            (void *)(uintptr_t)image_start, (void *)(uintptr_t)(image_start + image_size),
            (void *)(uintptr_t)ctx->regs.x64.rsp,
            stack_base, (char *)stack_base + stack_size );
+    if (heartbeat_enabled)
+    {
+        fprintf( stderr, "macrunner-hb-heartbeat: label=%s blocks=%s steps=%s "
+                 "block_pc=%p rva=%p rsp=%p rax=%p rcx=%p rdx=%p rsi=%p rdi=%p phase=start\n",
+                 label ? label : "entry", wine_dbgstr_longlong(0), wine_dbgstr_longlong(0),
+                 (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)(ctx->pc - image_start),
+                 (void *)(uintptr_t)ctx->regs.x64.rsp,
+                 (void *)(uintptr_t)ctx->regs.x64.rax,
+                 (void *)(uintptr_t)ctx->regs.x64.rcx,
+                 (void *)(uintptr_t)ctx->regs.x64.rdx,
+                 (void *)(uintptr_t)ctx->regs.x64.rsi,
+                 (void *)(uintptr_t)ctx->regs.x64.rdi );
+        fflush( stderr );
+    }
 
     ir_cache = calloc( 1, sizeof(*ir_cache) );
     if (!ir_cache)

@@ -1282,6 +1282,14 @@ static uint64_t macrunner_hb_trace_return_address( hb_context_t *ctx )
     return ret;
 }
 
+static uint64_t macrunner_hb_trace_stack_address( hb_context_t *ctx, unsigned int slot )
+{
+    uint64_t value = 0;
+    if (ctx && ctx->memory)
+        hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + slot * sizeof(value), &value );
+    return value;
+}
+
 static void macrunner_hb_trace_special_vm_fault( const char *op, hb_gva_t original,
                                                  mach_vm_address_t cur, size_t remaining,
                                                  kern_return_t kr, mach_vm_address_t region,
@@ -12412,6 +12420,20 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             RtlSetLastWin32Error( ERROR_SUCCESS );
             *ret = (uint64_t)(uintptr_t)handle;
         }
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            uint64_t caller = macrunner_hb_trace_return_address( ctx );
+            uint64_t outer = macrunner_hb_trace_stack_address( ctx, 6 );
+            fprintf( stderr, "macrunner-hb-wait-semantic: semaphore-create import=%s!%s pc=%p "
+                     "caller=%p outer=%p rsp=%p handle=%p initial=%ld max=%ld access=%#lx "
+                     "status=%08lx ret=%p last_error=%lu\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)caller, (void *)(uintptr_t)outer,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)handle,
+                     (long)initial, (long)max, (unsigned long)access, (unsigned long)status,
+                     (void *)(uintptr_t)*ret, (unsigned long)NtCurrentTeb()->LastErrorValue );
+            fflush( stderr );
+        }
         return TRUE;
     }
 
@@ -12487,11 +12509,15 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
             uint64_t caller = macrunner_hb_trace_return_address( ctx );
+            uint64_t outer = macrunner_hb_trace_stack_address( ctx, 6 );
             fprintf( stderr, "macrunner-hb-wait-semantic: event-signal import=%s!%s pc=%p rsp=%p "
-                     "caller=%p handle=%p status=%08lx ret=%p last_error=%lu\n",
+                     "caller=%p outer=%p handle=%p count=%lu prev_ptr=%p previous=%lu "
+                     "status=%08lx ret=%p last_error=%lu\n",
                      thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
                      (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)caller,
-                     (void *)(uintptr_t)args[0], (unsigned long)status, (void *)(uintptr_t)*ret,
+                     (void *)(uintptr_t)outer, (void *)(uintptr_t)args[0],
+                     (unsigned long)args[1], (void *)(uintptr_t)args[2], (unsigned long)previous,
+                     (unsigned long)status, (void *)(uintptr_t)*ret,
                      (unsigned long)NtCurrentTeb()->LastErrorValue );
             fflush( stderr );
         }
@@ -13421,11 +13447,13 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
             uint64_t caller = macrunner_hb_trace_return_address( ctx );
+            uint64_t outer = macrunner_hb_trace_stack_address( ctx, 6 );
             fprintf( stderr, "macrunner-hb-wait-semantic: before import=%s!%s pc=%p caller=%p rsp=%p "
-                     "handle=%p timeout_ms=%lu alertable=%u\n",
+                     "outer=%p handle=%p timeout_ms=%lu alertable=%u\n",
                      thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
                      (void *)(uintptr_t)caller,
-                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)args[0],
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)outer,
+                     (void *)(uintptr_t)args[0],
                      (unsigned long)(DWORD)args[1],
                      (unsigned int)(macrunner_hb_strieq( thunk->import_name,
                                                          "WaitForSingleObjectEx" ) && args[2]) );
@@ -13445,11 +13473,13 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
             uint64_t caller = macrunner_hb_trace_return_address( ctx );
+            uint64_t outer = macrunner_hb_trace_stack_address( ctx, 6 );
             fprintf( stderr, "macrunner-hb-wait-semantic: after import=%s!%s pc=%p caller=%p rsp=%p "
-                     "handle=%p timeout_ms=%lu status=%08lx ret=%p last_error=%lu\n",
+                     "outer=%p handle=%p timeout_ms=%lu status=%08lx ret=%p last_error=%lu\n",
                      thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
                      (void *)(uintptr_t)caller,
-                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)args[0],
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)outer,
+                     (void *)(uintptr_t)args[0],
                      (unsigned long)(DWORD)args[1], (unsigned long)status,
                      (void *)(uintptr_t)*ret, (unsigned long)NtCurrentTeb()->LastErrorValue );
             fflush( stderr );

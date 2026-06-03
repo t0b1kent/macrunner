@@ -1357,3 +1357,33 @@ NEXT: trace/probe the Mono generated-code execution path, not worker semaphores.
 question is whether `0x87fff960000-0x87fffa60000` contains guest x64 managed code being executed
 directly, or an intended host/native code heap spinning in runtime logic. Instrument executable
 `VirtualAlloc`/`VirtualProtect` creation and/or add an in-process byte dump for sampled hot PCs.
+
+## Lane A checkpoint — 2026-06-03 executable-region probes added
+
+- Added diagnostic envs:
+  - `MACRUNNER_HB_TRACE_EXEC_VIRTUAL=1` in `macrunner_hb.c` logs executable
+    `VirtualAlloc`/`VirtualProtect` and x64 syscall `NtAllocateVirtualMemory`/`NtProtectVirtualMemory`
+    transitions with guest caller/outer where available.
+  - `MACRUNNER_HB_TRACE_JIT_NATIVE_RANGE_START/END` and
+    `MACRUNNER_HB_TRACE_JIT_GUEST_RANGE_START/END` in `hb_runtime.c` force detailed JIT block IR
+    dumps for selected host-native or guest-address ranges.
+- Build proof: `reports/phase4-hollow-knight/build-20260603-210028-exec-virtual-syscall-trace/`
+  and `reports/phase4-hollow-knight/build-20260603-212706-jit-guest-range/` both rebuilt and
+  reinstalled `ntdll.so` successfully.
+- Probe results:
+  - `run-20260603-205254-exec-virtual300/` and
+    `run-20260603-210105-exec-virtual-syscall300/` saw only two KERNEL32 executable allocs
+    (`PAGE_EXECUTE_READWRITE`, 64 KiB each), and no `0x87fff...` alloc/protect via KERNEL32 or
+    x64 syscall dispatch.
+  - `run-20260603-210656-virtual-region300/` produced 9491 virtual sync/record lines but none for
+    `0x87fff...`; that sampled region is not created through the normal HB guest-memory sync path.
+  - `run-20260603-212039-jit-native-range300/` found `0x87fff...` as guest managed-code addresses
+    in JIT logs, while native emitted ranges were `0x111...`; therefore the sample's `0x87fff975c78`
+    should be treated as guest/managed PC, not host-native code.
+  - `run-20260603-212744-jit-guest-range-975c78/` did not match the narrow range because that run's
+    live sample showed parked ntdll wait frames instead of the unknown-code CPU thread.
+
+NEXT: run one combined settle/probe with heartbeat + wait-semantic + guest-range trace around the
+sampled managed-code heap, and take a late sample. If the sample shows unknown `0x87fff...`, expand
+guest range to the sampled 4 KiB page and rerun immediately; if it shows ntdll wait, use the existing
+semaphore verdict and continue toward producer/scheduler reachability rather than worker wake hacks.

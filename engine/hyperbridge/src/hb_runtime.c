@@ -494,11 +494,55 @@ static uint64_t trace_jit_native_addr(void) {
     return addr;
 }
 
+static uint64_t trace_jit_native_range_start(void) {
+    static int parsed = 0;
+    static uint64_t addr = 0;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_NATIVE_RANGE_START");
+        if (env && *env) addr = strtoull(env, NULL, 0);
+        parsed = 1;
+    }
+    return addr;
+}
+
+static uint64_t trace_jit_native_range_end(void) {
+    static int parsed = 0;
+    static uint64_t addr = 0;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_NATIVE_RANGE_END");
+        if (env && *env) addr = strtoull(env, NULL, 0);
+        parsed = 1;
+    }
+    return addr;
+}
+
 static uint64_t trace_jit_guest_addr(void) {
     static int parsed = 0;
     static uint64_t addr = 0;
     if (!parsed) {
         const char* env = getenv("MACRUNNER_HB_TRACE_JIT_GUEST_ADDR");
+        if (env && *env) addr = strtoull(env, NULL, 0);
+        parsed = 1;
+    }
+    return addr;
+}
+
+static uint64_t trace_jit_guest_range_start(void) {
+    static int parsed = 0;
+    static uint64_t addr = 0;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_GUEST_RANGE_START");
+        if (env && *env) addr = strtoull(env, NULL, 0);
+        parsed = 1;
+    }
+    return addr;
+}
+
+static uint64_t trace_jit_guest_range_end(void) {
+    static int parsed = 0;
+    static uint64_t addr = 0;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_GUEST_RANGE_END");
         if (env && *env) addr = strtoull(env, NULL, 0);
         parsed = 1;
     }
@@ -527,9 +571,19 @@ static int trace_jit_blocks_budget_allows(int force) {
 static void trace_jit_block(uint64_t guest_pc, const uint8_t* native, size_t native_size,
                             const hb_ir_block_t* block) {
     uint64_t watch = trace_jit_native_addr();
+    uint64_t range_start = trace_jit_native_range_start();
+    uint64_t range_end = trace_jit_native_range_end();
     uint64_t guest_watch = trace_jit_guest_addr();
+    uint64_t guest_range_start = trace_jit_guest_range_start();
+    uint64_t guest_range_end = trace_jit_guest_range_end();
     int matched = watch && (uintptr_t)native <= (uintptr_t)watch &&
                   (uintptr_t)watch < (uintptr_t)native + native_size;
+    int range_matched = range_start && range_end && range_start < range_end &&
+                        (uintptr_t)native < (uintptr_t)range_end &&
+                        (uintptr_t)native + native_size > (uintptr_t)range_start;
+    int guest_range_matched = guest_range_start && guest_range_end &&
+                              guest_range_start < guest_range_end &&
+                              guest_pc < guest_range_end;
     int guest_matched = guest_watch && guest_pc == guest_watch;
     const hb_ir_instr_t* first = (block && block->instr_count) ? &block->instrs[0] : NULL;
     const hb_ir_instr_t* last = (block && block->instr_count) ?
@@ -546,7 +600,19 @@ static void trace_jit_block(uint64_t guest_pc, const uint8_t* native, size_t nat
             }
         }
     }
-    matched = matched || guest_matched;
+    if (guest_range_matched && block) {
+        guest_range_matched = 0;
+        for (size_t i = 0; i < block->instr_count; i++) {
+            const hb_ir_instr_t* instr = &block->instrs[i];
+            uint64_t start = instr->guest_addr;
+            uint64_t end = start + (instr->guest_len ? instr->guest_len : 1);
+            if (start < guest_range_end && end > guest_range_start) {
+                guest_range_matched = 1;
+                break;
+            }
+        }
+    }
+    matched = matched || guest_matched || range_matched || guest_range_matched;
     if (!trace_jit_blocks_budget_allows(matched)) return;
     fprintf(stderr, "macrunner-hb-jit-block: guest=%p native=%p-%p size=%zu instrs=%zu "
             "first_op=%u first_guest=%p last_op=%u last_guest=%p last_target=%p%s\n",

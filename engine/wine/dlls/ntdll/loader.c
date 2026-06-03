@@ -3559,8 +3559,9 @@ static BOOL image_contains_range( HMODULE module, const void *ptr, SIZE_T size )
     ULONG_PTR base = (ULONG_PTR)module, addr = (ULONG_PTR)ptr, end;
 
     if (!nt) return FALSE;
+    if (nt->OptionalHeader.SizeOfImage > ~(ULONG_PTR)0 - base) return FALSE;
     end = base + nt->OptionalHeader.SizeOfImage;
-    if (end < base || addr < base || addr > end) return FALSE;
+    if (addr < base || addr > end) return FALSE;
     return size <= end - addr;
 }
 
@@ -3570,25 +3571,40 @@ static BOOL image_contains_array( HMODULE module, const void *ptr, SIZE_T count,
     return image_contains_range( module, ptr, count * elem_size );
 }
 
+static void *image_rva_range( HMODULE module, DWORD rva, SIZE_T size )
+{
+    IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
+    ULONG_PTR base = (ULONG_PTR)module;
+
+    if (!nt) return NULL;
+    if (nt->OptionalHeader.SizeOfImage > ~(ULONG_PTR)0 - base) return NULL;
+    if (rva > nt->OptionalHeader.SizeOfImage || size > nt->OptionalHeader.SizeOfImage - rva)
+        return NULL;
+    return (void *)(base + rva);
+}
+
 static const char *image_rva_string( HMODULE module, DWORD rva )
 {
     IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
     const char *str;
     SIZE_T len;
 
-    if (!nt || rva >= nt->OptionalHeader.SizeOfImage) return NULL;
-    str = (const char *)module + rva;
+    if (!nt || !(str = image_rva_range( module, rva, 1 ))) return NULL;
     len = nt->OptionalHeader.SizeOfImage - rva;
     return memchr( str, 0, len ) ? str : NULL;
 }
 
 static const IMAGE_IMPORT_BY_NAME *image_import_by_name( HMODULE module, DWORD rva )
 {
-    const IMAGE_IMPORT_BY_NAME *import = (const IMAGE_IMPORT_BY_NAME *)((char *)module + rva);
+    const IMAGE_IMPORT_BY_NAME *import;
+    DWORD name_rva;
 
-    if (!image_contains_range( module, import, FIELD_OFFSET( IMAGE_IMPORT_BY_NAME, Name ) + 1 ))
+    import = image_rva_range( module, rva, FIELD_OFFSET( IMAGE_IMPORT_BY_NAME, Name ) + 1 );
+    if (!import) return NULL;
+    if (rva > ~(DWORD)0 - FIELD_OFFSET( IMAGE_IMPORT_BY_NAME, Name ))
         return NULL;
-    if (!image_rva_string( module, rva + FIELD_OFFSET( IMAGE_IMPORT_BY_NAME, Name ) ))
+    name_rva = rva + FIELD_OFFSET( IMAGE_IMPORT_BY_NAME, Name );
+    if (!image_rva_string( module, name_rva ))
         return NULL;
     return import;
 }

@@ -5155,7 +5155,7 @@ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, UL
     /* arm64 uses larger signal/exception frames than x86. */
     if (size < 2 * 1024 * 1024) size = 2 * 1024 * 1024;
 #endif
-    size = ROUND_SIZE( 0, size, granularity_mask );
+    if (!round_size_checked( 0, size, granularity_mask, &size )) return STATUS_NO_MEMORY;
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
 

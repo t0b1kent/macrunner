@@ -1528,6 +1528,8 @@ static struct file_view *find_view_range( const void *addr, size_t size )
 {
     struct wine_rb_entry *ptr = views_tree.root;
 
+    if ((UINT_PTR)addr + size < (UINT_PTR)addr) return NULL; /* overflow */
+
     while (ptr)
     {
         struct file_view *view = WINE_RB_ENTRY_VALUE( ptr, struct file_view, entry );

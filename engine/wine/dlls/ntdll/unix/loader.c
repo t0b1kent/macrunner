@@ -967,18 +967,44 @@ static inline void fixup_rva_names( UINT_PTR *ptr, int delta )
 }
 
 
-/* fixup RVAs in the resource directory */
-static void fixup_so_resources( IMAGE_RESOURCE_DIRECTORY *dir, BYTE *root, int delta )
+static BOOL resource_ptr_fits( const BYTE *root, size_t size, const void *ptr, size_t len )
 {
-    IMAGE_RESOURCE_DIRECTORY_ENTRY *entry = (IMAGE_RESOURCE_DIRECTORY_ENTRY *)(dir + 1);
-    unsigned int i;
+    ULONG_PTR base = (ULONG_PTR)root, addr = (ULONG_PTR)ptr;
 
-    for (i = 0; i < dir->NumberOfNamedEntries + dir->NumberOfIdEntries; i++, entry++)
+    if (addr < base || addr - base > size) return FALSE;
+    return len <= size - (addr - base);
+}
+
+/* fixup RVAs in the resource directory */
+static BOOL fixup_so_resources( IMAGE_RESOURCE_DIRECTORY *dir, BYTE *root, size_t size, int delta,
+                                unsigned int level )
+{
+    IMAGE_RESOURCE_DIRECTORY_ENTRY *entry;
+    unsigned int i;
+    DWORD count;
+
+    if (level > 16 || !resource_ptr_fits( root, size, dir, sizeof(*dir) )) return FALSE;
+    count = dir->NumberOfNamedEntries + dir->NumberOfIdEntries;
+    entry = (IMAGE_RESOURCE_DIRECTORY_ENTRY *)(dir + 1);
+    if (!resource_ptr_fits( root, size, entry, count * sizeof(*entry) )) return FALSE;
+    for (i = 0; i < count; i++, entry++)
     {
-        void *ptr = root + entry->OffsetToDirectory;
-        if (entry->DataIsDirectory) fixup_so_resources( ptr, root, delta );
-        else fixup_rva_dwords( &((IMAGE_RESOURCE_DATA_ENTRY *)ptr)->OffsetToData, delta, 1 );
+        DWORD offset = entry->OffsetToDirectory;
+        void *ptr;
+
+        if (offset >= size) return FALSE;
+        ptr = root + offset;
+        if (entry->DataIsDirectory)
+        {
+            if (!fixup_so_resources( ptr, root, size, delta, level + 1 )) return FALSE;
+        }
+        else
+        {
+            if (!resource_ptr_fits( root, size, ptr, sizeof(IMAGE_RESOURCE_DATA_ENTRY) )) return FALSE;
+            fixup_rva_dwords( &((IMAGE_RESOURCE_DATA_ENTRY *)ptr)->OffsetToData, delta, 1 );
+        }
     }
+    return TRUE;
 }
 
 static BOOL builtin_rva_array_fits_image( DWORD image_size, DWORD rva, DWORD count, size_t elem_size )
@@ -1176,8 +1202,13 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     dir = &nt->OptionalHeader.DataDirectory[IMAGE_FILE_RESOURCE_DIRECTORY];
     if (dir->Size)
     {
-        void *ptr = addr + dir->VirtualAddress;
-        fixup_so_resources( ptr, ptr, delta );
+        void *ptr;
+
+        if (dir->VirtualAddress >= nt->OptionalHeader.SizeOfImage ||
+            dir->Size > nt->OptionalHeader.SizeOfImage - dir->VirtualAddress)
+            return STATUS_INVALID_IMAGE_FORMAT;
+        ptr = addr + dir->VirtualAddress;
+        if (!fixup_so_resources( ptr, ptr, dir->Size, delta, 0 )) return STATUS_INVALID_IMAGE_FORMAT;
     }
 
     /* build the export directory */

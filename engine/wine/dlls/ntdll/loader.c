@@ -9117,12 +9117,39 @@ static BOOL image_section_contains_raw_rva( const IMAGE_SECTION_HEADER *sec, DWO
            rva - sec->VirtualAddress < sec->SizeOfRawData;
 }
 
+static BOOL image_section_table_fits( const IMAGE_NT_HEADERS *nt, HMODULE module )
+{
+    const IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION( nt );
+    ULONG_PTR base = (ULONG_PTR)module, table = (ULONG_PTR)sec, limit;
+    DWORD image_size, headers_size;
+
+    if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    {
+        const IMAGE_NT_HEADERS64 *nt64 = (const IMAGE_NT_HEADERS64 *)nt;
+        image_size = nt64->OptionalHeader.SizeOfImage;
+        headers_size = nt64->OptionalHeader.SizeOfHeaders;
+    }
+    else if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+    {
+        const IMAGE_NT_HEADERS32 *nt32 = (const IMAGE_NT_HEADERS32 *)nt;
+        image_size = nt32->OptionalHeader.SizeOfImage;
+        headers_size = nt32->OptionalHeader.SizeOfHeaders;
+    }
+    else return FALSE;
+
+    if (image_size > ~(ULONG_PTR)0 - base || headers_size > image_size) return FALSE;
+    limit = base + (headers_size ? headers_size : image_size);
+    if (table < base || table > limit) return FALSE;
+    return nt->FileHeader.NumberOfSections <= (limit - table) / sizeof(*sec);
+}
+
 PIMAGE_SECTION_HEADER WINAPI RtlImageRvaToSection( const IMAGE_NT_HEADERS *nt,
                                                    HMODULE module, DWORD rva )
 {
     int i;
     const IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION( nt );
 
+    if (!image_section_table_fits( nt, module )) return NULL;
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
     {
         if (image_section_contains_raw_rva( sec, rva )) return (PIMAGE_SECTION_HEADER)sec;

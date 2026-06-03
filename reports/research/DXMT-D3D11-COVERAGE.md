@@ -19,7 +19,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 |---|---:|---|
 | `D3D11CreateDevice` | Implemented | `src/d3d11/d3d11.cpp` creates DXGI factory/adapter, selects FL, returns device/context. |
 | Feature levels 10_0-11_0 | Implemented | Default probe list includes 11_0, 10_1, 10_0. |
-| Feature level 11_1 | Partial | Enabled when Metal device supports Apple7 family; override exists via `d3d11.maxFeatureLevel`. |
+| Feature level 11_1 | Implemented | Current headless smoke returns `feature_level=0xb100`; `UnityFeatureLevelProbe request=11_1 chosen=0xb100`, with 11_0/10_1/10_0 fallbacks green. Cap override remains available via `d3d11.maxFeatureLevel`. |
 | `CreateDXGIFactory*` | Implemented | `src/dxgi/dxgi_factory.cpp` exports `CreateDXGIFactory`, `1`, `2`. |
 | Adapter enumeration | Implemented | `EnumAdapters/EnumAdapters1` enumerate `WMT::CopyAllDevices()`. |
 | WARP adapter | Gap | `EnumWarpAdapter` returns `DXGI_ERROR_NOT_FOUND`. |

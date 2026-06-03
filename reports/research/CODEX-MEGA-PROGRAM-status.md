@@ -1307,3 +1307,53 @@ NEXT: run a longer clean settle (900s+) with heartbeat + wait-semantic and late 
 parks, diagnose the final stable `rva`/wait target. If it keeps moving, shift to throughput
 acceleration and/or graphics/D3D arrival probes. Current STOP conditions are unchanged: main menu
 with rendered frame/input/audio, or a reproducible hard park/runtime-fail with exact signal target.
+
+---
+
+## Lane A checkpoint — 2026-06-03 worker wait verdict, not root signal bug
+
+- Checkpoint commits now protecting this climb:
+  - `3efbb1a fix(Lane A): honor x64 TEST operand-size override`
+  - `9ddea5d fix(Lane A): tolerate optional wow64 ntdll exports`
+  - `5460247 diag(Lane A): trace HyperBridge critical-section waits`
+  - `58c9566 diag(Lane A): trace semaphore create and outer wake callers`
+- Wait trace evidence:
+  - `reports/phase4-hollow-knight/run-20260603-183506-semaphore-outer240/`
+  - `reports/phase4-hollow-knight/run-20260603-184240-semaphore-outer520/`
+- The parked Unity worker threads wait in `WaitForSingleObjectEx(INFINITE)` at
+  `UnityPlayer+0x577c92` on work semaphores `0x44/0x50/0x5c/0x68/0x74/0x80/0x8c`,
+  created by `CreateSemaphoreExW` caller `UnityPlayer+0x577e9d`.
+- No `WakeByAddress*`/`WaitOnAddress` path appears (`address-wake=0`, `address-wait=0`).
+  No `ReleaseSemaphore` ever targets those work semaphores. The only repeated semaphore releases
+  target the sibling ready semaphores `0x48/0x54/0x60/0x6c/0x78/0x84/0x90`, from worker startup
+  (`outer=UnityPlayer+0x577c77`), plus unrelated handle `0xa4`.
+- Who should signal: Unity producer paths should store callback/data into the worker object
+  (`+0x68/+0x70`) and release the work semaphore at `+0x58`; static callsites identified are
+  `UnityPlayer+0x578176`, `+0x579415`, `+0x5795f5`, and shutdown `+0x577ff9`. These did not
+  execute in the traced runs.
+- Verdict: the worker wait is downstream. The engine has not reached the Unity producer/scheduler
+  signal, so adding a wake to the worker semaphore would be a symptom patch.
+
+## Lane A checkpoint — 2026-06-03 current deeper gate = Mono generated-code CPU burn
+
+- Direct-stack/cache controls:
+  - `run-20260603-190251-no-direct-stack300b/`: with `MACRUNNER_HB_JIT_DIRECT_STACK=0` and
+    `MACRUNNER_HB_TRANSLATION_CACHE=0`, HK passed the earlier `mono+0x150ec2` epilogue gate and
+    reached `blocks=0x1e6206`.
+  - `run-20260603-195215-direct-stack-fresh260/`: with direct-stack on and fresh cache, no
+    RuntimeType/assert/D3D/Gfx failure, but heartbeat flattened around `blocks=0x1e5ffb`.
+- Hot-block profiling:
+  - `run-20260603-201243-jithot260/` shows top HyperBridge JIT guest blocks in
+    `mono_class_get_flags`, especially `mono+0xd1530` and `mono+0xd1567`, ~33k hits.
+  - `run-20260603-201906-jithot-sample300/` sampled the CPU-heavy thread at
+    `0x87fff975c78` in `<unknown binary>`.
+  - `run-20260603-203214-sample-vmmap300/` mapped that PC to anonymous executable memory:
+    `VM_ALLOCATE 87fff960000-87fffa60000 [1024K] r-x/rwx`.
+- LLDB memory read was attempted in `run-20260603-203830-hotpc-bytes300/`, but macOS denied
+  attach. The sample/vmmap evidence is still enough to classify the active CPU PC as Mono-generated
+  executable code heap, not Wine wait, Unity wait, or PE image code.
+
+NEXT: trace/probe the Mono generated-code execution path, not worker semaphores. The immediate
+question is whether `0x87fff960000-0x87fffa60000` contains guest x64 managed code being executed
+directly, or an intended host/native code heap spinning in runtime logic. Instrument executable
+`VirtualAlloc`/`VirtualProtect` creation and/or add an in-process byte dump for sampled hot PCs.

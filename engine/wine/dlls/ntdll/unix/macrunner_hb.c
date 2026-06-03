@@ -321,6 +321,11 @@ static hb_perm_t macrunner_hb_protect_to_perm( ULONG protect )
     return perm;
 }
 
+static BOOL macrunner_hb_page_protect_executable( ULONG protect )
+{
+    return !!(macrunner_hb_protect_to_perm( protect ) & HB_PERM_EXEC);
+}
+
 __attribute__((visibility("default"))) NTSTATUS macrunner_hb_wow64_guest32_alloc( SIZE_T size,
                                                                                   ULONG protect,
                                                                                   void **host_ptr )
@@ -3419,6 +3424,11 @@ static BOOL macrunner_hb_memory_protect_writable( ULONG protect )
 static BOOL macrunner_hb_trace_virtual_region_enabled(void)
 {
     return macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_VIRTUAL_REGION" );
+}
+
+static BOOL macrunner_hb_trace_exec_virtual_enabled(void)
+{
+    return macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_EXEC_VIRTUAL" );
 }
 
 static void macrunner_hb_sync_virtual_region( hb_context_t *ctx, void *base, SIZE_T size,
@@ -12835,6 +12845,20 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             if (process == NtCurrentProcess())
                 macrunner_hb_notify_xtajit64_memory_alloc( base, size, type, protect, status );
         }
+        if (macrunner_hb_trace_exec_virtual_enabled() && macrunner_hb_page_protect_executable( protect ))
+        {
+            uint64_t caller = macrunner_hb_trace_return_address( ctx );
+            uint64_t outer = macrunner_hb_trace_stack_address( ctx, 6 );
+            fprintf( stderr, "macrunner-hb-exec-virtual: op=%s!%s pc=%p caller=%p outer=%p "
+                     "process=%p base=%p size=%#zx type=%#lx protect=%#lx status=%08lx "
+                     "ret=%p last_error=%lu\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)caller, (void *)(uintptr_t)outer, process, base,
+                     (size_t)size, (unsigned long)type, (unsigned long)protect,
+                     (unsigned long)status, (void *)(uintptr_t)*ret,
+                     (unsigned long)NtCurrentTeb()->LastErrorValue );
+            fflush( stderr );
+        }
         return TRUE;
     }
 
@@ -12936,6 +12960,22 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                 macrunner_hb_sync_virtual_region( ctx, base, size, protect );
                 macrunner_hb_notify_xtajit64_memory_protect( base, size, protect, status );
             }
+        }
+        if (macrunner_hb_trace_exec_virtual_enabled() &&
+            (macrunner_hb_page_protect_executable( protect ) ||
+             macrunner_hb_page_protect_executable( old_protect )))
+        {
+            uint64_t caller = macrunner_hb_trace_return_address( ctx );
+            uint64_t outer = macrunner_hb_trace_stack_address( ctx, 6 );
+            fprintf( stderr, "macrunner-hb-exec-virtual: op=%s!%s pc=%p caller=%p outer=%p "
+                     "process=%p base=%p size=%#zx protect=%#lx old_protect=%#lx "
+                     "old_ptr=%p status=%08lx ret=%p last_error=%lu\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)caller, (void *)(uintptr_t)outer, process, base,
+                     (size_t)size, (unsigned long)protect, (unsigned long)old_protect,
+                     (void *)(uintptr_t)old_protect_guest, (unsigned long)status,
+                     (void *)(uintptr_t)*ret, (unsigned long)NtCurrentTeb()->LastErrorValue );
+            fflush( stderr );
         }
         return TRUE;
     }
@@ -16485,6 +16525,53 @@ static hb_result_t macrunner_hb_dispatch_x64_syscall( hb_context_t *ctx, uint64_
         snprintf( thunk.import_name, sizeof(thunk.import_name), "%04x", service );
 
         rc = macrunner_hb_call_arm64_pe_import12_for_ctx( ctx, &thunk, args );
+        if (macrunner_hb_trace_exec_virtual_enabled() &&
+            thunk.target == (void *)NtAllocateVirtualMemory)
+        {
+            uint64_t base = 0, size = 0;
+            ULONG type = (ULONG)args[4];
+            ULONG protect = (ULONG)args[5];
+            if (args[1]) hb_memory_read_u64( ctx->memory, (hb_gva_t)args[1], &base );
+            if (args[3]) hb_memory_read_u64( ctx->memory, (hb_gva_t)args[3], &size );
+            if (macrunner_hb_page_protect_executable( protect ))
+            {
+                fprintf( stderr, "macrunner-hb-exec-virtual: op=native-syscall!NtAllocateVirtualMemory "
+                         "target=%p service=%04x table=%u id=%u ret_addr=%p process=%p "
+                         "base_ptr=%p size_ptr=%p base=%p size=%#llx type=%#lx protect=%#lx "
+                         "status=%08llx\n",
+                         thunk.target, service, table_idx, id, (void *)(uintptr_t)ret_addr,
+                         (void *)(uintptr_t)args[0], (void *)(uintptr_t)args[1],
+                         (void *)(uintptr_t)args[3], (void *)(uintptr_t)base,
+                         (unsigned long long)size, (unsigned long)type, (unsigned long)protect,
+                         (unsigned long long)rc );
+                fflush( stderr );
+            }
+        }
+        else if (macrunner_hb_trace_exec_virtual_enabled() &&
+                 thunk.target == (void *)NtProtectVirtualMemory)
+        {
+            uint64_t base = 0, size = 0;
+            ULONG protect = (ULONG)args[3];
+            ULONG old_protect = 0;
+            if (args[1]) hb_memory_read_u64( ctx->memory, (hb_gva_t)args[1], &base );
+            if (args[2]) hb_memory_read_u64( ctx->memory, (hb_gva_t)args[2], &size );
+            if (args[4]) hb_memory_read_u32( ctx->memory, (hb_gva_t)args[4], &old_protect );
+            if (macrunner_hb_page_protect_executable( protect ) ||
+                macrunner_hb_page_protect_executable( old_protect ))
+            {
+                fprintf( stderr, "macrunner-hb-exec-virtual: op=native-syscall!NtProtectVirtualMemory "
+                         "target=%p service=%04x table=%u id=%u ret_addr=%p process=%p "
+                         "base_ptr=%p size_ptr=%p base=%p size=%#llx protect=%#lx "
+                         "old_protect=%#lx old_ptr=%p status=%08llx\n",
+                         thunk.target, service, table_idx, id, (void *)(uintptr_t)ret_addr,
+                         (void *)(uintptr_t)args[0], (void *)(uintptr_t)args[1],
+                         (void *)(uintptr_t)args[2], (void *)(uintptr_t)base,
+                         (unsigned long long)size, (unsigned long)protect,
+                         (unsigned long)old_protect, (void *)(uintptr_t)args[4],
+                         (unsigned long long)rc );
+                fflush( stderr );
+            }
+        }
     }
 
     if (macrunner_hb_trace_direct_native_enabled() &&

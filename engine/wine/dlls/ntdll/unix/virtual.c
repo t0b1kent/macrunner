@@ -6679,6 +6679,7 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
     unsigned int status = STATUS_SUCCESS;
     LPVOID addr;
     SIZE_T size;
+    char *view_end = NULL;
 
     if (!addr_ptr || !size_ptr) return STATUS_ACCESS_VIOLATION;
 
@@ -6728,9 +6729,10 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
         status = STATUS_INVALID_PARAMETER;
     }
     else if (!(view = find_view( base, 0 ))) status = STATUS_MEMORY_NOT_ALLOCATED;
+    else if (!get_view_limit( view, &view_end )) status = STATUS_INVALID_PARAMETER;
     else if (!is_view_valloc( view )) status = STATUS_INVALID_PARAMETER;
     else if (!size && base != view->base) status = STATUS_FREE_VM_NOT_AT_BASE;
-    else if ((char *)view->base + view->size - base < size && !(type & MEM_COALESCE_PLACEHOLDERS))
+    else if ((SIZE_T)(view_end - base) < size && !(type & MEM_COALESCE_PLACEHOLDERS))
              status = STATUS_UNABLE_TO_FREE_VM;
     else switch (type)
     {
@@ -6871,21 +6873,24 @@ static struct file_view *get_memory_region_size( char *base, char **region_start
     ptr = views_tree.root;
     while (ptr)
     {
+        char *view_end;
+
         view = WINE_RB_ENTRY_VALUE( ptr, struct file_view, entry );
+        if (!get_view_limit( view, &view_end )) return NULL;
         if ((char *)view->base > base)
         {
             *region_end = view->base;
             ptr = ptr->left;
         }
-        else if ((char *)view->base + view->size <= base)
+        else if (view_end <= base)
         {
-            *region_start = (char *)view->base + view->size;
+            *region_start = view_end;
             ptr = ptr->right;
         }
         else
         {
             *region_start = view->base;
-            *region_end = (char *)view->base + view->size;
+            *region_end = view_end;
             return view;
         }
     }

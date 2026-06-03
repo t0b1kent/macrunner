@@ -960,13 +960,6 @@ static inline void fixup_rva_dwords( DWORD *ptr, int delta, unsigned int count )
 }
 
 
-/* fixup an array of name/ordinal RVAs by adding the specified delta */
-static inline void fixup_rva_names( UINT_PTR *ptr, int delta )
-{
-    for ( ; *ptr; ptr++) if (!(*ptr & IMAGE_ORDINAL_FLAG)) *ptr += delta;
-}
-
-
 static BOOL resource_ptr_fits( const BYTE *root, size_t size, const void *ptr, size_t len )
 {
     ULONG_PTR base = (ULONG_PTR)root, addr = (ULONG_PTR)ptr;
@@ -1018,6 +1011,46 @@ static BOOL builtin_rva_string_fits_image( BYTE *base, DWORD image_size, DWORD r
 {
     if (!rva || rva >= image_size) return FALSE;
     return memchr( base + rva, 0, image_size - rva ) != NULL;
+}
+
+static BOOL builtin_import_by_name_fits_image( BYTE *base, DWORD image_size, DWORD rva )
+{
+    DWORD name_rva;
+
+    if (!builtin_rva_array_fits_image( image_size, rva, 1,
+                                       FIELD_OFFSET( IMAGE_IMPORT_BY_NAME, Name ) + 1 ))
+        return FALSE;
+    if (rva > ~(DWORD)0 - FIELD_OFFSET( IMAGE_IMPORT_BY_NAME, Name )) return FALSE;
+    name_rva = rva + FIELD_OFFSET( IMAGE_IMPORT_BY_NAME, Name );
+    return builtin_rva_string_fits_image( base, image_size, name_rva );
+}
+
+/* fixup an array of name/ordinal RVAs by adding the specified delta */
+static BOOL fixup_rva_names( BYTE *base, DWORD image_size, UINT_PTR *ptr, int delta )
+{
+    UINT_PTR value;
+
+    for ( ; *ptr; ptr++)
+    {
+        if (*ptr & IMAGE_ORDINAL_FLAG) continue;
+
+        value = *ptr;
+        if (delta >= 0)
+        {
+            if (value > ~(UINT_PTR)0 - (UINT_PTR)delta) return FALSE;
+            value += delta;
+        }
+        else
+        {
+            UINT_PTR neg_delta = 0 - (UINT_PTR)delta;
+            if (value < neg_delta) return FALSE;
+            value -= neg_delta;
+        }
+        if (value > ~(DWORD)0 || !builtin_import_by_name_fits_image( base, image_size, value ))
+            return FALSE;
+        *ptr = value;
+    }
+    return TRUE;
 }
 
 static BOOL builtin_thunk_array_fits_image( BYTE *base, DWORD image_size, DWORD rva )
@@ -1214,9 +1247,17 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
                                                  imports[i].FirstThunk ))
                 return STATUS_INVALID_IMAGE_FORMAT;
             if (imports[i].OriginalFirstThunk)
-                fixup_rva_names( (UINT_PTR *)(addr + imports[i].OriginalFirstThunk), delta );
+            {
+                if (!fixup_rva_names( addr, nt->OptionalHeader.SizeOfImage,
+                                      (UINT_PTR *)(addr + imports[i].OriginalFirstThunk), delta ))
+                    return STATUS_INVALID_IMAGE_FORMAT;
+            }
             if (imports[i].FirstThunk)
-                fixup_rva_names( (UINT_PTR *)(addr + imports[i].FirstThunk), delta );
+            {
+                if (!fixup_rva_names( addr, nt->OptionalHeader.SizeOfImage,
+                                      (UINT_PTR *)(addr + imports[i].FirstThunk), delta ))
+                    return STATUS_INVALID_IMAGE_FORMAT;
+            }
         }
         if (i == count) return STATUS_INVALID_IMAGE_FORMAT;
     }
@@ -1307,7 +1348,11 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
                                                  imports[i].UnloadInformationTableRVA ))
                 return STATUS_INVALID_IMAGE_FORMAT;
             if (imports[i].ImportNameTableRVA)
-                fixup_rva_names( (UINT_PTR *)(addr + imports[i].ImportNameTableRVA), delta );
+            {
+                if (!fixup_rva_names( addr, nt->OptionalHeader.SizeOfImage,
+                                      (UINT_PTR *)(addr + imports[i].ImportNameTableRVA), delta ))
+                    return STATUS_INVALID_IMAGE_FORMAT;
+            }
         }
         if (i == count) return STATUS_INVALID_IMAGE_FORMAT;
     }

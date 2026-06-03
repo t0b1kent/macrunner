@@ -71,6 +71,25 @@ typedef struct
 
 #define FIND_STREAM_MAGIC 0xc0ffee12
 
+typedef struct
+{
+    ULONG LogicalBytesPerSector;
+    ULONG PhysicalBytesPerSectorForAtomicity;
+    ULONG PhysicalBytesPerSectorForPerformance;
+    ULONG FileSystemEffectivePhysicalBytesPerSectorForAtomicity;
+    ULONG Flags;
+    ULONG ByteOffsetForSectorAlignment;
+    ULONG ByteOffsetForPartitionAlignment;
+} FILE_STORAGE_INFO_LOCAL;
+
+typedef struct
+{
+    DWORD Flags;
+} FILE_CASE_SENSITIVE_INFO_LOCAL;
+
+#define STORAGE_INFO_FLAGS_ALIGNED_DEVICE              0x00000001
+#define STORAGE_INFO_FLAGS_PARTITION_ALIGNED_ON_DEVICE 0x00000002
+
 static const UINT max_entry_size = offsetof( FILE_ID_EXTD_BOTH_DIRECTORY_INFORMATION, FileName[256] );
 
 const WCHAR windows_dir[] = L"C:\\windows";
@@ -3240,13 +3259,62 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetFileInformationByHandleEx( HANDLE handle, FILE_
     switch (class)
     {
     case FileRemoteProtocolInfo:
+        if (!info)
+        {
+            SetLastError( ERROR_NOACCESS );
+            return FALSE;
+        }
+        if (size < sizeof(FILE_REMOTE_PROTOCOL_INFO))
+        {
+            SetLastError( ERROR_BAD_LENGTH );
+            return FALSE;
+        }
+        memset( info, 0, sizeof(FILE_REMOTE_PROTOCOL_INFO) );
+        ((FILE_REMOTE_PROTOCOL_INFO *)info)->StructureVersion = 1;
+        ((FILE_REMOTE_PROTOCOL_INFO *)info)->StructureSize = sizeof(FILE_REMOTE_PROTOCOL_INFO);
+        return TRUE;
+
     case FileStorageInfo:
+        if (!info)
+        {
+            SetLastError( ERROR_NOACCESS );
+            return FALSE;
+        }
+        if (size < sizeof(FILE_STORAGE_INFO_LOCAL))
+        {
+            SetLastError( ERROR_BAD_LENGTH );
+            return FALSE;
+        }
+        memset( info, 0, sizeof(FILE_STORAGE_INFO_LOCAL) );
+        ((FILE_STORAGE_INFO_LOCAL *)info)->LogicalBytesPerSector = 512;
+        ((FILE_STORAGE_INFO_LOCAL *)info)->PhysicalBytesPerSectorForAtomicity = 512;
+        ((FILE_STORAGE_INFO_LOCAL *)info)->PhysicalBytesPerSectorForPerformance = 512;
+        ((FILE_STORAGE_INFO_LOCAL *)info)->FileSystemEffectivePhysicalBytesPerSectorForAtomicity = 512;
+        ((FILE_STORAGE_INFO_LOCAL *)info)->Flags = STORAGE_INFO_FLAGS_ALIGNED_DEVICE |
+                                                   STORAGE_INFO_FLAGS_PARTITION_ALIGNED_ON_DEVICE;
+        return TRUE;
+
+    case FileCaseSensitiveInfo:
+        if (!info)
+        {
+            SetLastError( ERROR_NOACCESS );
+            return FALSE;
+        }
+        if (size < sizeof(FILE_CASE_SENSITIVE_INFO_LOCAL))
+        {
+            SetLastError( ERROR_BAD_LENGTH );
+            return FALSE;
+        }
+        memset( info, 0, sizeof(FILE_CASE_SENSITIVE_INFO_LOCAL) );
+        return TRUE;
+
+    case FileNormalizedNameInfo:
+        status = NtQueryInformationFile( handle, &io, info, size, FileNameInformation );
+        break;
+
     case FileDispositionInfoEx:
     case FileRenameInfoEx:
-    case FileCaseSensitiveInfo:
-    case FileNormalizedNameInfo:
-        FIXME( "%p, %u, %p, %lu\n", handle, class, info, size );
-        SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+        SetLastError( ERROR_INVALID_PARAMETER );
         return FALSE;
 
     case FileStreamInfo:

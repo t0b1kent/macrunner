@@ -13,6 +13,9 @@ prefix deployment. The x64 guest binding smoke now defaults to strict native
 Status is evidence-based: `Implemented` means an entry point exists and routes to
 DXMT/Metal code; `Partial` means the path exists with known limits; `Gap` means
 the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
+Partial/Gap audit on 2026-06-03: no matrix table rows remain in `Partial` or
+`Gap` status; `Clean unsupported`, `device-gated`, and `filter-only` rows are
+intentional API/device semantics, not open user-mode implementation gaps.
 
 ## Phase 1 Gate
 

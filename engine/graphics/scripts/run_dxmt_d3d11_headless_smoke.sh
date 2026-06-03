@@ -22,6 +22,7 @@ LOG="$LOG_DIR/dx11-headless-${ARCH}.log"
 SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-120}"
 SMOKE_REPEAT_COUNT="${SMOKE_REPEAT_COUNT:-1}"
 SMOKE_STABILITY_FRAMES="${SMOKE_STABILITY_FRAMES:-180}"
+SMOKE_VISIBLE_WINDOW="${SMOKE_VISIBLE_WINDOW:-0}"
 POSTPROCESS_WINEMETAL_ONLY=false
 
 case "$DXMT_SMOKE_BIND_MODE" in
@@ -151,6 +152,7 @@ echo "overrides=$DXMT_SMOKE_DLL_OVERRIDES"
 echo "log=$LOG"
 echo "repeat_count=$SMOKE_REPEAT_COUNT"
 echo "stability_frames=$SMOKE_STABILITY_FRAMES"
+echo "visible_window=$SMOKE_VISIBLE_WINDOW"
 
 if [[ ! "$SMOKE_REPEAT_COUNT" =~ ^[0-9]+$ || "$SMOKE_REPEAT_COUNT" -lt 1 ]]; then
   echo "invalid SMOKE_REPEAT_COUNT: $SMOKE_REPEAT_COUNT" >&2
@@ -162,7 +164,12 @@ if [[ ! "$SMOKE_STABILITY_FRAMES" =~ ^[0-9]+$ || "$SMOKE_STABILITY_FRAMES" -lt 1
   exit 26
 fi
 
-SUMMARY_PATTERN="DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDXGIFactory1|factory_probe|EnumAdapters|adapter_probe|RegisterClassExW|CreateWindowExW|window_create|D3D11CreateDevice|feature_level|UnityFeatureLevelProbe|UnityDeviceInterfaceProbe|CheckFormatSupport|format_support|UnityFormatProbe|CreateSwapChainForHwnd|IDXGISwapChain::GetBuffer|GetContainingOutput|GetFullscreenState|SetFullscreenState|GetFrameStatistics|D3DCompile\\(gs_5_0\\)|CreateGeometryShader|CreateGeometryShaderWithStreamOutput|gs_bytecode_magic|Emulate stream output|CreateEmulatedVertexStreamOutputShader|GeometryShaderDraw|StreamOutputDraw|StreamOutputVerify|stream_output_staging|UnitySRGBProbe|UnityMSAAProbe|UnityResidencyProbe|UnityStabilityProbe|UnityStateProbe|TIMESTAMP_DISJOINT|disjoint_frequency|UnityDeferredResourceProbe|UnityTessellationProbe|UnityMRTProbe|UnityMultithreadProbe|UnityBatchProbe|CreateClassLinkage|CreateHullShader|CreateDomainShader|CreateTexture1D|CreateTexture2D|CreateShaderResourceView|CopySubresourceRegion|GenerateMips|mip0_rgba|mip1_rgba|ResolveSubresource|CreateRenderTargetView|ClearRenderTargetView|CreateDepthStencilView|ClearDepthStencilView|ClearView|DiscardView|OMSetRenderTargetsAndUnorderedAccessViews|Present|Readback|pixel0_bgra|pixel_readback|c0000135|err:module|not found|failed|FAIL"
+if [[ "$SMOKE_VISIBLE_WINDOW" != "0" && "$SMOKE_VISIBLE_WINDOW" != "1" ]]; then
+  echo "invalid SMOKE_VISIBLE_WINDOW: $SMOKE_VISIBLE_WINDOW" >&2
+  exit 27
+fi
+
+SUMMARY_PATTERN="DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDXGIFactory1|factory_probe|EnumAdapters|adapter_probe|RegisterClassExW|CreateWindowExW|window_create|window_visible|D3D11CreateDevice|feature_level|UnityFeatureLevelProbe|UnityDeviceInterfaceProbe|CheckFormatSupport|format_support|UnityFormatProbe|CreateSwapChainForHwnd|IDXGISwapChain::GetBuffer|GetContainingOutput|GetFullscreenState|SetFullscreenState|GetFrameStatistics|D3DCompile\\(gs_5_0\\)|CreateGeometryShader|CreateGeometryShaderWithStreamOutput|gs_bytecode_magic|Emulate stream output|CreateEmulatedVertexStreamOutputShader|GeometryShaderDraw|StreamOutputDraw|StreamOutputVerify|stream_output_staging|UnitySRGBProbe|UnityMSAAProbe|UnityResidencyProbe|UnityStabilityProbe|UnityStateProbe|TIMESTAMP_DISJOINT|disjoint_frequency|UnityDeferredResourceProbe|UnityTessellationProbe|UnityMRTProbe|UnityMultithreadProbe|UnityBatchProbe|CreateClassLinkage|CreateHullShader|CreateDomainShader|CreateTexture1D|CreateTexture2D|CreateShaderResourceView|CopySubresourceRegion|GenerateMips|mip0_rgba|mip1_rgba|ResolveSubresource|CreateRenderTargetView|ClearRenderTargetView|CreateDepthStencilView|ClearDepthStencilView|ClearView|DiscardView|OMSetRenderTargetsAndUnorderedAccessViews|Present|Readback|pixel0_bgra|pixel_readback|c0000135|err:module|not found|failed|FAIL"
 
 SMOKE_RC=0
 for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
@@ -186,6 +193,7 @@ for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
       WINESYSTEMDLLPATH="$OVERLAY_MACHINE_DIR" \
       WINEDEBUG="${WINEDEBUG_SMOKE:--all,+loaddll}" \
       DXMT_SMOKE_STABILITY_FRAMES="$SMOKE_STABILITY_FRAMES" \
+      DXMT_SMOKE_VISIBLE_WINDOW="$SMOKE_VISIBLE_WINDOW" \
       "$PROJECT_ROOT/scripts/mr-run.sh" "$WINE_DIST" "$APP_DIR/dx11_headless_smoke.exe" "$SMOKE_TIMEOUT_SECONDS"
   ) >"$RUN_LOG" 2>&1
   run_rc=$?

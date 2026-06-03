@@ -3466,9 +3466,12 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
 
     status = STATUS_INVALID_IMAGE_FORMAT;  /* generic error */
     dos = (IMAGE_DOS_HEADER *)ptr;
-    nt = (IMAGE_NT_HEADERS *)(ptr + dos->e_lfanew);
     header_end = ptr + ROUND_SIZE( 0, header_size, align_mask );
     memset( ptr + header_size, 0, header_end - (ptr + header_size) );
+    if (header_end - ptr < sizeof(*nt) ||
+        (SIZE_T)dos->e_lfanew > header_end - ptr - sizeof(*nt))
+        return status;
+    nt = (IMAGE_NT_HEADERS *)(ptr + dos->e_lfanew);
     if ((char *)(nt + 1) > header_end) return status;
     sec = IMAGE_FIRST_SECTION( nt );
     if ((char *)(sec + nt->FileHeader.NumberOfSections) > header_end) return status;

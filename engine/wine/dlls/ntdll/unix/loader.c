@@ -1321,6 +1321,7 @@ static NTSTATUS dlopen_dll( const char *so_name, UNICODE_STRING *nt_name, void *
     if (!(nt = dlsym( handle, "__wine_spec_nt_header" )))
     {
         ERR( "invalid .so library %s, too old?\n", debugstr_a(so_name));
+        dlclose( handle );
         return STATUS_INVALID_IMAGE_FORMAT;
     }
 

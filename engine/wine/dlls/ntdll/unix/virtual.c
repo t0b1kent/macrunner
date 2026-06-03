@@ -7191,6 +7191,8 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
 NTSTATUS WINAPI NtLockVirtualMemory( HANDLE process, PVOID *addr, SIZE_T *size, ULONG unknown )
 {
     unsigned int status = STATUS_SUCCESS;
+    SIZE_T host_size, rounded_size;
+    void *rounded_addr;
 
     if (!addr || !size) return STATUS_ACCESS_VIOLATION;
 
@@ -7215,10 +7217,15 @@ NTSTATUS WINAPI NtLockVirtualMemory( HANDLE process, PVOID *addr, SIZE_T *size, 
         return result.virtual_lock.status;
     }
 
-    *size = ROUND_SIZE( *addr, *size, page_mask );
-    *addr = ROUND_ADDR( *addr, page_mask );
+    if (!round_size_checked( (UINT_PTR)*addr, *size, page_mask, &rounded_size ))
+        return STATUS_INVALID_PARAMETER;
+    rounded_addr = ROUND_ADDR( *addr, page_mask );
+    if (!round_size_checked( (UINT_PTR)rounded_addr, rounded_size, host_page_mask, &host_size ))
+        return STATUS_INVALID_PARAMETER;
+    *size = rounded_size;
+    *addr = rounded_addr;
 
-    if (mlock( ROUND_ADDR( *addr, host_page_mask ), ROUND_SIZE( *addr, *size, host_page_mask ) ))
+    if (mlock( ROUND_ADDR( *addr, host_page_mask ), host_size ))
         status = STATUS_ACCESS_DENIED;
     return status;
 }
@@ -7231,6 +7238,8 @@ NTSTATUS WINAPI NtLockVirtualMemory( HANDLE process, PVOID *addr, SIZE_T *size, 
 NTSTATUS WINAPI NtUnlockVirtualMemory( HANDLE process, PVOID *addr, SIZE_T *size, ULONG unknown )
 {
     unsigned int status = STATUS_SUCCESS;
+    SIZE_T host_size, rounded_size;
+    void *rounded_addr;
 
     if (!addr || !size) return STATUS_ACCESS_VIOLATION;
 
@@ -7255,10 +7264,15 @@ NTSTATUS WINAPI NtUnlockVirtualMemory( HANDLE process, PVOID *addr, SIZE_T *size
         return result.virtual_unlock.status;
     }
 
-    *size = ROUND_SIZE( *addr, *size, page_mask );
-    *addr = ROUND_ADDR( *addr, page_mask );
+    if (!round_size_checked( (UINT_PTR)*addr, *size, page_mask, &rounded_size ))
+        return STATUS_INVALID_PARAMETER;
+    rounded_addr = ROUND_ADDR( *addr, page_mask );
+    if (!round_size_checked( (UINT_PTR)rounded_addr, rounded_size, host_page_mask, &host_size ))
+        return STATUS_INVALID_PARAMETER;
+    *size = rounded_size;
+    *addr = rounded_addr;
 
-    if (munlock( ROUND_ADDR( *addr, host_page_mask ), ROUND_SIZE( *addr, *size, host_page_mask ) ))
+    if (munlock( ROUND_ADDR( *addr, host_page_mask ), host_size ))
         status = STATUS_ACCESS_DENIED;
     return status;
 }

@@ -968,9 +968,50 @@ static BOOL resource_ptr_fits( const BYTE *root, size_t size, const void *ptr, s
     return len <= size - (addr - base);
 }
 
+static BOOL resource_offset_ptr( BYTE *root, size_t size, DWORD offset, size_t len, void **ptr )
+{
+    if (offset > size || len > size - offset) return FALSE;
+    *ptr = root + offset;
+    return TRUE;
+}
+
+static BOOL resource_name_fits( IMAGE_RESOURCE_DIRECTORY_ENTRY *entry, BYTE *root, size_t size )
+{
+    IMAGE_RESOURCE_DIR_STRING_U *str;
+
+    if (!entry->NameIsString) return TRUE;
+    if (!resource_offset_ptr( root, size, entry->NameOffset,
+                              FIELD_OFFSET( IMAGE_RESOURCE_DIR_STRING_U, NameString ), (void **)&str ))
+        return FALSE;
+    return resource_ptr_fits( root, size, str->NameString, (size_t)str->Length * sizeof(WCHAR) );
+}
+
+static BOOL fixup_resource_data_entry( IMAGE_RESOURCE_DATA_ENTRY *data, DWORD image_size, int delta )
+{
+    UINT_PTR value = data->OffsetToData;
+
+    if (value)
+    {
+        if (delta >= 0)
+        {
+            if (value > ~(UINT_PTR)0 - (UINT_PTR)delta) return FALSE;
+            value += delta;
+        }
+        else
+        {
+            UINT_PTR neg_delta = 0 - (UINT_PTR)delta;
+            if (value < neg_delta) return FALSE;
+            value -= neg_delta;
+        }
+        if (value > ~(DWORD)0) return FALSE;
+        data->OffsetToData = value;
+    }
+    return data->OffsetToData < image_size && data->Size <= image_size - data->OffsetToData;
+}
+
 /* fixup RVAs in the resource directory */
-static BOOL fixup_so_resources( IMAGE_RESOURCE_DIRECTORY *dir, BYTE *root, size_t size, int delta,
-                                unsigned int level )
+static BOOL fixup_so_resources( IMAGE_RESOURCE_DIRECTORY *dir, BYTE *root, size_t size, DWORD image_size,
+                                int delta, unsigned int level )
 {
     IMAGE_RESOURCE_DIRECTORY_ENTRY *entry;
     unsigned int i;
@@ -985,16 +1026,17 @@ static BOOL fixup_so_resources( IMAGE_RESOURCE_DIRECTORY *dir, BYTE *root, size_
         DWORD offset = entry->OffsetToDirectory;
         void *ptr;
 
+        if (!resource_name_fits( entry, root, size )) return FALSE;
         if (offset >= size) return FALSE;
         ptr = root + offset;
         if (entry->DataIsDirectory)
         {
-            if (!fixup_so_resources( ptr, root, size, delta, level + 1 )) return FALSE;
+            if (!fixup_so_resources( ptr, root, size, image_size, delta, level + 1 )) return FALSE;
         }
         else
         {
             if (!resource_ptr_fits( root, size, ptr, sizeof(IMAGE_RESOURCE_DATA_ENTRY) )) return FALSE;
-            fixup_rva_dwords( &((IMAGE_RESOURCE_DATA_ENTRY *)ptr)->OffsetToData, delta, 1 );
+            if (!fixup_resource_data_entry( ptr, image_size, delta )) return FALSE;
         }
     }
     return TRUE;
@@ -1299,7 +1341,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
             dir->Size > nt->OptionalHeader.SizeOfImage - dir->VirtualAddress)
             return STATUS_INVALID_IMAGE_FORMAT;
         ptr = addr + dir->VirtualAddress;
-        if (!fixup_so_resources( ptr, ptr, dir->Size, delta, 0 )) return STATUS_INVALID_IMAGE_FORMAT;
+        if (!fixup_so_resources( ptr, ptr, dir->Size, nt->OptionalHeader.SizeOfImage, delta, 0 ))
+            return STATUS_INVALID_IMAGE_FORMAT;
     }
 
     /* build the export directory */

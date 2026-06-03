@@ -20,6 +20,7 @@ OVERLAY_DIR="$PREFIX/dxmt-builtin-overlay"
 LOG_DIR="$PROJECT_ROOT/artifacts/dxmt-smoke-logs"
 LOG="$LOG_DIR/dx11-headless-${ARCH}.log"
 SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-120}"
+SMOKE_REPEAT_COUNT="${SMOKE_REPEAT_COUNT:-1}"
 POSTPROCESS_WINEMETAL_ONLY=false
 
 case "$DXMT_SMOKE_BIND_MODE" in
@@ -147,29 +148,52 @@ echo "bind_mode=$DXMT_SMOKE_BIND_MODE"
 echo "wine_builtin_dll=$WINE_BUILTIN_DLL"
 echo "overrides=$DXMT_SMOKE_DLL_OVERRIDES"
 echo "log=$LOG"
+echo "repeat_count=$SMOKE_REPEAT_COUNT"
 
-set +e
-(
-  env -i \
-    HOME="$HOME" \
-    USER="${USER:-}" \
-    LOGNAME="${LOGNAME:-${USER:-}}" \
-    PATH="$PATH" \
-    TMPDIR="${TMPDIR:-/tmp}" \
-    MACRUNNER_DXMT_ROOT="$OVERLAY_DIR" \
-    WINEDLLOVERRIDES="$DXMT_SMOKE_DLL_OVERRIDES" \
-    WINEDLLDIR0="$OVERLAY_DIR" \
-    WINEDLLPATH="$OVERLAY_MACHINE_DIR:$OVERLAY_UNIX_DIR:$WINE_MACHINE_DIR:$WINE_UNIX_DIR" \
-    WINESYSTEMDLLPATH="$OVERLAY_MACHINE_DIR" \
-    WINEDEBUG="${WINEDEBUG_SMOKE:--all,+loaddll}" \
-    "$PROJECT_ROOT/scripts/mr-run.sh" "$WINE_DIST" "$APP_DIR/dx11_headless_smoke.exe" "$SMOKE_TIMEOUT_SECONDS"
-) >"$LOG" 2>&1
-SMOKE_RC=$?
-set -e
+if [[ ! "$SMOKE_REPEAT_COUNT" =~ ^[0-9]+$ || "$SMOKE_REPEAT_COUNT" -lt 1 ]]; then
+  echo "invalid SMOKE_REPEAT_COUNT: $SMOKE_REPEAT_COUNT" >&2
+  exit 25
+fi
+
+SUMMARY_PATTERN="DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDXGIFactory1|factory_probe|EnumAdapters|adapter_probe|RegisterClassExW|CreateWindowExW|window_create|D3D11CreateDevice|feature_level|CheckFormatSupport|format_support|CreateSwapChainForHwnd|IDXGISwapChain::GetBuffer|GetContainingOutput|GetFullscreenState|SetFullscreenState|GetFrameStatistics|D3DCompile\\(gs_5_0\\)|CreateGeometryShader|CreateGeometryShaderWithStreamOutput|gs_bytecode_magic|Emulate stream output|CreateEmulatedVertexStreamOutputShader|GeometryShaderDraw|StreamOutputDraw|StreamOutputVerify|stream_output_staging|UnitySRGBProbe|UnityStateProbe|TIMESTAMP_DISJOINT|disjoint_frequency|UnityDeferredResourceProbe|UnityTessellationProbe|UnityMRTProbe|UnityMultithreadProbe|UnityBatchProbe|CreateClassLinkage|CreateHullShader|CreateDomainShader|CreateTexture1D|CreateTexture2D|CreateShaderResourceView|CopySubresourceRegion|GenerateMips|ResolveSubresource|CreateRenderTargetView|ClearRenderTargetView|CreateDepthStencilView|ClearDepthStencilView|ClearView|DiscardView|OMSetRenderTargetsAndUnorderedAccessViews|Present|Readback|pixel0_bgra|pixel_readback|c0000135|err:module|not found|failed|FAIL"
+
+SMOKE_RC=0
+for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
+  RUN_LOG="$LOG"
+  if [[ "$SMOKE_REPEAT_COUNT" -gt 1 ]]; then
+    RUN_LOG="$LOG_DIR/dx11-headless-${ARCH}-run${run}.log"
+  fi
+
+  set +e
+  (
+    env -i \
+      HOME="$HOME" \
+      USER="${USER:-}" \
+      LOGNAME="${LOGNAME:-${USER:-}}" \
+      PATH="$PATH" \
+      TMPDIR="${TMPDIR:-/tmp}" \
+      MACRUNNER_DXMT_ROOT="$OVERLAY_DIR" \
+      WINEDLLOVERRIDES="$DXMT_SMOKE_DLL_OVERRIDES" \
+      WINEDLLDIR0="$OVERLAY_DIR" \
+      WINEDLLPATH="$OVERLAY_MACHINE_DIR:$OVERLAY_UNIX_DIR:$WINE_MACHINE_DIR:$WINE_UNIX_DIR" \
+      WINESYSTEMDLLPATH="$OVERLAY_MACHINE_DIR" \
+      WINEDEBUG="${WINEDEBUG_SMOKE:--all,+loaddll}" \
+      "$PROJECT_ROOT/scripts/mr-run.sh" "$WINE_DIST" "$APP_DIR/dx11_headless_smoke.exe" "$SMOKE_TIMEOUT_SECONDS"
+  ) >"$RUN_LOG" 2>&1
+  run_rc=$?
+  set -e
+
+  echo "run=$run/$SMOKE_REPEAT_COUNT log=$RUN_LOG"
+  echo "run_exit_code=$run_rc"
+  grep -E "$SUMMARY_PATTERN" "$RUN_LOG" | tail -220 || true
+  if [[ "$run_rc" -ne 0 ]]; then
+    SMOKE_RC="$run_rc"
+    break
+  fi
+done
 
 WINEPREFIX="$PREFIX" "$WINESERVER" -k >/dev/null 2>&1 || true
 
 echo "exit_code=$SMOKE_RC"
-grep -E "DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDXGIFactory1|factory_probe|EnumAdapters|adapter_probe|RegisterClassExW|CreateWindowExW|window_create|D3D11CreateDevice|feature_level|CheckFormatSupport|format_support|CreateSwapChainForHwnd|IDXGISwapChain::GetBuffer|GetContainingOutput|GetFullscreenState|SetFullscreenState|GetFrameStatistics|D3DCompile\\(gs_5_0\\)|CreateGeometryShader|CreateGeometryShaderWithStreamOutput|gs_bytecode_magic|Emulate stream output|CreateEmulatedVertexStreamOutputShader|GeometryShaderDraw|StreamOutputDraw|StreamOutputVerify|stream_output_staging|UnitySRGBProbe|UnityStateProbe|TIMESTAMP_DISJOINT|disjoint_frequency|UnityDeferredResourceProbe|UnityTessellationProbe|UnityMRTProbe|UnityMultithreadProbe|UnityBatchProbe|CreateClassLinkage|CreateHullShader|CreateDomainShader|CreateTexture1D|CreateTexture2D|CreateShaderResourceView|CopySubresourceRegion|GenerateMips|ResolveSubresource|CreateRenderTargetView|ClearRenderTargetView|CreateDepthStencilView|ClearDepthStencilView|ClearView|DiscardView|OMSetRenderTargetsAndUnorderedAccessViews|Present|Readback|pixel0_bgra|pixel_readback|c0000135|err:module|not found|failed|FAIL" "$LOG" | tail -220 || true
 
 exit "$SMOKE_RC"

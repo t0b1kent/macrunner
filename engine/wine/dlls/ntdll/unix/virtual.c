@@ -7676,13 +7676,21 @@ NTSTATUS WINAPI NtFlushVirtualMemory( HANDLE process, LPCVOID *addr_ptr,
     if (!(view = find_view( addr, *size_ptr ))) status = STATUS_INVALID_PARAMETER;
     else
     {
+        SIZE_T host_size;
+
         if (!*size_ptr) *size_ptr = view->size;
+        if (!round_size_checked( (UINT_PTR)addr, *size_ptr, host_page_mask, &host_size ))
+        {
+            status = STATUS_INVALID_PARAMETER;
+            goto done;
+        }
         *addr_ptr = addr;
 #ifdef MS_ASYNC
-        if (msync( ROUND_ADDR( addr, host_page_mask ), ROUND_SIZE( addr, *size_ptr, host_page_mask ), MS_ASYNC ))
+        if (msync( ROUND_ADDR( addr, host_page_mask ), host_size, MS_ASYNC ))
             status = STATUS_NOT_MAPPED_DATA;
 #endif
     }
+done:
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
     return status;
 }

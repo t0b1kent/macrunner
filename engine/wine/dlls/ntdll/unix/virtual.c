@@ -241,6 +241,17 @@ static struct list teb_list = LIST_INIT( teb_list );
 #define ROUND_ADDR(addr,mask) ((void *)((UINT_PTR)(addr) & ~(UINT_PTR)(mask)))
 #define ROUND_SIZE(addr,size,mask) (((SIZE_T)(size) + ((UINT_PTR)(addr) & (mask)) + (mask)) & ~(UINT_PTR)(mask))
 
+static BOOL round_size_checked( UINT_PTR addr, SIZE_T size, UINT_PTR mask, SIZE_T *rounded )
+{
+    SIZE_T offset = addr & mask;
+
+    if (size > ~(SIZE_T)0 - offset) return FALSE;
+    size += offset;
+    if (size > ~(SIZE_T)0 - mask) return FALSE;
+    *rounded = ROUND_SIZE( addr, size - offset, mask );
+    return TRUE;
+}
+
 #define VIRTUAL_DEBUG_DUMP_VIEW(view) do { if (TRACE_ON(virtual)) dump_view(view); } while (0)
 #define VIRTUAL_DEBUG_DUMP_RANGES() do { if (TRACE_ON(virtual_ranges)) dump_free_ranges(); } while (0)
 
@@ -3585,7 +3596,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     struct stat st;
     char *header_end;
     char *ptr = view->base;
-    SIZE_T header_size, header_map_size, total_size = view->size;
+    SIZE_T header_size, header_map_size, rounded_size, total_size = view->size;
     SIZE_T align_mask;
     INT_PTR delta;
 
@@ -3597,14 +3608,19 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     /* map the header */
 
     if (fstat( fd, &st )) return errno_to_status( errno );
+    if (st.st_size < 0) return STATUS_INVALID_IMAGE_FORMAT;
+    if (!round_size_checked( 0, st.st_size, host_page_mask, &rounded_size ))
+        return STATUS_INVALID_IMAGE_FORMAT;
     header_size = min( image_info->header_size, st.st_size );
-    header_map_size = min( image_info->header_map_size, ROUND_SIZE( 0, st.st_size, host_page_mask ));
+    header_map_size = min( image_info->header_map_size, rounded_size );
     if ((status = map_pe_header( view->base, header_size, header_map_size, fd, &removable )))
         return status;
 
     status = STATUS_INVALID_IMAGE_FORMAT;  /* generic error */
     dos = (IMAGE_DOS_HEADER *)ptr;
-    header_end = ptr + ROUND_SIZE( 0, header_size, align_mask );
+    if (!round_size_checked( 0, header_size, align_mask, &rounded_size ) || rounded_size > total_size)
+        return status;
+    header_end = ptr + rounded_size;
     memset( ptr + header_size, 0, header_end - (ptr + header_size) );
     if (header_end - ptr < sizeof(*nt) ||
         (SIZE_T)dos->e_lfanew > header_end - ptr - sizeof(*nt))
@@ -3665,23 +3681,32 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
         SIZE_T map_size, file_start, file_size, end;
 
         if (!sec[i].Misc.VirtualSize)
-            map_size = ROUND_SIZE( 0, sec[i].SizeOfRawData, align_mask );
+        {
+            if (!round_size_checked( 0, sec[i].SizeOfRawData, align_mask, &map_size ))
+                goto done;
+        }
         else
-            map_size = ROUND_SIZE( 0, sec[i].Misc.VirtualSize, align_mask );
+        {
+            if (!round_size_checked( 0, sec[i].Misc.VirtualSize, align_mask, &map_size ))
+                goto done;
+        }
 
         /* file positions are rounded to sector boundaries regardless of OptionalHeader.FileAlignment */
         file_start = sec[i].PointerToRawData & ~sector_align;
-        file_size = ROUND_SIZE( sec[i].PointerToRawData, sec[i].SizeOfRawData, sector_align );
+        if (!round_size_checked( sec[i].PointerToRawData, sec[i].SizeOfRawData, sector_align, &file_size ))
+            goto done;
         if (file_size > map_size) file_size = map_size;
 
         /* a few sanity checks */
-        end = sec[i].VirtualAddress + ROUND_SIZE( sec[i].VirtualAddress, map_size, align_mask );
-        if (sec[i].VirtualAddress > total_size || end > total_size || end < sec[i].VirtualAddress)
+        if (!round_size_checked( sec[i].VirtualAddress, map_size, align_mask, &rounded_size ))
+            goto done;
+        if (sec[i].VirtualAddress > total_size || rounded_size > total_size - sec[i].VirtualAddress)
         {
             WARN_(module)( "%s section %.8s too large (%x+%lx/%lx)\n",
                            debugstr_us(nt_name), sec[i].Name, sec[i].VirtualAddress, map_size, total_size );
             goto done;
         }
+        end = sec[i].VirtualAddress + rounded_size;
 
         if ((sec[i].Characteristics & IMAGE_SCN_MEM_SHARED) &&
             (sec[i].Characteristics & IMAGE_SCN_MEM_WRITE))

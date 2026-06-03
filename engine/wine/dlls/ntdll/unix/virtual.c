@@ -3486,7 +3486,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     if ((char *)(nt + 1) > header_end) return status;
     sec = IMAGE_FIRST_SECTION( nt );
     if ((char *)(sec + nt->FileHeader.NumberOfSections) > header_end) return status;
-    if ((char *)(sec + nt->FileHeader.NumberOfSections) > ptr + image_info->header_map_size)
+    if ((char *)(sec + nt->FileHeader.NumberOfSections) > ptr + header_map_size)
     {
         /* copy section data since it will get overwritten by a section mapping */
         if (!(sections = malloc( sizeof(*sections) * nt->FileHeader.NumberOfSections )))

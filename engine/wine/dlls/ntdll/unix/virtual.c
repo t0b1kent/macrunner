@@ -4435,11 +4435,18 @@ void virtual_init(void)
         unsigned long start, end;
         if (sscanf( preload, "%lx-%lx", &start, &end ) == 2)
         {
-            preload_reserve_start = ROUND_ADDR( start, host_page_mask );
-            preload_reserve_end = (void *)ROUND_SIZE( 0, end, host_page_mask );
-            /* some apps start inside the DOS area */
-            if (preload_reserve_start)
-                address_space_start = min( address_space_start, preload_reserve_start );
+            SIZE_T rounded_end;
+
+            if (end <= start || !round_size_checked( 0, end, host_page_mask, &rounded_end ))
+                WARN( "ignoring invalid WINEPRELOADRESERVE range %s\n", preload );
+            else
+            {
+                preload_reserve_start = ROUND_ADDR( start, host_page_mask );
+                preload_reserve_end = (void *)rounded_end;
+                /* some apps start inside the DOS area */
+                if (preload_reserve_start)
+                    address_space_start = min( address_space_start, preload_reserve_start );
+            }
         }
         unsetenv( "WINEPRELOADRESERVE" );
     }

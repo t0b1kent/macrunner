@@ -5813,6 +5813,7 @@ static BOOL convert_to_pe64( HMODULE module, const SECTION_IMAGE_INFORMATION *in
     SIZE_T hdr_size = min( sizeof(hdr32), nt->FileHeader.SizeOfOptionalHeader );
     SIZE_T size = min( nt->OptionalHeader.SizeOfHeaders, nt->OptionalHeader.SizeOfImage );
     void *addr = module;
+    ULONG_PTR image_base = (ULONG_PTR)module, image_end, sections_start = (ULONG_PTR)(nt + 1);
     ULONG i, old_prot;
 
     if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC) return TRUE;  /* already 64-bit */
@@ -5821,14 +5822,14 @@ static BOOL convert_to_pe64( HMODULE module, const SECTION_IMAGE_INFORMATION *in
 
     TRACE( "%p\n", module );
 
-    if (NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &old_prot ))
+    if (size > ~(ULONG_PTR)0 - image_base) return FALSE;
+    image_end = image_base + size;
+    if (sections_start > image_end ||
+        nt->FileHeader.NumberOfSections > (image_end - sections_start) / sizeof(*sec))
         return FALSE;
 
-    if ((char *)module + size < (char *)(nt + 1) + nt->FileHeader.NumberOfSections * sizeof(*sec))
-    {
-        NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, old_prot, &old_prot );
+    if (NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &old_prot ))
         return FALSE;
-    }
 
     memcpy( &hdr32, &nt->OptionalHeader, hdr_size );
     memcpy( &hdr64, &hdr32, offsetof( IMAGE_OPTIONAL_HEADER64, SizeOfStackReserve ));

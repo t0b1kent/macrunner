@@ -178,6 +178,8 @@ fi
 
 SUMMARY_PATTERN="DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDXGIFactory1|factory_probe|factory_status_probe|factory_.*cookie|factory_associated_window|IDXGIFactory2|IDXGIFactory4|GetSharedResourceAdapterLuid|factory_shared_luid|RegisterStereoStatus|RegisterOcclusionStatus|MakeWindowAssociation|GetWindowAssociation|EnumAdapters|adapter_probe|RegisterClassExW|CreateWindowExW|window_create|window_visible|D3D11CreateDevice|feature_level|UnityFeatureLevelProbe|UnityFactoryProbe|CreateSwapChainForComposition|CreateSwapChainForCoreWindow|unsupported_swapchains|composition_.*swapchain|corewindow_swapchain|UnityDeviceInterfaceProbe|CheckFormatSupport|format_support|UnityFormatProbe|UnityCounterProbe|CheckCounterInfo|CheckCounter|CreateCounter|CreateSwapChainForHwnd|IDXGISwapChain::GetBuffer|GetBuffer|extra_buffer|IDXGISwapChain3|CheckColorSpaceSupport|SetColorSpace1|color_space_support|IDXGISwapChain4|SetHDRMetaData|ResizeBuffers|ResizeBuffers1|GetContainingOutput|GetDesc1|desc1|GetFullscreenDesc|fullscreen_desc|GetHwnd|GetCoreWindow|core_window|GetRestrictToOutput|restrict_output|GetBackgroundColor|SetBackgroundColor|background_rgba|GetRotation|SetRotation|rotation=|IDXGISwapChain2|GetSourceSize|SetSourceSize|source_size|GetMaximumFrameLatency|SetMaximumFrameLatency|max_frame_latency|GetMatrixTransform|SetMatrixTransform|matrix_offset|GetFullscreenState|SetFullscreenState|GetFrameStatistics|D3DCompile\\(gs_5_0\\)|CreateGeometryShader|CreateGeometryShaderWithStreamOutput|gs_bytecode_magic|Emulate stream output|CreateEmulatedVertexStreamOutputShader|GeometryShaderDraw|StreamOutputDraw|StreamOutputVerify|stream_output_staging|UnitySRGBProbe|UnityMSAAProbe|UnityResidencyProbe|UnityStabilityProbe|UnityStateProbe|UnityGammaProbe|UnityQueryProbe|UnityDeferredProbe|UnityQueryDeferredProbe|TIMESTAMP_DISJOINT|PIPELINE_STATISTICS|GetPredication|disjoint_frequency|UnityDeferredResourceProbe|UnityTessellationProbe|UnityClassLinkageProbe|UnityMRTProbe|UnityMultithreadProbe|UnityBatchProbe|CreateClassLinkage|CreateHullShader|CreateDomainShader|CreateTexture1D|CreateTexture2D|CreateShaderResourceView|CreateUnorderedAccessView|CreateBuffer\\(raw\\)|Map\\(dynamic_vertex_no_overwrite\\)|CopySubresourceRegion|GenerateMips|mip0_rgba|mip1_rgba|ResolveSubresource|CreateRenderTargetView|ClearRenderTargetView|CreateDepthStencilView|ClearDepthStencilView|ClearView|DiscardView|DiscardResource|OMSetRenderTargetsAndUnorderedAccessViews|Present|Present1|Readback|pixel0_bgra|pixel_readback|c0000135|err:module|not found|failed|FAIL"
 
+SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnityOutputCapabilityProbe"
+
 SMOKE_RC=0
 for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
   RUN_LOG="$LOG"
@@ -209,7 +211,7 @@ for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
 
   echo "run=$run/$SMOKE_REPEAT_COUNT log=$RUN_LOG"
   echo "run_exit_code=$run_rc"
-  grep -E "$SUMMARY_PATTERN" "$RUN_LOG" | tail -520 || true
+  grep -E "$SUMMARY_PATTERN" "$RUN_LOG" | tail -700 || true
   if [[ "$run_rc" -ne 0 ]]; then
     SMOKE_RC="$run_rc"
     break

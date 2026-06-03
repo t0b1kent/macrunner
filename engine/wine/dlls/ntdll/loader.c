@@ -5472,21 +5472,22 @@ static void update_load_config( void *module )
 {
     IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
     IMAGE_LOAD_CONFIG_DIRECTORY *cfg;
+    ULONG_PTR base = (ULONG_PTR)module, end;
     ULONG size;
 
+    if (!nt || nt->OptionalHeader.SizeOfImage > ~(ULONG_PTR)0 - base) return;
+    end = base + nt->OptionalHeader.SizeOfImage;
     cfg = RtlImageDirectoryEntryToData( module, TRUE, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG, &size );
     if (!cfg) return;
     size = min( size, cfg->Size );
     if (size > offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, SecurityCookie ) &&
-        cfg->SecurityCookie > (ULONG_PTR)module &&
-        cfg->SecurityCookie < (ULONG_PTR)module + nt->OptionalHeader.SizeOfImage)
+        cfg->SecurityCookie > base && cfg->SecurityCookie < end)
     {
         set_security_cookie( (ULONG_PTR *)cfg->SecurityCookie );
     }
 #ifdef __arm64ec__
     if (size > offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, CHPEMetadataPointer ) &&
-        cfg->CHPEMetadataPointer > (ULONG_PTR)module &&
-        cfg->CHPEMetadataPointer < (ULONG_PTR)module + nt->OptionalHeader.SizeOfImage)
+        cfg->CHPEMetadataPointer > base && cfg->CHPEMetadataPointer < end)
     {
         arm64ec_update_hybrid_metadata( module, nt, (void *)cfg->CHPEMetadataPointer );
     }

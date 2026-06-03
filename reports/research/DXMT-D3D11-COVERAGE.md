@@ -67,7 +67,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Swapchain/present | PASS | Message HWND path prints `CreateSwapChainForHwnd hr=0x00000000`, `IDXGISwapChain::GetBuffer hr=0x00000000`, `Present hr=0x00000000`. |
 | RTV clear/readback | PASS | Swapchain backbuffer clears to RGBA `(0.125,0.5,0.875,1.0)`; readback prints `pixel0_bgra=223,128,32,255`, `pixel_readback=PASS`. |
 | Strict native `winemetal=n` | Gap | Raw native `winemetal.dll` still fails `__wine_init_unix_call` with `status=0xc0000135`; tracked in `reports/research/LANE-D-NEEDS.md`, not a stop for mixed DXMT smoke. |
-| Top-level HWND creation | Gap | Overlapped/static/popup windows still return `gle=1400`; smoke now uses a message HWND plus fallback `CAMetalLayer` to keep headless swapchain/present covered. |
+| Top-level HWND creation | Implemented | Owned live/fullscreen smokes create non-null overlapped Wine HWNDs and present through them; stale `GetLastError=1400` after a successful `CreateWindowExW` is ignored. Message-HWND fallback remains available for headless coverage. |
 
 ## D3D11 Device Surface
 

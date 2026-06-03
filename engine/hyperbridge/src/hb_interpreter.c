@@ -3004,6 +3004,10 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         }
 
         case HB_IR_CMPXCHG: {
+            /* x86 LOCK-prefixed RMW implies a full memory barrier (TSO). ARM64 is weakly
+             * ordered, so model it explicitly — otherwise a cross-thread publisher's store
+             * is never observed by a spin-reader (livelock). See CLAUDE-GATE-DIAGNOSIS UPDATE 4. */
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
             uint64_t dst_val = 0;
             uint64_t src_val = 0;
             hb_size_t size = instr->dst.size ? instr->dst.size : instr->src1.size;
@@ -3038,6 +3042,7 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         }
 
         case HB_IR_CMPXCHG8B: {
+            __atomic_thread_fence(__ATOMIC_SEQ_CST); /* x86 LOCK full barrier (TSO) — see UPDATE 4 */
             if (instr->dst.size == HB_SIZE_128) {
                 uint64_t mem[2] = {0, 0};
                 uint64_t acc[2] = {read_reg(ctx, HB_REG_RAX), read_reg(ctx, HB_REG_RDX)};
@@ -3086,6 +3091,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         }
 
         case HB_IR_XCHG: {
+            /* XCHG with a memory operand is implicitly LOCK'd on x86 → full barrier (TSO). */
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
             uint64_t dst_val = 0;
             uint64_t src_val = 0;
             hb_size_t size = instr->dst.size ? instr->dst.size : instr->src1.size;
@@ -3117,6 +3124,8 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         }
 
         case HB_IR_XADD: {
+            /* x86 LOCK XADD implies a full memory barrier (TSO). */
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
             uint64_t dst_val = 0;
             uint64_t src_val = 0;
             hb_size_t size = instr->dst.size ? instr->dst.size : instr->src1.size;

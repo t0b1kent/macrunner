@@ -2284,7 +2284,14 @@ static void commit_arm64ec_map( struct file_view *view )
  */
 static void update_write_watches( void *base, size_t size, size_t accessed_size )
 {
-    TRACE( "updating watch %p-%p-%p\n", base, (char *)base + accessed_size, (char *)base + size );
+    char *accessed_end, *end;
+
+    if (accessed_size > size) accessed_size = size;
+    if (size > ~(SIZE_T)0 - (UINT_PTR)base) return;
+    accessed_end = (char *)base + accessed_size;
+    end = (char *)base + size;
+
+    TRACE( "updating watch %p-%p-%p\n", base, accessed_end, end );
     /* clear write watch flag on accessed pages */
     set_page_vprot_bits( base, accessed_size, 0, VPROT_WRITEWATCH );
     /* restore page protections on the entire range */

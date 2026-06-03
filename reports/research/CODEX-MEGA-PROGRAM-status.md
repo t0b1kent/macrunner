@@ -34,6 +34,20 @@ waits/signals; no `WaitOnAddress`/event/semaphore target corresponds to these PC
 and profile `mono-2.0-bdwgc.dll+0x284b34`, then promote/fix the hottest concrete loop/helper by
 evidence. Do not return to the wait layer for `0x5158b4`.
 
+Post-commit climb update: `0x284b34` is also not a wait/lock root. Disassembly maps it to
+`mono_jit_set_domain`, which walks a method/list chain and calls `0x14e0f0`; the run that sampled it
+had block count fixed at `0x1e63c4` but host CPU hot, consistent with generated/native code running
+inside one guest block. A low-trace host-sample run
+`reports/phase4-hollow-knight/run-20260603-112556-284b34-hostsample210/` reached the same depth and
+sampled hot unknown generated frames while the latest heartbeat was `rva=0x7715e`
+(`mono_property_hash_lookup` / cleanup path), with no runtime fail or JIT fallback. A focused hot
+block run `reports/phase4-hollow-knight/run-20260603-113204-jit-hotblocks190/` maps the repeatable
+top dispatch family to Mono vtable/signature matching: `0xd4330 -> call 0xd1530 -> 0xd4371`, with
+top RVAs `0xd1530`, `0xd1567`, `0xd169c`, `0xd18eb`, `0xd4330`, `0xd4358`, `0xd4371`. The inner
+path calls `mono_method_signature_internal_slow` and `mono_metadata_signature_equal`. NEXT is now an
+evidence-scoped throughput helper/profile for this vtable signature-match/list-walk family; do not
+chase HeapFree, SRW/critical-section waits, or the old `0x284b34` wrapper as roots.
+
 **2026-06-03 wait-semantic verdict (Codex Lane A): `0x5158b4` is NOT a wait primitive.**
 Checkpoint commit made first as requested: `aa76fd5 checkpoint(lane-a): pass 0x14f180 barrier`.
 Fresh trace run:

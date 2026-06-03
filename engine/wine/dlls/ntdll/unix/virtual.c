@@ -6263,7 +6263,6 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 
         /* disallow low 64k, wrap-around and kernel space */
         if (((char *)base < (char *)0x10000) ||
-            ((char *)base + size < (char *)base) ||
             is_beyond_limit( base, size, address_space_limit ))
         {
             /* address 1 is magic to mean DOS area */

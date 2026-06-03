@@ -1076,6 +1076,9 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_X87_FISTP:
             emit(b, hb_ir_emit_unop(b, HB_IR_X87_FISTP, operand_from_dec(dec, 1), hb_ir_none()), dec);
             return HB_OK;
+        case HB_INS_X87_FIST:
+            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FIST, operand_from_dec(dec, 1), hb_ir_none()), dec);
+            return HB_OK;
         case HB_INS_X87_FLDCW:
             emit(b, hb_ir_emit_unop(b, HB_IR_X87_FLDCW, hb_ir_none(), operand_from_dec(dec, 1)), dec);
             return HB_OK;
@@ -1136,14 +1139,37 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_X87_FRNDINT:
             emit(b, hb_ir_emit(b, HB_IR_X87_FRNDINT), dec);
             return HB_OK;
+        case HB_INS_X87_FINCSTP:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FINCSTP), dec);
+            return HB_OK;
+        case HB_INS_X87_FDECSTP:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FDECSTP), dec);
+            return HB_OK;
         case HB_INS_X87_FUCOM:
         case HB_INS_X87_FUCOMP:
         case HB_INS_X87_FUCOMI:
         case HB_INS_X87_FUCOMPI:
-            /* FUCOM/FUCOMP/FUCOMI/FUCOMPI: unordered compares. Model as a
-             * no-op FNINIT for now — these are 0-side-effect at the IR level
-             * because FPU condition codes are not yet exposed. */
-            emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);
+        case HB_INS_X87_FCOMI:
+        case HB_INS_X87_FCOMPI:
+            /* FUCOM/FUCOMP/FUCOMI/FUCOMPI: unordered compares (set C0/C2/C3
+             * to 111 for NaN; the regular FCOM does NOT do that, FUCOM does).
+             * FCOMI/FCOMIP/FUCOMI/FUCOMIP also write EFLAGS (gap matrix #8
+             * now closed: FCOMI-family is wired through dedicated IR ops
+             * HB_IR_X87_FCOMI/FUCOMI/FCOMIP/FUCOMIP that write EFLAGS). */
+            {
+                int op = (int)dec->opcode;
+                hb_ir_op_t ir;
+                switch (op) {
+                    case (int)HB_INS_X87_FUCOM:   ir = HB_IR_X87_FUCOM;   break;
+                    case (int)HB_INS_X87_FUCOMP:  ir = HB_IR_X87_FUCOMP;  break;
+                    case (int)HB_INS_X87_FUCOMI:  ir = HB_IR_X87_FUCOMI;  break;
+                    case (int)HB_INS_X87_FUCOMPI: ir = HB_IR_X87_FUCOMIP; break;
+                    case (int)HB_INS_X87_FCOMI:   ir = HB_IR_X87_FCOMI;   break;
+                    case (int)HB_INS_X87_FCOMPI:  ir = HB_IR_X87_FCOMIP;  break;
+                    default: return HB_ERR_INTERNAL;
+                }
+                emit(b, hb_ir_emit_unop(b, ir, hb_ir_none(), operand_from_dec(dec, 1)), dec);
+            }
             return HB_OK;
         case HB_INS_X87_FNCLEX:
             emit(b, hb_ir_emit(b, HB_IR_X87_FNCLEX), dec);
@@ -1151,26 +1177,88 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_X87_FNINIT:
             emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);
             return HB_OK;
+        case HB_INS_X87_FXAM:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FXAM), dec);
+            return HB_OK;
+        case HB_INS_X87_FSQRT:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FSQRT), dec);
+            return HB_OK;
+        case HB_INS_X87_F2XM1:
+            emit(b, hb_ir_emit(b, HB_IR_X87_F2XM1), dec);
+            return HB_OK;
+        case HB_INS_X87_FYL2X:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FYL2X), dec);
+            return HB_OK;
+        case HB_INS_X87_FPTAN:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FPTAN), dec);
+            return HB_OK;
+        case HB_INS_X87_FPATAN:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FPATAN), dec);
+            return HB_OK;
+        case HB_INS_X87_FXTRACT:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FXTRACT), dec);
+            return HB_OK;
+        case HB_INS_X87_FPREM1:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FPREM1), dec);
+            return HB_OK;
+        case HB_INS_X87_FPREM:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FPREM), dec);
+            return HB_OK;
+        case HB_INS_X87_FYL2XP1:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FYL2XP1), dec);
+            return HB_OK;
+        case HB_INS_X87_FSINCOS:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FSINCOS), dec);
+            return HB_OK;
+        case HB_INS_X87_FSCALE:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FSCALE), dec);
+            return HB_OK;
+        case HB_INS_X87_FSIN:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FSIN), dec);
+            return HB_OK;
+        case HB_INS_X87_FCOS:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FCOS), dec);
+            return HB_OK;
+        case HB_INS_X87_FNOP:
+            /* FNOP — FPU no-op. No state change. */
+            emit(b, hb_ir_emit(b, HB_IR_X87_FNOP), dec);
+            return HB_OK;
+        case HB_INS_X87_FCHS:
+            /* FCHS — complement sign of ST(0). */
+            emit(b, hb_ir_emit(b, HB_IR_X87_FCHS), dec);
+            return HB_OK;
+        case HB_INS_X87_FABS:
+            /* FABS — clear sign of ST(0). */
+            emit(b, hb_ir_emit(b, HB_IR_X87_FABS), dec);
+            return HB_OK;
+        case HB_INS_X87_FTST:
+            /* FTST — compare ST(0) to +0.0, set C0/C2/C3 in FPU SW. */
+            emit(b, hb_ir_emit(b, HB_IR_X87_FTST), dec);
+            return HB_OK;
         case HB_INS_X87_FFREE:
-            /* FFREE ST(i): mark ST(i) as free. We model as a no-op since the
-             * stack pointer is implicit in our interpreter. */
-            emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);  /* stand-in */
+            /* FFREE ST(i): mark ST(i) as free. We model as NOP since the
+             * stack pointer is implicit in our interpreter. NOTE: this
+             * used to be HB_IR_X87_FNINIT (full FPU reset!) which was
+             * catastrophic. */
+            emit(b, hb_ir_emit(b, HB_IR_NOP), dec);  /* stand-in */
             return HB_OK;
         case HB_INS_X87_MISC:
-            /* FNOP and other FPU no-op-style opcodes. We model as a no-op;
-             * the FNINIT stand-in works because both are 0-side-effect FPU
-             * ops at the IR level. */
-            emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);  /* stand-in */
+            /* Safety net: should be unreachable now that FNOP/FCHS/FABS/FTST
+             * are split out into their own opcodes. If we ever land here,
+             * a newly added x87 instruction needs a case above. */
+            emit(b, hb_ir_emit(b, HB_IR_NOP), dec);  /* stand-in */
             return HB_OK;
         case HB_INS_X87_FFREEP:
-            /* FFREEP ST(i): pop + free. Stand-in via FNINIT. */
-            emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);  /* stand-in */
+            /* FFREEP ST(i): pop + free. We model as NOP since the full
+             * pop+tag-clear is not yet implemented. NOTE: this used to
+             * be HB_IR_X87_FNINIT. */
+            emit(b, hb_ir_emit(b, HB_IR_NOP), dec);  /* stand-in */
             return HB_OK;
         case HB_INS_X87_FCMOV:
-            /* FCMOVcc ST, ST(i): conditional move based on EFLAGS. We
-             * currently implement as FNINIT (no-op) since condition code is
-             * not yet tracked per FCMOV variant. */
-            emit(b, hb_ir_emit(b, HB_IR_X87_FNINIT), dec);
+            /* FCMOVcc ST, ST(i): conditional move based on EFLAGS. Model
+             * as NOP since condition code is not yet tracked per FCMOV
+             * variant. NOTE: this used to be HB_IR_X87_FNINIT. */
+            emit(b, hb_ir_emit(b, HB_IR_NOP), dec);
             return HB_OK;
         case HB_INS_PUSHA: {
             hb_ir_instr_t *i = hb_ir_emit(b, HB_IR_PUSHA);

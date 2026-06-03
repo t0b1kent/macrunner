@@ -400,9 +400,46 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             return HB_OK;
         }
         if (opcode == 0xd9) {
-            if (modrm == 0xe8 || modrm == 0xee) {
+            if (modrm == 0xe8) {
+                /* FLD1: push 1.0 */
                 out->opcode = HB_INS_X87_FLD;
-                set_imm(out, 1, modrm == 0xe8 ? -1 : -2, 1);
+                set_imm(out, 1, -1, 1);
+                return HB_OK;
+            }
+            if (modrm == 0xee) {
+                /* FLDZ: push 0.0 */
+                out->opcode = HB_INS_X87_FLD;
+                set_imm(out, 1, -2, 1);
+                return HB_OK;
+            }
+            if (modrm == 0xe9) {
+                /* FLDL2T: push log2(10) */
+                out->opcode = HB_INS_X87_FLD;
+                set_imm(out, 1, -3, 1);
+                return HB_OK;
+            }
+            if (modrm == 0xea) {
+                /* FLDL2E: push log2(e) */
+                out->opcode = HB_INS_X87_FLD;
+                set_imm(out, 1, -4, 1);
+                return HB_OK;
+            }
+            if (modrm == 0xeb) {
+                /* FLDPI: push pi */
+                out->opcode = HB_INS_X87_FLD;
+                set_imm(out, 1, -5, 1);
+                return HB_OK;
+            }
+            if (modrm == 0xec) {
+                /* FLDLG2: push log10(2) */
+                out->opcode = HB_INS_X87_FLD;
+                set_imm(out, 1, -6, 1);
+                return HB_OK;
+            }
+            if (modrm == 0xed) {
+                /* FLDLN2: push ln(2) */
+                out->opcode = HB_INS_X87_FLD;
+                set_imm(out, 1, -7, 1);
                 return HB_OK;
             }
             if (modrm >= 0xc0 && modrm <= 0xc7) out->opcode = HB_INS_X87_FLD;
@@ -414,17 +451,32 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             }
             else if (modrm == 0xd0) {
                 /* FNOP — FPU no-op. */
-                out->opcode = HB_INS_X87_MISC;
+                out->opcode = HB_INS_X87_FNOP;
                 return HB_OK;
             }
             else if (modrm >= 0xd1 && modrm <= 0xd7) out->opcode = HB_INS_X87_FSTP; /* FSTPNCE — undocumented */
             else if (modrm >= 0xd8 && modrm <= 0xdf) out->opcode = HB_INS_X87_FSTP;
-            else if (modrm == 0xe0) out->opcode = HB_INS_X87_MISC; /* FCHS */
-            else if (modrm == 0xe1) out->opcode = HB_INS_X87_MISC; /* FABS */
-            else if (modrm == 0xe4) out->opcode = HB_INS_X87_MISC; /* FTST */
-            else if (modrm == 0xe5) out->opcode = HB_INS_X87_MISC; /* FXAM */
+            else if (modrm == 0xe0) { out->opcode = HB_INS_X87_FCHS; return HB_OK; }
+            else if (modrm == 0xe1) { out->opcode = HB_INS_X87_FABS; return HB_OK; }
+            else if (modrm == 0xe4) { out->opcode = HB_INS_X87_FTST; return HB_OK; }
+            else if (modrm == 0xe5) { out->opcode = HB_INS_X87_FXAM; return HB_OK; }
+            else if (modrm == 0xf6) { out->opcode = HB_INS_X87_FDECSTP; return HB_OK; }
+            else if (modrm == 0xf7) { out->opcode = HB_INS_X87_FINCSTP; return HB_OK; }
             else if (modrm >= 0xe8 && modrm <= 0xee) out->opcode = HB_INS_X87_FLD;  /* FLD1/FLDL2T/.../FLDZ */
-            else if (modrm >= 0xf0 && modrm <= 0xff) out->opcode = HB_INS_X87_MISC; /* F2XM1/FYL2X/.../FCOS */
+            else if (modrm == 0xf0) { out->opcode = HB_INS_X87_F2XM1;   return HB_OK; }
+            else if (modrm == 0xf1) { out->opcode = HB_INS_X87_FYL2X;   return HB_OK; }
+            else if (modrm == 0xf2) { out->opcode = HB_INS_X87_FPTAN;   return HB_OK; }
+            else if (modrm == 0xf3) { out->opcode = HB_INS_X87_FPATAN;  return HB_OK; }
+            else if (modrm == 0xf4) { out->opcode = HB_INS_X87_FXTRACT; return HB_OK; }
+            else if (modrm == 0xf5) { out->opcode = HB_INS_X87_FPREM1;  return HB_OK; }
+            else if (modrm == 0xf8) { out->opcode = HB_INS_X87_FPREM;   return HB_OK; }
+            else if (modrm == 0xf9) { out->opcode = HB_INS_X87_FYL2XP1; return HB_OK; }  /* per capstone, D9 F9 = FYL2XP1 */
+            else if (modrm == 0xfa) { out->opcode = HB_INS_X87_FSQRT;   return HB_OK; }
+            else if (modrm == 0xfb) { out->opcode = HB_INS_X87_FSINCOS; return HB_OK; }
+            else if (modrm == 0xfc) { out->opcode = HB_INS_X87_FRNDINT; return HB_OK; }
+            else if (modrm == 0xfd) { out->opcode = HB_INS_X87_FSCALE;  return HB_OK; }
+            else if (modrm == 0xfe) { out->opcode = HB_INS_X87_FSIN;    return HB_OK; }
+            else if (modrm == 0xff) { out->opcode = HB_INS_X87_FCOS;    return HB_OK; }
             else return HB_ERR_UNSUPPORTED_OPCODE;
             set_imm(out, 1, sti, 1);
             return HB_OK;
@@ -449,17 +501,23 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             else if (modrm >= 0xd0 && modrm <= 0xd7) out->opcode = HB_INS_X87_FCMOV; /* FCMOVNBE */
             else if (modrm >= 0xd8 && modrm <= 0xdf) out->opcode = HB_INS_X87_FCMOV; /* FCMOVNU */
             else if (modrm >= 0xe8 && modrm <= 0xef) out->opcode = HB_INS_X87_FUCOMI;
-            else if (modrm >= 0xf0 && modrm <= 0xf7) out->opcode = HB_INS_X87_FUCOMI; /* cap reports fcomi */
+            else if (modrm >= 0xf0 && modrm <= 0xf7) out->opcode = HB_INS_X87_FCOMI;
             else return HB_ERR_UNSUPPORTED_OPCODE;
-            if (modrm < 0xe0) set_imm(out, 1, sti, 1);
+            set_imm(out, 1, sti, 1);
             return HB_OK;
         }
         if (opcode == 0xda) {
-            /* FCMOVB/FCMOVE/FCMOVBE/FCMOVU — Pentium Pro+ conditional moves. */
+            /* FCMOVB/FCMOVE/FCMOVBE/FCMOVU + FUCOMPP (Pentium Pro+). */
             if (modrm >= 0xc0 && modrm <= 0xc7) out->opcode = HB_INS_X87_FCMOV; /* FCMOVB */
             else if (modrm >= 0xc8 && modrm <= 0xcf) out->opcode = HB_INS_X87_FCMOV; /* FCMOVE */
             else if (modrm >= 0xd0 && modrm <= 0xd7) out->opcode = HB_INS_X87_FCMOV; /* FCMOVBE */
             else if (modrm >= 0xd8 && modrm <= 0xdf) out->opcode = HB_INS_X87_FCMOV; /* FCMOVU */
+            else if (modrm == 0xe9) {
+                /* FUCOMPP ST(0), ST(1) — pop twice. */
+                out->opcode = HB_INS_X87_FCOMPP;
+                set_imm(out, 1, 1, 1);
+                return HB_OK;
+            }
             else return HB_ERR_UNSUPPORTED_OPCODE;
             set_imm(out, 1, sti, 1);
             return HB_OK;
@@ -518,7 +576,7 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
                 return HB_OK;
             }
             else if (modrm >= 0xf0 && modrm <= 0xf7) {
-                out->opcode = HB_INS_X87_FUCOMPI;  /* cap reports fcompi; we collapse to FUCOMPI stand-in */
+                out->opcode = HB_INS_X87_FCOMPI;
                 set_imm(out, 1, sti, 1);
                 return HB_OK;
             }
@@ -547,6 +605,7 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             else if (reg_op == 2) { out->opcode = HB_INS_X87_FST; size = 4; }
             else if (reg_op == 3) { out->opcode = HB_INS_X87_FSTP; size = 4; }
             else if (reg_op == 5) { out->opcode = HB_INS_X87_FLDCW; size = 2; }
+            else if (reg_op == 6) { out->opcode = HB_INS_X87_FNSTSW; size = 2; }
             else if (reg_op == 7) { out->opcode = HB_INS_X87_FNSTCW; size = 2; }
             else return HB_ERR_UNSUPPORTED_OPCODE;
             break;
@@ -565,7 +624,10 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             break;
         case 0xdb:
             if (reg_op == 0) { out->opcode = HB_INS_X87_FILD; size = 4; }
+            else if (reg_op == 2) { out->opcode = HB_INS_X87_FIST; size = 4; }
             else if (reg_op == 3) { out->opcode = HB_INS_X87_FISTP; size = 4; }
+            else if (reg_op == 5) { out->opcode = HB_INS_X87_FLD; size = 10; }  /* FLD m80 (extended) */
+            else if (reg_op == 7) { out->opcode = HB_INS_X87_FSTP; size = 10; } /* FSTP m80 (extended) */
             else return HB_ERR_UNSUPPORTED_OPCODE;
             break;
         case 0xde:
@@ -589,6 +651,7 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             break;
         case 0xdf:
             if (reg_op == 0) { out->opcode = HB_INS_X87_FILD; size = 2; }
+            else if (reg_op == 2) { out->opcode = HB_INS_X87_FIST; size = 2; }
             else if (reg_op == 3) { out->opcode = HB_INS_X87_FISTP; size = 2; }
             else if (reg_op == 5) { out->opcode = HB_INS_X87_FILD; size = 8; }
             else if (reg_op == 7) { out->opcode = HB_INS_X87_FISTP; size = 8; }
@@ -2796,7 +2859,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t modrm = read_u8(d);
         uint8_t ext = (modrm >> 3) & 7;
-        uint8_t sz = (opcode == 0xF6) ? 1 : (operand16 ? 2 : 4);
+        uint8_t sz = (opcode == 0xF6) ? 1 : 4;
         if (ext == 0) {
             out->opcode = HB_INS_TEST;
             out->writes_flags = true;
@@ -2805,12 +2868,9 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             if (opcode == 0xF6) {
                 if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
                 set_imm(out, 2, read_s8(d), 1);
-            } else if (sz == 2) {
-                if (!can_read(d, 2)) return HB_ERR_DECODE_FAILED;
-                set_imm(out, 2, (int64_t)read_s16(d), sz);
             } else {
                 if (!can_read(d, 4)) return HB_ERR_DECODE_FAILED;
-                set_imm(out, 2, (int64_t)read_s32(d), sz);
+                set_imm(out, 2, (int64_t)read_s32(d), 4);
             }
             return HB_OK;
         }

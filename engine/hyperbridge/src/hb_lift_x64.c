@@ -1548,6 +1548,60 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
         case HB_INS_X87_FRNDINT:
             emit(b, hb_ir_emit(b, HB_IR_X87_FRNDINT), dec);
             return HB_OK;
+        /* x87 FCMOVcc / FFREE / FFREEP — the x64 decoder doesn't produce
+         * these today (they're rare on 64-bit code) but the lifter should
+         * still handle them in case the decoder is ever extended. Until
+         * then the existing FCMOV/FFREEP NOP stand-ins keep the build
+         * green. Listed here only as documentation; the actual handlers
+         * remain above. */
+        /* FUCOM family — gap matrix #8 fix. */
+        case HB_INS_X87_FUCOM:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FUCOM), dec);
+            return HB_OK;
+        case HB_INS_X87_FUCOMP:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FUCOMP), dec);
+            return HB_OK;
+        case HB_INS_X87_FCOMI:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FCOMI), dec);
+            return HB_OK;
+        case HB_INS_X87_FUCOMI:
+            emit(b, hb_ir_emit(b, HB_IR_X87_FUCOMI), dec);
+            return HB_OK;
+        case HB_INS_X87_FCOMPI:  /* decoder alias for FCOMIP */
+            emit(b, hb_ir_emit(b, HB_IR_X87_FCOMIP), dec);
+            return HB_OK;
+        case HB_INS_X87_FUCOMPI: /* decoder alias for FUCOMIP */
+            emit(b, hb_ir_emit(b, HB_IR_X87_FUCOMIP), dec);
+            return HB_OK;
+        /* D9 F0-FF transcendentals — gap matrix #6. */
+        case HB_INS_X87_FSQRT:   emit(b, hb_ir_emit(b, HB_IR_X87_FSQRT), dec);   return HB_OK;
+        case HB_INS_X87_F2XM1:   emit(b, hb_ir_emit(b, HB_IR_X87_F2XM1), dec);   return HB_OK;
+        case HB_INS_X87_FYL2X:   emit(b, hb_ir_emit(b, HB_IR_X87_FYL2X), dec);   return HB_OK;
+        case HB_INS_X87_FPTAN:   emit(b, hb_ir_emit(b, HB_IR_X87_FPTAN), dec);   return HB_OK;
+        case HB_INS_X87_FPATAN:  emit(b, hb_ir_emit(b, HB_IR_X87_FPATAN), dec);  return HB_OK;
+        case HB_INS_X87_FXTRACT: emit(b, hb_ir_emit(b, HB_IR_X87_FXTRACT), dec); return HB_OK;
+        case HB_INS_X87_FPREM1:  emit(b, hb_ir_emit(b, HB_IR_X87_FPREM1), dec);  return HB_OK;
+        case HB_INS_X87_FPREM:   emit(b, hb_ir_emit(b, HB_IR_X87_FPREM), dec);   return HB_OK;
+        case HB_INS_X87_FYL2XP1: emit(b, hb_ir_emit(b, HB_IR_X87_FYL2XP1), dec); return HB_OK;
+        case HB_INS_X87_FSINCOS: emit(b, hb_ir_emit(b, HB_IR_X87_FSINCOS), dec); return HB_OK;
+        case HB_INS_X87_FSCALE:  emit(b, hb_ir_emit(b, HB_IR_X87_FSCALE), dec);  return HB_OK;
+        case HB_INS_X87_FSIN:    emit(b, hb_ir_emit(b, HB_IR_X87_FSIN), dec);    return HB_OK;
+        case HB_INS_X87_FCOS:    emit(b, hb_ir_emit(b, HB_IR_X87_FCOS), dec);    return HB_OK;
+        /* Environment + control — same as x86. */
+        case HB_INS_X87_FXAM:    emit(b, hb_ir_emit(b, HB_IR_X87_FXAM), dec);    return HB_OK;
+        case HB_INS_X87_FINCSTP: emit(b, hb_ir_emit(b, HB_IR_X87_FINCSTP), dec); return HB_OK;
+        case HB_INS_X87_FDECSTP: emit(b, hb_ir_emit(b, HB_IR_X87_FDECSTP), dec); return HB_OK;
+        case HB_INS_X87_FNSTCW:  emit(b, hb_ir_emit(b, HB_IR_X87_FNSTCW), dec);  return HB_OK;
+        case HB_INS_X87_FIST:    emit(b, hb_ir_emit(b, HB_IR_X87_FIST), dec);    return HB_OK;
+        /* D9 D0/E0/E1/E4 — same handlers as x86. */
+        case HB_INS_X87_FNOP:    emit(b, hb_ir_emit(b, HB_IR_X87_FNOP), dec);    return HB_OK;
+        case HB_INS_X87_FCHS:    emit(b, hb_ir_emit(b, HB_IR_X87_FCHS), dec);    return HB_OK;
+        case HB_INS_X87_FABS:    emit(b, hb_ir_emit(b, HB_IR_X87_FABS), dec);    return HB_OK;
+        case HB_INS_X87_FTST:    emit(b, hb_ir_emit(b, HB_IR_X87_FTST), dec);    return HB_OK;
+        /* MISC safety net — same as x86. */
+        case HB_INS_X87_MISC:
+            emit(b, hb_ir_emit(b, HB_IR_NOP), dec);
+            return HB_OK;
         case HB_INS_NOP: {
             emit(b, hb_ir_emit(b, HB_IR_NOP), dec);
             return HB_OK;

@@ -702,6 +702,41 @@ static void store_lane(uint8_t* p, unsigned lane, uint64_t v) {
     else { uint64_t q = v; memcpy(p, &q, sizeof(q)); }
 }
 
+/* SHA-NI helpers (Intel SDM Vol 2). These are pure functions over uint32_t
+ * state, kept as file-static so the per-op dispatch can call them without
+ * lambda overhead. Operands are little-endian dwords. */
+static inline uint32_t sha_rol(uint32_t x, unsigned n) {
+    return (x << n) | (x >> (32 - n));
+}
+static inline uint32_t sha_ror(uint32_t x, unsigned n) {
+    return (x >> n) | (x << (32 - n));
+}
+static inline uint32_t sha_ch(uint32_t x, uint32_t y, uint32_t z) {
+    return (x & y) ^ ((~x) & z);
+}
+static inline uint32_t sha_maj(uint32_t x, uint32_t y, uint32_t z) {
+    return (x & y) ^ (x & z) ^ (y & z);
+}
+static inline uint32_t sha_parity(uint32_t x, uint32_t y, uint32_t z) {
+    return x ^ y ^ z;
+}
+/* Big-sigma0 (SHA-256): ROR(x,2) ^ ROR(x,13) ^ ROR(x,22). */
+static inline uint32_t sha_bigsig0(uint32_t x) {
+    return sha_ror(x, 2) ^ sha_ror(x, 13) ^ sha_ror(x, 22);
+}
+/* Big-sigma1 (SHA-256): ROR(x,6) ^ ROR(x,11) ^ ROR(x,25). */
+static inline uint32_t sha_bigsig1(uint32_t x) {
+    return sha_ror(x, 6) ^ sha_ror(x, 11) ^ sha_ror(x, 25);
+}
+/* Small-sigma0 (SHA-256): ROR(x,7) ^ ROR(x,18) ^ SHR(x,3). */
+static inline uint32_t sha_smallsig0(uint32_t x) {
+    return sha_ror(x, 7) ^ sha_ror(x, 18) ^ (x >> 3);
+}
+/* Small-sigma1 (SHA-256): ROR(x,17) ^ ROR(x,19) ^ SHR(x,10). */
+static inline uint32_t sha_smallsig1(uint32_t x) {
+    return sha_ror(x, 17) ^ sha_ror(x, 19) ^ (x >> 10);
+}
+
 static const uint8_t aes_sbox[256] = {
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
     0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
@@ -1274,6 +1309,44 @@ static hb_result_t x87_fld_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     return hb_x87_push_f64(&ctx->regs.x86.x87, value);
 }
 
+/* Convert an IEEE 754 double to an 80-bit extended precision encoding
+ * (sign+exponent 16-bit, significand 64-bit with explicit integer bit).
+ * Used by FSTP m80. The 80-bit format: bits 79 = sign, 78-64 = biased
+ * exponent (15 bits), 63 = explicit integer bit (1 for normal), 62-0
+ * = fraction (no hidden bit). For our double (53-bit mantissa), we have
+ * to split it into explicit-int form. For subnormals/zero/inf/nan we
+ * follow IEEE 754 conventions. */
+static void double_to_ext80(double value, uint8_t out[10]) {
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    bool neg = (bits >> 63) & 1;
+    uint64_t frac = bits & 0x000FFFFFFFFFFFFFULL;
+    unsigned exp = (unsigned)((bits >> 52) & 0x7FFu);
+
+    uint16_t se = neg ? 0x8000u : 0u;
+    uint64_t sig = 0;
+
+    if (exp == 0 && frac == 0) {
+        /* Zero */
+        se |= 0x0000u;
+        sig = 0;
+    } else if (exp == 0x7FFu) {
+        /* Inf / NaN */
+        se |= 0x7FFFu;
+        if (frac == 0) {
+            sig = 0x8000000000000000ULL;  /* Inf: integer bit set, frac=0 */
+        } else {
+            sig = 0x8000000000000000ULL | frac;  /* NaN: keep payload */
+        }
+    } else {
+        /* Normal finite: convert hidden-bit double to explicit-bit 80 */
+        se |= (uint16_t)(exp - 0x3FFu + 0x3FFFu);
+        sig = 0x8000000000000000ULL | frac;
+    }
+    memcpy(out, &sig, sizeof(sig));
+    memcpy(out + 8, &se, sizeof(se));
+}
+
 static hb_result_t x87_fstp_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint64_t addr = resolve_addr(ctx, op);
     double value;
@@ -1285,6 +1358,10 @@ static hb_result_t x87_fstp_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
         r = hb_memory_write(ctx->memory, addr, &f, sizeof(f));
     } else if (op->size == HB_SIZE_64) {
         r = hb_memory_write(ctx->memory, addr, &value, sizeof(value));
+    } else if (op->size == HB_SIZE_80) {
+        uint8_t bytes[10];
+        double_to_ext80(value, bytes);
+        r = hb_memory_write(ctx->memory, addr, bytes, sizeof(bytes));
     } else {
         return HB_ERR_UNSUPPORTED_FEATURE;
     }
@@ -1304,6 +1381,11 @@ static hb_result_t x87_fst_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     }
     if (op->size == HB_SIZE_64) {
         return hb_memory_write(ctx->memory, addr, &value, sizeof(value));
+    }
+    if (op->size == HB_SIZE_80) {
+        uint8_t bytes[10];
+        double_to_ext80(value, bytes);
+        return hb_memory_write(ctx->memory, addr, bytes, sizeof(bytes));
     }
     return HB_ERR_UNSUPPORTED_FEATURE;
 }
@@ -1357,6 +1439,25 @@ static hb_result_t x87_fistp_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     return HB_ERR_UNSUPPORTED_FEATURE;
 }
 
+/* FIST = non-popping integer store. Same encoding as FISTP but no pop. */
+static hb_result_t x87_fist_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    uint64_t addr = resolve_addr(ctx, op);
+
+    if (op->size == HB_SIZE_16) {
+        int16_t v;
+        hb_result_t r = hb_x87_fist_i16(&ctx->regs.x86.x87, &v);
+        if (r != HB_OK) return r;
+        return hb_memory_write(ctx->memory, addr, &v, sizeof(v));
+    }
+    if (op->size == HB_SIZE_32) {
+        int32_t v;
+        hb_result_t r = hb_x87_fist_i32(&ctx->regs.x86.x87, &v);
+        if (r != HB_OK) return r;
+        return hb_memory_write(ctx->memory, addr, &v, sizeof(v));
+    }
+    return HB_ERR_UNSUPPORTED_FEATURE;
+}
+
 static hb_result_t x87_fldcw_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint16_t cw;
     uint64_t addr = resolve_addr(ctx, op);
@@ -1371,6 +1472,12 @@ static hb_result_t x87_fnstcw_mem(hb_context_t* ctx, const hb_ir_operand_t* op) 
     hb_result_t r = hb_x87_fnstcw(&ctx->regs.x86.x87, &cw);
     if (r != HB_OK) return r;
     return hb_memory_write(ctx->memory, addr, &cw, sizeof(cw));
+}
+
+static hb_result_t x87_fnstsw_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    uint16_t sw = ctx->regs.x86.x87.status_word;
+    uint64_t addr = resolve_addr(ctx, op);
+    return hb_memory_write(ctx->memory, addr, &sw, sizeof(sw));
 }
 
 static hb_result_t x87_arith_mem(hb_context_t* ctx, const hb_ir_operand_t* op, hb_ir_op_t arith_op) {
@@ -1414,12 +1521,31 @@ static hb_result_t x87_fld_st(hb_context_t* ctx, const hb_ir_operand_t* op) {
     double value;
     if (op && op->type == HB_OP_IMM && op->imm == -1) return hb_x87_push_f64(&ctx->regs.x86.x87, 1.0);
     if (op && op->type == HB_OP_IMM && op->imm == -2) {
+        /* FLDZ: push 0.0 and set tag to "zero" (01). */
         hb_result_t r = hb_x87_push_f64(&ctx->regs.x86.x87, 0.0);
         if (r != HB_OK) return r;
         uint16_t shift = (uint16_t)(ctx->regs.x86.x87.top * 2u);
         ctx->regs.x86.x87.tag_word = (uint16_t)((ctx->regs.x86.x87.tag_word & ~(0x3u << shift)) |
                                                 (0x1u << shift));
         return HB_OK;
+    }
+    /* FLD1/FLDZ/FLDL2T/FLDL2E/FLDPI/FLDLG2/FLDLN2 constants. The decoder
+     * encodes the constant as a negative imm value: -1=FLD1, -2=FLDZ,
+     * -3=FLDL2T (log2(10)), -4=FLDL2E (log2(e)), -5=FLDPI,
+     * -6=FLDLG2 (log10(2)), -7=FLDLN2 (ln(2)). Push as a "valid" double. */
+    if (op && op->type == HB_OP_IMM) {
+        double cnst = 0.0;
+        switch (op->imm) {
+            case -3: cnst = 3.3219280948873623478703194294894; break;  /* log2(10) */
+            case -4: cnst = 1.4426950408889634073599246810019; break;  /* log2(e) */
+            case -5: cnst = 3.1415926535897932384626433832795; break;  /* pi */
+            case -6: cnst = 0.3010299956639811952137388947245; break;  /* log10(2) */
+            case -7: cnst = 0.6931471805599453094172321214582; break;  /* ln(2) */
+            default: break;
+        }
+        if (op->imm >= -7 && op->imm <= -3) {
+            return hb_x87_push_f64(&ctx->regs.x86.x87, cnst);
+        }
     }
     hb_result_t r = x87_st_index(op, &index);
     if (r != HB_OK) return r;
@@ -1500,6 +1626,68 @@ static hb_result_t x87_fcom_st(hb_context_t* ctx, const hb_ir_operand_t* op, uns
     if (r != HB_OK) return r;
     r = hb_x87_fcom(&ctx->regs.x86.x87, rhs);
     if (r != HB_OK) return r;
+    while (pops--) {
+        r = hb_x87_pop(&ctx->regs.x86.x87);
+        if (r != HB_OK) return r;
+    }
+    return HB_OK;
+}
+
+/* FCOMI/FCOMIP/FUCOMI/FUCOMIP — compare ST(0) to ST(i), set FPU C0/C2/C3
+ * (same as FCOM/FUCOM), and ALSO mirror them to EFLAGS as ZF/PF/CF.
+ *
+ *   lhs < rhs  -> ZF=0 PF=0 CF=1
+ *   lhs == rhs -> ZF=1 PF=0 CF=0
+ *   lhs > rhs  -> ZF=0 PF=0 CF=0
+ *   unordered (NaN)              -> ZF=1 PF=1 CF=1
+ *
+ * Per Intel SDM Vol 1 §8.1.8 (FCOMI/FCOMIP/FUCOMI/FUCOMIP) and Vol 2A
+ * instruction entries. OF/SF/AF are cleared. IF is unchanged.
+ *
+ * `unordered` is true for FUCOMI/FUCOMIP — for the FPU SW, hb_x87_fcom
+ * already produces C0=C2=C3=111 on NaN, so the unordered flag only matters
+ * when the regular-FCOM "QNaN raises IE" semantic is wanted (gap matrix
+ * #3 — FPU exception flags — not yet implemented). EFLAGS encoding is
+ * the same for FCOMI and FUCOMI (NaN -> ZF=PF=CF=1). */
+static hb_result_t x87_fcomi_st(hb_context_t* ctx, const hb_ir_operand_t* op,
+                                unsigned pops, bool unordered) {
+    (void)unordered; /* see comment above */
+    unsigned index;
+    double lhs, rhs;
+    hb_result_t r = x87_st_index(op, &index);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &lhs);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &rhs);
+    if (r != HB_OK) return r;
+
+    /* Update the FPU C0/C2/C3 condition flags first. */
+    r = hb_x87_fcom(&ctx->regs.x86.x87, rhs);
+    if (r != HB_OK) return r;
+
+    /* Mirror to EFLAGS (lazy-flags cleared so values land in canonical slot). */
+    hb_lazy_flags_clear(ctx);
+    ctx->flags.of = false;
+    ctx->flags.sf = false;
+    ctx->flags.af = false;
+    if (lhs != lhs || rhs != rhs) {
+        ctx->flags.zf = true;
+        ctx->flags.pf = true;
+        ctx->flags.cf = true;
+    } else if (lhs < rhs) {
+        ctx->flags.zf = false;
+        ctx->flags.pf = false;
+        ctx->flags.cf = true;
+    } else if (lhs == rhs) {
+        ctx->flags.zf = true;
+        ctx->flags.pf = false;
+        ctx->flags.cf = false;
+    } else {
+        ctx->flags.zf = false;
+        ctx->flags.pf = false;
+        ctx->flags.cf = false;
+    }
+
     while (pops--) {
         r = hb_x87_pop(&ctx->regs.x86.x87);
         if (r != HB_OK) return r;
@@ -1837,6 +2025,7 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_X87_FSTP: return "X87_FSTP";
         case HB_IR_X87_FILD: return "X87_FILD";
         case HB_IR_X87_FISTP: return "X87_FISTP";
+        case HB_IR_X87_FIST: return "X87_FIST";
         case HB_IR_X87_FLDCW: return "X87_FLDCW";
         case HB_IR_X87_FNSTCW: return "X87_FNSTCW";
         case HB_IR_X87_FNSTSW: return "X87_FNSTSW";
@@ -1844,6 +2033,12 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_X87_FMUL: return "X87_FMUL";
         case HB_IR_X87_FCOM: return "X87_FCOM";
         case HB_IR_X87_FCOMP: return "X87_FCOMP";
+        case HB_IR_X87_FUCOM: return "X87_FUCOM";
+        case HB_IR_X87_FUCOMP: return "X87_FUCOMP";
+        case HB_IR_X87_FCOMI: return "X87_FCOMI";
+        case HB_IR_X87_FUCOMI: return "X87_FUCOMI";
+        case HB_IR_X87_FCOMIP: return "X87_FCOMIP";
+        case HB_IR_X87_FUCOMIP: return "X87_FUCOMIP";
         case HB_IR_X87_FSUB: return "X87_FSUB";
         case HB_IR_X87_FSUBR: return "X87_FSUBR";
         case HB_IR_X87_FDIV: return "X87_FDIV";
@@ -1857,8 +2052,28 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_X87_FDIVRP: return "X87_FDIVRP";
         case HB_IR_X87_FXCH: return "X87_FXCH";
         case HB_IR_X87_FRNDINT: return "X87_FRNDINT";
+        case HB_IR_X87_FINCSTP: return "X87_FINCSTP";
+        case HB_IR_X87_FDECSTP: return "X87_FDECSTP";
         case HB_IR_X87_FNCLEX: return "X87_FNCLEX";
         case HB_IR_X87_FNINIT: return "X87_FNINIT";
+        case HB_IR_X87_FXAM: return "X87_FXAM";
+        case HB_IR_X87_FSQRT: return "X87_FSQRT";
+        case HB_IR_X87_F2XM1: return "X87_F2XM1";
+        case HB_IR_X87_FYL2X: return "X87_FYL2X";
+        case HB_IR_X87_FPTAN: return "X87_FPTAN";
+        case HB_IR_X87_FPATAN: return "X87_FPATAN";
+        case HB_IR_X87_FXTRACT: return "X87_FXTRACT";
+        case HB_IR_X87_FPREM1: return "X87_FPREM1";
+        case HB_IR_X87_FPREM: return "X87_FPREM";
+        case HB_IR_X87_FYL2XP1: return "X87_FYL2XP1";
+        case HB_IR_X87_FSINCOS: return "X87_FSINCOS";
+        case HB_IR_X87_FSCALE: return "X87_FSCALE";
+        case HB_IR_X87_FSIN: return "X87_FSIN";
+        case HB_IR_X87_FCOS: return "X87_FCOS";
+        case HB_IR_X87_FNOP: return "X87_FNOP";
+        case HB_IR_X87_FCHS: return "X87_FCHS";
+        case HB_IR_X87_FABS: return "X87_FABS";
+        case HB_IR_X87_FTST: return "X87_FTST";
         case HB_IR_PUSHA: return "PUSHA";
         case HB_IR_POPA: return "POPA";
         case HB_IR_AAA: return "AAA";
@@ -3044,6 +3259,10 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             if (instr->dst.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             return x87_fistp_mem(ctx, &instr->dst);
 
+        case HB_IR_X87_FIST:
+            if (instr->dst.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fist_mem(ctx, &instr->dst);
+
         case HB_IR_X87_FLDCW:
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             return x87_fldcw_mem(ctx, &instr->src1);
@@ -3053,8 +3272,13 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             return x87_fnstcw_mem(ctx, &instr->dst);
 
         case HB_IR_X87_FNSTSW:
-            if (instr->dst.type != HB_OP_REG) return HB_ERR_INTERNAL;
-            return write_operand_value(ctx, &instr->dst, ctx->regs.x86.x87.status_word);
+            if (instr->dst.type == HB_OP_REG) {
+                return write_operand_value(ctx, &instr->dst, ctx->regs.x86.x87.status_word);
+            }
+            if (instr->dst.type == HB_OP_MEM) {
+                return x87_fnstsw_mem(ctx, &instr->dst);
+            }
+            return HB_ERR_INTERNAL;
 
         case HB_IR_X87_FADD:
         case HB_IR_X87_FMUL:
@@ -3076,6 +3300,25 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             return x87_fcom_mem(ctx, &instr->src1, true);
 
+        case HB_IR_X87_FUCOM:
+            if (instr->src1.type == HB_OP_IMM) return x87_fcom_st(ctx, &instr->src1, 0);
+            if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fcom_mem(ctx, &instr->src1, false);
+
+        case HB_IR_X87_FUCOMP:
+            if (instr->src1.type == HB_OP_IMM) return x87_fcom_st(ctx, &instr->src1, 1);
+            if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
+            return x87_fcom_mem(ctx, &instr->src1, true);
+
+        case HB_IR_X87_FCOMI:
+            return x87_fcomi_st(ctx, &instr->src1, 0, false);
+        case HB_IR_X87_FUCOMI:
+            return x87_fcomi_st(ctx, &instr->src1, 0, true);
+        case HB_IR_X87_FCOMIP:
+            return x87_fcomi_st(ctx, &instr->src1, 1, false);
+        case HB_IR_X87_FUCOMIP:
+            return x87_fcomi_st(ctx, &instr->src1, 1, true);
+
         case HB_IR_X87_FADDP:
         case HB_IR_X87_FMULP:
         case HB_IR_X87_FSUBP:
@@ -3093,11 +3336,38 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
         case HB_IR_X87_FRNDINT:
             return hb_x87_frndint(&ctx->regs.x86.x87);
 
+        case HB_IR_X87_FINCSTP:
+            return hb_x87_fincstp(&ctx->regs.x86.x87);
+
+        case HB_IR_X87_FDECSTP:
+            return hb_x87_fdecstp(&ctx->regs.x86.x87);
+
         case HB_IR_X87_FNCLEX:
             return hb_x87_fnclex(&ctx->regs.x86.x87);
 
         case HB_IR_X87_FNINIT:
             return hb_x87_fninit(&ctx->regs.x86.x87);
+
+        case HB_IR_X87_FXAM:
+            return hb_x87_fxam(&ctx->regs.x86.x87);
+
+        case HB_IR_X87_FSQRT:   return hb_x87_fsqrt(&ctx->regs.x86.x87);
+        case HB_IR_X87_F2XM1:   return hb_x87_f2xm1(&ctx->regs.x86.x87);
+        case HB_IR_X87_FYL2X:   return hb_x87_fyl2x(&ctx->regs.x86.x87);
+        case HB_IR_X87_FPTAN:   return hb_x87_fptan(&ctx->regs.x86.x87);
+        case HB_IR_X87_FPATAN:  return hb_x87_fpatan(&ctx->regs.x86.x87);
+        case HB_IR_X87_FXTRACT: return hb_x87_fxtract(&ctx->regs.x86.x87);
+        case HB_IR_X87_FPREM1:  return hb_x87_fprem1(&ctx->regs.x86.x87);
+        case HB_IR_X87_FPREM:   return hb_x87_fprem(&ctx->regs.x86.x87);
+        case HB_IR_X87_FYL2XP1: return hb_x87_fyl2xp1(&ctx->regs.x86.x87);
+        case HB_IR_X87_FSINCOS: return hb_x87_fsincos(&ctx->regs.x86.x87);
+        case HB_IR_X87_FSCALE:  return hb_x87_fscale(&ctx->regs.x86.x87);
+        case HB_IR_X87_FSIN:    return hb_x87_fsin(&ctx->regs.x86.x87);
+        case HB_IR_X87_FCOS:    return hb_x87_fcos(&ctx->regs.x86.x87);
+        case HB_IR_X87_FNOP:    return hb_x87_fnop(&ctx->regs.x86.x87);
+        case HB_IR_X87_FCHS:    return hb_x87_fchs(&ctx->regs.x86.x87);
+        case HB_IR_X87_FABS:    return hb_x87_fabs(&ctx->regs.x86.x87);
+        case HB_IR_X87_FTST:    return hb_x87_ftst(&ctx->regs.x86.x87);
 
         case HB_IR_PUSHA: {
             /* PUSHA / PUSHAD — push EAX/ECX/EDX/EBX/EBP/ESI/EDI then the original ESP.
@@ -4122,6 +4392,11 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                                                    HB_FLAG_BIT_CF | HB_FLAG_BIT_OF);
                 if (r != HB_OK) return r;
 
+                /* Per Intel SDM, the pointer update and count decrement happen
+                 * BEFORE the termination check. The first terminating comparison
+                 * (mismatch for REPE, match for REPNE) still updates pointers and
+                 * decrements count, so the final state has pointers one past the
+                 * element that triggered the stop. */
                 rsi = (uint64_t)((int64_t)rsi + step);
                 rdi = (uint64_t)((int64_t)rdi + step);
                 if (repeated) count--;
@@ -4159,7 +4434,16 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 uint64_t value = 0;
                 r = mem_read(ctx, rsi, &value, size);
                 if (r != HB_OK) return r;
-                write_reg_sized(ctx, HB_REG_RAX, value, size);
+                /* LODS zero-extends the loaded value into the full AL/AX/EAX/RAX
+                 * register (per Intel SDM: "Loads a byte, word, or doubleword
+                 * from the source operand into the AL, AX, or EAX register,
+                 * respectively"). Unlike MOV AL,[mem] which preserves the upper
+                 * bits, LODS clobbers them with zeros. */
+                if (mode32) {
+                    ctx->regs.x86.eax = (uint32_t)trunc_to_size(value, size);
+                } else {
+                    ctx->regs.x64.rax = trunc_to_size(value, size);
+                }
                 rsi = (uint64_t)((int64_t)rsi + step);
                 if (repeated) count--;
                 if (!repeated) break;
@@ -5283,6 +5567,172 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                     aes_round128(vop, lhs + off, rhs + off, out + off);
                 }
                 return write_vec_reg_bytes(ctx, instr->dst.reg, out, bytes);
+            }
+            if (vop == HB_VEC_SHA1NEXTE || vop == HB_VEC_SHA1MSG1 || vop == HB_VEC_SHA1MSG2 ||
+                vop == HB_VEC_SHA1RNDS4 || vop == HB_VEC_SHA256RNDS2 ||
+                vop == HB_VEC_SHA256MSG1 || vop == HB_VEC_SHA256MSG2) {
+                /* SHA-NI extensions. Operate on 16 bytes (4×u32) per element. */
+                if (bytes != 16) return HB_ERR_INTERNAL;
+                r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, 16);
+                if (r != HB_OK) return r;
+                r = read_xmm_operand_bytes(ctx, &instr->src2, rhs, 16);
+                if (r != HB_OK) return r;
+                uint32_t s0[4], s1[4], d[4];
+                /* DST dword layout per Intel spec (big-endian bit fields shown as
+                 * little-endian dword index in our array):
+                 *   s[0] = xmm[127:96], s[1] = xmm[95:64], s[2] = xmm[63:32], s[3] = xmm[31:0]
+                 */
+                for (unsigned k = 0; k < 4; k++) memcpy(&s0[k], lhs + (3 - k) * 4, 4);
+                for (unsigned k = 0; k < 4; k++) memcpy(&s1[k], rhs + (3 - k) * 4, 4);
+                switch (vop) {
+                    case HB_VEC_SHA1NEXTE: {
+                        /* TMP := (SRC1[127:96] ROL 30); DEST[127:96] := SRC2[127:96] + TMP;
+                         * DEST[95:32] := SRC2[95:32]; DEST[31:0] := SRC2[31:0]. */
+                        uint32_t a = s0[0];
+                        uint32_t tmp = (a << 30) | (a >> 2);
+                        d[0] = s1[0] + tmp;
+                        d[1] = s1[1];
+                        d[2] = s1[2];
+                        d[3] = s1[3];
+                        break;
+                    }
+                    case HB_VEC_SHA1MSG1: {
+                        /* W0..W3 = SRC1 dwords; W4,W5 = SRC2[127:64].
+                         * DEST[127:96] := W2 XOR W0;  DEST[95:64] := W3 XOR W1;
+                         * DEST[63:32]  := W4 XOR W2;  DEST[31:0]   := W5 XOR W3. */
+                        d[0] = s0[2] ^ s0[0];
+                        d[1] = s0[3] ^ s0[1];
+                        d[2] = s1[0] ^ s0[2];
+                        d[3] = s1[1] ^ s0[3];
+                        break;
+                    }
+                    case HB_VEC_SHA1MSG2: {
+                        /* W13 := SRC2[95:64]; W14 := SRC2[63:32]; W15 := SRC2[31:0];
+                         * W16 := (SRC1[127:96] XOR W13) ROL 1;
+                         * W17 := (SRC1[95:64]  XOR W14) ROL 1;
+                         * W18 := (SRC1[63:32]  XOR W15) ROL 1;
+                         * W19 := (SRC1[31:0]   XOR W16) ROL 1;
+                         * DEST[127:96] := W16; DEST[95:64] := W17;
+                         * DEST[63:32]  := W18; DEST[31:0]  := W19. */
+                        uint32_t w13 = s1[1], w14 = s1[2], w15 = s1[3];
+                        uint32_t w16 = ((s0[0] ^ w13) << 1) | ((s0[0] ^ w13) >> 31);
+                        uint32_t w17 = ((s0[1] ^ w14) << 1) | ((s0[1] ^ w14) >> 31);
+                        uint32_t w18 = ((s0[2] ^ w15) << 1) | ((s0[2] ^ w15) >> 31);
+                        uint32_t w19 = ((s0[3] ^ w16) << 1) | ((s0[3] ^ w16) >> 31);
+                        d[0] = w16; d[1] = w17; d[2] = w18; d[3] = w19;
+                        break;
+                    }
+                    case HB_VEC_SHA1RNDS4: {
+                        /* A,B,C,D = SRC1[127:32]; W0E,W1,W2,W3 = SRC2 dwords.
+                         * imm8[1:0] picks f()/K. Four rounds, then write A4,B4,C4,D4.
+                         * Round 0: A_1 := f(B,C,D) + ROL(A,5) + W0E + K; E_1 := D.
+                         * Round i (i=1..3): A_{i+1} := f(B_i,C_i,D_i) + ROL(A_i,5) + Wi + E_i + K;
+                         *   B_{i+1} := A_i; C_{i+1} := ROL(B_i,30); D_{i+1} := C_i; E_{i+1} := D_i.
+                         * Note: E_0 is implicit (the 5th state dword; carried in W0E
+                         * for round 0). For rounds 1..3, E_i = D_{i-1}. */
+                        static const uint32_t Ktab[4] = { 0x5A827999u, 0x6ED9EBA1u,
+                                                          0x8F1BBCDCu, 0xCA62C1D6u };
+                        unsigned k = imm & 0x3u;
+                        uint32_t K = Ktab[k];
+                        /* 5 slots: [0] = input, [1..4] = results of rounds 0..3. */
+                        uint32_t Ast[5] = { s0[0], 0, 0, 0, 0 };
+                        uint32_t Bst[5] = { s0[1], 0, 0, 0, 0 };
+                        uint32_t Cst[5] = { s0[2], 0, 0, 0, 0 };
+                        uint32_t Dst[5] = { s0[3], 0, 0, 0, 0 };
+                        uint32_t Est[5] = { 0, 0, 0, 0, 0 };  /* Est[0] unused. */
+                        uint32_t Ws[4]   = { s1[0], s1[1], s1[2], s1[3] };
+                        for (int i = 0; i < 4; i++) {
+                            uint32_t fi = (k == 0) ? sha_ch(Bst[i], Cst[i], Dst[i]) :
+                                          (k == 1) ? sha_parity(Bst[i], Cst[i], Dst[i]) :
+                                          (k == 2) ? sha_maj(Bst[i], Cst[i], Dst[i]) :
+                                                     sha_parity(Bst[i], Cst[i], Dst[i]);
+                            Ast[i + 1] = (i == 0) ? (fi + sha_rol(Ast[i], 5) + Ws[i] + K)
+                                                  : (fi + sha_rol(Ast[i], 5) + Ws[i] + Est[i] + K);
+                            Bst[i + 1] = Ast[i];
+                            Cst[i + 1] = sha_rol(Bst[i], 30);
+                            Dst[i + 1] = Cst[i];
+                            Est[i + 1] = Dst[i];
+                        }
+                        /* Write A4, B4, C4, D4 (= Ast[4], Bst[4], Cst[4], Dst[4]). */
+                        d[0] = Ast[4]; d[1] = Bst[4]; d[2] = Cst[4]; d[3] = Dst[4];
+                        break;
+                    }
+                    case HB_VEC_SHA256MSG1: {
+                        /* W4 := SRC2[31:0]; W3,W2,W1,W0 := SRC1[127:32];
+                         * σ0(x) = ROR(x,7) XOR ROR(x,18) XOR (x >> 3);
+                         * DEST[127:96] := W3 + σ0(W4);
+                         * DEST[95:64]  := W2 + σ0(W3);
+                         * DEST[63:32]  := W1 + σ0(W2);
+                         * DEST[31:0]   := W0 + σ0(W1).
+                         * In interp's Intel bit-numbered s0/s1:
+                         *   s0[0]=SRC1[127:96]=W3, s0[1]=SRC1[95:64]=W2,
+                         *   s0[2]=SRC1[63:32]=W1, s0[3]=SRC1[31:0]=W0.
+                         *   s1[3]=SRC2[31:0]=W4.
+                         * So d[0]=s0[3]+σ0(s1[3]), d[1]=s0[2]+σ0(s0[3]),
+                         *    d[2]=s0[1]+σ0(s0[2]), d[3]=s0[0]+σ0(s0[1]). */
+                        uint32_t w4 = s1[3];
+                        d[0] = s0[3] + sha_smallsig0(w4);
+                        d[1] = s0[2] + sha_smallsig0(s0[3]);
+                        d[2] = s0[1] + sha_smallsig0(s0[2]);
+                        d[3] = s0[0] + sha_smallsig0(s0[1]);
+                        break;
+                    }
+                    case HB_VEC_SHA256MSG2: {
+                        /* W14 := SRC2[95:64]; W15 := SRC2[127:96];
+                         * W16 := SRC1[31:0]  + σ1(W14);
+                         * W17 := SRC1[63:32] + σ1(W15);
+                         * W18 := SRC1[95:64] + σ1(W16);
+                         * W19 := SRC1[127:96] + σ1(W17);
+                         * σ1(x) = ROR(x,17) XOR ROR(x,19) XOR (x >> 10);
+                         * DEST[127:96] := W19; DEST[95:64] := W18;
+                         * DEST[63:32]  := W17; DEST[31:0]  := W16. */
+                        uint32_t w14 = s1[1], w15 = s1[0];
+                        uint32_t w16 = s0[3] + sha_smallsig1(w14);
+                        uint32_t w17 = s0[2] + sha_smallsig1(w15);
+                        uint32_t w18 = s0[1] + sha_smallsig1(w16);
+                        uint32_t w19 = s0[0] + sha_smallsig1(w17);
+                        d[0] = w19; d[1] = w18; d[2] = w17; d[3] = w16;
+                        break;
+                    }
+                    case HB_VEC_SHA256RNDS2: {
+                        /* A0,B0 := SRC2[127:64]; C0,D0 := SRC1[127:64];
+                         * E0,F0 := SRC2[63:32];  G0,H0 := SRC1[63:32];
+                         * WK0 := XMM0[31:0]; WK1 := XMM0[63:32].
+                         * For i in 0..1:
+                         *   A_{i+1} := Ch(E_i,F_i,G_i) + Σ1(E_i) + WK_i + H_i + Maj(A_i,B_i,C_i) + Σ0(A_i);
+                         *   B_{i+1} := A_i; C_{i+1} := B_i; D_{i+1} := C_i;
+                         *   E_{i+1} := Ch(E_i,F_i,G_i) + Σ1(E_i) + WK_i + H_i + D_i;
+                         *   F_{i+1} := E_i; G_{i+1} := F_i; H_{i+1} := G_i.
+                         * DEST[127:96]:=A2; DEST[95:64]:=B2;
+                         * DEST[63:32] :=E2; DEST[31:0]  :=F2. */
+                        uint8_t xmm0[16];
+                        r = read_vec_reg_bytes(ctx, HB_REG_XMM0, xmm0, 16);
+                        if (r != HB_OK) return r;
+                        uint32_t WK[2];
+                        memcpy(&WK[0], xmm0 + 0, 4);  /* XMM0[31:0]  = LE dword 0 (offset 0) */
+                        memcpy(&WK[1], xmm0 + 4, 4);  /* XMM0[63:32] = LE dword 1 (offset 4) */
+                        uint32_t A = s1[0], B = s1[1], C = s0[0], D = s0[1];
+                        uint32_t E = s1[2], F = s1[3], G = s0[2], H = s0[3];
+                        for (int i = 0; i < 2; i++) {
+                            uint32_t ch = sha_ch(E, F, G);
+                            uint32_t s1e = sha_bigsig1(E);
+                            uint32_t m = sha_maj(A, B, C);
+                            uint32_t s0a = sha_bigsig0(A);
+                            uint32_t An = ch + s1e + WK[i] + H + m + s0a;
+                            uint32_t En = ch + s1e + WK[i] + H + D;
+                            /* The new state for round i+1 uses OLD A..H, not the new An/En. */
+                            uint32_t Aold = A, Bold = B, Cold = C;
+                            uint32_t Eold = E, Fold = F, Gold = G;
+                            A = An; B = Aold; C = Bold; D = Cold;
+                            E = En; F = Eold; G = Fold; H = Gold;
+                        }
+                        d[0] = A; d[1] = B; d[2] = E; d[3] = F;
+                        break;
+                    }
+                    default: return HB_ERR_UNSUPPORTED_OPCODE;
+                }
+                for (unsigned k = 0; k < 4; k++) memcpy(out + (3 - k) * 4, &d[k], 4);
+                return write_vec_reg_bytes(ctx, instr->dst.reg, out, 16);
             }
             if (vop == HB_VEC_GF2P8MULB) {
                 r = read_xmm_operand_bytes(ctx, &instr->src1, lhs, bytes);

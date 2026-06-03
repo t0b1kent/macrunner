@@ -3568,9 +3568,8 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode == 0x85) {
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t modrm = read_u8(d);
-        uint8_t sz = rex_w ? 8 : (operand16 ? 2 : 4);
         out->opcode = HB_INS_TEST; out->writes_flags = true;
-        return parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b, sz, out, 1, 2, true);
+        return parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b, 4, out, 1, 2, true);
     }
     if (opcode == 0xA8) {
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
@@ -4143,6 +4142,7 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_X87_FSTP: return "X87_FSTP";
         case HB_INS_X87_FILD: return "X87_FILD";
         case HB_INS_X87_FISTP: return "X87_FISTP";
+        case HB_INS_X87_FIST: return "X87_FIST";
         case HB_INS_X87_FISTTP: return "X87_FISTTP";
         case HB_INS_X87_FI: return "X87_FI";
         case HB_INS_X87_FLDCW: return "X87_FLDCW";
@@ -4165,8 +4165,24 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_X87_FDIVRP: return "X87_FDIVRP";
         case HB_INS_X87_FXCH: return "X87_FXCH";
         case HB_INS_X87_FRNDINT: return "X87_FRNDINT";
+        case HB_INS_X87_FINCSTP: return "X87_FINCSTP";
+        case HB_INS_X87_FDECSTP: return "X87_FDECSTP";
         case HB_INS_X87_FNCLEX: return "X87_FNCLEX";
         case HB_INS_X87_FNINIT: return "X87_FNINIT";
+        case HB_INS_X87_FXAM: return "X87_FXAM";
+        case HB_INS_X87_FSQRT: return "X87_FSQRT";
+        case HB_INS_X87_F2XM1: return "X87_F2XM1";
+        case HB_INS_X87_FYL2X: return "X87_FYL2X";
+        case HB_INS_X87_FPTAN: return "X87_FPTAN";
+        case HB_INS_X87_FPATAN: return "X87_FPATAN";
+        case HB_INS_X87_FXTRACT: return "X87_FXTRACT";
+        case HB_INS_X87_FPREM1: return "X87_FPREM1";
+        case HB_INS_X87_FPREM: return "X87_FPREM";
+        case HB_INS_X87_FYL2XP1: return "X87_FYL2XP1";
+        case HB_INS_X87_FSINCOS: return "X87_FSINCOS";
+        case HB_INS_X87_FSCALE: return "X87_FSCALE";
+        case HB_INS_X87_FSIN: return "X87_FSIN";
+        case HB_INS_X87_FCOS: return "X87_FCOS";
         case HB_INS_X87_FCMOV: return "X87_FCMOV";
         case HB_INS_X87_FCOMI: return "X87_FCOMI";
         case HB_INS_X87_FUCOMI: return "X87_FUCOMI";
@@ -4176,6 +4192,10 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_X87_FUCOMP: return "X87_FUCOMP";
         case HB_INS_X87_FFREE: return "X87_FFREE";
         case HB_INS_X87_FFREEP: return "X87_FFREEP";
+        case HB_INS_X87_FNOP: return "X87_FNOP";
+        case HB_INS_X87_FCHS: return "X87_FCHS";
+        case HB_INS_X87_FABS: return "X87_FABS";
+        case HB_INS_X87_FTST: return "X87_FTST";
         case HB_INS_X87_MISC: return "X87_MISC";
         case HB_INS_PUSHA: return "PUSHA";
         case HB_INS_POPA: return "POPA";

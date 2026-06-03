@@ -373,6 +373,7 @@ typedef enum {
     HB_IR_X87_FSTP,
     HB_IR_X87_FILD,
     HB_IR_X87_FISTP,
+    HB_IR_X87_FIST,
     HB_IR_X87_FLDCW,
     HB_IR_X87_FNSTCW,
     HB_IR_X87_FNSTSW,
@@ -393,8 +394,39 @@ typedef enum {
     HB_IR_X87_FDIVRP,
     HB_IR_X87_FXCH,
     HB_IR_X87_FRNDINT,
+    HB_IR_X87_FINCSTP,
+    HB_IR_X87_FDECSTP,
+    HB_IR_X87_FXAM,
+    HB_IR_X87_FSQRT,
+    /* D9 F0-FF transcendentals. */
+    HB_IR_X87_F2XM1,
+    HB_IR_X87_FYL2X,
+    HB_IR_X87_FPTAN,
+    HB_IR_X87_FPATAN,
+    HB_IR_X87_FXTRACT,
+    HB_IR_X87_FPREM1,
+    HB_IR_X87_FPREM,
+    HB_IR_X87_FYL2XP1,
+    HB_IR_X87_FSINCOS,
+    HB_IR_X87_FSCALE,
+    HB_IR_X87_FSIN,
+    HB_IR_X87_FCOS,
     HB_IR_X87_FNCLEX,
     HB_IR_X87_FNINIT,
+    /* Unordered FPU compares (gap matrix #8). FUCOM/FUCOMP set FPU SW C0/C2/C3
+     * to 111 on NaN; FCOM/FCOMP do not. FCOMI/FCOMIP/FUCOMI/FUCOMIP additionally
+     * write EFLAGS (ZF/PF/CF) from the comparison. The pop variants pop ST(0). */
+    HB_IR_X87_FUCOM,
+    HB_IR_X87_FUCOMP,
+    HB_IR_X87_FCOMI,
+    HB_IR_X87_FUCOMI,
+    HB_IR_X87_FCOMIP,
+    HB_IR_X87_FUCOMIP,
+    /* D9 D0/E0/E1/E4 stack-top sign / abs / test (gap matrix #9). */
+    HB_IR_X87_FNOP,   /* FNOP — FPU no-op (D9 D0). */
+    HB_IR_X87_FCHS,   /* FCHS — complement sign of ST(0) (D9 E0). */
+    HB_IR_X87_FABS,   /* FABS — clear sign of ST(0) (D9 E1). */
+    HB_IR_X87_FTST,   /* FTST — compare ST(0) to +0.0, set C0/C2/C3 (D9 E4). */
     /* Legacy i386-only ops (removed in x64). */
     HB_IR_PUSHA,
     HB_IR_POPA,

@@ -22,7 +22,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Feature level 11_1 | Implemented | Current headless smoke returns `feature_level=0xb100`; `UnityFeatureLevelProbe request=11_1 chosen=0xb100`, with 11_0/10_1/10_0 fallbacks green. Cap override remains available via `d3d11.maxFeatureLevel`. |
 | `CreateDXGIFactory*` | Implemented | `src/dxgi/dxgi_factory.cpp` exports `CreateDXGIFactory`, `1`, `2`. |
 | Adapter enumeration | Implemented | `EnumAdapters/EnumAdapters1` enumerate `WMT::CopyAllDevices()`. |
-| WARP adapter | Gap | `EnumWarpAdapter` returns `DXGI_ERROR_NOT_FOUND`. |
+| WARP adapter | Implemented | `EnumWarpAdapter` returns the default DXMT Metal adapter as the WARP fallback; this is not a CPU WARP rasterizer. |
 | `CreateSwapChain` / `ForHwnd` | Implemented | Legacy desc converts to desc1 and routes through `IMTLDXGIDevice::CreateSwapChain`. |
 | CoreWindow/composition swapchains | Partial | `CreateSwapChainForCoreWindow` and `CreateSwapChainForComposition` return clean `DXGI_ERROR_UNSUPPORTED` for valid owned-device inputs and `DXGI_ERROR_INVALID_CALL` for invalid inputs; smoke reports `unsupported_swapchains=PASS`. |
 | Backbuffer `GetBuffer(0)` | Partial | Index 0 supported; non-zero buffers return unsupported. |
@@ -38,7 +38,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Isolated prefix install | PASS | Runner owns `artifacts/dxmt-smoke-prefix/`, installs built DLLs into `system32`, the app dir, and a prefix-local builtin overlay. |
 | Mixed DXMT binding | PASS | `bind_mode=mixed`, `WINEDLLOVERRIDES=d3d11,dxgi=n;winemetal=b,n`; loaded paths point to the prefix overlay for `winemetal.dll`, `dxgi.dll`, and `d3d11.dll`. |
 | x64 DXMT PE binding | PASS | `engine/graphics/scripts/run_dxmt_x64_binding_smoke.sh` confirms x64 `winemetal.dll`, `DXGI.DLL`, and `d3d11.dll` load native from the synchronized graphics prefix; current runtime stops before present in HyperBridge, outside Lane D. |
-| DXGI factory/adapter probe | PASS | `CreateDXGIFactory1(probe) hr=0x00000000`; `IDXGIFactory::EnumAdapters(0 probe) hr=0x00000000`. |
+| DXGI factory/adapter probe | PASS | `CreateDXGIFactory1(probe) hr=0x00000000`; `IDXGIFactory::EnumAdapters(0 probe) hr=0x00000000`; `IDXGIFactory4::EnumWarpAdapter hr=0x00000000` returns a non-null adapter and `GetDesc hr=0x00000000`. |
 | Adapter/output enumeration | PASS | `EnumAdapters1`, `GetDesc1`, `EnumOutputs`, `GetDesc`, and `GetDisplayModeList` pass; first mode `640x480`, fetched `3` modes. |
 | Output gamma/fullscreen state probes | PASS | `UnityGammaProbe` covers gamma capabilities, set/get/restore gamma ramp, display-surface unsupported cases, `GetFullscreenDesc`, `GetFullscreenState`, `SetFullscreenState(FALSE)`, and opt-in forced-message `SetFullscreenState(TRUE)` plus restore. |
 | D3D11 device probe | PASS | `D3D11CreateDevice hr=0x00000000`; `feature_level=0xb100`. |

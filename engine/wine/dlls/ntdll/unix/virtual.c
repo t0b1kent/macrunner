@@ -4667,7 +4667,8 @@ NTSTATUS virtual_relocate_module( void *module )
     IMAGE_DATA_DIRECTORY *relocs;
     IMAGE_BASE_RELOCATION *rel, *end;
     IMAGE_SECTION_HEADER *sec;
-    ULONG total_size = ROUND_SIZE( 0, nt->OptionalHeader.SizeOfImage, page_mask );
+    SIZE_T rounded_size;
+    ULONG total_size;
     ULONG *protect_old, i;
     ULONG_PTR image_base;
     INT_PTR delta;
@@ -4677,6 +4678,11 @@ NTSTATUS virtual_relocate_module( void *module )
         image_base = ((const IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.ImageBase;
     else
         image_base = ((const IMAGE_NT_HEADERS32 *)nt)->OptionalHeader.ImageBase;
+
+    if (!round_size_checked( 0, nt->OptionalHeader.SizeOfImage, page_mask, &rounded_size ) ||
+        rounded_size > MAXDWORD)
+        return STATUS_INVALID_IMAGE_FORMAT;
+    total_size = rounded_size;
 
 
     if (!(delta = (ULONG_PTR)module - image_base)) return STATUS_SUCCESS;

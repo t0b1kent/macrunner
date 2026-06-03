@@ -1648,14 +1648,18 @@ static struct wine_rb_entry *find_view_inside_range( void **base_ptr, void **end
 static void* try_map_free_area( void *base, void *end, ptrdiff_t step,
                                 void *start, size_t size, int unix_prot )
 {
-    while (start && base <= start && (char*)start + size <= (char*)end)
+    while (start && base <= start)
     {
+        char *map_end;
+
+        if (start >= end || (SIZE_T)((char *)end - (char *)start) < size) break;
+        map_end = (char *)start + size;
         if (anon_mmap_tryfixed( start, size, unix_prot, 0 ) != MAP_FAILED) return start;
         TRACE( "Found free area is already mapped, start %p.\n", start );
         if (errno != EEXIST)
         {
             ERR( "mmap() error %s, range %p-%p, unix_prot %#x.\n",
-                 strerror(errno), start, (char *)start + size, unix_prot );
+                 strerror(errno), start, map_end, unix_prot );
             return NULL;
         }
         if ((step > 0 && (char *)end - (char *)start < step) ||
@@ -1681,6 +1685,8 @@ static void *map_free_area( void *base, void *end, size_t size, int top_down, in
     ptrdiff_t step = top_down ? -(align_mask + 1) : (align_mask + 1);
     void *start;
 
+    if (end <= base || (SIZE_T)((char *)end - (char *)base) < size) return NULL;
+
     if (top_down)
     {
         start = ROUND_ADDR( (char *)end - size, align_mask );
@@ -1691,6 +1697,7 @@ static void *map_free_area( void *base, void *end, size_t size, int top_down, in
             struct file_view *view = WINE_RB_ENTRY_VALUE( first, struct file_view, entry );
             if ((start = try_map_free_area( (char *)view->base + view->size, (char *)start + size, step,
                                             start, size, unix_prot ))) break;
+            if ((SIZE_T)((char *)view->base - (char *)base) < size) return NULL;
             start = ROUND_ADDR( (char *)view->base - size, align_mask );
             /* stop if remaining space is not large enough */
             if (!start || start >= end || start < base) return NULL;
@@ -1699,15 +1706,19 @@ static void *map_free_area( void *base, void *end, size_t size, int top_down, in
     }
     else
     {
+        if (align_mask > ~(UINT_PTR)0 - (UINT_PTR)base) return NULL;
         start = ROUND_ADDR( (char *)base + align_mask, align_mask );
         if (!start || start >= end || (char *)end - (char *)start < size) return NULL;
 
         while (first)
         {
             struct file_view *view = WINE_RB_ENTRY_VALUE( first, struct file_view, entry );
+            char *view_end = (char *)view->base + view->size;
+
             if ((start = try_map_free_area( start, view->base, step,
                                             start, size, unix_prot ))) break;
-            start = ROUND_ADDR( (char *)view->base + view->size + align_mask, align_mask );
+            if (align_mask > ~(UINT_PTR)0 - (UINT_PTR)view_end) return NULL;
+            start = ROUND_ADDR( view_end + align_mask, align_mask );
             /* stop if remaining space is not large enough */
             if (!start || start >= end || (char *)end - (char *)start < size) return NULL;
             first = rb_next( first );

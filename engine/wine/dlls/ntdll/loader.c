@@ -4849,6 +4849,12 @@ static void call_tls_callbacks( HMODULE module, UINT reason )
     {
         PIMAGE_TLS_CALLBACK proc;
 
+        if (!image_contains_range( module, callback, sizeof(*callback) ))
+        {
+            TRACE_(relay)("\1invalid TLS callback slot (callback=%p,module=%p,reason=%s)\n",
+                          callback, module, reason_names[reason] );
+            return;
+        }
         __TRY
         {
             proc = *callback;

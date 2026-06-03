@@ -2393,8 +2393,10 @@ static void *map_reserved_area( void *limit_low, void *limit_high, size_t size, 
         LIST_FOR_EACH_ENTRY_REV( area, &reserved_areas, struct reserved_area, entry )
         {
             void *start = area->base;
-            void *end = (char *)start + area->size;
+            void *end;
 
+            if (area->size > ~(SIZE_T)0 - (UINT_PTR)start) return NULL;
+            end = (char *)start + area->size;
             if (start >= limit_high) continue;
             if (end <= limit_low) return NULL;
             if (start < limit_low)
@@ -2415,8 +2417,10 @@ static void *map_reserved_area( void *limit_low, void *limit_high, size_t size, 
         LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
         {
             void *start = area->base;
-            void *end = (char *)start + area->size;
+            void *end;
 
+            if (area->size > ~(SIZE_T)0 - (UINT_PTR)start) return NULL;
+            end = (char *)start + area->size;
             if (start >= limit_high) return NULL;
             if (end <= limit_low) continue;
             if (start < limit_low)
@@ -2459,8 +2463,10 @@ static NTSTATUS map_fixed_area( void *base, size_t size, int unix_prot )
     LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
     {
         char *area_start = area->base;
-        char *area_end = area_start + area->size;
+        char *area_end;
 
+        if (area->size > ~(SIZE_T)0 - (UINT_PTR)area_start) return STATUS_INVALID_PARAMETER;
+        area_end = area_start + area->size;
         if (area_start >= end) break;
         if (area_end <= start) continue;
         if (area_start > start)
@@ -2483,14 +2489,14 @@ static NTSTATUS map_fixed_area( void *base, size_t size, int unix_prot )
 failed:
     if (errno == ENOMEM)
     {
-        ERR( "out of memory for %p-%p\n", base, (char *)base + size );
+        ERR( "out of memory for %p-%p\n", base, end );
         status = STATUS_NO_MEMORY;
     }
     else if (errno == EEXIST) status = STATUS_CONFLICTING_ADDRESSES;
     else
     {
         ERR( "mmap error %s for %p-%p, unix_prot %#x\n",
-             strerror(errno), base, (char *)base + size, unix_prot );
+             strerror(errno), base, end, unix_prot );
         status = STATUS_INVALID_PARAMETER;
     }
     unmap_area( base, start - (char *)base );

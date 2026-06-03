@@ -2320,10 +2320,15 @@ static NTSTATUS map_fixed_area( void *base, size_t size, int unix_prot )
 {
     struct reserved_area *area;
     NTSTATUS status;
-    char *start = base, *end = (char *)base + ROUND_SIZE( 0, size, host_page_mask );
+    size_t host_size;
+    char *start = base, *end;
 
     if ((UINT_PTR)base & host_page_mask) return STATUS_CONFLICTING_ADDRESSES;
     if (find_view_range( base, size )) return STATUS_CONFLICTING_ADDRESSES;
+    if (!round_size_checked( 0, size, host_page_mask, &host_size ) ||
+        host_size > ~(UINT_PTR)0 - (UINT_PTR)base)
+        return STATUS_INVALID_PARAMETER;
+    end = (char *)base + host_size;
 
     LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
     {
@@ -2467,8 +2472,13 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
     {
         void *start = address_space_start;
         void *end = min( user_space_limit, host_addr_space_limit );
-        size_t host_size = ROUND_SIZE( 0, size, host_page_mask );
-        size_t unmap_size, view_size = host_size + align_mask + 1;
+        size_t unmap_size, host_size, view_size;
+
+        if (!round_size_checked( 0, size, host_page_mask, &host_size ) ||
+            align_mask == ~(SIZE_T)0 ||
+            host_size > ~(SIZE_T)0 - align_mask - 1)
+            return STATUS_INVALID_PARAMETER;
+        view_size = host_size + align_mask + 1;
 
         if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
         if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;

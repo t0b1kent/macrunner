@@ -1963,7 +1963,11 @@ static void *macrunner_hb_file_rva_to_ptr( BYTE *data, SIZE_T size, IMAGE_SECTIO
         if (rva < sections[i].VirtualAddress) continue;
         delta = rva - sections[i].VirtualAddress;
         if (delta >= sec_size || delta > sections[i].SizeOfRawData) continue;
-        if ((SIZE_T)sections[i].PointerToRawData + delta + len > size) return NULL;
+        if (len > sections[i].SizeOfRawData - delta) continue;
+        if ((SIZE_T)sections[i].PointerToRawData > size ||
+            delta > size - (SIZE_T)sections[i].PointerToRawData ||
+            len > size - (SIZE_T)sections[i].PointerToRawData - delta)
+            return NULL;
         return data + sections[i].PointerToRawData + delta;
     }
     return NULL;
@@ -1977,9 +1981,12 @@ static BOOL macrunner_hb_file_rva_in_section( IMAGE_SECTION_HEADER *sections, un
     for (i = 0; i < count; i++)
     {
         DWORD sec_size = max( sections[i].Misc.VirtualSize, sections[i].SizeOfRawData );
+        DWORD delta;
 
         if (strncmp( (const char *)sections[i].Name, section, IMAGE_SIZEOF_SHORT_NAME )) continue;
-        return rva >= sections[i].VirtualAddress && rva < sections[i].VirtualAddress + sec_size;
+        if (rva < sections[i].VirtualAddress) return FALSE;
+        delta = rva - sections[i].VirtualAddress;
+        return delta < sec_size;
     }
     return FALSE;
 }

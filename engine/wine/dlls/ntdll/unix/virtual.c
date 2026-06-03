@@ -1967,9 +1967,13 @@ static void register_view( struct file_view *view )
 static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t size, unsigned int vprot )
 {
     struct file_view *view;
+    char *end;
 
     assert( !((UINT_PTR)base & host_page_mask) );
     assert( !(size & page_mask) );
+
+    if (size > ~(SIZE_T)0 - (UINT_PTR)base) return STATUS_CONFLICTING_ADDRESSES;
+    end = (char *)base + size;
 
     /* Check for overlapping views. This can happen if the previous view
      * was a system view that got unmapped behind our back. In that case
@@ -1977,8 +1981,12 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
 
     while ((view = find_view_range( base, size )))
     {
+        char *view_end;
+
+        if (view->size > ~(SIZE_T)0 - (UINT_PTR)view->base) return STATUS_CONFLICTING_ADDRESSES;
+        view_end = (char *)view->base + view->size;
         TRACE( "overlapping view %p-%p for %p-%p\n",
-               view->base, (char *)view->base + view->size, base, (char *)base + size );
+               view->base, view_end, base, end );
         assert( view->protect & VPROT_SYSTEM );
         delete_view( view );
     }
@@ -1989,7 +1997,7 @@ static NTSTATUS create_view( struct file_view **view_ret, void *base, size_t siz
 
     if (!(view = alloc_view()))
     {
-        FIXME( "out of memory for %p-%p\n", base, (char *)base + size );
+        FIXME( "out of memory for %p-%p\n", base, end );
         return STATUS_NO_MEMORY;
     }
 

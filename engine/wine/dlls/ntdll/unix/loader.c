@@ -980,6 +980,21 @@ static inline void fixup_rva_ptrs( void *array, BYTE *base, unsigned int count )
     for ( ; count; count--, src++, dst++) *dst = *src ? *src - base : 0;
 }
 
+static BOOL builtin_ptr_array_fits_image( BYTE *base, DWORD image_size, void *array, unsigned int count )
+{
+    BYTE **ptr = array;
+    ULONG_PTR image_base = (ULONG_PTR)base;
+
+    for ( ; count; count--, ptr++ )
+    {
+        ULONG_PTR addr = (ULONG_PTR)*ptr;
+
+        if (!addr) continue;
+        if (addr < image_base || addr - image_base >= image_size) return FALSE;
+    }
+    return TRUE;
+}
+
 /* fixup an array of RVAs by adding the specified delta */
 static inline void fixup_rva_dwords( DWORD *ptr, int delta, unsigned int count )
 {
@@ -1274,6 +1289,8 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
 #endif
     if (code_end < code_start || data_end < data_start) return STATUS_INVALID_IMAGE_FORMAT;
 
+    if (!builtin_ptr_array_fits_image( addr, data_end, &nt->OptionalHeader.AddressOfEntryPoint, 1 ))
+        return STATUS_INVALID_IMAGE_FORMAT;
     fixup_rva_ptrs( &nt->OptionalHeader.AddressOfEntryPoint, addr, 1 );
 
     nt->FileHeader.NumberOfSections                = nb_sections;
@@ -1401,6 +1418,9 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
             return STATUS_INVALID_IMAGE_FORMAT;
         if (!fixup_rva_strings( addr, nt->OptionalHeader.SizeOfImage,
                                 (DWORD *)(addr + exports->AddressOfNames), delta, exports->NumberOfNames ))
+            return STATUS_INVALID_IMAGE_FORMAT;
+        if (!builtin_ptr_array_fits_image( addr, nt->OptionalHeader.SizeOfImage,
+                                           addr + exports->AddressOfFunctions, exports->NumberOfFunctions ))
             return STATUS_INVALID_IMAGE_FORMAT;
         fixup_rva_ptrs( addr + exports->AddressOfFunctions, addr, exports->NumberOfFunctions );
     }

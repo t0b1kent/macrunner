@@ -3451,8 +3451,11 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     char *header_end;
     char *ptr = view->base;
     SIZE_T header_size, header_map_size, total_size = view->size;
-    SIZE_T align_mask = max( image_info->alignment - 1, page_mask );
+    SIZE_T align_mask;
     INT_PTR delta;
+
+    if (!image_info->alignment) return STATUS_INVALID_IMAGE_FORMAT;
+    align_mask = max( image_info->alignment - 1, page_mask );
 
     TRACE_(module)( "mapping PE file %s at %p-%p\n", debugstr_us(nt_name), ptr, ptr + total_size );
 

@@ -1849,27 +1849,33 @@ static BOOL macrunner_hb_is_semantic_import_stub( const char *dll_name, const ch
     return FALSE;
 }
 
+static BOOL macrunner_hb_section_contains_target( HMODULE module, const IMAGE_SECTION_HEADER *sec,
+                                                  ULONG_PTR target )
+{
+    ULONG_PTR base = (ULONG_PTR)module;
+    ULONG_PTR start, size = max( sec->Misc.VirtualSize, sec->SizeOfRawData );
+
+    if (!size) return FALSE;
+    if (sec->VirtualAddress > ~(ULONG_PTR)0 - base) return FALSE;
+    start = base + sec->VirtualAddress;
+    if (size > ~(ULONG_PTR)0 - start) return FALSE;
+    return target >= start && target < start + size;
+}
+
 static BOOL macrunner_hb_address_in_section( HMODULE module, const char *section, ULONG_PTR target )
 {
     IMAGE_NT_HEADERS *nt;
     IMAGE_SECTION_HEADER *sec;
-    ULONG_PTR base;
     unsigned int i;
 
     if (!module || !section || !target) return FALSE;
     if (!(nt = RtlImageNtHeader( module ))) return FALSE;
 
-    base = (ULONG_PTR)module;
     sec = IMAGE_FIRST_SECTION( nt );
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
     {
-        ULONG_PTR start, end, size;
-
         if (strncmp( (const char *)sec->Name, section, IMAGE_SIZEOF_SHORT_NAME )) continue;
-        size = max( sec->Misc.VirtualSize, sec->SizeOfRawData );
-        start = base + sec->VirtualAddress;
-        end = start + size;
-        if (target >= start && target < end) return TRUE;
+        if (macrunner_hb_section_contains_target( module, sec, target )) return TRUE;
     }
     return FALSE;
 }
@@ -1878,22 +1884,15 @@ static BOOL macrunner_hb_address_in_executable_section( HMODULE module, ULONG_PT
 {
     IMAGE_NT_HEADERS *nt;
     IMAGE_SECTION_HEADER *sec;
-    ULONG_PTR base;
     unsigned int i;
 
     if (!module || !target) return FALSE;
     if (!(nt = RtlImageNtHeader( module ))) return FALSE;
 
-    base = (ULONG_PTR)module;
     sec = IMAGE_FIRST_SECTION( nt );
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
     {
-        ULONG_PTR start, end, size;
-
-        size = max( sec->Misc.VirtualSize, sec->SizeOfRawData );
-        start = base + sec->VirtualAddress;
-        end = start + size;
-        if (target >= start && target < end)
+        if (macrunner_hb_section_contains_target( module, sec, target ))
             return !!(sec->Characteristics & IMAGE_SCN_MEM_EXECUTE);
     }
     return FALSE;

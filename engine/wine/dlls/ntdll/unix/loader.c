@@ -2298,7 +2298,7 @@ static const void *get_module_data_dir( HMODULE module, ULONG dir, ULONG *size )
     if (!data->VirtualAddress || !data->Size) return NULL;
     if (data->VirtualAddress >= image_size || data->Size > image_size - data->VirtualAddress) return NULL;
     if (size) *size = data->Size;
-    return get_rva( module, data->VirtualAddress );
+    return module_rva_ptr( module, image_size, data->VirtualAddress, data->Size );
 }
 
 /***********************************************************************

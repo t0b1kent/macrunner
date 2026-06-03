@@ -99,10 +99,10 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | `R10G10B10A2` | Implemented | Mapped and marked backbuffer-capable. |
 | `R16G16B16A16_FLOAT` | Implemented | Mapped and marked backbuffer-capable. |
 | 16/32-bit float/int scalar/vector | Implemented | Generic mappings plus Metal capability inspector. |
-| BC1-BC7 | Partial | Mapped when Metal device reports BC texture compression; smoke validates detailed BC1 copy paths plus create/SRV/default-to-staging copy/map/byte readback for every advertised BC1 sRGB, BC2, BC3, BC4, BC5, BC6H, and BC7 variant on this host. |
+| BC1-BC7 | Implemented (device-gated) | Mapped when Metal device reports BC texture compression; smoke validates detailed BC1 copy paths plus create/SRV/default-to-staging copy/map/byte readback for every advertised BC1 sRGB, BC2, BC3, BC4, BC5, BC6H, and BC7 variant on this host. |
 | D16/D24S8/D32/D32S8 | Implemented | Smoke creates textures/DSVs and clears `D16_UNORM`, `D24_UNORM_S8_UINT`, `D32_FLOAT`, and `D32_FLOAT_S8X24_UINT`; D24 remains internally emulated over Depth32Float_Stencil8. |
-| YUV 4:2:2 | Partial | `R8G8_B8G8_UNORM`/`G8R8_G8B8_UNORM` map to BGRG/GBGR 4:2:2 and smoke-verify Texture2D + shader-sample/filter-only support; no RT/storage capability is advertised. |
-| MSAA | Partial | `R8G8B8A8`, `B8G8R8A8`, and `R16G16B16A16_FLOAT` report 1/2/4x quality=1 and 8x quality=0; smoke covers 4x color/depth render plus 2x/4x color resolve/staging byte readback across those formats. |
+| YUV 4:2:2 | Implemented (filter-only) | `R8G8_B8G8_UNORM`/`G8R8_G8B8_UNORM` map to BGRG/GBGR 4:2:2 and smoke-verify Texture2D + shader-sample/filter-only support; no RT/storage capability is advertised. |
+| MSAA | Implemented (device-gated) | `R8G8B8A8`, `B8G8R8A8`, and `R16G16B16A16_FLOAT` report 1/2/4x quality=1 and 8x quality=0; smoke covers 4x color/depth render plus 2x/4x color resolve/staging byte readback across those formats. |
 | `CheckFormatSupport` | Implemented | Computes D3D11 flags from `MTLQueryDXGIFormat` and capability bits. |
 | `CheckFormatSupport2` | Implemented | UAV/load/store/atomic/tiled flags populated from Metal capability bits. |
 

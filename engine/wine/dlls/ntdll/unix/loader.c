@@ -1117,7 +1117,7 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     *nt = *nt_descr;
 
     delta_ptr = (INT_PTR)nt_descr - (INT_PTR)addr;
-    if (delta_ptr < INT_MIN || delta_ptr > INT_MAX) return STATUS_INVALID_IMAGE_FORMAT;
+    if (delta_ptr < 0 || delta_ptr > INT_MAX) return STATUS_INVALID_IMAGE_FORMAT;
     delta      = delta_ptr;
     data_start = delta & ~align_mask;
 #ifdef __APPLE__

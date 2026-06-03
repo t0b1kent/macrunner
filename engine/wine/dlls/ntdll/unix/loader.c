@@ -1309,6 +1309,7 @@ static NTSTATUS dlopen_dll( const char *so_name, UNICODE_STRING *nt_name, void *
 {
     void *module, *handle;
     const IMAGE_NT_HEADERS *nt;
+    ULONGLONG image_base;
 
     handle = dlopen( so_name, RTLD_NOW );
     if (!handle)
@@ -1323,7 +1324,13 @@ static NTSTATUS dlopen_dll( const char *so_name, UNICODE_STRING *nt_name, void *
         return STATUS_INVALID_IMAGE_FORMAT;
     }
 
-    module = (HMODULE)((nt->OptionalHeader.ImageBase + 0xffff) & ~0xffff);
+    image_base = nt->OptionalHeader.ImageBase;
+    if (image_base > (ULONGLONG)(ULONG_PTR)~0 - 0xffff)
+    {
+        dlclose( handle );
+        return STATUS_INVALID_IMAGE_FORMAT;
+    }
+    module = (HMODULE)((ULONG_PTR)(image_base + 0xffff) & ~(ULONG_PTR)0xffff);
     if (get_builtin_so_handle( module ))  /* already loaded */
     {
         fill_builtin_image_info( module, image_info );

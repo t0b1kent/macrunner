@@ -143,6 +143,16 @@ static void emit_ldrh_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) 
     emit_u32(buf, 0x79400000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
+static void emit_ldar_to_reg(hb_codegen_buffer_t* buf, int rt, int rn, hb_size_t size) {
+    switch (size) {
+        case HB_SIZE_8:  emit_u32(buf, 0x08dffc00 | (rn << 5) | rt); break; /* LDARB Wt, [Xn] */
+        case HB_SIZE_16: emit_u32(buf, 0x48dffc00 | (rn << 5) | rt); break; /* LDARH Wt, [Xn] */
+        case HB_SIZE_32: emit_u32(buf, 0x88dffc00 | (rn << 5) | rt); break; /* LDAR Wt, [Xn] */
+        case HB_SIZE_64:
+        default:         emit_u32(buf, 0xc8dffc00 | (rn << 5) | rt); break; /* LDAR Xt, [Xn] */
+    }
+}
+
 static void emit_str_x(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
     /* STR Xt, [Xn, #off] */
     uint32_t imm12 = (off / 8) & 0xFFF;
@@ -176,6 +186,16 @@ static void emit_strh_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) 
     /* STRH Wt, [Xn, #off] — off must be multiple of 2 */
     uint32_t imm12 = (off / 2) & 0xFFF;
     emit_u32(buf, 0x79000000 | (imm12 << 10) | (rn << 5) | rt);
+}
+
+static void emit_stlr_from_reg(hb_codegen_buffer_t* buf, int rt, int rn, hb_size_t size) {
+    switch (size) {
+        case HB_SIZE_8:  emit_u32(buf, 0x089ffc00 | (rn << 5) | rt); break; /* STLRB Wt, [Xn] */
+        case HB_SIZE_16: emit_u32(buf, 0x489ffc00 | (rn << 5) | rt); break; /* STLRH Wt, [Xn] */
+        case HB_SIZE_32: emit_u32(buf, 0x889ffc00 | (rn << 5) | rt); break; /* STLR Wt, [Xn] */
+        case HB_SIZE_64:
+        default:         emit_u32(buf, 0xc89ffc00 | (rn << 5) | rt); break; /* STLR Xt, [Xn] */
+    }
 }
 
 static void emit_mov_imm64(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
@@ -725,59 +745,45 @@ static void emit_note_lazy_cmp_from_x23_x22_x21(hb_codegen_buffer_t* buf, hb_siz
     emit_note_lazy_masks(buf, 16, HB_FLAG_BIT_ALL);
 }
 
+static void emit_direct_mem_load_to_x20_base(hb_codegen_buffer_t* buf, hb_size_t size, int rn) {
+    emit_ldar_to_reg(buf, 20, rn, size);
+}
+
 static void emit_direct_mem_load_to_x20(hb_codegen_buffer_t* buf, hb_size_t size) {
-    switch (size) {
-        case HB_SIZE_8:  emit_ldrb_w(buf, 20, 21, 0); break;
-        case HB_SIZE_16: emit_ldrh_w(buf, 20, 21, 0); break;
-        case HB_SIZE_32: emit_ldr_w(buf, 20, 21, 0); break;
-        case HB_SIZE_64:
-        default:         emit_ldr_x(buf, 20, 21, 0); break;
-    }
-    emit_dmb_ishld(buf);
+    emit_direct_mem_load_to_x20_base(buf, size, 21);
+}
+
+static void emit_direct_mem_store_from_x20_base(hb_codegen_buffer_t* buf, hb_size_t size, int rn) {
+    emit_stlr_from_reg(buf, 20, rn, size);
 }
 
 static void emit_direct_mem_store_from_x20(hb_codegen_buffer_t* buf, hb_size_t size) {
-    emit_dmb_ishst(buf);
-    switch (size) {
-        case HB_SIZE_8:  emit_strb_w(buf, 20, 21, 0); break;
-        case HB_SIZE_16: emit_strh_w(buf, 20, 21, 0); break;
-        case HB_SIZE_32: emit_str_w(buf, 20, 21, 0); break;
-        case HB_SIZE_64:
-        default:         emit_str_x(buf, 20, 21, 0); break;
+    emit_direct_mem_store_from_x20_base(buf, size, 21);
+}
+
+/* LDAR/STLR do not have unsigned-offset forms. Keep X21 as the canonical base
+ * for fusions that reuse it, and use X22 as a dead scratch address. */
+static int emit_direct_mem_base_for_offset(hb_codegen_buffer_t* buf, uint32_t off) {
+    if (!off) return 21;
+    if (off < 4096) {
+        emit_add_imm(buf, 22, 21, off);
+    } else {
+        emit_mov_imm64(buf, 22, off);
+        emit_add_reg(buf, 22, 21, 22);
     }
+    return 22;
 }
 
 static void emit_direct_mem_load_to_x20_off(hb_codegen_buffer_t* buf, hb_size_t size, uint32_t off) {
-    switch (size) {
-        case HB_SIZE_8:  emit_ldrb_w(buf, 20, 21, off); break;
-        case HB_SIZE_16: emit_ldrh_w(buf, 20, 21, off); break;
-        case HB_SIZE_32: emit_ldr_w(buf, 20, 21, off); break;
-        case HB_SIZE_64:
-        default:         emit_ldr_x(buf, 20, 21, off); break;
-    }
-    emit_dmb_ishld(buf);
+    emit_direct_mem_load_to_x20_base(buf, size, emit_direct_mem_base_for_offset(buf, off));
 }
 
 static void emit_direct_mem_store_from_x20_off(hb_codegen_buffer_t* buf, hb_size_t size, uint32_t off) {
-    emit_dmb_ishst(buf);
-    switch (size) {
-        case HB_SIZE_8:  emit_strb_w(buf, 20, 21, off); break;
-        case HB_SIZE_16: emit_strh_w(buf, 20, 21, off); break;
-        case HB_SIZE_32: emit_str_w(buf, 20, 21, off); break;
-        case HB_SIZE_64:
-        default:         emit_str_x(buf, 20, 21, off); break;
-    }
+    emit_direct_mem_store_from_x20_base(buf, size, emit_direct_mem_base_for_offset(buf, off));
 }
 
 static void emit_direct_mem_store_zero_off(hb_codegen_buffer_t* buf, hb_size_t size, uint32_t off) {
-    emit_dmb_ishst(buf);
-    switch (size) {
-        case HB_SIZE_8:  emit_strb_w(buf, 31, 21, off); break;
-        case HB_SIZE_16: emit_strh_w(buf, 31, 21, off); break;
-        case HB_SIZE_32: emit_str_w(buf, 31, 21, off); break;
-        case HB_SIZE_64:
-        default:         emit_str_x(buf, 31, 21, off); break;
-    }
+    emit_stlr_from_reg(buf, 31, emit_direct_mem_base_for_offset(buf, off), size);
 }
 
 static bool direct_mem_unsigned_offset(const hb_ir_operand_t* op, uint32_t* off) {
@@ -894,6 +900,7 @@ static bool emit_load_xmm_operand_to_pair(hb_codegen_buffer_t* buf, const hb_ir_
             emit_ldr_x(buf, lo, 21, 0);
             emit_ldr_x(buf, hi, 21, 8);
         }
+        emit_dmb_ishld(buf);
         return true;
     }
     return false;
@@ -1049,7 +1056,7 @@ static bool emit_native_xmm_logic(hb_codegen_buffer_t* buf, const hb_ir_instr_t*
 static void emit_native_stack_push_x20(hb_codegen_buffer_t* buf) {
     emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
     emit_sub_imm(buf, 21, 21, 8);
-    emit_str_x(buf, 20, 21, 0);
+    emit_stlr_from_reg(buf, 20, 21, HB_SIZE_64);
     emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
 }
 
@@ -1073,7 +1080,7 @@ static bool emit_native_pop(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr
     if (!is_plain_gpr_reg_operand(&instr->dst) || instr->dst.size != HB_SIZE_64)
         return false;
     emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
-    emit_ldr_x(buf, 20, 21, 0);
+    emit_ldar_to_reg(buf, 20, 21, HB_SIZE_64);
     emit_add_imm(buf, 21, 21, 8);
     emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
     emit_store_x20_to_gpr_sized(buf, &instr->dst);
@@ -1090,7 +1097,7 @@ static bool emit_native_ret(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr
         return false;
     }
     emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
-    emit_ldr_x(buf, 20, 21, 0);
+    emit_ldar_to_reg(buf, 20, 21, HB_SIZE_64);
     emit_add_imm(buf, 21, 21, 8);
     if (adjust) emit_add_imm(buf, 21, 21, (uint32_t)adjust);
     emit_str_x(buf, 21, 19, (uint32_t)x64_reg_off(HB_REG_RSP));
@@ -1412,11 +1419,7 @@ static bool emit_hot_scalar_scan_loop(hb_codegen_buffer_t* buf, const hb_ir_bloc
     emit_add_imm(buf, 20, 20, 1);
     if (!emit_direct_mem_addr_with_override(buf, &cmp->src1, scan_reg, 20))
         return false;
-    switch (cmp->src1.size) {
-        case HB_SIZE_8:  emit_ldrb_w(buf, 23, 21, 0); break;
-        case HB_SIZE_16: emit_ldrh_w(buf, 23, 21, 0); break;
-        default: return false;
-    }
+    emit_ldar_to_reg(buf, 23, 21, cmp->src1.size);
     emit_sub_reg(buf, 21, 23, 22);
     emit_cmp_reg(buf, 23, 22);
     branch_cond = arm64_cond(jcc->cc);
@@ -2687,6 +2690,7 @@ extern void     hb_jit_helper_xgetbv(hb_context_t* ctx);
 extern void     hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern hb_result_t hb_interpreter_exec_one_for_jit(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_interp_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_atomic_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_two_block_loop(hb_context_t* ctx,
                                                   const hb_ir_block_t* first,
                                                   const hb_ir_block_t* second);
@@ -2740,6 +2744,16 @@ static hb_result_t emit_interp_ir_helper(hb_codegen_buffer_t* buf, const hb_ir_i
     emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
     emit_call_helper(buf, (void*)hb_jit_helper_exec_interp_ir);
     emit_return_if_helper_failed(buf);
+    return HB_OK;
+}
+
+static hb_result_t emit_atomic_ir_helper(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    emit_dmb_ish(buf);
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+    emit_call_helper(buf, (void*)hb_jit_helper_exec_atomic_ir);
+    emit_return_if_helper_failed(buf);
+    emit_dmb_ish(buf);
     return HB_OK;
 }
 
@@ -3999,11 +4013,13 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             return emit_interp_ir_helper(buf, instr);
         }
 
-        case HB_IR_MOV_SEG:
         case HB_IR_CMPXCHG:
         case HB_IR_CMPXCHG8B:
         case HB_IR_XCHG:
         case HB_IR_XADD:
+            return emit_atomic_ir_helper(buf, instr);
+
+        case HB_IR_MOV_SEG:
         case HB_IR_PUSHF:
         case HB_IR_POPF:
         case HB_IR_MOVS:
@@ -4514,6 +4530,225 @@ static int64_t hb_jit_sign_extend_from_size(uint64_t value, hb_size_t size) {
         case HB_SIZE_64:
         default:         return (int64_t)value;
     }
+}
+
+static size_t hb_jit_size_bytes(hb_size_t size) {
+    switch (size) {
+        case HB_SIZE_8: return 1;
+        case HB_SIZE_16: return 2;
+        case HB_SIZE_32: return 4;
+        case HB_SIZE_64: return 8;
+        default: return 0;
+    }
+}
+
+static uint64_t hb_jit_resolve_addr(hb_context_t* ctx, const hb_ir_operand_t* op) {
+    uint64_t base = 0;
+    uint64_t index = 0;
+
+    if (!ctx || !op || op->type != HB_OP_MEM) return 0;
+    if (op->mem.base < HB_REG_COUNT) {
+        base = op->mem.base == HB_REG_RIP ? ctx->pc : hb_context_read_reg_value(ctx, op->mem.base);
+    }
+    if (op->mem.index < HB_REG_COUNT)
+        index = hb_context_read_reg_value(ctx, op->mem.index);
+    if (op->mem.segment == 0x64) base += ctx->fs_base;
+    else if (op->mem.segment == 0x65) base += ctx->gs_base;
+    if (ctx->mode == HB_MODE_32BIT || op->mem.addr32) {
+        uint32_t base32 = (uint32_t)base;
+        uint32_t index32 = (uint32_t)index;
+        return (uint32_t)(base32 + index32 * op->mem.scale + (uint32_t)op->mem.disp);
+    }
+    return base + index * op->mem.scale + (uint64_t)op->mem.disp;
+}
+
+static void* hb_jit_atomic_host_ptr(hb_context_t* ctx, const hb_ir_operand_t* op,
+                                    hb_size_t size, uint64_t* addr_out) {
+    size_t bytes = hb_jit_size_bytes(size);
+    uint64_t addr;
+    void* ptr;
+
+    if (!ctx || !ctx->memory || !op || op->type != HB_OP_MEM || !bytes) return NULL;
+    addr = hb_jit_resolve_addr(ctx, op);
+    if ((addr & (bytes - 1)) != 0) return NULL;
+    if (((addr & 63u) + bytes) > 64u) return NULL;
+    ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, bytes,
+                             (hb_perm_t)(HB_PERM_READ | HB_PERM_WRITE));
+    if (!ptr || (((uintptr_t)ptr) & (bytes - 1)) != 0) return NULL;
+    if (addr_out) *addr_out = addr;
+    return ptr;
+}
+
+static volatile uint32_t hb_jit_split_lock_gate;
+
+static void hb_jit_split_lock_acquire(void) {
+    while (__atomic_exchange_n(&hb_jit_split_lock_gate, 1u, __ATOMIC_ACQUIRE))
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+
+static void hb_jit_split_lock_release(void) {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    __atomic_store_n(&hb_jit_split_lock_gate, 0u, __ATOMIC_RELEASE);
+}
+
+static hb_result_t hb_jit_atomic_cmpxchg(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_size_t size = instr->dst.size ? instr->dst.size : instr->src1.size;
+    void* ptr;
+    uint64_t src_val = 0;
+    uint64_t acc, old = 0;
+    bool equal = false;
+    hb_result_t r;
+
+    if (!size) size = instr->src2.size ? instr->src2.size : HB_SIZE_32;
+    ptr = hb_jit_atomic_host_ptr(ctx, &instr->src1, size, NULL);
+    if (!ptr) return HB_ERR_UNSUPPORTED_FEATURE;
+    r = hb_flags_read_operand_value(ctx, &instr->src2, &src_val);
+    if (r != HB_OK) return r;
+    acc = hb_jit_trunc_to_size(hb_context_read_reg_value(ctx, HB_REG_RAX), size);
+    src_val = hb_jit_trunc_to_size(src_val, size);
+
+    switch (size) {
+        case HB_SIZE_8: {
+            uint8_t expected = (uint8_t)acc;
+            equal = __atomic_compare_exchange_n((uint8_t*)ptr, &expected, (uint8_t)src_val,
+                                                false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+            old = expected;
+            break;
+        }
+        case HB_SIZE_16: {
+            uint16_t expected = (uint16_t)acc;
+            equal = __atomic_compare_exchange_n((uint16_t*)ptr, &expected, (uint16_t)src_val,
+                                                false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+            old = expected;
+            break;
+        }
+        case HB_SIZE_32: {
+            uint32_t expected = (uint32_t)acc;
+            equal = __atomic_compare_exchange_n((uint32_t*)ptr, &expected, (uint32_t)src_val,
+                                                false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+            old = expected;
+            break;
+        }
+        case HB_SIZE_64:
+        default: {
+            uint64_t expected = acc;
+            equal = __atomic_compare_exchange_n((uint64_t*)ptr, &expected, src_val,
+                                                false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+            old = expected;
+            break;
+        }
+    }
+
+    old = hb_jit_trunc_to_size(old, size);
+    hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, size, acc, old, acc - old, 0);
+    if (!equal)
+        hb_context_write_reg_value_sized(ctx, HB_REG_RAX, old, size);
+    return HB_OK;
+}
+
+static hb_result_t hb_jit_atomic_xchg(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_size_t size = instr->src1.size ? instr->src1.size : instr->src2.size;
+    void* ptr;
+    uint64_t src_val = 0;
+    uint64_t old = 0;
+    hb_result_t r;
+
+    if (!size) size = HB_SIZE_32;
+    ptr = hb_jit_atomic_host_ptr(ctx, &instr->src1, size, NULL);
+    if (!ptr) return HB_ERR_UNSUPPORTED_FEATURE;
+    r = hb_flags_read_operand_value(ctx, &instr->src2, &src_val);
+    if (r != HB_OK) return r;
+    src_val = hb_jit_trunc_to_size(src_val, size);
+
+    switch (size) {
+        case HB_SIZE_8:  old = __atomic_exchange_n((uint8_t*)ptr, (uint8_t)src_val, __ATOMIC_SEQ_CST); break;
+        case HB_SIZE_16: old = __atomic_exchange_n((uint16_t*)ptr, (uint16_t)src_val, __ATOMIC_SEQ_CST); break;
+        case HB_SIZE_32: old = __atomic_exchange_n((uint32_t*)ptr, (uint32_t)src_val, __ATOMIC_SEQ_CST); break;
+        case HB_SIZE_64:
+        default:         old = __atomic_exchange_n((uint64_t*)ptr, src_val, __ATOMIC_SEQ_CST); break;
+    }
+    return hb_flags_write_operand_value(ctx, &instr->src2, hb_jit_trunc_to_size(old, size));
+}
+
+static hb_result_t hb_jit_atomic_xadd(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_size_t size = instr->src1.size ? instr->src1.size : instr->src2.size;
+    void* ptr;
+    uint64_t src_val = 0;
+    uint64_t old = 0;
+    uint64_t result;
+    hb_result_t r;
+
+    if (!size) size = HB_SIZE_32;
+    ptr = hb_jit_atomic_host_ptr(ctx, &instr->src1, size, NULL);
+    if (!ptr) return HB_ERR_UNSUPPORTED_FEATURE;
+    r = hb_flags_read_operand_value(ctx, &instr->src2, &src_val);
+    if (r != HB_OK) return r;
+    src_val = hb_jit_trunc_to_size(src_val, size);
+
+    switch (size) {
+        case HB_SIZE_8:  old = __atomic_fetch_add((uint8_t*)ptr, (uint8_t)src_val, __ATOMIC_SEQ_CST); break;
+        case HB_SIZE_16: old = __atomic_fetch_add((uint16_t*)ptr, (uint16_t)src_val, __ATOMIC_SEQ_CST); break;
+        case HB_SIZE_32: old = __atomic_fetch_add((uint32_t*)ptr, (uint32_t)src_val, __ATOMIC_SEQ_CST); break;
+        case HB_SIZE_64:
+        default:         old = __atomic_fetch_add((uint64_t*)ptr, src_val, __ATOMIC_SEQ_CST); break;
+    }
+    old = hb_jit_trunc_to_size(old, size);
+    result = hb_jit_trunc_to_size(old + src_val, size);
+    hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_ADD, size, old, src_val, result, 0);
+    return hb_flags_write_operand_value(ctx, &instr->src2, old);
+}
+
+static hb_result_t hb_jit_atomic_cmpxchg8b(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    void* ptr;
+    uint64_t acc, src, old;
+    bool equal;
+
+    if (instr->dst.size == HB_SIZE_128)
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    ptr = hb_jit_atomic_host_ptr(ctx, &instr->dst, HB_SIZE_64, NULL);
+    if (!ptr) return HB_ERR_UNSUPPORTED_FEATURE;
+
+    acc = ((uint64_t)(uint32_t)hb_context_read_reg_value(ctx, HB_REG_RDX) << 32) |
+          (uint32_t)hb_context_read_reg_value(ctx, HB_REG_RAX);
+    src = ((uint64_t)(uint32_t)hb_context_read_reg_value(ctx, HB_REG_RCX) << 32) |
+          (uint32_t)hb_context_read_reg_value(ctx, HB_REG_RBX);
+    old = acc;
+    equal = __atomic_compare_exchange_n((uint64_t*)ptr, &old, src,
+                                        false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    hb_lazy_flags_clear(ctx);
+    ctx->flags.zf = equal;
+    if (!equal) {
+        hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint32_t)old, HB_SIZE_32);
+        hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint32_t)(old >> 32), HB_SIZE_32);
+    }
+    return HB_OK;
+}
+
+void hb_jit_helper_exec_atomic_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_result_t r = HB_ERR_UNSUPPORTED_FEATURE;
+
+    if (!ctx || !instr) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    switch (instr->op) {
+        case HB_IR_CMPXCHG:   r = hb_jit_atomic_cmpxchg(ctx, instr); break;
+        case HB_IR_CMPXCHG8B: r = hb_jit_atomic_cmpxchg8b(ctx, instr); break;
+        case HB_IR_XCHG:      r = hb_jit_atomic_xchg(ctx, instr); break;
+        case HB_IR_XADD:      r = hb_jit_atomic_xadd(ctx, instr); break;
+        default:              r = HB_ERR_UNSUPPORTED_OPCODE; break;
+    }
+
+    if (r == HB_ERR_UNSUPPORTED_FEATURE) {
+        hb_jit_split_lock_acquire();
+        r = hb_interpreter_exec_one_for_jit(ctx, instr);
+        hb_jit_split_lock_release();
+    }
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    ctx->last_result = r;
 }
 
 void hb_jit_helper_exec_mul_div_operand(hb_context_t* ctx, const hb_ir_instr_t* instr) {

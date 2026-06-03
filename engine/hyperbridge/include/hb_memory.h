@@ -79,6 +79,7 @@ uint64_t hb_memory_region_generation(hb_memory_t* mem, hb_gva_t addr);
 
 hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t size);
 hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, size_t size);
+void* hb_memory_host_ptr(hb_memory_t* mem, hb_gva_t addr, size_t size, hb_perm_t perm);
 void hb_memory_set_special_handlers(hb_memory_t* mem,
                                     hb_result_t (*read_fn)(void* user, hb_gva_t addr, void* out, size_t size),
                                     hb_result_t (*write_fn)(void* user, hb_gva_t addr, const void* in, size_t size),

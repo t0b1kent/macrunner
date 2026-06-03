@@ -1387,3 +1387,27 @@ NEXT: run one combined settle/probe with heartbeat + wait-semantic + guest-range
 sampled managed-code heap, and take a late sample. If the sample shows unknown `0x87fff...`, expand
 guest range to the sampled 4 KiB page and rerun immediately; if it shows ntdll wait, use the existing
 semaphore verdict and continue toward producer/scheduler reachability rather than worker wake hacks.
+
+## Lane A checkpoint — 2026-06-04 TSO root-fix backend patch
+
+- Heartbeat capture checkpoint landed as `3c85aa8`: x64 dispatch now emits an immediate
+  `phase=start` heartbeat when `MACRUNNER_HB_TRACE_HEARTBEAT=1`; proof run
+  `run-20260604-082244-heartbeat-proof-tso-mp/` still had `heartbeat_count=0`, which now means the
+  dispatcher was not entered, not that the sampler is blind.
+- Backend patch in progress:
+  - direct scalar guest loads/stores now emit `LDAR[B/H/W/X]` / `STLR[B/H/W/X]`;
+  - direct stack POP/RET/PUSH and scalar scan loop reloads are acquire/release hardened;
+  - JIT `CMPXCHG/CMPXCHG8B/XCHG/XADD` route through a full-barrier atomic helper;
+  - aligned 8/16/32/64-bit memory RMW uses host `__atomic` on the resolved guest backing pointer;
+  - unaligned/cacheline-crossing/128-bit forms fall back through a split-lock gate and interpreter op.
+- Validation artifacts:
+  - HyperBridge build green: `build-20260604-083823-lane-a-tso-codegen-x22offset.log`
+  - `tools/hb_oracle/fast_validate_family.sh phase1_core`: PASS
+  - `hb_fuzz_diff.py --families xchg_cmpxchg --cases 20000 --arch x64`: 0 backend/oracle mismatches
+  - JIT backend diff, 5000 xchg/cmpxchg cases: 0 backend/oracle mismatches
+- Full `make -C engine/hyperbridge test` remains red with 442 passed / 5 failed:
+  decoder NOP family, existing block-count expectation, PE mprotect errno 13, and two direct-mem
+  code-size thresholds. The TSO spin test is not among the failures.
+
+NEXT: commit this checkpoint, relink/install/codesign `ntdll.so`, build/run `tso_litmus.exe`
+`mp/spin/cas/xadd/split`, then retry Hollow Knight with heartbeat and Gfx/D3D trace gates.

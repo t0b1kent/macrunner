@@ -862,6 +862,22 @@ hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, siz
     return HB_OK;
 }
 
+void* hb_memory_host_ptr(hb_memory_t* mem, hb_gva_t addr, size_t size, hb_perm_t perm) {
+    hb_region_t* region;
+
+    if (!mem || !size) return NULL;
+    if (!normalize_guest32_mirror_addr(mem, &addr, size)) return NULL;
+    region = find_region_normalized(mem, addr);
+    if (!region || addr + size > region->base + region->size) return NULL;
+    if ((region->perm & perm) != perm) return NULL;
+#ifdef __APPLE__
+    if (region->host_base && region->is_guest32 && guest32_copy_needs_mach(region, addr, size))
+        return NULL;
+#endif
+    if (region->host_base) return region_host_ptr(region, addr);
+    return (void*)(uintptr_t)addr;
+}
+
 void hb_memory_set_special_handlers(hb_memory_t* mem,
                                     hb_result_t (*read_fn)(void* user, hb_gva_t addr, void* out, size_t size),
                                     hb_result_t (*write_fn)(void* user, hb_gva_t addr, const void* in, size_t size),

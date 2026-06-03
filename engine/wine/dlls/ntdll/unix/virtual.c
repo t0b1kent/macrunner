@@ -2906,14 +2906,24 @@ static SIZE_T get_committed_size( struct file_view *view, void *base, size_t max
  */
 static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size )
 {
-    char *host_end, *host_start = (char *)ROUND_SIZE( 0, base, host_page_mask );
+    SIZE_T host_start_size;
+    char *host_end, *host_start;
+
+    if (!round_size_checked( 0, (SIZE_T)base, host_page_mask, &host_start_size ))
+        return STATUS_INVALID_PARAMETER;
+    host_start = (char *)host_start_size;
 
     if (!size)
     {
         size = view->size;
+        if (view->size > ~(SIZE_T)0 - (SIZE_T)host_start) return STATUS_INVALID_PARAMETER;
         host_end = host_start + view->size;
     }
-    else host_end = ROUND_ADDR( base + size, host_page_mask );
+    else
+    {
+        if (size > ~(SIZE_T)0 - (SIZE_T)base) return STATUS_INVALID_PARAMETER;
+        host_end = ROUND_ADDR( base + size, host_page_mask );
+    }
 
     if (host_start < host_end) anon_mmap_fixed( host_start, host_end - host_start, PROT_NONE, 0 );
     set_page_vprot_bits( base, size, 0, VPROT_COMMITTED );
@@ -2978,6 +2988,7 @@ static NTSTATUS remove_pages_from_view( struct file_view *view, char *base, size
  */
 static NTSTATUS free_pages_preserve_placeholder( struct file_view *view, char *base, size_t size )
 {
+    SIZE_T host_size;
     NTSTATUS status;
 
     if (!size) return STATUS_INVALID_PARAMETER_3;
@@ -3002,7 +3013,9 @@ static NTSTATUS free_pages_preserve_placeholder( struct file_view *view, char *b
 
     view->protect = VPROT_PLACEHOLDER | VPROT_FREE_PLACEHOLDER;
     set_page_vprot( view->base, view->size, 0 );
-    anon_mmap_fixed( view->base, ROUND_SIZE( 0, view->size, host_page_mask ), PROT_NONE, 0 );
+    if (!round_size_checked( 0, view->size, host_page_mask, &host_size ))
+        return STATUS_INVALID_PARAMETER;
+    anon_mmap_fixed( view->base, host_size, PROT_NONE, 0 );
     return STATUS_SUCCESS;
 }
 
@@ -3015,9 +3028,15 @@ static NTSTATUS free_pages_preserve_placeholder( struct file_view *view, char *b
  */
 static NTSTATUS free_pages( struct file_view *view, char *base, size_t size )
 {
-    char *host_base = (char *)ROUND_SIZE( 0, base, host_page_mask );
-    char *host_end = base + size;
+    SIZE_T host_base_size;
+    char *host_base, *host_end;
     NTSTATUS status;
+
+    if (!round_size_checked( 0, (SIZE_T)base, host_page_mask, &host_base_size ) ||
+        size > ~(SIZE_T)0 - (SIZE_T)base)
+        return STATUS_INVALID_PARAMETER;
+    host_base = (char *)host_base_size;
+    host_end = base + size;
 
     if (size == view->size)
     {

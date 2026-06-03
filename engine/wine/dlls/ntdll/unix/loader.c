@@ -3291,21 +3291,19 @@ static void check_command_line( int argc, char *argv[] )
 
         if (build_dir)
         {
-            if (asprintf( &exe, "%s/programs/%s%s/%s.exe", build_dir, basename, pe_dir, basename ) >= 0)
-            {
-                if (!access( exe, R_OK )) reexec_loader( argc, argv, basename );
-                free( exe );
-            }
+            if (asprintf( &exe, "%s/programs/%s%s/%s.exe", build_dir, basename, pe_dir, basename ) < 0)
+                fatal_error( "out of memory checking builtin executable\n" );
+            if (!access( exe, R_OK )) reexec_loader( argc, argv, basename );
+            free( exe );
         }
         else
         {
-            for (int i = 0; dll_paths[i]; i++)
+            for (size_t i = 0; dll_paths[i]; i++)
             {
-                if (asprintf( &exe, "%s%s/%s.exe", dll_paths[i], pe_dir, basename ) >= 0)
-                {
-                    if (!access( exe, R_OK )) reexec_loader( argc, argv, basename );
-                    free( exe );
-                }
+                if (asprintf( &exe, "%s%s/%s.exe", dll_paths[i], pe_dir, basename ) < 0)
+                    fatal_error( "out of memory checking builtin executable\n" );
+                if (!access( exe, R_OK )) reexec_loader( argc, argv, basename );
+                free( exe );
             }
         }
     }

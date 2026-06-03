@@ -6064,11 +6064,20 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 
     if (*ret)
     {
+        void *page_base;
+        SIZE_T page_size, prefix_size;
+
         if (type & MEM_RESERVE && !(type & MEM_REPLACE_PLACEHOLDER)) /* Round down to 64k boundary */
             base = ROUND_ADDR( *ret, granularity_mask );
         else
             base = ROUND_ADDR( *ret, page_mask );
-        size = (((UINT_PTR)*ret + size + page_mask) & ~page_mask) - (UINT_PTR)base;
+        page_base = ROUND_ADDR( *ret, page_mask );
+        if (!round_size_checked( (UINT_PTR)*ret, size, page_mask, &page_size ))
+            return STATUS_INVALID_PARAMETER;
+        if ((UINT_PTR)page_base < (UINT_PTR)base) return STATUS_INVALID_PARAMETER;
+        prefix_size = (UINT_PTR)page_base - (UINT_PTR)base;
+        if (page_size > ~(SIZE_T)0 - prefix_size) return STATUS_INVALID_PARAMETER;
+        size = prefix_size + page_size;
 
         /* disallow low 64k, wrap-around and kernel space */
         if (((char *)base < (char *)0x10000) ||

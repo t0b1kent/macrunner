@@ -2476,11 +2476,17 @@ static IMAGE_ARM64EC_METADATA *macrunner_hb_get_arm64x_metadata( HMODULE module 
 static void *macrunner_hb_redirect_arm64x_thunk_to_native( HMODULE module, void *ptr )
 {
     IMAGE_ARM64EC_METADATA *metadata = macrunner_hb_get_arm64x_metadata( module );
+    IMAGE_NT_HEADERS *nt;
     const IMAGE_ARM64EC_REDIRECTION_ENTRY *map;
-    ULONG_PTR rva = (ULONG_PTR)ptr - (ULONG_PTR)module;
+    ULONG_PTR base = (ULONG_PTR)module, target = (ULONG_PTR)ptr, rva;
     int min, max;
 
     if (!metadata || !ptr) return ptr;
+    if (!(nt = RtlImageNtHeader( module ))) return ptr;
+    if (nt->OptionalHeader.SizeOfImage > ~(ULONG_PTR)0 - base ||
+        target < base || target - base >= nt->OptionalHeader.SizeOfImage)
+        return ptr;
+    rva = target - base;
     map = get_rva( module, metadata->RedirectionMetadata );
     min = 0;
     max = metadata->RedirectionMetadataCount - 1;
@@ -2619,6 +2625,17 @@ static WINE_MODREF *macrunner_hb_find_module_from_address( ULONG_PTR addr )
     return NULL;
 }
 
+static BOOL macrunner_hb_modref_range_contains( WINE_MODREF *mod, ULONG_PTR addr, SIZE_T len )
+{
+    ULONG_PTR base, end;
+
+    if (!mod) return FALSE;
+    base = (ULONG_PTR)mod->ldr.DllBase;
+    if (mod->ldr.SizeOfImage > ~(ULONG_PTR)0 - base) return FALSE;
+    end = base + mod->ldr.SizeOfImage;
+    return addr >= base && addr <= end && len <= end - addr;
+}
+
 static void *macrunner_hb_resolve_arm64x_native_target( void *ptr )
 {
     unsigned int limit;
@@ -2628,6 +2645,7 @@ static void *macrunner_hb_resolve_arm64x_native_target( void *ptr )
         WINE_MODREF *mod = macrunner_hb_find_module_from_address( (ULONG_PTR)ptr );
         void *native;
         BYTE *code = ptr;
+        ULONG_PTR slot;
         INT32 disp;
         void *next;
 
@@ -2641,9 +2659,24 @@ static void *macrunner_hb_resolve_arm64x_native_target( void *ptr )
             }
         }
 
+        if (!macrunner_hb_modref_range_contains( mod, (ULONG_PTR)code, 6 )) break;
         if (code[0] != 0xff || code[1] != 0x25) break; /* x64 jmp *disp32(%rip) */
         memcpy( &disp, code + 2, sizeof(disp) );
-        next = *(void **)(code + 6 + disp);
+        slot = (ULONG_PTR)code + 6;
+        if (slot < (ULONG_PTR)code) break;
+        if (disp < 0)
+        {
+            ULONG_PTR back = -(LONG_PTR)disp;
+            if (back > slot) break;
+            slot -= back;
+        }
+        else
+        {
+            if ((ULONG_PTR)disp > ~(ULONG_PTR)0 - slot) break;
+            slot += disp;
+        }
+        if (!macrunner_hb_modref_range_contains( mod, slot, sizeof(next) )) break;
+        next = *(void **)slot;
         if (!next || next == ptr) break;
         ptr = next;
     }

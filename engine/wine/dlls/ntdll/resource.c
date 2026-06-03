@@ -387,14 +387,21 @@ static inline NTSTATUS access_resource( HMODULE hmod, const IMAGE_RESOURCE_DATA_
             status = STATUS_RESOURCE_DATA_NOT_FOUND;
         else
         {
-            if (ptr)
+            BOOL is_data_file = is_data_file_module(hmod);
+            hmod = (HMODULE)((ULONG_PTR)hmod & ~3);
+            if (is_data_file)
             {
-                BOOL is_data_file = is_data_file_module(hmod);
-                hmod = (HMODULE)((ULONG_PTR)hmod & ~3);
-                if (is_data_file)
-                    *ptr = RtlImageRvaToVa( RtlImageNtHeader(hmod), hmod, entry->OffsetToData, NULL );
-                else
-                    *ptr = (char *)hmod + entry->OffsetToData;
+                void *data = RtlImageRvaToVa( RtlImageNtHeader(hmod), hmod, entry->OffsetToData, NULL );
+                if (!data) return STATUS_RESOURCE_DATA_NOT_FOUND;
+                if (ptr) *ptr = data;
+            }
+            else
+            {
+                const IMAGE_NT_HEADERS *nt = RtlImageNtHeader(hmod);
+                if (!nt || entry->OffsetToData >= nt->OptionalHeader.SizeOfImage ||
+                    entry->Size > nt->OptionalHeader.SizeOfImage - entry->OffsetToData)
+                    return STATUS_RESOURCE_DATA_NOT_FOUND;
+                if (ptr) *ptr = (char *)hmod + entry->OffsetToData;
             }
             if (size) *size = entry->Size;
             status = STATUS_SUCCESS;

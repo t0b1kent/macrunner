@@ -3436,26 +3436,46 @@ static WINE_MODREF *find_fileid_module( const struct file_id *id )
 /******************************************************************************
  *	get_apiset_entry
  */
+static BOOL apiset_offset_ptr( const API_SET_NAMESPACE *map, ULONG offset, SIZE_T len, const void **ptr )
+{
+    if (!map || map->Size < sizeof(*map)) return FALSE;
+    if (offset > map->Size || len > map->Size - offset) return FALSE;
+    *ptr = (const char *)map + offset;
+    return TRUE;
+}
+
 static NTSTATUS get_apiset_entry( const API_SET_NAMESPACE *map, const WCHAR *name, ULONG len,
                                   const API_SET_NAMESPACE_ENTRY **entry )
 {
     const API_SET_HASH_ENTRY *hash_entry;
+    const API_SET_NAMESPACE_ENTRY *entries;
     ULONG hash, i, hash_len;
+    SIZE_T hash_size, entry_size, hashed_bytes;
     int min, max;
 
     if (len <= 4) return STATUS_INVALID_PARAMETER;
     if (wcsnicmp( name, L"api-", 4 ) && wcsnicmp( name, L"ext-", 4 )) return STATUS_INVALID_PARAMETER;
     if (!map) return STATUS_APISET_NOT_PRESENT;
+    if (!map->Count || map->Count > 0x7fffffff ||
+        map->Count > (SIZE_T)-1 / sizeof(*hash_entry) ||
+        map->Count > (SIZE_T)-1 / sizeof(*entries))
+        return STATUS_APISET_NOT_PRESENT;
+    hash_size = (SIZE_T)map->Count * sizeof(*hash_entry);
+    entry_size = (SIZE_T)map->Count * sizeof(*entries);
+    if (!apiset_offset_ptr( map, map->HashOffset, hash_size, (const void **)&hash_entry ) ||
+        !apiset_offset_ptr( map, map->EntryOffset, entry_size, (const void **)&entries ))
+        return STATUS_APISET_NOT_PRESENT;
 
     for (i = hash_len = 0; i < len; i++)
     {
         if (name[i] == '.') break;
         if (name[i] == '-') hash_len = i;
     }
+    if (hash_len > (SIZE_T)-1 / sizeof(WCHAR)) return STATUS_APISET_NOT_PRESENT;
+    hashed_bytes = (SIZE_T)hash_len * sizeof(WCHAR);
     for (i = hash = 0; i < hash_len; i++)
         hash = hash * map->HashFactor + ((name[i] >= 'A' && name[i] <= 'Z') ? name[i] + 32 : name[i]);
 
-    hash_entry = (API_SET_HASH_ENTRY *)((char *)map + map->HashOffset);
     min = 0;
     max = map->Count - 1;
     while (min <= max)
@@ -3465,9 +3485,15 @@ static NTSTATUS get_apiset_entry( const API_SET_NAMESPACE *map, const WCHAR *nam
         else if (hash_entry[pos].Hash > hash) max = pos - 1;
         else
         {
-            *entry = (API_SET_NAMESPACE_ENTRY *)((char *)map + map->EntryOffset) + hash_entry[pos].Index;
-            if ((*entry)->HashedLength != hash_len * sizeof(WCHAR)) break;
-            if (wcsnicmp( (WCHAR *)((char *)map + (*entry)->NameOffset), name, hash_len )) break;
+            const WCHAR *entry_name;
+
+            if (hash_entry[pos].Index >= map->Count) break;
+            *entry = entries + hash_entry[pos].Index;
+            if ((*entry)->HashedLength != hashed_bytes) break;
+            if (!apiset_offset_ptr( map, (*entry)->NameOffset, (*entry)->HashedLength,
+                                    (const void **)&entry_name ))
+                break;
+            if (wcsnicmp( entry_name, name, hash_len )) break;
             return STATUS_SUCCESS;
         }
     }
@@ -3481,17 +3507,27 @@ static NTSTATUS get_apiset_entry( const API_SET_NAMESPACE *map, const WCHAR *nam
 static NTSTATUS get_apiset_target( const API_SET_NAMESPACE *map, const API_SET_NAMESPACE_ENTRY *entry,
                                    const WCHAR *host, UNICODE_STRING *ret )
 {
-    const API_SET_VALUE_ENTRY *value = (API_SET_VALUE_ENTRY *)((char *)map + entry->ValueOffset);
+    const API_SET_VALUE_ENTRY *value;
     ULONG i, len;
 
     if (!entry->ValueCount) return STATUS_DLL_NOT_FOUND;
+    if (entry->ValueCount > (SIZE_T)-1 / sizeof(*value) ||
+        !apiset_offset_ptr( map, entry->ValueOffset, (SIZE_T)entry->ValueCount * sizeof(*value),
+                            (const void **)&value ))
+        return STATUS_DLL_NOT_FOUND;
     if (host)
     {
         /* look for specific host in entries 1..n, entry 0 is the default */
         for (i = 1; i < entry->ValueCount; i++)
         {
+            const WCHAR *value_name;
+
+            if (value[i].NameLength % sizeof(WCHAR)) return STATUS_DLL_NOT_FOUND;
+            if (!apiset_offset_ptr( map, value[i].NameOffset, value[i].NameLength,
+                                    (const void **)&value_name ))
+                return STATUS_DLL_NOT_FOUND;
             len = value[i].NameLength / sizeof(WCHAR);
-            if (!wcsnicmp( host, (WCHAR *)((char *)map + value[i].NameOffset), len ) && !host[len])
+            if (!wcsnicmp( host, value_name, len ) && !host[len])
             {
                 value += i;
                 break;
@@ -3499,7 +3535,8 @@ static NTSTATUS get_apiset_target( const API_SET_NAMESPACE *map, const API_SET_N
         }
     }
     if (!value->ValueOffset) return STATUS_DLL_NOT_FOUND;
-    ret->Buffer = (WCHAR *)((char *)map + value->ValueOffset);
+    if (!apiset_offset_ptr( map, value->ValueOffset, value->ValueLength, (const void **)&ret->Buffer ))
+        return STATUS_DLL_NOT_FOUND;
     ret->Length = value->ValueLength;
     return STATUS_SUCCESS;
 }

@@ -5351,6 +5351,12 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
 
     if (!relocs->Size) return STATUS_SUCCESS;
     if (!relocs->VirtualAddress) return STATUS_CONFLICTING_ADDRESSES;
+    if (relocs->VirtualAddress > len || relocs->Size > len - relocs->VirtualAddress)
+    {
+        WARN( "invalid relocation directory va %lx size %lx image size %Iu\n",
+              relocs->VirtualAddress, relocs->Size, len );
+        return STATUS_INVALID_IMAGE_FORMAT;
+    }
 
     if (!(protect_old = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY,
                                          nt->FileHeader.NumberOfSections * sizeof(*protect_old ))))
@@ -5384,6 +5390,16 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
 
     while (rel < end - 1 && rel->SizeOfBlock)
     {
+        SIZE_T remaining = (char *)end - (char *)rel;
+
+        if (rel->SizeOfBlock < sizeof(*rel) || rel->SizeOfBlock > remaining ||
+            (rel->SizeOfBlock - sizeof(*rel)) % sizeof(USHORT))
+        {
+            WARN( "invalid relocation block %p size %lx remaining %Iu\n",
+                  rel, rel->SizeOfBlock, remaining );
+            status = STATUS_INVALID_IMAGE_FORMAT;
+            goto done;
+        }
         if (rel->VirtualAddress >= len)
         {
             WARN( "invalid address %p in relocation %p\n", get_rva( module, rel->VirtualAddress ), rel );

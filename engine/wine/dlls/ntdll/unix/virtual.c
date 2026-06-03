@@ -3357,6 +3357,17 @@ static IMAGE_DATA_DIRECTORY *get_data_dir( IMAGE_NT_HEADERS *nt, SIZE_T total_si
  *
  * Reimplementation of LdrProcessRelocationBlock.
  */
+static BOOL is_valid_relocation_block( const IMAGE_BASE_RELOCATION *rel, const IMAGE_BASE_RELOCATION *end,
+                                       ULONG total_size )
+{
+    SIZE_T remaining = (const char *)end - (const char *)rel;
+
+    if (rel->SizeOfBlock < sizeof(*rel) || rel->SizeOfBlock > remaining ||
+        (rel->SizeOfBlock - sizeof(*rel)) % sizeof(USHORT))
+        return FALSE;
+    return rel->VirtualAddress < total_size;
+}
+
 static IMAGE_BASE_RELOCATION *process_relocation_block( char *page, IMAGE_BASE_RELOCATION *rel,
                                                         INT_PTR delta )
 {
@@ -3666,8 +3677,15 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
             IMAGE_BASE_RELOCATION *rel = (IMAGE_BASE_RELOCATION *)(ptr + dir->VirtualAddress);
             IMAGE_BASE_RELOCATION *end = (IMAGE_BASE_RELOCATION *)((char *)rel + dir->Size);
 
-            while (rel && rel < end - 1 && rel->SizeOfBlock && rel->VirtualAddress < total_size)
-                rel = process_relocation_block( ptr + rel->VirtualAddress, rel, delta );
+            while (rel && rel < end - 1 && rel->SizeOfBlock)
+            {
+                if (!is_valid_relocation_block( rel, end, total_size ) ||
+                    !(rel = process_relocation_block( ptr + rel->VirtualAddress, rel, delta )))
+                {
+                    status = STATUS_INVALID_IMAGE_FORMAT;
+                    goto done;
+                }
+            }
         }
     }
 no_dynamic_reloc:
@@ -4433,6 +4451,7 @@ NTSTATUS virtual_relocate_module( void *module )
     ULONG *protect_old, i;
     ULONG_PTR image_base;
     INT_PTR delta;
+    NTSTATUS status = STATUS_SUCCESS;
 
     if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
         image_base = ((const IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.ImageBase;
@@ -4474,8 +4493,15 @@ NTSTATUS virtual_relocate_module( void *module )
     rel = (IMAGE_BASE_RELOCATION *)((char *)module + relocs->VirtualAddress);
     end = (IMAGE_BASE_RELOCATION *)((char *)rel + relocs->Size);
 
-    while (rel && rel < end - 1 && rel->SizeOfBlock && rel->VirtualAddress < total_size)
-        rel = process_relocation_block( (char *)module + rel->VirtualAddress, rel, delta );
+    while (rel && rel < end - 1 && rel->SizeOfBlock)
+    {
+        if (!is_valid_relocation_block( rel, end, total_size ) ||
+            !(rel = process_relocation_block( (char *)module + rel->VirtualAddress, rel, delta )))
+        {
+            status = STATUS_INVALID_IMAGE_FORMAT;
+            break;
+        }
+    }
 
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
@@ -4484,7 +4510,7 @@ NTSTATUS virtual_relocate_module( void *module )
         NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, protect_old[i], &protect_old[i] );
     }
     free( protect_old );
-    return STATUS_SUCCESS;
+    return status;
 }
 
 

@@ -10,6 +10,7 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$LOG_DIR/run-$STAMP"
 VKD3D_MODULES=(d3d12.dll d3d12core.dll)
 DXMT_MODULES=(dxgi.dll winemetal.dll)
+OBJDUMP="${VKD3D_PREFIX_SYNC_OBJDUMP:-$(command -v objdump || true)}"
 
 mkdir -p "$RUN_DIR"
 "$PROJECT_ROOT/scripts/disk-guard.sh" --check-only >/dev/null
@@ -43,6 +44,32 @@ check_module() {
   fi
 }
 
+check_exports() {
+  local label="$1"
+  local path="$2"
+  shift 2
+  local export_log="$RUN_DIR/exports-${label//\//_}.log"
+
+  if [[ -z "$OBJDUMP" || ! -x "$OBJDUMP" ]]; then
+    echo "vkd3d_prefix_sync_result=FAIL reason=missing_objdump module=$label"
+    exit 2
+  fi
+
+  if ! "$OBJDUMP" -p "$path" >"$export_log" 2>&1; then
+    echo "vkd3d_prefix_sync_result=FAIL reason=export_parse_failed module=$label log=$export_log"
+    exit 1
+  fi
+
+  for symbol in "$@"; do
+    if ! grep -Eq "[[:space:]]${symbol}([[:space:]]|$)" "$export_log"; then
+      echo "vkd3d_prefix_sync_result=FAIL reason=missing_export module=$label symbol=$symbol log=$export_log"
+      exit 1
+    fi
+  done
+
+  echo "exports=$label PASS symbols=$* log=$export_log"
+}
+
 if (($#)); then
   RAW_ARCHES=("$@")
 else
@@ -66,6 +93,21 @@ for raw_arch in "${RAW_ARCHES[@]}"; do
     check_module "vkd3d/$arch/$module" \
       "$PROJECT_ROOT/engine/graphics/dist/vkd3d/$arch/$module" \
       "$system32/$module"
+    case "$module" in
+      d3d12.dll)
+        check_exports "vkd3d/$arch/$module" "$system32/$module" \
+          D3D12CreateDevice \
+          D3D12GetDebugInterface \
+          D3D12GetInterface \
+          D3D12SerializeRootSignature \
+          D3D12SerializeVersionedRootSignature
+        ;;
+      d3d12core.dll)
+        check_exports "vkd3d/$arch/$module" "$system32/$module" \
+          D3D12GetInterface \
+          D3D12SDKVersion
+        ;;
+    esac
   done
 
   for module in "${DXMT_MODULES[@]}"; do

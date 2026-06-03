@@ -2314,28 +2314,29 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
  */
 static void commit_arm64ec_map( struct file_view *view )
 {
-    size_t view_end, start = ((size_t)view->base >> page_shift) / 8;
+    size_t start = ((size_t)view->base >> page_shift) / 8;
     size_t end, size;
+    char *view_end, *bitmap_addr;
     void *base;
 
-    if (view->size > ~(size_t)0 - (size_t)view->base)
+    if (!get_view_limit( view, &view_end ))
     {
         ERR( "ARM64EC map view range overflow base %p size %zx\n", view->base, view->size );
         return;
     }
-    view_end = (size_t)view->base + view->size;
-    end = (view_end >> page_shift) / 8;
+    end = ((size_t)view_end >> page_shift) / 8;
     if (end < start || end == ~(size_t)0 || !round_size_checked( start, end + 1 - start, page_mask, &size ))
     {
-        ERR( "ARM64EC bitmap span overflow for view %p-%p\n", view->base, (char *)view->base + view->size );
+        ERR( "ARM64EC bitmap span overflow for view %p-%p\n", view->base, view_end );
         return;
     }
     if (start > ~(size_t)0 - (size_t)arm64ec_view->base)
     {
-        ERR( "ARM64EC bitmap base overflow for view %p-%p\n", view->base, (char *)view->base + view->size );
+        ERR( "ARM64EC bitmap base overflow for view %p-%p\n", view->base, view_end );
         return;
     }
-    base = ROUND_ADDR( (char *)arm64ec_view->base + start, page_mask );
+    bitmap_addr = (char *)arm64ec_view->base + start;
+    base = ROUND_ADDR( bitmap_addr, page_mask );
 
     view->protect |= VPROT_ARM64EC;
     set_vprot( arm64ec_view, base, size, VPROT_READ | VPROT_WRITE | VPROT_COMMITTED );

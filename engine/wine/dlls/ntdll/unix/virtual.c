@@ -5598,7 +5598,8 @@ static NTSTATUS check_write_access( void *base, size_t size, BOOL *has_write_wat
     size_t i;
     char *addr = ROUND_ADDR( base, host_page_mask );
 
-    size = ROUND_SIZE( base, size, host_page_mask );
+    if (!round_size_checked( (UINT_PTR)base, size, host_page_mask, &size ))
+        return STATUS_INVALID_USER_BUFFER;
     for (i = 0; i < size; i += host_page_size)
     {
         BYTE vprot = get_host_page_vprot( addr + i );

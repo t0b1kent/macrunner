@@ -1310,6 +1310,7 @@ static NTSTATUS dlopen_dll( const char *so_name, UNICODE_STRING *nt_name, void *
     void *module, *handle;
     const IMAGE_NT_HEADERS *nt;
     ULONGLONG image_base;
+    NTSTATUS status;
 
     handle = dlopen( so_name, RTLD_NOW );
     if (!handle)
@@ -1340,10 +1341,10 @@ static NTSTATUS dlopen_dll( const char *so_name, UNICODE_STRING *nt_name, void *
         return STATUS_SUCCESS;
     }
 
-    if (map_so_dll( nt, module ))
+    if ((status = map_so_dll( nt, module )))
     {
         dlclose( handle );
-        return STATUS_NO_MEMORY;
+        return status;
     }
 
     fill_builtin_image_info( module, image_info );

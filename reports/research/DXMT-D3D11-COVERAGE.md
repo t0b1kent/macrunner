@@ -51,7 +51,7 @@ intentional API/device semantics, not open user-mode implementation gaps.
 | Unity optional BC probes | PASS | All optional BC1-BC7 variants report Texture2D + shader-sample support on this Metal device. |
 | Unity optional YUV 4:2:2 probes | PASS | `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` report Texture2D + shader-sample support (`support=0x00d233f1`, required `0x00000220`) in `artifacts/dxmt-smoke-logs/lane-d-yuv422-20260603-212449.outer.log`. |
 | Unity feature probes | PASS | `THREADING`, `D3D11_OPTIONS`, `ARCHITECTURE_INFO`, `DOUBLES`, `D3D10_X_HARDWARE_OPTIONS`, and MSAA quality matrix all return `hr=0x00000000`; sampled formats support 1/2/4x and report 0 quality for 8x on this Metal device. |
-| Unity resource probes | PASS | Color texture + SRV/RTV/update/copy/readback, dynamic vertex buffer map, immutable constant buffer, depth DSV, R32_UINT UAV, 3D texture SRV, cubemap SRV, and structured buffer SRV/UAV all return success. |
+| Unity resource probes | PASS | Color texture + SRV/RTV/update/copy/readback, dynamic vertex buffer map, immutable constant buffer, depth DSV, R32_UINT UAV, 3D texture SRV, cubemap SRV, Texture2DArray SRV/RTV, and structured buffer SRV/UAV all return success. |
 | Depth format family probe | PASS | Resource smoke creates DSVs and clears `D24_UNORM_S8_UINT`, `D16_UNORM`, `D32_FLOAT`, `D32_FLOAT_S8X24_UINT`, plus typeless `R24G8_TYPELESS` with DSV/SRV views. |
 | BC texture family probe | PASS | Resource smoke keeps the detailed BC1 copy matrix and now creates/SRVs/copies to staging/maps/byte-verifies every advertised BC1 sRGB, BC2, BC3, BC4, BC5, BC6H, and BC7 variant in `artifacts/dxmt-smoke-logs/lane-d-bc-family-summary-20260603-213548.outer.log`. |
 | MSAA resolve family probe | PASS | 2x/4x `R8G8B8A8_UNORM`, `B8G8R8A8_UNORM`, and `R16G16B16A16_FLOAT` create MSAA RTVs, resolve to single-sample textures, copy to staging, and byte-verify in `artifacts/dxmt-smoke-logs/lane-d-msaa-family-20260603-214144.outer.log`; 4x color+depth resolve/readback remains green. |
@@ -93,7 +93,7 @@ intentional API/device semantics, not open user-mode implementation gaps.
 | Multithread/render stability | Implemented | `ID3D10Multithread` protection, two worker-thread deferred command lists, command batching, and two 60s stability runs pass; stability smoke presented `7175` and `7198` frames with final green readback. |
 | Draw/DrawIndexed/instanced/indirect | Implemented | Smoke covers direct, indexed, instanced, indexed-instanced, and indirect variants. |
 | Dispatch/DispatchIndirect | Implemented | Smoke covers direct and indirect compute dispatch with UAV readback value `42`. |
-| Copy/resolve/mips | Implemented | `CopyResource`, `ResolveSubresource`, `GenerateMips` paths exist. |
+| Copy/resolve/mips | Implemented | `CopyResource`, `ResolveSubresource`, `GenerateMips`, and Texture2DArray mip/slice subresource paths are covered; `artifacts/dxmt-smoke-logs/dx11-headless-aarch64.log` reports `array_slice0_mip1_rgba=96,80,65,255`, `array_slice1_mip1_rgba=255,128,64,255`, and `UnityResourceProbe result=PASS`. |
 
 ## DXGI Format Coverage
 

@@ -2399,6 +2399,7 @@ static DLLENTRYPROC macrunner_hb_find_disk_native_entry( WINE_MODREF *target_mod
     HANDLE file;
     BYTE *data;
     SIZE_T size;
+    DWORD entry;
     NTSTATUS status;
     DLLENTRYPROC ret = NULL;
 
@@ -2424,7 +2425,8 @@ static DLLENTRYPROC macrunner_hb_find_disk_native_entry( WINE_MODREF *target_mod
 
     dos = (IMAGE_DOS_HEADER *)data;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto done_data;
-    if ((SIZE_T)dos->e_lfanew + sizeof(*nt) > size) goto done_data;
+    if (dos->e_lfanew < 0 || size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
+        goto done_data;
     nt = (IMAGE_NT_HEADERS *)(data + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) goto done_data;
     if (nt->FileHeader.Machine != IMAGE_FILE_MACHINE_ARM64) goto done_data;
@@ -2435,11 +2437,14 @@ static DLLENTRYPROC macrunner_hb_find_disk_native_entry( WINE_MODREF *target_mod
                                         nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].VirtualAddress,
                                         sizeof(*cfg) );
     if (!cfg || !cfg->CHPEMetadataPointer) goto done_data;
-    if (!nt->OptionalHeader.AddressOfEntryPoint) goto done_data;
-    if (macrunner_hb_file_rva_in_section( sections, nt->FileHeader.NumberOfSections, section,
-                                          nt->OptionalHeader.AddressOfEntryPoint ))
+    if (!(entry = nt->OptionalHeader.AddressOfEntryPoint)) goto done_data;
+    if (entry >= nt->OptionalHeader.SizeOfImage ||
+        (ULONG_PTR)target_mod->ldr.DllBase > ~(ULONG_PTR)0 - entry)
         goto done_data;
-    ret = (DLLENTRYPROC)((BYTE *)target_mod->ldr.DllBase + nt->OptionalHeader.AddressOfEntryPoint);
+    if (macrunner_hb_file_rva_in_section( sections, nt->FileHeader.NumberOfSections, section,
+                                          entry ))
+        goto done_data;
+    ret = (DLLENTRYPROC)((BYTE *)target_mod->ldr.DllBase + entry);
 
 done_data:
     RtlFreeHeap( GetProcessHeap(), 0, data );
@@ -2452,6 +2457,7 @@ static IMAGE_ARM64EC_METADATA *macrunner_hb_get_arm64x_metadata( HMODULE module 
 {
     IMAGE_LOAD_CONFIG_DIRECTORY *cfg;
     IMAGE_NT_HEADERS *nt;
+    ULONG_PTR base;
     ULONG size;
 
     if (!(nt = RtlImageNtHeader( module ))) return NULL;
@@ -2459,8 +2465,10 @@ static IMAGE_ARM64EC_METADATA *macrunner_hb_get_arm64x_metadata( HMODULE module 
         return NULL;
     size = min( size, cfg->Size );
     if (size <= offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, CHPEMetadataPointer )) return NULL;
-    if (cfg->CHPEMetadataPointer <= (ULONG_PTR)module) return NULL;
-    if (cfg->CHPEMetadataPointer >= (ULONG_PTR)module + nt->OptionalHeader.SizeOfImage)
+    base = (ULONG_PTR)module;
+    if (nt->OptionalHeader.SizeOfImage > ~(ULONG_PTR)0 - base) return NULL;
+    if (cfg->CHPEMetadataPointer <= base ||
+        cfg->CHPEMetadataPointer >= base + nt->OptionalHeader.SizeOfImage)
         return NULL;
     return (IMAGE_ARM64EC_METADATA *)cfg->CHPEMetadataPointer;
 }

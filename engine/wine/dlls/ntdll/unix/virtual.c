@@ -608,13 +608,17 @@ static BOOL mmap_remove_reserved_area( void *addr, SIZE_T size )
 static int mmap_is_in_reserved_area( void *addr, SIZE_T size )
 {
     struct reserved_area *area;
+    void *end, *area_end;
+
+    end = reserved_area_end( addr, &size );
 
     LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
     {
         if (area->base > addr) break;
-        if ((char *)area->base + area->size <= (char *)addr) continue;
+        area_end = (char *)area->base + area->size;
+        if (area_end <= addr) continue;
         /* area must contain block completely */
-        if ((char *)area->base + area->size < (char *)addr + size) return -1;
+        if (area_end < end) return -1;
         return 1;
     }
     return 0;

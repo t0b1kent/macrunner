@@ -70,6 +70,25 @@ check_exports() {
   echo "exports=$label PASS symbols=$* log=$export_log"
 }
 
+check_machine() {
+  local label="$1"
+  local path="$2"
+  local expected="$3"
+  local machine_log="$RUN_DIR/machine-${label//\//_}.log"
+
+  if ! "$OBJDUMP" -f "$path" >"$machine_log" 2>&1; then
+    echo "vkd3d_prefix_sync_result=FAIL reason=machine_parse_failed module=$label log=$machine_log"
+    exit 1
+  fi
+
+  if ! grep -Eq "architecture:[[:space:]]*$expected([[:space:]]|$)" "$machine_log"; then
+    echo "vkd3d_prefix_sync_result=FAIL reason=unexpected_machine module=$label expected=$expected log=$machine_log"
+    exit 1
+  fi
+
+  echo "machine=$label PASS architecture=$expected log=$machine_log"
+}
+
 if (($#)); then
   RAW_ARCHES=("$@")
 else
@@ -80,6 +99,10 @@ echo "run_dir=$RUN_DIR"
 
 for raw_arch in "${RAW_ARCHES[@]}"; do
   arch="$(normalize_arch "$raw_arch")"
+  case "$arch" in
+    aarch64-windows) expected_machine="aarch64" ;;
+    x86_64-windows) expected_machine="x86_64" ;;
+  esac
   prefix="$RUN_DIR/prefix-$arch"
   system32="$prefix/drive_c/windows/system32"
   sync_log="$RUN_DIR/sync-$arch.log"
@@ -93,10 +116,14 @@ for raw_arch in "${RAW_ARCHES[@]}"; do
     check_module "vkd3d/$arch/$module" \
       "$PROJECT_ROOT/engine/graphics/dist/vkd3d/$arch/$module" \
       "$system32/$module"
+    check_machine "vkd3d/$arch/$module" "$system32/$module" "$expected_machine"
     case "$module" in
       d3d12.dll)
         check_exports "vkd3d/$arch/$module" "$system32/$module" \
           D3D12CreateDevice \
+          D3D12CreateRootSignatureDeserializer \
+          D3D12CreateVersionedRootSignatureDeserializer \
+          D3D12EnableExperimentalFeatures \
           D3D12GetDebugInterface \
           D3D12GetInterface \
           D3D12SerializeRootSignature \

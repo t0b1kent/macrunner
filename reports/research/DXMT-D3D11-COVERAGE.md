@@ -37,15 +37,17 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | x64 DXMT PE binding | PASS | `engine/graphics/scripts/run_dxmt_x64_binding_smoke.sh` confirms x64 `winemetal.dll`, `DXGI.DLL`, and `d3d11.dll` load native from the synchronized graphics prefix; current runtime stops before present in HyperBridge, outside Lane D. |
 | DXGI factory/adapter probe | PASS | `CreateDXGIFactory1(probe) hr=0x00000000`; `IDXGIFactory::EnumAdapters(0 probe) hr=0x00000000`. |
 | Adapter/output enumeration | PASS | `EnumAdapters1`, `GetDesc1`, `EnumOutputs`, `GetDesc`, and `GetDisplayModeList` pass; first mode `640x480`, fetched `3` modes. |
+| Output gamma/fullscreen state probes | PASS | `UnityGammaProbe` covers gamma capabilities, set/get/restore gamma ramp, display-surface unsupported cases, `GetFullscreenDesc`, `GetFullscreenState`, and `SetFullscreenState(FALSE)`. |
 | D3D11 device probe | PASS | `D3D11CreateDevice hr=0x00000000`; `feature_level=0xb100`. |
 | BGRA render-target support | PASS | `CheckFormatSupport(B8G8R8A8_UNORM) hr=0x00000000`; `format_support=0x02fef3f3`. |
 | Unity core format probes | PASS | `R8G8B8A8`, `B8G8R8A8`, `R16G16B16A16_FLOAT`, `R11G11B10_FLOAT`, `R32_FLOAT`, `R16_FLOAT`, `R8_UNORM`, `D24S8`, and `D32_FLOAT` meet required Texture2D/sample/RT/depth flags. |
 | Unity optional BC probes | PASS | `BC1_UNORM`, `BC3_UNORM`, and `BC7_UNORM` report Texture2D + shader-sample support. |
 | Unity feature probes | PASS | `THREADING`, `D3D11_OPTIONS`, `ARCHITECTURE_INFO`, `DOUBLES`, `D3D10_X_HARDWARE_OPTIONS`, and MSAA quality matrix all return `hr=0x00000000`; sampled formats support 1/2/4x and report 0 quality for 8x on this Metal device. |
 | Unity resource probes | PASS | Color texture + SRV/RTV/update/copy/readback, dynamic vertex buffer map, immutable constant buffer, depth DSV, R32_UINT UAV, 3D texture SRV, cubemap SRV, and structured buffer SRV/UAV all return success. |
-| Unity shader/draw probes | PASS | Dynamic `d3dcompiler_47` load, VS/PS compile, shader creation, input layout with per-instance slot, vertex/index/instance/indirect buffers, fullscreen draw, texture-sample draw, present, and green-pixel readback pass. |
+| Unity shader/draw probes | PASS | Dynamic `d3dcompiler_47` load, VS/PS/GS compile, GS stream-output creation, shader creation, input layout with per-instance slot, vertex/index/instance/indirect/SO buffers, fullscreen draw, texture-sample draw, present, stream-output readback, and green-pixel readback pass. |
 | Unity state/draw variants | PASS | Alpha/opaque blend, cull-none/cull-back rasterizer, depth/stencil and disabled depth, linear/comparison/anisotropic samplers, and bindings pass; `Draw`, `DrawIndexed`, `DrawInstanced`, `DrawIndexedInstanced`, `DrawInstancedIndirect`, and `DrawIndexedInstancedIndirect` execute with `IASetVertexBuffers(instance_slot)=PASS` before present/readback. |
 | Unity compute/dispatch probes | PASS | CS `cs_5_0` compile, compute shader creation, UAV texture, direct `Dispatch`, `DispatchIndirect`, UAV-to-staging copy, map, and `staging_value=42` all pass. |
+| Unity tessellation/class linkage probes | PASS | `UnityTessellationProbe` compiles `hs_5_0`, `ds_5_0`, `vs_5_0`, and `ps_5_0`, creates VS/HS/DS/PS objects, and exercises class linkage/name queries. |
 | Unity query/deferred probes | PASS | `CreateQuery(EVENT)`, `GetData(EVENT)`, `CreateQuery(TIMESTAMP)`, timestamp readback, `CreateQuery(OCCLUSION)`, occlusion `GetData=0`, `CreatePredicate(OCCLUSION)`, predication bind/clear, `CreateDeferredContext`, `FinishCommandList`, and `ExecuteCommandList` all pass. |
 | Unity deferred resource probes | PASS | `UnityDeferredResourceProbe` records `UpdateSubresource` texture/box/default-buffer commands, dynamic `Map`/`Unmap`, copy-to-staging, `FinishCommandList`, immediate `ExecuteCommandList`, and post-execute readbacks. |
 | Unity deferred draw probe | PASS | Deferred context records `ClearRenderTargetView`, finishes/executes command list, and readback returns `pixel0_bgra=255,0,64,255`; deferred full draw command recording/execution returns green `draw_pixel0_bgra=0,255,0,255`. |
@@ -67,8 +69,8 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Textures 1D/2D/3D | Implemented | Texture creation routes through device, staging, linear, dynamic helpers. |
 | SRV/RTV/DSV/UAV | Implemented | View creation normalizes descriptors and creates Metal texture views. |
 | VS/PS/CS | Implemented | Pipeline cache add paths exist. |
-| GS/HS/DS | Partial | Creation paths exist; coverage still needs Unity/game probes. |
-| Stream output | Partial | Warns unsupported, falls back to GS shader path. |
+| GS/HS/DS | Partial | Headless smoke compiles and creates GS, GS+stream-output, HS, and DS shaders; still needs a real game shader corpus. |
+| Stream output | Partial | Smoke creates SO layout/buffer, binds SO targets, draws, unbinds, copies to staging, and verifies output; broader game behavior remains partial. |
 | Blend/rasterizer/depth-stencil/sampler states | Implemented | Smoke covers alpha/opaque blend, cull-none/cull-back rasterizer, depth/stencil/disabled depth, and linear/comparison/anisotropic samplers. |
 | Queries/counters | Partial | Event, timestamp, occlusion query data, and occlusion predicate smoke pass; counters return `E_NOTIMPL`. |
 | Deferred/context methods | Partial | Empty deferred command-list, deferred RTV clear/readback, deferred draw recording/playback, and deferred resource update/map/copy/readback pass; broader deferred command surface still needs game coverage. |
@@ -99,8 +101,8 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Unity format probes | PASS | Core Unity color/depth formats plus optional BC1/BC3/BC7 probes pass in the headless smoke. |
 | Phase 3 resource probes | PASS | Texture/buffer/view/update/map/copy/UAV, 3D texture, cubemap, and structured SRV/UAV probes pass in the headless smoke. |
 | Phase 4 shaders/draw | PASS | Embedded HLSL VS/PS/CS compiles via `d3dcompiler_47`; shader/input-layout creation succeeds with per-instance input data; direct/indirect draw and dispatch variants pass; expanded state matrix, event/timestamp/occlusion query data, predicate, deferred command list, deferred clear, and deferred draw pass; readback returns `pixel0_bgra=0,255,0,255`, deferred clear returns `255,0,64,255`, deferred draw returns green, and compute returns `staging_value=42`. |
-| Phase 5 Unity probe expansion | PASS | State object matrix, texture sampling, `ResizeBuffers`, post-resize RTV/present/readback, indexed/indirect variants, query/predicate, empty deferred playback, and bitblt/flip swapchains are green. |
+| Phase 5 Unity probe expansion | PASS | State object matrix, texture sampling, gamma/output state, `ResizeBuffers`, post-resize RTV/present/readback, indexed/indirect variants, query/predicate, empty deferred playback, and bitblt/flip swapchains are green. |
 | Swapchain variants | PASS | Basic headless message-HWND swapchain/present, resize, `DISCARD`, and `FLIP_DISCARD` variant present/readback are green. |
 | Adapter/output enumeration | PASS | `EnumOutputs`, monitor desc, and display mode list pass in the smoke. |
 | State object breadth | PASS | Alpha/opaque blend, cull-none/cull-back rasterizer, depth/stencil/disabled depth, and linear/comparison/anisotropic sampler variants pass. |
-| Next Phase 4/5 evidence | Next | Add GS/HS/DS game-facing probes, stream-output behavior coverage, wider query/counter negative paths, fullscreen/gamma correctness, and real Unity present once the external x64 runtime blocker clears. |
+| Next Phase 4/5 evidence | Next | Add true fullscreen transition correctness, broader real-game shader corpus coverage, and real Unity present once the external x64 runtime blocker clears. |

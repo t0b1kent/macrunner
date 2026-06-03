@@ -7901,18 +7901,20 @@ NTSTATUS WINAPI NtGetWriteWatch( HANDLE process, ULONG flags, PVOID base, SIZE_T
 {
     NTSTATUS status = STATUS_SUCCESS;
     sigset_t sigset;
+    char *end;
 
     if (!count || !granularity) return STATUS_ACCESS_VIOLATION;
     if (!round_size_checked( (UINT_PTR)base, size, page_mask, &size ))
         return STATUS_INVALID_PARAMETER;
     base = ROUND_ADDR( base, page_mask );
     if (!*count || !size) return STATUS_INVALID_PARAMETER;
+    if (size > ~(SIZE_T)0 - (UINT_PTR)base) return STATUS_INVALID_PARAMETER;
+    end = (char *)base + size;
     if (flags & ~WRITE_WATCH_FLAG_RESET) return STATUS_INVALID_PARAMETER;
 
     if (!addresses) return STATUS_ACCESS_VIOLATION;
 
-    TRACE( "%p %x %p-%p %p %lu\n", process, flags, base, (char *)base + size,
-           addresses, *count );
+    TRACE( "%p %x %p-%p %p %lu\n", process, flags, base, end, addresses, *count );
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
 
@@ -7920,7 +7922,6 @@ NTSTATUS WINAPI NtGetWriteWatch( HANDLE process, ULONG flags, PVOID base, SIZE_T
     {
         ULONG_PTR pos = 0;
         char *addr = base;
-        char *end = addr + size;
 
         if (use_kernel_writewatch)
             kernel_get_write_watches( base, size, addresses, count, flags & WRITE_WATCH_FLAG_RESET );
@@ -8271,6 +8272,7 @@ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T
 #elif defined(HAVE___CLEAR_CACHE)
     if (handle == GetCurrentProcess())
     {
+        if (size > ~(SIZE_T)0 - (UINT_PTR)addr) return STATUS_INVALID_PARAMETER;
         __clear_cache( (char *)addr, (char *)addr + size );
     }
     else

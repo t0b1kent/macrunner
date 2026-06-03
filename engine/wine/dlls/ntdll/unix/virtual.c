@@ -3458,7 +3458,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
 
     /* map the header */
 
-    fstat( fd, &st );
+    if (fstat( fd, &st )) return errno_to_status( errno );
     header_size = min( image_info->header_size, st.st_size );
     header_map_size = min( image_info->header_map_size, ROUND_SIZE( 0, st.st_size, host_page_mask ));
     if ((status = map_pe_header( view->base, header_size, header_map_size, fd, &removable )))

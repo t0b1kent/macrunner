@@ -5659,7 +5659,11 @@ static NTSTATUS build_module( LPCWSTR load_path, const UNICODE_STRING *nt_name, 
 
     if (!(nt = RtlImageNtHeader( *module ))) return STATUS_INVALID_IMAGE_FORMAT;
 
+    if (nt->OptionalHeader.SizeOfImage > ~(SIZE_T)0 - (page_size - 1))
+        return STATUS_INVALID_IMAGE_FORMAT;
     map_size = (nt->OptionalHeader.SizeOfImage + page_size - 1) & ~(page_size - 1);
+    if (map_size < nt->OptionalHeader.SizeOfImage || (ULONG_PTR)*module > ~(ULONG_PTR)0 - map_size)
+        return STATUS_INVALID_IMAGE_FORMAT;
     if ((status = perform_relocations( *module, nt, map_size ))) return status;
 
     is_builtin = ((char *)nt - signature >= sizeof(builtin_signature) &&

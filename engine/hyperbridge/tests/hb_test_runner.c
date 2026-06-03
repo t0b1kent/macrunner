@@ -41,6 +41,7 @@ void hb_pe_unload(hb_pe_image_t* pe);
 #include <stdlib.h>
 #include <math.h>
 #include <sys/mman.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <time.h>
 
@@ -3038,6 +3039,9 @@ TEST(decode_xadd_lock_r32_calc_atomic) {
     uint8_t code[] = {0xf0, 0x0f, 0xc1, 0x0b}; /* lock xadd %ecx,(%rbx) */
     uint8_t cmpxchg8b[] = {0x0f, 0xc7, 0x0b};  /* cmpxchg8b (%rbx) */
     uint8_t cmpxchg16b[] = {0xf0, 0x48, 0x0f, 0xc7, 0x4e, 0x40}; /* lock cmpxchg16b 0x40(%rsi) */
+    uint8_t lfence[] = {0x0f, 0xae, 0xe8};
+    uint8_t mfence[] = {0x0f, 0xae, 0xf0};
+    uint8_t sfence[] = {0x0f, 0xae, 0xf8};
     hb_decoded_t d;
     hb_result_t r = hb_decode_x64(code, sizeof(code), 0x100022309, &d);
     ASSERT(r == HB_OK);
@@ -3066,6 +3070,141 @@ TEST(decode_xadd_lock_r32_calc_atomic) {
     ASSERT(d.op1.mem.base == HB_REG_RSI);
     ASSERT(d.op1.mem.disp == 0x40);
     ASSERT(d.op1.size == 16);
+
+    r = hb_decode_x64(lfence, sizeof(lfence), 0x100022500, &d);
+    ASSERT(r == HB_OK);
+    ASSERT(d.opcode == HB_INS_FENCE);
+    ASSERT(d.op1.imm == HB_FENCE_ACQUIRE);
+    r = hb_decode_x64(mfence, sizeof(mfence), 0x100022503, &d);
+    ASSERT(r == HB_OK);
+    ASSERT(d.opcode == HB_INS_FENCE);
+    ASSERT(d.op1.imm == HB_FENCE_FULL);
+    r = hb_decode_x64(sfence, sizeof(sfence), 0x100022506, &d);
+    ASSERT(r == HB_OK);
+    ASSERT(d.opcode == HB_INS_FENCE);
+    ASSERT(d.op1.imm == HB_FENCE_RELEASE);
+    tests_passed++;
+}
+
+typedef struct {
+    uint8_t reader_code[11];
+    uint8_t writer_code[15];
+    uint32_t data;
+    uint32_t flag;
+} hb_tso_spin_block_t;
+
+typedef struct {
+    hb_tso_spin_block_t* block;
+    hb_ir_func_t* func;
+    uint64_t base;
+    uint64_t step_limit;
+    hb_result_t run_result;
+    hb_exec_result_t exec;
+    uint64_t rax;
+} hb_tso_spin_thread_arg_t;
+
+static hb_ir_func_t* lift_x64_test_code(const uint8_t* code, size_t len, uint64_t base) {
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, len, base);
+    hb_ir_func_t* func = NULL;
+    if (!dec) return NULL;
+    if (hb_lift_func_x64(dec, &func) != HB_OK) func = NULL;
+    hb_decoder_destroy(dec);
+    return func;
+}
+
+static void* run_x64_jit_tso_spin_thread(void* opaque) {
+    hb_tso_spin_thread_arg_t* arg = (hb_tso_spin_thread_arg_t*)opaque;
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    if (!arg || !ctx) {
+        if (arg) arg->run_result = HB_ERR_OUT_OF_MEMORY;
+        return NULL;
+    }
+    ctx->memory = hb_memory_create(0);
+    if (!ctx->memory) {
+        arg->run_result = HB_ERR_OUT_OF_MEMORY;
+        hb_context_destroy(ctx);
+        return NULL;
+    }
+    if (hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)arg->block, sizeof(*arg->block),
+                      HB_PERM_READ | HB_PERM_WRITE | HB_PERM_EXEC) != HB_OK) {
+        arg->run_result = HB_ERR_MEMORY_FAULT;
+        hb_context_destroy(ctx);
+        return NULL;
+    }
+    ctx->pc = arg->base;
+    ctx->regs.x64.rip = arg->base;
+    ctx->regs.x64.rdi = (uint64_t)(uintptr_t)&arg->block->data;
+    ctx->regs.x64.rsi = (uint64_t)(uintptr_t)&arg->block->flag;
+    ctx->step_limit = arg->step_limit;
+    arg->run_result = hb_runtime_run(ctx, arg->func, HB_BACKEND_JIT, &arg->exec);
+    arg->rax = ctx->regs.x64.rax;
+    hb_context_destroy(ctx);
+    return NULL;
+}
+
+TEST(jit_x64_tso_spin_reader_observes_publisher) {
+    hb_tso_spin_block_t block;
+    memset(&block, 0xcc, sizeof(block));
+    memcpy(block.reader_code,
+           (uint8_t[]){0x8b, 0x06, 0x0f, 0xae, 0xe8, 0x85, 0xc0, 0x74, 0xf7, 0x8b, 0x07},
+           sizeof(block.reader_code));
+    memcpy(block.writer_code,
+           (uint8_t[]){0xc7, 0x07, 0x2a, 0x00, 0x00, 0x00, 0x0f, 0xae,
+                       0xf8, 0xc7, 0x06, 0x01, 0x00, 0x00, 0x00},
+           sizeof(block.writer_code));
+    block.data = 0;
+    block.flag = 0;
+
+    uint64_t reader_base = (uint64_t)(uintptr_t)block.reader_code;
+    uint64_t writer_base = (uint64_t)(uintptr_t)block.writer_code;
+    hb_ir_func_t* reader = lift_x64_test_code(block.reader_code, sizeof(block.reader_code), reader_base);
+    hb_ir_func_t* writer = lift_x64_test_code(block.writer_code, sizeof(block.writer_code), writer_base);
+    ASSERT(reader != NULL);
+    ASSERT(writer != NULL);
+
+    char* saved_direct_mem = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+
+    hb_tso_spin_thread_arg_t reader_arg = {&block, reader, reader_base, 20000000, HB_OK, {0}, 0};
+    hb_tso_spin_thread_arg_t writer_arg = {&block, writer, writer_base, 1000, HB_OK, {0}, 0};
+    pthread_t reader_thread;
+    pthread_t writer_thread;
+    ASSERT(pthread_create(&reader_thread, NULL, run_x64_jit_tso_spin_thread, &reader_arg) == 0);
+    usleep(1000);
+    ASSERT(pthread_create(&writer_thread, NULL, run_x64_jit_tso_spin_thread, &writer_arg) == 0);
+    ASSERT(pthread_join(writer_thread, NULL) == 0);
+    ASSERT(pthread_join(reader_thread, NULL) == 0);
+
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved_direct_mem);
+    if (writer_arg.run_result != HB_OK || writer_arg.exec.result != HB_OK ||
+        reader_arg.run_result != HB_OK || reader_arg.exec.result != HB_OK ||
+        reader_arg.rax != 1) {
+        fprintf(stderr,
+                "tso-spin: writer_run=%d writer_result=%d writer_fault=%d writer_reason=%s "
+                "writer_steps=%llu writer_blocks=%llu reader_run=%d reader_result=%d "
+                "reader_fault=%d reader_reason=%s reader_steps=%llu reader_blocks=%llu "
+                "rax=%llu data=%u flag=%u\n",
+                writer_arg.run_result, writer_arg.exec.result, writer_arg.exec.faulted,
+                writer_arg.exec.fault_reason ? writer_arg.exec.fault_reason : "-",
+                (unsigned long long)writer_arg.exec.steps_executed,
+                (unsigned long long)writer_arg.exec.blocks_executed,
+                reader_arg.run_result, reader_arg.exec.result, reader_arg.exec.faulted,
+                reader_arg.exec.fault_reason ? reader_arg.exec.fault_reason : "-",
+                (unsigned long long)reader_arg.exec.steps_executed,
+                (unsigned long long)reader_arg.exec.blocks_executed,
+                (unsigned long long)reader_arg.rax, block.data, block.flag);
+    }
+    ASSERT(writer_arg.run_result == HB_OK);
+    ASSERT(writer_arg.exec.result == HB_OK);
+    ASSERT(reader_arg.run_result == HB_OK);
+    ASSERT(reader_arg.exec.result == HB_OK);
+    ASSERT(!reader_arg.exec.timed_out);
+    ASSERT(reader_arg.rax == 1);
+    ASSERT(block.data == 42);
+    ASSERT(block.flag == 1);
+
+    hb_ir_func_destroy(reader);
+    hb_ir_func_destroy(writer);
     tests_passed++;
 }
 
@@ -23117,6 +23256,7 @@ int main(int argc, char** argv) {
             printf("sse_exit\n");
             printf("atomics_enter\n");
             test_decode_xadd_lock_r32_calc_atomic();
+            test_jit_x64_tso_spin_reader_observes_publisher();
             test_interp_x64_lock_xadd_r32_memory();
             test_interp_x64_cmpxchg8b_cmpxchg16b_family();
             printf("atomics_exit\n");
@@ -23219,6 +23359,7 @@ int main(int argc, char** argv) {
     test_decode_div_r32_group_f7();
     test_decode_idiv_r32_group_f7();
     test_decode_xadd_lock_r32_calc_atomic();
+    test_jit_x64_tso_spin_reader_observes_publisher();
     test_interp_x64_lock_xadd_r32_memory();
     test_interp_x64_cmpxchg8b_cmpxchg16b_family();
     test_interp_x64_div_r32_calc_startup();

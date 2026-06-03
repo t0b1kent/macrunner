@@ -163,6 +163,12 @@ hb_ir_instr_t* hb_ir_emit_store(hb_ir_builder_t* b, hb_ir_operand_t addr, hb_ir_
     return i;
 }
 
+hb_ir_instr_t* hb_ir_emit_fence(hb_ir_builder_t* b, hb_fence_kind_t kind) {
+    hb_ir_instr_t* i = hb_ir_emit(b, HB_IR_FENCE);
+    if (i) i->src1 = hb_ir_imm((int64_t)kind, HB_SIZE_8);
+    return i;
+}
+
 hb_ir_instr_t* hb_ir_emit_call(hb_ir_builder_t* b, uint64_t target) {
     hb_ir_instr_t* i = hb_ir_emit(b, HB_IR_CALL);
     if (i) { i->target = target; i->src1 = hb_ir_none(); }

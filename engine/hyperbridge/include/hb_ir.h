@@ -239,6 +239,7 @@ typedef enum {
     HB_IR_CMPXCHG8B,
     HB_IR_XCHG,
     HB_IR_XADD,
+    HB_IR_FENCE,
     HB_IR_LAHF,
     HB_IR_SAHF,
     HB_IR_CPUID,
@@ -444,6 +445,12 @@ typedef enum {
     HB_IR_UNSUPPORTED
 } hb_ir_op_t;
 
+typedef enum {
+    HB_FENCE_ACQUIRE = 1,
+    HB_FENCE_RELEASE = 2,
+    HB_FENCE_FULL = 3
+} hb_fence_kind_t;
+
 /* Condition codes for SETcc, CMOVcc, Jcc */
 typedef enum {
     HB_CC_E,   /* equal / zero */
@@ -542,6 +549,7 @@ hb_ir_instr_t* hb_ir_emit_binop(hb_ir_builder_t* b, hb_ir_op_t op, hb_ir_operand
 hb_ir_instr_t* hb_ir_emit_unop(hb_ir_builder_t* b, hb_ir_op_t op, hb_ir_operand_t dst, hb_ir_operand_t src);
 hb_ir_instr_t* hb_ir_emit_load(hb_ir_builder_t* b, hb_ir_operand_t dst, hb_ir_operand_t addr);
 hb_ir_instr_t* hb_ir_emit_store(hb_ir_builder_t* b, hb_ir_operand_t addr, hb_ir_operand_t src);
+hb_ir_instr_t* hb_ir_emit_fence(hb_ir_builder_t* b, hb_fence_kind_t kind);
 hb_ir_instr_t* hb_ir_emit_call(hb_ir_builder_t* b, uint64_t target);
 hb_ir_instr_t* hb_ir_emit_ret(hb_ir_builder_t* b);
 hb_ir_instr_t* hb_ir_emit_jmp(hb_ir_builder_t* b, uint64_t target);

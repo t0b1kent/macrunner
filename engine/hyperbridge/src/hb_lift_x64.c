@@ -1606,6 +1606,10 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, hb_ir_emit(b, HB_IR_NOP), dec);
             return HB_OK;
         }
+        case HB_INS_FENCE: {
+            emit(b, hb_ir_emit_fence(b, (hb_fence_kind_t)dec->op1.imm), dec);
+            return HB_OK;
+        }
         default:
             emit(b, hb_ir_emit_unsupported(b, hb_opcode_name(dec->opcode), dec->addr,
                                    (uint8_t*)dec->bytes, dec->len), dec);

@@ -1891,6 +1891,7 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_CMPXCHG8B: return "CMPXCHG8B";
         case HB_IR_XCHG: return "XCHG";
         case HB_IR_XADD: return "XADD";
+        case HB_IR_FENCE: return "FENCE";
         case HB_IR_LAHF: return "LAHF";
         case HB_IR_SAHF: return "SAHF";
         case HB_IR_CPUID: return "CPUID";
@@ -2677,6 +2678,21 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     hb_result_t r;
     switch (instr->op) {
         case HB_IR_NOP:
+            return HB_OK;
+
+        case HB_IR_FENCE:
+            switch ((hb_fence_kind_t)instr->src1.imm) {
+                case HB_FENCE_ACQUIRE:
+                    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+                    break;
+                case HB_FENCE_RELEASE:
+                    __atomic_thread_fence(__ATOMIC_RELEASE);
+                    break;
+                case HB_FENCE_FULL:
+                default:
+                    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+                    break;
+            }
             return HB_OK;
 
         case HB_IR_MOV: {

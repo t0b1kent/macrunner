@@ -93,6 +93,33 @@ static void __attribute__((unused)) emit_tst_reg(hb_codegen_buffer_t* buf, int r
     emit_u32(buf, 0xea00001f | (rm << 16) | (rn << 5));
 }
 
+static void emit_dmb_ish(hb_codegen_buffer_t* buf) {
+    emit_u32(buf, 0xd5033bbf);
+}
+
+static void emit_dmb_ishld(hb_codegen_buffer_t* buf) {
+    emit_u32(buf, 0xd50339bf);
+}
+
+static void emit_dmb_ishst(hb_codegen_buffer_t* buf) {
+    emit_u32(buf, 0xd5033abf);
+}
+
+static void emit_guest_fence(hb_codegen_buffer_t* buf, hb_fence_kind_t kind) {
+    switch (kind) {
+        case HB_FENCE_ACQUIRE:
+            emit_dmb_ishld(buf);
+            break;
+        case HB_FENCE_RELEASE:
+            emit_dmb_ishst(buf);
+            break;
+        case HB_FENCE_FULL:
+        default:
+            emit_dmb_ish(buf);
+            break;
+    }
+}
+
 static void emit_ldr_x(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
     /* LDR Xt, [Xn, #off]  — off must be multiple of 8 */
     uint32_t imm12 = (off / 8) & 0xFFF;
@@ -706,9 +733,11 @@ static void emit_direct_mem_load_to_x20(hb_codegen_buffer_t* buf, hb_size_t size
         case HB_SIZE_64:
         default:         emit_ldr_x(buf, 20, 21, 0); break;
     }
+    emit_dmb_ishld(buf);
 }
 
 static void emit_direct_mem_store_from_x20(hb_codegen_buffer_t* buf, hb_size_t size) {
+    emit_dmb_ishst(buf);
     switch (size) {
         case HB_SIZE_8:  emit_strb_w(buf, 20, 21, 0); break;
         case HB_SIZE_16: emit_strh_w(buf, 20, 21, 0); break;
@@ -726,9 +755,11 @@ static void emit_direct_mem_load_to_x20_off(hb_codegen_buffer_t* buf, hb_size_t 
         case HB_SIZE_64:
         default:         emit_ldr_x(buf, 20, 21, off); break;
     }
+    emit_dmb_ishld(buf);
 }
 
 static void emit_direct_mem_store_from_x20_off(hb_codegen_buffer_t* buf, hb_size_t size, uint32_t off) {
+    emit_dmb_ishst(buf);
     switch (size) {
         case HB_SIZE_8:  emit_strb_w(buf, 20, 21, off); break;
         case HB_SIZE_16: emit_strh_w(buf, 20, 21, off); break;
@@ -739,6 +770,7 @@ static void emit_direct_mem_store_from_x20_off(hb_codegen_buffer_t* buf, hb_size
 }
 
 static void emit_direct_mem_store_zero_off(hb_codegen_buffer_t* buf, hb_size_t size, uint32_t off) {
+    emit_dmb_ishst(buf);
     switch (size) {
         case HB_SIZE_8:  emit_strb_w(buf, 31, 21, off); break;
         case HB_SIZE_16: emit_strh_w(buf, 31, 21, off); break;
@@ -838,9 +870,11 @@ static void emit_store_x20_x22_to_xmm(hb_codegen_buffer_t* buf, hb_reg_t reg) {
 static void emit_direct_mem128_load_to_x20_x22(hb_codegen_buffer_t* buf) {
     emit_ldr_x(buf, 20, 21, 0);
     emit_ldr_x(buf, 22, 21, 8);
+    emit_dmb_ishld(buf);
 }
 
 static void emit_direct_mem128_store_from_x20_x22(hb_codegen_buffer_t* buf) {
+    emit_dmb_ishst(buf);
     emit_str_x(buf, 20, 21, 0);
     emit_str_x(buf, 22, 21, 8);
 }
@@ -3733,6 +3767,10 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             return HB_OK;
         }
 
+        case HB_IR_FENCE:
+            emit_guest_fence(buf, (hb_fence_kind_t)instr->src1.imm);
+            return HB_OK;
+
         case HB_IR_LOAD: {
             if (instr->src1.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             if (is_xmm_reg_operand(&instr->dst) && jit_direct_mem_enabled() &&
@@ -4105,6 +4143,7 @@ uint64_t hb_jit_helper_load_u64(hb_context_t* ctx, uint64_t addr) {
     }
     hb_result_t r = hb_memory_read_u64(ctx->memory, addr, &val);
     ctx->last_result = r;
+    if (r == HB_OK) __atomic_thread_fence(__ATOMIC_ACQUIRE);
     return val;
 }
 
@@ -4141,6 +4180,7 @@ static uint64_t hb_jit_helper_load_sized_value(hb_context_t* ctx, uint64_t addr,
             break;
     }
     ctx->last_result = r;
+    if (r == HB_OK) __atomic_thread_fence(__ATOMIC_ACQUIRE);
     return val;
 }
 
@@ -4165,6 +4205,7 @@ void hb_jit_helper_exec_load_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t
     hb_result_t r;
     if (!ctx || !instr) return;
     r = hb_flags_read_operand_value(ctx, &instr->src1, &val);
+    if (r == HB_OK) __atomic_thread_fence(__ATOMIC_ACQUIRE);
     if (r == HB_OK) r = hb_flags_write_operand_value(ctx, &instr->dst, val);
     ctx->last_result = r;
 }
@@ -4174,6 +4215,7 @@ void hb_jit_helper_exec_store_operand_lazy(hb_context_t* ctx, const hb_ir_instr_
     hb_result_t r;
     if (!ctx || !instr) return;
     r = hb_flags_read_operand_value(ctx, &instr->src2, &val);
+    if (r == HB_OK) __atomic_thread_fence(__ATOMIC_RELEASE);
     if (r == HB_OK) r = hb_flags_write_operand_value(ctx, &instr->src1, val);
     ctx->last_result = r;
 }
@@ -4184,6 +4226,7 @@ void hb_jit_helper_store_u64(hb_context_t* ctx, uint64_t addr, uint64_t val) {
         ctx->last_result = HB_ERR_MEMORY_FAULT;
         return;
     }
+    __atomic_thread_fence(__ATOMIC_RELEASE);
     ctx->last_result = hb_memory_write_u64(ctx->memory, addr, val);
 }
 
@@ -4193,6 +4236,7 @@ void hb_jit_helper_store_sized(hb_context_t* ctx, uint64_t addr, uint64_t val, u
         ctx->last_result = HB_ERR_MEMORY_FAULT;
         return;
     }
+    __atomic_thread_fence(__ATOMIC_RELEASE);
     switch ((hb_size_t)size) {
         case HB_SIZE_8:
             ctx->last_result = hb_memory_write_u8(ctx->memory, addr, (uint8_t)val);

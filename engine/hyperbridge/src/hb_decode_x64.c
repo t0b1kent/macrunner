@@ -2367,7 +2367,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             /* Control-state group needed by compiler setjmp helpers:
              *   0F AE /2 LDMXCSR m32  -- no-op until MXCSR is modeled
              *   0F AE /3 STMXCSR m32  -- store architectural reset MXCSR
-             *   0F AE E8/F0/F8        -- LFENCE/MFENCE/SFENCE as ordering no-ops
+             *   0F AE E8/F0/F8        -- LFENCE/MFENCE/SFENCE ordering fences
              * FXSAVE/FXRSTOR/XSAVE/XRSTOR are not scalar control-word ops and
              * require a real extended-state image, so keep them unsupported. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
@@ -2380,7 +2380,9 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             }
             if (mod == 3) {
                 if ((modrm & 7) == 0 && (ext == 5 || ext == 6 || ext == 7)) {
-                    out->opcode = HB_INS_NOP;
+                    out->opcode = HB_INS_FENCE;
+                    set_imm(out, 1, ext == 5 ? HB_FENCE_ACQUIRE :
+                                    ext == 6 ? HB_FENCE_FULL : HB_FENCE_RELEASE, 1);
                     return HB_OK;
                 }
                 return HB_ERR_UNSUPPORTED_OPCODE;
@@ -3858,6 +3860,7 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_CPUID: return "CPUID";
         case HB_INS_XGETBV: return "XGETBV";
         case HB_INS_NOP: return "NOP";
+        case HB_INS_FENCE: return "FENCE";
         case HB_INS_MOVS: return "MOVS";
         case HB_INS_CMPS: return "CMPS";
         case HB_INS_LODS: return "LODS";

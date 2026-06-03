@@ -1161,6 +1161,26 @@ static BYTE get_page_vprot( const void *addr )
 }
 
 
+static BOOL get_page_range( const void *addr, size_t size, size_t *idx, size_t *end )
+{
+    UINT_PTR start = (UINT_PTR)addr;
+
+    *idx = start >> page_shift;
+    if (!size)
+    {
+        *end = *idx;
+        return TRUE;
+    }
+
+    if (size - 1 > ~(UINT_PTR)0 - start) return FALSE;
+    *end = ((start + size - 1) >> page_shift) + 1;
+#ifdef _WIN64
+    if (*end > pages_vprot_size << pages_vprot_shift) return FALSE;
+#endif
+    return TRUE;
+}
+
+
 /***********************************************************************
  *           get_host_page_vprot
  *
@@ -1241,8 +1261,10 @@ static SIZE_T get_vprot_range_size( char *base, SIZE_T size, BYTE mask, BYTE *vp
  */
 static void set_page_vprot( const void *addr, size_t size, BYTE vprot )
 {
-    size_t idx = (size_t)addr >> page_shift;
-    size_t end = ((size_t)addr + size + page_mask) >> page_shift;
+    size_t idx, end;
+
+    if (!get_page_range( addr, size, &idx, &end )) return;
+    if (idx == end) return;
 
 #ifdef _WIN64
     while (idx >> pages_vprot_shift != end >> pages_vprot_shift)
@@ -1265,8 +1287,9 @@ static void set_page_vprot( const void *addr, size_t size, BYTE vprot )
  */
 static void set_page_vprot_bits( const void *addr, size_t size, BYTE set, BYTE clear )
 {
-    size_t idx = (size_t)addr >> page_shift;
-    size_t end = ((size_t)addr + size + page_mask) >> page_shift;
+    size_t idx, end;
+
+    if (!get_page_range( addr, size, &idx, &end )) return;
 
 #ifdef _WIN64
     for ( ; idx < end; idx++)
@@ -1289,8 +1312,9 @@ static BOOL set_page_vprot_exec_write_protect( const void *addr, size_t size )
 {
     BOOL ret = FALSE;
 #ifdef _WIN64 /* only supported on 64-bit so assume 2-level table */
-    size_t idx = (size_t)addr >> page_shift;
-    size_t end = ((size_t)addr + size + page_mask) >> page_shift;
+    size_t idx, end;
+
+    if (!get_page_range( addr, size, &idx, &end )) return FALSE;
 
     for ( ; idx < end; idx++)
     {
@@ -1312,11 +1336,12 @@ static BOOL set_page_vprot_exec_write_protect( const void *addr, size_t size )
 static BOOL alloc_pages_vprot( const void *addr, size_t size )
 {
 #ifdef _WIN64
-    size_t idx = (size_t)addr >> page_shift;
-    size_t end = ((size_t)addr + size + page_mask) >> page_shift;
+    size_t idx, end;
     size_t i;
     void *ptr;
 
+    if (!get_page_range( addr, size, &idx, &end )) return FALSE;
+    if (idx == end) return TRUE;
     assert( end <= pages_vprot_size << pages_vprot_shift );
     for (i = idx >> pages_vprot_shift; i < (end + pages_vprot_mask) >> pages_vprot_shift; i++)
     {
@@ -1344,10 +1369,11 @@ static inline UINT64 maskbits( size_t idx )
 static void set_arm64ec_range( const void *addr, size_t size )
 {
     UINT64 *map = arm64ec_view->base;
-    size_t idx = (size_t)addr >> page_shift;
-    size_t end = ((size_t)addr + size + page_mask) >> page_shift;
-    size_t pos = idx / 64;
-    size_t end_pos = end / 64;
+    size_t idx, end, pos, end_pos;
+
+    if (!get_page_range( addr, size, &idx, &end ) || idx == end) return;
+    pos = idx / 64;
+    end_pos = end / 64;
 
     if (end_pos > pos)
     {
@@ -1365,10 +1391,11 @@ static void set_arm64ec_range( const void *addr, size_t size )
 static void clear_arm64ec_range( const void *addr, size_t size )
 {
     UINT64 *map = arm64ec_view->base;
-    size_t idx = (size_t)addr >> page_shift;
-    size_t end = ((size_t)addr + size + page_mask) >> page_shift;
-    size_t pos = idx / 64;
-    size_t end_pos = end / 64;
+    size_t idx, end, pos, end_pos;
+
+    if (!get_page_range( addr, size, &idx, &end ) || idx == end) return;
+    pos = idx / 64;
+    end_pos = end / 64;
 
     if (end_pos > pos)
     {

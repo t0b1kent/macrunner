@@ -2165,15 +2165,13 @@ static void load_ntdll_functions( HMODULE module )
     image_size = get_module_image_size( module );
     exports = get_module_data_dir( module, IMAGE_DIRECTORY_ENTRY_EXPORT, &exports_size );
     assert( image_size && exports && exports_size >= sizeof(*exports) );
-    if (!image_size || !exports || exports_size < sizeof(*exports)) return;
+    if (!image_size || !exports || exports_size < sizeof(*exports))
+        fatal_error( "invalid ntdll export directory\n" );
 
 #define GET_FUNC(name) \
     do { \
         if (!(p##name = (void *)find_named_export( module, image_size, exports, #name ))) \
-        { \
-            ERR( "%s not found\n", #name ); \
-            return; \
-        } \
+            fatal_error( "ntdll export %s not found\n", #name ); \
     } while (0)
 
     GET_FUNC( DbgUiRemoteBreakin );
@@ -2217,17 +2215,15 @@ static void load_ntdll_wow64_functions( HMODULE module )
     image_size = get_module_image_size( module );
     exports = get_module_data_dir( module, IMAGE_FILE_EXPORT_DIRECTORY, &exports_size );
     assert( image_size && exports && exports_size >= sizeof(*exports) );
-    if (!image_size || !exports || exports_size < sizeof(*exports)) return;
+    if (!image_size || !exports || exports_size < sizeof(*exports))
+        fatal_error( "invalid wow64 ntdll export directory\n" );
 
     pLdrSystemDllInitBlock->ntdll_handle = (ULONG_PTR)module;
 
 #define GET_FUNC(name) \
     do { \
         if (!(pLdrSystemDllInitBlock->p##name = find_named_export( module, image_size, exports, #name ))) \
-        { \
-            ERR( "%s not found\n", #name ); \
-            return; \
-        } \
+            fatal_error( "wow64 ntdll export %s not found\n", #name ); \
     } while (0)
     GET_FUNC( KiUserApcDispatcher );
     GET_FUNC( KiUserCallbackDispatcher );
@@ -2241,20 +2237,14 @@ static void load_ntdll_wow64_functions( HMODULE module )
 
     if (!(p__wine_ctrl_routine = (void *)find_named_export( module, image_size, exports,
                                                             "__wine_ctrl_routine" )))
-    {
-        ERR( "__wine_ctrl_routine not found\n" );
-        return;
-    }
+        fatal_error( "wow64 ntdll export __wine_ctrl_routine not found\n" );
 
 #ifdef _WIN64
     {
         unixlib_handle_t *p__wine_unixlib_handle = (void *)find_named_export( module, image_size, exports,
                                                                               "__wine_unixlib_handle" );
         if (!p__wine_unixlib_handle)
-        {
-            ERR( "__wine_unixlib_handle not found\n" );
-            return;
-        }
+            fatal_error( "wow64 ntdll export __wine_unixlib_handle not found\n" );
         *p__wine_unixlib_handle = (UINT_PTR)unix_call_wow64_funcs;
     }
 #endif

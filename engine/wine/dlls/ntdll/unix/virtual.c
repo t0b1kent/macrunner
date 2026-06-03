@@ -3121,6 +3121,8 @@ static NTSTATUS allocate_dos_memory( struct file_view **view, unsigned int vprot
  */
 static NTSTATUS map_pe_header( void *ptr, size_t size, size_t map_size, int fd, BOOL *removable )
 {
+    ssize_t ret;
+
     if (!size) return STATUS_INVALID_IMAGE_FORMAT;
 
     map_size &= ~host_page_mask;
@@ -3129,7 +3131,12 @@ static NTSTATUS map_pe_header( void *ptr, size_t size, size_t map_size, int fd, 
     {
         if (mmap( ptr, map_size, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE, fd, 0 ) != MAP_FAILED)
         {
-            if (size > map_size) pread( fd, (char *)ptr + map_size, size - map_size, map_size );
+            if (size > map_size)
+            {
+                ret = pread( fd, (char *)ptr + map_size, size - map_size, map_size );
+                if (ret != size - map_size)
+                    return ret < 0 ? errno_to_status( errno ) : STATUS_INVALID_IMAGE_FORMAT;
+            }
             return STATUS_SUCCESS;
         }
         switch (errno)
@@ -3148,7 +3155,8 @@ static NTSTATUS map_pe_header( void *ptr, size_t size, size_t map_size, int fd, 
         }
         *removable = TRUE;
     }
-    pread( fd, ptr, size, 0 );
+    ret = pread( fd, ptr, size, 0 );
+    if (ret != size) return ret < 0 ? errno_to_status( errno ) : STATUS_INVALID_IMAGE_FORMAT;
     return STATUS_SUCCESS;  /* page protections will be updated later */
 }
 

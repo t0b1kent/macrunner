@@ -205,9 +205,15 @@ def set_initial_state(uc: Uc, state: InitialState, code: bytes, arch: str = "x64
             uc.reg_write(reg, state.regs[name])
         uc.reg_write(UC_X86_REG_RIP, CODE_BASE)
     uc.reg_write(UC_X86_REG_EFLAGS, state.rflags)
-    for i in range(16):
-        ymm = state.xmm[i] + state.ymm_hi[i]
-        uc.reg_write(reg_const("YMM", i), int.from_bytes(ymm, "little"))
+    # Prime XMM state. In 64-bit mode we also prime YMM (Unicorn 2.1.4
+    # rejects YMM writes in UC_MODE_32; for 32-bit we keep XMM-only).
+    if arch == "x86":
+        for i in range(8):
+            uc.reg_write(reg_const("XMM", i), int.from_bytes(state.xmm[i], "little"))
+    else:
+        for i in range(16):
+            ymm = state.xmm[i] + state.ymm_hi[i]
+            uc.reg_write(reg_const("YMM", i), int.from_bytes(ymm, "little"))
 
 
 def snapshot(uc: Uc, arch: str = "x64") -> dict[str, Any]:
@@ -222,13 +228,34 @@ def snapshot(uc: Uc, arch: str = "x64") -> dict[str, Any]:
     eflags = uc.reg_read(UC_X86_REG_EFLAGS)
     xmm: list[str] = []
     ymm_hi: list[str] = []
-    for i in range(16):
-        raw = int(uc.reg_read(reg_const("YMM", i))).to_bytes(32, "little")
-        xmm.append(bytes_to_hex(raw[:16]))
-        ymm_hi.append(bytes_to_hex(raw[16:]))
+    if arch == "x86":
+        for i in range(8):
+            raw = int(uc.reg_read(reg_const("XMM", i))).to_bytes(16, "little")
+            xmm.append(bytes_to_hex(raw))
+            ymm_hi.append("0" * 32)
+    else:
+        for i in range(16):
+            raw = int(uc.reg_read(reg_const("YMM", i))).to_bytes(32, "little")
+            xmm.append(bytes_to_hex(raw[:16]))
+            ymm_hi.append(bytes_to_hex(raw[16:]))
     data = bytes(uc.mem_read(DATA_BASE, DATA_SIZE))
     stack = bytes(uc.mem_read(STACK_BASE, STACK_SIZE))
-    return {
+    # FPU state (Unicorn exposes CW via UC_X86_REG_FPCW/SW/TW since 2.0).
+    # We capture these for x87-family comparisons; absence is non-fatal.
+    fpu: dict[str, str] = {}
+    try:
+        fpu["cw"] = hex64(uc.reg_read(x86c.UC_X86_REG_FPCW) & 0xFFFF)
+    except Exception:
+        pass
+    try:
+        fpu["sw"] = hex64(uc.reg_read(x86c.UC_X86_REG_FPSW) & 0xFFFF)
+    except Exception:
+        pass
+    try:
+        fpu["tw"] = hex64(uc.reg_read(x86c.UC_X86_REG_FPTW) & 0xFFFF)
+    except Exception:
+        pass
+    out = {
         "api": 0,
         "result": 0,
         "regs": regs,
@@ -239,6 +266,9 @@ def snapshot(uc: Uc, arch: str = "x64") -> dict[str, Any]:
         "data_hash": hex64(fnv1a64(data)),
         "stack_hash": hex64(fnv1a64(stack)),
     }
+    if fpu:
+        out["fpu"] = fpu
+    return out
 
 
 def run_case(seed: int, code_hex: str, arch: str = "x64") -> dict[str, Any]:

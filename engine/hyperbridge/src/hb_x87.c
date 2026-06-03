@@ -26,6 +26,14 @@ static void set_tag(hb_x87_state_t* x87, unsigned phys, uint16_t tag) {
     x87->tag_word = (uint16_t)((x87->tag_word & ~(0x3u << shift)) | ((tag & 0x3u) << shift));
 }
 
+static void set_condition_bits(hb_x87_state_t* x87, unsigned c0, unsigned c1,
+                               unsigned c2, unsigned c3) {
+    const uint16_t mask = (uint16_t)~((1u << 8) | (1u << 9) | (1u << 10) | (1u << 14));
+    x87->status_word = (uint16_t)((x87->status_word & mask)
+                                  | ((c0 & 1u) << 8) | ((c1 & 1u) << 9)
+                                  | ((c2 & 1u) << 10) | ((c3 & 1u) << 14));
+}
+
 /*
  * x87 tag word encoding (per Intel SDM, Vol. 1, §8.1.5):
  *   00 = Valid (normal finite nonzero)
@@ -83,56 +91,46 @@ hb_result_t hb_x87_fdecstp(hb_x87_state_t* x87) {
     return HB_OK;
 }
 
-/* FXAM — examine ST(0). Sets C0/C1/C2/C3 in the status word based on the
- * class of ST(0). Per Intel SDM Vol. 1 §8.1.5.3, the encoding is:
- *   C0 = sign of ST(0) (0 = +, 1 = -)
- *   C1 = 0
- *   C2 = class pair: 0 = normal/unnormal, 1 = NaN, 0 = inf, 1 = denormal/empty
- *   C3 = class pair: 0 = normal, 1 = inf, 0 = zero, 1 = empty
- *
- * The actual bits C2:C3 in x86 form a 2-bit field, not independent. Concretely:
- *   C3 C2
- *   0  0  -> +unnormal, -unnormal, +normal, -normal
- *   0  1  -> +NaN, -NaN
- *   1  0  -> +inf, -inf
- *   1  1  -> +denormal, -denormal, +0 (but tag=valid), -0 (but tag=valid),
- *            empty, unsupported
- *
- * Empty takes priority — the user can't read a "valid" answer from an empty
- * register, so we report the slot as empty.
+/* FXAM — examine ST(0). Intel encodes the class in C3:C2:C0 and the
+ * operand sign in C1:
+ *   000 unsupported, 001 NaN, 010 normal, 011 infinity,
+ *   100 zero, 101 empty, 110 denormal.
  */
 hb_result_t hb_x87_fxam(hb_x87_state_t* x87) {
     if (!x87) return HB_ERR_INVALID_ARG;
 
     unsigned phys = x87->top;
     double value = x87->st[phys];
+    bool empty = tag_is_empty(x87, phys);
+    unsigned c0, c2, c3;
+    unsigned c1 = (!empty && signbit(value)) ? 1u : 0u;
 
-    /* C0 = sign */
-    unsigned c0 = (signbit(value) != 0) ? 1u : 0u;
-    /* C1 = 0 (reserved in result; some chips set it for ±0 or empty, but
-     * the canonical Intel encoding is C1=0 for FXAM). */
-    unsigned c1 = 0u;
-    /* C2, C3 from class */
-    unsigned c2, c3;
-
-    if (tag_is_empty(x87, phys)) {
-        c3 = 1u; c2 = 1u;  /* empty */
+    if (empty) {
+        c3 = 1u; c2 = 0u; c0 = 1u;
     } else {
         switch (fpclassify(value)) {
-            case FP_NAN:       c3 = 0u; c2 = 1u; break;  /* +NaN or -NaN */
-            case FP_INFINITE:  c3 = 1u; c2 = 0u; break;  /* +/-inf */
-            case FP_ZERO:      c3 = 1u; c2 = 1u; break;  /* +/-0 (same encoding as empty) */
-            case FP_SUBNORMAL: c3 = 0u; c2 = 0u; break;  /* denormal (per SDM, "unsupported") */
-            case FP_NORMAL:    c3 = 0u; c2 = 0u; break;  /* normal */
-            default:           c3 = 0u; c2 = 0u; break;
+            case FP_NAN:       c3 = 0u; c2 = 0u; c0 = 1u; break;
+            case FP_INFINITE:  c3 = 0u; c2 = 1u; c0 = 1u; break;
+            case FP_ZERO:      c3 = 1u; c2 = 0u; c0 = 0u; break;
+            case FP_SUBNORMAL: c3 = 1u; c2 = 1u; c0 = 0u; break;
+            case FP_NORMAL:    c3 = 0u; c2 = 1u; c0 = 0u; break;
+            default:           c3 = 0u; c2 = 0u; c0 = 0u; break;
         }
     }
 
-    /* Mask out C0/C1/C2/C3 (bits 8, 9, 10, 14), then set them. */
-    const uint16_t mask = (uint16_t)~((1u << 8) | (1u << 9) | (1u << 10) | (1u << 14));
-    x87->status_word = (uint16_t)((x87->status_word & mask)
-                                  | (c0 << 8) | (c1 << 9) | (c2 << 10) | (c3 << 14));
+    set_condition_bits(x87, c0, c1, c2, c3);
     return HB_OK;
+}
+
+static void set_fprem_condition_bits(hb_x87_state_t* x87, double quotient) {
+    if (!isfinite(quotient) || fabs(quotient) > (double)LLONG_MAX) {
+        set_condition_bits(x87, 0, 0, 1, 0);
+        return;
+    }
+
+    long long q = (long long)quotient;
+    unsigned low = (unsigned)((q < 0 ? -q : q) & 7);
+    set_condition_bits(x87, (low >> 2) & 1u, low & 1u, 0, (low >> 1) & 1u);
 }
 
 hb_result_t hb_x87_push_f64(hb_x87_state_t* x87, double value) {
@@ -416,8 +414,7 @@ hb_result_t hb_x87_fxtract(hb_x87_state_t* x87) {
 }
 
 hb_result_t hb_x87_fprem1(hb_x87_state_t* x87) {
-    /* IEEE partial remainder: ST(0) = ST(0) mod ST(1), with sign of dividend.
-     * We don't set C0..C3 (gap matrix #3). No pop. */
+    /* IEEE partial remainder: quotient is rounded to nearest-even. No pop. */
     double a, b, result;
     hb_result_t r;
 
@@ -428,7 +425,10 @@ hb_result_t hb_x87_fprem1(hb_x87_state_t* x87) {
     if (r != HB_OK) return r;
     /* C99 remainder() implements IEEE 754 remainder, equivalent to FPREM1. */
     result = remainder(a, b);
-    return hb_x87_set_st_f64(x87, 0, result);
+    r = hb_x87_set_st_f64(x87, 0, result);
+    if (r != HB_OK) return r;
+    set_fprem_condition_bits(x87, (a - result) / b);
+    return HB_OK;
 }
 
 hb_result_t hb_x87_fprem(hb_x87_state_t* x87) {
@@ -443,7 +443,10 @@ hb_result_t hb_x87_fprem(hb_x87_state_t* x87) {
     r = hb_x87_st_f64(x87, 1, &b);
     if (r != HB_OK) return r;
     result = fmod(a, b);
-    return hb_x87_set_st_f64(x87, 0, result);
+    r = hb_x87_set_st_f64(x87, 0, result);
+    if (r != HB_OK) return r;
+    set_fprem_condition_bits(x87, trunc(a / b));
+    return HB_OK;
 }
 
 hb_result_t hb_x87_fyl2xp1(hb_x87_state_t* x87) {

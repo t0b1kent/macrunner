@@ -5,6 +5,7 @@
 #include "hb_lifter.h"
 #include "hb_memory.h"
 #include "hb_runtime.h"
+#include "hb_x87.h"
 #include <ctype.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -64,7 +65,7 @@ static int hex_nibble(char c) {
     return -1;
 }
 
-static bool parse_hex(const char* s, uint8_t* out, size_t* out_len) {
+static bool parse_hex_bytes(const char* s, uint8_t* out, size_t max_out, size_t* out_len) {
     size_t n = 0;
     while (*s) {
         while (*s && isspace((unsigned char)*s)) s++;
@@ -72,11 +73,15 @@ static bool parse_hex(const char* s, uint8_t* out, size_t* out_len) {
         int hi = hex_nibble(*s++);
         if (hi < 0 || !*s) return false;
         int lo = hex_nibble(*s++);
-        if (lo < 0 || n >= HB_DIFF_MAX_CODE) return false;
+        if (lo < 0 || n >= max_out) return false;
         out[n++] = (uint8_t)((hi << 4) | lo);
     }
     *out_len = n;
     return n > 0;
+}
+
+static bool parse_hex(const char* s, uint8_t* out, size_t* out_len) {
+    return parse_hex_bytes(s, out, HB_DIFF_MAX_CODE, out_len);
 }
 
 static void print_hex_bytes(const uint8_t* bytes, size_t len) {
@@ -159,6 +164,28 @@ static hb_result_t init_context(hb_context_t* ctx, uint64_t seed, const uint8_t*
     if (r != HB_OK) return r;
     fill_random(&rng, data, sizeof(data));
     fill_random(&rng, stack, sizeof(stack));
+    /* Optional override: HB_DIFF_DATA_HEX=<seed>:<hex> lets a fuzz harness
+     * pre-populate the data region deterministically (so both engines
+     * see the same bytes for a given seed). The seed is encoded so the
+     * fuzzer can verify the right env var was used. */
+    const char* data_hex_env = getenv("HB_DIFF_DATA_HEX");
+    if (data_hex_env) {
+        const char* colon = strchr(data_hex_env, ':');
+        if (colon) {
+            uint64_t env_seed = strtoull(data_hex_env, NULL, 0);
+            if (env_seed == seed) {
+                const char* hex = colon + 1;
+                size_t hex_len = strlen(hex);
+                size_t want = sizeof(data) * 2;
+                if (hex_len == want) {
+                    size_t parsed = 0;
+                    if (parse_hex_bytes(hex, data, sizeof(data), &parsed) && parsed == sizeof(data)) {
+                        /* data replaced with fuzzer-provided bytes */
+                    }
+                }
+            }
+        }
+    }
     r = hb_memory_write(ctx->memory, HB_DIFF_DATA_BASE, data, sizeof(data));
     if (r != HB_OK) return r;
     r = hb_memory_write(ctx->memory, HB_DIFF_STACK_BASE, stack, sizeof(stack));
@@ -174,6 +201,12 @@ static hb_result_t init_context(hb_context_t* ctx, uint64_t seed, const uint8_t*
         ctx->regs.x86.esp = (uint32_t)(HB_DIFF_STACK_BASE + 0x1000);
         ctx->regs.x86.ebp = (uint32_t)(HB_DIFF_STACK_BASE + 0x1100);
         ctx->regs.x86.eip = (uint32_t)HB_DIFF_CODE_BASE;
+        /* Reset x87 state to FNINIT semantics so the tag word starts as
+         * 0xFFFF (all empty), control word 0x037F, status word 0, TOP=0.
+         * Without this the C-initialized fields are 0 → tag_word=0 → all
+         * "valid", which diverges from the per-architecture FNINIT spec
+         * the x87 interpreter (and Unicorn) expects. */
+        hb_x87_fninit(&ctx->regs.x86.x87);
     } else {
         ctx->regs.x64.rax = HB_DIFF_DATA_BASE + 0x1000;
         ctx->regs.x64.rbx = splitmix64_next(&rng);

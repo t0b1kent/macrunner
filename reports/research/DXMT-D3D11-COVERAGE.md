@@ -7,7 +7,8 @@ calls, expanded state/query probes, deferred resource command-lists, MSAA
 render/resolve, shader corpus coverage, Hollow Knight DXBC corpus extraction,
 asset-aware Hollow Knight Unity ShaderProgram DXBC extraction, bitblt/flip
 swapchain variants, live-window present, visible fullscreen enter/restore with
-display capture, resize, readback, and vkd3d prefix deployment.
+display capture, resize, readback, two-pass long-run stability, and vkd3d
+prefix deployment.
 Status is evidence-based: `Implemented` means an entry point exists and routes to
 DXMT/Metal code; `Partial` means the path exists with known limits; `Gap` means
 the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
@@ -60,6 +61,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Swapchain variant probes | PASS | Separate `DXGI_SWAP_EFFECT_DISCARD` and `DXGI_SWAP_EFFECT_FLIP_DISCARD` smoke swapchains both create, present, read back `pixel0_bgra=0,255,0,255`, and report `result=PASS`. |
 | Live-window present smoke | PASS | `engine/graphics/scripts/run_dxmt_d3d11_live_window_smoke.sh aarch64` reaches real HWND present/readback in the owned prefix; CG capture confirms a nonblack host window shell on this host. |
 | Visible fullscreen display smoke | PASS | `engine/graphics/scripts/run_dxmt_d3d11_fullscreen_smoke.sh aarch64` reaches visible HWND, `SetFullscreenState(TRUE) hr=0x00000000`, `fullscreen_after_true=1`, restore success, `pixel_readback=PASS`, and a display capture of `3024x1964` with nonblack/colorful pixels. |
+| Phase 6 stability smoke | PASS | `engine/graphics/scripts/run_dxmt_d3d11_stability_smoke.sh aarch64` ran 2 passes with 60s minimum stability each; both passed `UnityMultithreadProbe`, `UnityBatchProbe`, final readback, frame statistics, and `UnityStabilityProbe`, with `presented_frames=7175` and `7198`. |
 | vkd3d prefix deployment | PASS | `engine/graphics/scripts/run_vkd3d_prefix_sync_smoke.sh` verifies `d3d12.dll`, `d3d12core.dll`, `dxgi.dll`, and `winemetal.dll` in isolated aarch64/x64 prefixes byte-match `engine/graphics/dist`. |
 | Headless Metal layer fallback | PASS | When Wine macdrv Metal-view symbols are unavailable, `winemetal` creates a retained fallback `CAMetalLayer` for the smoke HWND. |
 | Swapchain/present | PASS | Message HWND path prints `CreateSwapChainForHwnd hr=0x00000000`, `IDXGISwapChain::GetBuffer hr=0x00000000`, `Present hr=0x00000000`. |
@@ -80,6 +82,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Blend/rasterizer/depth-stencil/sampler states | Implemented | Smoke covers alpha/opaque blend, cull-none/cull-back rasterizer, depth/stencil/disabled depth, and linear/comparison/anisotropic samplers. |
 | Queries/counters | Partial | Event, timestamp, occlusion query data, and occlusion predicate smoke pass; counters return `E_NOTIMPL`. |
 | Deferred/context methods | Partial | Empty deferred command-list, deferred RTV clear/readback, deferred draw recording/playback, and deferred resource update/map/copy/readback pass; broader deferred command surface still needs game coverage. |
+| Multithread/render stability | Partial | `ID3D10Multithread` protection, two worker-thread deferred command lists, command batching, and two 60s stability runs pass; still needs real Unity render-thread validation once the runtime reaches D3D11. |
 | Draw/DrawIndexed/instanced/indirect | Implemented | Smoke covers direct, indexed, instanced, indexed-instanced, and indirect variants. |
 | Dispatch/DispatchIndirect | Implemented | Smoke covers direct and indirect compute dispatch with UAV readback value `42`. |
 | Copy/resolve/mips | Implemented | `CopyResource`, `ResolveSubresource`, `GenerateMips` paths exist. |

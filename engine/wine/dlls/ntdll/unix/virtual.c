@@ -3798,6 +3798,11 @@ no_dynamic_reloc:
             size = ROUND_SIZE( sec[i].VirtualAddress, sec[i].Misc.VirtualSize, align_mask );
         else
             size = ROUND_SIZE( sec[i].VirtualAddress, sec[i].SizeOfRawData, align_mask );
+        if (sec[i].VirtualAddress > total_size || size > total_size - sec[i].VirtualAddress)
+        {
+            status = STATUS_INVALID_IMAGE_FORMAT;
+            goto done;
+        }
 
         if (sec[i].Characteristics & IMAGE_SCN_MEM_READ)    vprot |= VPROT_READ;
         if (sec[i].Characteristics & IMAGE_SCN_MEM_WRITE)   vprot |= VPROT_WRITECOPY;

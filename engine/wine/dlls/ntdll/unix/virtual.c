@@ -478,6 +478,16 @@ static void kernel_get_write_watches( void *base, SIZE_T size, void **buffer, UL
 }
 #endif
 
+static void *reserved_area_end( void *addr, SIZE_T *size )
+{
+    UINT_PTR start = (UINT_PTR)addr;
+    SIZE_T max_size = ~(UINT_PTR)0 - start;
+
+    if (*size > max_size) *size = max_size;
+    return (void *)(start + *size);
+}
+
+
 static void mmap_add_reserved_area( void *addr, SIZE_T size )
 {
     struct reserved_area *area;
@@ -487,8 +497,8 @@ static void mmap_add_reserved_area( void *addr, SIZE_T size )
     assert( !((UINT_PTR)addr & host_page_mask) );
     assert( !(size & host_page_mask) );
 
-    if (!((intptr_t)addr + size)) size--;  /* avoid wrap-around */
-    end = (char *)addr + size;
+    end = reserved_area_end( addr, &size );
+    if (!size) return;
 
     LIST_FOR_EACH( ptr, &reserved_areas )
     {
@@ -535,27 +545,30 @@ static BOOL mmap_remove_reserved_area( void *addr, SIZE_T size )
 {
     struct reserved_area *area;
     struct list *ptr;
+    void *end, *area_end;
 
     assert( !((UINT_PTR)addr & host_page_mask) );
     assert( !(size & host_page_mask) );
 
-    if (!((intptr_t)addr + size)) size--;  /* avoid wrap-around */
+    end = reserved_area_end( addr, &size );
+    if (!size) return TRUE;
 
     ptr = list_head( &reserved_areas );
     /* find the first area covering address */
     while (ptr)
     {
         area = LIST_ENTRY( ptr, struct reserved_area, entry );
-        if ((char *)area->base >= (char *)addr + size) break;  /* outside the range */
-        if ((char *)area->base + area->size > (char *)addr)  /* overlaps range */
+        area_end = (char *)area->base + area->size;
+        if (area->base >= end) break;  /* outside the range */
+        if (area_end > addr)  /* overlaps range */
         {
             if (area->base >= addr)
             {
-                if ((char *)area->base + area->size > (char *)addr + size)
+                if (area_end > end)
                 {
                     /* range overlaps beginning of area only -> shrink area */
-                    area->size -= (char *)addr + size - (char *)area->base;
-                    area->base = (char *)addr + size;
+                    area->size -= (char *)end - (char *)area->base;
+                    area->base = end;
                     break;
                 }
                 else
@@ -569,13 +582,13 @@ static BOOL mmap_remove_reserved_area( void *addr, SIZE_T size )
             }
             else
             {
-                if ((char *)area->base + area->size > (char *)addr + size)
+                if (area_end > end)
                 {
                     /* range is in the middle of area -> split area in two */
                     struct reserved_area *new_area = malloc( sizeof(*new_area) );
                     if (!new_area) return FALSE;
-                    new_area->base = (char *)addr + size;
-                    new_area->size = (char *)area->base + area->size - (char *)new_area->base;
+                    new_area->base = end;
+                    new_area->size = (char *)area_end - (char *)new_area->base;
                     list_add_after( ptr, &new_area->entry );
                     area->size = (char *)addr - (char *)area->base;
                     break;

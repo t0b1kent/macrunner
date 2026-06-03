@@ -3463,6 +3463,17 @@ static const char *image_rva_string( HMODULE module, DWORD rva )
     return memchr( str, 0, len ) ? str : NULL;
 }
 
+static const IMAGE_IMPORT_BY_NAME *image_import_by_name( HMODULE module, DWORD rva )
+{
+    const IMAGE_IMPORT_BY_NAME *import = (const IMAGE_IMPORT_BY_NAME *)((char *)module + rva);
+
+    if (!image_contains_range( module, import, FIELD_OFFSET( IMAGE_IMPORT_BY_NAME, Name ) + 1 ))
+        return NULL;
+    if (!image_rva_string( module, rva + FIELD_OFFSET( IMAGE_IMPORT_BY_NAME, Name ) ))
+        return NULL;
+    return import;
+}
+
 static NTSTATUS get_import_descriptor_count( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *imports,
                                              DWORD size, DWORD *count )
 {
@@ -3922,7 +3933,7 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
     DWORD exp_size;
     const IMAGE_THUNK_DATA *import_list;
     IMAGE_THUNK_DATA *thunk_list;
-    SIZE_T import_count;
+    SIZE_T i, import_count;
     WCHAR buffer[256];
     const char *name = image_rva_string( module, descr->Name );
     DWORD len;
@@ -3964,6 +3975,18 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
         WARN( "Skipping unused import %s\n", name );
         *pwm = NULL;
         return TRUE;
+    }
+
+    for (i = 0; i < import_count; i++)
+    {
+        if (!IMAGE_SNAP_BY_ORDINAL(import_list[i].u1.Ordinal) &&
+            !image_import_by_name( module, (DWORD)import_list[i].u1.AddressOfData ))
+        {
+            WARN( "invalid import-by-name rva %Ix for %s imported from %s\n",
+                  (ULONG_PTR)import_list[i].u1.AddressOfData, name,
+                  debugstr_w(wm->ldr.FullDllName.Buffer) );
+            return FALSE;
+        }
     }
 
     status = build_import_name( wm, buffer, name, len );
@@ -4056,7 +4079,7 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
             }
             else
             {
-                IMAGE_IMPORT_BY_NAME *pe_name = get_rva( module, (DWORD)import_list->u1.AddressOfData );
+                const IMAGE_IMPORT_BY_NAME *pe_name = image_import_by_name( module, (DWORD)import_list->u1.AddressOfData );
                 WARN("No implementation for %s.%s", name, pe_name->Name );
                 thunk_list->u1.Function = allocate_stub( name, (const char*)pe_name->Name );
             }
@@ -4093,10 +4116,10 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
         }
         else  /* import by name */
         {
-            IMAGE_IMPORT_BY_NAME *pe_name;
-            pe_name = get_rva( module, (DWORD)import_list->u1.AddressOfData );
+            const IMAGE_IMPORT_BY_NAME *pe_name;
+            pe_name = image_import_by_name( module, (DWORD)import_list->u1.AddressOfData );
             thunk_list->u1.Function = (ULONG_PTR)find_named_export( imp_mod, exports, exp_size,
-                                                                    (const char*)pe_name->Name,
+                                                                     (const char*)pe_name->Name,
                                                                     pe_name->Hint, load_path, wm, FALSE );
             thunk_list->u1.Function = macrunner_hb_fix_native_import_target( wm, wmImp, name,
                                                                              (const char *)pe_name->Name,
@@ -7649,10 +7672,14 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
                                        IMAGE_THUNK_DATA* addr, ULONG flags )
 {
     IMAGE_THUNK_DATA *pIAT, *pINT;
+    const IMAGE_IMPORT_BY_NAME *iibn = NULL;
     DELAYLOAD_INFO delayinfo;
     UNICODE_STRING mod;
     const CHAR* name;
     HMODULE *phmod;
+    SIZE_T import_count;
+    ULONG_PTR iat_addr, thunk_addr, offset;
+    BOOL import_by_ordinal;
     NTSTATUS nts;
     FARPROC fp;
     INT_PTR id;
@@ -7662,8 +7689,35 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
     phmod = get_rva(base, desc->ModuleHandleRVA);
     pIAT = get_rva(base, desc->ImportAddressTableRVA);
     pINT = desc->ImportNameTableRVA ? get_rva(base, desc->ImportNameTableRVA) : pIAT;
-    name = get_rva(base, desc->DllNameRVA);
-    id = addr - pIAT;
+    name = image_rva_string(base, desc->DllNameRVA);
+
+    if (!name || !image_contains_array( base, phmod, 1, sizeof(*phmod) ) ||
+        get_import_thunk_count( base, pINT, &import_count ) ||
+        !image_contains_array( base, pIAT, import_count + 1, sizeof(*pIAT) ))
+    {
+        WARN( "invalid delay-load descriptor %p for base %p\n", desc, base );
+        return NULL;
+    }
+
+    iat_addr = (ULONG_PTR)pIAT;
+    thunk_addr = (ULONG_PTR)addr;
+    if (thunk_addr < iat_addr || (offset = thunk_addr - iat_addr) % sizeof(*pIAT) ||
+        offset / sizeof(*pIAT) >= import_count)
+    {
+        WARN( "delay-load thunk %p is outside IAT %p count %Iu for %s\n",
+              addr, pIAT, import_count, name );
+        return NULL;
+    }
+
+    id = offset / sizeof(*pIAT);
+    import_by_ordinal = IMAGE_SNAP_BY_ORDINAL(pINT[id].u1.Ordinal);
+    if (!import_by_ordinal &&
+        !(iibn = image_import_by_name( base, (DWORD)pINT[id].u1.AddressOfData )))
+    {
+        WARN( "invalid delay-load import-by-name rva %Ix for %s\n",
+              (ULONG_PTR)pINT[id].u1.AddressOfData, name );
+        return NULL;
+    }
 
     if (!*phmod)
     {
@@ -7688,11 +7742,10 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
         if (nts) goto fail;
     }
 
-    if (IMAGE_SNAP_BY_ORDINAL(pINT[id].u1.Ordinal))
+    if (import_by_ordinal)
         nts = LdrGetProcedureAddress(*phmod, NULL, LOWORD(pINT[id].u1.Ordinal), (void**)&fp);
     else
     {
-        const IMAGE_IMPORT_BY_NAME* iibn = get_rva(base, pINT[id].u1.AddressOfData);
         ANSI_STRING fnc;
 
         RtlInitAnsiString(&fnc, (char*)iibn->Name);
@@ -7702,11 +7755,7 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
     {
         const char *import_name = NULL;
 
-        if (!IMAGE_SNAP_BY_ORDINAL(pINT[id].u1.Ordinal))
-        {
-            const IMAGE_IMPORT_BY_NAME* iibn = get_rva(base, pINT[id].u1.AddressOfData);
-            import_name = (char*)iibn->Name;
-        }
+        if (!import_by_ordinal) import_name = (char*)iibn->Name;
         fp = macrunner_hb_maybe_register_dynamic_import_thunk( base, *phmod, name, import_name,
                                                                LOWORD(pINT[id].u1.Ordinal), fp );
         pIAT[id].u1.Function = (ULONG_PTR)fp;
@@ -7718,14 +7767,13 @@ fail:
     delayinfo.DelayloadDescriptor = desc;
     delayinfo.ThunkAddress = addr;
     delayinfo.TargetDllName = name;
-    if (IMAGE_SNAP_BY_ORDINAL(pINT[id].u1.Ordinal))
+    if (import_by_ordinal)
     {
         delayinfo.TargetApiDescriptor.ImportDescribedByName = FALSE;
         delayinfo.TargetApiDescriptor.Description.Ordinal = LOWORD(pINT[id].u1.Ordinal);
     }
     else
     {
-        const IMAGE_IMPORT_BY_NAME* iibn = get_rva(base, pINT[id].u1.AddressOfData);
         delayinfo.TargetApiDescriptor.ImportDescribedByName = TRUE;
         delayinfo.TargetApiDescriptor.Description.Name = (const char *)iibn->Name;
     }
@@ -7736,14 +7784,13 @@ fail:
     if (dllhook)
         return dllhook(4, &delayinfo);
 
-    if (IMAGE_SNAP_BY_ORDINAL(pINT[id].u1.Ordinal))
+    if (import_by_ordinal)
     {
         DWORD_PTR ord = LOWORD(pINT[id].u1.Ordinal);
         return syshook(name, (const char *)ord);
     }
     else
     {
-        const IMAGE_IMPORT_BY_NAME* iibn = get_rva(base, pINT[id].u1.AddressOfData);
         return syshook(name, (const char *)iibn->Name);
     }
 }

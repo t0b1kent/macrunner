@@ -2090,7 +2090,7 @@ static int mprotect_range( void *base, size_t size, BYTE set, BYTE clear )
     int prot, next;
     BYTE vprot;
 
-    size = ROUND_SIZE( base, size, host_page_mask );
+    if (!round_size_checked( (UINT_PTR)base, size, host_page_mask, &size )) return -1;
 
     vprot = get_host_page_vprot( addr );
     prot = get_unix_prot( (vprot & ~clear) | set );

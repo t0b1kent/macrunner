@@ -170,6 +170,6 @@ set -e
 WINEPREFIX="$PREFIX" "$WINESERVER" -k >/dev/null 2>&1 || true
 
 echo "exit_code=$SMOKE_RC"
-grep -E "DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDXGIFactory1|factory_probe|EnumAdapters|adapter_probe|RegisterClassExW|CreateWindowExW|window_create|D3D11CreateDevice|feature_level|CheckFormatSupport|format_support|CreateSwapChainForHwnd|IDXGISwapChain::GetBuffer|CreateTexture1D|CreateTexture2D|CreateShaderResourceView|CopySubresourceRegion|GenerateMips|ResolveSubresource|CreateRenderTargetView|ClearRenderTargetView|CreateDepthStencilView|ClearDepthStencilView|Present|Readback|pixel0_bgra|pixel_readback|c0000135|err:module|not found|failed|FAIL" "$LOG" | tail -140 || true
+grep -E "DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDXGIFactory1|factory_probe|EnumAdapters|adapter_probe|RegisterClassExW|CreateWindowExW|window_create|D3D11CreateDevice|feature_level|CheckFormatSupport|format_support|CreateSwapChainForHwnd|IDXGISwapChain::GetBuffer|CreateTexture1D|CreateTexture2D|CreateShaderResourceView|CopySubresourceRegion|GenerateMips|ResolveSubresource|CreateRenderTargetView|ClearRenderTargetView|CreateDepthStencilView|ClearDepthStencilView|OMSetRenderTargetsAndUnorderedAccessViews|Present|Readback|pixel0_bgra|pixel_readback|c0000135|err:module|not found|failed|FAIL" "$LOG" | tail -140 || true
 
 exit "$SMOKE_RC"

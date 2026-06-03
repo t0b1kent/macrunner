@@ -3445,6 +3445,51 @@ static IMAGE_DATA_DIRECTORY *get_data_dir( IMAGE_NT_HEADERS *nt, SIZE_T total_si
  *
  * Reimplementation of LdrProcessRelocationBlock.
  */
+static BOOL relocation_block_targets_fit_image( const IMAGE_BASE_RELOCATION *rel, ULONG total_size )
+{
+    const USHORT *fixup = (const USHORT *)(rel + 1);
+    ULONG count = (rel->SizeOfBlock - sizeof(*rel)) / sizeof(*fixup);
+
+    while (count--)
+    {
+        USHORT entry = *fixup++;
+        SIZE_T offset = entry & 0xfff;
+        SIZE_T size = 0, rva;
+
+        switch (entry >> 12)
+        {
+        case IMAGE_REL_BASED_ABSOLUTE:
+            continue;
+        case IMAGE_REL_BASED_HIGH:
+        case IMAGE_REL_BASED_LOW:
+        case IMAGE_REL_BASED_HIGHADJ:
+            size = sizeof(short);
+            if ((entry >> 12) == IMAGE_REL_BASED_HIGHADJ)
+            {
+                if (!count) return FALSE;
+                fixup++;
+                count--;
+            }
+            break;
+        case IMAGE_REL_BASED_HIGHLOW:
+            size = sizeof(int);
+            break;
+        case IMAGE_REL_BASED_DIR64:
+            size = sizeof(INT64);
+            break;
+        case IMAGE_REL_BASED_THUMB_MOV32:
+            size = 2 * sizeof(UINT);
+            break;
+        default:
+            return FALSE;
+        }
+        if (rel->VirtualAddress > total_size || offset > total_size - rel->VirtualAddress) return FALSE;
+        rva = rel->VirtualAddress + offset;
+        if (size > total_size - rva) return FALSE;
+    }
+    return TRUE;
+}
+
 static BOOL is_valid_relocation_block( const IMAGE_BASE_RELOCATION *rel, const IMAGE_BASE_RELOCATION *end,
                                        ULONG total_size )
 {
@@ -3453,7 +3498,7 @@ static BOOL is_valid_relocation_block( const IMAGE_BASE_RELOCATION *rel, const I
     if (rel->SizeOfBlock < sizeof(*rel) || rel->SizeOfBlock > remaining ||
         (rel->SizeOfBlock - sizeof(*rel)) % sizeof(USHORT))
         return FALSE;
-    return rel->VirtualAddress < total_size;
+    return rel->VirtualAddress < total_size && relocation_block_targets_fit_image( rel, total_size );
 }
 
 static IMAGE_BASE_RELOCATION *process_relocation_block( char *page, IMAGE_BASE_RELOCATION *rel,

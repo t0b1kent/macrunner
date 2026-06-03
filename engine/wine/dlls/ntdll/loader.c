@@ -5514,6 +5514,54 @@ static BOOL image_section_raw_range_fits( const IMAGE_SECTION_HEADER *sec, SIZE_
     return rva < image_size && *size <= image_size - rva;
 }
 
+static BOOL image_relocation_block_targets_fit( const IMAGE_BASE_RELOCATION *rel, SIZE_T image_size )
+{
+    const USHORT *fixup = (const USHORT *)(rel + 1);
+    ULONG count = (rel->SizeOfBlock - sizeof(*rel)) / sizeof(*fixup);
+
+    while (count--)
+    {
+        USHORT entry = *fixup++;
+        SIZE_T offset = entry & 0xfff;
+        SIZE_T size = 0, rva;
+
+        switch (entry >> 12)
+        {
+        case IMAGE_REL_BASED_ABSOLUTE:
+            continue;
+        case IMAGE_REL_BASED_HIGH:
+        case IMAGE_REL_BASED_LOW:
+        case IMAGE_REL_BASED_HIGHADJ:
+            size = sizeof(short);
+            if ((entry >> 12) == IMAGE_REL_BASED_HIGHADJ)
+            {
+                if (!count) return FALSE;
+                fixup++;
+                count--;
+            }
+            break;
+        case IMAGE_REL_BASED_HIGHLOW:
+            size = sizeof(int);
+            break;
+#ifdef _WIN64
+        case IMAGE_REL_BASED_DIR64:
+            size = sizeof(INT_PTR);
+            break;
+#elif defined(__arm__)
+        case IMAGE_REL_BASED_THUMB_MOV32:
+            size = 2 * sizeof(UINT);
+            break;
+#endif
+        default:
+            return FALSE;
+        }
+        if (rel->VirtualAddress > image_size || offset > image_size - rel->VirtualAddress) return FALSE;
+        rva = rel->VirtualAddress + offset;
+        if (size > image_size - rva) return FALSE;
+    }
+    return TRUE;
+}
+
 
 static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T len )
 {
@@ -5609,6 +5657,13 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
         {
             WARN( "invalid address %p in relocation %p\n", get_rva( module, rel->VirtualAddress ), rel );
             status = STATUS_ACCESS_VIOLATION;
+            goto done;
+        }
+        if (!image_relocation_block_targets_fit( rel, len ))
+        {
+            WARN( "invalid relocation targets in block %p va %lx size %lx image size %Iu\n",
+                  rel, rel->VirtualAddress, rel->SizeOfBlock, len );
+            status = STATUS_INVALID_IMAGE_FORMAT;
             goto done;
         }
         rel = LdrProcessRelocationBlock( get_rva( module, rel->VirtualAddress ),

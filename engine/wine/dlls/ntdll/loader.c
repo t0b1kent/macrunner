@@ -2002,6 +2002,7 @@ static void *macrunner_hb_find_disk_export_outside_section( WINE_MODREF *target_
     IMAGE_DOS_HEADER *dos;
     IMAGE_NT_HEADERS *nt;
     IMAGE_SECTION_HEADER *sections;
+    const IMAGE_DATA_DIRECTORY *export_dir;
     IMAGE_EXPORT_DIRECTORY *exports;
     DWORD *names, *functions, func_rva;
     WORD *ordinals;
@@ -2034,18 +2035,23 @@ static void *macrunner_hb_find_disk_export_outside_section( WINE_MODREF *target_
 
     dos = (IMAGE_DOS_HEADER *)data;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto done_data;
-    if ((SIZE_T)dos->e_lfanew + sizeof(*nt) > size) goto done_data;
+    if (dos->e_lfanew < 0 || size < sizeof(*nt) || (SIZE_T)dos->e_lfanew > size - sizeof(*nt))
+        goto done_data;
     nt = (IMAGE_NT_HEADERS *)(data + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) goto done_data;
     if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) goto done_data;
-    if (!nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress) goto done_data;
+    export_dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!export_dir->VirtualAddress) goto done_data;
     sections = IMAGE_FIRST_SECTION( nt );
     if ((BYTE *)(sections + nt->FileHeader.NumberOfSections) > data + size) goto done_data;
 
     exports = macrunner_hb_file_rva_to_ptr( data, size, sections, nt->FileHeader.NumberOfSections,
-                                            nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress,
-                                            sizeof(*exports) );
+                                            export_dir->VirtualAddress, sizeof(*exports) );
     if (!exports) goto done_data;
+    if (exports->NumberOfNames > ~(SIZE_T)0 / sizeof(*names) ||
+        exports->NumberOfNames > ~(SIZE_T)0 / sizeof(*ordinals) ||
+        exports->NumberOfFunctions > ~(SIZE_T)0 / sizeof(*functions))
+        goto done_data;
     names = macrunner_hb_file_rva_to_ptr( data, size, sections, nt->FileHeader.NumberOfSections,
                                           exports->AddressOfNames, exports->NumberOfNames * sizeof(*names) );
     ordinals = macrunner_hb_file_rva_to_ptr( data, size, sections, nt->FileHeader.NumberOfSections,
@@ -2066,9 +2072,7 @@ static void *macrunner_hb_find_disk_export_outside_section( WINE_MODREF *target_
         ordinal = ordinals[i];
         if (ordinal >= exports->NumberOfFunctions) break;
         func_rva = functions[ordinal];
-        if (func_rva >= nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress &&
-            func_rva < nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress +
-                       nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size)
+        if (func_rva >= export_dir->VirtualAddress && func_rva - export_dir->VirtualAddress < export_dir->Size)
             break;
         if (macrunner_hb_file_rva_in_section( sections, nt->FileHeader.NumberOfSections, section, func_rva ))
             break;

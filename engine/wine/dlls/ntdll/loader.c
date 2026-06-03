@@ -4921,7 +4921,7 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
         {
             struct macrunner_hb_x64_dll_entry_params params;
             DLLENTRYPROC header_entry = nt->OptionalHeader.AddressOfEntryPoint ?
-                (DLLENTRYPROC)((char *)module + nt->OptionalHeader.AddressOfEntryPoint) : NULL;
+                image_rva_range( module, nt->OptionalHeader.AddressOfEntryPoint, 1 ) : NULL;
 
             if (header_entry && entry != header_entry)
             {

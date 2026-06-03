@@ -4223,18 +4223,60 @@ static BOOL is_dll_native_subsystem( LDR_DATA_TABLE_ENTRY *mod, const IMAGE_NT_H
  * Allocate a TLS slot for a newly-loaded module.
  * The loader_section must be locked while calling this function.
  */
+static BOOL get_tls_data_size( const IMAGE_TLS_DIRECTORY *dir, SIZE_T *size )
+{
+    ULONG_PTR start = dir->StartAddressOfRawData;
+    ULONG_PTR end = dir->EndAddressOfRawData;
+
+    if (end < start) return FALSE;
+    *size = end - start;
+    return *size <= (SIZE_T)-1 - dir->SizeOfZeroFill;
+}
+
+static BOOL validate_tls_directory( HMODULE module, const IMAGE_TLS_DIRECTORY *dir, SIZE_T *size )
+{
+    if (!get_tls_data_size( dir, size ))
+    {
+        WARN( "invalid TLS raw data range %p-%p in module %p\n",
+              (void *)dir->StartAddressOfRawData, (void *)dir->EndAddressOfRawData, module );
+        return FALSE;
+    }
+    if (!*size && !dir->SizeOfZeroFill && !dir->AddressOfCallBacks) return TRUE;
+
+    if (!dir->AddressOfIndex ||
+        !image_contains_range( module, (const void *)dir->AddressOfIndex, sizeof(DWORD) ))
+    {
+        WARN( "invalid TLS index pointer %p in module %p\n", (void *)dir->AddressOfIndex, module );
+        return FALSE;
+    }
+    if (*size && !image_contains_range( module, (const void *)dir->StartAddressOfRawData, *size ))
+    {
+        WARN( "invalid TLS raw data range %p-%p in module %p\n",
+              (void *)dir->StartAddressOfRawData, (void *)dir->EndAddressOfRawData, module );
+        return FALSE;
+    }
+    if (dir->AddressOfCallBacks &&
+        !image_contains_range( module, (const void *)dir->AddressOfCallBacks, sizeof(PIMAGE_TLS_CALLBACK) ))
+    {
+        WARN( "invalid TLS callback array %p in module %p\n", (void *)dir->AddressOfCallBacks, module );
+        return FALSE;
+    }
+    return TRUE;
+}
+
 static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
 {
     const IMAGE_TLS_DIRECTORY *dir;
-    ULONG i, size;
+    ULONG i, dirsize;
+    SIZE_T size;
     void *new_ptr;
     UINT old_module_count = tls_module_count;
     HANDLE thread = NULL, next;
 
-    if (!(dir = RtlImageDirectoryEntryToData( mod->DllBase, TRUE, IMAGE_DIRECTORY_ENTRY_TLS, &size )))
+    if (!(dir = RtlImageDirectoryEntryToData( mod->DllBase, TRUE, IMAGE_DIRECTORY_ENTRY_TLS, &dirsize )))
         return FALSE;
 
-    size = dir->EndAddressOfRawData - dir->StartAddressOfRawData;
+    if (!validate_tls_directory( mod->DllBase, dir, &size )) return FALSE;
     if (!size && !dir->SizeOfZeroFill && !dir->AddressOfCallBacks) return FALSE;
 
     for (i = 0; i < tls_module_count; i++)
@@ -4307,7 +4349,7 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
         memcpy( new_ptr, (void *)dir->StartAddressOfRawData, size );
         memset( (char *)new_ptr + size, 0, dir->SizeOfZeroFill );
 
-        TRACE( "thread %04lx slot %lu: %lu/%lu bytes at %p\n",
+        TRACE( "thread %04lx slot %lu: %Iu/%lu bytes at %p\n",
                HandleToULong(teb->ClientId.UniqueThread), i, size, dir->SizeOfZeroFill, new_ptr );
 
         RtlFreeHeap( GetProcessHeap(), 0,
@@ -4330,11 +4372,14 @@ static BOOL alloc_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
 static void free_tls_slot( LDR_DATA_TABLE_ENTRY *mod )
 {
     const IMAGE_TLS_DIRECTORY *dir;
-    ULONG i, size;
+    ULONG i, dirsize;
+    SIZE_T size;
 
     if (mod->TlsIndex != -1)
         return;
-    if (!(dir = RtlImageDirectoryEntryToData( mod->DllBase, TRUE, IMAGE_DIRECTORY_ENTRY_TLS, &size )))
+    if (!(dir = RtlImageDirectoryEntryToData( mod->DllBase, TRUE, IMAGE_DIRECTORY_ENTRY_TLS, &dirsize )))
+        return;
+    if (!validate_tls_directory( mod->DllBase, dir, &size ) || !dir->AddressOfIndex)
         return;
 
     i = *(ULONG*)dir->AddressOfIndex;
@@ -4542,7 +4587,8 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
 static NTSTATUS alloc_thread_tls(void)
 {
     void **pointers;
-    UINT i, size;
+    UINT i;
+    SIZE_T size;
 
     if (!(pointers = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY,
                                       tls_module_count * sizeof(*pointers) )))
@@ -4552,8 +4598,7 @@ static NTSTATUS alloc_thread_tls(void)
     {
         const IMAGE_TLS_DIRECTORY *dir = &tls_dirs[i];
 
-        if (!dir) continue;
-        size = dir->EndAddressOfRawData - dir->StartAddressOfRawData;
+        if (!get_tls_data_size( dir, &size )) continue;
         if (!size && !dir->SizeOfZeroFill) continue;
 
         if (!(pointers[i] = RtlAllocateHeap( GetProcessHeap(), 0, size + dir->SizeOfZeroFill )))
@@ -4565,7 +4610,7 @@ static NTSTATUS alloc_thread_tls(void)
         memcpy( pointers[i], (void *)dir->StartAddressOfRawData, size );
         memset( (char *)pointers[i] + size, 0, dir->SizeOfZeroFill );
 
-        TRACE( "slot %u: %u/%lu bytes at %p\n", i, size, dir->SizeOfZeroFill, pointers[i] );
+        TRACE( "slot %u: %Iu/%lu bytes at %p\n", i, size, dir->SizeOfZeroFill, pointers[i] );
     }
     NtCurrentTeb()->ThreadLocalStoragePointer = pointers;
 #ifdef __x86_64__  /* macOS-specific hack */
@@ -4615,6 +4660,12 @@ static void call_tls_callbacks( HMODULE module, UINT reason )
 
     dir = RtlImageDirectoryEntryToData( module, TRUE, IMAGE_DIRECTORY_ENTRY_TLS, &dirsize );
     if (!dir || !dir->AddressOfCallBacks) return;
+    if (!image_contains_range( module, (const void *)dir->AddressOfCallBacks, sizeof(*callback) ))
+    {
+        TRACE_(relay)("\1invalid TLS callback array (callbacks=%p,module=%p,reason=%s)\n",
+                      (void *)dir->AddressOfCallBacks, module, reason_names[reason] );
+        return;
+    }
 
     for (callback = (const PIMAGE_TLS_CALLBACK *)dir->AddressOfCallBacks;; callback++)
     {

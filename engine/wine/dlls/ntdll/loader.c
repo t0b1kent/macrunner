@@ -67,6 +67,7 @@ static const WCHAR pe_dir[] = L"";
 
 /* we don't want to include winuser.h */
 #define RT_MANIFEST                         ((ULONG_PTR)24)
+#define CREATEPROCESS_MANIFEST_RESOURCE_ID  ((ULONG_PTR)1)
 #define ISOLATIONAWARE_MANIFEST_RESOURCE_ID ((ULONG_PTR)2)
 
 typedef DWORD (CALLBACK *DLLENTRYPROC)(HMODULE,DWORD,LPVOID);
@@ -4163,9 +4164,11 @@ static NTSTATUS create_module_activation_context( LDR_DATA_TABLE_ENTRY *module )
     NTSTATUS status;
     LDR_RESOURCE_INFO info;
     const IMAGE_RESOURCE_DATA_ENTRY *entry;
+    ULONG_PTR manifest_id = (module->Flags & LDR_IMAGE_IS_DLL) ?
+        ISOLATIONAWARE_MANIFEST_RESOURCE_ID : CREATEPROCESS_MANIFEST_RESOURCE_ID;
 
     info.Type = RT_MANIFEST;
-    info.Name = ISOLATIONAWARE_MANIFEST_RESOURCE_ID;
+    info.Name = manifest_id;
     info.Language = 0;
     if (!(status = LdrFindResource_U( module->DllBase, &info, 3, &entry )))
     {
@@ -4174,7 +4177,7 @@ static NTSTATUS create_module_activation_context( LDR_DATA_TABLE_ENTRY *module )
         ctx.lpSource = NULL;
         ctx.dwFlags  = ACTCTX_FLAG_RESOURCE_NAME_VALID | ACTCTX_FLAG_HMODULE_VALID;
         ctx.hModule  = module->DllBase;
-        ctx.lpResourceName = (LPCWSTR)ISOLATIONAWARE_MANIFEST_RESOURCE_ID;
+        ctx.lpResourceName = (LPCWSTR)manifest_id;
         status = RtlCreateActivationContext( &module->ActivationContext, &ctx );
     }
     return status;

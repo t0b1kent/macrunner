@@ -5,8 +5,9 @@ Updated on 2026-06-03 after the isolated DXMT smoke prefix covered Unity device
 probes, resource breadth, shader/draw/dispatch, per-instance input, indirect
 calls, expanded state/query probes, deferred resource command-lists, MSAA
 render/resolve, shader corpus coverage, Hollow Knight DXBC corpus extraction,
-bitblt/flip swapchain variants, live-window present, fullscreen enter/restore
-state, resize, readback, and vkd3d prefix deployment.
+bitblt/flip swapchain variants, live-window present, visible fullscreen
+enter/restore with display capture, resize, readback, and vkd3d prefix
+deployment.
 Status is evidence-based: `Implemented` means an entry point exists and routes to
 DXMT/Metal code; `Partial` means the path exists with known limits; `Gap` means
 the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
@@ -57,6 +58,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Unity MSAA/depth resolve probe | PASS | `UnityMSAAProbe` creates 4x color/depth textures, creates an MSAA DSV, clears color/depth, resolves to single-sample texture, and validates staging readback. |
 | Swapchain variant probes | PASS | Separate `DXGI_SWAP_EFFECT_DISCARD` and `DXGI_SWAP_EFFECT_FLIP_DISCARD` smoke swapchains both create, present, read back `pixel0_bgra=0,255,0,255`, and report `result=PASS`. |
 | Live-window present smoke | PASS | `engine/graphics/scripts/run_dxmt_d3d11_live_window_smoke.sh aarch64` reaches real HWND present/readback in the owned prefix; CG capture confirms a nonblack host window shell on this host. |
+| Visible fullscreen display smoke | PASS | `engine/graphics/scripts/run_dxmt_d3d11_fullscreen_smoke.sh aarch64` reaches visible HWND, `SetFullscreenState(TRUE) hr=0x00000000`, `fullscreen_after_true=1`, restore success, `pixel_readback=PASS`, and a display capture of `3024x1964` with nonblack/colorful pixels. |
 | vkd3d prefix deployment | PASS | `engine/graphics/scripts/run_vkd3d_prefix_sync_smoke.sh` verifies `d3d12.dll`, `d3d12core.dll`, `dxgi.dll`, and `winemetal.dll` in isolated aarch64/x64 prefixes byte-match `engine/graphics/dist`. |
 | Headless Metal layer fallback | PASS | When Wine macdrv Metal-view symbols are unavailable, `winemetal` creates a retained fallback `CAMetalLayer` for the smoke HWND. |
 | Swapchain/present | PASS | Message HWND path prints `CreateSwapChainForHwnd hr=0x00000000`, `IDXGISwapChain::GetBuffer hr=0x00000000`, `Present hr=0x00000000`. |
@@ -104,8 +106,8 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Unity format probes | PASS | Core Unity color/depth formats plus optional BC1/BC3/BC7 probes pass in the headless smoke. |
 | Phase 3 resource probes | PASS | Texture/buffer/view/update/map/copy/UAV, 3D texture, cubemap, and structured SRV/UAV probes pass in the headless smoke. |
 | Phase 4 shaders/draw | PASS | Embedded HLSL VS/PS/CS compiles via `d3dcompiler_47`; shader/input-layout creation succeeds with per-instance input data; direct/indirect draw and dispatch variants pass; expanded state matrix, event/timestamp/occlusion query data, predicate, deferred command list, deferred clear, and deferred draw pass; readback returns `pixel0_bgra=0,255,0,255`, deferred clear returns `255,0,64,255`, deferred draw returns green, and compute returns `staging_value=42`. |
-| Phase 5 Unity probe expansion | PASS | State object matrix, texture sampling, gamma/output state, forced-message fullscreen enter/restore, `ResizeBuffers`, post-resize RTV/present/readback, indexed/indirect variants, query/predicate, empty deferred playback, and bitblt/flip swapchains are green. |
+| Phase 5 Unity probe expansion | PASS | State object matrix, texture sampling, gamma/output state, forced-message fullscreen enter/restore, visible fullscreen display capture, `ResizeBuffers`, post-resize RTV/present/readback, indexed/indirect variants, query/predicate, empty deferred playback, and bitblt/flip swapchains are green. |
 | Swapchain variants | PASS | Basic headless message-HWND swapchain/present, resize, `DISCARD`, and `FLIP_DISCARD` variant present/readback are green. |
 | Adapter/output enumeration | PASS | `EnumOutputs`, monitor desc, and display mode list pass in the smoke. |
 | State object breadth | PASS | Alpha/opaque blend, cull-none/cull-back rasterizer, depth/stencil/disabled depth, and linear/comparison/anisotropic sampler variants pass. |
-| Next Phase 4/5 evidence | Next | Add visible/full-display fullscreen correctness, Unity asset-aware game shader extraction/runtime capture, and real Unity present once the external x64 runtime blocker clears. |
+| Next Phase 4/5 evidence | Next | Add Unity asset-aware game shader extraction/runtime capture and real Unity present once the external x64 runtime blocker clears. |

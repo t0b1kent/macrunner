@@ -3091,7 +3091,7 @@ static SIZE_T get_committed_size( struct file_view *view, void *base, size_t max
 static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size )
 {
     SIZE_T host_start_size;
-    char *host_end, *host_start;
+    char *end, *host_end, *host_start;
 
     if (!round_size_checked( 0, (SIZE_T)base, host_page_mask, &host_start_size ))
         return STATUS_INVALID_PARAMETER;
@@ -3106,7 +3106,8 @@ static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size 
     else
     {
         if (size > ~(SIZE_T)0 - (SIZE_T)base) return STATUS_INVALID_PARAMETER;
-        host_end = ROUND_ADDR( base + size, host_page_mask );
+        end = base + size;
+        host_end = ROUND_ADDR( end, host_page_mask );
     }
 
     if (host_start < host_end) anon_mmap_fixed( host_start, host_end - host_start, PROT_NONE, 0 );
@@ -3124,19 +3125,25 @@ static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size 
  */
 static NTSTATUS remove_pages_from_view( struct file_view *view, char *base, size_t size )
 {
+    char *base_end, *view_end;
+
     assert( size < view->size );
 
-    if (view->base != base && base + size != (char *)view->base + view->size)
+    if (size > ~(SIZE_T)0 - (SIZE_T)base || !get_view_limit( view, &view_end ))
+        return STATUS_INVALID_PARAMETER;
+    base_end = base + size;
+
+    if (view->base != base && base_end != view_end)
     {
         struct file_view *new_view = alloc_view();
 
         if (!new_view)
         {
-            ERR( "out of memory for %p-%p\n", base, base + size );
+            ERR( "out of memory for %p-%p\n", base, base_end );
             return STATUS_NO_MEMORY;
         }
-        new_view->base    = base + size;
-        new_view->size    = (char *)view->base + view->size - (char *)new_view->base;
+        new_view->base    = base_end;
+        new_view->size    = view_end - (char *)new_view->base;
         new_view->protect = view->protect;
 
         unregister_view( view );
@@ -3152,7 +3159,7 @@ static NTSTATUS remove_pages_from_view( struct file_view *view, char *base, size
         unregister_view( view );
         if (view->base == base)
         {
-            view->base = base + size;
+            view->base = base_end;
             view->size -= size;
         }
         else view->size = base - (char *)view->base;
@@ -3173,18 +3180,22 @@ static NTSTATUS remove_pages_from_view( struct file_view *view, char *base, size
 static NTSTATUS free_pages_preserve_placeholder( struct file_view *view, char *base, size_t size )
 {
     SIZE_T host_size;
+    char *base_end, *view_end;
     NTSTATUS status;
 
     if (!size) return STATUS_INVALID_PARAMETER_3;
     if (!(view->protect & VPROT_PLACEHOLDER)) return STATUS_CONFLICTING_ADDRESSES;
     if (view->protect & VPROT_FREE_PLACEHOLDER && size == view->size) return STATUS_CONFLICTING_ADDRESSES;
+    if (size > ~(SIZE_T)0 - (SIZE_T)base || !get_view_limit( view, &view_end ))
+        return STATUS_INVALID_PARAMETER;
+    base_end = base + size;
 
     if (size < view->size)
     {
         if ((UINT_PTR)base & host_page_mask ||
-            ((size & host_page_mask) && base + size != (char *)view->base + view->size))
+            ((size & host_page_mask) && base_end != view_end))
         {
-            ERR( "unaligned partial free %p-%p\n", base, base + size );
+            ERR( "unaligned partial free %p-%p\n", base, base_end );
             return STATUS_CONFLICTING_ADDRESSES;
         }
 
@@ -3213,14 +3224,15 @@ static NTSTATUS free_pages_preserve_placeholder( struct file_view *view, char *b
 static NTSTATUS free_pages( struct file_view *view, char *base, size_t size )
 {
     SIZE_T host_base_size;
-    char *host_base, *host_end;
+    char *base_end, *host_base, *host_end, *view_end;
     NTSTATUS status;
 
     if (!round_size_checked( 0, (SIZE_T)base, host_page_mask, &host_base_size ) ||
-        size > ~(SIZE_T)0 - (SIZE_T)base)
+        size > ~(SIZE_T)0 - (SIZE_T)base || !get_view_limit( view, &view_end ))
         return STATUS_INVALID_PARAMETER;
+    base_end = base + size;
     host_base = (char *)host_base_size;
-    host_end = base + size;
+    host_end = base_end;
 
     if (size == view->size)
     {
@@ -3235,15 +3247,15 @@ static NTSTATUS free_pages( struct file_view *view, char *base, size_t size )
     {
         if (size & host_page_mask)
         {
-            ERR( "unaligned partial free %p-%p\n", base, base + size );
+            ERR( "unaligned partial free %p-%p\n", base, base_end );
             return STATUS_CONFLICTING_ADDRESSES;
         }
     }
-    else if (base + size < (char *)view->base + view->size)  /* create a hole */
+    else if (base_end < view_end)  /* create a hole */
     {
-        if ((UINT_PTR)(base + size) & host_page_mask)
+        if ((UINT_PTR)base_end & host_page_mask)
         {
-            ERR( "unaligned partial free %p-%p\n", base, base + size );
+            ERR( "unaligned partial free %p-%p\n", base, base_end );
             return STATUS_CONFLICTING_ADDRESSES;
         }
     }

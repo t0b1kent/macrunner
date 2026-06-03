@@ -3221,8 +3221,10 @@ static void update_arm64ec_ranges( struct file_view *view, IMAGE_NT_HEADERS *nt,
     const IMAGE_CHPE_RANGE_ENTRY *map;
     char *base = view->base;
     const IMAGE_LOAD_CONFIG_DIRECTORY *cfg = (void *)(base + dir->VirtualAddress);
-    ULONG i, size = min( dir->Size, cfg->Size );
+    ULONG i, size;
 
+    if (dir->Size < sizeof(cfg->Size)) return;
+    size = min( dir->Size, cfg->Size );
     if (size <= offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, CHPEMetadataPointer )) return;
     if (!cfg->CHPEMetadataPointer) return;
     if (!arm64ec_view) alloc_arm64ec_map();
@@ -3291,8 +3293,10 @@ static void update_arm64x_mapping( struct file_view *view, IMAGE_NT_HEADERS *nt,
     const char *ptr, *end;
     char *base = view->base;
     const IMAGE_LOAD_CONFIG_DIRECTORY *cfg = (void *)(base + dir->VirtualAddress);
-    ULONG sec, offset, size = min( dir->Size, cfg->Size );
+    ULONG sec, offset, size;
 
+    if (dir->Size < sizeof(cfg->Size)) return;
+    size = min( dir->Size, cfg->Size );
     if (size <= offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, DynamicValueRelocTableSection )) return;
     offset = cfg->DynamicValueRelocTableOffset;
     sec = cfg->DynamicValueRelocTableSection;

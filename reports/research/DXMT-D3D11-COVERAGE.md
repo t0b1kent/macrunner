@@ -44,12 +44,12 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | D3D11 device probe | PASS | `D3D11CreateDevice hr=0x00000000`; `feature_level=0xb100`. |
 | BGRA render-target support | PASS | `CheckFormatSupport(B8G8R8A8_UNORM) hr=0x00000000`; `format_support=0x02fef3f3`. |
 | Unity core format probes | PASS | `R8G8B8A8`, `B8G8R8A8`, `R16G16B16A16_FLOAT`, `R11G11B10_FLOAT`, `R32_FLOAT`, `R16_FLOAT`, `R8_UNORM`, `D24S8`, and `D32_FLOAT` meet required Texture2D/sample/RT/depth flags. |
-| Unity optional BC probes | PASS | `BC1_UNORM`, `BC3_UNORM`, and `BC7_UNORM` report Texture2D + shader-sample support. |
+| Unity optional BC probes | PASS | All optional BC1-BC7 variants report Texture2D + shader-sample support on this Metal device. |
 | Unity optional YUV 4:2:2 probes | PASS | `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` report Texture2D + shader-sample support (`support=0x00d233f1`, required `0x00000220`) in `artifacts/dxmt-smoke-logs/lane-d-yuv422-20260603-212449.outer.log`. |
 | Unity feature probes | PASS | `THREADING`, `D3D11_OPTIONS`, `ARCHITECTURE_INFO`, `DOUBLES`, `D3D10_X_HARDWARE_OPTIONS`, and MSAA quality matrix all return `hr=0x00000000`; sampled formats support 1/2/4x and report 0 quality for 8x on this Metal device. |
 | Unity resource probes | PASS | Color texture + SRV/RTV/update/copy/readback, dynamic vertex buffer map, immutable constant buffer, depth DSV, R32_UINT UAV, 3D texture SRV, cubemap SRV, and structured buffer SRV/UAV all return success. |
 | Depth format family probe | PASS | Resource smoke creates DSVs and clears `D24_UNORM_S8_UINT`, `D16_UNORM`, `D32_FLOAT`, `D32_FLOAT_S8X24_UINT`, plus typeless `R24G8_TYPELESS` with DSV/SRV views. |
-| BC texture family probe | PASS | Resource smoke keeps the detailed BC1 copy matrix and now creates/SRV/copies/verifies BC3 and BC7 blocks when the Metal device advertises BC support. |
+| BC texture family probe | PASS | Resource smoke keeps the detailed BC1 copy matrix and now creates/SRVs/copies to staging/maps/byte-verifies every advertised BC1 sRGB, BC2, BC3, BC4, BC5, BC6H, and BC7 variant in `artifacts/dxmt-smoke-logs/lane-d-bc-family-summary-20260603-213548.outer.log`. |
 | Unity shader/draw probes | PASS | Dynamic `d3dcompiler_47` load, VS/PS/GS compile, GS stream-output creation, shader creation, input layout with per-instance slot, vertex/index/instance/indirect/SO buffers, fullscreen draw, texture-sample draw, present, stream-output readback, and green-pixel readback pass. |
 | Unity shader corpus probe | PASS | `UnityShaderCorpusProbe` compiles/creates `vs_vertex_id`, `vs_instance_matrix`, `ps_texture_array_clip`, `ps_derivative_frontface`, and `cs_texture_intrinsics`; this also covers DXBC `UNDEFINED` interpolation as flat for system-value inputs. |
 | Hollow Knight DXBC corpus smoke | PASS | `engine/graphics/scripts/run_hk_dxbc_airconv_corpus_smoke.sh aarch64` extracted 24 standalone DXBC containers from Unity default resources and translated all 24 through native `airconv -S`; HK `resources.assets`, `sharedassets0.assets`, and `globalgamemanagers.assets` contain DXBC markers but need Unity asset-aware extraction before they count as real-game shader corpus coverage. |
@@ -98,7 +98,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | `R10G10B10A2` | Implemented | Mapped and marked backbuffer-capable. |
 | `R16G16B16A16_FLOAT` | Implemented | Mapped and marked backbuffer-capable. |
 | 16/32-bit float/int scalar/vector | Implemented | Generic mappings plus Metal capability inspector. |
-| BC1-BC7 | Partial | Mapped when Metal device reports BC texture compression; smoke validates BC1 copy paths plus BC3/BC7 texture creation, SRV creation, staging copy, and byte readback on this host. |
+| BC1-BC7 | Partial | Mapped when Metal device reports BC texture compression; smoke validates detailed BC1 copy paths plus create/SRV/default-to-staging copy/map/byte readback for every advertised BC1 sRGB, BC2, BC3, BC4, BC5, BC6H, and BC7 variant on this host. |
 | D16/D24S8/D32/D32S8 | Implemented | Smoke creates textures/DSVs and clears `D16_UNORM`, `D24_UNORM_S8_UINT`, `D32_FLOAT`, and `D32_FLOAT_S8X24_UINT`; D24 remains internally emulated over Depth32Float_Stencil8. |
 | YUV 4:2:2 | Partial | `R8G8_B8G8_UNORM`/`G8R8_G8B8_UNORM` map to BGRG/GBGR 4:2:2 and smoke-verify Texture2D + shader-sample/filter-only support; no RT/storage capability is advertised. |
 | MSAA | Partial | `R8G8B8A8`, `B8G8R8A8`, and `R16G16B16A16_FLOAT` report 1/2/4x quality=1 and 8x quality=0; smoke covers 4x color/depth render, resolve, and readback. |
@@ -110,7 +110,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Probe | Current state | Next evidence needed |
 |---|---:|---|
 | Unity FL 11_0 + BGRA support | PASS | `D3D11CreateDevice hr=0x00000000`, `feature_level=0xb100`, BGRA flags `0x02fef3f3`. |
-| Unity format probes | PASS | Core Unity color/depth formats plus optional BC1/BC3/BC7 and YUV 4:2:2 probes pass in the headless smoke. |
+| Unity format probes | PASS | Core Unity color/depth formats plus optional BC1-BC7 and YUV 4:2:2 probes pass in the headless smoke. |
 | Phase 3 resource probes | PASS | Texture/buffer/view/update/map/copy/UAV, 3D texture, cubemap, and structured SRV/UAV probes pass in the headless smoke. |
 | Phase 4 shaders/draw | PASS | Embedded HLSL VS/PS/CS compiles via `d3dcompiler_47`; shader/input-layout creation succeeds with per-instance input data; direct/indirect draw and dispatch variants pass; expanded state matrix, event/timestamp/occlusion query data, predicate, deferred command list, deferred clear, and deferred draw pass; readback returns `pixel0_bgra=0,255,0,255`, deferred clear returns `255,0,64,255`, deferred draw returns green, and compute returns `staging_value=42`. |
 | Phase 5 Unity probe expansion | PASS | State object matrix, texture sampling, gamma/output state, forced-message fullscreen enter/restore, visible fullscreen display capture, `ResizeBuffers`, post-resize RTV/present/readback, indexed/indirect variants, query/predicate, empty deferred playback, and bitblt/flip swapchains are green. |

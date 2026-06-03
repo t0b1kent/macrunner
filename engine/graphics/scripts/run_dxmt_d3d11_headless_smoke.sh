@@ -155,7 +155,7 @@ if [[ ! "$SMOKE_REPEAT_COUNT" =~ ^[0-9]+$ || "$SMOKE_REPEAT_COUNT" -lt 1 ]]; the
   exit 25
 fi
 
-SUMMARY_PATTERN="DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDXGIFactory1|factory_probe|EnumAdapters|adapter_probe|RegisterClassExW|CreateWindowExW|window_create|D3D11CreateDevice|feature_level|CheckFormatSupport|format_support|CreateSwapChainForHwnd|IDXGISwapChain::GetBuffer|GetContainingOutput|GetFullscreenState|SetFullscreenState|GetFrameStatistics|D3DCompile\\(gs_5_0\\)|CreateGeometryShader|CreateGeometryShaderWithStreamOutput|gs_bytecode_magic|Emulate stream output|CreateEmulatedVertexStreamOutputShader|GeometryShaderDraw|StreamOutputDraw|StreamOutputVerify|stream_output_staging|UnitySRGBProbe|UnityStateProbe|TIMESTAMP_DISJOINT|disjoint_frequency|UnityDeferredResourceProbe|UnityTessellationProbe|UnityMRTProbe|UnityMultithreadProbe|UnityBatchProbe|CreateClassLinkage|CreateHullShader|CreateDomainShader|CreateTexture1D|CreateTexture2D|CreateShaderResourceView|CopySubresourceRegion|GenerateMips|ResolveSubresource|CreateRenderTargetView|ClearRenderTargetView|CreateDepthStencilView|ClearDepthStencilView|ClearView|DiscardView|OMSetRenderTargetsAndUnorderedAccessViews|Present|Readback|pixel0_bgra|pixel_readback|c0000135|err:module|not found|failed|FAIL"
+SUMMARY_PATTERN="DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDXGIFactory1|factory_probe|EnumAdapters|adapter_probe|RegisterClassExW|CreateWindowExW|window_create|D3D11CreateDevice|feature_level|CheckFormatSupport|format_support|UnityFormatProbe|CreateSwapChainForHwnd|IDXGISwapChain::GetBuffer|GetContainingOutput|GetFullscreenState|SetFullscreenState|GetFrameStatistics|D3DCompile\\(gs_5_0\\)|CreateGeometryShader|CreateGeometryShaderWithStreamOutput|gs_bytecode_magic|Emulate stream output|CreateEmulatedVertexStreamOutputShader|GeometryShaderDraw|StreamOutputDraw|StreamOutputVerify|stream_output_staging|UnitySRGBProbe|UnityStateProbe|TIMESTAMP_DISJOINT|disjoint_frequency|UnityDeferredResourceProbe|UnityTessellationProbe|UnityMRTProbe|UnityMultithreadProbe|UnityBatchProbe|CreateClassLinkage|CreateHullShader|CreateDomainShader|CreateTexture1D|CreateTexture2D|CreateShaderResourceView|CopySubresourceRegion|GenerateMips|ResolveSubresource|CreateRenderTargetView|ClearRenderTargetView|CreateDepthStencilView|ClearDepthStencilView|ClearView|DiscardView|OMSetRenderTargetsAndUnorderedAccessViews|Present|Readback|pixel0_bgra|pixel_readback|c0000135|err:module|not found|failed|FAIL"
 
 SMOKE_RC=0
 for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
@@ -185,7 +185,7 @@ for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
 
   echo "run=$run/$SMOKE_REPEAT_COUNT log=$RUN_LOG"
   echo "run_exit_code=$run_rc"
-  grep -E "$SUMMARY_PATTERN" "$RUN_LOG" | tail -220 || true
+  grep -E "$SUMMARY_PATTERN" "$RUN_LOG" | tail -320 || true
   if [[ "$run_rc" -ne 0 ]]; then
     SMOKE_RC="$run_rc"
     break

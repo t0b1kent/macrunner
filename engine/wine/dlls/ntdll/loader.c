@@ -8787,8 +8787,11 @@ void loader_init( CONTEXT *context, void **entry )
  */
 PVOID WINAPI RtlImageDirectoryEntryToData( HMODULE module, BOOL image, WORD dir, ULONG *size )
 {
+    const IMAGE_DATA_DIRECTORY *data;
     const IMAGE_NT_HEADERS *nt;
-    DWORD addr;
+    IMAGE_SECTION_HEADER *section = NULL;
+    DWORD addr, headers_size, image_size;
+    void *ret;
 
     if ((ULONG_PTR)module & 1) image = FALSE;  /* mapped as data file */
     module = (HMODULE)((ULONG_PTR)module & ~3);
@@ -8798,23 +8801,39 @@ PVOID WINAPI RtlImageDirectoryEntryToData( HMODULE module, BOOL image, WORD dir,
         const IMAGE_NT_HEADERS64 *nt64 = (const IMAGE_NT_HEADERS64 *)nt;
 
         if (dir >= nt64->OptionalHeader.NumberOfRvaAndSizes) return NULL;
-        if (!(addr = nt64->OptionalHeader.DataDirectory[dir].VirtualAddress)) return NULL;
-        *size = nt64->OptionalHeader.DataDirectory[dir].Size;
-        if (image || addr < nt64->OptionalHeader.SizeOfHeaders) return (char *)module + addr;
+        data = &nt64->OptionalHeader.DataDirectory[dir];
+        headers_size = nt64->OptionalHeader.SizeOfHeaders;
+        image_size = nt64->OptionalHeader.SizeOfImage;
     }
     else if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
     {
         const IMAGE_NT_HEADERS32 *nt32 = (const IMAGE_NT_HEADERS32 *)nt;
 
         if (dir >= nt32->OptionalHeader.NumberOfRvaAndSizes) return NULL;
-        if (!(addr = nt32->OptionalHeader.DataDirectory[dir].VirtualAddress)) return NULL;
-        *size = nt32->OptionalHeader.DataDirectory[dir].Size;
-        if (image || addr < nt32->OptionalHeader.SizeOfHeaders) return (char *)module + addr;
+        data = &nt32->OptionalHeader.DataDirectory[dir];
+        headers_size = nt32->OptionalHeader.SizeOfHeaders;
+        image_size = nt32->OptionalHeader.SizeOfImage;
     }
     else return NULL;
 
+    if (!(addr = data->VirtualAddress)) return NULL;
+    *size = data->Size;
+    if ((ULONG_PTR)module > ~(ULONG_PTR)0 - addr) return NULL;
+    if (image)
+    {
+        if (addr > image_size || *size > image_size - addr) return NULL;
+        return (char *)module + addr;
+    }
+    if (addr < headers_size)
+    {
+        if (*size > headers_size - addr) return NULL;
+        return (char *)module + addr;
+    }
+
     /* not mapped as image, need to find the section containing the virtual address */
-    return RtlImageRvaToVa( nt, module, addr, NULL );
+    if (!(ret = RtlImageRvaToVa( nt, module, addr, &section ))) return NULL;
+    if (*size > section->SizeOfRawData - (addr - section->VirtualAddress)) return NULL;
+    return ret;
 }
 
 

@@ -1347,19 +1347,21 @@ HANDLE WINAPI DECLSPEC_HOTPATCH FindFirstFileExW( LPCWSTR filename, FINDEX_INFO_
 
     TRACE( "%s %d %p %d %p %lx\n", debugstr_w(filename), level, data, search_op, filter, flags );
 
-    if (flags & ~FIND_FIRST_EX_LARGE_FETCH)
+    if (flags & ~(FIND_FIRST_EX_CASE_SENSITIVE | FIND_FIRST_EX_LARGE_FETCH))
     {
-        FIXME("flags not implemented 0x%08lx\n", flags );
+        WARN("unsupported flags 0x%08lx\n", flags );
+        SetLastError( ERROR_INVALID_PARAMETER );
+        return INVALID_HANDLE_VALUE;
     }
     if (search_op != FindExSearchNameMatch && search_op != FindExSearchLimitToDirectories)
     {
-        FIXME( "search_op not implemented 0x%08x\n", search_op );
+        WARN( "unsupported search_op 0x%08x\n", search_op );
         SetLastError( ERROR_INVALID_PARAMETER );
         return INVALID_HANDLE_VALUE;
     }
     if (level != FindExInfoStandard && level != FindExInfoBasic)
     {
-        FIXME("info level %d not implemented\n", level );
+        WARN("unsupported info level %d\n", level );
         SetLastError( ERROR_INVALID_PARAMETER );
         return INVALID_HANDLE_VALUE;
     }

@@ -2189,10 +2189,21 @@ static BOOL module_rva_array_fits_image( ULONG image_size, ULONG rva, ULONG coun
     return count <= (image_size - rva) / elem_size;
 }
 
+static void *module_rva_ptr( HMODULE module, ULONG image_size, ULONG rva, SIZE_T size )
+{
+    ULONG_PTR base = (ULONG_PTR)module;
+
+    if (image_size > ~(ULONG_PTR)0 - base) return NULL;
+    if (rva > image_size || size > image_size - rva) return NULL;
+    return (void *)(base + rva);
+}
+
 static BOOL module_string_fits_image( HMODULE module, ULONG image_size, ULONG rva )
 {
-    if (rva >= image_size) return FALSE;
-    return memchr( (BYTE *)module + rva, 0, image_size - rva ) != NULL;
+    char *str = module_rva_ptr( module, image_size, rva, 1 );
+
+    if (!str) return FALSE;
+    return memchr( str, 0, image_size - rva ) != NULL;
 }
 
 static ULONG_PTR find_ordinal_export( HMODULE module, ULONG image_size,
@@ -2204,9 +2215,11 @@ static ULONG_PTR find_ordinal_export( HMODULE module, ULONG image_size,
                                       exports->NumberOfFunctions, sizeof(*functions) ))
         return 0;
     if (ordinal >= exports->NumberOfFunctions) return 0;
-    functions = (const DWORD *)((BYTE *)module + exports->AddressOfFunctions);
+    functions = module_rva_ptr( module, image_size, exports->AddressOfFunctions,
+                                exports->NumberOfFunctions * sizeof(*functions) );
+    if (!functions) return 0;
     if (!functions[ordinal] || functions[ordinal] >= image_size) return 0;
-    return (ULONG_PTR)module + functions[ordinal];
+    return (ULONG_PTR)module_rva_ptr( module, image_size, functions[ordinal], 1 );
 }
 
 static ULONG_PTR find_named_export( HMODULE module, ULONG image_size,
@@ -2223,15 +2236,19 @@ static ULONG_PTR find_named_export( HMODULE module, ULONG image_size,
     if (!module_rva_array_fits_image( image_size, exports->AddressOfNames,
                                       exports->NumberOfNames, sizeof(*names) ))
         return 0;
-    ordinals = (const WORD *)((BYTE *)module + exports->AddressOfNameOrdinals);
-    names = (const DWORD *)((BYTE *)module + exports->AddressOfNames);
+    ordinals = module_rva_ptr( module, image_size, exports->AddressOfNameOrdinals,
+                               exports->NumberOfNames * sizeof(*ordinals) );
+    names = module_rva_ptr( module, image_size, exports->AddressOfNames,
+                            exports->NumberOfNames * sizeof(*names) );
+    if (!ordinals || !names) return 0;
     max = exports->NumberOfNames - 1;
     while (min <= max)
     {
         int res, pos = (min + max) / 2;
         char *ename;
         if (!module_string_fits_image( module, image_size, names[pos] )) return 0;
-        ename = (char *)module + names[pos];
+        ename = module_rva_ptr( module, image_size, names[pos], 1 );
+        if (!ename) return 0;
         if (!(res = strcmp( ename, name )))
             return find_ordinal_export( module, image_size, exports, ordinals[pos] );
         if (res > 0) max = pos - 1;

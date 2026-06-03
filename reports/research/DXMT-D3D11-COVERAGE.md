@@ -24,7 +24,7 @@ the current code returns `E_NOTIMPL`, `DXGI_ERROR_*`, or has no owned smoke yet.
 | Adapter enumeration | Implemented | `EnumAdapters/EnumAdapters1` enumerate `WMT::CopyAllDevices()`. |
 | WARP adapter | Implemented | `EnumWarpAdapter` returns the default DXMT Metal adapter as the WARP fallback; this is not a CPU WARP rasterizer. |
 | `CreateSwapChain` / `ForHwnd` | Implemented | Legacy desc converts to desc1 and routes through `IMTLDXGIDevice::CreateSwapChain`. |
-| CoreWindow/composition swapchains | Partial | `CreateSwapChainForCoreWindow` and `CreateSwapChainForComposition` return clean `DXGI_ERROR_UNSUPPORTED` for valid owned-device inputs and `DXGI_ERROR_INVALID_CALL` for invalid inputs; smoke reports `unsupported_swapchains=PASS`. |
+| CoreWindow/composition swapchains | Clean unsupported | `CreateSwapChainForCoreWindow` and `CreateSwapChainForComposition` return `DXGI_ERROR_UNSUPPORTED` with null swapchains for valid owned-device inputs and `DXGI_ERROR_INVALID_CALL` for invalid inputs; smoke reports `unsupported_swapchains=PASS`. |
 | Backbuffer `GetBuffer(0)` | Partial | Index 0 supported; non-zero buffers return unsupported. |
 | RTV clear | Implemented | `ClearRenderTargetView` emits DXMT render clear commands. |
 | Present | Implemented | `IDXGISwapChain::Present` routes to `Present1`/Presenter. |

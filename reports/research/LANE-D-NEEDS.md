@@ -23,6 +23,13 @@ Lane D attempts completed:
 - Added a prefix-local builtin overlay with `MACRUNNER_DXMT_ROOT`.
 - Built raw native DXMT DLLs and separately postprocessed `winemetal.dll` as builtin.
 - Landed mixed binding: raw native `d3d11.dll`/`dxgi.dll` plus builtin `winemetal.dll`, all from the Lane D prefix overlay.
+- Re-probed strict native on 2026-06-03:
+  `artifacts/dxmt-smoke-logs/lane-d-strict-native-20260603-215627.outer.log`
+  still reports `winemetal_init_unix_call status=0xc0000135`.
+- Manual `winebuild --builtin winemetal.dll` postprocess removes the Unix-call
+  init status but then strict native load fails as `LoadLibraryExW(winemetal)
+  module=0 gle=126`, confirming the postprocessed PE is only viable via
+  builtin/mixed binding, not `winemetal=n`.
 
 Need:
 

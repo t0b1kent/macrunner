@@ -180,6 +180,8 @@ SUMMARY_PATTERN="DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDX
 
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnityOutputCapabilityProbe|UnityAdapterNotificationProbe|UnityFenceProbe|D3D11On12Probe|UnityTiledProbe"
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|invalid_buffer"
+SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnitySRGBSampleProbe|UnityComputeProbe|array_slice[01]_mip1_rgba|typed_buffer"
+SUMMARY_FOCUS_PATTERN="UnitySRGBSampleProbe|array_slice[01]_mip1_rgba|typed_buffer_values"
 
 SMOKE_RC=0
 for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
@@ -214,6 +216,7 @@ for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
 
   echo "run=$run/$SMOKE_REPEAT_COUNT log=$RUN_LOG"
   echo "run_exit_code=$run_rc"
+  grep -E "$SUMMARY_FOCUS_PATTERN" "$RUN_LOG" || true
   grep -E "$SUMMARY_PATTERN" "$RUN_LOG" | tail -700 || true
   if [[ "$run_rc" -ne 0 ]]; then
     SMOKE_RC="$run_rc"

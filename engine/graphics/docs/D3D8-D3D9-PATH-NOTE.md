@@ -44,7 +44,7 @@ to run 32-bit-era game targets.
 - DXMT D3D11 headless smoke remains green through feature levels 10_0-11_1,
   resources, views, shader stages, MSAA, mips, queries, BC formats,
   per-swapchain `ResizeTarget`/`ResizeBuffers`, append-UAV counters,
-  UAV clear readbacks, multi-UAV and groupshared/interlocked compute readbacks, D3D11.1
+  UAV clear readbacks, multi-UAV, SRV-to-UAV, and groupshared/interlocked compute readbacks, D3D11.1
   constant-buffer offset/partial-update paths, overlap buffer copies, and
   stability loops.
 - x64 guest DXMT binding remains strict-native green for `d3d11`, `dxgi`, and
@@ -67,11 +67,11 @@ As of the 2026-06-04 Lane D checkpoints, the DXMT D3D11 owned smoke suite is
 green across device creation, resources, shader stages, draw/dispatch,
 present/readback, fullscreen, MSAA, queries, deferred contexts, BC formats,
 per-swapchain target/buffer resize, append-UAV counter copy,
-multi-UAV and groupshared/interlocked compute readbacks, constant-buffer partial updates,
+multi-UAV, SRV-to-UAV, and groupshared/interlocked compute readbacks, constant-buffer partial updates,
 shader-visible constant-buffer offsetting, overlap buffer copies,
 R32_UINT/R32_FLOAT UAV clear readbacks, depth-only D3D11.1 `ClearView`, and
 two-pass stability
-(`artifacts/dxmt-smoke-logs/lane-d-stability-multi-uav-20260604-164159.outer.log`).
+(`artifacts/dxmt-smoke-logs/lane-d-stability-srv-uav-20260604-164708.outer.log`).
 Strict-native x64 guest `winemetal=n` binding remains green but still does not
 reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260604-162546/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`

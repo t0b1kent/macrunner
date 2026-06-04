@@ -1,0 +1,10 @@
+run_rc=0
+sync_ok=1
+unsupported=0
+ioctl_unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=9
+hb_runtime_fail=0
+seh_invalid=3

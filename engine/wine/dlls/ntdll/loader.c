@@ -3290,6 +3290,43 @@ static ULONG_PTR macrunner_hb_fix_native_import_target( WINE_MODREF *importer, W
     if (!macrunner_hb_importer_is_native_wine_builtin( importer )) return target;
     if (!(target_mod->ldr.Flags & LDR_WINE_INTERNAL)) return target;
     if (macrunner_hb_address_in_executable_section( target_mod->ldr.DllBase, target )) return target;
+    else
+    {
+        WINE_MODREF *actual_mod = macrunner_hb_find_module_from_address( target );
+        IMAGE_NT_HEADERS *actual_nt = actual_mod ? RtlImageNtHeader( actual_mod->ldr.DllBase ) : NULL;
+
+        if (actual_mod && actual_mod != target_mod && (actual_mod->ldr.Flags & LDR_WINE_INTERNAL) &&
+            actual_nt && actual_nt->FileHeader.Machine == current_machine &&
+            macrunner_hb_address_in_executable_section( actual_mod->ldr.DllBase, target ))
+        {
+            TRACE( "MacRunner HyperBridge native forwarded import %s -> %s!%s target=%p module %s -> %s\n",
+                   debugstr_w(importer->ldr.BaseDllName.Buffer), dll_name, import_name, (void *)target,
+                   debugstr_w(target_mod->ldr.BaseDllName.Buffer),
+                   debugstr_w(actual_mod->ldr.BaseDllName.Buffer) );
+            return target;
+        }
+        if (actual_mod && actual_nt && actual_nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64)
+        {
+            const char *native_import_name = macrunner_hb_ascii_ieq( import_name, "__chkstk_arm64ec" )
+                                             ? "__chkstk" : import_name;
+            WINE_MODREF *native_mod = NULL;
+            void *native_target = macrunner_hb_find_native_counterpart_export( actual_mod,
+                                                                               native_import_name,
+                                                                               &native_mod );
+
+            if (native_target && native_mod &&
+                macrunner_hb_address_in_executable_section( native_mod->ldr.DllBase,
+                                                            (ULONG_PTR)native_target ))
+            {
+                TRACE( "MacRunner HyperBridge native forwarded counterpart import %s -> %s!%s "
+                       "target=%p module %s -> %s native=%p\n",
+                       debugstr_w(importer->ldr.BaseDllName.Buffer), dll_name, import_name,
+                       (void *)target, debugstr_w(actual_mod->ldr.BaseDllName.Buffer),
+                       debugstr_w(native_mod->ldr.BaseDllName.Buffer), native_target );
+                return (ULONG_PTR)native_target;
+            }
+        }
+    }
 
     /*
      * Some ARM64/ARM64X builtins expose a live export-table view that can point
@@ -3301,6 +3338,20 @@ static ULONG_PTR macrunner_hb_fix_native_import_target( WINE_MODREF *importer, W
     native_target = macrunner_hb_find_disk_export_outside_section( target_mod, import_name, ".hexpthk" );
     if (!native_target)
         native_target = macrunner_hb_find_export_outside_section( target_mod->ldr.DllBase, import_name, ".hexpthk" );
+    if (!native_target)
+    {
+        void *live_target = RtlFindExportedRoutineByName( target_mod->ldr.DllBase, import_name );
+
+        if (live_target)
+        {
+            native_target = macrunner_hb_redirect_arm64x_thunk_to_native( target_mod->ldr.DllBase,
+                                                                          live_target );
+            if (native_target == live_target &&
+                macrunner_hb_address_in_section( target_mod->ldr.DllBase, ".hexpthk",
+                                                 (ULONG_PTR)native_target ))
+                native_target = NULL;
+        }
+    }
 
     if (native_target && macrunner_hb_address_in_executable_section( target_mod->ldr.DllBase,
                                                                      (ULONG_PTR)native_target ))

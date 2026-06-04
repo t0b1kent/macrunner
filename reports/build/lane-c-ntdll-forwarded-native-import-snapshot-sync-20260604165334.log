@@ -1,0 +1,5 @@
+sync forwarded native import ntdll.dll into Lane C snapshot
+4e68ba7f49e2479705ed297ddca068d8dc20f36e912e3561b3d772a917e45de2  engine/wine/build-arm64ec-spike/dlls/ntdll/aarch64-windows/ntdll.dll
+4e68ba7f49e2479705ed297ddca068d8dc20f36e912e3561b3d772a917e45de2  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.dll
+11e46ff9087e397c833ebeaa45956ca2d0245c84fa1814c96ee7a55d68857f89  engine/wine/build-arm64ec-spike/dlls/ntdll/x86_64-windows/ntdll.dll
+11e46ff9087e397c833ebeaa45956ca2d0245c84fa1814c96ee7a55d68857f89  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/ntdll.dll

@@ -1,0 +1,220 @@
+build ntdll forwarded native import fix
+HEAD=2109f90
+aarch64-w64-mingw32-clang -c -o dlls/ntdll/aarch64-windows/loader.o /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c \
+  -Idlls/ntdll -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll \
+  -Iinclude -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/msvcrt \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/libs/tomcrypt/src/headers \
+  -D_MSVCR_VER=0 -D__WINESRC__ -DLTC_NO_PROTOTYPES -DLTC_SOURCE -D_NTSYSTEM_ -D_ACRTIMP= \
+  -DWINBASEAPI= -D__WINE_PE_BUILD -Wall -target aarch64-windows -fuse-ld=lld --no-default-config \
+  -fno-strict-aliasing -Wdeclaration-after-statement -Wempty-body -Wignored-qualifiers -Winit-self \
+  -Wno-microsoft-enum-forward-reference -Wstrict-prototypes -Wtype-limits -Wunused-but-set-parameter \
+  -Wvla -Wwrite-strings -Wpointer-arith -Wabsolute-value -ffunction-sections -fasync-exceptions \
+  -ffp-exception-behavior=maytrap -gdwarf-4 -g -O2
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2090:36: warning: result of comparison of constant 4611686018427387903 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2090 |         exports->NumberOfFunctions > ~(SIZE_T)0 / sizeof(*functions))
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2089:32: warning: result of comparison of constant 9223372036854775807 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2089 |         exports->NumberOfNames > ~(SIZE_T)0 / sizeof(*ordinals) ||
+      |         ~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2088:32: warning: result of comparison of constant 4611686018427387903 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2088 |     if (exports->NumberOfNames > ~(SIZE_T)0 / sizeof(*names) ||
+      |         ~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2212:40: warning: result of comparison of constant 1024819115206086200 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2212 |     if (nt->FileHeader.NumberOfSymbols > (~(SIZE_T)0 - sizeof(DWORD)) / IMAGE_SIZEOF_SYMBOL)
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2311:40: warning: result of comparison of constant 1024819115206086200 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2311 |     if (nt->FileHeader.NumberOfSymbols > (~(SIZE_T)0 - sizeof(DWORD)) / IMAGE_SIZEOF_SYMBOL)
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3505:20: warning: result of comparison of constant 768614336404564650 with expression of type 'const ULONG' (aka 'const unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3505 |         map->Count > (SIZE_T)-1 / sizeof(*entries))
+      |         ~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3504:20: warning: result of comparison of constant 2305843009213693951 with expression of type 'const ULONG' (aka 'const unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3504 |         map->Count > (SIZE_T)-1 / sizeof(*hash_entry) ||
+      |         ~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3518:18: warning: result of comparison of constant 9223372036854775807 with expression of type 'ULONG' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3518 |     if (hash_len > (SIZE_T)-1 / sizeof(WCHAR)) return STATUS_APISET_NOT_PRESENT;
+      |         ~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3558:27: warning: result of comparison of constant 922337203685477580 with expression of type 'const ULONG' (aka 'const unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3558 |     if (entry->ValueCount > (SIZE_T)-1 / sizeof(*value) ||
+      |         ~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:6015:25: warning: result of comparison of constant 461168601842738790 with expression of type 'unsigned int' is always false [-Wtautological-constant-out-of-range-compare]
+ 6015 |     if (!count || count > (SIZE_T)-1 / sizeof(*sec)) return 0;
+      |                   ~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2653:14: warning: unused function 'macrunner_hb_resolve_arm64x_native_target' [-Wunused-function]
+ 2653 | static void *macrunner_hb_resolve_arm64x_native_target( void *ptr )
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+11 warnings generated.
+arm64ec-w64-mingw32-clang -c -o dlls/ntdll/arm64ec-windows/loader.o /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c \
+  -Idlls/ntdll -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll \
+  -Iinclude -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/msvcrt \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/libs/tomcrypt/src/headers \
+  -D_MSVCR_VER=0 -D__WINESRC__ -DLTC_NO_PROTOTYPES -DLTC_SOURCE -D_NTSYSTEM_ -D_ACRTIMP= \
+  -DWINBASEAPI= -D__WINE_PE_BUILD -Wall -target arm64ec-windows -fuse-ld=lld --no-default-config \
+  -fno-strict-aliasing -Wdeclaration-after-statement -Wempty-body -Wignored-qualifiers -Winit-self \
+  -Wno-microsoft-enum-forward-reference -Wstrict-prototypes -Wtype-limits -Wunused-but-set-parameter \
+  -Wvla -Wwrite-strings -Wpointer-arith -Wabsolute-value -ffunction-sections -fasync-exceptions \
+  -ffp-exception-behavior=maytrap -gdwarf-4 -g -O2
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2090:36: warning: result of comparison of constant 4611686018427387903 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2090 |         exports->NumberOfFunctions > ~(SIZE_T)0 / sizeof(*functions))
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2089:32: warning: result of comparison of constant 9223372036854775807 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2089 |         exports->NumberOfNames > ~(SIZE_T)0 / sizeof(*ordinals) ||
+      |         ~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2088:32: warning: result of comparison of constant 4611686018427387903 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2088 |     if (exports->NumberOfNames > ~(SIZE_T)0 / sizeof(*names) ||
+      |         ~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2212:40: warning: result of comparison of constant 1024819115206086200 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2212 |     if (nt->FileHeader.NumberOfSymbols > (~(SIZE_T)0 - sizeof(DWORD)) / IMAGE_SIZEOF_SYMBOL)
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2311:40: warning: result of comparison of constant 1024819115206086200 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2311 |     if (nt->FileHeader.NumberOfSymbols > (~(SIZE_T)0 - sizeof(DWORD)) / IMAGE_SIZEOF_SYMBOL)
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3505:20: warning: result of comparison of constant 768614336404564650 with expression of type 'const ULONG' (aka 'const unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3505 |         map->Count > (SIZE_T)-1 / sizeof(*entries))
+      |         ~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3504:20: warning: result of comparison of constant 2305843009213693951 with expression of type 'const ULONG' (aka 'const unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3504 |         map->Count > (SIZE_T)-1 / sizeof(*hash_entry) ||
+      |         ~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3518:18: warning: result of comparison of constant 9223372036854775807 with expression of type 'ULONG' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3518 |     if (hash_len > (SIZE_T)-1 / sizeof(WCHAR)) return STATUS_APISET_NOT_PRESENT;
+      |         ~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3558:27: warning: result of comparison of constant 922337203685477580 with expression of type 'const ULONG' (aka 'const unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3558 |     if (entry->ValueCount > (SIZE_T)-1 / sizeof(*value) ||
+      |         ~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:6015:25: warning: result of comparison of constant 461168601842738790 with expression of type 'unsigned int' is always false [-Wtautological-constant-out-of-range-compare]
+ 6015 |     if (!count || count > (SIZE_T)-1 / sizeof(*sec)) return 0;
+      |                   ~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:551:13: warning: unused function 'macrunner_hb_trace_xtajit64' [-Wunused-function]
+  551 | static BOOL macrunner_hb_trace_xtajit64(void)
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:559:13: warning: unused function 'macrunner_hb_use_xtajit64_thread' [-Wunused-function]
+  559 | static BOOL macrunner_hb_use_xtajit64_thread(void)
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2653:14: warning: unused function 'macrunner_hb_resolve_arm64x_native_target' [-Wunused-function]
+ 2653 | static void *macrunner_hb_resolve_arm64x_native_target( void *ptr )
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+13 warnings generated.
+tools/winegcc/winegcc -o dlls/ntdll/aarch64-windows/ntdll.dll --wine-objdir . -b arm64ec-windows -marm64x -Wl,--wine-builtin -shared \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/ntdll.spec \
+  -nodefaultlibs dlls/ntdll/aarch64-windows/actctx.o dlls/ntdll/aarch64-windows/atom.o \
+  dlls/ntdll/aarch64-windows/crypt.o dlls/ntdll/aarch64-windows/debugbuffer.o \
+  dlls/ntdll/aarch64-windows/env.o dlls/ntdll/aarch64-windows/error.o \
+  dlls/ntdll/aarch64-windows/exception.o dlls/ntdll/aarch64-windows/handletable.o \
+  dlls/ntdll/aarch64-windows/heap.o dlls/ntdll/aarch64-windows/large_int.o \
+  dlls/ntdll/aarch64-windows/loader.o dlls/ntdll/aarch64-windows/locale.o \
+  dlls/ntdll/aarch64-windows/macrunner_hb_pe.o dlls/ntdll/aarch64-windows/math.o \
+  dlls/ntdll/aarch64-windows/misc.o dlls/ntdll/aarch64-windows/path.o \
+  dlls/ntdll/aarch64-windows/printf.o dlls/ntdll/aarch64-windows/process.o \
+  dlls/ntdll/aarch64-windows/reg.o dlls/ntdll/aarch64-windows/relay.o \
+  dlls/ntdll/aarch64-windows/resource.o dlls/ntdll/aarch64-windows/rtl.o \
+  dlls/ntdll/aarch64-windows/rtlbitmap.o dlls/ntdll/aarch64-windows/rtlstr.o \
+  dlls/ntdll/aarch64-windows/sec.o dlls/ntdll/aarch64-windows/signal_arm.o \
+  dlls/ntdll/aarch64-windows/signal_arm64.o dlls/ntdll/aarch64-windows/signal_arm64ec.o \
+  dlls/ntdll/aarch64-windows/signal_i386.o dlls/ntdll/aarch64-windows/signal_x86_64.o \
+  dlls/ntdll/aarch64-windows/string.o dlls/ntdll/aarch64-windows/sync.o \
+  dlls/ntdll/aarch64-windows/thread.o dlls/ntdll/aarch64-windows/threadpool.o \
+  dlls/ntdll/aarch64-windows/time.o dlls/ntdll/aarch64-windows/unwind.o \
+  dlls/ntdll/aarch64-windows/version.o dlls/ntdll/aarch64-windows/wcstring.o \
+  dlls/ntdll/arm64ec-windows/actctx.o dlls/ntdll/arm64ec-windows/atom.o \
+  dlls/ntdll/arm64ec-windows/crypt.o dlls/ntdll/arm64ec-windows/debugbuffer.o \
+  dlls/ntdll/arm64ec-windows/env.o dlls/ntdll/arm64ec-windows/error.o \
+  dlls/ntdll/arm64ec-windows/exception.o dlls/ntdll/arm64ec-windows/handletable.o \
+  dlls/ntdll/arm64ec-windows/heap.o dlls/ntdll/arm64ec-windows/large_int.o \
+  dlls/ntdll/arm64ec-windows/loader.o dlls/ntdll/arm64ec-windows/locale.o \
+  dlls/ntdll/arm64ec-windows/macrunner_hb_pe.o dlls/ntdll/arm64ec-windows/math.o \
+  dlls/ntdll/arm64ec-windows/misc.o dlls/ntdll/arm64ec-windows/path.o \
+  dlls/ntdll/arm64ec-windows/printf.o dlls/ntdll/arm64ec-windows/process.o \
+  dlls/ntdll/arm64ec-windows/reg.o dlls/ntdll/arm64ec-windows/relay.o \
+  dlls/ntdll/arm64ec-windows/resource.o dlls/ntdll/arm64ec-windows/rtl.o \
+  dlls/ntdll/arm64ec-windows/rtlbitmap.o dlls/ntdll/arm64ec-windows/rtlstr.o \
+  dlls/ntdll/arm64ec-windows/sec.o dlls/ntdll/arm64ec-windows/signal_arm.o \
+  dlls/ntdll/arm64ec-windows/signal_arm64.o dlls/ntdll/arm64ec-windows/signal_arm64ec.o \
+  dlls/ntdll/arm64ec-windows/signal_i386.o dlls/ntdll/arm64ec-windows/signal_x86_64.o \
+  dlls/ntdll/arm64ec-windows/string.o dlls/ntdll/arm64ec-windows/sync.o \
+  dlls/ntdll/arm64ec-windows/thread.o dlls/ntdll/arm64ec-windows/threadpool.o \
+  dlls/ntdll/arm64ec-windows/time.o dlls/ntdll/arm64ec-windows/unwind.o \
+  dlls/ntdll/arm64ec-windows/version.o dlls/ntdll/arm64ec-windows/wcstring.o dlls/ntdll/version.res \
+  libs/tomcrypt/aarch64-windows/libtomcrypt.a libs/musl/aarch64-windows/libmusl.a \
+  dlls/winecrt0/aarch64-windows/libwinecrt0.a libs/compiler-rt/aarch64-windows/libcompiler-rt.a \
+  --no-default-config -Wl,-debug:dwarf
+x86_64-w64-mingw32-gcc -c -o dlls/ntdll/x86_64-windows/loader.o /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c \
+  -Idlls/ntdll -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll \
+  -Iinclude -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/msvcrt \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/libs/tomcrypt/src/headers \
+  -D_MSVCR_VER=0 -D__WINESRC__ -DLTC_NO_PROTOTYPES -DLTC_SOURCE -D_NTSYSTEM_ -D_ACRTIMP= \
+  -DWINBASEAPI= -D__WINE_PE_BUILD -Wall -target x86_64-windows -fuse-ld=lld --no-default-config \
+  -fno-strict-aliasing -Wdeclaration-after-statement -Wempty-body -Wignored-qualifiers -Winit-self \
+  -Wno-microsoft-enum-forward-reference -Wstrict-prototypes -Wtype-limits -Wunused-but-set-parameter \
+  -Wvla -Wwrite-strings -Wpointer-arith -Wabsolute-value -ffunction-sections -fasync-exceptions \
+  -ffp-exception-behavior=maytrap -fms-hotpatch -Wformat-overflow -Wnonnull -mcx16 -mcmodel=small \
+  -gdwarf-4 -g -O2
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2090:36: warning: result of comparison of constant 4611686018427387903 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2090 |         exports->NumberOfFunctions > ~(SIZE_T)0 / sizeof(*functions))
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2089:32: warning: result of comparison of constant 9223372036854775807 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2089 |         exports->NumberOfNames > ~(SIZE_T)0 / sizeof(*ordinals) ||
+      |         ~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2088:32: warning: result of comparison of constant 4611686018427387903 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2088 |     if (exports->NumberOfNames > ~(SIZE_T)0 / sizeof(*names) ||
+      |         ~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2212:40: warning: result of comparison of constant 1024819115206086200 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2212 |     if (nt->FileHeader.NumberOfSymbols > (~(SIZE_T)0 - sizeof(DWORD)) / IMAGE_SIZEOF_SYMBOL)
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2311:40: warning: result of comparison of constant 1024819115206086200 with expression of type 'DWORD' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 2311 |     if (nt->FileHeader.NumberOfSymbols > (~(SIZE_T)0 - sizeof(DWORD)) / IMAGE_SIZEOF_SYMBOL)
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3505:20: warning: result of comparison of constant 768614336404564650 with expression of type 'const ULONG' (aka 'const unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3505 |         map->Count > (SIZE_T)-1 / sizeof(*entries))
+      |         ~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3504:20: warning: result of comparison of constant 2305843009213693951 with expression of type 'const ULONG' (aka 'const unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3504 |         map->Count > (SIZE_T)-1 / sizeof(*hash_entry) ||
+      |         ~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3518:18: warning: result of comparison of constant 9223372036854775807 with expression of type 'ULONG' (aka 'unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3518 |     if (hash_len > (SIZE_T)-1 / sizeof(WCHAR)) return STATUS_APISET_NOT_PRESENT;
+      |         ~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:3558:27: warning: result of comparison of constant 922337203685477580 with expression of type 'const ULONG' (aka 'const unsigned long') is always false [-Wtautological-constant-out-of-range-compare]
+ 3558 |     if (entry->ValueCount > (SIZE_T)-1 / sizeof(*value) ||
+      |         ~~~~~~~~~~~~~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:6015:25: warning: result of comparison of constant 461168601842738790 with expression of type 'unsigned int' is always false [-Wtautological-constant-out-of-range-compare]
+ 6015 |     if (!count || count > (SIZE_T)-1 / sizeof(*sec)) return 0;
+      |                   ~~~~~ ^ ~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:551:13: warning: unused function 'macrunner_hb_trace_xtajit64' [-Wunused-function]
+  551 | static BOOL macrunner_hb_trace_xtajit64(void)
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:559:13: warning: unused function 'macrunner_hb_use_xtajit64_thread' [-Wunused-function]
+  559 | static BOOL macrunner_hb_use_xtajit64_thread(void)
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2653:14: warning: unused function 'macrunner_hb_resolve_arm64x_native_target' [-Wunused-function]
+ 2653 | static void *macrunner_hb_resolve_arm64x_native_target( void *ptr )
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+13 warnings generated.
+tools/winegcc/winegcc -o dlls/ntdll/x86_64-windows/ntdll.dll --wine-objdir . -b x86_64-windows -Wl,--wine-builtin -shared \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/ntdll.spec \
+  -nodefaultlibs -Wl,--image-base,0x170000000 dlls/ntdll/x86_64-windows/actctx.o \
+  dlls/ntdll/x86_64-windows/atom.o dlls/ntdll/x86_64-windows/crypt.o \
+  dlls/ntdll/x86_64-windows/debugbuffer.o dlls/ntdll/x86_64-windows/env.o \
+  dlls/ntdll/x86_64-windows/error.o dlls/ntdll/x86_64-windows/exception.o \
+  dlls/ntdll/x86_64-windows/handletable.o dlls/ntdll/x86_64-windows/heap.o \
+  dlls/ntdll/x86_64-windows/large_int.o dlls/ntdll/x86_64-windows/loader.o \
+  dlls/ntdll/x86_64-windows/locale.o dlls/ntdll/x86_64-windows/macrunner_hb_pe.o \
+  dlls/ntdll/x86_64-windows/math.o dlls/ntdll/x86_64-windows/misc.o dlls/ntdll/x86_64-windows/path.o \
+  dlls/ntdll/x86_64-windows/printf.o dlls/ntdll/x86_64-windows/process.o \
+  dlls/ntdll/x86_64-windows/reg.o dlls/ntdll/x86_64-windows/relay.o \
+  dlls/ntdll/x86_64-windows/resource.o dlls/ntdll/x86_64-windows/rtl.o \
+  dlls/ntdll/x86_64-windows/rtlbitmap.o dlls/ntdll/x86_64-windows/rtlstr.o \
+  dlls/ntdll/x86_64-windows/sec.o dlls/ntdll/x86_64-windows/signal_arm.o \
+  dlls/ntdll/x86_64-windows/signal_arm64.o dlls/ntdll/x86_64-windows/signal_arm64ec.o \
+  dlls/ntdll/x86_64-windows/signal_i386.o dlls/ntdll/x86_64-windows/signal_x86_64.o \
+  dlls/ntdll/x86_64-windows/string.o dlls/ntdll/x86_64-windows/sync.o \
+  dlls/ntdll/x86_64-windows/thread.o dlls/ntdll/x86_64-windows/threadpool.o \
+  dlls/ntdll/x86_64-windows/time.o dlls/ntdll/x86_64-windows/unwind.o \
+  dlls/ntdll/x86_64-windows/version.o dlls/ntdll/x86_64-windows/wcstring.o dlls/ntdll/version.res \
+  libs/tomcrypt/x86_64-windows/libtomcrypt.a libs/musl/x86_64-windows/libmusl.a \
+  dlls/winecrt0/x86_64-windows/libwinecrt0.a libs/compiler-rt/x86_64-windows/libcompiler-rt.a \
+  --no-default-config -fms-hotpatch -Wl,-debug:dwarf
+build_rc=0
+4e68ba7f49e2479705ed297ddca068d8dc20f36e912e3561b3d772a917e45de2  engine/wine/build-arm64ec-spike/dlls/ntdll/aarch64-windows/ntdll.dll
+11e46ff9087e397c833ebeaa45956ca2d0245c84fa1814c96ee7a55d68857f89  engine/wine/build-arm64ec-spike/dlls/ntdll/x86_64-windows/ntdll.dll

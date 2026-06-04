@@ -1,0 +1,15 @@
+app=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/phase-h/reactos-calc-build/reactos-calc.exe
+dist=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike
+run_rc=143
+file_info=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/phase-h/reactos-calc-build/reactos-calc.exe: PE32+ executable (GUI) x86-64, for MS Windows
+calc_markers=4
+gui_markers=17
+native_import_nonexec=0
+unsupported=0
+ioctl_unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=16
+hb_runtime_fail=0
+seh_invalid=367194

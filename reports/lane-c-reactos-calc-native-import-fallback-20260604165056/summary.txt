@@ -1,0 +1,17 @@
+app=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/phase-h/reactos-calc-build/reactos-calc.exe
+dist=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike
+run_rc=143
+file_info=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/phase-h/reactos-calc-build/reactos-calc.exe: PE32+ executable (GUI) x86-64, for MS Windows
+calc_markers=4
+gui_markers=51
+native_import_nonexec=169
+native_import_repaired=0
+unsupported=0
+ioctl_unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=16
+hb_runtime_fail=2
+seh_invalid=418704
+first_nonexec=0024:warn:module:macrunner_hb_fix_native_import_target MacRunner HyperBridge native import L"kernel32.dll" -> kernelbase.dll!EnterCriticalSection resolved to non-executable 0000087FFF9A7F34

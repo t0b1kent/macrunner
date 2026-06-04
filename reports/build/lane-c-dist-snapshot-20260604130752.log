@@ -1,0 +1,8 @@
+Lane C isolated dist snapshot
+timestamp=20260604130752
+source=engine/wine/dist-arm64ec-spike
+snapshot=artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+2.5G	artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike

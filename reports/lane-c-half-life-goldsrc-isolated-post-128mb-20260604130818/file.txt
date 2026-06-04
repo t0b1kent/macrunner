@@ -1,0 +1,1 @@
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/games/half-life/Half-Life/hl.exe: PE32 executable (GUI) Intel 80386, for MS Windows

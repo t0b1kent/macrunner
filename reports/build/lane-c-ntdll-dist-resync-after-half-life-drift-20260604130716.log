@@ -1,0 +1,16 @@
+Lane C ntdll dist resync after Half-Life stale active-dist drift
+timestamp=20260604130716
+before:
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+9c541bb13272127b55d69f17ee0475604a8cde103828808fadf364ebb2f90dc3  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+9c541bb13272127b55d69f17ee0475604a8cde103828808fadf364ebb2f90dc3  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+-rwxr-xr-x  1 timurtoby  staff  1368648 Jun  4 12:49 engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+-rwxr-xr-x  1 timurtoby  staff  1378864 Jun  4 13:05 engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+-rwxr-xr-x  1 timurtoby  staff  1378864 Jun  4 13:05 engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+after:
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+-rwxr-xr-x  1 timurtoby  staff  1368648 Jun  4 12:49 engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+-rwxr-xr-x  1 timurtoby  staff  1368648 Jun  4 13:07 engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+-rwxr-xr-x  1 timurtoby  staff  1368648 Jun  4 13:07 engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so

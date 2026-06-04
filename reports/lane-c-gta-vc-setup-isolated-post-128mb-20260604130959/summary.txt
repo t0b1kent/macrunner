@@ -1,0 +1,169 @@
+app=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/games/gta-vc-disc/Setup.exe
+dist=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike
+run_rc=53
+file_info=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/games/gta-vc-disc/Setup.exe: PE32 executable (GUI) Intel 80386, for MS Windows
+wow64_markers=887
+gta_markers=176
+unsupported=1
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=11
+hb_runtime_fail=0
+seh_invalid=4
+hashes:
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+relevant_lines:
+65:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3d10_1.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3d10_1.dll
+66:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3d10.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3d10.dll
+67:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3d10core.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3d10core.dll
+68:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3d11.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3d11.dll
+69:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3d12.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3d12.dll
+70:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3d12core.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3d12core.dll
+71:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3d8.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3d8.dll
+72:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3d8thk.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3d8thk.dll
+73:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3d9.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3d9.dll
+74:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_33.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_33.dll
+75:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_34.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_34.dll
+76:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_35.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_35.dll
+77:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_36.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_36.dll
+78:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_37.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_37.dll
+79:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_38.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_38.dll
+80:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_39.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_39.dll
+81:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_40.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_40.dll
+82:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_41.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_41.dll
+83:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_42.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_42.dll
+84:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_43.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_43.dll
+85:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_46.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_46.dll
+86:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dcompiler_47.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dcompiler_47.dll
+87:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dim.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dim.dll
+88:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dim700.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dim700.dll
+89:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3drm.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3drm.dll
+90:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_33.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_33.dll
+91:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_34.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_34.dll
+92:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_35.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_35.dll
+93:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_36.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_36.dll
+94:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_37.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_37.dll
+95:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_38.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_38.dll
+96:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_39.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_39.dll
+97:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_40.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_40.dll
+98:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_41.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_41.dll
+99:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_42.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_42.dll
+100:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx10_43.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx10_43.dll
+101:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx11_42.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx11_42.dll
+102:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx11_43.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx11_43.dll
+103:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_24.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_24.dll
+104:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_25.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_25.dll
+105:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_26.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_26.dll
+106:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_27.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_27.dll
+107:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_28.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_28.dll
+108:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_29.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_29.dll
+109:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_30.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_30.dll
+110:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_31.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_31.dll
+111:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_32.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_32.dll
+112:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_33.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_33.dll
+113:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_34.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_34.dll
+114:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_35.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_35.dll
+115:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_36.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_36.dll
+116:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_37.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_37.dll
+117:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_38.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_38.dll
+118:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_39.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_39.dll
+119:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_40.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_40.dll
+120:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_41.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_41.dll
+121:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_42.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_42.dll
+122:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dx9_43.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dx9_43.dll
+123:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/d3dxof.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/d3dxof.dll
+363:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/opcservices.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/opcservices.dll
+416:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/setupapi.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/setupapi.dll
+482:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/webservices.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/webservices.dll
+493:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/windows.devices.bluetooth.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/windows.devices.bluetooth.dll
+494:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/windows.devices.enumeration.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/windows.devices.enumeration.dll
+495:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/windows.devices.usb.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/windows.devices.usb.dll
+499:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/windows.media.devices.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/windows.media.devices.dll
+521:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/wined3d.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/wined3d.dll
+552:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/wow64.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64.dll
+553:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/wow64cpu.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64cpu.dll
+554:synced artifacts/_mr-run.mOO0mO/drive_c/windows/system32/wow64win.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64win.dll
+615:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/acledit.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/acledit.dll
+616:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/aclui.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/aclui.dll
+617:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/activeds.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/activeds.dll
+618:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/actxprxy.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/actxprxy.dll
+619:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/adsldp.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/adsldp.dll
+620:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/adsldpc.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/adsldpc.dll
+621:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/advapi32.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/advapi32.dll
+622:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/advpack.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/advpack.dll
+623:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/amsi.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/amsi.dll
+624:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/amstream.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/amstream.dll
+625:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/apisetschema.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/apisetschema.dll
+626:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/apphelp.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/apphelp.dll
+627:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/appxdeploymentclient.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/appxdeploymentclient.dll
+628:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/atl.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/atl.dll
+629:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/atl100.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/atl100.dll
+630:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/atl110.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/atl110.dll
+631:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/atl80.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/atl80.dll
+632:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/atl90.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/atl90.dll
+633:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/atlthunk.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/atlthunk.dll
+634:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/atmlib.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/atmlib.dll
+635:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/authz.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/authz.dll
+636:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/avicap32.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/avicap32.dll
+637:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/avifil32.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/avifil32.dll
+638:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/avrt.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/avrt.dll
+639:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/bcp47langs.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/bcp47langs.dll
+640:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/bcrypt.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/bcrypt.dll
+641:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/bcryptprimitives.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/bcryptprimitives.dll
+642:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/bluetoothapis.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/bluetoothapis.dll
+643:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/browseui.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/browseui.dll
+644:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/cabinet.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/cabinet.dll
+645:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/cards.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/cards.dll
+646:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/cdosys.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/cdosys.dll
+647:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/cfgmgr32.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/cfgmgr32.dll
+648:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/clusapi.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/clusapi.dll
+649:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/colorcnv.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/colorcnv.dll
+650:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/combase.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/combase.dll
+651:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/comcat.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/comcat.dll
+652:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/comctl32_v6.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/comctl32_v6.dll
+653:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/comctl32.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/comctl32.dll
+654:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/comdlg32.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/comdlg32.dll
+655:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/coml2.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/coml2.dll
+656:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/compstui.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/compstui.dll
+657:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/comsvcs.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/comsvcs.dll
+658:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/concrt140.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/concrt140.dll
+659:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/connect.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/connect.dll
+660:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/coremessaging.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/coremessaging.dll
+661:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/credui.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/credui.dll
+662:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/crtdll.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/crtdll.dll
+663:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/crypt32.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/crypt32.dll
+664:synced artifacts/_mr-run.mOO0mO/drive_c/windows/syswow64/cryptbase.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/cryptbase.dll
+last_log_lines:
+macrunner-wow64: NtMapViewOfSection leave status=40000003 out_addr=6d170000 out_size=003f7000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141F08C raw=00000038,ffffffff,0141f0f4,00000000,00000000,00000000,0141f12c,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000038 process=FFFFFFFFFFFFFFFF addr32=000000030141F0F4 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141F12C size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000036CFF0000 size=180000
+macrunner-wow64: NtMapViewOfSection leave status=40000003 out_addr=6cff0000 out_size=00180000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141ECB0 raw=0000003c,ffffffff,0141ed18,00000000,00000000,00000000,0141ed50,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=000000000000003C process=FFFFFFFFFFFFFFFF addr32=000000030141ED18 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141ED50 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=4000000e addr=000000036CFB0000 size=40000
+macrunner-wow64: NtMapViewOfSection leave status=4000000e out_addr=6cfb0000 out_size=00040000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141F08C raw=00000038,ffffffff,0141f0f4,00000000,00000000,00000000,0141f12c,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000038 process=FFFFFFFFFFFFFFFF addr32=000000030141F0F4 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141F12C size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=4000000e addr=000000036CF70000 size=40000
+macrunner-wow64: NtMapViewOfSection leave status=4000000e out_addr=6cf70000 out_size=00040000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141F468 raw=00000034,ffffffff,0141f4d0,00000000,00000000,00000000,0141f508,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000034 process=FFFFFFFFFFFFFFFF addr32=000000030141F4D0 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141F508 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000036CDF0000 size=180000
+macrunner-wow64: NtMapViewOfSection leave status=40000003 out_addr=6cdf0000 out_size=00180000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141F08C raw=00000038,ffffffff,0141f0f4,00000000,00000000,00000000,0141f12c,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000038 process=FFFFFFFFFFFFFFFF addr32=000000030141F0F4 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141F12C size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000036C9F0000 size=3f7000
+macrunner-wow64: NtMapViewOfSection leave status=40000003 out_addr=6c9f0000 out_size=003f7000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141ECB0 raw=0000003c,ffffffff,0141ed18,00000000,00000000,00000000,0141ed50,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=000000000000003C process=FFFFFFFFFFFFFFFF addr32=000000030141ED18 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141ED50 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=4000000e addr=000000036C9B0000 size=40000
+macrunner-wow64: NtMapViewOfSection leave status=4000000e out_addr=6c9b0000 out_size=00040000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141F08C raw=00000038,ffffffff,0141f0f4,00000000,00000000,00000000,0141f12c,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000038 process=FFFFFFFFFFFFFFFF addr32=000000030141F0F4 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141F12C size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=4000000e addr=000000036C970000 size=40000
+macrunner-wow64: NtMapViewOfSection leave status=4000000e out_addr=6c970000 out_size=00040000
+[mr-run] exit=53 (prefix auto-removed on exit)

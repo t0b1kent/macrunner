@@ -1,0 +1,1 @@
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/games/gta-vc-disc/Setup.exe: PE32 executable (GUI) Intel 80386, for MS Windows

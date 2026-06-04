@@ -1,0 +1,40 @@
+top-level rebuild virtual.o ntdll.so
+timestamp=20260604124909
+gcc -std=gnu23 -c -o dlls/ntdll/unix/virtual.o /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/virtual.c \
+  -Idlls/ntdll -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll \
+  -Iinclude -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include -D__WINESRC__ \
+  -DLTC_NO_PROTOTYPES -DLTC_SOURCE -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI= -DWINE_UNIX_LIB \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/../hyperbridge/include -Wall \
+  -pipe -fcf-protection=none -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing \
+  -Wdeclaration-after-statement -Wempty-body -Wignored-qualifiers -Winit-self -Wpointer-arith \
+  -Wstrict-prototypes -Wtype-limits -Wunused-but-set-parameter -Wvla -Wwrite-strings -gdwarf-4 -fPIC \
+  -fasynchronous-unwind-tables -g -O2 -DIS_WOW64_BUILD -DIS_WOW64_BUILD -DIS_WOW64_BUILD -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+In file included from /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/virtual.c:93:
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/unix_private.h:93:9: warning: 'WINE_NT_MAP_VIEW' macro redefined [-Wmacro-redefined]
+   93 | #define WINE_NT_MAP_VIEW(mapping, process, ptr, zero_bits, commit_size, offset, size, inherit_, alloc_type_, protect_) \
+      |         ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/winternl.h:4723:9: note: previous definition is here
+ 4723 | #define WINE_NT_MAP_VIEW(handle, process, addr, zero_bits, commit_size, offset, size, inherit, alloc_type, protect) \
+      |         ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/virtual.c:7699:21: warning: unused variable 'inherit' [-Wunused-variable]
+ 7699 |     SECTION_INHERIT inherit = extra ? extra->inherit : ViewShare;
+      |                     ^~~~~~~
+2 warnings generated.
+gcc -std=gnu23 -o dlls/ntdll/ntdll.so -dynamiclib -install_name @rpath/ntdll.so -Wl,-rpath,@loader_path\/ \
+  dlls/ntdll/unix/cdrom.o dlls/ntdll/unix/debug.o dlls/ntdll/unix/env.o dlls/ntdll/unix/file.o \
+  dlls/ntdll/unix/msync.o dlls/ntdll/unix/loader.o dlls/ntdll/unix/loadorder.o \
+  dlls/ntdll/unix/macrunner_hb.o dlls/ntdll/unix/process.o dlls/ntdll/unix/registry.o \
+  dlls/ntdll/unix/security.o dlls/ntdll/unix/serial.o dlls/ntdll/unix/server.o \
+  dlls/ntdll/unix/signal_arm.o dlls/ntdll/unix/signal_arm64.o dlls/ntdll/unix/signal_i386.o \
+  dlls/ntdll/unix/signal_x86_64.o dlls/ntdll/unix/socket.o dlls/ntdll/unix/sync.o \
+  dlls/ntdll/unix/system.o dlls/ntdll/unix/tape.o dlls/ntdll/unix/thread.o dlls/ntdll/unix/virtual.o \
+  dlls/ntdll/unix/version.o -framework IOKit -framework CoreFoundation -framework CoreFoundation \
+  -framework CoreServices \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/../hyperbridge/libhyperbridge.a \
+  
+build_rc=0
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+Jun  4 12:49:11 2026 engine/wine/build-arm64ec-spike/dlls/ntdll/unix/virtual.o
+Jun  4 12:49:11 2026 engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so

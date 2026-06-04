@@ -1,0 +1,36 @@
+fixture=fixtures/arm64/loopback_tcp_arm64.exe
+run_rc=0
+stdout_like=1
+unsupported=0
+vm_fail=0
+aperture_trace=0
+dll_fail=0
+fixme_stub=0
+actctx=6
+hb_runtime_fail=0
+seh_invalid=3
+hashes:
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+last_log_lines:
+002c:warn:file:NtCreateFile L"\\??\\C:\\users" not found (c0000035)
+002c:warn:file:NtCreateFile L"\\??\\C:\\users\\crossover" not found (c0000035)
+002c:warn:file:NtCreateFile L"\\??\\C:\\users\\crossover\\AppData" not found (c0000035)
+002c:warn:file:NtCreateFile L"\\??\\C:\\users\\crossover\\AppData\\Local" not found (c0000035)
+002c:warn:file:NtQueryAttributesFile L"\\??\\C:\\users\\crossover\\Desktop" not found (c0000034)
+002c:warn:file:NtQueryAttributesFile L"\\??\\C:\\users\\crossover\\Desktop" not found (c0000034)
+002c:warn:file:NtQueryAttributesFile L"\\??\\C:\\users\\crossover\\Desktop" not found (c0000034)
+002c:warn:file:NtQueryAttributesFile L"\\??\\C:\\users\\crossover\\AppData\\Local\\Microsoft\\Windows\\History" not found (c0000034)
+002c:warn:file:NtQueryAttributesFile L"\\??\\C:\\users\\crossover\\Desktop" not found (c0000034)
+002c:warn:file:NtQueryAttributesFile L"\\??\\C:\\users\\crossover\\AppData\\Local\\Microsoft\\Windows\\INetCookies" not found (c0000034)
+002c:warn:file:NtQueryAttributesFile L"\\??\\C:\\users\\crossover\\Desktop" not found (c0000034)
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010805FC70 pc=0000087FFF994E30 lr=0000000000000000 sp=0000000108060000 x0=0000000140010448 x1=0000000105F50000 x2=0000000000000000 x3=0000000000000000 unk=0000000105F50000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF660000 image_base=00006FFFFF640000 delta=FFFF988000020000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEE00000 image_base=00006FFFFEDD0000 delta=FFFF988000030000 machine=0xaa64
+0024:warn:file:NtCreateFile L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\fixtures\\arm64\\loopback_tcp_arm64.exe.manifest" not found (c0000034)
+macrunner-hb-pe-relocate: module=0000087FFEC50000 image_base=00006FFFFDC00000 delta=FFFF988001050000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE5A0000 image_base=00006FFFFE390000 delta=FFFF988000210000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010805FC70 pc=0000087FFF994E30 lr=0000000000000000 sp=0000000108060000 entry=0000000140010448 arg=0000000105F50000
+loopback tcp ok
+[mr-run] exit=0 (prefix auto-removed on exit)

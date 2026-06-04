@@ -1,0 +1,41 @@
+fixture=fixtures/arm64/shell_known_folder_arm64.exe
+run_rc=2
+stdout_like=1
+shget_failed=1
+unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+seh_invalid=1
+documents_probe=55
+last_log_lines:
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:ft_face_get_full_name full name not found, using L"Courier Regular" instead
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:ft_face_get_full_name full name not found, using L"MS Sans Serif Regular" instead
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:ft_face_get_full_name full name not found, using L"MS Sans Serif Regular" instead
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:ft_face_get_full_name full name not found, using L"MS Sans Serif Regular" instead
+0060:warn:font:unix_face_create unable to parse font, falling back to FreeType
+0060:warn:font:ft_face_get_full_name full name not found, using L"Small Fonts Regular" instead
+macrunner-hb-pe-relocate: module=0000087FFBAE0000 image_base=00006FFFFC250000 delta=FFFF987FFF890000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010B8EFC70 pc=0000087FFF994E30 lr=0000000000000000 sp=000000010B8F0000 entry=0000000140010448 arg=00000001097E0000
+0060:warn:file:NtQueryAttributesFile L"\\??\\C:\\users\\crossover\\Documents" not found (c000003a)
+SHGetFolderPath failed
+[mr-run] exit=2 (prefix auto-removed on exit)

@@ -7,6 +7,27 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
+## Lane A checkpoint — 2026-06-04 `66 85 /r` x64 TEST decoder regression
+Root/current gate after the TSO climb: HK reaches Mono and faults with
+`System.RuntimeType has invalid vtable method slot 16` followed by `mono-2.0-bdwgc.dll`
+`rva=0x1f71a3`, `rdi=0`. Fresh disassembly maps the bad branch to
+`0x1800d4835: 66 85 c9` (`test %cx,%cx`) with `ecx=0x01010000`; the low 16 bits are zero, so
+`jne` must fall through to the vtable override store. Source audit found `hb_decode_x64.c` had
+regressed `0x85 /r` to a literal 32-bit `parse_modrm(..., 4, ...)`, so the decoder could turn the
+Mono 16-bit TEST into a 32-bit TEST and incorrectly take the branch.
+
+Fix: `hb_decode_x64.c` now passes `op_size` for x64 `0x85 /r`. Added
+`decode_x64_test_modrm_operand_size_family` covering exact `66 85 c9`, default `85 c9`,
+`48 85 c9`, and memory-form `66 41 85 08`; the existing
+`jit_x64_testw_same_reg_jne_uses_low16` remains the backend/Jcc guard.
+
+Validation: `make -C engine/hyperbridge tests/hb_test_runner` succeeded, then
+`engine/hyperbridge/tests/hb_test_runner --fast-family phase1_core` produced
+`46 passed, 0 failed`
+(`reports/phase4-hollow-knight/test-20260604-143320-phase1-core-test85.log`). NEXT: commit this
+checkpoint, rebuild/relink/install/sign `ntdll.so`, run ISA fuzz, then rerun Hollow Knight and
+verify the invalid-vtable gate clears.
+
 ## ⚡ LANE A NEXT (Codex 2026-06-03 update) — `0x14f180` and `0x5158b4` are cleared; profile the new CPU-hot Mono gate
 Current checkpoint: `0x5158b4` was proven not to be a wait primitive, and a fresh-cache run after
 the Mono metadata bsearch helper fix now passes both `0x14f180` and `0x5158b4`. The old shared

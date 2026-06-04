@@ -547,6 +547,39 @@ TEST(decode_x64_operand16_immediate_lengths) {
     tests_passed++;
 }
 
+TEST(decode_x64_test_modrm_operand_size_family) {
+    hb_decoded_t d;
+
+    uint8_t test_r16_r16[] = {0x66, 0x85, 0xc9}; /* test %cx, %cx */
+    ASSERT(hb_decode_x64(test_r16_r16, sizeof(test_r16_r16), 0x1800d4835ULL, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST);
+    ASSERT(d.len == 3);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 2);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RCX && d.op2.size == 2);
+
+    uint8_t test_r32_r32[] = {0x85, 0xc9}; /* test %ecx, %ecx */
+    ASSERT(hb_decode_x64(test_r32_r32, sizeof(test_r32_r32), 0x1800d4835ULL, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST);
+    ASSERT(d.len == 2);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 4);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RCX && d.op2.size == 4);
+
+    uint8_t test_r64_r64[] = {0x48, 0x85, 0xc9}; /* test %rcx, %rcx */
+    ASSERT(hb_decode_x64(test_r64_r64, sizeof(test_r64_r64), 0x1800d4835ULL, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST);
+    ASSERT(d.len == 3);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_RCX && d.op1.size == 8);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RCX && d.op2.size == 8);
+
+    uint8_t test_m16_r16[] = {0x66, 0x41, 0x85, 0x08}; /* test %cx, (%r8) */
+    ASSERT(hb_decode_x64(test_m16_r16, sizeof(test_m16_r16), 0x1800d4835ULL, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_TEST);
+    ASSERT(d.op1.is_mem && d.op1.mem.base == HB_REG_R8 && d.op1.size == 2);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_RCX && d.op2.size == 2);
+
+    tests_passed++;
+}
+
 TEST(decode_x64_0f38_0f3a_vector_family_lengths) {
     uint8_t phaddw[] = {0x0F, 0x38, 0x01, 0xC0};
     uint8_t palignr[] = {0x0F, 0x3A, 0x0F, 0xC0, 0x7F};
@@ -12096,6 +12129,44 @@ TEST(diff_lazy_flags_jcc_fuzzer) {
     tests_passed++;
 }
 
+TEST(jit_x64_testw_same_reg_jne_uses_low16) {
+    hb_ir_func_t* func = hb_ir_func_create(0x1000, 0);
+    ASSERT(func != NULL);
+    hb_ir_block_t* entry = hb_ir_block_create(0, 0x1000);
+    hb_ir_block_t* fallthrough = hb_ir_block_create(1, 0x1010);
+    hb_ir_block_t* target = hb_ir_block_create(2, 0x1020);
+    ASSERT(entry && fallthrough && target);
+    hb_ir_cfg_add_block(func->cfg, entry);
+    hb_ir_cfg_add_block(func->cfg, fallthrough);
+    hb_ir_cfg_add_block(func->cfg, target);
+    func->cfg->entry = entry;
+
+    hb_ir_builder_t* b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, entry);
+    hb_ir_instr_t* test = hb_ir_emit_test(b, hb_ir_reg(HB_REG_RAX, HB_SIZE_16),
+                                          hb_ir_reg(HB_REG_RAX, HB_SIZE_16));
+    hb_ir_instr_t* jcc = hb_ir_emit_jcc(b, HB_CC_NE, 0x1020);
+    ASSERT(test && jcc);
+    test->guest_addr = 0x1000;
+    test->guest_len = 3;
+    jcc->guest_addr = 0x100a;
+    jcc->guest_len = 6;
+    hb_ir_builder_set_block(b, fallthrough);
+    hb_ir_emit_mov(b, hb_ir_reg(HB_REG_RCX, HB_SIZE_64), hb_ir_imm(0, HB_SIZE_64));
+    hb_ir_builder_set_block(b, target);
+    hb_ir_emit_mov(b, hb_ir_reg(HB_REG_RCX, HB_SIZE_64), hb_ir_imm(1, HB_SIZE_64));
+    hb_ir_builder_destroy(b);
+
+    uint64_t jit_rcx = 0, interp_rcx = 0;
+    run_compare(func, 0x01010000ULL, &jit_rcx, &interp_rcx);
+    ASSERT(jit_rcx == 0);
+    ASSERT(interp_rcx == 0);
+
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(diff_lazy_flags_setcc_cmovcc_fuzzer) {
     hb_ir_op_t ops[] = {HB_IR_ADD, HB_IR_SUB, HB_IR_CMP, HB_IR_TEST, HB_IR_SHL, HB_IR_SHR, HB_IR_SAR};
     for (size_t i = 0; i < 84; i++) {
@@ -23277,6 +23348,8 @@ int main(int argc, char** argv) {
             printf("flags_oracle_exit\n");
             printf("lazy_flags_enter\n");
             test_diff_lazy_flags_jcc_fuzzer();
+            test_decode_x64_test_modrm_operand_size_family();
+            test_jit_x64_testw_same_reg_jne_uses_low16();
             test_diff_lazy_flags_setcc_cmovcc_fuzzer();
             test_jit_x64_native_flags_setcc_sequence_family();
             test_jit_x64_native_arith_rmw_memory_family();
@@ -23335,6 +23408,7 @@ int main(int argc, char** argv) {
     test_decode_mov_reg_reg();
     test_decode_mov_r8_mem16_operand_override();
     test_decode_x64_operand16_immediate_lengths();
+    test_decode_x64_test_modrm_operand_size_family();
     test_decode_x64_mov_moffs_family();
     test_decode_x64_xchg_accumulator_opcode_family();
     test_decode_x64_segment_mov_leave_family();
@@ -23599,6 +23673,7 @@ int main(int argc, char** argv) {
     test_decode_test_cx_imm16_calc_security_cookie();
     test_lift_x64_calc_cookie_guard_stops_at_jne();
     test_diff_lazy_flags_jcc_fuzzer();
+    test_jit_x64_testw_same_reg_jne_uses_low16();
     test_decode_rep_stosw_notepadpp_fill();
     test_interp_x64_rep_stosw_notepadpp_fill();
     test_decode_rep_movsq_icon_memcpy();

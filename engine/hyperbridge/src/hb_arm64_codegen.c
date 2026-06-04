@@ -6478,7 +6478,7 @@ void hb_jit_helper_exec_mono_metadata_decode_col(hb_context_t* ctx,
     r = hb_jit_read_guest_u64_result(ctx, rsp, &ret_addr);
     if (r != HB_OK) { ctx->last_result = r; return; }
 
-    r8 = base + (uint64_t)row_size * idx;
+    r8 = base + (uint32_t)((uint32_t)row_size * idx);
     r9 = 0;
     r10 = 0;
     eax = (bits & 3u) + 1u;
@@ -6500,6 +6500,10 @@ void hb_jit_helper_exec_mono_metadata_decode_col(hb_context_t* ctx,
             edx += 4u;
             eax++;
             r10 += eax;
+            eax = bits;
+            eax >>= (ecx & 31u);
+            eax &= 3u;
+            eax++;
             r11--;
         } while (r11 != 0);
     }
@@ -6568,7 +6572,7 @@ static hb_result_t mono_metadata_decode_col_value(hb_context_t* ctx, uint64_t ta
     r = hb_jit_helper_read_u64_fast(ctx, table, &base);
     if (r != HB_OK) return r;
 
-    r8 = base + (uint64_t)row_size * idx;
+    r8 = base + (uint32_t)((uint32_t)row_size * idx);
     r9 = 0;
     r10 = 0;
     eax = (bits & 3u) + 1u;
@@ -6590,6 +6594,10 @@ static hb_result_t mono_metadata_decode_col_value(hb_context_t* ctx, uint64_t ta
             edx += 4u;
             eax++;
             r10 += eax;
+            eax = bits;
+            eax >>= (ecx & 31u);
+            eax &= 3u;
+            eax++;
             r11--;
         } while (r11 != 0);
     }

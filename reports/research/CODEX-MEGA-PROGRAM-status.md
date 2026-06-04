@@ -1468,3 +1468,30 @@ gates. The immediate pass criterion is clearing the `0x513xxx` livelock and adva
 
 NEXT: commit this CMPXCHG16B checkpoint, then diagnose why Mono metadata/vtable state is corrupted
 before `GfxDevice`.
+
+## Lane A checkpoint - 2026-06-04 Mono metadata fusion bisection
+
+- Hollow Knight now clears the original `0x513xxx` TSO livelock and the Unity
+  `lock cmpxchg16b` gate, then fails in Mono before graphics with:
+  `System.RuntimeType has invalid vtable method slot 16 with method
+  System.Reflection.MemberInfo:get_Name()`, followed by mono-2.0-bdwgc.dll
+  `rva=0x1f71a3` faulting on `mov (%rdi),%rax` with `rdi=0`.
+- Bisection with temporary `MACRUNNER_HB_DISABLE_MONO_FUSION*` diagnostics:
+  disabling all Mono metadata fusions clears the assertion for 180s; disabling
+  only string fusions is not required. Disabling bsearch/coded-index/decode-row-loop
+  is insufficient, and disabling decode-row-entry or decode-col alone is insufficient.
+- Production diagnostic switch was removed before this checkpoint.
+- Correctness fix applied in the Mono `metadata_decode_col` fused helpers:
+  the native loop refreshes `eax` to the next even-column width at the end of each
+  pair iteration; both C helpers were leaving `eax` at the previous odd-column width.
+  The helpers now mirror that loop and use native 32-bit row-size multiplication.
+- Validation:
+  - build/relink/install/codesign: `reports/phase4-hollow-knight/build-20260604-125709-hb-mono-decode-col-offset.log`
+    PASS, artifact `ntdll-hb-mono-decode-col-offset-lanea49base-20260604-125709.so`.
+  - Hollow Knight: `reports/phase4-hollow-knight/run-20260604-125729-hk-mono-decode-col-offset300/`
+    still times out with `invalid_vtable=2`, `runtime_fail=1`, `GfxDevice=0`,
+    `D3D11CreateDevice=0`.
+
+NEXT: continue Mono metadata fusion bisection. The offset-loop bug is real but not the vtable
+blocker; isolate the remaining corruptor among rowptr-entry, decode-row-entry/loop, decode-col,
+coded-index, and bsearch with pair disables or direct helper-vs-IR comparison.

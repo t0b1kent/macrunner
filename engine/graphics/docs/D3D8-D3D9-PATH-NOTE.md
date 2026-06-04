@@ -47,8 +47,8 @@ to run 32-bit-era game targets.
   UAV clear readbacks, multi-UAV, structured/raw buffer and texture SRV-to-UAV,
   Texture1D mip generation/readback, texture-array/3D UAV, cube mip generation/readback, TextureCubeArray
   SRV/readback, and groupshared/interlocked compute readbacks, D3D11.1
-  constant-buffer offset/partial-update paths, overlap buffer copies, and
-  stability loops.
+  constant-buffer offset/partial-update paths, overlap buffer copies,
+  multi viewport/scissor state roundtrips, and stability loops.
 - x64 guest DXMT binding remains strict-native green for `d3d11`, `dxgi`, and
   `winemetal=n` before older-game routing borrows the same prefix/deployment
   machinery.
@@ -78,11 +78,13 @@ multi-UAV, structured/raw buffer and texture SRV-to-UAV, texture-array/3D UAV,
 cube mip generation/readback, TextureCubeArray SRV/readback, and
 groupshared/interlocked compute readbacks, constant-buffer partial updates,
 shader-visible constant-buffer offsetting, overlap buffer copies,
-R32_UINT/R32_FLOAT UAV clear readbacks, depth-only D3D11.1 `ClearView`, and
-five-pass stability
+R32_UINT/R32_FLOAT UAV clear readbacks, depth-only D3D11.1 `ClearView`,
+multi viewport/scissor state roundtrips, and five-pass stability
 (`artifacts/dxmt-smoke-logs/lane-d-longrun-compute-expanded-20260604-205810.outer.log`;
 cube/cube-array evidence:
 `artifacts/dxmt-smoke-logs/lane-d-cube-array-stability-20260605-031934.outer.log`).
+The latest state breadth run is
+`artifacts/dxmt-smoke-logs/lane-d-state-multi-20260605-043114.outer.log`.
 Strict-native x64 guest `winemetal=n` binding remains green but still does not
 reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260605-040004/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`

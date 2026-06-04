@@ -28,7 +28,7 @@ intentional API/device semantics, not open user-mode implementation gaps.
 | Feature level 11_1 | Implemented | Current headless smoke returns `feature_level=0xb100`; `UnityFeatureLevelProbe request=11_1 chosen=0xb100`, with 11_0/10_1/10_0 fallbacks green. Cap override remains available via `d3d11.maxFeatureLevel`. |
 | `CreateDXGIFactory*` | Implemented | `src/dxgi/dxgi_factory.cpp` exports `CreateDXGIFactory`, `1`, `2`. |
 | Adapter enumeration | Implemented | `EnumAdapters/EnumAdapters1` enumerate `WMT::CopyAllDevices()`. |
-| WARP adapter | Implemented | `EnumWarpAdapter` returns the default DXMT Metal adapter as the WARP fallback; this is not a CPU WARP rasterizer. |
+| WARP adapter | Implemented | `EnumWarpAdapter` returns the default DXMT Metal adapter as the WARP fallback; this is not a CPU WARP rasterizer. The smoke now also creates a `D3D_DRIVER_TYPE_WARP` device through that fallback (`UnityWarpProbe result=PASS`, FL 11_1) in `artifacts/dxmt-smoke-logs/lane-d-warp-device-20260604-140424.outer.log`. |
 | `CreateSwapChain` / `ForHwnd` | Implemented | Legacy desc converts to desc1 and routes through `IMTLDXGIDevice::CreateSwapChain`. |
 | CoreWindow/composition swapchains | Clean unsupported | `CreateSwapChainForCoreWindow` and `CreateSwapChainForComposition` return `DXGI_ERROR_UNSUPPORTED` with null swapchains for valid owned-device inputs and `DXGI_ERROR_INVALID_CALL` for invalid inputs; smoke reports `unsupported_swapchains=PASS`. |
 | Backbuffer `GetBuffer` | Implemented | Valid logical indices below `BufferCount` query the DXMT backing texture; out-of-range indices return `DXGI_ERROR_INVALID_CALL` with null output. Bitblt and flip smoke verify `GetBuffer(1) hr=0x00000000` and `GetBuffer(2) hr=0x887a0001`. |

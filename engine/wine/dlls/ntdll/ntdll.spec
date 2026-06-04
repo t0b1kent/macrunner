@@ -1543,6 +1543,7 @@
 @ stdcall -arch=!i386 __C_specific_handler(ptr long ptr ptr)
 @ cdecl -arch=!i386 -norelay __chkstk()
 @ cdecl -arch=x86_64,arm64ec -norelay __chkstk_arm64ec()
+@ cdecl -arch=x86_64 -norelay ___chkstk_ms()
 @ cdecl __isascii(long)
 @ cdecl __iscsym(long)
 @ cdecl __iscsymf(long)

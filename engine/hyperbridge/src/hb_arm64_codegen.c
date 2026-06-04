@@ -456,6 +456,11 @@ static void emit_store_operand(hb_codegen_buffer_t* buf, const hb_ir_operand_t* 
 
 static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn);
 extern uint64_t hb_jit_helper_load_u64(hb_context_t* ctx, uint64_t addr);
+extern void     hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr,
+                                                 uint64_t dst_reg, uint64_t dst_size,
+                                                 uint64_t dst_reg_offset);
+extern void     hb_jit_helper_store_sized(hb_context_t* ctx, uint64_t addr,
+                                          uint64_t val, uint64_t size);
 
 static bool is_direct_user_mem_operand(const hb_ir_operand_t* op) {
     if (!op || op->type != HB_OP_MEM) return false;
@@ -794,6 +799,86 @@ static void emit_direct_mem_store_from_x20_off(hb_codegen_buffer_t* buf, hb_size
 
 static void emit_direct_mem_store_zero_off(hb_codegen_buffer_t* buf, hb_size_t size, uint32_t off) {
     emit_stlr_from_reg(buf, 31, emit_direct_mem_base_for_offset(buf, off), size);
+}
+
+static uint64_t direct_mem_alignment_mask(hb_size_t size) {
+    switch (size) {
+        case HB_SIZE_16: return 1u;
+        case HB_SIZE_32: return 3u;
+        case HB_SIZE_64: return 7u;
+        case HB_SIZE_8:
+        default: return 0u;
+    }
+}
+
+static bool emit_direct_mem_load_to_gpr_tso(hb_codegen_buffer_t* buf,
+                                            const hb_ir_operand_t* src,
+                                            const hb_ir_operand_t* dst) {
+    uint64_t mask;
+    size_t aligned_branch = 0;
+    size_t done_branch = 0;
+
+    if (!buf || !src || !dst || !is_gpr_reg_operand(dst) ||
+        !is_direct_user_mem_operand(src))
+        return false;
+
+    emit_direct_mem_addr(buf, src);
+    mask = direct_mem_alignment_mask(src->size);
+    if (mask) {
+        emit_mov_imm_compact(buf, 22, mask);
+        emit_ands_reg(buf, 22, 21, 22);
+        aligned_branch = emit_bcond_deferred(buf, 0); /* EQ: runtime-aligned */
+
+        emit_mov_reg(buf, 0, 19);
+        emit_mov_reg(buf, 1, 21);
+        emit_mov_imm_compact(buf, 2, (uint64_t)dst->reg);
+        emit_mov_imm_compact(buf, 3, (uint64_t)dst->size);
+        emit_mov_imm_compact(buf, 4, (uint64_t)dst->reg_offset);
+        emit_call_helper(buf, (void*)hb_jit_helper_load_to_reg_sized);
+        emit_return_if_helper_failed(buf);
+        done_branch = emit_b_deferred(buf);
+
+        patch_bcond(buf, aligned_branch, 0, buf->size);
+    }
+
+    emit_direct_mem_load_to_x20(buf, src->size);
+    emit_store_x20_to_gpr_sized(buf, dst);
+    if (done_branch)
+        patch_b(buf, done_branch, buf->size);
+    return true;
+}
+
+static bool emit_direct_mem_store_from_x20_tso(hb_codegen_buffer_t* buf,
+                                               const hb_ir_operand_t* dst) {
+    uint64_t mask;
+    size_t aligned_branch = 0;
+    size_t done_branch = 0;
+
+    if (!buf || !dst || !is_direct_user_mem_operand(dst))
+        return false;
+
+    emit_direct_mem_addr(buf, dst);
+    mask = direct_mem_alignment_mask(dst->size);
+    if (mask) {
+        emit_mov_imm_compact(buf, 22, mask);
+        emit_ands_reg(buf, 22, 21, 22);
+        aligned_branch = emit_bcond_deferred(buf, 0); /* EQ: runtime-aligned */
+
+        emit_mov_reg(buf, 0, 19);
+        emit_mov_reg(buf, 1, 21);
+        emit_mov_reg(buf, 2, 20);
+        emit_mov_imm_compact(buf, 3, (uint64_t)dst->size);
+        emit_call_helper(buf, (void*)hb_jit_helper_store_sized);
+        emit_return_if_helper_failed(buf);
+        done_branch = emit_b_deferred(buf);
+
+        patch_bcond(buf, aligned_branch, 0, buf->size);
+    }
+
+    emit_direct_mem_store_from_x20(buf, dst->size);
+    if (done_branch)
+        patch_b(buf, done_branch, buf->size);
+    return true;
 }
 
 static bool direct_mem_unsigned_offset(const hb_ir_operand_t* op, uint32_t* off) {
@@ -3829,9 +3914,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
                 return emit_interp_ir_helper(buf, instr);
             if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1) &&
                 !wide_self_base_load_needs_helper(instr)) {
-                uint32_t off = emit_direct_mem_addr_with_offset(buf, &instr->src1);
-                emit_direct_mem_load_to_x20_off(buf, instr->src1.size, off);
-                emit_store_x20_to_gpr_sized(buf, &instr->dst);
+                if (!emit_direct_mem_load_to_gpr_tso(buf, &instr->src1, &instr->dst))
+                    return HB_ERR_INTERNAL;
                 return HB_OK;
             }
             emit_mov_reg(buf, 0, 19);
@@ -3860,8 +3944,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
                 } else {
                     emit_mov_imm_compact(buf, 20, (uint64_t)instr->src2.imm);
                 }
-                uint32_t off = emit_direct_mem_addr_with_offset(buf, &instr->src1);
-                emit_direct_mem_store_from_x20_off(buf, instr->src1.size, off);
+                if (!emit_direct_mem_store_from_x20_tso(buf, &instr->src1))
+                    return HB_ERR_INTERNAL;
                 return HB_OK;
             }
             emit_mov_reg(buf, 0, 19);

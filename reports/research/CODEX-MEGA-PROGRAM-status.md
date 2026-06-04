@@ -7,6 +7,36 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
+## Lane A checkpoint — 2026-06-04 unaligned direct-memory TSO fallback
+TSO litmus progress after `e5d2750`: `mp`, `spin`, `cas`, `xadd`, and `sb` pass under
+MacRunner when driven by `TSO_LITMUS_MODE`; `sb` reports `PASS sb: both0_seen=0`. `split`
+proved the remaining blocker: atomics trace reaches the 40,000th `lock xaddq` at
+`0x140002615` (`old=39999 result=40000`), then the test exits before the harness can print a
+verdict. Disassembly maps the next read to `0x1400021d2: mov (%rax),%rsi` from
+`split_buf+63`, an unaligned 64-bit plain guest load.
+
+Root-fix step taken in `engine/hyperbridge/src/hb_arm64_codegen.c`: scalar direct-memory
+LOAD/STORE now computes the full runtime guest address and uses LDAR/STLR only when the address is
+naturally aligned for the operand width. Unaligned 16/32/64-bit runtime addresses fall back to the
+existing TSO helpers (`hb_jit_helper_load_to_reg_sized` / `hb_jit_helper_store_sized`), which wrap
+host byte/memcpy access with fences instead of emitting an ARM64 acquire/release access that can
+fault on unaligned addresses.
+
+Validation:
+- Build: `reports/phase4-hollow-knight/build-20260604-unaligned-direct-tso.log`, rc=0.
+- `engine/hyperbridge/tests/hb_test_runner --fast-family phase1_core`:
+  `reports/phase4-hollow-knight/test-20260604-unaligned-direct-phase1.log`, `46 passed, 0 failed`.
+- Oracle fast gate:
+  `reports/phase4-hollow-knight/fast-validate-20260604-unaligned-direct-phase1.log`,
+  `FAST VALIDATION: PASS`.
+- x64 fuzz:
+  `reports/phase4-hollow-knight/fuzz-20260604-unaligned-direct-x64-logic-cmov.json`,
+  `cases_run=10000`, families `int_logic_flags=6668`, `cmov_setcc=3332`,
+  `backend_mismatch_count=0`, `oracle_mismatch_count=0`, `oracle_pass_count=10000`.
+
+NEXT: commit this checkpoint, relink/install/sign `ntdll.so`, rerun all TSO litmus modes, then
+resume the Hollow Knight 900s climb.
+
 ## Lane A checkpoint — 2026-06-04 helper-side TSO ordering and XCHG atomicity
 Checkpointed diagnostic WIP first as `e93b485 checkpoint(Lane A): capture Mono vtable probe`.
 

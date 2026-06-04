@@ -234,7 +234,7 @@ run_runtime_loader_probe() {
     echo "runtime_loader_arch=$arch"
     echo "runtime_loader_exe=$app_exe"
     echo "runtime_loader_app_dir=$app_dir"
-    echo "runtime_loader_overrides=d3d12=n"
+    echo "runtime_loader_overrides=d3d12,d3d12core=n"
     echo "runtime_loader_wine_dist=$RUNTIME_WINE_DIST"
     echo "runtime_loader_prefix=$prefix"
     echo "runtime_loader_winedllpath=$runtime_winedllpath"
@@ -252,7 +252,7 @@ run_runtime_loader_probe() {
     (
       cd "$app_dir" &&
       WINEPREFIX="$prefix" \
-      WINEDLLOVERRIDES="d3d12=n" \
+      WINEDLLOVERRIDES="d3d12,d3d12core=n" \
       WINEDEBUG="-all,+loaddll" \
       WINELOADERNOEXEC="${WINELOADERNOEXEC:-1}" \
       MACRUNNER_GRAPHICS_BACKEND="dxmt" \
@@ -270,7 +270,7 @@ run_runtime_loader_probe() {
     (
       cd "$app_dir" &&
       WINEPREFIX="$prefix" \
-      WINEDLLOVERRIDES="d3d12=n" \
+      WINEDLLOVERRIDES="d3d12,d3d12core=n" \
       WINEDEBUG="-all,+loaddll" \
       WINELOADERNOEXEC="${WINELOADERNOEXEC:-1}" \
       MACRUNNER_GRAPHICS_BACKEND="dxmt" \

@@ -1,7 +1,17 @@
 #define WIN32_LEAN_AND_MEAN
+#define COBJMACROS
+#define INITGUID
 #include <windows.h>
 
+#include <d3d12.h>
 #include <stdio.h>
+
+typedef HRESULT(WINAPI *PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)(
+    const D3D12_ROOT_SIGNATURE_DESC *desc, D3D_ROOT_SIGNATURE_VERSION version,
+    ID3DBlob **blob, ID3DBlob **error_blob);
+
+typedef HRESULT(WINAPI *PFN_D3D12_CREATE_ROOT_SIGNATURE_DESERIALIZER)(
+    const void *data, SIZE_T data_size, REFIID iid, void **deserializer);
 
 struct export_probe {
   const char *name;
@@ -51,6 +61,76 @@ static int probe_module(const struct module_probe *probe) {
   return pass;
 }
 
+static int probe_d3d12_root_signature(void) {
+  HMODULE module;
+  PFN_D3D12_SERIALIZE_ROOT_SIGNATURE serialize_root_signature;
+  PFN_D3D12_CREATE_ROOT_SIGNATURE_DESERIALIZER create_deserializer;
+  D3D12_ROOT_SIGNATURE_DESC desc;
+  ID3DBlob *blob = NULL;
+  ID3DBlob *error_blob = NULL;
+  ID3D12RootSignatureDeserializer *deserializer = NULL;
+  const D3D12_ROOT_SIGNATURE_DESC *decoded;
+  HRESULT hr;
+  int pass = 1;
+
+  module = GetModuleHandleW(L"d3d12.dll");
+  printf("vkd3d_runtime_semantic module=d3d12.dll handle=%p\n", module);
+  if (!module)
+    return 0;
+
+  serialize_root_signature =
+      (PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)GetProcAddress(
+          module, "D3D12SerializeRootSignature");
+  create_deserializer =
+      (PFN_D3D12_CREATE_ROOT_SIGNATURE_DESERIALIZER)GetProcAddress(
+          module, "D3D12CreateRootSignatureDeserializer");
+  if (!serialize_root_signature || !create_deserializer)
+    return 0;
+
+  ZeroMemory(&desc, sizeof(desc));
+  desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+  hr = serialize_root_signature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob,
+                                &error_blob);
+  printf("vkd3d_runtime_call api=D3D12SerializeRootSignature hr=0x%08lx blob=%p error=%p\n",
+         (unsigned long)hr, blob, error_blob);
+  if (FAILED(hr) || !blob) {
+    pass = 0;
+    goto cleanup;
+  }
+
+  hr = create_deserializer(ID3D10Blob_GetBufferPointer(blob),
+                           ID3D10Blob_GetBufferSize(blob),
+                           &IID_ID3D12RootSignatureDeserializer,
+                           (void **)&deserializer);
+  printf("vkd3d_runtime_call api=D3D12CreateRootSignatureDeserializer hr=0x%08lx deserializer=%p\n",
+         (unsigned long)hr, deserializer);
+  if (FAILED(hr) || !deserializer) {
+    pass = 0;
+    goto cleanup;
+  }
+
+  decoded = ID3D12RootSignatureDeserializer_GetRootSignatureDesc(deserializer);
+  printf("vkd3d_runtime_rootsig params=%u samplers=%u flags=0x%08x\n",
+         decoded ? decoded->NumParameters : 0xffffffffu,
+         decoded ? decoded->NumStaticSamplers : 0xffffffffu,
+         decoded ? decoded->Flags : 0xffffffffu);
+  if (!decoded || decoded->NumParameters || decoded->NumStaticSamplers ||
+      decoded->Flags != desc.Flags)
+    pass = 0;
+
+cleanup:
+  if (deserializer)
+    ID3D12RootSignatureDeserializer_Release(deserializer);
+  if (blob)
+    ID3D10Blob_Release(blob);
+  if (error_blob)
+    ID3D10Blob_Release(error_blob);
+
+  printf("vkd3d_runtime_rootsig_result=%s\n", pass ? "PASS" : "FAIL");
+  return pass;
+}
+
 int main(void) {
   static const struct export_probe d3d12_exports[] = {
       {"D3D12CreateDevice"},
@@ -77,6 +157,9 @@ int main(void) {
     if (!probe_module(&modules[i]))
       pass = 0;
   }
+
+  if (!probe_d3d12_root_signature())
+    pass = 0;
 
   printf("vkd3d_runtime_load_result=%s\n", pass ? "PASS" : "FAIL");
   return pass ? 0 : 1;

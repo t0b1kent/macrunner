@@ -1,0 +1,20 @@
+Lane C Hollow Knight Unity game probe after setupapi NODECOMP checkpoint.
+
+run_log=reports/lane-c-hollow-knight-post-setupapi-20260604111854/run.log
+rc=143
+total_lines=1261256
+
+dxmt_prefix_sync=pass
+d3d_runtime_reached=no
+missing_imports=0
+unsupported=0
+fixme_stub=0
+actctx=0
+vm_fail=0
+hb_runtime_fail=0
+seh_invalid=1259885
+
+Notes:
+- `mr-run.sh` used a warm DXMT prefix template, skipped wineboot, synced system32/syswow64 graphics DLLs, and launched `Hollow Knight.exe`.
+- The game does not reach a D3D/DXGI runtime marker in this run.
+- The terminal blocker is repeated `virtual_unwind exception data not found` / `EXCEPTION_INVALID_DISPOSITION`, not a Lane-C-owned loader, virtual memory, or real-DLL API fault.

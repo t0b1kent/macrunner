@@ -68,8 +68,7 @@ present/readback, fullscreen, MSAA, queries, deferred contexts, BC formats,
 per-swapchain target/buffer resize, append-UAV counter copy, constant-buffer
 partial updates, shader-visible constant-buffer offsetting, overlap buffer
 copies, depth-only D3D11.1 `ClearView`, and two-pass stability
-(`artifacts/dxmt-smoke-logs/lane-d-stability-20260604-133145.outer.log`,
-`artifacts/dxmt-smoke-logs/lane-d-depth-clearview-20260604-134840.outer.log`).
+(`artifacts/dxmt-smoke-logs/lane-d-stability-refresh-20260604-135717.outer.log`).
 Strict-native x64 guest `winemetal=n` binding remains green but still does not
 reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260604-134959/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`

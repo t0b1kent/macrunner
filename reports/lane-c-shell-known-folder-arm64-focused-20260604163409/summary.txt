@@ -1,0 +1,89 @@
+run_rc=2
+shell_ok=0
+shell_failed=1
+unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+seh_invalid=4
+relevant_lines:
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\ssef1256.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/ssef1256.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\ssef1257.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/ssef1257.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\ssef874.fon" -> ret 0 n
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/ssef874.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sserife.fon" -> ret 0 n
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/sserife.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sserifee.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/sserifee.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sserifeg.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/sserifeg.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sserifer.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/sserifer.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sserifet.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/sserifet.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sseriff.fon" -> ret 0 n
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/sseriff.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sseriffe.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/sseriffe.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sseriffg.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/sseriffg.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sseriffr.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/sseriffr.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sserifft.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/sserifft.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\svgasys.fon" -> ret 0 n
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/svgasys.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\symbol.ttf" -> ret 0 nt
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\tahoma.ttf" -> ret 0 nt
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\tahomabd.ttf" -> ret 0 
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\vgafix.fon" -> ret 0 nt
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/vgafix.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\vgas1255.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/vgas1255.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\vgas1256.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/vgas1256.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\vgas1257.fon" -> ret 0 
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/vgas1257.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\vgas874.fon" -> ret 0 n
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/vgas874.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\vgasys.fon" -> ret 0 nt
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/vgasys.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\vgasyse.fon" -> ret 0 n
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/vgasyse.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\vgasysg.fon" -> ret 0 n
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/vgasysg.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\vgasysr.fon" -> ret 0 n
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/vgasysr.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\vgasyst.fon" -> ret 0 n
+0024:warn:font:new_ft_face Ignoring font "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/share/wine/fonts/vgasyst.fon"/0x100e24000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\webdings.ttf" -> ret 0 
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\wingding.ttf" -> ret 0 
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\coure.fon" -> ret 0 nt 
+0024:warn:font:ft_face_get_full_name full name not found, using L"Courier Regular" instead
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\System\\Library\\Fonts\\Supplemental\\NISC18030.ttf" -> ret 0 nt L"\\??\\Z:\\System\\Library\\Fonts\\Supplemental\\NISC18030.ttf" unix "/Users/timurtoby/Documents/MacRunn
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\sserife.fon" -> ret 0 n
+0024:warn:font:ft_face_get_full_name full name not found, using L"MS Sans Serif Regular" instead
+0024:warn:font:ft_face_get_full_name full name not found, using L"MS Sans Serif Regular" instead
+0024:warn:font:ft_face_get_full_name full name not found, using L"MS Sans Serif Regular" instead
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\serife.fon" -> ret c000
+0024:trace:file:get_nt_and_unix_names L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\artifacts\\lane-c-dist-snapshots\\20260604130752\\dist-arm64ec-spike\\share\\wine\\fonts\\smalle.fon" -> ret 0 nt
+0024:warn:font:ft_face_get_full_name full name not found, using L"Small Fonts Regular" instead
+0024:trace:shell:SHGetFolderPathA 0000000000000000,5,0000000000000000,0,00000001084FFE4C
+0024:trace:shell:SHGetFolderPathAndSubDirW 0000000000000000,0x5,0000000000000000,0,(null),00000001084FFBF8
+0024:trace:shell:_SHGetUserShellFolderPath FFFFFFFF80000001,(null),L"Personal",00000001084FF780
+0024:trace:shell:_SHExpandEnvironmentStrings L"%USERPROFILE%\\Documents", 00000001084FF028
+0024:trace:shell:_SHGetProfilesValue 0000000000000064,L"ProfilesDirectory",00000001084FEBB0,L"C:\\users"
+0024:trace:shell:_SHGetProfilesValue returning 0x00000000 (output value is L"C:\\users")
+0024:trace:shell:_SHExpandEnvironmentStrings returning 0x00000000 (input was L"%USERPROFILE%\\Documents", output is L"C:\\users\\crossover\\Documents")
+0024:trace:shell:_SHGetUserShellFolderPath returning 0x00000000
+0024:trace:shell:_SHGetUserProfilePath returning 0x00000000 (output path is L"C:\\users\\crossover\\Documents")
+0024:trace:file:GetFileAttributesW L"C:\\users\\crossover\\Documents"
+0024:trace:file:RtlDosPathNameToNtPathName_U_WithStatus (L"C:\\users\\crossover\\Documents",00000001084FF6E8,0000000000000000,0000000000000000)
+0024:trace:file:RtlGetFullPathName_U (L"C:\\users\\crossover\\Documents" 520 00000001084FF3F8 0000000000000000)
+0024:trace:file:RtlGetFullPathName_UEx (L"C:\\users\\crossover\\Documents" 520 00000001084FF3F8 0000000000000000 0000000000000000)
+0024:trace:file:get_nt_and_unix_names L"\\??\\C:\\users\\crossover\\Documents" -> ret c0000034
+0024:warn:file:NtQueryAttributesFile L"\\??\\C:\\users\\crossover\\Documents" not found (c0000034)
+0024:trace:shell:SHGetFolderPathAndSubDirW returning 0x80070003 (final path is L"C:\\users\\crossover\\Documents")
+SHGetFolderPath failed0024:trace:file:NtWriteFile = SUCCESS (22)

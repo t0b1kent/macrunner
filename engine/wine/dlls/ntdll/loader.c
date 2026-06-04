@@ -6405,6 +6405,15 @@ static NTSTATUS open_known_dll( const WCHAR *libname, UNICODE_STRING *nt_name, W
         return STATUS_SUCCESS;
     }
     NtQuerySection( *mapping, SectionImageInformation, image_info, sizeof(*image_info), NULL );
+    if (current_machine == IMAGE_FILE_MACHINE_I386 && image_info->Machine != IMAGE_FILE_MACHINE_I386)
+    {
+        TRACE( "%s known dll is for arch %x, continuing search\n", debugstr_us(nt_name), image_info->Machine );
+        NtClose( *mapping );
+        *mapping = NULL;
+        RtlFreeUnicodeString( nt_name );
+        nt_name->Buffer = NULL;
+        return STATUS_DLL_NOT_FOUND;
+    }
     memset( id, 0, sizeof(*id) );
     TRACE( "loaded %s from known dlls\n", debugstr_us(nt_name) );
     return STATUS_SUCCESS;

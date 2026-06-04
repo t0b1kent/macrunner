@@ -1,0 +1,21 @@
+stamp=20260604113428
+target=aarch64-windows
+make: `dlls/win32u/aarch64-windows/win32u.dll' is up to date.
+make_rc_aarch64-windows=0
+install_rc_aarch64-windows=0
+target=x86_64-windows
+tools/winegcc/winegcc -o dlls/win32u/x86_64-windows/win32u.dll --wine-objdir . -b x86_64-windows -Wl,--wine-builtin -shared \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/win32u/win32u.spec \
+  -nodefaultlibs dlls/win32u/x86_64-windows/main.o dlls/ntdll/x86_64-windows/libntdll.a \
+  dlls/winecrt0/x86_64-windows/libwinecrt0.a libs/compiler-rt/x86_64-windows/libcompiler-rt.a \
+  --no-default-config -fms-hotpatch -Wl,-debug:dwarf
+make_rc_x86_64-windows=0
+install_rc_x86_64-windows=0
+target=i386-windows
+tools/winegcc/winegcc -o dlls/win32u/i386-windows/win32u.dll --wine-objdir . -b i686-windows -Wl,--wine-builtin -shared \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/win32u/win32u.spec \
+  -nodefaultlibs dlls/win32u/i386-windows/main.o dlls/ntdll/i386-windows/libntdll.a \
+  dlls/winecrt0/i386-windows/libwinecrt0.a libs/compiler-rt/i386-windows/libcompiler-rt.a \
+  --no-default-config -fms-hotpatch -Wl,-debug:dwarf
+make_rc_i386-windows=0
+install_rc_i386-windows=0

@@ -1,0 +1,24 @@
+# Lane C Half-Life GoldSrc PE32 current runtime
+
+Date: 2026-06-04
+Report: reports/lane-c-half-life-goldsrc-current-20260604121101
+Extraction log: reports/build/lane-c-half-life-extract-20260604121003.log
+Raw log: reports/lane-c-half-life-goldsrc-current-20260604121101/run.log
+
+## Result
+- run_rc=143
+- total_lines=1454
+- wow64_markers=0
+- btcpu_markers=0
+- cpu_simulate_markers=0
+- graphics_markers=131
+- unsupported=0
+- vm_fail=0
+- dll_fail=0
+- fixme_stub=0
+- actctx=0
+- hb_runtime_fail=0
+- seh_invalid=0
+
+## Interpretation
+No new Lane-C-owned loader/VM/Win32-DLL signature surfaced in this GoldSrc PE32 game probe.

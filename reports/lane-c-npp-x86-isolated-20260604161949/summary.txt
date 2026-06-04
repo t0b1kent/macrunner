@@ -1,0 +1,15 @@
+run_rc=143
+wow64_markers=613
+btcpu_markers=0
+cpu_simulate_markers=0
+npp_markers=0
+gui_markers=9
+unsupported=0
+ioctl_unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=3
+hb_runtime_fail=0
+seh_invalid=244013
+last_exception=002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised

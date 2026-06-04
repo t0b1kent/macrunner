@@ -1,0 +1,4 @@
+fixture	run_rc	stdout_like	wow64_markers	btcpu_markers	cpu_simulate_markers	unsupported	ioctl_unsupported	vm_fail	dll_fail	fixme_stub	actctx	hb_runtime_fail	seh_invalid
+memory_x86.exe	143	88	677	8	1	0	0	0	0	0	7	0	4
+file_io_x86.exe	143	88	677	8	1	0	0	0	0	0	7	0	4
+registry_read_x86.exe	143	5	613	0	0	0	0	0	0	0	3	0	90469

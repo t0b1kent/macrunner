@@ -86,7 +86,7 @@ cube/cube-array evidence:
 The latest state breadth run is
 `artifacts/dxmt-smoke-logs/lane-d-state-multi-20260605-043114.outer.log`.
 Strict-native x64 guest `winemetal=n` binding remains green but still does not
-reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260605-040004/dxmt-x64-binding.log`).
+reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260605-043515/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`
 runtime loading with native `d3d12core.dll`, legacy and versioned
 root-signature frontend roundtrips, plus `D3D12GetInterface` SDK-configuration

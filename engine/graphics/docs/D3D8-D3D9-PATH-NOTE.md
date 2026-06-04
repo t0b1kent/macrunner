@@ -45,7 +45,7 @@ to run 32-bit-era game targets.
   resources, views, shader stages, MSAA, mips, queries, BC formats,
   per-swapchain `ResizeTarget`/`ResizeBuffers`, append-UAV counters,
   UAV clear readbacks, multi-UAV, structured/raw buffer and texture SRV-to-UAV,
-  texture-array/3D UAV, cube mip generation/readback, TextureCubeArray
+  Texture1D mip generation/readback, texture-array/3D UAV, cube mip generation/readback, TextureCubeArray
   SRV/readback, and groupshared/interlocked compute readbacks, D3D11.1
   constant-buffer offset/partial-update paths, overlap buffer copies, and
   stability loops.
@@ -73,7 +73,7 @@ to run 32-bit-era game targets.
 As of the 2026-06-05 Lane D checkpoints, the DXMT D3D11 owned smoke suite is
 green across device creation, resources, shader stages, draw/dispatch,
 present/readback, fullscreen, MSAA, queries, deferred contexts, BC formats,
-per-swapchain target/buffer resize, append-UAV counter copy,
+per-swapchain target/buffer resize, Texture1D mip generation/readback, append-UAV counter copy,
 multi-UAV, structured/raw buffer and texture SRV-to-UAV, texture-array/3D UAV,
 cube mip generation/readback, TextureCubeArray SRV/readback, and
 groupshared/interlocked compute readbacks, constant-buffer partial updates,
@@ -84,7 +84,7 @@ five-pass stability
 cube/cube-array evidence:
 `artifacts/dxmt-smoke-logs/lane-d-cube-array-stability-20260605-031934.outer.log`).
 Strict-native x64 guest `winemetal=n` binding remains green but still does not
-reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260605-030159/dxmt-x64-binding.log`).
+reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260605-040004/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`
 runtime loading with native `d3d12core.dll`, plus legacy and versioned
 root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260605-034309`).

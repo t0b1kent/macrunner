@@ -1,0 +1,33 @@
+app=reports/lane-c-gta-vc-autorun-prefix-sync-20260604212417/autorun.log
+run_rc=143
+gta_markers=30
+wow64=616
+btcpu=0
+gui_markers=4
+unsupported=0
+ioctl_unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=4
+native_import_nonexec=0
+hb_invalid=0
+markers=
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/system32/opcservices.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/opcservices.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/system32/setupapi.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/setupapi.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/system32/user32.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/user32.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/system32/webservices.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/webservices.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/system32/windows.devices.bluetooth.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/windows.devices.bluetooth.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/system32/windows.devices.enumeration.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/windows.devices.enumeration.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/system32/windows.devices.usb.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/windows.devices.usb.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/system32/windows.media.devices.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/windows.media.devices.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/syswow64/opcservices.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/opcservices.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/syswow64/setupapi.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/setupapi.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/syswow64/user32.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/user32.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/syswow64/webservices.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/webservices.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/syswow64/windows.devices.bluetooth.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/windows.devices.bluetooth.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/syswow64/windows.devices.enumeration.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/windows.devices.enumeration.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/syswow64/windows.devices.usb.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/windows.devices.usb.dll
+synced artifacts/_mr-run.m8AdTy/drive_c/windows/syswow64/windows.media.devices.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/windows.media.devices.dll
+[mr-run] prefix=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run.m8AdTy timeout=120s exe=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/games/gta-vc-disc/autorun.exe
+macrunner-hb-ldr-init: phase=before index=0 ctx=00000001073AFC70 pc=000007FFD0775270 lr=0000000000000000 sp=00000001073B0000 x0=0000000140016408 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFEDC0000 delta=FFFF9880009E0000 machine=0xaa64

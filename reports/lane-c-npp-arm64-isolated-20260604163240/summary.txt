@@ -1,0 +1,14 @@
+app=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/phase-h/npp-arm64/notepad++.exe
+dist=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike
+run_rc=143
+npp_markers=1
+gui_markers=17
+unsupported=0
+ioctl_unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=6
+hb_runtime_fail=0
+seh_invalid=275989
+last_relevant=002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised

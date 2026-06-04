@@ -181,7 +181,7 @@ SUMMARY_PATTERN="DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDX
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnityOutputCapabilityProbe|UnityAdapterNotificationProbe|UnityFenceProbe|D3D11On12Probe|UnityTiledProbe"
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|invalid_buffer"
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnitySRGBSampleProbe|UnityComputeProbe|array_slice[01]_mip1_rgba|array_slice[01]_mip1_copy_rgba|typed_buffer"
-SUMMARY_FOCUS_PATTERN="UnityFeatureProbe|dynamic_constant|partial_constant|constant_partial_words|constant_offset|CSSetConstantBuffers1|CSGetConstantBuffers1|UnitySRGBSampleProbe|array_slice[01]_mip1_rgba|array_slice[01]_mip1_copy_rgba|typed_buffer_values"
+SUMMARY_FOCUS_PATTERN="UnityFeatureProbe|dynamic_constant|partial_constant|constant_partial_words|overlap_copy|constant_offset|CSSetConstantBuffers1|CSGetConstantBuffers1|UnitySRGBSampleProbe|array_slice[01]_mip1_rgba|array_slice[01]_mip1_copy_rgba|typed_buffer_values"
 
 SMOKE_RC=0
 for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do

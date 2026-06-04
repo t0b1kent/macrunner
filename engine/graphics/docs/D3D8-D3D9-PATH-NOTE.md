@@ -43,15 +43,17 @@ to run 32-bit-era game targets.
 
 - DXMT D3D11 headless smoke remains green through feature levels 10_0-11_1,
   resources, views, shader stages, MSAA, mips, queries, BC formats,
-  per-swapchain `ResizeTarget`/`ResizeBuffers`, append-UAV counters, and
-  stability loops.
+  per-swapchain `ResizeTarget`/`ResizeBuffers`, append-UAV counters,
+  D3D11.1 constant-buffer offset/partial-update paths, overlap buffer copies,
+  and stability loops.
 - x64 guest DXMT binding remains strict-native green for `d3d11`, `dxgi`, and
   `winemetal=n` before older-game routing borrows the same prefix/deployment
   machinery.
 - vkd3d/D3D12 prefix deployment continues to gate DXMT `dxgi.dll` dependency
   architecture, factory exports, and standalone `d3d12.dll` runtime loading
-  with native `d3d12core.dll`, because older D3D8/9 routing will reuse the same
-  prefix-copy/export hygiene.
+  with native `d3d12core.dll`, plus root-signature serialization/deserialization
+  roundtrips, because older D3D8/9 routing will reuse the same prefix-copy/export
+  hygiene.
 - PE32/WOW64 is stable enough for 32-bit-era D3D8/D3D9 titles before using real
   game targets as graphics validation.
 - A D3D9 coverage matrix exists before implementation starts.
@@ -63,13 +65,14 @@ to run 32-bit-era game targets.
 As of the 2026-06-04 Lane D checkpoints, the DXMT D3D11 owned smoke suite is
 green across device creation, resources, shader stages, draw/dispatch,
 present/readback, fullscreen, MSAA, queries, deferred contexts, BC formats,
-per-swapchain target/buffer resize, append-UAV counter copy, two-pass stability,
-strict-native x64 guest `winemetal=n` binding, and vkd3d/DXGI prefix dependency
-gates including aarch64 standalone `d3d12.dll` runtime loading with native
-`d3d12core.dll` and a root-signature frontend roundtrip. Real Unity present was
-rechecked after Lane A TSO checkpoint `d0c0f6d`
-and still times out before D3D11/DXGI markers, so it is not a D3D8/D3D9
-implementation gate. D3D8/D3D9 work should still wait for future ownership plus
-Lane C PE32/WOW64 readiness for 32-bit game targets; current Lane C evidence
-still shows PE32/WOW64 real-game probes are not stable enough to serve as
-graphics validation targets.
+per-swapchain target/buffer resize, append-UAV counter copy, constant-buffer
+partial updates, shader-visible constant-buffer offsetting, overlap buffer
+copies, and two-pass stability (`artifacts/dxmt-smoke-logs/lane-d-stability-20260604-133145.outer.log`).
+Strict-native x64 guest `winemetal=n` binding remains green but still does not
+reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260604-131356/dxmt-x64-binding.log`).
+vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`
+runtime loading with native `d3d12core.dll`, plus legacy and versioned
+root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260604-131226`).
+Real Unity present is therefore still not a D3D8/D3D9 implementation gate.
+D3D8/D3D9 work should wait for future ownership plus Lane C PE32/WOW64 readiness
+for 32-bit game targets.

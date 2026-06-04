@@ -1,0 +1,17 @@
+app=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/games/gta-vc-disc/autorun.exe
+dist=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike
+run_rc=143
+file_info=artifacts/games/gta-vc-disc/autorun.exe: PE32 executable (GUI) Intel 80386, for MS Windows
+wow64_markers=1054
+btcpu_markers=10
+gta_markers=56
+gui_markers=11
+unsupported=1
+ioctl_unsupported=1
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=11
+hb_runtime_fail=0
+seh_invalid=4
+last_relevant=macrunner-wow64: NtMapViewOfSection leave status=4000000e out_addr=68a90000 out_size=00040000

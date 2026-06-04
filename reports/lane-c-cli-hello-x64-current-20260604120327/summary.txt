@@ -1,0 +1,20 @@
+# Lane C x64 CLI hello current runtime
+
+Date: 2026-06-04
+Report: reports/lane-c-cli-hello-x64-current-20260604120327
+Raw log: reports/lane-c-cli-hello-x64-current-20260604120327/run.log
+
+## Result
+- run_rc=143
+- total_lines=330289
+- stdout_like_lines=0
+- unsupported=0
+- vm_fail=0
+- dll_fail=0
+- fixme_stub=0
+- actctx=0
+- hb_runtime_fail=0
+- seh_invalid=330150
+
+## Interpretation
+No Lane-C-owned loader/VM/Win32-DLL signature surfaced; nonzero/timeout belongs to runtime continuation unless a new marker appears.

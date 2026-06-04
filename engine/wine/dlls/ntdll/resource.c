@@ -238,6 +238,8 @@ static NTSTATUS find_entry( HMODULE hmod, const LDR_RESOURCE_INFO *info,
     const void *root;
     const IMAGE_RESOURCE_DIRECTORY *resdirptr;
     WORD list[9];  /* list of languages to try */
+    WORD lang;
+    BOOL neutral_lang;
     int i, pos = 0;
 
     root = RtlImageDirectoryEntryToData( hmod, TRUE, IMAGE_DIRECTORY_ENTRY_RESOURCE, &size );
@@ -256,24 +258,27 @@ static NTSTATUS find_entry( HMODULE hmod, const LDR_RESOURCE_INFO *info,
     if (!level--) return STATUS_SUCCESS;
     if (level) return STATUS_INVALID_PARAMETER;  /* level > 3 */
 
+    lang = info->Language;
+    neutral_lang = PRIMARYLANGID( lang ) == LANG_NEUTRAL;
+
     /* 1. specified language */
-    pos = push_language( list, pos, info->Language );
+    pos = push_language( list, pos, lang );
 
     /* 2. specified language with neutral sublanguage */
-    pos = push_language( list, pos, MAKELANGID( PRIMARYLANGID(info->Language), SUBLANG_NEUTRAL ) );
+    pos = push_language( list, pos, MAKELANGID( PRIMARYLANGID(lang), SUBLANG_NEUTRAL ) );
 
     /* 3. neutral language with neutral sublanguage */
     pos = push_language( list, pos, MAKELANGID( LANG_NEUTRAL, SUBLANG_NEUTRAL ) );
 
     /* if no explicitly specified language, try some defaults */
-    if (PRIMARYLANGID(info->Language) == LANG_NEUTRAL)
+    if (neutral_lang)
     {
         LANGID user_lang, user_neutral_lang, system_lang;
 
         get_resource_lcids( &user_lang, &user_neutral_lang, &system_lang );
 
         /* user defaults, unless SYS_DEFAULT sublanguage specified  */
-        if (SUBLANGID(info->Language) != SUBLANG_SYS_DEFAULT)
+        if (SUBLANGID(lang) != SUBLANG_SYS_DEFAULT)
         {
             /* 4. current thread locale language */
             pos = push_language( list, pos, LANGIDFROMLCID(NtCurrentTeb()->CurrentLocale) );
@@ -289,18 +294,37 @@ static NTSTATUS find_entry( HMODULE hmod, const LDR_RESOURCE_INFO *info,
         pos = push_language( list, pos, system_lang );
 
         /* 8. system locale language with neutral sublanguage */
-        pos = push_language( list, pos, PRIMARYLANGID( system_lang ));
+        pos = push_language( list, pos, MAKELANGID( PRIMARYLANGID( system_lang ), SUBLANG_NEUTRAL ) );
 
         /* 9. English */
         pos = push_language( list, pos, MAKELANGID( LANG_ENGLISH, SUBLANG_DEFAULT ) );
     }
+    if (neutral_lang)
+        pos = push_language( list, pos, MAKELANGID( LANG_ENGLISH, SUBLANG_DEFAULT ) );
 
     resdirptr = *ret;
+    if (!lang)
+    {
+        LANGID user_lang, user_neutral_lang, system_lang;
+        WORD defaults[6];
+
+        get_resource_lcids( &user_lang, &user_neutral_lang, &system_lang );
+        defaults[0] = LANGIDFROMLCID(NtCurrentTeb()->CurrentLocale);
+        defaults[1] = user_lang;
+        defaults[2] = user_neutral_lang;
+        defaults[3] = system_lang;
+        defaults[4] = MAKELANGID( PRIMARYLANGID( system_lang ), SUBLANG_NEUTRAL );
+        defaults[5] = MAKELANGID( LANG_ENGLISH, SUBLANG_DEFAULT );
+
+        for (i = 0; i < ARRAY_SIZE(defaults); i++)
+            if ((*ret = find_entry_by_id( resdirptr, defaults[i], root, size, want_dir ))) return STATUS_SUCCESS;
+        if ((*ret = find_first_entry( resdirptr, root, size, want_dir ))) return STATUS_SUCCESS;
+    }
     for (i = 0; i < pos; i++)
         if ((*ret = find_entry_by_id( resdirptr, list[i], root, size, want_dir ))) return STATUS_SUCCESS;
 
     /* if no explicitly specified language, return the first entry */
-    if (PRIMARYLANGID(info->Language) == LANG_NEUTRAL)
+    if (neutral_lang)
     {
         if ((*ret = find_first_entry( resdirptr, root, size, want_dir ))) return STATUS_SUCCESS;
     }

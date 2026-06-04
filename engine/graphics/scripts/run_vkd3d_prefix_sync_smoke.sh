@@ -15,6 +15,16 @@ OBJDUMP="${VKD3D_PREFIX_SYNC_OBJDUMP:-$(command -v objdump || true)}"
 mkdir -p "$RUN_DIR"
 "$PROJECT_ROOT/scripts/disk-guard.sh" --check-only >/dev/null
 
+detect_vkd3d_source() {
+  if [[ -n "${VKD3D_PREFIX_SYNC_SOURCE:-}" ]]; then
+    echo "$VKD3D_PREFIX_SYNC_SOURCE"
+  elif [[ -d "$PROJECT_ROOT/engine/vkd3d-proton" ]]; then
+    echo "$PROJECT_ROOT/engine/vkd3d-proton"
+  else
+    echo "$PROJECT_ROOT/engine/vkd3d"
+  fi
+}
+
 normalize_arch() {
   case "$1" in
     aarch64|arm64|aarch64-windows) echo "aarch64-windows" ;;
@@ -89,6 +99,51 @@ check_machine() {
   echo "machine=$label PASS architecture=$expected log=$machine_log"
 }
 
+check_structured_store_source_gate() {
+  local source_path source_name hlsl_codegen source_log
+
+  source_path="$(detect_vkd3d_source)"
+  source_name="$(basename "$source_path")"
+  hlsl_codegen="$source_path/libs/vkd3d-shader/hlsl_codegen.c"
+  source_log="$RUN_DIR/structured-store-source.log"
+
+  {
+    echo "source=$source_path"
+    echo "source_name=$source_name"
+    if [[ -f "$hlsl_codegen" ]]; then
+      echo "hlsl_codegen=$hlsl_codegen"
+    else
+      echo "hlsl_codegen=absent"
+    fi
+  } >"$source_log"
+
+  if [[ ! -d "$source_path" ]]; then
+    echo "vkd3d_prefix_sync_result=FAIL reason=missing_vkd3d_source path=$source_path log=$source_log"
+    exit 2
+  fi
+
+  if [[ ! -f "$hlsl_codegen" ]]; then
+    if [[ "$source_name" == "vkd3d-proton" ]]; then
+      echo "structured_store_source=PASS mode=active_source_no_hlsl_codegen log=$source_log"
+      return
+    fi
+    echo "vkd3d_prefix_sync_result=FAIL reason=missing_hlsl_codegen source=$source_name log=$source_log"
+    exit 2
+  fi
+
+  if grep -q "Structured buffers store is not implemented" "$hlsl_codegen"; then
+    echo "vkd3d_prefix_sync_result=FAIL reason=structured_store_fixme_present source=$source_name log=$source_log"
+    exit 1
+  fi
+
+  if ! grep -q "VSIR_OP_STORE_STRUCTURED, 1, 3" "$hlsl_codegen"; then
+    echo "vkd3d_prefix_sync_result=FAIL reason=missing_structured_store_lowering source=$source_name log=$source_log"
+    exit 1
+  fi
+
+  echo "structured_store_source=PASS mode=hlsl_codegen_lowering source=$source_name log=$source_log"
+}
+
 if (($#)); then
   RAW_ARCHES=("$@")
 else
@@ -96,6 +151,7 @@ else
 fi
 
 echo "run_dir=$RUN_DIR"
+check_structured_store_source_gate
 
 for raw_arch in "${RAW_ARCHES[@]}"; do
   arch="$(normalize_arch "$raw_arch")"

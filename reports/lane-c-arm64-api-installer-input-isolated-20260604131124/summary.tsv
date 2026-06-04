@@ -1,0 +1,4 @@
+fixture	run_rc	stdout_like	unsupported	vm_fail	dll_fail	fixme_stub	actctx	hb_runtime_fail	seh_invalid
+msi_detection_fixture_arm64.exe	0	49	0	0	0	0	6	0	3
+xinput_probe_arm64.exe	0	49	0	0	0	0	6	0	3
+controller_stub_arm64.exe	0	49	0	0	0	0	6	0	3

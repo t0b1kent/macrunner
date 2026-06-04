@@ -1,0 +1,22 @@
+Lane C Notepad++ ARM64 app validation after Unix ntdll virtual refresh and KernelBase global-data cleanup.
+
+run_log=reports/lane-c-npp-arm64-app-post-virtual-refresh-20260604112745/run.log
+rc=143
+total_lines=1888
+
+vm_4gb_enomem=0
+vm_fail=0
+core_id_stub=0
+global_data_semistub=0
+fixme_stub=0
+missing_imports=0
+actctx=0
+setupapi_unsupported=0
+seh_invalid=0
+
+unsupported_font_format_warn=435
+
+Notes:
+- Rebuilt and installed active `ntdll.so` from current `ntdll/unix/virtual.c`, which contains the 4GB-boundary ENOMEM skip logic.
+- Rebuilt and installed active `kernelbase.dll` after changing `KernelBaseGetGlobalData()` from a noisy semi-stub warning to a trace-only internal global-data return.
+- The run still ends through the bounded wrapper timeout, with remaining unsupported markers limited to existing font-format warnings.

@@ -1,0 +1,264 @@
+Lane C PE32 real-app breadth analysis
+
+Verdict:
+- No Lane-C-owned loader, native VM, real-DLL API, missing import, DLL-load, unsupported API, or fixme blocker was found.
+- Notepad++ x86 and KeePass setup show zero Lane-C markers in the bounded run.
+- OldClassicCalc setup and GTA VC setup reach WOW64/BTCpu with all Lane-C markers zero.
+- OldClassicCalc setup later reports BTCpu `MEMORY_FAULT(-8)` / `c0000005`; a focused check found `vmStatusC000=0`, `vmFail=0`, `dll=0`, and 22 successful VM map/allocation lines, so this is routed to Lane B/CPU rather than `virtual.c`.
+- Repeated `seh_tail` lines are the already-routed ARM64EC unwind metadata tail.
+
+## npp_x86
+rc=143 wow64=0 btcpu=0 unsupported=0 missing_import=0 vm_fail=0 dll_fail=0 fixme=0 seh_tail=0 xtajit_unsupported=0
+focus_tail:
+
+
+## keepass_setup
+rc=143 wow64=0 btcpu=0 unsupported=0 missing_import=0 vm_fail=0 dll_fail=0 fixme=0 seh_tail=0 xtajit_unsupported=0
+focus_tail:
+
+
+## oldclassiccalc_setup
+rc=143 wow64=119 btcpu=62 unsupported=0 missing_import=0 vm_fail=0 dll_fail=0 fixme=0 seh_tail=66 xtajit_unsupported=0
+focus_tail:
+macrunner-wow64: guest32-write restore-done ignored=00000008
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: process_init done machine=014c ss32=002b
+macrunner-wow64: Wow64LdrpInitialize after process_init
+macrunner-wow64: thread_init enter machine=014c teb32=00000003001F2000 bop=000007FFD04E0664
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-xtajit: BTCpuThreadInit status=00000000
+macrunner-wow64: after BTCpuThreadInit
+macrunner-wow64: thread_init i386 context eip=7bdc6c5c esp=0143fff0 ldr=37bdc7640
+macrunner-wow64: thread_init i386 set eip=7bdc7640 esp=0143fd10 ctx_ptr=000000030143FD24
+macrunner-wow64: Wow64LdrpInitialize before cpu_simulate
+macrunner-wow64: NtAllocateVirtualMemory pre process=FFFFFFFFFFFFFFFF addr32=000000030143FB64 val=00000000 zero=00000000 size32=000000030143FBD0 size=10000 type=00002000 protect=00000004 current=1
+macrunner-wow64: NtAllocateVirtualMemory post status=00000000 addr=0000000300290000 guest=00290000 size=10000
+macrunner-wow64: NtAllocateVirtualMemory pre process=FFFFFFFFFFFFFFFF addr32=000000030143FB64 val=00290000 zero=00000000 size32=000000030143FB9C size=10000 type=00001000 protect=00000004 current=1
+macrunner-wow64: NtAllocateVirtualMemory post status=00000000 addr=0000000300290000 guest=00290000 size=10000
+macrunner-wow64: NtAllocateVirtualMemory pre process=FFFFFFFFFFFFFFFF addr32=0000000300290460 val=00000000 zero=00000000 size32=000000030143FB88 size=50a0 type=00003000 protect=00000004 current=1
+macrunner-wow64: NtAllocateVirtualMemory post status=00000000 addr=00000003002A0000 guest=002a0000 size=6000
+macrunner-wow64: NtQuerySystemInformation enter class=1000 ptr=000000037BE1ED84 len=256 retlen=0000000000000000
+macrunner-wow64: Wow64SystemServiceEx enter num=00000023 args=000000030143FBC8 thunk=000007FFD05C3140 templist=0000000000000000
+macrunner-wow64: Wow64SystemServiceEx after-syscall num=00000023 status=00000000 templist=0000000000000000
+macrunner-wow64: Wow64SystemServiceEx leave num=00000023 status=00000000 templist=0000000000000000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143FAEC raw=00000034,ffffffff,0143fb54,00000000,00000000,00000000,0143fb8c,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000034 process=FFFFFFFFFFFFFFFF addr32=000000030143FB54 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143FB8C size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037BC20000 size=131000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7bc20000 out_size=00131000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143F718 raw=00000038,ffffffff,0143f780,00000000,00000000,00000000,0143f7b8,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000038 process=FFFFFFFFFFFFFFFF addr32=000000030143F780 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143F7B8 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B7C0000 size=447000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7b7c0000 out_size=00447000
+macrunner-xtajit-unix: simulate hb=OK(0) exec=MEMORY_FAULT(-8) faulted=1 steps=7126 blocks=1198 in_eip=7bdc5bbc out_eip=7bdba820 out_esp=0143fa00 reason=memory or internal fault
+macrunner-xtajit: BTCpuSimulate publish-exception-context status=00000000 exception=c0000005 eip=7bdba820 esp=0143fa00 eax=1ffffffe
+macrunner-xtajit-unix: simulate hb=OK(0) exec=MEMORY_FAULT(-8) faulted=1 steps=687 blocks=113 in_eip=7bdcd64c out_eip=7bdba820 out_esp=0143f820 reason=memory or internal fault
+macrunner-xtajit: BTCpuSimulate publish-exception-context status=00000000 exception=c0000005 eip=7bdba820 esp=0143f820 eax=1ffffffe
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143F84C raw=00000034,ffffffff,0143f8b4,00000000,00000000,00000000,0143f8ec,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000034 process=FFFFFFFFFFFFFFFF addr32=000000030143F8B4 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143F8EC size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B590000 size=219000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7b590000 out_size=00219000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143F478 raw=00000038,ffffffff,0143f4e0,00000000,00000000,00000000,0143f518,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000038 process=FFFFFFFFFFFFFFFF addr32=000000030143F4E0 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143F518 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B320000 size=254000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7b320000 out_size=00254000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143F0A4 raw=0000003c,ffffffff,0143f10c,00000000,00000000,00000000,0143f144,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=000000000000003C process=FFFFFFFFFFFFFFFF addr32=000000030143F10C addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143F144 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B260000 size=a4000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7b260000 out_size=000a4000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143ECD0 raw=00000040,ffffffff,0143ed38,00000000,00000000,00000000,0143ed70,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000040 process=FFFFFFFFFFFFFFFF addr32=000000030143ED38 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143ED70 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B1F0000 size=55000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7b1f0000 out_size=00055000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143E8FC raw=00000044,ffffffff,0143e964,00000000,00000000,00000000,0143e99c,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000044 process=FFFFFFFFFFFFFFFF addr32=000000030143E964 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143E99C size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037AF40000 size=29e000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7af40000 out_size=0029e000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143ECD0 raw=00000040,ffffffff,0143ed38,00000000,00000000,00000000,0143ed70,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000040 process=FFFFFFFFFFFFFFFF addr32=000000030143ED38 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143ED70 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037AD10000 size=219000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7ad10000 out_size=00219000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143F0A4 raw=0000003c,ffffffff,0143f10c,00000000,00000000,00000000,0143f144,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=000000000000003C process=FFFFFFFFFFFFFFFF addr32=000000030143F10C addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143F144 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037A900000 size=3f7000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7a900000 out_size=003f7000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143ECD0 raw=00000040,ffffffff,0143ed38,00000000,00000000,00000000,0143ed70,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000040 process=FFFFFFFFFFFFFFFF addr32=000000030143ED38 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143ED70 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037A770000 size=180000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7a770000 out_size=00180000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143E8FC raw=00000044,ffffffff,0143e964,00000000,00000000,00000000,0143e99c,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000044 process=FFFFFFFFFFFFFFFF addr32=000000030143E964 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143E99C size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037A720000 size=40000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: guest32-write query out=000000037A744020 remaining=4
+macrunner-wow64: guest32-write query status=00000000 base=000000037A744000 size=4096 state=00001000 protect=00000008
+macrunner-wow64: guest32-write protect base=000000037A744000 size=4096 old=00000008
+macrunner-wow64: guest32-write protect status=00000000 old=00000008
+macrunner-wow64: guest32-write memcpy out=000000037A744020 chunk=4 restore=1
+macrunner-wow64: guest32-write memcpy-done out=000000037A744020 chunk=4
+macrunner-wow64: guest32-write restore base=000000037A744000 size=4096 old=00000008
+macrunner-wow64: guest32-write restore-done ignored=00000008
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7a720000 out_size=00040000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143F0A4 raw=0000003c,ffffffff,0143f10c,00000000,00000000,00000000,0143f144,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=000000000000003C process=FFFFFFFFFFFFFFFF addr32=000000030143F10C addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143F144 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037A610000 size=ff000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7a610000 out_size=000ff000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143ECD0 raw=00000040,ffffffff,0143ed38,00000000,00000000,00000000,0143ed70,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000040 process=FFFFFFFFFFFFFFFF addr32=000000030143ED38 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143ED70 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037A470000 size=18e000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7a470000 out_size=0018e000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143E67C raw=00000044,ffffffff,0143e6e4,00000000,00000000,00000000,0143e71c,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000044 process=FFFFFFFFFFFFFFFF addr32=000000030143E6E4 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143E71C size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037A440000 size=1a000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7a440000 out_size=0001a000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143F0A4 raw=0000003c,ffffffff,0143f10c,00000000,00000000,00000000,0143f144,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=000000000000003C process=FFFFFFFFFFFFFFFF addr32=000000030143F10C addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143F144 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037A3E0000 size=45000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7a3e0000 out_size=00045000
+macrunner-wow64: NtAllocateVirtualMemory pre process=FFFFFFFFFFFFFFFF addr32=000000030143EF38 val=00000000 zero=00000000 size32=000000030143EF5C size=100000 type=00002000 protect=00000004 current=1
+macrunner-wow64: NtAllocateVirtualMemory post status=00000000 addr=0000000305450000 guest=05450000 size=100000
+macrunner-wow64: NtAllocateVirtualMemory pre process=FFFFFFFFFFFFFFFF addr32=000000030143EF38 val=05450000 zero=00000000 size32=000000030143EF58 size=10000 type=00001000 protect=00000004 current=1
+macrunner-wow64: NtAllocateVirtualMemory post status=00000000 addr=0000000305450000 guest=05450000 size=10000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030143F84C raw=00000034,ffffffff,0143f8b4,00000000,00000000,00000000,0143f8ec,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000034 process=FFFFFFFFFFFFFFFF addr32=000000030143F8B4 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030143F8EC size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037A130000 size=29f000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7a130000 out_size=0029f000
+macrunner-wow64: NtAllocateVirtualMemory pre process=FFFFFFFFFFFFFFFF addr32=000000030143F9B4 val=00000000 zero=00000000 size32=000000030143F9B0 size=80000 type=00003000 protect=00000004 current=1
+macrunner-wow64: NtAllocateVirtualMemory post status=00000000 addr=0000000305550000 guest=05550000 size=80000
+macrunner-wow64: NtQuerySystemInformation enter class=102 ptr=000000030143F750 len=432 retlen=0000000000000000
+
+## gta_vc_setup
+rc=143 wow64=84 btcpu=17 unsupported=0 missing_import=0 vm_fail=0 dll_fail=0 fixme=0 seh_tail=64 xtajit_unsupported=0
+focus_tail:
+008c:fixme:advpack:write_predefined_strings SYS_MOD_PATH needs more work
+008c:fixme:advpack:write_predefined_strings SYS_MOD_PATH needs more work
+00a8:fixme:svchost:AddServiceElem library L"C:\\windows\\system32\\wevtsvc.dll" expects undocumented SvchostPushServiceGlobals function to be called
+002c:fixme:msg:pack_message msg 14 (WM_ERASEBKGND) not supported yet
+0124:fixme:wineusb:add_usb_device Interface 3 has 2 alternate settings; using the first one.
+0124:fixme:wineusb:add_usb_device Interface 5 has 2 alternate settings; using the first one.
+0124:fixme:wineusb:add_usb_device Interface 0 has 2 alternate settings; using the first one.
+0124:fixme:wineusb:add_usb_device Interface 0 has 2 alternate settings; using the first one.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+0110:fixme:wineusb:query_id Unhandled ID query type 0x5.
+macrunner-wow64: Wow64LdrpInitialize enter context=000000010745F990
+macrunner-wow64: process_init enter current=014c native=aa64
+macrunner-wow64: load_64bit_module enter name_ptr=000007FFD05F03BC dir_ptr=000007FFD05E23C2 str_ptr=000000010745F090 full_path=1
+macrunner-wow64: load_64bit_module done name_ptr=000007FFD05F03BC module=000007FFD04D0000
+macrunner-wow64: cpu module=000007FFD04D0000
+macrunner-wow64: cpu exports bop=000007FFD04E0664 init=000007FFD04E0850 thread=000007FFD04E09D0 simulate=000007FFD04E0EA8
+macrunner-wow64: before load wow64win.dll
+macrunner-wow64: load_64bit_module enter name_ptr=000007FFD05E20AC dir_ptr=000007FFD05E23C2 str_ptr=000000010745F090 full_path=1
+macrunner-wow64: load_64bit_module done name_ptr=000007FFD05E20AC module=000007FFD0360000
+macrunner-wow64: after load wow64win.dll module=000007FFD0360000
+macrunner-wow64: before sdwhwin32 export
+macrunner-wow64: after sdwhwin32 export ptr=000007FFD039A918
+macrunner-wow64: after win32 syscall table copy
+macrunner-wow64: before BTCpuProcessInit
+macrunner-xtajit: BTCpuProcessInit status=00000000
+macrunner-wow64: after BTCpuProcessInit
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: guest32-write query out=000000037BE05DE4 remaining=4
+macrunner-wow64: guest32-write query status=00000000 base=000000037BE05000 size=106496 state=00001000 protect=00000008
+macrunner-wow64: guest32-write protect base=000000037BE05000 size=4096 old=00000008
+macrunner-wow64: guest32-write protect status=00000000 old=00000008
+macrunner-wow64: guest32-write memcpy out=000000037BE05DE4 chunk=4 restore=1
+macrunner-wow64: guest32-write memcpy-done out=000000037BE05DE4 chunk=4
+macrunner-wow64: guest32-write restore base=000000037BE05000 size=4096 old=00000008
+macrunner-wow64: guest32-write restore-done ignored=00000008
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: process_init done machine=014c ss32=002b
+macrunner-wow64: Wow64LdrpInitialize after process_init
+macrunner-wow64: thread_init enter machine=014c teb32=00000003001F2000 bop=000007FFD04E0664
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-xtajit: BTCpuThreadInit status=00000000
+macrunner-wow64: after BTCpuThreadInit
+macrunner-wow64: thread_init i386 context eip=7bdc6c5c esp=0141fff0 ldr=37bdc7640
+macrunner-wow64: thread_init i386 set eip=7bdc7640 esp=0141fd10 ctx_ptr=000000030141FD24
+macrunner-wow64: Wow64LdrpInitialize before cpu_simulate
+macrunner-wow64: NtAllocateVirtualMemory pre process=FFFFFFFFFFFFFFFF addr32=000000030141FB64 val=00000000 zero=00000000 size32=000000030141FBD0 size=10000 type=00002000 protect=00000004 current=1
+macrunner-wow64: NtAllocateVirtualMemory post status=00000000 addr=0000000300290000 guest=00290000 size=10000
+macrunner-wow64: NtAllocateVirtualMemory pre process=FFFFFFFFFFFFFFFF addr32=000000030141FB64 val=00290000 zero=00000000 size32=000000030141FB9C size=10000 type=00001000 protect=00000004 current=1
+macrunner-wow64: NtAllocateVirtualMemory post status=00000000 addr=0000000300290000 guest=00290000 size=10000
+macrunner-wow64: NtAllocateVirtualMemory pre process=FFFFFFFFFFFFFFFF addr32=0000000300290460 val=00000000 zero=00000000 size32=000000030141FB88 size=50a0 type=00003000 protect=00000004 current=1
+macrunner-wow64: NtAllocateVirtualMemory post status=00000000 addr=00000003002A0000 guest=002a0000 size=6000
+macrunner-wow64: NtQuerySystemInformation enter class=1000 ptr=000000037BE1ED84 len=256 retlen=0000000000000000
+macrunner-wow64: Wow64SystemServiceEx enter num=00000023 args=000000030141FBC8 thunk=000007FFD05C3140 templist=0000000000000000
+macrunner-wow64: Wow64SystemServiceEx after-syscall num=00000023 status=00000000 templist=0000000000000000
+macrunner-wow64: Wow64SystemServiceEx leave num=00000023 status=00000000 templist=0000000000000000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141FAEC raw=00000034,ffffffff,0141fb54,00000000,00000000,00000000,0141fb8c,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000034 process=FFFFFFFFFFFFFFFF addr32=000000030141FB54 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141FB8C size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037BC20000 size=131000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7bc20000 out_size=00131000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141F718 raw=00000038,ffffffff,0141f780,00000000,00000000,00000000,0141f7b8,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000038 process=FFFFFFFFFFFFFFFF addr32=000000030141F780 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141F7B8 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B7C0000 size=447000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7b7c0000 out_size=00447000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141F84C raw=00000034,ffffffff,0141f8b4,00000000,00000000,00000000,0141f8ec,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000034 process=FFFFFFFFFFFFFFFF addr32=000000030141F8B4 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141F8EC size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B3B0000 size=3f7000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7b3b0000 out_size=003f7000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141F478 raw=00000038,ffffffff,0141f4e0,00000000,00000000,00000000,0141f518,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000038 process=FFFFFFFFFFFFFFFF addr32=000000030141F4E0 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141F518 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B220000 size=180000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7b220000 out_size=00180000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141F0A4 raw=0000003c,ffffffff,0141f10c,00000000,00000000,00000000,0141f144,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=000000000000003C process=FFFFFFFFFFFFFFFF addr32=000000030141F10C addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141F144 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B160000 size=a4000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7b160000 out_size=000a4000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141ECD0 raw=00000040,ffffffff,0141ed38,00000000,00000000,00000000,0141ed70,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000040 process=FFFFFFFFFFFFFFFF addr32=000000030141ED38 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141ED70 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B0F0000 size=55000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7b0f0000 out_size=00055000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141E8FC raw=00000044,ffffffff,0141e964,00000000,00000000,00000000,0141e99c,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000044 process=FFFFFFFFFFFFFFFF addr32=000000030141E964 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141E99C size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037AE40000 size=29e000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7ae40000 out_size=0029e000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141ECD0 raw=00000040,ffffffff,0141ed38,00000000,00000000,00000000,0141ed70,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000040 process=FFFFFFFFFFFFFFFF addr32=000000030141ED38 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141ED70 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037AC10000 size=219000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7ac10000 out_size=00219000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030141F0A4 raw=0000003c,ffffffff,0141f10c,00000000,00000000,00000000,0141f144,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=000000000000003C process=FFFFFFFFFFFFFFFF addr32=000000030141F10C addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030141F144 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037ABC0000 size=40000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: guest32-write query out=000000037ABE4020 remaining=4
+macrunner-wow64: guest32-write query status=00000000 base=000000037ABE4000 size=4096 state=00001000 protect=00000008
+macrunner-wow64: guest32-write protect base=000000037ABE4000 size=4096 old=00000008
+macrunner-wow64: guest32-write protect status=00000000 old=00000008
+macrunner-wow64: guest32-write memcpy out=000000037ABE4020 chunk=4 restore=1
+macrunner-wow64: guest32-write memcpy-done out=000000037ABE4020 chunk=4
+macrunner-wow64: guest32-write restore base=000000037ABE4000 size=4096 old=00000008
+macrunner-wow64: guest32-write restore-done ignored=00000008
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7abc0000 out_size=00040000

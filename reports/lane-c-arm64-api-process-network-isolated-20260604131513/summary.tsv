@@ -1,0 +1,4 @@
+fixture	run_rc	stdout_like	unsupported	vm_fail	dll_fail	fixme_stub	actctx	hb_runtime_fail	seh_invalid
+process_spawn_arm64.exe	0	6	0	0	0	0	7	0	3
+threadpool_timer_arm64.exe	143	3	0	0	0	0	3	0	64287
+udp_loopback_arm64.exe	143	3	0	0	0	0	3	0	505717

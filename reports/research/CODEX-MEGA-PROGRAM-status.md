@@ -1495,3 +1495,33 @@ before `GfxDevice`.
 NEXT: continue Mono metadata fusion bisection. The offset-loop bug is real but not the vtable
 blocker; isolate the remaining corruptor among rowptr-entry, decode-row-entry/loop, decode-col,
 coded-index, and bsearch with pair disables or direct helper-vs-IR comparison.
+
+## Lane A checkpoint - 2026-06-04 LODS partial-register semantics
+
+- Evidence: the broad scalar/string ISA fuzz isolated a `string_ops:lodsb` oracle mismatch:
+  HyperBridge wrote `RAX=0x5d` while x86 preserved the upper bits and expected
+  `RAX=0x7000105d`. This is a real x86 partial-register bug, but not the Hollow Knight
+  Mono blocker root.
+- Root fix: `HB_IR_LODS` now writes through the normal sized-register path. `LODSB`/`LODSW`
+  update only `AL`/`AX`, `LODSD` zero-extends through `EAX` in x86-64, and `LODSQ` writes
+  full `RAX`.
+- Regression coverage: updated the incorrect `LODSB` tests, added a `LODSW` sibling, and
+  kept `LODSD`/REP `LODSB` coverage in the `string_ops` fast family.
+- Validation:
+  - targeted string-op runner: `reports/phase4-hollow-knight/test-20260604-135924-hb-runner-fast-string-ops.log`
+    has `27 passed, 0 failed`.
+  - string-op fuzz: `reports/phase4-hollow-knight/fuzz-20260604-135954-string-ops-lods-fix-rebuild.json`
+    has `backend_mismatch_count=0`, `oracle_mismatch_count=0`, `oracle_pass_count=20000`.
+  - scalar/string fuzz: `reports/phase4-hollow-knight/fuzz-20260604-140120-scalar-string-post-lods-fix.json`
+    has `backend_mismatch_count=0`, `oracle_mismatch_count=0`, `oracle_pass_count=4912`
+    with only the known shared `div_r9` traps.
+  - relink/install/codesign: `reports/phase4-hollow-knight/build-20260604-140200-hb-lods-partial-reg.log`
+    PASS, artifact `ntdll-hb-lods-partial-reg-lanea49base-20260604-140200.so`.
+  - Hollow Knight: `reports/phase4-hollow-knight/run-20260604-140232-hk-lods-partial-reg300/`
+    still reports `invalid_vtable=2`, `runtime_fail=1`, `GfxDevice=0`, `D3D11CreateDevice=0`;
+    the fault remains mono-2.0-bdwgc.dll `rva=0x1f71a3` on `mov (%rdi),%rax` with `rdi=0`.
+
+NEXT: commit this LODS correctness checkpoint, then continue the Mono invalid-vtable evidence
+pass. Current priority is to compare native Mono metadata/type/vtable helper behavior against
+the lowered IR around the first bad `System.RuntimeType` slot, not to revisit the cleared
+TSO/CMPXCHG16B gates.

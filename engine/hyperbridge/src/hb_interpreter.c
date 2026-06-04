@@ -4459,15 +4459,12 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 uint64_t value = 0;
                 r = mem_read(ctx, rsi, &value, size);
                 if (r != HB_OK) return r;
-                /* LODS zero-extends the loaded value into the full AL/AX/EAX/RAX
-                 * register (per Intel SDM: "Loads a byte, word, or doubleword
-                 * from the source operand into the AL, AX, or EAX register,
-                 * respectively"). Unlike MOV AL,[mem] which preserves the upper
-                 * bits, LODS clobbers them with zeros. */
+                /* LODSB/LODSW write AL/AX only; LODSD zero-extends through EAX in
+                 * x86-64, and LODSQ writes the full RAX. */
                 if (mode32) {
-                    ctx->regs.x86.eax = (uint32_t)trunc_to_size(value, size);
+                    write_reg_sized_offset(ctx, HB_REG_X86_EAX, value, size, 0);
                 } else {
-                    ctx->regs.x64.rax = trunc_to_size(value, size);
+                    write_reg_sized_offset(ctx, HB_REG_RAX, value, size, 0);
                 }
                 rsi = (uint64_t)((int64_t)rsi + step);
                 if (repeated) count--;

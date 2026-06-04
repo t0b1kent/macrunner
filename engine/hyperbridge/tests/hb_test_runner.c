@@ -4855,10 +4855,9 @@ TEST(interp_x86_repe_cmpsb_stops_on_mismatch) {
     tests_passed++;
 }
 
-TEST(interp_x86_lodsb_zero_extends_eax) {
-    /* Batch 4: x86 LODSB reads byte from [ESI] into AL (zero-extending
-     * into EAX per the regular 32-bit semantics), and advances ESI by 1.
-     * Non-REP form (single step). */
+TEST(interp_x86_lodsb_preserves_upper_eax) {
+    /* LODSB reads byte from [ESI] into AL and advances ESI by 1.
+     * It preserves the upper EAX bits like any 8-bit register write. */
     const uint32_t code_base = 0x00407000u;
     const uint32_t data_base = 0x00207000u;
     uint8_t code[] = {0xac}; /* lodsb */
@@ -4882,13 +4881,13 @@ TEST(interp_x86_lodsb_zero_extends_eax) {
     ASSERT(hb_memory_write(ctx->memory, data_base, src, sizeof(src)) == HB_OK);
     ctx->pc = code_base;
     ctx->regs.x86.eip = code_base;
-    ctx->regs.x86.eax = 0xDEADBEEFu;  /* high bits set; LODSB should zero them. */
+    ctx->regs.x86.eax = 0xDEADBEEFu;
     ctx->regs.x86.esi = data_base;
 
     hb_exec_result_t out;
     ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
     ASSERT(out.result == HB_OK);
-    ASSERT(ctx->regs.x86.eax == 0x42);
+    ASSERT(ctx->regs.x86.eax == 0xDEADBE42u);
     ASSERT(ctx->regs.x86.esi == data_base + 1);
 
     hb_context_destroy(ctx);
@@ -5329,6 +5328,40 @@ TEST(interp_x64_lodsd_zero_extends_eax) {
     tests_passed++;
 }
 
+TEST(interp_x64_lodsw_preserves_upper_rax) {
+    uint8_t code[] = {0x66, 0xad}; /* lodsw */
+    uint64_t base = (uint64_t)(uintptr_t)code;
+    uint8_t data[] = {0xcd, 0xab};
+    uint64_t addr = (uint64_t)(uintptr_t)data;
+
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_map(ctx->memory, base, sizeof(code), HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ASSERT(hb_memory_map(ctx->memory, addr, sizeof(data), HB_PERM_READ) == HB_OK);
+    ctx->pc = base;
+    ctx->regs.x64.rax = 0x1122334455667788ULL;
+    ctx->regs.x64.rsi = addr;
+
+    hb_exec_result_t out;
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(ctx->regs.x64.rax == 0x112233445566abcdULL);
+    ASSERT(ctx->regs.x64.rsi == addr + 2);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(interp_x64_rep_lodsb_direction_flag_backward) {
     uint8_t code[] = {0xf3, 0xac}; /* rep lodsb */
     uint64_t base = (uint64_t)(uintptr_t)code;
@@ -5359,12 +5392,8 @@ TEST(interp_x64_rep_lodsb_direction_flag_backward) {
     ASSERT(out.result == HB_OK);
     ASSERT(ctx->regs.x64.rcx == 0);
     ASSERT(ctx->regs.x64.rsi == addr - 1);
-    /* REP LODSB: each iteration loads one byte and DF=1 walks RSI backward.
-     * Iteration 1 reads data[2]=0x30 → RAX=0x30; iteration 2 reads data[1]=0x20
-     * → RAX=0x20; iteration 3 reads data[0]=0x10 → RAX=0x10.
-     * LODS zero-extends per Intel SDM (unlike MOV AL,[mem] which preserves
-     * the upper bits). */
-    ASSERT(ctx->regs.x64.rax == 0x0000000000000010ULL);
+    /* REP LODSB writes AL each iteration while preserving the upper bits. */
+    ASSERT(ctx->regs.x64.rax == 0xaaaaaaaaaaaaaa10ULL);
 
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
@@ -23213,8 +23242,9 @@ int main(int argc, char** argv) {
             printf("lods_enter\n");
             test_decode_lodsq_string_load();
             test_interp_x64_lodsd_zero_extends_eax();
+            test_interp_x64_lodsw_preserves_upper_rax();
             test_interp_x64_rep_lodsb_direction_flag_backward();
-            test_interp_x86_lodsb_zero_extends_eax();
+            test_interp_x86_lodsb_preserves_upper_eax();
             printf("lods_exit\n");
             printf("%d passed, %d failed\n", tests_passed, tests_failed);
             return tests_failed ? 1 : 0;
@@ -23591,12 +23621,13 @@ int main(int argc, char** argv) {
     test_interp_x64_repne_cmpsb_stops_on_match();
     test_interp_x64_cmpsw_direction_flag_single_step();
     test_interp_x64_lodsd_zero_extends_eax();
+    test_interp_x64_lodsw_preserves_upper_rax();
     test_interp_x64_rep_lodsb_direction_flag_backward();
     test_decode_repne_scasw();
     test_interp_x64_repne_scasw_finds_nul();
     test_interp_x86_repne_scasb_finds_nul();
     test_interp_x86_repe_cmpsb_stops_on_mismatch();
-    test_interp_x86_lodsb_zero_extends_eax();
+    test_interp_x86_lodsb_preserves_upper_eax();
     test_interp_x64_neg_mem32_notepadpp_pointer_math();
     test_decode_x64_cmp_operand16_notepadpp_mode_parser();
     test_decode_x64_alu_operand16_family();

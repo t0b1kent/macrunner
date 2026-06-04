@@ -42,7 +42,7 @@ to run 32-bit-era game targets.
 ## Prerequisites
 
 - DXMT D3D11 headless smoke remains green through feature levels 10_0-11_1,
-  resources, views, shader stages, MSAA, mips, queries, BC formats,
+  resources, views, shader stages, MSAA including array-slice resolve, mips, queries, BC formats,
   per-swapchain `ResizeTarget`/`ResizeBuffers`, append-UAV counters,
   UAV clear readbacks, multi-UAV, structured/raw buffer and texture SRV-to-UAV,
   Texture1D mip generation/readback, texture-array/3D UAV, cube mip generation/readback, TextureCubeArray
@@ -72,7 +72,7 @@ to run 32-bit-era game targets.
 
 As of the 2026-06-05 Lane D checkpoints, the DXMT D3D11 owned smoke suite is
 green across device creation, resources, shader stages, draw/dispatch,
-present/readback, fullscreen, MSAA, queries, deferred contexts, BC formats,
+present/readback, fullscreen, MSAA including array-slice resolve, queries, deferred contexts, BC formats,
 per-swapchain target/buffer resize, Texture1D mip generation/readback, append-UAV counter copy,
 multi-UAV, structured/raw buffer and texture SRV-to-UAV, texture-array/3D UAV,
 cube mip generation/readback, TextureCubeArray SRV/readback, and

@@ -45,9 +45,10 @@ to run 32-bit-era game targets.
   resources, views, shader stages, MSAA, mips, queries, BC formats,
   per-swapchain `ResizeTarget`/`ResizeBuffers`, append-UAV counters,
   UAV clear readbacks, multi-UAV, structured/raw buffer and texture SRV-to-UAV,
-  texture-array/3D UAV, cube mip generation/readback, and
-  groupshared/interlocked compute readbacks, D3D11.1 constant-buffer
-  offset/partial-update paths, overlap buffer copies, and stability loops.
+  texture-array/3D UAV, cube mip generation/readback, TextureCubeArray
+  SRV/readback, and groupshared/interlocked compute readbacks, D3D11.1
+  constant-buffer offset/partial-update paths, overlap buffer copies, and
+  stability loops.
 - x64 guest DXMT binding remains strict-native green for `d3d11`, `dxgi`, and
   `winemetal=n` before older-game routing borrows the same prefix/deployment
   machinery.
@@ -69,13 +70,14 @@ green across device creation, resources, shader stages, draw/dispatch,
 present/readback, fullscreen, MSAA, queries, deferred contexts, BC formats,
 per-swapchain target/buffer resize, append-UAV counter copy,
 multi-UAV, structured/raw buffer and texture SRV-to-UAV, texture-array/3D UAV,
-cube mip generation/readback, and groupshared/interlocked compute readbacks,
-constant-buffer partial updates, shader-visible constant-buffer offsetting,
-overlap buffer copies, R32_UINT/R32_FLOAT UAV clear readbacks, depth-only D3D11.1
-`ClearView`, and five-pass stability
+cube mip generation/readback, TextureCubeArray SRV/readback, and
+groupshared/interlocked compute readbacks, constant-buffer partial updates,
+shader-visible constant-buffer offsetting, overlap buffer copies,
+R32_UINT/R32_FLOAT UAV clear readbacks, depth-only D3D11.1 `ClearView`, and
+five-pass stability
 (`artifacts/dxmt-smoke-logs/lane-d-longrun-compute-expanded-20260604-205810.outer.log`;
-cube mip evidence:
-`artifacts/dxmt-smoke-logs/lane-d-cube-mip-stability-20260605-031225.outer.log`).
+cube/cube-array evidence:
+`artifacts/dxmt-smoke-logs/lane-d-cube-array-stability-20260605-031934.outer.log`).
 Strict-native x64 guest `winemetal=n` binding remains green but still does not
 reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260605-030159/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`

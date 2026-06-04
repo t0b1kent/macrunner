@@ -180,9 +180,9 @@ SUMMARY_PATTERN="DXMTProbe|LoadLibraryExW|loaded_.*_path|GetProcAddress|CreateDX
 
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnityOutputCapabilityProbe|UnityAdapterNotificationProbe|UnityFenceProbe|D3D11On12Probe|UnityTiledProbe"
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|invalid_buffer"
-SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnitySRGBSampleProbe|UnityComputeProbe|array_slice[01]_mip1_rgba|array_slice[01]_mip1_copy_rgba|typed_buffer|multi_uav|srv_uav|raw_buffer|texture_srv_uav|texture_array_uav|texture3d_uav|groupshared_atomic"
+SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnitySRGBSampleProbe|UnityComputeProbe|array_slice[01]_mip1_rgba|array_slice[01]_mip1_copy_rgba|cube_face5_mip1_rgba|typed_buffer|multi_uav|srv_uav|raw_buffer|texture_srv_uav|texture_array_uav|texture3d_uav|groupshared_atomic"
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnityWarpProbe"
-SUMMARY_FOCUS_PATTERN="UnityFeatureProbe|UnityWarpProbe|uav_clear|ClearUnorderedAccessView|dynamic_constant|partial_constant|constant_partial_words|overlap_copy|constant_offset|CSSetConstantBuffers1|CSGetConstantBuffers1|PIPELINE_STATISTICS pending|SO_STATISTICS pending|SO_OVERFLOW_PREDICATE pending|ClearView\\(depth_|UnitySRGBSampleProbe|array_slice[01]_mip1_rgba|array_slice[01]_mip1_copy_rgba|typed_buffer_values|multi_uav[01]_values|srv_uav_values|raw_buffer_values|texture_srv_uav_value|texture_array_uav_values|texture3d_uav_values|groupshared_atomic_values"
+SUMMARY_FOCUS_PATTERN="UnityFeatureProbe|UnityWarpProbe|uav_clear|ClearUnorderedAccessView|dynamic_constant|partial_constant|constant_partial_words|overlap_copy|constant_offset|CSSetConstantBuffers1|CSGetConstantBuffers1|PIPELINE_STATISTICS pending|SO_STATISTICS pending|SO_OVERFLOW_PREDICATE pending|ClearView\\(depth_|UnitySRGBSampleProbe|array_slice[01]_mip1_rgba|array_slice[01]_mip1_copy_rgba|cube_face5_mip1_rgba|typed_buffer_values|multi_uav[01]_values|srv_uav_values|raw_buffer_values|texture_srv_uav_value|texture_array_uav_values|texture3d_uav_values|groupshared_atomic_values"
 
 SMOKE_RC=0
 for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do

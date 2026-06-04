@@ -49,8 +49,8 @@ to run 32-bit-era game targets.
   `winemetal=n` before older-game routing borrows the same prefix/deployment
   machinery.
 - vkd3d/D3D12 prefix deployment continues to gate DXMT `dxgi.dll` dependency
-  architecture and factory exports, because older D3D8/9 routing will reuse the
-  same prefix-copy/export hygiene.
+  architecture, factory exports, and standalone `d3d12.dll` runtime loading,
+  because older D3D8/9 routing will reuse the same prefix-copy/export hygiene.
 - PE32/WOW64 is stable enough for 32-bit-era D3D8/D3D9 titles before using real
   game targets as graphics validation.
 - A D3D9 coverage matrix exists before implementation starts.
@@ -64,7 +64,8 @@ green across device creation, resources, shader stages, draw/dispatch,
 present/readback, fullscreen, MSAA, queries, deferred contexts, BC formats,
 per-swapchain target/buffer resize, append-UAV counter copy, two-pass stability,
 strict-native x64 guest `winemetal=n` binding, and vkd3d/DXGI prefix dependency
-gates. Real Unity present was rechecked after Lane A TSO checkpoint `d0c0f6d`
+gates including aarch64 standalone `d3d12.dll` runtime loading. Real Unity
+present was rechecked after Lane A TSO checkpoint `d0c0f6d`
 and still times out before D3D11/DXGI markers, so it is not a D3D8/D3D9
 implementation gate. D3D8/D3D9 work should still wait for future ownership plus
 Lane C PE32/WOW64 readiness for 32-bit game targets; current Lane C evidence

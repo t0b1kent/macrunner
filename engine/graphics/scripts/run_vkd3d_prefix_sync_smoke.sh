@@ -3,14 +3,20 @@ set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 source "$PROJECT_ROOT/config/env.sh"
+source "$PROJECT_ROOT/engine/graphics/build-support/common.sh"
 
 WINE_DIST="${VKD3D_PREFIX_SYNC_WINE_DIST:-$PROJECT_ROOT/engine/wine/dist-arm64ec-spike}"
+RUNTIME_WINE_DIST="${VKD3D_PREFIX_SYNC_RUNTIME_WINE_DIST:-$PROJECT_ROOT/engine/wine/dist}"
 LOG_DIR="$PROJECT_ROOT/artifacts/vkd3d-prefix-sync"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$LOG_DIR/run-$STAMP"
 VKD3D_MODULES=(d3d12.dll d3d12core.dll)
 DXMT_MODULES=(dxgi.dll winemetal.dll)
 OBJDUMP="${VKD3D_PREFIX_SYNC_OBJDUMP:-$(command -v objdump || true)}"
+RUNTIME_PROBE_SOURCE="$PROJECT_ROOT/engine/graphics/tests/vkd3d/vkd3d_load_probe.c"
+RUNTIME_PROBE_ENABLED="${VKD3D_PREFIX_SYNC_RUNTIME:-1}"
+RUNTIME_PROBE_ARCHES="${VKD3D_PREFIX_SYNC_RUNTIME_ARCHES:-aarch64-windows}"
+RUNTIME_PROBE_TIMEOUT_SECONDS="${VKD3D_PREFIX_SYNC_RUNTIME_TIMEOUT_SECONDS:-45}"
 
 mkdir -p "$RUN_DIR"
 "$PROJECT_ROOT/scripts/disk-guard.sh" --check-only >/dev/null
@@ -144,6 +150,176 @@ check_structured_store_source_gate() {
   echo "structured_store_source=PASS mode=hlsl_codegen_lowering source=$source_name log=$source_log"
 }
 
+runtime_probe_arch_enabled() {
+  local arch="$1"
+  local enabled_arch
+
+  [[ "$RUNTIME_PROBE_ENABLED" == "1" ]] || return 1
+  for enabled_arch in $RUNTIME_PROBE_ARCHES; do
+    [[ "$(normalize_arch "$enabled_arch")" == "$arch" ]] && return 0
+  done
+  return 1
+}
+
+compile_runtime_loader_probe() {
+  local arch="$1"
+  local raw_arch triplet compiler exe
+
+  case "$arch" in
+    aarch64-windows) raw_arch="aarch64" ;;
+    x86_64-windows) raw_arch="x86_64" ;;
+    *) echo "unsupported runtime probe arch: $arch" >&2; exit 2 ;;
+  esac
+
+  ensure_llvm_mingw
+  triplet="$(triplet_for_arch "$raw_arch")"
+  compiler="$TOOLCHAIN_BIN/$triplet-clang"
+  exe="$RUN_DIR/vkd3d-load-probe-$arch.exe"
+
+  "$compiler" -O2 -Wall -Wextra -o "$exe" "$RUNTIME_PROBE_SOURCE"
+  echo "$exe"
+}
+
+run_runtime_loader_probe() {
+  local arch="$1"
+  local prefix="$2"
+  local exe="$3"
+  local app_dir="$RUN_DIR/runtime-app-$arch"
+  local app_exe="$app_dir/vkd3d_load_probe.exe"
+  local log="$RUN_DIR/runtime-loader-$arch.log"
+  local unix_arch
+  local wine="$RUNTIME_WINE_DIST/bin/wine"
+  local wineserver="$RUNTIME_WINE_DIST/bin/wineserver"
+  local wine_unix_lib
+  local dyld_library_path="${DYLD_LIBRARY_PATH:-}"
+  local dyld_fallback_library_path="${DYLD_FALLBACK_LIBRARY_PATH:-}"
+  local runtime_winedllpath
+  local runtime_systemdllpath
+  local timeout_bin=""
+  local child
+  local elapsed
+  local rc=0
+
+  case "$arch" in
+    aarch64-windows) unix_arch="aarch64-unix" ;;
+    x86_64-windows) unix_arch="aarch64-unix" ;;
+    *) echo "unsupported runtime probe arch: $arch" >&2; exit 2 ;;
+  esac
+  runtime_winedllpath="$PROJECT_ROOT/engine/graphics/dist/vkd3d/$arch"
+  runtime_winedllpath="$runtime_winedllpath:$PROJECT_ROOT/engine/graphics/dist/dxmt/$arch"
+  runtime_winedllpath="$runtime_winedllpath:$PROJECT_ROOT/engine/graphics/dist/dxmt/$unix_arch"
+  runtime_winedllpath="$runtime_winedllpath:$RUNTIME_WINE_DIST/lib/wine/$arch"
+  runtime_winedllpath="$runtime_winedllpath:$RUNTIME_WINE_DIST/lib/wine/$unix_arch"
+  runtime_systemdllpath="$PROJECT_ROOT/engine/graphics/dist/vkd3d/$arch"
+  runtime_systemdllpath="$runtime_systemdllpath:$PROJECT_ROOT/engine/graphics/dist/dxmt/$arch"
+  wine_unix_lib="$RUNTIME_WINE_DIST/lib/wine/$unix_arch"
+
+  mkdir -p "$app_dir"
+  cp -f "$exe" "$app_exe"
+  cp -f "$PROJECT_ROOT/engine/graphics/dist/vkd3d/$arch/d3d12.dll" "$app_dir/d3d12.dll"
+  cp -f "$PROJECT_ROOT/engine/graphics/dist/vkd3d/$arch/d3d12core.dll" "$app_dir/d3d12core.dll"
+  cp -f "$PROJECT_ROOT/engine/graphics/dist/dxmt/$arch/dxgi.dll" "$app_dir/dxgi.dll"
+  cp -f "$PROJECT_ROOT/engine/graphics/dist/dxmt/$arch/winemetal.dll" "$app_dir/winemetal.dll"
+  if [[ -f "$PROJECT_ROOT/engine/graphics/dist/dxmt/$unix_arch/winemetal.so" ]]; then
+    cp -f "$PROJECT_ROOT/engine/graphics/dist/dxmt/$unix_arch/winemetal.so" "$app_dir/winemetal.so"
+    cp -f "$PROJECT_ROOT/engine/graphics/dist/dxmt/$unix_arch/winemetal.so" "$app_dir/winemetal.dll.so"
+  fi
+
+  if [[ -d "$wine_unix_lib" ]]; then
+    dyld_library_path="$wine_unix_lib${dyld_library_path:+:$dyld_library_path}"
+    dyld_fallback_library_path="$wine_unix_lib${dyld_fallback_library_path:+:$dyld_fallback_library_path}"
+  fi
+
+  {
+    echo "runtime_loader_arch=$arch"
+    echo "runtime_loader_exe=$app_exe"
+    echo "runtime_loader_app_dir=$app_dir"
+    echo "runtime_loader_overrides=d3d12=n"
+    echo "runtime_loader_wine_dist=$RUNTIME_WINE_DIST"
+    echo "runtime_loader_prefix=$prefix"
+    echo "runtime_loader_winedllpath=$runtime_winedllpath"
+    echo "runtime_loader_winesystemdllpath=$runtime_systemdllpath"
+  } >"$log"
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_bin="$(command -v timeout)"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin="$(command -v gtimeout)"
+  fi
+
+  set +e
+  if [[ -n "$timeout_bin" ]]; then
+    (
+      cd "$app_dir" &&
+      WINEPREFIX="$prefix" \
+      WINEDLLOVERRIDES="d3d12=n" \
+      WINEDEBUG="-all,+loaddll" \
+      WINELOADERNOEXEC="${WINELOADERNOEXEC:-1}" \
+      MACRUNNER_GRAPHICS_BACKEND="dxmt" \
+      MACRUNNER_DXMT_ROOT="$PROJECT_ROOT/engine/graphics/dist/dxmt" \
+      MACRUNNER_PREFIX_SYSTEM32_ARCH="$arch" \
+      WINEDLLPATH="$runtime_winedllpath" \
+      WINESYSTEMDLLPATH="$runtime_systemdllpath" \
+      DYLD_LIBRARY_PATH="$dyld_library_path" \
+      DYLD_FALLBACK_LIBRARY_PATH="$dyld_fallback_library_path" \
+        "$timeout_bin" "$RUNTIME_PROBE_TIMEOUT_SECONDS" "$wine" \
+        "vkd3d_load_probe.exe"
+    ) >>"$log" 2>&1
+    rc=$?
+  else
+    (
+      cd "$app_dir" &&
+      WINEPREFIX="$prefix" \
+      WINEDLLOVERRIDES="d3d12=n" \
+      WINEDEBUG="-all,+loaddll" \
+      WINELOADERNOEXEC="${WINELOADERNOEXEC:-1}" \
+      MACRUNNER_GRAPHICS_BACKEND="dxmt" \
+      MACRUNNER_DXMT_ROOT="$PROJECT_ROOT/engine/graphics/dist/dxmt" \
+      MACRUNNER_PREFIX_SYSTEM32_ARCH="$arch" \
+      WINEDLLPATH="$runtime_winedllpath" \
+      WINESYSTEMDLLPATH="$runtime_systemdllpath" \
+      DYLD_LIBRARY_PATH="$dyld_library_path" \
+      DYLD_FALLBACK_LIBRARY_PATH="$dyld_fallback_library_path" \
+        "$wine" "vkd3d_load_probe.exe"
+    ) >>"$log" 2>&1 &
+    child=$!
+    rc=124
+    elapsed=0
+    while kill -0 "$child" 2>/dev/null; do
+      if [[ "$elapsed" -ge "$RUNTIME_PROBE_TIMEOUT_SECONDS" ]]; then
+        kill "$child" 2>/dev/null || true
+        sleep 1
+        kill -9 "$child" 2>/dev/null || true
+        wait "$child" 2>/dev/null || true
+        break
+      fi
+      sleep 1
+      elapsed=$((elapsed + 1))
+    done
+    if ! kill -0 "$child" 2>/dev/null; then
+      wait "$child" 2>/dev/null
+      rc=$?
+    fi
+  fi
+  set -e
+
+  WINEPREFIX="$prefix" \
+  DYLD_LIBRARY_PATH="$dyld_library_path" \
+  DYLD_FALLBACK_LIBRARY_PATH="$dyld_fallback_library_path" \
+    "$wineserver" -k >/dev/null 2>&1 || true
+
+  if [[ "$rc" -ne 0 ]]; then
+    echo "vkd3d_prefix_sync_result=FAIL reason=runtime_loader_exit arch=$arch rc=$rc log=$log"
+    exit 1
+  fi
+  if ! grep -q "vkd3d_runtime_load_result=PASS" "$log"; then
+    echo "vkd3d_prefix_sync_result=FAIL reason=runtime_loader_missing_pass arch=$arch log=$log"
+    exit 1
+  fi
+
+  echo "runtime_loader=$arch PASS log=$log"
+}
+
 if (($#)); then
   RAW_ARCHES=("$@")
 else
@@ -208,6 +384,11 @@ for raw_arch in "${RAW_ARCHES[@]}"; do
         ;;
     esac
   done
+
+  if runtime_probe_arch_enabled "$arch"; then
+    probe_exe="$(compile_runtime_loader_probe "$arch")"
+    run_runtime_loader_probe "$arch" "$prefix" "$probe_exe"
+  fi
 
   echo "arch=$arch sync_log=$sync_log vkd3d=PASS dxmt_dependency=PASS"
 done

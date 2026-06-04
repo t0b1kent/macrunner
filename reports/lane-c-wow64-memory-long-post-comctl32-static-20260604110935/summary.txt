@@ -1,0 +1,22 @@
+Lane C WOW64/x86 memory fixture long probe after Common-Controls/resource checkpoints.
+
+run_log=reports/lane-c-wow64-memory-long-post-comctl32-static-20260604110935/memory_x86.log
+rc=143
+total_lines=6952907
+
+wow64_markers=47
+btcpu_markers=11
+cpu_simulate_reached=yes
+vm_fail=0
+dll_fail=0
+actctx=0
+setupapi_unsupported_style=5
+hb_seh_invalid=64
+virtual_unwind_missing=631979
+invalid_disposition=1264149
+
+Notes:
+- This run reaches Wow64LdrpInitialize, BTCpuProcessInit, BTCpuThreadInit, and the first 32-bit NtAllocateVirtualMemory/NtMapViewOfSection calls.
+- Observed WOW64 VM calls return success-class statuses, including STATUS_IMAGE_NOT_AT_BASE for NtMapViewOfSection.
+- The actionable Lane-C-owned marker is setupapi SP_COPY_NODECOMP logging Unsupported style(s) 0x10.
+- The terminal blocker is repeated SEH unwind metadata missing / EXCEPTION_INVALID_DISPOSITION, outside Lane C-owned setupapi/virtual.c code.

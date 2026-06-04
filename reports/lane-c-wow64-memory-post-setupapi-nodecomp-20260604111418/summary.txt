@@ -1,0 +1,17 @@
+Lane C WOW64/x86 memory fixture validation after setupapi SP_COPY_NODECOMP checkpoint.
+
+run_log=reports/lane-c-wow64-memory-post-setupapi-nodecomp-20260604111418/memory_x86.log
+rc=143
+total_lines=4395896
+
+setupapi_unsupported_style=0
+unsupported_total=0
+vm_fail=0
+dll_fail=0
+actctx=0
+hb_seh_invalid=369488
+
+Notes:
+- The setupapi Unsupported style(s) 0x10 marker is gone.
+- This 60s validation did not reach WOW64 before the existing SEH unwind loop, but it covered the prefix device-copy path that emitted the setupapi marker in the 120s probe.
+- Remaining terminal marker is virtual_unwind exception data not found / EXCEPTION_INVALID_DISPOSITION.

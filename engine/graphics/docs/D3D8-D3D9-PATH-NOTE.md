@@ -42,11 +42,15 @@ to run 32-bit-era game targets.
 ## Prerequisites
 
 - DXMT D3D11 headless smoke remains green through feature levels 10_0-11_1,
-  resources, views, shader stages, MSAA, mips, queries, BC formats, and stability
-  loops.
+  resources, views, shader stages, MSAA, mips, queries, BC formats,
+  per-swapchain `ResizeTarget`/`ResizeBuffers`, append-UAV counters, and
+  stability loops.
 - x64 guest DXMT binding remains strict-native green for `d3d11`, `dxgi`, and
   `winemetal=n` before older-game routing borrows the same prefix/deployment
   machinery.
+- vkd3d/D3D12 prefix deployment continues to gate DXMT `dxgi.dll` dependency
+  architecture and factory exports, because older D3D8/9 routing will reuse the
+  same prefix-copy/export hygiene.
 - PE32/WOW64 is stable enough for 32-bit-era D3D8/D3D9 titles before using real
   game targets as graphics validation.
 - A D3D9 coverage matrix exists before implementation starts.
@@ -55,10 +59,14 @@ to run 32-bit-era game targets.
 
 ## Current Gate
 
-As of the 2026-06-03 Lane D checkpoints, the DXMT D3D11 owned smoke suite is green
-across device creation, resources, shader stages, draw/dispatch, present/readback,
-fullscreen, MSAA, queries, deferred contexts, BC formats, two-pass stability, and
-strict-native x64 guest `winemetal=n` binding. Real Unity present is currently
-blocked before D3D11/DXGI by Lane A CPU/TSO work, so it is not a D3D8/D3D9
+As of the 2026-06-04 Lane D checkpoints, the DXMT D3D11 owned smoke suite is
+green across device creation, resources, shader stages, draw/dispatch,
+present/readback, fullscreen, MSAA, queries, deferred contexts, BC formats,
+per-swapchain target/buffer resize, append-UAV counter copy, two-pass stability,
+strict-native x64 guest `winemetal=n` binding, and vkd3d/DXGI prefix dependency
+gates. Real Unity present was rechecked after Lane A TSO checkpoint `d0c0f6d`
+and still times out before D3D11/DXGI markers, so it is not a D3D8/D3D9
 implementation gate. D3D8/D3D9 work should still wait for future ownership plus
-Lane C PE32/WOW64 readiness for 32-bit game targets.
+Lane C PE32/WOW64 readiness for 32-bit game targets; current Lane C evidence
+still shows PE32/WOW64 real-game probes are not stable enough to serve as
+graphics validation targets.

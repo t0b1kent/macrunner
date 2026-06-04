@@ -1,0 +1,24 @@
+# Lane C Hollow Knight Unity current runtime
+
+Date: 2026-06-04
+Report: reports/lane-c-hollow-knight-current-20260604120502
+Raw log: reports/lane-c-hollow-knight-current-20260604120502/run.log
+
+## Result
+- run_rc=143
+- total_lines=1111165
+- dxmt_sync_markers=4
+- d3d_runtime_markers=273
+- mono_unity_markers=4
+- unsupported=0
+- vm_fail=0
+- dll_fail=0
+- optional_builtin_probe_warn=2
+- fixme_stub=0
+- actctx=0
+- seh_invalid=1109520
+- hb_runtime_fail=0
+
+## Interpretation
+No new Lane-C-owned loader/VM/Win32-DLL signature surfaced in this Unity game probe. The two broad DLL-pattern matches were optional builtin probes for `wow64cpu.dll` and app-local `UnityPlayer.dll`, not terminal missing imports.
+Terminal blocker remains the excluded SEH/unwind continuation path.

@@ -13,12 +13,13 @@ Evidence:
 ```text
 engine/graphics/scripts/run_dxmt_x64_binding_smoke.sh
 WINEDLLOVERRIDES=d3d11,dxgi,d3d10core,winemetal=n
-artifacts/dxmt-x64-binding/run-20260603-230044/dxmt-x64-binding.log
+artifacts/dxmt-x64-binding/run-20260604-131356/dxmt-x64-binding.log
 dxmt_sync=PASS
 load_winemetal=PASS
 load_dxgi=PASS
 load_d3d11=PASS
 unixlib_binding=PASS
+present_reached=NO
 ```
 
 Lane D attempts completed:
@@ -65,7 +66,7 @@ Lane D attempts completed:
 - Fresh-prefix HK run after DXMT sync.
 - Low-log HK run to exclude log-volume/runtime trace noise.
 - Separate x64 DXMT binding smoke proves `winemetal.dll`, `DXGI.DLL`, and `d3d11.dll` load native from the synchronized graphics prefix.
-- Rechecked after Lane A TSO checkpoint `d0c0f6d`: `artifacts/dxmt-x64-binding/run-20260604-115855/dxmt-x64-binding.log` still reports `dxmt_sync=PASS`, `unixlib_binding=PASS`, and `present_reached=NO`; the guest exits via the smoke timeout (`exit=143`) before `CreateDXGIFactory` / `D3D11CreateDevice` markers, so a real HK frame run is still not meaningful yet.
+- Rechecked after the latest Lane C runtime notes on 2026-06-04: `artifacts/dxmt-x64-binding/run-20260604-131356/dxmt-x64-binding.log` still reports `dxmt_sync=PASS`, `unixlib_binding=PASS`, and `present_reached=NO`; the guest exits via the smoke timeout (`run_rc=143`) before `CreateDXGIFactory` / `D3D11CreateDevice` markers, so a real HK frame run is still not meaningful yet.
 - In-scope substitutes are green: owned headless/live/fullscreen DXMT smokes and asset-aware HK Unity DXBC corpus extraction.
 
 Need:
@@ -74,7 +75,7 @@ Fix the pre-D3D HyperBridge/SEH invalid-disposition/callback path so the real x6
 
 ## VKD3D native D3D12 load bypassed by builtin dependency routing
 
-Status: external Lane C/A loader blocker; prefix deployment remains green.
+Status: resolved for the Lane D strict prefix runtime probe on 2026-06-04; no active Lane A/C need for this path.
 
 Evidence:
 
@@ -83,6 +84,10 @@ reports/phase5-vkd3d/run-20260603-200745-arm64-winedllpath/d3d12-create-device-a
 engine/graphics/dist/vkd3d/aarch64-windows/d3d12.dll copied into system32
 macrunner_hb_open_native_builtin_dependency MacRunner HyperBridge builtin dependency "d3d12.dll"
   => engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/d3d12.dll
+artifacts/vkd3d-prefix-sync/run-20260604-131226/runtime-loader-aarch64-windows.log
+WINEDLLOVERRIDES=d3d12,d3d12core=n
+vkd3d_runtime_load_result=PASS
+vkd3d_runtime_versioned_rootsig_result=PASS
 ```
 
 Lane D attempts completed:
@@ -91,7 +96,14 @@ Lane D attempts completed:
 - Deployed `d3d12.dll` and `d3d12core.dll` into isolated aarch64/x64 graphics prefixes.
 - Verified prefix byte matches with `engine/graphics/scripts/run_vkd3d_prefix_sync_smoke.sh`.
 - Tried app-local/system32/WINEDLLPATH native-load variants.
+- Added a strict aarch64 runtime loader gate that copies app-local native
+  `d3d12.dll`/`d3d12core.dll`, overrides both DLLs as native, verifies native
+  `d3d12core.dll` binding, and exercises legacy plus versioned root signature
+  serialization/deserialization.
 
-Need:
+Resolution:
 
-The loader/builtin dependency path must honor the graphics prefix/app-local native `d3d12.dll` / `d3d12core.dll` before resolving to Wine's builtin `dist-arm64ec-spike` copy. Lane D cannot patch loader or HyperBridge code.
+The graphics-owned prefix/app-local path now binds native vkd3d DLLs cleanly when
+`d3d12,d3d12core=n` is set. Full D3D12 device creation remains separate from this
+loader gate because it depends on the host graphics/device backend, not on the
+previous builtin dependency misrouting signature.

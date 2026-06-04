@@ -57,8 +57,9 @@ to run 32-bit-era game targets.
   with native `d3d12core.dll`, plus root-signature serialization/deserialization
   roundtrips. Fallback `engine/vkd3d` HLSL source now also builds
   `RWStructuredBuffer` UAV counter methods to `imm_atomic_alloc` /
-  `imm_atomic_consume`; `AppendStructuredBuffer<T>`/`ConsumeStructuredBuffer<T>`
-  type syntax remains future HLSL parser work. The runtime probe also carries an
+  `imm_atomic_consume`, and `AppendStructuredBuffer<T>` /
+  `ConsumeStructuredBuffer<T>` object syntax to the matching hidden-counter
+  atomic plus `store_structured` / `ld_structured` operations. The runtime probe also carries an
   opt-in D3D12 device diagnostic so future D3D12->Metal bring-up can be separated
   from prefix-copy/export hygiene.
 - PE32/WOW64 is stable enough for 32-bit-era D3D8/D3D9 titles before using real
@@ -89,7 +90,9 @@ runtime loading with native `d3d12core.dll`, plus legacy and versioned
 root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260605-034309`).
 Fallback vkd3d HLSL counter-method validation built `vkd3d-compiler` from
 `engine/vkd3d` and compiled `artifacts/vkd3d-hlsl-counter/uav-counter.hlsl` to
-DXBC with `imm_atomic_alloc` and `imm_atomic_consume`
+DXBC with `RWStructuredBuffer` counter methods plus `AppendStructuredBuffer<T>` /
+`ConsumeStructuredBuffer<T>` syntax lowering to `imm_atomic_alloc`,
+`imm_atomic_consume`, `store_structured`, and `ld_structured`
 (`artifacts/vkd3d-hlsl-counter/uav-counter.asm`).
 The opt-in D3D12 device diagnostic currently returns
 `D3D12CreateDevice hr=0x80004005` after builtin `winevulkan.dll` loading

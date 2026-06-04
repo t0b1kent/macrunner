@@ -6634,6 +6634,66 @@ static bool add_uav_counter_method_call(struct hlsl_ctx *ctx, struct hlsl_block 
     return true;
 }
 
+static bool add_uav_append_method_call(struct hlsl_ctx *ctx, struct hlsl_block *block, struct hlsl_ir_node *object,
+        const char *name, const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
+{
+    struct hlsl_type *format = object->data_type->e.resource.format;
+    struct hlsl_resource_load_params load_params = {0};
+    struct hlsl_ir_node *counter, *rhs;
+    struct hlsl_deref resource_deref;
+    uint32_t writemask;
+
+    if (params->args_count != 1)
+    {
+        hlsl_error(ctx, loc, VKD3D_SHADER_ERROR_HLSL_WRONG_PARAMETER_COUNT,
+                "Wrong number of arguments to method '%s': expected 1.", name);
+        return false;
+    }
+
+    load_params.type = HLSL_RESOURCE_COUNTER_INCREMENT;
+    load_params.resource = object;
+    load_params.format = hlsl_get_scalar_type(ctx, HLSL_TYPE_UINT);
+    counter = hlsl_block_add_resource_load(ctx, block, &load_params, loc);
+
+    if (!(rhs = add_implicit_conversion(ctx, block, params->args[0], format, loc)))
+        return false;
+
+    if (!hlsl_init_deref_from_index_chain(ctx, &resource_deref, object))
+        return false;
+
+    writemask = vkd3d_write_mask_from_component_count(hlsl_type_component_count(rhs->data_type));
+    hlsl_block_add_resource_store(ctx, block, HLSL_RESOURCE_STORE, &resource_deref, counter, rhs, writemask, loc);
+    hlsl_cleanup_deref(&resource_deref);
+    return true;
+}
+
+static bool add_uav_consume_method_call(struct hlsl_ctx *ctx, struct hlsl_block *block, struct hlsl_ir_node *object,
+        const char *name, const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
+{
+    struct hlsl_resource_load_params load_params = {0};
+    struct hlsl_ir_node *counter;
+
+    if (params->args_count)
+    {
+        hlsl_error(ctx, loc, VKD3D_SHADER_ERROR_HLSL_WRONG_PARAMETER_COUNT,
+                "Wrong number of arguments to method '%s': expected 0.", name);
+        return false;
+    }
+
+    load_params.type = HLSL_RESOURCE_COUNTER_DECREMENT;
+    load_params.resource = object;
+    load_params.format = hlsl_get_scalar_type(ctx, HLSL_TYPE_UINT);
+    counter = hlsl_block_add_resource_load(ctx, block, &load_params, loc);
+
+    memset(&load_params, 0, sizeof(load_params));
+    load_params.type = HLSL_RESOURCE_LOAD;
+    load_params.resource = object;
+    load_params.coords = counter;
+    load_params.format = object->data_type->e.resource.format;
+    hlsl_block_add_resource_load(ctx, block, &load_params, loc);
+    return true;
+}
+
 static bool add_so_append_method_call(struct hlsl_ctx *ctx, struct hlsl_block *block, struct hlsl_ir_node *object,
         const char *name, const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
 {
@@ -6717,6 +6777,8 @@ texture_methods[] =
 
 static const struct method_function uav_methods[] =
 {
+    { "Append",           add_uav_append_method_call,  "00000000000010" },
+    { "Consume",          add_uav_consume_method_call, "00000000000010" },
     { "DecrementCounter", add_uav_counter_method_call, "00000000000010" },
     { "IncrementCounter", add_uav_counter_method_call, "00000000000010" },
     { "Store",            add_store_method_call,        "00000000000001" },
@@ -7060,6 +7122,7 @@ static void validate_uav_type(struct hlsl_ctx *ctx, enum hlsl_sampler_dim dim,
 
 %token KW_BLENDSTATE
 %token KW_BREAK
+%token KW_APPENDSTRUCTUREDBUFFER
 %token KW_BUFFER
 %token KW_BYTEADDRESSBUFFER
 %token KW_CASE
@@ -7072,6 +7135,7 @@ static void validate_uav_type(struct hlsl_ctx *ctx, enum hlsl_sampler_dim dim,
 %token KW_COMPUTESHADER
 %token KW_CONST
 %token KW_CONTINUE
+%token KW_CONSUMESTRUCTUREDBUFFER
 %token KW_DEFAULT
 %token KW_DEPTHSTENCILSTATE
 %token KW_DEPTHSTENCILVIEW
@@ -8286,6 +8350,14 @@ uav_type:
       KW_RWBUFFER
         {
             $$ = HLSL_SAMPLER_DIM_BUFFER;
+        }
+    | KW_APPENDSTRUCTUREDBUFFER
+        {
+            $$ = HLSL_SAMPLER_DIM_STRUCTURED_BUFFER;
+        }
+    | KW_CONSUMESTRUCTUREDBUFFER
+        {
+            $$ = HLSL_SAMPLER_DIM_STRUCTURED_BUFFER;
         }
     | KW_RWSTRUCTUREDBUFFER
         {

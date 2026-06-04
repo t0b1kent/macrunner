@@ -1,0 +1,49 @@
+/usr/bin/clang -c -o dlls/ntdll/i386-windows/loader.o /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c \
+  -Idlls/ntdll -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll \
+  -Iinclude -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/msvcrt \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/libs/tomcrypt/src/headers \
+  -D_MSVCR_VER=0 -D__WINESRC__ -DLTC_NO_PROTOTYPES -DLTC_SOURCE -D_NTSYSTEM_ -D_ACRTIMP= \
+  -DWINBASEAPI= -D__WINE_PE_BUILD -Wall -target i686-windows -fuse-ld=lld --no-default-config \
+  -fno-strict-aliasing -Wdeclaration-after-statement -Wempty-body -Wignored-qualifiers -Winit-self \
+  -Wno-microsoft-enum-forward-reference -Wstrict-prototypes -Wtype-limits -Wunused-but-set-parameter \
+  -Wvla -Wwrite-strings -Wpointer-arith -Wabsolute-value -ffunction-sections -fasync-exceptions \
+  -ffp-exception-behavior=maytrap -fms-hotpatch -fno-omit-frame-pointer -gdwarf-4 -g -O2
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:5738:65: warning: result of comparison of constant 8796093022208 with expression of type 'ULONG_PTR' (aka 'unsigned int') is always false [-Wtautological-constant-out-of-range-compare]
+ 5738 |     if ((ULONG_PTR)delta == 0x800000000ull || (ULONG_PTR)module >= 0x80000000000ull)
+      |                                               ~~~~~~~~~~~~~~~~~ ^  ~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:5738:26: warning: result of comparison of constant 34359738368 with expression of type 'ULONG_PTR' (aka 'unsigned int') is always false [-Wtautological-constant-out-of-range-compare]
+ 5738 |     if ((ULONG_PTR)delta == 0x800000000ull || (ULONG_PTR)module >= 0x80000000000ull)
+      |         ~~~~~~~~~~~~~~~~ ^  ~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:551:13: warning: unused function 'macrunner_hb_trace_xtajit64' [-Wunused-function]
+  551 | static BOOL macrunner_hb_trace_xtajit64(void)
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:559:13: warning: unused function 'macrunner_hb_use_xtajit64_thread' [-Wunused-function]
+  559 | static BOOL macrunner_hb_use_xtajit64_thread(void)
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/loader.c:2653:14: warning: unused function 'macrunner_hb_resolve_arm64x_native_target' [-Wunused-function]
+ 2653 | static void *macrunner_hb_resolve_arm64x_native_target( void *ptr )
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+5 warnings generated.
+tools/winegcc/winegcc -o dlls/ntdll/i386-windows/ntdll.dll --wine-objdir . -b i686-windows -Wl,--wine-builtin -shared \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/ntdll.spec \
+  -nodefaultlibs -Wl,--image-base,0x7bc00000 dlls/ntdll/i386-windows/actctx.o \
+  dlls/ntdll/i386-windows/atom.o dlls/ntdll/i386-windows/crypt.o \
+  dlls/ntdll/i386-windows/debugbuffer.o dlls/ntdll/i386-windows/env.o \
+  dlls/ntdll/i386-windows/error.o dlls/ntdll/i386-windows/exception.o \
+  dlls/ntdll/i386-windows/handletable.o dlls/ntdll/i386-windows/heap.o \
+  dlls/ntdll/i386-windows/large_int.o dlls/ntdll/i386-windows/loader.o \
+  dlls/ntdll/i386-windows/locale.o dlls/ntdll/i386-windows/macrunner_hb_pe.o \
+  dlls/ntdll/i386-windows/math.o dlls/ntdll/i386-windows/misc.o dlls/ntdll/i386-windows/path.o \
+  dlls/ntdll/i386-windows/printf.o dlls/ntdll/i386-windows/process.o dlls/ntdll/i386-windows/reg.o \
+  dlls/ntdll/i386-windows/relay.o dlls/ntdll/i386-windows/resource.o dlls/ntdll/i386-windows/rtl.o \
+  dlls/ntdll/i386-windows/rtlbitmap.o dlls/ntdll/i386-windows/rtlstr.o dlls/ntdll/i386-windows/sec.o \
+  dlls/ntdll/i386-windows/signal_arm.o dlls/ntdll/i386-windows/signal_arm64.o \
+  dlls/ntdll/i386-windows/signal_arm64ec.o dlls/ntdll/i386-windows/signal_i386.o \
+  dlls/ntdll/i386-windows/signal_x86_64.o dlls/ntdll/i386-windows/string.o \
+  dlls/ntdll/i386-windows/sync.o dlls/ntdll/i386-windows/thread.o \
+  dlls/ntdll/i386-windows/threadpool.o dlls/ntdll/i386-windows/time.o \
+  dlls/ntdll/i386-windows/unwind.o dlls/ntdll/i386-windows/version.o \
+  dlls/ntdll/i386-windows/wcstring.o dlls/ntdll/version.res libs/tomcrypt/i386-windows/libtomcrypt.a \
+  libs/musl/i386-windows/libmusl.a dlls/winecrt0/i386-windows/libwinecrt0.a \
+  libs/compiler-rt/i386-windows/libcompiler-rt.a --no-default-config -fms-hotpatch -Wl,-debug:dwarf

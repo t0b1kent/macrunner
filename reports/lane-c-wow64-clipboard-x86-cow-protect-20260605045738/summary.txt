@@ -1,0 +1,14 @@
+run_rc=53
+c000007f=0
+c0000135=8
+loader_fail=0
+wow64_markers=85
+btcpu_markers=8
+unsupported=0
+vm_marker_lines=0
+dll_fail_lines=0
+fixme_stub=0
+clipboard_markers=6
+exit_markers=15
+diskfull_text=0
+last_line=[mr-run] exit=53 (prefix auto-removed on exit)

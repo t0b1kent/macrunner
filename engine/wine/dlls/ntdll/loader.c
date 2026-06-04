@@ -3610,6 +3610,13 @@ static NTSTATUS get_apiset_target( const API_SET_NAMESPACE *map, const API_SET_N
 /**********************************************************************
  *	    build_import_name
  */
+static BOOL macrunner_hb_is_ucrt_apiset_name( const WCHAR *name )
+{
+    static const WCHAR prefix[] = L"api-ms-win-crt-";
+
+    return !wcsnicmp( name, prefix, ARRAY_SIZE(prefix) - 1 );
+}
+
 static NTSTATUS build_import_name( WINE_MODREF *importer, WCHAR buffer[256], const char *import, int len )
 {
     const API_SET_NAMESPACE *map = NtCurrentTeb()->Peb->ApiSetMap;
@@ -3623,7 +3630,11 @@ static NTSTATUS build_import_name( WINE_MODREF *importer, WCHAR buffer[256], con
     buffer[len] = 0;
     if (!wcschr( buffer, '.' )) wcscpy( buffer + len, L".dll" );
 
-    if (get_apiset_entry( map, buffer, wcslen(buffer), &entry )) return STATUS_SUCCESS;
+    if (get_apiset_entry( map, buffer, wcslen(buffer), &entry ))
+    {
+        if (macrunner_hb_is_ucrt_apiset_name( buffer )) wcscpy( buffer, L"ucrtbase.dll" );
+        return STATUS_SUCCESS;
+    }
 
     if (get_apiset_target( map, entry, host, &str )) return STATUS_DLL_NOT_FOUND;
     if (str.Length >= 256 * sizeof(WCHAR)) return STATUS_DLL_NOT_FOUND;
@@ -4184,6 +4195,9 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
     {
         WARN( "invalid import dll name rva %08lx in %s\n",
               (ULONG)descr->Name, debugstr_w(wm->ldr.FullDllName.Buffer) );
+        if (trace_pe32_loader)
+            MESSAGE( "macrunner-pe32-loader-fail: import_dll module=%s base=%p reason=invalid-name-rva name_rva=%08lx\n",
+                     debugstr_w(wm->ldr.BaseDllName.Buffer), module, (ULONG)descr->Name );
         return FALSE;
     }
     len = strlen(name);
@@ -4199,6 +4213,10 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
     {
         WARN( "invalid import thunk table for %s imported from %s\n",
               name, debugstr_w(wm->ldr.FullDllName.Buffer) );
+        if (trace_pe32_loader)
+            MESSAGE( "macrunner-pe32-loader-fail: import_dll module=%s base=%p dll=%s reason=invalid-thunk-table oft=%08lx ft=%08lx\n",
+                     debugstr_w(wm->ldr.BaseDllName.Buffer), module, name,
+                     (ULONG)descr->OriginalFirstThunk, (ULONG)descr->FirstThunk );
         return FALSE;
     }
 
@@ -4222,6 +4240,10 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
             WARN( "invalid import-by-name rva %Ix for %s imported from %s\n",
                   (ULONG_PTR)import_list[i].u1.AddressOfData, name,
                   debugstr_w(wm->ldr.FullDllName.Buffer) );
+            if (trace_pe32_loader)
+                MESSAGE( "macrunner-pe32-loader-fail: import_dll module=%s base=%p dll=%s reason=invalid-import-by-name index=%Iu rva=%Ix\n",
+                         debugstr_w(wm->ldr.BaseDllName.Buffer), module, name, i,
+                         (ULONG_PTR)import_list[i].u1.AddressOfData );
             return FALSE;
         }
     }
@@ -4240,6 +4262,10 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
         else
             ERR("Loading library %s (which is needed by %s) failed (error %lx).\n",
                 name, debugstr_w(wm->ldr.FullDllName.Buffer), status);
+        if (trace_pe32_loader)
+            MESSAGE( "macrunner-pe32-loader-fail: import_dll module=%s base=%p dll=%s resolved=%s status=%08lx system=%u load_path=%s\n",
+                     debugstr_w(wm->ldr.BaseDllName.Buffer), module, name,
+                     debugstr_w(buffer), status, system, debugstr_w(load_path) );
         return FALSE;
     }
 
@@ -4728,7 +4754,15 @@ static NTSTATUS fixup_imports( WINE_MODREF *wm, LPCWSTR load_path )
     {
         dep_after = wm->ldr.DdagNode->Dependencies.Tail;
         if (!import_dll( wm, &imports[i], load_path, &imp ))
+        {
+            const char *name = image_rva_string( wm->ldr.DllBase, imports[i].Name );
+
+            if (trace_pe32_loader)
+                MESSAGE( "macrunner-pe32-loader-fail: fixup_imports module=%s base=%p import_index=%lu dll=%s status=%08lx\n",
+                         debugstr_w(wm->ldr.BaseDllName.Buffer), wm->ldr.DllBase, i,
+                         name ? name : "<invalid>", STATUS_DLL_NOT_FOUND );
             status = STATUS_DLL_NOT_FOUND;
+        }
         else if (imp && imp->ldr.DdagNode != node_ntdll && imp->ldr.DdagNode != node_kernel32)
             add_module_dependency_after( wm->ldr.DdagNode, imp->ldr.DdagNode, dep_after );
     }
@@ -5684,6 +5718,9 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
         addr = get_rva( module, sec[i].VirtualAddress );
         status = NtProtectVirtualMemory( NtCurrentProcess(), &addr,
                                          &size, PAGE_READWRITE, &protect_old[i] );
+        if (status == STATUS_DISK_FULL)
+            status = NtProtectVirtualMemory( NtCurrentProcess(), &addr,
+                                             &size, PAGE_WRITECOPY, &protect_old[i] );
         if (status)
         {
             WARN( "failed to make relocation section %lu writable, status %lx\n", i, status );
@@ -7254,7 +7291,19 @@ static NTSTATUS find_apiset_dll( const WCHAR *name, WCHAR **fullname )
     UNICODE_STRING str;
     ULONG len;
 
-    if (get_apiset_entry( map, name, wcslen(name), &entry )) return STATUS_APISET_NOT_PRESENT;
+    if (get_apiset_entry( map, name, wcslen(name), &entry ))
+    {
+        static const WCHAR ucrtbaseW[] = L"ucrtbase.dll";
+        ULONG system_len = wcslen( system_dir );
+
+        if (!macrunner_hb_is_ucrt_apiset_name( name )) return STATUS_APISET_NOT_PRESENT;
+        len = system_len + ARRAY_SIZE(ucrtbaseW) - 1;
+        if (!(*fullname = RtlAllocateHeap( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) )))
+            return STATUS_NO_MEMORY;
+        wcscpy( *fullname, system_dir );
+        memcpy( *fullname + system_len, ucrtbaseW, sizeof(ucrtbaseW) );
+        return STATUS_SUCCESS;
+    }
     if (get_apiset_target( map, entry, NULL, &str )) return STATUS_DLL_NOT_FOUND;
 
     len = wcslen( system_dir ) + str.Length / sizeof(WCHAR);
@@ -8980,6 +9029,10 @@ void loader_init( CONTEXT *context, void **entry )
 
         if (status)
         {
+            if (current_machine == IMAGE_FILE_MACHINE_I386 || macrunner_hb_trace_pe32_loader())
+                MESSAGE( "macrunner-pe32-loader-fail: loader_init main_imports image=%s module=%s base=%p status=%08lx flags=%lx\n",
+                         debugstr_w(NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer),
+                         debugstr_w(wm->ldr.BaseDllName.Buffer), wm->ldr.DllBase, status, wm->ldr.Flags );
             ERR( "Importing dlls for %s failed, status %lx\n",
                  debugstr_w(NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer), status );
             NtTerminateProcess( GetCurrentProcess(), status );

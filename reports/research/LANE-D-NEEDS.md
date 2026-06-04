@@ -13,7 +13,7 @@ Evidence:
 ```text
 engine/graphics/scripts/run_dxmt_x64_binding_smoke.sh
 WINEDLLOVERRIDES=d3d11,dxgi,d3d10core,winemetal=n
-artifacts/dxmt-x64-binding/run-20260604-134959/dxmt-x64-binding.log
+artifacts/dxmt-x64-binding/run-20260604-162546/dxmt-x64-binding.log
 dxmt_sync=PASS
 load_winemetal=PASS
 load_dxgi=PASS
@@ -66,7 +66,7 @@ Lane D attempts completed:
 - Fresh-prefix HK run after DXMT sync.
 - Low-log HK run to exclude log-volume/runtime trace noise.
 - Separate x64 DXMT binding smoke proves `winemetal.dll`, `DXGI.DLL`, and `d3d11.dll` load native from the synchronized graphics prefix.
-- Rechecked after the latest Lane C runtime notes on 2026-06-04: `artifacts/dxmt-x64-binding/run-20260604-134959/dxmt-x64-binding.log` still reports `dxmt_sync=PASS`, `unixlib_binding=PASS`, and `present_reached=NO`; the guest exits via the smoke timeout (`run_rc=143`) before `CreateDXGIFactory` / `D3D11CreateDevice` markers, so a real HK frame run is still not meaningful yet.
+- Rechecked after the latest Lane C runtime notes on 2026-06-04: `artifacts/dxmt-x64-binding/run-20260604-162546/dxmt-x64-binding.log` still reports `dxmt_sync=PASS`, `unixlib_binding=PASS`, and `present_reached=NO`; the guest exits via the smoke timeout (`run_rc=143`) before `CreateDXGIFactory` / `D3D11CreateDevice` markers, so a real HK frame run is still not meaningful yet.
 - In-scope substitutes are green: owned headless/live/fullscreen DXMT smokes and asset-aware HK Unity DXBC corpus extraction.
 
 Need:

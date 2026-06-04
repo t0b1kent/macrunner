@@ -1,0 +1,3 @@
+fixture	run_rc	fixture_ok	unsupported	ioctl_unsupported	vm_fail	dll_fail	fixme_stub	actctx	hb_runtime_fail	seh_invalid
+overlapped_file_io_arm64.exe	0	1	0	0	0	0	0	9	0	3
+pipe_arm64.exe	0	1	0	0	0	0	0	9	0	3

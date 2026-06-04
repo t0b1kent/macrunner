@@ -52,8 +52,8 @@ to run 32-bit-era game targets.
 - vkd3d/D3D12 prefix deployment continues to gate DXMT `dxgi.dll` dependency
   architecture, factory exports, and standalone `d3d12.dll` runtime loading
   with native `d3d12core.dll`, plus root-signature serialization/deserialization
-  roundtrips, because older D3D8/9 routing will reuse the same prefix-copy/export
-  hygiene.
+  roundtrips. The runtime probe also carries an opt-in D3D12 device diagnostic so
+  future D3D12->Metal bring-up can be separated from prefix-copy/export hygiene.
 - PE32/WOW64 is stable enough for 32-bit-era D3D8/D3D9 titles before using real
   game targets as graphics validation.
 - A D3D9 coverage matrix exists before implementation starts.
@@ -67,12 +67,19 @@ green across device creation, resources, shader stages, draw/dispatch,
 present/readback, fullscreen, MSAA, queries, deferred contexts, BC formats,
 per-swapchain target/buffer resize, append-UAV counter copy, constant-buffer
 partial updates, shader-visible constant-buffer offsetting, overlap buffer
-copies, and two-pass stability (`artifacts/dxmt-smoke-logs/lane-d-stability-20260604-133145.outer.log`).
+copies, depth-only D3D11.1 `ClearView`, and two-pass stability
+(`artifacts/dxmt-smoke-logs/lane-d-stability-20260604-133145.outer.log`,
+`artifacts/dxmt-smoke-logs/lane-d-depth-clearview-20260604-134840.outer.log`).
 Strict-native x64 guest `winemetal=n` binding remains green but still does not
-reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260604-131356/dxmt-x64-binding.log`).
+reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260604-134959/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`
 runtime loading with native `d3d12core.dll`, plus legacy and versioned
-root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260604-131226`).
+root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260604-135430`).
+The opt-in D3D12 device diagnostic currently returns
+`D3D12CreateDevice hr=0x80004005` after builtin `winevulkan.dll` loading
+(`artifacts/vkd3d-prefix-sync/run-20260604-135307/runtime-loader-aarch64-windows.log`),
+which confirms device bring-up is future D3D12 backend work rather than a D3D8/9
+gate.
 Real Unity present is therefore still not a D3D8/D3D9 implementation gate.
 D3D8/D3D9 work should wait for future ownership plus Lane C PE32/WOW64 readiness
 for 32-bit game targets.

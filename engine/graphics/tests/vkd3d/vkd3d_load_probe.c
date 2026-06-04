@@ -20,6 +20,10 @@ typedef HRESULT(WINAPI *PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)(
 typedef HRESULT(WINAPI *PFN_D3D12_CREATE_VERSIONED_ROOT_SIGNATURE_DESERIALIZER)(
     const void *data, SIZE_T data_size, REFIID iid, void **deserializer);
 
+typedef HRESULT(WINAPI *PFN_D3D12_CREATE_DEVICE)(IUnknown *adapter,
+                                                 D3D_FEATURE_LEVEL min_feature_level,
+                                                 REFIID riid, void **device);
+
 struct export_probe {
   const char *name;
 };
@@ -266,6 +270,54 @@ cleanup:
   return pass;
 }
 
+static int probe_d3d12_device(void) {
+  HMODULE module;
+  PFN_D3D12_CREATE_DEVICE create_device;
+  ID3D12Device *device = NULL;
+  UINT node_count = 0;
+  HRESULT hr;
+  int pass = 1;
+
+  module = GetModuleHandleW(L"d3d12.dll");
+  printf("vkd3d_runtime_device_semantic module=d3d12.dll handle=%p\n",
+         module);
+  if (!module)
+    return 0;
+
+  create_device =
+      (PFN_D3D12_CREATE_DEVICE)GetProcAddress(module, "D3D12CreateDevice");
+  if (!create_device)
+    return 0;
+
+  hr = create_device(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device,
+                     (void **)&device);
+  printf("vkd3d_runtime_call api=D3D12CreateDevice hr=0x%08lx device=%p\n",
+         (unsigned long)hr, device);
+  if (FAILED(hr) || !device) {
+    pass = 0;
+    goto cleanup;
+  }
+
+  node_count = ID3D12Device_GetNodeCount(device);
+  printf("vkd3d_runtime_device nodes=%u\n", node_count);
+  if (!node_count)
+    pass = 0;
+
+cleanup:
+  if (device)
+    ID3D12Device_Release(device);
+
+  printf("vkd3d_runtime_device_result=%s\n", pass ? "PASS" : "FAIL");
+  return pass;
+}
+
+static int should_probe_d3d12_device(void) {
+  char value[8];
+  DWORD len = GetEnvironmentVariableA("VKD3D_RUNTIME_PROBE_DEVICE", value,
+                                      sizeof(value));
+  return len && len < sizeof(value) && value[0] && value[0] != '0';
+}
+
 int main(void) {
   static const struct export_probe d3d12_exports[] = {
       {"D3D12CreateDevice"},
@@ -297,6 +349,12 @@ int main(void) {
     pass = 0;
   if (!probe_d3d12_versioned_root_signature())
     pass = 0;
+  if (should_probe_d3d12_device()) {
+    if (!probe_d3d12_device())
+      pass = 0;
+  } else {
+    printf("vkd3d_runtime_device_result=SKIP reason=opt_in_disabled\n");
+  }
 
   printf("vkd3d_runtime_load_result=%s\n", pass ? "PASS" : "FAIL");
   return pass ? 0 : 1;

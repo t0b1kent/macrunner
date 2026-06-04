@@ -84,10 +84,13 @@ reports/phase5-vkd3d/run-20260603-200745-arm64-winedllpath/d3d12-create-device-a
 engine/graphics/dist/vkd3d/aarch64-windows/d3d12.dll copied into system32
 macrunner_hb_open_native_builtin_dependency MacRunner HyperBridge builtin dependency "d3d12.dll"
   => engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/d3d12.dll
-artifacts/vkd3d-prefix-sync/run-20260604-131226/runtime-loader-aarch64-windows.log
+artifacts/vkd3d-prefix-sync/run-20260604-135430/runtime-loader-aarch64-windows.log
 WINEDLLOVERRIDES=d3d12,d3d12core=n
 vkd3d_runtime_load_result=PASS
 vkd3d_runtime_versioned_rootsig_result=PASS
+vkd3d_runtime_device_result=SKIP reason=opt_in_disabled
+artifacts/vkd3d-prefix-sync/run-20260604-135307/runtime-loader-aarch64-windows.log
+VKD3D_RUNTIME_PROBE_DEVICE=1 diagnostic: D3D12CreateDevice hr=0x80004005
 ```
 
 Lane D attempts completed:
@@ -100,10 +103,16 @@ Lane D attempts completed:
   `d3d12.dll`/`d3d12core.dll`, overrides both DLLs as native, verifies native
   `d3d12core.dll` binding, and exercises legacy plus versioned root signature
   serialization/deserialization.
+- Added an opt-in `VKD3D_RUNTIME_PROBE_DEVICE=1` diagnostic for
+  `D3D12CreateDevice(NULL, D3D_FEATURE_LEVEL_11_0)`. The current diagnostic
+  fails with `hr=0x80004005` after loading builtin `winevulkan.dll`, so full
+  D3D12 device bring-up is confirmed as backend work rather than the old native
+  DLL binding problem.
 
 Resolution:
 
 The graphics-owned prefix/app-local path now binds native vkd3d DLLs cleanly when
 `d3d12,d3d12core=n` is set. Full D3D12 device creation remains separate from this
-loader gate because it depends on the host graphics/device backend, not on the
-previous builtin dependency misrouting signature.
+loader gate because it depends on the host graphics/device backend (`winevulkan`
+today, future Metal path), not on the previous builtin dependency misrouting
+signature.

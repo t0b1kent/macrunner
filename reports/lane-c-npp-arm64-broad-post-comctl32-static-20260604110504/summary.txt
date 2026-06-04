@@ -1,0 +1,20 @@
+Lane C ARM64 Notepad++ installer broad validation after compiled comctl32 v6 manifest fallback.
+
+run_log=reports/lane-c-npp-arm64-broad-post-comctl32-static-20260604110504/run.log
+rc=143
+kill_rc=1
+total_lines=1893
+
+fixme_actctx=0
+module_load_fail=0
+macdrv_string_fail=0
+copy_sys_popup=0
+ole_err=3
+
+common_controls_file_probe_warn=4
+unsupported_font_format_warn=435
+
+Notes:
+- The Common-Controls v6 SxS failure is gone: no fixme:actctx lines remain.
+- The remaining comctl32_v6.dll lines are warn:file probes for the absent prefix system32 file before the compiled manifest fallback is parsed.
+- The run ended via the bounded mr-run timeout; the scoped prefix was already auto-removed, so the follow-up wineserver -k returned 1.

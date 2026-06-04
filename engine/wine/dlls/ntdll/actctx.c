@@ -3343,6 +3343,43 @@ static BOOL is_builtin_comctl32_v6_identity( const struct assembly_identity *ai 
 
 static NTSTATUS lookup_builtin_comctl32_v6( struct actctx_loader *acl, struct assembly_identity *ai )
 {
+    static const char manifest[] =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+        "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\n"
+        "  <assemblyIdentity type=\"win32\" name=\"Microsoft.Windows.Common-Controls\" "
+        "version=\"6.0.2600.2982\" processorArchitecture=\"\" "
+        "publicKeyToken=\"6595b64144ccf1df\"/>\n"
+        "  <file name=\"comctl32.dll\">\n"
+        "    <windowClass>Button</windowClass>\n"
+        "    <windowClass>ButtonListBox</windowClass>\n"
+        "    <windowClass>ComboBoxEx32</windowClass>\n"
+        "    <windowClass>ComboLBox</windowClass>\n"
+        "    <windowClass>ComboBox</windowClass>\n"
+        "    <windowClass>Edit</windowClass>\n"
+        "    <windowClass>ListBox</windowClass>\n"
+        "    <windowClass>NativeFontCtl</windowClass>\n"
+        "    <windowClass>ReBarWindow32</windowClass>\n"
+        "    <windowClass>ScrollBar</windowClass>\n"
+        "    <windowClass>Static</windowClass>\n"
+        "    <windowClass>SysAnimate32</windowClass>\n"
+        "    <windowClass>SysDateTimePick32</windowClass>\n"
+        "    <windowClass>SysHeader32</windowClass>\n"
+        "    <windowClass>SysIPAddress32</windowClass>\n"
+        "    <windowClass>SysLink</windowClass>\n"
+        "    <windowClass>SysListView32</windowClass>\n"
+        "    <windowClass>SysMonthCal32</windowClass>\n"
+        "    <windowClass>SysPager</windowClass>\n"
+        "    <windowClass>SysTabControl32</windowClass>\n"
+        "    <windowClass>SysTreeView32</windowClass>\n"
+        "    <windowClass>ToolbarWindow32</windowClass>\n"
+        "    <windowClass>msctls_hotkey32</windowClass>\n"
+        "    <windowClass>msctls_progress32</windowClass>\n"
+        "    <windowClass>msctls_statusbar32</windowClass>\n"
+        "    <windowClass>msctls_trackbar32</windowClass>\n"
+        "    <windowClass>msctls_updown32</windowClass>\n"
+        "    <windowClass>tooltips_class32</windowClass>\n"
+        "  </file>\n"
+        "</assembly>\n";
     struct assembly_identity builtin_ai = *ai;
     UNICODE_STRING path_us;
     WCHAR *path, *directory;
@@ -3386,7 +3423,13 @@ static NTSTATUS lookup_builtin_comctl32_v6( struct actctx_loader *acl, struct as
         status = get_manifest_in_pe_file( acl, ai, path_us.Buffer, directory, TRUE, file, NULL, 0 );
         NtClose( file );
     }
-    else status = STATUS_NO_SUCH_FILE;
+    else
+    {
+        TRACE( "using compiled builtin comctl32 v6 manifest for %s (%s)\n",
+               debugstr_w(ai->name), debugstr_version(&ai->version) );
+        status = parse_manifest( acl, ai, path_us.Buffer, NULL, directory, TRUE,
+                                 manifest, sizeof(manifest) - 1 );
+    }
 
     RtlFreeUnicodeString( &path_us );
     RtlFreeHeap( GetProcessHeap(), 0, directory );

@@ -1,0 +1,24 @@
+# Lane C KeePass PE32 installer after ntdll resync
+
+Date: 2026-06-04
+Report: reports/lane-c-keepass-pe32-post-ntdll-resync-20260604120059
+Build log: reports/build/lane-c-ntdll-system-dist-resync-20260604120034.log
+Raw log: reports/lane-c-keepass-pe32-post-ntdll-resync-20260604120059/run.log
+
+## Result
+- run_rc=143
+- total_lines=1453
+- wow64_markers=0
+- btcpu_markers=0
+- cpu_simulate_markers=0
+- unsupported=0
+- vm_fail=0
+- dll_fail=0
+- fixme_stub=0
+- core_id_stub=0
+- actctx=0
+- hb_runtime_fail=0
+- seh_invalid=0
+
+## Interpretation
+No new Lane-C-owned loader/VM/Win32-DLL signature surfaced in this PE32 app probe.

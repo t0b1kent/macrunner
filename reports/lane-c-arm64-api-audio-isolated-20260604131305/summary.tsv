@@ -1,0 +1,4 @@
+fixture	run_rc	stdout_like	unsupported	vm_fail	dll_fail	fixme_stub	actctx	hb_runtime_fail	seh_invalid
+audio_device_enum_arm64.exe	0	65	0	0	0	0	6	0	3
+waveout_open_close_arm64.exe	143	51	0	0	0	0	3	0	49839
+winmm_timer_arm64.exe	0	65	0	0	0	0	6	0	3

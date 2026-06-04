@@ -7,6 +7,31 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
+## Lane A checkpoint — 2026-06-04 helper-side TSO ordering and XCHG atomicity
+Checkpointed diagnostic WIP first as `e93b485 checkpoint(Lane A): capture Mono vtable probe`.
+
+Root-fix step taken next in `engine/hyperbridge/src/hb_arm64_codegen.c`: JIT helper fast paths now
+use helper-local TSO wrappers for guest memory. Host-span fast reads use acquire atomics (unaligned
+copies are fenced), helper writes use release stores/fences, memory-operand helper fallbacks fence
+guest memory reads/writes, and the Unity freelist helper no longer implements `XCHG [rsi+0x80],rax`
+as plain read+write: it now uses a seq-cst host atomic exchange with split-lock fallback.
+
+Validation:
+- Build: `reports/phase4-hollow-knight/build-20260604-150652-hb-tso-helper-order2.log`, rc=0.
+- `engine/hyperbridge/tests/hb_test_runner --fast-family phase1_core`:
+  `reports/phase4-hollow-knight/test-20260604-150714-phase1-core-tso-helper-order2.log`,
+  `46 passed, 0 failed` (`atomics_enter/atomics_exit` included).
+- Oracle fast gate:
+  `reports/phase4-hollow-knight/fast-validate-20260604-150739-phase1-core-tso-helper-order.log`,
+  `FAST VALIDATION: PASS`.
+- x64 fuzz:
+  `engine/hyperbridge/reports/phase4-hollow-knight/fuzz-20260604-150817-x64-logic-cmov-tso-helper-order.json`,
+  `cases_run=10000`, families `int_logic_flags=6668`, `cmov_setcc=3332`,
+  `backend_mismatch_count=0`, `oracle_mismatch_count=0`, `oracle_pass_count=10000`.
+
+NEXT: commit this helper-ordering checkpoint, rebuild/relink/install/sign `ntdll.so`, then run the
+ready `reports/research/tso_litmus.c` modes under MacRunner before the next Hollow Knight climb.
+
 ## Lane A checkpoint — 2026-06-04 `66 85 /r` x64 TEST decoder regression
 Root/current gate after the TSO climb: HK reaches Mono and faults with
 `System.RuntimeType has invalid vtable method slot 16` followed by `mono-2.0-bdwgc.dll`

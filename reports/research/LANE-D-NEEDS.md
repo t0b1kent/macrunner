@@ -89,7 +89,7 @@ WINEDLLOVERRIDES=d3d12,d3d12core=n
 vkd3d_runtime_load_result=PASS
 vkd3d_runtime_versioned_rootsig_result=PASS
 vkd3d_runtime_device_result=SKIP reason=opt_in_disabled
-artifacts/vkd3d-prefix-sync/run-20260604-135307/runtime-loader-aarch64-windows.log
+artifacts/vkd3d-prefix-sync/run-20260604-205538/runtime-loader-aarch64-windows.log
 VKD3D_RUNTIME_PROBE_DEVICE=1 diagnostic: D3D12CreateDevice hr=0x80004005
 ```
 

@@ -81,7 +81,7 @@ runtime loading with native `d3d12core.dll`, plus legacy and versioned
 root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260604-165527`).
 The opt-in D3D12 device diagnostic currently returns
 `D3D12CreateDevice hr=0x80004005` after builtin `winevulkan.dll` loading
-(`artifacts/vkd3d-prefix-sync/run-20260604-135307/runtime-loader-aarch64-windows.log`),
+(`artifacts/vkd3d-prefix-sync/run-20260604-205538/runtime-loader-aarch64-windows.log`),
 which confirms device bring-up is future D3D12 backend work rather than a D3D8/9
 gate.
 Real Unity present is therefore still not a D3D8/D3D9 implementation gate.

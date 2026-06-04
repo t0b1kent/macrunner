@@ -1411,3 +1411,33 @@ semaphore verdict and continue toward producer/scheduler reachability rather tha
 
 NEXT: commit this checkpoint, relink/install/codesign `ntdll.so`, build/run `tso_litmus.exe`
 `mp/spin/cas/xadd/split`, then retry Hollow Knight with heartbeat and Gfx/D3D trace gates.
+
+## Lane A checkpoint — 2026-06-04 TSO atomics/no-hoist validation green
+
+- Root fix completed in the JIT path:
+  - atomic IR is blocked from hot self-loop/two-block/four-block fusion so LOCK RMW cannot be
+    hoisted or lowered through non-atomic loop helpers;
+  - JIT block helper execution routes `CMPXCHG/CMPXCHG8B/XCHG/XADD` through the full-barrier atomic
+    helper instead of the plain interpreter helper;
+  - unaligned/cacheline-crossing LOCK RMW now takes the split-lock gate and performs guest-memory
+    read/modify/write directly for `CMPXCHG`, `CMPXCHG8B`, `XCHG`, and `XADD`;
+  - wide self-base loads such as `mov rbx, [rbx]` fall back to the fenced helper path, avoiding
+    LDAR on dynamically unaligned addresses.
+- Install detail: manual `ntdll.so` relink against current `libhyperbridge.a` and Lane A baseline
+  `system.lanea49.o`/`virtual.lanea49.o`; installed and codesigned into both
+  `dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so` and
+  `dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so`. The earlier xadd failure was partly caused
+  by only replacing the windows-side ntdll while Wine loaded the unix-side copy.
+- Validation:
+  - post-fuzz TSO matrix: `reports/phase4-hollow-knight/run-20260604-114143-tso-litmus-post-fuzz-final-matrix/`
+    has `mp`, `spin`, `cas`, `xadd`, `split`, and `sb` all `rc=0`/PASS with heartbeat samples.
+  - atomic ISA/JIT fuzz: `engine/hyperbridge/reports/phase4-hollow-knight/fuzz-20260604-114021-xchg-cmpxchg-tso-final.json`
+    has `backend_mismatch_count=0`, `oracle_mismatch_count=0`, `oracle_pass_count=20000`.
+  - `hb_test_runner` remains at the known residual `442 passed, 5 failed`
+    (`reports/phase4-hollow-knight/test-20260604-113936-hb-test-runner-after-self-base.log`):
+    decoder NOP expectation, loop block-count expectation, PE mprotect errno 13, and direct-mem
+    code-size thresholds. The TSO litmus gates are green.
+
+NEXT: commit this Lane A checkpoint, then run Hollow Knight 900s with heartbeat and D3D/Gfx trace
+gates. The immediate pass criterion is clearing the `0x513xxx` livelock and advancing toward
+`GfxDevice`/`D3D11CreateDevice`.

@@ -1753,10 +1753,22 @@ static void try_promote_unity_sort_inner_loop(hb_jit_runtime_t* rt, hb_context_t
     }
 }
 
+static bool block_contains_lock_rmw_ir(const hb_ir_block_t* block) {
+    if (!block) return false;
+    for (size_t i = 0; i < block->instr_count; i++) {
+        hb_ir_op_t op = block->instrs[i].op;
+        if (op == HB_IR_CMPXCHG || op == HB_IR_CMPXCHG8B ||
+            op == HB_IR_XCHG || op == HB_IR_XADD)
+            return true;
+    }
+    return false;
+}
+
 static bool small_terminal_jcc_self_loop(const hb_ir_block_t* block) {
     if (!block || block->instr_count < 2 || block->instr_count > 16) return false;
     const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
     if (last->op != HB_IR_Jcc || last->target != block->guest_addr) return false;
+    if (block_contains_lock_rmw_ir(block)) return false;
     for (size_t i = 0; i + 1 < block->instr_count; i++) {
         hb_ir_op_t op = block->instrs[i].op;
         if (op == HB_IR_CALL || op == HB_IR_RET || op == HB_IR_JMP ||
@@ -1768,8 +1780,10 @@ static bool small_terminal_jcc_self_loop(const hb_ir_block_t* block) {
 
 static void try_promote_self_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
                                   const hb_ir_block_t* block) {
+    bool has_lock_rmw = block_contains_lock_rmw_ir(block);
     if (!rt || !rt->block_cache || !rt->jit_mem || rt->code_cache_full ||
-        block_cache_is_full(rt->block_cache) || !ctx || !small_terminal_jcc_self_loop(block))
+        block_cache_is_full(rt->block_cache) || !ctx ||
+        has_lock_rmw || !small_terminal_jcc_self_loop(block))
         return;
     hb_block_cache_entry_t* entry = block_cache_find(rt->block_cache, block->guest_addr);
     if (!entry || entry->fused) return;

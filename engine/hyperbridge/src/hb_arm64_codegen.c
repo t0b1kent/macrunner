@@ -543,6 +543,16 @@ static bool same_mem_operand(const hb_ir_operand_t* a, const hb_ir_operand_t* b)
            a->mem.addr32 == b->mem.addr32;
 }
 
+static bool wide_self_base_load_needs_helper(const hb_ir_instr_t* instr) {
+    if (!instr || instr->op != HB_IR_LOAD || !is_gpr_reg_operand(&instr->dst))
+        return false;
+    if (instr->src1.type != HB_OP_MEM || instr->src1.size == HB_SIZE_8)
+        return false;
+    return instr->src1.mem.base == instr->dst.reg &&
+           instr->src1.mem.index == HB_REG_COUNT &&
+           instr->src1.mem.disp == 0;
+}
+
 static bool adjacent_mem64_operands(const hb_ir_operand_t* a, const hb_ir_operand_t* b) {
     return a && b && a->type == HB_OP_MEM && b->type == HB_OP_MEM &&
            a->size == HB_SIZE_64 && b->size == HB_SIZE_64 &&
@@ -2757,6 +2767,22 @@ static hb_result_t emit_atomic_ir_helper(hb_codegen_buffer_t* buf, const hb_ir_i
     return HB_OK;
 }
 
+static bool block_has_atomic_ir(const hb_ir_block_t* block) {
+    if (!block) return false;
+    for (size_t i = 0; i < block->instr_count; i++) {
+        switch (block->instrs[i].op) {
+            case HB_IR_CMPXCHG:
+            case HB_IR_CMPXCHG8B:
+            case HB_IR_XCHG:
+            case HB_IR_XADD:
+                return true;
+            default:
+                break;
+        }
+    }
+    return false;
+}
+
 /* Emit a call to a C helper via BLR */
 static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn) {
     emit_mov_imm64(buf, 23, (uint64_t)fn);
@@ -2767,6 +2793,8 @@ static bool emit_two_block_loop_helper(hb_codegen_buffer_t* buf,
                                        const hb_ir_block_t* first,
                                        const hb_ir_block_t* second) {
     if (!buf || !first || !second || !first->instr_count || !second->instr_count)
+        return false;
+    if (block_has_atomic_ir(first) || block_has_atomic_ir(second))
         return false;
     emit_mov_reg(buf, 0, 19);
     emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)first);
@@ -2783,6 +2811,9 @@ static bool emit_four_block_loop_helper(hb_codegen_buffer_t* buf,
                                         const hb_ir_block_t* fourth) {
     if (!buf || !first || !second || !third ||
         !first->instr_count || !second->instr_count || !third->instr_count)
+        return false;
+    if (block_has_atomic_ir(first) || block_has_atomic_ir(second) ||
+        block_has_atomic_ir(third) || block_has_atomic_ir(fourth))
         return false;
     emit_mov_reg(buf, 0, 19);
     emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)first);
@@ -3796,7 +3827,8 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             }
             if (!is_gpr_reg_operand(&instr->dst))
                 return emit_interp_ir_helper(buf, instr);
-            if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1)) {
+            if (jit_direct_mem_enabled() && is_direct_user_mem_operand(&instr->src1) &&
+                !wide_self_base_load_needs_helper(instr)) {
                 uint32_t off = emit_direct_mem_addr_with_offset(buf, &instr->src1);
                 emit_direct_mem_load_to_x20_off(buf, instr->src1.size, off);
                 emit_store_x20_to_gpr_sized(buf, &instr->dst);
@@ -4580,6 +4612,18 @@ static void* hb_jit_atomic_host_ptr(hb_context_t* ctx, const hb_ir_operand_t* op
 }
 
 static volatile uint32_t hb_jit_split_lock_gate;
+static volatile uint64_t hb_jit_atomic_helper_trace_count;
+static volatile uint64_t hb_jit_block_atomic_trace_count;
+static volatile uint64_t hb_jit_atomic_xadd_trace_count;
+
+static bool hb_jit_trace_atomics_enabled(void) {
+    static int cached = -1;
+    const char* env;
+    if (cached >= 0) return cached != 0;
+    env = getenv("MACRUNNER_HB_TRACE_ATOMICS");
+    cached = (env && env[0] && env[0] != '0') ? 1 : 0;
+    return cached != 0;
+}
 
 static void hb_jit_split_lock_acquire(void) {
     while (__atomic_exchange_n(&hb_jit_split_lock_gate, 1u, __ATOMIC_ACQUIRE))
@@ -4590,6 +4634,39 @@ static void hb_jit_split_lock_acquire(void) {
 static void hb_jit_split_lock_release(void) {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     __atomic_store_n(&hb_jit_split_lock_gate, 0u, __ATOMIC_RELEASE);
+}
+
+static hb_result_t hb_jit_atomic_read_mem_value(hb_context_t* ctx,
+                                                const hb_ir_operand_t* op,
+                                                hb_size_t size,
+                                                uint64_t* addr_out,
+                                                uint64_t* value_out) {
+    size_t bytes = hb_jit_size_bytes(size);
+    uint64_t addr;
+    uint64_t value = 0;
+    hb_result_t r;
+
+    if (!ctx || !ctx->memory || !op || op->type != HB_OP_MEM ||
+        !bytes || !value_out)
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    addr = hb_jit_resolve_addr(ctx, op);
+    r = hb_memory_read(ctx->memory, (hb_gva_t)addr, &value, bytes);
+    if (r != HB_OK) return r;
+    if (addr_out) *addr_out = addr;
+    *value_out = hb_jit_trunc_to_size(value, size);
+    return HB_OK;
+}
+
+static hb_result_t hb_jit_atomic_write_mem_value(hb_context_t* ctx,
+                                                 uint64_t addr,
+                                                 hb_size_t size,
+                                                 uint64_t value) {
+    size_t bytes = hb_jit_size_bytes(size);
+    uint64_t tmp = hb_jit_trunc_to_size(value, size);
+
+    if (!ctx || !ctx->memory || !bytes)
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    return hb_memory_write(ctx->memory, (hb_gva_t)addr, &tmp, bytes);
 }
 
 static hb_result_t hb_jit_atomic_cmpxchg(hb_context_t* ctx, const hb_ir_instr_t* instr) {
@@ -4647,6 +4724,35 @@ static hb_result_t hb_jit_atomic_cmpxchg(hb_context_t* ctx, const hb_ir_instr_t*
     return HB_OK;
 }
 
+static hb_result_t hb_jit_atomic_cmpxchg_split_locked(hb_context_t* ctx,
+                                                      const hb_ir_instr_t* instr) {
+    hb_size_t size = instr->dst.size ? instr->dst.size : instr->src1.size;
+    uint64_t src_val = 0;
+    uint64_t addr = 0;
+    uint64_t acc;
+    uint64_t old = 0;
+    bool equal;
+    hb_result_t r;
+
+    if (!size) size = instr->src2.size ? instr->src2.size : HB_SIZE_32;
+    r = hb_flags_read_operand_value(ctx, &instr->src2, &src_val);
+    if (r != HB_OK) return r;
+    r = hb_jit_atomic_read_mem_value(ctx, &instr->src1, size, &addr, &old);
+    if (r != HB_OK) return r;
+
+    acc = hb_jit_trunc_to_size(hb_context_read_reg_value(ctx, HB_REG_RAX), size);
+    src_val = hb_jit_trunc_to_size(src_val, size);
+    equal = old == acc;
+    if (equal) {
+        r = hb_jit_atomic_write_mem_value(ctx, addr, size, src_val);
+        if (r != HB_OK) return r;
+    } else {
+        hb_context_write_reg_value_sized(ctx, HB_REG_RAX, old, size);
+    }
+    hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_CMP, size, acc, old, acc - old, 0);
+    return HB_OK;
+}
+
 static hb_result_t hb_jit_atomic_xchg(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     hb_size_t size = instr->src1.size ? instr->src1.size : instr->src2.size;
     void* ptr;
@@ -4671,17 +4777,44 @@ static hb_result_t hb_jit_atomic_xchg(hb_context_t* ctx, const hb_ir_instr_t* in
     return hb_flags_write_operand_value(ctx, &instr->src2, hb_jit_trunc_to_size(old, size));
 }
 
+static hb_result_t hb_jit_atomic_xchg_split_locked(hb_context_t* ctx,
+                                                   const hb_ir_instr_t* instr) {
+    hb_size_t size = instr->src1.size ? instr->src1.size : instr->src2.size;
+    uint64_t src_val = 0;
+    uint64_t addr = 0;
+    uint64_t old = 0;
+    hb_result_t r;
+
+    if (!size) size = HB_SIZE_32;
+    r = hb_flags_read_operand_value(ctx, &instr->src2, &src_val);
+    if (r != HB_OK) return r;
+    r = hb_jit_atomic_read_mem_value(ctx, &instr->src1, size, &addr, &old);
+    if (r != HB_OK) return r;
+    r = hb_jit_atomic_write_mem_value(ctx, addr, size, src_val);
+    if (r != HB_OK) return r;
+    return hb_flags_write_operand_value(ctx, &instr->src2, old);
+}
+
 static hb_result_t hb_jit_atomic_xadd(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     hb_size_t size = instr->src1.size ? instr->src1.size : instr->src2.size;
     void* ptr;
+    uint64_t addr = 0;
     uint64_t src_val = 0;
     uint64_t old = 0;
     uint64_t result;
     hb_result_t r;
 
     if (!size) size = HB_SIZE_32;
-    ptr = hb_jit_atomic_host_ptr(ctx, &instr->src1, size, NULL);
-    if (!ptr) return HB_ERR_UNSUPPORTED_FEATURE;
+    ptr = hb_jit_atomic_host_ptr(ctx, &instr->src1, size, &addr);
+    if (!ptr) {
+        if (hb_jit_trace_atomics_enabled())
+            fprintf(stderr,
+                    "macrunner-hb-atomic-xadd: fallback pc=0x%llx instr=0x%llx size=%u\n",
+                    (unsigned long long)(ctx ? ctx->pc : 0),
+                    (unsigned long long)(instr ? instr->guest_addr : 0),
+                    (unsigned)size);
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    }
     r = hb_flags_read_operand_value(ctx, &instr->src2, &src_val);
     if (r != HB_OK) return r;
     src_val = hb_jit_trunc_to_size(src_val, size);
@@ -4695,6 +4828,59 @@ static hb_result_t hb_jit_atomic_xadd(hb_context_t* ctx, const hb_ir_instr_t* in
     }
     old = hb_jit_trunc_to_size(old, size);
     result = hb_jit_trunc_to_size(old + src_val, size);
+    if (hb_jit_trace_atomics_enabled()) {
+        uint64_t count = __atomic_add_fetch(&hb_jit_atomic_xadd_trace_count, 1, __ATOMIC_RELAXED);
+        if (count <= 32 || (count % 200000u) == 0) {
+            fprintf(stderr,
+                    "macrunner-hb-atomic-xadd: count=%llu pc=0x%llx instr=0x%llx addr=0x%llx ptr=%p size=%u src=%llu old=%llu result=%llu\n",
+                    (unsigned long long)count,
+                    (unsigned long long)(ctx ? ctx->pc : 0),
+                    (unsigned long long)instr->guest_addr,
+                    (unsigned long long)addr,
+                    ptr,
+                    (unsigned)size,
+                    (unsigned long long)src_val,
+                    (unsigned long long)old,
+                    (unsigned long long)result);
+        }
+    }
+    hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_ADD, size, old, src_val, result, 0);
+    return hb_flags_write_operand_value(ctx, &instr->src2, old);
+}
+
+static hb_result_t hb_jit_atomic_xadd_split_locked(hb_context_t* ctx,
+                                                   const hb_ir_instr_t* instr) {
+    hb_size_t size = instr->src1.size ? instr->src1.size : instr->src2.size;
+    uint64_t src_val = 0;
+    uint64_t addr = 0;
+    uint64_t old = 0;
+    uint64_t result;
+    hb_result_t r;
+
+    if (!size) size = HB_SIZE_32;
+    r = hb_flags_read_operand_value(ctx, &instr->src2, &src_val);
+    if (r != HB_OK) return r;
+    src_val = hb_jit_trunc_to_size(src_val, size);
+    r = hb_jit_atomic_read_mem_value(ctx, &instr->src1, size, &addr, &old);
+    if (r != HB_OK) return r;
+    result = hb_jit_trunc_to_size(old + src_val, size);
+    r = hb_jit_atomic_write_mem_value(ctx, addr, size, result);
+    if (r != HB_OK) return r;
+    if (hb_jit_trace_atomics_enabled()) {
+        uint64_t count = __atomic_add_fetch(&hb_jit_atomic_xadd_trace_count, 1, __ATOMIC_RELAXED);
+        if (count <= 32 || (count % 10000u) == 0) {
+            fprintf(stderr,
+                    "macrunner-hb-atomic-xadd-split: count=%llu pc=0x%llx instr=0x%llx addr=0x%llx size=%u src=%llu old=%llu result=%llu\n",
+                    (unsigned long long)count,
+                    (unsigned long long)(ctx ? ctx->pc : 0),
+                    (unsigned long long)instr->guest_addr,
+                    (unsigned long long)addr,
+                    (unsigned)size,
+                    (unsigned long long)src_val,
+                    (unsigned long long)old,
+                    (unsigned long long)result);
+        }
+    }
     hb_lazy_flags_note(ctx, HB_LAZY_FLAGS_ADD, size, old, src_val, result, 0);
     return hb_flags_write_operand_value(ctx, &instr->src2, old);
 }
@@ -4725,12 +4911,57 @@ static hb_result_t hb_jit_atomic_cmpxchg8b(hb_context_t* ctx, const hb_ir_instr_
     return HB_OK;
 }
 
+static hb_result_t hb_jit_atomic_cmpxchg8b_split_locked(hb_context_t* ctx,
+                                                        const hb_ir_instr_t* instr) {
+    uint64_t addr = 0;
+    uint64_t acc, src, old = 0;
+    bool equal;
+    hb_result_t r;
+
+    if (instr->dst.size == HB_SIZE_128)
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    r = hb_jit_atomic_read_mem_value(ctx, &instr->dst, HB_SIZE_64, &addr, &old);
+    if (r != HB_OK) return r;
+
+    acc = ((uint64_t)(uint32_t)hb_context_read_reg_value(ctx, HB_REG_RDX) << 32) |
+          (uint32_t)hb_context_read_reg_value(ctx, HB_REG_RAX);
+    src = ((uint64_t)(uint32_t)hb_context_read_reg_value(ctx, HB_REG_RCX) << 32) |
+          (uint32_t)hb_context_read_reg_value(ctx, HB_REG_RBX);
+    equal = old == acc;
+    if (equal) {
+        r = hb_jit_atomic_write_mem_value(ctx, addr, HB_SIZE_64, src);
+        if (r != HB_OK) return r;
+    } else {
+        hb_context_write_reg_value_sized(ctx, HB_REG_RAX, (uint32_t)old, HB_SIZE_32);
+        hb_context_write_reg_value_sized(ctx, HB_REG_RDX, (uint32_t)(old >> 32), HB_SIZE_32);
+    }
+    hb_lazy_flags_clear(ctx);
+    ctx->flags.zf = equal;
+    return HB_OK;
+}
+
 void hb_jit_helper_exec_atomic_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     hb_result_t r = HB_ERR_UNSUPPORTED_FEATURE;
+    uint64_t trace_count = 0;
 
     if (!ctx || !instr) {
         if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
         return;
+    }
+
+    if (hb_jit_trace_atomics_enabled()) {
+        trace_count = __atomic_add_fetch(&hb_jit_atomic_helper_trace_count, 1, __ATOMIC_RELAXED);
+        if (trace_count <= 64 || (trace_count % 200000u) == 0) {
+            fprintf(stderr,
+                    "macrunner-hb-atomic-helper: enter count=%llu op=%u pc=0x%llx instr=0x%llx dst=%u src1=%u src2=%u\n",
+                    (unsigned long long)trace_count,
+                    (unsigned)instr->op,
+                    (unsigned long long)ctx->pc,
+                    (unsigned long long)instr->guest_addr,
+                    (unsigned)instr->dst.type,
+                    (unsigned)instr->src1.type,
+                    (unsigned)instr->src2.type);
+        }
     }
 
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -4744,10 +4975,35 @@ void hb_jit_helper_exec_atomic_ir(hb_context_t* ctx, const hb_ir_instr_t* instr)
 
     if (r == HB_ERR_UNSUPPORTED_FEATURE) {
         hb_jit_split_lock_acquire();
-        r = hb_interpreter_exec_one_for_jit(ctx, instr);
+        switch (instr->op) {
+            case HB_IR_CMPXCHG:
+                r = hb_jit_atomic_cmpxchg_split_locked(ctx, instr);
+                break;
+            case HB_IR_CMPXCHG8B:
+                r = hb_jit_atomic_cmpxchg8b_split_locked(ctx, instr);
+                break;
+            case HB_IR_XCHG:
+                r = hb_jit_atomic_xchg_split_locked(ctx, instr);
+                break;
+            case HB_IR_XADD:
+                r = hb_jit_atomic_xadd_split_locked(ctx, instr);
+                break;
+            default:
+                r = hb_interpreter_exec_one_for_jit(ctx, instr);
+                break;
+        }
         hb_jit_split_lock_release();
     }
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (trace_count && (trace_count <= 64 || (trace_count % 200000u) == 0)) {
+        fprintf(stderr,
+                "macrunner-hb-atomic-helper: exit count=%llu op=%u result=%d pc=0x%llx instr=0x%llx\n",
+                (unsigned long long)trace_count,
+                (unsigned)instr->op,
+                (int)r,
+                (unsigned long long)ctx->pc,
+                (unsigned long long)instr->guest_addr);
+    }
     ctx->last_result = r;
 }
 
@@ -4956,6 +5212,46 @@ void hb_jit_helper_exec_interp_ir(hb_context_t* ctx, const hb_ir_instr_t* instr)
     ctx->last_result = hb_interpreter_exec_one_for_jit(ctx, instr);
 }
 
+static hb_result_t hb_jit_helper_exec_block_instr_for_jit(hb_context_t* ctx,
+                                                          const hb_ir_instr_t* instr) {
+    switch (instr->op) {
+        case HB_IR_CMPXCHG:
+        case HB_IR_CMPXCHG8B:
+        case HB_IR_XCHG:
+        case HB_IR_XADD:
+            if (hb_jit_trace_atomics_enabled()) {
+                uint64_t count = __atomic_add_fetch(&hb_jit_block_atomic_trace_count, 1, __ATOMIC_RELAXED);
+                if (count <= 128 || (count % 100000u) == 0) {
+                    fprintf(stderr,
+                            "macrunner-hb-block-atomic: enter count=%llu op=%u pc=0x%llx instr=0x%llx dst=%u src1=%u src2=%u\n",
+                            (unsigned long long)count,
+                            (unsigned)instr->op,
+                            (unsigned long long)(ctx ? ctx->pc : 0),
+                            (unsigned long long)instr->guest_addr,
+                            (unsigned)instr->dst.type,
+                            (unsigned)instr->src1.type,
+                            (unsigned)instr->src2.type);
+                }
+            }
+            hb_jit_helper_exec_atomic_ir(ctx, instr);
+            if (hb_jit_trace_atomics_enabled()) {
+                uint64_t count = __atomic_load_n(&hb_jit_block_atomic_trace_count, __ATOMIC_RELAXED);
+                if (count <= 128 || (count % 100000u) == 0) {
+                    fprintf(stderr,
+                            "macrunner-hb-block-atomic: exit count=%llu op=%u result=%d pc=0x%llx instr=0x%llx\n",
+                            (unsigned long long)count,
+                            (unsigned)instr->op,
+                            (int)(ctx ? ctx->last_result : HB_ERR_INVALID_ARG),
+                            (unsigned long long)(ctx ? ctx->pc : 0),
+                            (unsigned long long)instr->guest_addr);
+                }
+            }
+            return ctx->last_result;
+        default:
+            return hb_interpreter_exec_one_for_jit(ctx, instr);
+    }
+}
+
 static bool hb_jit_helper_is_control_transfer(hb_ir_op_t op) {
     return op == HB_IR_CALL || op == HB_IR_RET || op == HB_IR_JMP ||
            op == HB_IR_Jcc || op == HB_IR_LOOP || op == HB_IR_JRCXZ;
@@ -4978,7 +5274,7 @@ static hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
     if (!ctx || !block) return HB_ERR_INVALID_ARG;
     for (size_t i = 0; i < block->instr_count; i++) {
         const hb_ir_instr_t* instr = &block->instrs[i];
-        hb_result_t r = hb_interpreter_exec_one_for_jit(ctx, instr);
+        hb_result_t r = hb_jit_helper_exec_block_instr_for_jit(ctx, instr);
         if (r != HB_OK) return r;
         if (hb_jit_helper_is_control_transfer(instr->op)) return HB_OK;
     }

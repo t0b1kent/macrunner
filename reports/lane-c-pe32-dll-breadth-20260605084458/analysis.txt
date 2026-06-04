@@ -1,0 +1,14 @@
+Lane C PE32 DLL breadth analysis
+
+Report: reports/lane-c-pe32-dll-breadth-20260605084458/summary.tsv
+
+Verdict:
+- No Lane-C-owned unsupported API, missing import, DLL load, or VM failure was found.
+- clipboard_ole_smoke_x86 reached WOW64/BTCpu with unsupported=0 missing=0 dll_fail=0 fixme=0.
+- shell_execute_smoke_x86 reached WOW64/BTCpu with unsupported=0 missing=0 dll_fail=0 fixme=0.
+- shell_execute_smoke_x86 summary.tsv vm_fail=2 is a scanner false positive:
+  lines 663 and 665 contain successful NtMapViewOfSection status=40000003 and
+  out_addr=7b7c0000; the generic regex matched the c000 address suffix, not a
+  failing NTSTATUS. The call leaves status=00000000.
+- The seh_tail=64 entries are the already triaged ARM64EC unwind metadata tail,
+  routed to Lane A/B in reports/research/LANE-C-API-GAPS.md.

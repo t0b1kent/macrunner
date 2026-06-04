@@ -1612,3 +1612,22 @@ NEXT: commit this LODS correctness checkpoint, then continue the Mono invalid-vt
 pass. Current priority is to compare native Mono metadata/type/vtable helper behavior against
 the lowered IR around the first bad `System.RuntimeType` slot, not to revisit the cleared
 TSO/CMPXCHG16B gates.
+
+## Lane A checkpoint - 2026-06-04 HK sampler repair
+
+- Evidence: `run-20260604-unaligned-tso-hk900/` was started with the old controller and wrote
+  `hb_count=0` at 60/300/600s while sampling a direct child of `mr-run.sh` instead of the actual
+  hot `Hollow Knight.exe` descendant. The run was stopped as blind/invalid for block trajectory.
+- Fix: `reports/phase4-hollow-knight/run-20260602-livelock-decisive-1800b/controller.py` now walks
+  descendants recursively and chooses the process whose command contains `Hollow Knight.exe`, falling
+  back to the first descendant only if the game process is not yet visible.
+- Validation: `python3 -m py_compile` passes. Next HK run must use this controller so `samples.tsv`
+  reports the real game PID/CPU while the heartbeat parser continues to pull block/rva from
+  `macrunner-hb-heartbeat` lines.
+- 60s verification: `reports/phase4-hollow-knight/run-20260604-heartbeat-sampler-game60/` uses
+  game-lifetime sampling (`MR_HK_SAMPLE_FROM_GAME=1`) and proves capture is working:
+  sample `60` has `hb_count=1781`, `blocks=0x185cba` (`1596602`), `rva=0xd3150`, real HK
+  `pid=49810`, `pcpu=97.3`, `etime=01:01`; final row has `hb_count=1941`,
+  `blocks=0x1a876a` (`1738602`), `rva=0x51589d`. D3D/Gfx counts remain 0 in this short proof.
+
+NEXT: run the TSO litmus suite under MacRunner before any more HK diagnosis.

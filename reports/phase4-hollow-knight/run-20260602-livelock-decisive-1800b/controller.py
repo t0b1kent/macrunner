@@ -10,6 +10,9 @@ repo = Path("/Users/timurtoby/Documents/MacRunner/Main/MacRunner")
 game = Path("/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620")
 run_id = os.environ.get("MR_HK_RUN_ID", "run-20260602-livelock-decisive-1800b")
 duration = int(os.environ.get("MR_HK_DURATION", "1800"))
+sample_from_game = os.environ.get("MR_HK_SAMPLE_FROM_GAME", "0") not in ("", "0")
+startup_grace = int(os.environ.get("MR_HK_STARTUP_GRACE", "180" if sample_from_game else "0"))
+run_timeout = duration + startup_grace
 run_dir = repo / "reports/phase4-hollow-knight" / run_id
 log_path = run_dir / "run.log"
 d3d_path = run_dir / "d3d-trace.log"
@@ -40,7 +43,7 @@ cmd = [
     str(repo / "scripts/mr-run.sh"),
     str(repo / "engine/wine/dist-arm64ec-spike"),
     "Hollow Knight.exe",
-    str(duration),
+    str(run_timeout),
     "--",
     "-logFile",
     "-",
@@ -64,36 +67,43 @@ def grep_count(path: Path, pattern: str) -> int:
     return sum(1 for line in path.read_text(errors="replace").splitlines() if rx.search(line))
 
 
+def descendants(pid: int):
+    out = subprocess.check_output(
+        ["ps", "-axo", "pid=,ppid=,command="], text=True, errors="replace"
+    )
+    children = {}
+    commands = {}
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 2:
+            continue
+        child_pid, parent_pid = parts[0], parts[1]
+        command = parts[2] if len(parts) > 2 else ""
+        children.setdefault(parent_pid, []).append(child_pid)
+        commands[child_pid] = command
+
+    queue = list(children.get(str(pid), []))
+    result = []
+    while queue:
+        child_pid = queue.pop(0)
+        result.append((child_pid, commands.get(child_pid, "")))
+        queue.extend(children.get(child_pid, []))
+    return result
+
+
+def game_child_pid(pid: int) -> str:
+    for candidate, command in descendants(pid):
+        if "Hollow Knight.exe" in command:
+            return candidate
+    return ""
+
+
 def child_stats(pid: int):
     try:
-        out = subprocess.check_output(
-            ["ps", "-axo", "pid=,ppid=,command="], text=True, errors="replace"
-        )
-        children = {}
-        commands = {}
-        for line in out.splitlines():
-            parts = line.strip().split(None, 2)
-            if len(parts) < 2:
-                continue
-            child_pid, parent_pid = parts[0], parts[1]
-            command = parts[2] if len(parts) > 2 else ""
-            children.setdefault(parent_pid, []).append(child_pid)
-            commands[child_pid] = command
-
-        queue = list(children.get(str(pid), []))
-        descendants = []
-        while queue:
-            child_pid = queue.pop(0)
-            descendants.append(child_pid)
-            queue.extend(children.get(child_pid, []))
-
-        child = ""
-        for candidate in descendants:
-            if "Hollow Knight.exe" in commands.get(candidate, ""):
-                child = candidate
-                break
-        if not child and descendants:
-            child = descendants[0]
+        child = game_child_pid(pid)
+        child_list = descendants(pid)
+        if not child and child_list:
+            child = child_list[0][0]
         if not child:
             return "", "", ""
         out = subprocess.check_output(["ps", "-p", child, "-o", "%cpu=", "-o", "etime="], text=True).strip()
@@ -154,6 +164,13 @@ with log_path.open("wb") as log:
     proc = subprocess.Popen(cmd, cwd=game, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
 
 state_path.write_text(f"run_id={run_id}\nmr_pid={proc.pid}\nstarted={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
+
+if sample_from_game:
+    deadline = time.monotonic() + startup_grace
+    while proc.poll() is None and time.monotonic() < deadline:
+        if game_child_pid(proc.pid):
+            break
+        time.sleep(1)
 
 last = 0
 sample_points = [t for t in (60, 300, 600, 900, 1200, 1500, 1800) if t <= duration]

@@ -1,0 +1,21 @@
+# Lane C ARM64 CLI hello post 4GB inclusive aperture
+
+Date: 2026-06-04
+Report: reports/lane-c-cli-hello-arm64-post-4gb-inclusive-20260604121919
+Build logs: reports/build/lane-c-virtual-4gb-aperture-20260604121740.log; reports/build/lane-c-virtual-4gb-aperture-inclusive-20260604121855.log
+Raw log: reports/lane-c-cli-hello-arm64-post-4gb-inclusive-20260604121919/run.log
+
+## Result
+- run_rc=0
+- total_lines=5247
+- stdout_like_lines=1
+- unsupported=0
+- vm_fail=0
+- dll_fail=1
+- fixme_stub=0
+- actctx=0
+- hb_runtime_fail=0
+- seh_invalid=778
+
+## Interpretation
+ARM64 CLI fixture is not clean; inspect counts above.

@@ -1,0 +1,29 @@
+stamp=20260604122031
+target=aarch64-windows
+tools/winegcc/winegcc -o dlls/wevtsvc/aarch64-windows/wevtsvc.dll --wine-objdir . -b arm64ec-windows -marm64x -Wl,--wine-builtin -shared \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wevtsvc/wevtsvc.spec \
+  dlls/wevtsvc/aarch64-windows/wevtsvc.o dlls/wevtsvc/arm64ec-windows/wevtsvc.o \
+  dlls/rpcrt4/aarch64-windows/librpcrt4.a dlls/advapi32/aarch64-windows/libadvapi32.a \
+  dlls/winecrt0/aarch64-windows/libwinecrt0.a libs/compiler-rt/aarch64-windows/libcompiler-rt.a \
+  dlls/ucrtbase/aarch64-windows/libucrtbase.a dlls/kernel32/aarch64-windows/libkernel32.a \
+  dlls/ntdll/aarch64-windows/libntdll.a --no-default-config -Wl,-debug:dwarf
+make_rc_aarch64-windows=0
+install_rc_aarch64-windows=0
+target=x86_64-windows
+tools/winegcc/winegcc -o dlls/wevtsvc/x86_64-windows/wevtsvc.dll --wine-objdir . -b x86_64-windows -Wl,--wine-builtin -shared \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wevtsvc/wevtsvc.spec \
+  dlls/wevtsvc/x86_64-windows/wevtsvc.o dlls/rpcrt4/x86_64-windows/librpcrt4.a \
+  dlls/advapi32/x86_64-windows/libadvapi32.a dlls/winecrt0/x86_64-windows/libwinecrt0.a \
+  libs/compiler-rt/x86_64-windows/libcompiler-rt.a dlls/ucrtbase/x86_64-windows/libucrtbase.a \
+  dlls/kernel32/x86_64-windows/libkernel32.a dlls/ntdll/x86_64-windows/libntdll.a --no-default-config -fms-hotpatch -Wl,-debug:dwarf
+make_rc_x86_64-windows=0
+install_rc_x86_64-windows=0
+target=i386-windows
+tools/winegcc/winegcc -o dlls/wevtsvc/i386-windows/wevtsvc.dll --wine-objdir . -b i686-windows -Wl,--wine-builtin -shared \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wevtsvc/wevtsvc.spec \
+  dlls/wevtsvc/i386-windows/wevtsvc.o dlls/rpcrt4/i386-windows/librpcrt4.a \
+  dlls/advapi32/i386-windows/libadvapi32.a dlls/winecrt0/i386-windows/libwinecrt0.a \
+  libs/compiler-rt/i386-windows/libcompiler-rt.a dlls/ucrtbase/i386-windows/libucrtbase.a \
+  dlls/kernel32/i386-windows/libkernel32.a dlls/ntdll/i386-windows/libntdll.a --no-default-config -fms-hotpatch -Wl,-debug:dwarf
+make_rc_i386-windows=0
+install_rc_i386-windows=0

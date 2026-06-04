@@ -1,0 +1,22 @@
+# Lane C ARM64 CLI hello post wevtsvc export
+
+Date: 2026-06-04
+Report: reports/lane-c-cli-hello-arm64-post-wevtsvc-20260604122101
+Build logs: reports/build/lane-c-virtual-4gb-aperture-inclusive-20260604121855.log; reports/build/lane-c-wevtsvc-svchost-globals-20260604122031.log
+Raw log: reports/lane-c-cli-hello-arm64-post-wevtsvc-20260604122101/run.log
+
+## Result
+- run_rc=143
+- total_lines=1452
+- stdout_like_lines=0
+- unsupported=0
+- vm_fail=0
+- dll_fail=0
+- svchost_globals_lookup=0
+- fixme_stub=0
+- actctx=0
+- hb_runtime_fail=0
+- seh_invalid=0
+
+## Interpretation
+ARM64 CLI fixture is not clean; inspect counts above.

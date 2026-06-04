@@ -1,0 +1,20 @@
+# Lane C ARM64 CLI hello current runtime
+
+Date: 2026-06-04
+Report: reports/lane-c-cli-hello-arm64-current-20260604121602
+Raw log: reports/lane-c-cli-hello-arm64-current-20260604121602/run.log
+
+## Result
+- run_rc=0
+- total_lines=4339
+- stdout_like_lines=1
+- unsupported=0
+- vm_fail=3
+- dll_fail=1
+- fixme_stub=0
+- actctx=0
+- hb_runtime_fail=0
+- seh_invalid=0
+
+## Interpretation
+ARM64 CLI fixture is not clean; inspect counts above.

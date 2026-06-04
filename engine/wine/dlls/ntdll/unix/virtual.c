@@ -1730,9 +1730,10 @@ static void* try_map_free_area( void *base, void *end, ptrdiff_t step,
         if (errno != EEXIST)
         {
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_WIN64)
-            if (errno == ENOMEM && (ULONG_PTR)start == limit_4g)
+            if (errno == ENOMEM && (ULONG_PTR)start >= limit_4g &&
+                (ULONG_PTR)start <= limit_4g + 64 * 1024 * 1024)
             {
-                TRACE( "treating unmappable 4GB boundary as occupied, range %p-%p.\n", start, map_end );
+                TRACE( "treating unmappable 4GB aperture as occupied, range %p-%p.\n", start, map_end );
                 errno = EEXIST;
             }
             else

@@ -1,6 +1,6 @@
 # Lane D Needs
 
-Updated: 2026-06-03
+Updated: 2026-06-04
 
 This file records cross-lane needs only after Lane D has exhausted in-scope graphics workarounds. Lane D continues with DXMT coverage using the isolated smoke prefix and strict x64 guest binding path where available.
 
@@ -65,6 +65,7 @@ Lane D attempts completed:
 - Fresh-prefix HK run after DXMT sync.
 - Low-log HK run to exclude log-volume/runtime trace noise.
 - Separate x64 DXMT binding smoke proves `winemetal.dll`, `DXGI.DLL`, and `d3d11.dll` load native from the synchronized graphics prefix.
+- Rechecked after Lane A TSO checkpoint `d0c0f6d`: `artifacts/dxmt-x64-binding/run-20260604-115855/dxmt-x64-binding.log` still reports `dxmt_sync=PASS`, `unixlib_binding=PASS`, and `present_reached=NO`; the guest exits via the smoke timeout (`exit=143`) before `CreateDXGIFactory` / `D3D11CreateDevice` markers, so a real HK frame run is still not meaningful yet.
 - In-scope substitutes are green: owned headless/live/fullscreen DXMT smokes and asset-aware HK Unity DXBC corpus extraction.
 
 Need:

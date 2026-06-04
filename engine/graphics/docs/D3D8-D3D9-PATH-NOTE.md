@@ -76,7 +76,7 @@ Strict-native x64 guest `winemetal=n` binding remains green but still does not
 reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260604-162546/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`
 runtime loading with native `d3d12core.dll`, plus legacy and versioned
-root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260604-135430`).
+root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260604-165527`).
 The opt-in D3D12 device diagnostic currently returns
 `D3D12CreateDevice hr=0x80004005` after builtin `winevulkan.dll` loading
 (`artifacts/vkd3d-prefix-sync/run-20260604-135307/runtime-loader-aarch64-windows.log`),

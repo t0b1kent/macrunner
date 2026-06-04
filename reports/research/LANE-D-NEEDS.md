@@ -84,7 +84,7 @@ reports/phase5-vkd3d/run-20260603-200745-arm64-winedllpath/d3d12-create-device-a
 engine/graphics/dist/vkd3d/aarch64-windows/d3d12.dll copied into system32
 macrunner_hb_open_native_builtin_dependency MacRunner HyperBridge builtin dependency "d3d12.dll"
   => engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/d3d12.dll
-artifacts/vkd3d-prefix-sync/run-20260604-135430/runtime-loader-aarch64-windows.log
+artifacts/vkd3d-prefix-sync/run-20260604-165527/runtime-loader-aarch64-windows.log
 WINEDLLOVERRIDES=d3d12,d3d12core=n
 vkd3d_runtime_load_result=PASS
 vkd3d_runtime_versioned_rootsig_result=PASS

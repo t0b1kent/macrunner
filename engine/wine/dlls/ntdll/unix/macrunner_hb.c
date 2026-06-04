@@ -1681,6 +1681,72 @@ static int macrunner_hb_env_enabled( const char *name )
     return val && val[0] && val[0] != '0';
 }
 
+static void macrunner_hb_trace_mono_vtable_probe( const char *phase, const char *label,
+                                                  hb_context_t *ctx, uint64_t image_start,
+                                                  uint64_t block_pc, uint64_t blocks,
+                                                  uint64_t steps, hb_result_t ret,
+                                                  hb_result_t out_result,
+                                                  uint64_t out_steps )
+{
+    static int budget = 600;
+    uint64_t rva = block_pc - image_start;
+    uint16_t r12_word = 0, r12_slot_word = 0;
+    uint32_t r12_flags32 = 0, stack5c = 0;
+    uint64_t stack48 = 0, stack68 = 0, slot_value = 0, slot_addr = 0;
+    hb_result_t r12_word_r = HB_ERR_NOT_FOUND, r12_flags_r = HB_ERR_NOT_FOUND;
+    hb_result_t r12_slot_r = HB_ERR_NOT_FOUND, stack48_r = HB_ERR_NOT_FOUND;
+    hb_result_t stack5c_r = HB_ERR_NOT_FOUND, stack68_r = HB_ERR_NOT_FOUND;
+    hb_result_t slot_r = HB_ERR_NOT_FOUND;
+    int16_t slot_index = 0;
+
+    if (!macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_MONO_VTABLE" )) return;
+    if (rva < 0xd47c0 || rva > 0xd4b40) return;
+    if (budget <= 0) return;
+    budget--;
+
+    if (ctx->memory)
+    {
+        r12_word_r = hb_memory_read_u16( ctx->memory, (hb_gva_t)ctx->regs.x64.r12, &r12_word );
+        r12_flags_r = hb_memory_read_u32( ctx->memory, (hb_gva_t)ctx->regs.x64.r12 + 0x20, &r12_flags32 );
+        r12_slot_r = hb_memory_read_u16( ctx->memory, (hb_gva_t)ctx->regs.x64.r12 + 0x22, &r12_slot_word );
+        stack48_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 0x48, &stack48 );
+        stack5c_r = hb_memory_read_u32( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 0x5c, &stack5c );
+        stack68_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 0x68, &stack68 );
+        slot_index = (int16_t)r12_slot_word;
+        if (stack48_r == HB_OK)
+        {
+            slot_addr = stack48 + (int64_t)slot_index * 8;
+            slot_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)slot_addr, &slot_value );
+        }
+    }
+
+    fprintf( stderr, "macrunner-hb-mono-vtable-probe: phase=%s label=%s block=%s steps=%s "
+             "rva=%p block_pc=%p pc=%p ret=%s out=%s out_steps=%s "
+             "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p rsp=%p rbp=%p "
+             "r8=%p r9=%p r10=%p r11=%p r12=%p r13=%p r14=%p r15=%p "
+             "r12_word=%04x/%s r12_flags=%08x/%s r12_slot=%04x/%s "
+             "stack48=%p/%s stack5c=%08x/%s stack68=%p/%s "
+             "slot_index=%d slot_addr=%p slot_value=%p/%s budget_left=%d\n",
+             phase, label ? label : "entry", wine_dbgstr_longlong(blocks),
+             wine_dbgstr_longlong(steps), (void *)(uintptr_t)rva, (void *)(uintptr_t)block_pc,
+             (void *)(uintptr_t)ctx->pc, hb_result_string(ret), hb_result_string(out_result),
+             wine_dbgstr_longlong(out_steps), (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx, (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi, (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (void *)(uintptr_t)ctx->regs.x64.rbp, (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9, (void *)(uintptr_t)ctx->regs.x64.r10,
+             (void *)(uintptr_t)ctx->regs.x64.r11, (void *)(uintptr_t)ctx->regs.x64.r12,
+             (void *)(uintptr_t)ctx->regs.x64.r13, (void *)(uintptr_t)ctx->regs.x64.r14,
+             (void *)(uintptr_t)ctx->regs.x64.r15, r12_word, hb_result_string(r12_word_r),
+             r12_flags32, hb_result_string(r12_flags_r), r12_slot_word, hb_result_string(r12_slot_r),
+             (void *)(uintptr_t)stack48, hb_result_string(stack48_r), stack5c,
+             hb_result_string(stack5c_r), (void *)(uintptr_t)stack68, hb_result_string(stack68_r),
+             slot_index, (void *)(uintptr_t)slot_addr, (void *)(uintptr_t)slot_value,
+             hb_result_string(slot_r), budget );
+    fflush( stderr );
+}
+
 static BOOL macrunner_hb_use_callback12_for_thunk( const struct macrunner_hb_import_thunk *thunk )
 {
     if (!thunk || !thunk->pe_callback12) return FALSE;
@@ -17352,6 +17418,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                 heartbeat_next_block = blocks + 1000;
             }
         }
+        macrunner_hb_trace_mono_vtable_probe( "before", label, ctx, image_start, block_pc,
+                                              blocks, steps, HB_OK, HB_OK, 0 );
         if (blocks <= 80)
             TRACE( "MacRunner HyperBridge block %s pc=%p rsp=%p rax=%p\n",
                    wine_dbgstr_longlong(blocks), (void *)(uintptr_t)ctx->pc,
@@ -17414,6 +17482,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                  label ? label : "x64", wine_dbgstr_longlong(blocks),
                  hb_result_string(ret), hb_result_string(out.result),
                  wine_dbgstr_longlong(out.steps_executed), (void *)(uintptr_t)ctx->pc );
+        macrunner_hb_trace_mono_vtable_probe( "after", label, ctx, image_start, block_pc,
+                                              blocks, steps, ret, out.result, out.steps_executed );
         if (transient_func)
         {
             if (jit_rt)

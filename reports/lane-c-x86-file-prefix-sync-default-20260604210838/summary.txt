@@ -1,0 +1,32 @@
+report=reports/lane-c-x86-file-prefix-sync-default-20260604210838/summary.txt
+run_rc=143
+success=0
+wow64=685
+btcpu=9
+exit_trace=1
+image_not_at_base=6
+unsupported=0
+vm_fail=0
+dll_fail=0
+native_import_nonexec=0
+hb_invalid=0
+markers=
+[mr-run] graphics=dxmt sync-prefix system32_arch=x86_64-windows
+prefix_sync=PASS prefix=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run.zhlAWC dist=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike system32_arch=x86_64-windows
+macrunner-rtl-exit: pid=40 tid=44 status=0x0 image=L"C:\\windows\\system32\\wineboot.exe" cmd=L"\"C:\\windows\\system32\\wineboot.exe\" --init"
+macrunner-process-exit: stage=NtTerminateProcess_enter pid=42937 tid=2c handle=0x0 exit_code=0x0 image=L"C:\\windows\\system32\\wineboot.exe" cmd=L"\"C:\\windows\\system32\\wineboot.exe\" --init" argv0=C:\windows\system32\wineboot.exe
+macrunner-process-exit: stage=NtTerminateProcess_after_server pid=42937 tid=2c ret=0x0 self=1
+macrunner-process-exit: stage=NtTerminateProcess_enter pid=42937 tid=2c handle=0xffffffffffffffff exit_code=0x0 image=L"C:\\windows\\system32\\wineboot.exe" cmd=L"\"C:\\windows\\system32\\wineboot.exe\" --init" argv0=C:\windows\system32\wineboot.exe
+macrunner-process-exit: stage=NtTerminateProcess_after_server pid=42937 tid=2c ret=0x0 self=1
+macrunner-wow64: NtMapViewOfSection raw_args=000000030140FAE8 raw=00000030,ffffffff,0140fb50,00000000,00000000,00000000,0140fb88,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000030 process=FFFFFFFFFFFFFFFF addr32=000000030140FB50 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030140FB88 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037BC10000 size=131000
+macrunner-wow64: NtMapViewOfSection leave status=40000003 out_addr=7bc10000 out_size=00131000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030140F70C raw=00000034,ffffffff,0140f774,00000000,00000000,00000000,0140f7ac,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000034 process=FFFFFFFFFFFFFFFF addr32=000000030140F774 addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030140F7AC size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B7B0000 size=447000
+macrunner-wow64: NtMapViewOfSection leave status=40000003 out_addr=7b7b0000 out_size=00447000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030140F844 raw=00000030,ffffffff,0140f8ac,00000000,00000000,00000000,0140f8e4,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=0000000000000030 process=FFFFFFFFFFFFFFFF addr32=000000030140F8AC addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030140F8E4 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037B500000 size=29e000
+macrunner-wow64: NtMapViewOfSection leave status=40000003 out_addr=7b500000 out_size=0029e000

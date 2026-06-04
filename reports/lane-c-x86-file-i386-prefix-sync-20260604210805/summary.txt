@@ -1,0 +1,15 @@
+report=reports/lane-c-x86-file-i386-prefix-sync-20260604210805/summary.txt
+run_rc=2
+success=0
+wow64=0
+btcpu=0
+exit_trace=0
+image_not_at_base=0
+unsupported=1
+vm_fail=0
+dll_fail=0
+native_import_nonexec=0
+hb_invalid=0
+markers=
+[mr-run] graphics=dxmt sync-prefix system32_arch=i386-windows
+[mr-run] dxmt prefix sync failed

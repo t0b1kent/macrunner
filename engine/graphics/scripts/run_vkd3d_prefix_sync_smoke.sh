@@ -197,6 +197,16 @@ for raw_arch in "${RAW_ARCHES[@]}"; do
     check_module "dxmt/$arch/$module" \
       "$PROJECT_ROOT/engine/graphics/dist/dxmt/$arch/$module" \
       "$system32/$module"
+    check_machine "dxmt/$arch/$module" "$system32/$module" "$expected_machine"
+    case "$module" in
+      dxgi.dll)
+        check_exports "dxmt/$arch/$module" "$system32/$module" \
+          CreateDXGIFactory \
+          CreateDXGIFactory1 \
+          CreateDXGIFactory2 \
+          DXGIGetDebugInterface1
+        ;;
+    esac
   done
 
   echo "arch=$arch sync_log=$sync_log vkd3d=PASS dxmt_dependency=PASS"

@@ -1747,6 +1747,37 @@ static void macrunner_hb_trace_mono_vtable_probe( const char *phase, const char 
     fflush( stderr );
 }
 
+static void macrunner_hb_trace_mono_515_loop( const char *phase, const char *label,
+                                              hb_context_t *ctx, uint64_t image_start,
+                                              uint64_t block_pc, uint64_t blocks,
+                                              uint64_t steps )
+{
+    static int budget = 80;
+    uint64_t rva;
+    uint8_t byte = 0;
+    hb_result_t byte_r = HB_ERR_NOT_FOUND;
+
+    if (!ctx || !ctx->memory) return;
+    if (!macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_MONO_515" )) return;
+    rva = block_pc - image_start;
+    if (rva < 0x51589d || rva > 0x5158c4) return;
+    if (budget <= 0) return;
+    budget--;
+
+    byte_r = hb_memory_read_u8( ctx->memory, (hb_gva_t)ctx->regs.x64.rsi, &byte );
+    fprintf( stderr, "macrunner-hb-mono-515-loop: phase=%s label=%s block=%s steps=%s "
+             "rva=%p block_pc=%p rsi=%p rbp=%p r8=%p r9=%p rbx=%p rsp=%p "
+             "src_remaining=%lld byte=%02x/%s budget_left=%d\n",
+             phase, label ? label : "entry", wine_dbgstr_longlong(blocks),
+             wine_dbgstr_longlong(steps), (void *)(uintptr_t)rva, (void *)(uintptr_t)block_pc,
+             (void *)(uintptr_t)ctx->regs.x64.rsi, (void *)(uintptr_t)ctx->regs.x64.rbp,
+             (void *)(uintptr_t)ctx->regs.x64.r8, (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.rbx, (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (long long)(ctx->regs.x64.rbp - ctx->regs.x64.rsi), byte,
+             hb_result_string(byte_r), budget );
+    fflush( stderr );
+}
+
 static BOOL macrunner_hb_use_callback12_for_thunk( const struct macrunner_hb_import_thunk *thunk )
 {
     if (!thunk || !thunk->pe_callback12) return FALSE;
@@ -17420,6 +17451,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         }
         macrunner_hb_trace_mono_vtable_probe( "before", label, ctx, image_start, block_pc,
                                               blocks, steps, HB_OK, HB_OK, 0 );
+        macrunner_hb_trace_mono_515_loop( "before", label, ctx, image_start, block_pc,
+                                          blocks, steps );
         if (blocks <= 80)
             TRACE( "MacRunner HyperBridge block %s pc=%p rsp=%p rax=%p\n",
                    wine_dbgstr_longlong(blocks), (void *)(uintptr_t)ctx->pc,
@@ -17484,6 +17517,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                  wine_dbgstr_longlong(out.steps_executed), (void *)(uintptr_t)ctx->pc );
         macrunner_hb_trace_mono_vtable_probe( "after", label, ctx, image_start, block_pc,
                                               blocks, steps, ret, out.result, out.steps_executed );
+        macrunner_hb_trace_mono_515_loop( "after", label, ctx, image_start, block_pc,
+                                          blocks, steps + out.steps_executed );
         if (transient_func)
         {
             if (jit_rt)

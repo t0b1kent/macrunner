@@ -7,6 +7,30 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
+## Lane A checkpoint - 2026-06-04 HK `0x51589d` is assertion formatting, not a TSO spin
+Litmus verdict: `mp`, `spin`, `cas`, `xadd`, and `split` all PASS in
+`reports/phase4-hollow-knight/run-20260604-113246-tso-litmus-final-matrix-greencheck/`;
+the post-fuzz repeat matrix `run-20260604-114143-tso-litmus-post-fuzz-final-matrix/` repeats the
+same PASS set. Later fresh single-mode clang-binary attempts exited/timed out before
+`macrunner-xtajit64: ProcessInit`; those are harness/bootstrap misses, not semantic litmus FAILs.
+
+HK loop classification: `block_pc=0x87ef188589d` is in
+`MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll`, base `0x87ef1370000`, RVA `0x51589d`.
+Disassembly and live byte trace are in
+`reports/research/LANE-A-HK-51589D-DISASM-20260604.md`.
+
+Result: `0x51589d` is not a cross-thread flag loop and not a timer/QPC/RDTSC wait. It is Mono's
+assertion/log formatting loop:
+`cmp rsi,rbp; movb (rsi),al; inc rsi; cmp al,0x0a; ...; jb 0x51589d`.
+Live trace `run-20260604-mono515-byte-probe180b` shows `r8=0x11d2619c0`, `r9=0x1b6`,
+`rbp=0x11d261b76`, and the bytes loaded from `rsi` start
+`2a 20 41 73 73 65 72 74 69 6f 6e` (`* Assertion`). Producer is Mono's assertion path after
+`System.RuntimeType has invalid vtable method slot 16`; graphics counters remain zero.
+
+NEXT: stop treating `0x51589d` as a TSO/no-hoist gate. Trace/fix the earlier invalid-vtable
+producer path in `mono-2.0-bdwgc.dll` (current diagnostic run also reports a later
+`macrunner-hb-runtime-fail` at Mono RVA `0x1f71a3`, bytes `48 8b 07 ...`, after the assertion).
+
 ## Lane A checkpoint — 2026-06-04 unaligned direct-memory TSO fallback
 TSO litmus progress after `e5d2750`: `mp`, `spin`, `cas`, `xadd`, and `sb` pass under
 MacRunner when driven by `TSO_LITMUS_MODE`; `sb` reports `PASS sb: both0_seen=0`. `split`

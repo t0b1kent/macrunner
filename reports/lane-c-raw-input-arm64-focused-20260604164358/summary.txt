@@ -1,0 +1,26 @@
+run_rc=0
+input_ok=1
+wineserver_crash=0
+unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+seh_invalid=3
+relevant_lines:
+synced artifacts/_mr-run.s7PMzq/drive_c/windows/system32/ddraw.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/ddraw.dll
+synced artifacts/_mr-run.s7PMzq/drive_c/windows/system32/ddrawex.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/ddrawex.dll
+synced artifacts/_mr-run.s7PMzq/drive_c/windows/syswow64/ddraw.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/ddraw.dll
+synced artifacts/_mr-run.s7PMzq/drive_c/windows/syswow64/ddrawex.dll <= artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/i386-windows/ddrawex.dll
+[mr-run] prefix=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run.s7PMzq timeout=15s exe=fixtures/arm64/raw_input_register_arm64.exe
+002c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+002c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+0034:fixme:service:scmdatabase_autostart_services Auto-start service L"MountMgr" failed to start: 2
+0034:fixme:service:scmdatabase_autostart_services Auto-start service L"PlugPlay" failed to start: 2
+0034:fixme:service:scmdatabase_autostart_services Auto-start service L"Eventlog" failed to start: 2
+0034:fixme:service:scmdatabase_autostart_services Auto-start service L"nsiproxy" failed to start: 2
+0034:fixme:service:scmdatabase_autostart_services Auto-start service L"NDIS" failed to start: 2
+0034:fixme:service:scmdatabase_autostart_services Auto-start service L"winebus" failed to start: 2
+0034:fixme:service:scmdatabase_autostart_services Auto-start service L"wineusb" failed to start: 2
+0034:fixme:service:scmdatabase_autostart_services Auto-start service L"winebth" failed to start: 2
+002c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+0024:warn:file:NtCreateFile L"\\??\\Z:\\Users\\timurtoby\\Documents\\MacRunner\\Main\\MacRunner\\fixtures\\arm64\\raw_input_register_arm64.exe.manifest" not found (c0000034)

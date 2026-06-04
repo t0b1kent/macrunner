@@ -86,8 +86,9 @@ cube/cube-array evidence:
 Strict-native x64 guest `winemetal=n` binding remains green but still does not
 reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260605-040004/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`
-runtime loading with native `d3d12core.dll`, plus legacy and versioned
-root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260605-034309`).
+runtime loading with native `d3d12core.dll`, legacy and versioned
+root-signature frontend roundtrips, plus `D3D12GetInterface` SDK-configuration
+semantics (`artifacts/vkd3d-prefix-sync/run-20260605-042533`).
 Fallback vkd3d HLSL counter-method validation built `vkd3d-compiler` from
 `engine/vkd3d` and compiled `artifacts/vkd3d-hlsl-counter/uav-counter.hlsl` to
 DXBC with `RWStructuredBuffer` counter methods plus `AppendStructuredBuffer<T>` /

@@ -24,6 +24,9 @@ typedef HRESULT(WINAPI *PFN_D3D12_CREATE_DEVICE)(IUnknown *adapter,
                                                  D3D_FEATURE_LEVEL min_feature_level,
                                                  REFIID riid, void **device);
 
+typedef HRESULT(WINAPI *PFN_D3D12_GET_INTERFACE)(REFCLSID clsid, REFIID iid,
+                                                 void **object);
+
 struct export_probe {
   const char *name;
 };
@@ -270,6 +273,59 @@ cleanup:
   return pass;
 }
 
+static int probe_d3d12_sdk_configuration(void) {
+  HMODULE module;
+  PFN_D3D12_GET_INTERFACE get_interface;
+  ID3D12SDKConfiguration *config = NULL;
+  ULONG refcount;
+  HRESULT hr;
+  int pass = 1;
+
+  module = GetModuleHandleW(L"d3d12.dll");
+  printf("vkd3d_runtime_sdk_config module=d3d12.dll handle=%p\n", module);
+  if (!module)
+    return 0;
+
+  get_interface =
+      (PFN_D3D12_GET_INTERFACE)GetProcAddress(module, "D3D12GetInterface");
+  if (!get_interface)
+    return 0;
+
+  hr = get_interface(&CLSID_D3D12SDKConfiguration,
+                     &IID_ID3D12SDKConfiguration, NULL);
+  printf("vkd3d_runtime_call api=D3D12GetInterface(SDKConfiguration,null) hr=0x%08lx\n",
+         (unsigned long)hr);
+  if (hr != S_FALSE)
+    pass = 0;
+
+  hr = get_interface(&CLSID_D3D12SDKConfiguration,
+                     &IID_ID3D12SDKConfiguration, (void **)&config);
+  printf("vkd3d_runtime_call api=D3D12GetInterface(SDKConfiguration) hr=0x%08lx config=%p\n",
+         (unsigned long)hr, config);
+  if (FAILED(hr) || !config) {
+    pass = 0;
+    goto cleanup;
+  }
+
+  hr = ID3D12SDKConfiguration_SetSDKVersion(config, 0, NULL);
+  printf("vkd3d_runtime_call api=ID3D12SDKConfiguration_SetSDKVersion hr=0x%08lx\n",
+         (unsigned long)hr);
+  if (FAILED(hr))
+    pass = 0;
+
+cleanup:
+  if (config) {
+    refcount = ID3D12SDKConfiguration_Release(config);
+    printf("vkd3d_runtime_sdk_config release_refcount=%lu\n",
+           (unsigned long)refcount);
+    if (refcount)
+      pass = 0;
+  }
+
+  printf("vkd3d_runtime_sdk_config_result=%s\n", pass ? "PASS" : "FAIL");
+  return pass;
+}
+
 static int probe_d3d12_device(void) {
   HMODULE module;
   PFN_D3D12_CREATE_DEVICE create_device;
@@ -348,6 +404,8 @@ int main(void) {
   if (!probe_d3d12_root_signature())
     pass = 0;
   if (!probe_d3d12_versioned_root_signature())
+    pass = 0;
+  if (!probe_d3d12_sdk_configuration())
     pass = 0;
   if (should_probe_d3d12_device()) {
     if (!probe_d3d12_device())

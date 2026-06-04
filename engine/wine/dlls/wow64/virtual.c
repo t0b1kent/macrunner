@@ -251,6 +251,7 @@ NTSTATUS WINAPI wow64_NtAllocateVirtualMemory( UINT *args )
     type = get_ulong( &args );
     protect = get_ulong( &args );
     is_current = RtlIsCurrentProcess( process );
+    if (!addr32 || !size32) return STATUS_ACCESS_VIOLATION;
     addr = is_current ? guest32_host_ptr( *addr32 ) : ULongToPtr( *addr32 );
     size = *size32;
 
@@ -305,9 +306,14 @@ NTSTATUS WINAPI wow64_NtAllocateVirtualMemoryEx( UINT *args )
     NTSTATUS status;
     MEM_EXTENDED_PARAMETER *params64;
     BOOL is_current = RtlIsCurrentProcess( process );
-    void *addr = is_current ? guest32_host_ptr( *addr32 ) : ULongToPtr( *addr32 );
-    SIZE_T size = *size32;
-    BOOL set_limit = (!*addr32 && is_current);
+    void *addr;
+    SIZE_T size;
+    BOOL set_limit;
+
+    if (!addr32 || !size32) return STATUS_ACCESS_VIOLATION;
+    addr = is_current ? guest32_host_ptr( *addr32 ) : ULongToPtr( *addr32 );
+    size = *size32;
+    set_limit = (!*addr32 && is_current);
 
     if (!addr) type |= MEM_RESERVE;
 
@@ -429,9 +435,13 @@ NTSTATUS WINAPI wow64_NtFreeVirtualMemory( UINT *args )
     ULONG type = get_ulong( &args );
 
     BOOL is_current = RtlIsCurrentProcess( process );
-    void *addr = is_current ? guest32_host_ptr( *addr32 ) : ULongToPtr( *addr32 );
-    SIZE_T size = *size32;
+    void *addr;
+    SIZE_T size;
     NTSTATUS status;
+
+    if (!addr32 || !size32) return STATUS_ACCESS_VIOLATION;
+    addr = is_current ? guest32_host_ptr( *addr32 ) : ULongToPtr( *addr32 );
+    size = *size32;
 
     if (!is_current) send_cross_process_notification( process, CrossProcessPreVirtualFree,
                                                       addr, size, 2, type, 0 );
@@ -602,9 +612,13 @@ NTSTATUS WINAPI wow64_NtMapViewOfSection( UINT *args )
     SIZE_T size;
     NTSTATUS status;
     void *prev = NtCurrentTeb()->Tib.ArbitraryUserPointer;
-    ULONG addr_before = addr32 ? *addr32 : 0;
-    ULONG size_before = size32 ? *size32 : 0;
+    ULONG addr_before;
+    ULONG size_before;
     LONGLONG offset_value = offset ? offset->QuadPart : 0;
+
+    if (!addr32 || !size32) return STATUS_ACCESS_VIOLATION;
+    addr_before = *addr32;
+    size_before = *size32;
 
     MESSAGE( "macrunner-wow64: NtMapViewOfSection raw_args=%p raw=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
              raw_args, raw_args[0], raw_args[1], raw_args[2], raw_args[3], raw_args[4],
@@ -652,8 +666,11 @@ NTSTATUS WINAPI wow64_NtMapViewOfSectionEx( UINT *args )
     NTSTATUS status;
     MEM_EXTENDED_PARAMETER *params64;
     BOOL is_current = RtlIsCurrentProcess( process );
-    BOOL set_limit = (!*addr32 && is_current);
+    BOOL set_limit;
     void *prev = NtCurrentTeb()->Tib.ArbitraryUserPointer;
+
+    if (!addr32 || !size32) return STATUS_ACCESS_VIOLATION;
+    set_limit = (!*addr32 && is_current);
 
     if ((status = mem_extended_parameters_32to64( &params64, params32, &count, set_limit ))) return status;
 
@@ -683,9 +700,13 @@ NTSTATUS WINAPI wow64_NtProtectVirtualMemory( UINT *args )
     ULONG *old_prot = get_ptr( &args );
 
     BOOL is_current = RtlIsCurrentProcess( process );
-    void *addr = is_current ? guest32_host_ptr( *addr32 ) : ULongToPtr( *addr32 );
-    SIZE_T size = *size32;
+    void *addr;
+    SIZE_T size;
     NTSTATUS status;
+
+    if (!addr32 || !size32 || !old_prot) return STATUS_ACCESS_VIOLATION;
+    addr = is_current ? guest32_host_ptr( *addr32 ) : ULongToPtr( *addr32 );
+    size = *size32;
 
     if (!is_current) send_cross_process_notification( process, CrossProcessPreVirtualProtect,
                                                       addr, size, 2, new_prot, 0 );
@@ -1037,6 +1058,7 @@ NTSTATUS WINAPI wow64_NtWow64AllocateVirtualMemory64( UINT *args )
     ULONG type = get_ulong( &args );
     ULONG protect = get_ulong( &args );
 
+    if (!addr || !size) return STATUS_ACCESS_VIOLATION;
     return NtAllocateVirtualMemory( process, addr, zero_bits, size, type, protect );
 }
 

@@ -1,0 +1,16 @@
+app=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/games/half-life/Half-Life/hltv.exe
+dist=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike
+run_rc=143
+file_info=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/games/half-life/Half-Life/hltv.exe: PE32 executable (GUI) Intel 80386, for MS Windows
+wow64_markers=616
+btcpu_markers=0
+goldsrc_markers=319
+unsupported=0
+ioctl_unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=6
+hb_runtime_fail=0
+seh_invalid=171754
+last_relevant=002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised

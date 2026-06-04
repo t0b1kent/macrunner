@@ -1,0 +1,34 @@
+fixture=fixtures/arm64/loopback_tcp_arm64.exe
+run_rc=143
+stdout_like=0
+unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=0
+hb_runtime_fail=0
+seh_invalid=0
+89e512fb1272d0e3df030cb82aeaf542696d1c710f384ffd2f792926e1897c93  engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+89e512fb1272d0e3df030cb82aeaf542696d1c710f384ffd2f792926e1897c93  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+89e512fb1272d0e3df030cb82aeaf542696d1c710f384ffd2f792926e1897c93  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+last_log_lines:
+macrunner-hb-pe-relocate: module=0000087FFE730000 image_base=00006FFFFEA50000 delta=FFFF987FFFCE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE080000 image_base=00006FFFFE390000 delta=FFFF987FFFCF0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDAC0000 image_base=00006FFFFDDC0000 delta=FFFF987FFFD00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD990000 image_base=00006FFFFC3B0000 delta=FFFF9880015E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD840000 image_base=00006FFFFC250000 delta=FFFF9880015F0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010737FC70 pc=000007FFD0784E30 lr=0000000000000000 sp=0000000107380000 entry=00000001400118FC arg=000007FFD01F0000
+macrunner-hb-pe-relocate: module=0000087FFD750000 image_base=00006FFFFC150000 delta=FFFF988001600000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD580000 image_base=00006FFFF9D50000 delta=FFFF988003830000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD3E0000 image_base=00006FFFFD220000 delta=FFFF9880001C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCF70000 image_base=00006FFFFD780000 delta=FFFF987FFF7F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCE90000 image_base=00006FFFFD690000 delta=FFFF987FFF800000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC870000 image_base=00006FFFFA730000 delta=FFFF988002140000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC590000 image_base=00006FFFFA440000 delta=FFFF988002150000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC460000 image_base=00006FFFFA300000 delta=FFFF988002160000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB3F0000 image_base=00006FFFFB0D0000 delta=FFFF988000320000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB1B0000 image_base=00006FFFFAE80000 delta=FFFF988000330000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB0A0000 image_base=00006FFFFAD60000 delta=FFFF988000340000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAF00000 image_base=00006FFFF9D80000 delta=FFFF988001180000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA920000 image_base=00006FFFF9790000 delta=FFFF988001190000 machine=0xaa64
+[mr-run] exit=143 (prefix auto-removed on exit)

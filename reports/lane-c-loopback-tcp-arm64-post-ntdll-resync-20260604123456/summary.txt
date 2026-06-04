@@ -1,0 +1,35 @@
+fixture=fixtures/arm64/loopback_tcp_arm64.exe
+run_rc=143
+stdout_like=0
+unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=18
+hb_runtime_fail=0
+seh_invalid=5
+ntdll_hashes_start_end_checked=yes
+89e512fb1272d0e3df030cb82aeaf542696d1c710f384ffd2f792926e1897c93  engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+89e512fb1272d0e3df030cb82aeaf542696d1c710f384ffd2f792926e1897c93  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+89e512fb1272d0e3df030cb82aeaf542696d1c710f384ffd2f792926e1897c93  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+last_log_lines:
+0088:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\iphlpapi.dll" not found (c0000034)
+0088:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\iphlpapi.dll" (status c0000034)
+0088:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\iprop.dll" not found (c0000034)
+0088:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\iprop.dll" (status c0000034)
+0088:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\ir50_32.dll" not found (c0000034)
+0088:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\ir50_32.dll" (status c0000034)
+0088:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\irprops.cpl" not found (c0000034)
+0088:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\irprops.cpl" (status c0000034)
+0088:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\itircl.dll" not found (c0000034)
+0088:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\itircl.dll" (status c0000034)
+0088:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\itss.dll" not found (c0000034)
+0088:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\itss.dll" (status c0000034)
+0088:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\joy.cpl" not found (c0000034)
+0088:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\joy.cpl" (status c0000034)
+0088:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\jscript.dll" not found (c0000034)
+0088:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\jscript.dll" (status c0000034)
+0088:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\jsproxy.dll" not found (c0000034)
+0088:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\jsproxy.dll" (status c0000034)
+0088:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+[mr-run] exit=143 (prefix auto-removed on exit)

@@ -1,0 +1,6 @@
+fixture	run_rc	lines	stdout_like	unsupported	vm_fail	dll_fail	fixme_stub	actctx	hb_runtime_fail	seh_invalid
+file_io_arm64.exe	143	1457	0	0	0	0	8	0	0	0
+registry_read_arm64.exe	143	64037	0	0	0	0	8	0	0	62452
+named_pipe_arm64.exe	143	179360	0	0	0	0	0	0	0	179224
+udp_loopback_arm64.exe	143	76723	0	0	0	0	8	0	0	75138
+loopback_tcp_arm64.exe	0	4351	1	0	3	0	8	0	0	0

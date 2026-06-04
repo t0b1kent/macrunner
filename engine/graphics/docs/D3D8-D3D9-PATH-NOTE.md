@@ -55,8 +55,12 @@ to run 32-bit-era game targets.
 - vkd3d/D3D12 prefix deployment continues to gate DXMT `dxgi.dll` dependency
   architecture, factory exports, and standalone `d3d12.dll` runtime loading
   with native `d3d12core.dll`, plus root-signature serialization/deserialization
-  roundtrips. The runtime probe also carries an opt-in D3D12 device diagnostic so
-  future D3D12->Metal bring-up can be separated from prefix-copy/export hygiene.
+  roundtrips. Fallback `engine/vkd3d` HLSL source now also builds
+  `RWStructuredBuffer` UAV counter methods to `imm_atomic_alloc` /
+  `imm_atomic_consume`; `AppendStructuredBuffer<T>`/`ConsumeStructuredBuffer<T>`
+  type syntax remains future HLSL parser work. The runtime probe also carries an
+  opt-in D3D12 device diagnostic so future D3D12->Metal bring-up can be separated
+  from prefix-copy/export hygiene.
 - PE32/WOW64 is stable enough for 32-bit-era D3D8/D3D9 titles before using real
   game targets as graphics validation.
 - A D3D9 coverage matrix exists before implementation starts.
@@ -82,7 +86,11 @@ Strict-native x64 guest `winemetal=n` binding remains green but still does not
 reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260605-030159/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`
 runtime loading with native `d3d12core.dll`, plus legacy and versioned
-root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260604-165527`).
+root-signature frontend roundtrips (`artifacts/vkd3d-prefix-sync/run-20260605-034309`).
+Fallback vkd3d HLSL counter-method validation built `vkd3d-compiler` from
+`engine/vkd3d` and compiled `artifacts/vkd3d-hlsl-counter/uav-counter.hlsl` to
+DXBC with `imm_atomic_alloc` and `imm_atomic_consume`
+(`artifacts/vkd3d-hlsl-counter/uav-counter.asm`).
 The opt-in D3D12 device diagnostic currently returns
 `D3D12CreateDevice hr=0x80004005` after builtin `winevulkan.dll` loading
 (`artifacts/vkd3d-prefix-sync/run-20260604-205538/runtime-loader-aarch64-windows.log`),

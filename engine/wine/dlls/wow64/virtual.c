@@ -413,6 +413,8 @@ NTSTATUS WINAPI wow64_NtFlushVirtualMemory( UINT *args )
     SIZE_T size;
     NTSTATUS status;
 
+    if (!addr32 || !size32) return STATUS_ACCESS_VIOLATION;
+
     status = NtFlushVirtualMemory( process, (const void **)addr_32to64( &addr, addr32 ),
                                    size_32to64( &size, size32 ), unknown );
     if (!status)
@@ -501,10 +503,12 @@ NTSTATUS WINAPI wow64_NtGetWriteWatch( UINT *args )
     ULONG *count_ptr = get_ptr( &args );
     ULONG *granularity = get_ptr( &args );
 
-    ULONG_PTR i, count = *count_ptr;
+    ULONG_PTR i, count;
     void **addresses;
     NTSTATUS status;
 
+    if (!count_ptr || !granularity) return STATUS_ACCESS_VIOLATION;
+    count = *count_ptr;
     if (!count || !size) return STATUS_INVALID_PARAMETER;
     if (flags & ~WRITE_WATCH_FLAG_RESET) return STATUS_INVALID_PARAMETER;
     if (!addr_ptr) return STATUS_ACCESS_VIOLATION;
@@ -550,6 +554,8 @@ NTSTATUS WINAPI wow64_NtLockVirtualMemory( UINT *args )
     void *addr;
     SIZE_T size;
     NTSTATUS status;
+
+    if (!addr32 || !size32) return STATUS_ACCESS_VIOLATION;
 
     status = NtLockVirtualMemory( process, addr_32to64( &addr, addr32 ),
                                   size_32to64( &size, size32 ), unknown );
@@ -941,12 +947,10 @@ NTSTATUS WINAPI wow64_NtSetInformationVirtualMemory( UINT *args )
 
     MEMORY_RANGE_ENTRY *addresses;
 
-    if (!count) return STATUS_INVALID_PARAMETER_3;
-    addresses = memory_range_entry_array_32to64( addresses32, count );
-
     switch (info_class)
     {
     case VmPrefetchInformation:
+    case VmPageDirtyStateInformation:
         break;
     default:
         FIXME( "(%p,info_class=%u,%lu,%p,%p,%lu): not implemented\n",
@@ -954,6 +958,12 @@ NTSTATUS WINAPI wow64_NtSetInformationVirtualMemory( UINT *args )
         return STATUS_INVALID_PARAMETER_2;
     }
 
+    if (!ptr) return STATUS_INVALID_PARAMETER_5;
+    if (len != sizeof(ULONG)) return STATUS_INVALID_PARAMETER_6;
+    if (!count) return STATUS_INVALID_PARAMETER_3;
+    if (!addresses32) return STATUS_ACCESS_VIOLATION;
+
+    addresses = memory_range_entry_array_32to64( addresses32, count );
     return NtSetInformationVirtualMemory( process, info_class, count, addresses, ptr, len );
 }
 
@@ -997,6 +1007,8 @@ NTSTATUS WINAPI wow64_NtUnlockVirtualMemory( UINT *args )
     void *addr;
     SIZE_T size;
     NTSTATUS status;
+
+    if (!addr32 || !size32) return STATUS_ACCESS_VIOLATION;
 
     status = NtUnlockVirtualMemory( process, addr_32to64( &addr, addr32 ),
                                     size_32to64( &size, size32 ), unknown );

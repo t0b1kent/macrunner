@@ -1,0 +1,105 @@
+Lane C PE32 game breadth verdict
+
+Report: reports/lane-c-pe32-game-breadth-20260605085050/summary.tsv
+
+- No Lane-C-owned loader, VM, real-DLL API, missing import, or DLL-load fault was found.
+- GTA VC autorun and Half-Life HLTV remain in ARM64EC loader/app startup timeout territory with zero Lane-C markers in the bounded run.
+- Half-Life hl.exe reaches WOW64/BTCpu (`wow64=92`, `btcpu=37`) after successful VM mapping, then BTCpu reports `exec=UNSUPPORTED_OPCODE(-5)` and publishes `c000001d` at i386 `eip=7bdc7460` with bytes `66 90 55 89 e5 ...`.
+- Clipboard text x86 reaches WOW64/BTCpu (`wow64=87`, `btcpu=17`) with `unsupported=0`, `missing=0`, `vm_fail_strict=0`, `dll_fail=0`, and `fixme=0`.
+- The repeated `seh_tail=64/65` lines are the already triaged ARM64EC unwind metadata tail, not a Lane-C-owned DLL/loader/VM gap.
+
+## gta_vc_autorun
+rc=143 wow64=0 btcpu=0 unsupported=0 missing=0 vm_fail_strict=0 dll_fail=0 fixme=0 seh_tail=0 xtajit_unsupported=0
+last_tail:
+macrunner-hb-pe-relocate: module=0000087FFE080000 image_base=00006FFFFE390000 delta=FFFF987FFFCF0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDAC0000 image_base=00006FFFFDDC0000 delta=FFFF987FFFD00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD990000 image_base=00006FFFFC3B0000 delta=FFFF9880015E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD840000 image_base=00006FFFFC250000 delta=FFFF9880015F0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=00000001073FFC70 pc=000007FFD0784E30 lr=0000000000000000 sp=0000000107400000 entry=00000001400118FC arg=000007FFD01F0000
+macrunner-hb-pe-relocate: module=0000087FFD750000 image_base=00006FFFFC150000 delta=FFFF988001600000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD580000 image_base=00006FFFF9D50000 delta=FFFF988003830000 machine=0xaa64
+0088:fixme:keyboard:NtUserActivateKeyboardLayout Changing user locale is not supported
+macrunner-hb-pe-relocate: module=0000087FFD3E0000 image_base=00006FFFFD220000 delta=FFFF9880001C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCF70000 image_base=00006FFFFD780000 delta=FFFF987FFF7F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCE90000 image_base=00006FFFFD690000 delta=FFFF987FFF800000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC870000 image_base=00006FFFFA730000 delta=FFFF988002140000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC590000 image_base=00006FFFFA440000 delta=FFFF988002150000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC460000 image_base=00006FFFFA300000 delta=FFFF988002160000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB3F0000 image_base=00006FFFFB0D0000 delta=FFFF988000320000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB1B0000 image_base=00006FFFFAE80000 delta=FFFF988000330000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB0A0000 image_base=00006FFFFAD60000 delta=FFFF988000340000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAF00000 image_base=00006FFFF9D80000 delta=FFFF988001180000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA920000 image_base=00006FFFF9790000 delta=FFFF988001190000 machine=0xaa64
+[mr-run] exit=143 (prefix auto-removed on exit)
+
+## half_life_hl
+rc=29 wow64=92 btcpu=37 unsupported=1 missing=0 vm_fail_strict=0 dll_fail=0 fixme=0 seh_tail=65 xtajit_unsupported=1
+last_tail:
+macrunner-xtajit-unix: simulate hb=OK(0) exec=UNSUPPORTED_OPCODE(-5) faulted=1 steps=77 blocks=10 in_eip=7bdcd64c out_eip=7bdc7460 out_esp=0140f598 reason=UNSUPPORTED
+macrunner-xtajit-unix: regs eax=0140f5d4 ebx=00000000 ecx=0140f5d4 edx=0140f8a8 esi=0140f5d4 edi=0140f8ac ebp=0140f5b4 esp=0140f598 eip=7bdc7460 eflags=00000206 fs=7f000000
+macrunner-xtajit-seh: fault teb32=7f000000 head=ffffffff next=00000000 handler=00000000 valid=1 handler_exec=0
+macrunner-xtajit-unix: mem eip=7bdc7460 host=0x37bdc7460 can_r=1 can_w=0 can_x=1 region=7bd71000-7bdde000 perm=5 guest32=1 gen=8
+macrunner-xtajit-unix: mem esp=0140f598 host=0x30140f598 can_r=1 can_w=1 can_x=0 region=00410000-01410000 perm=3 guest32=1 gen=7
+macrunner-xtajit-unix: mem ebp=0140f5b4 host=0x30140f5b4 can_r=1 can_w=1 can_x=0 region=00410000-01410000 perm=3 guest32=1 gen=7
+macrunner-xtajit-unix: mem eax=0140f5d4 host=0x30140f5d4 can_r=1 can_w=1 can_x=0 region=00410000-01410000 perm=3 guest32=1 gen=7
+macrunner-xtajit-unix: mem eax+460=0140fa34 host=0x30140fa34 can_r=1 can_w=1 can_x=0 region=00410000-01410000 perm=3 guest32=1 gen=7
+macrunner-xtajit-unix: mem esi=0140f5d4 host=0x30140f5d4 can_r=1 can_w=1 can_x=0 region=00410000-01410000 perm=3 guest32=1 gen=7
+macrunner-xtajit-unix: mem edi=0140f8ac host=0x30140f8ac can_r=1 can_w=1 can_x=0 region=00410000-01410000 perm=3 guest32=1 gen=7
+macrunner-xtajit-unix: mem fs=7f000000 host=0x37f000000 can_r=1 can_w=1 can_x=0 region=7f000000-7f002000 perm=3 guest32=1 gen=24
+macrunner-xtajit-unix: dwords esp=0140f598 20383939 67616c66 0a303d73 00000a00 01000a30 7bd9c3fd 0140fa68 0140f5c4
+macrunner-xtajit-unix: dwords ebp-40=0140f574 3d74666f 30303030 63663335 3d746620 30303030 38663034 72696620 303d7473 35303030 20383939 67616c66 0a303d73 00000a00 01000a30 7bd9c3fd 0140fa68
+macrunner-xtajit-unix: dwords ebp=0140f5b4 0140f5c4 7bdc73e4 0140f8ac 004059b8 0140f8a0 7bdc6c58 0140f8ac 0140f5d4 0001000f 0140fae8 7bdba391 004081b0
+macrunner-xtajit-unix: dwords caller-ebp-80=0140f544 3d657361 30343030 30303030 6c6c6420 6970613d 2d736d2d 2d6e6977 2d747263 70616568 2d316c2d 2e302d31 206c6c64 3d74666f 30303030 63663335 3d746620 30303030 38663034 72696620 303d7473 35303030 20383939 67616c66 0a303d73 00000a00 01000a30 7bd9c3fd 0140fa68 0140f5c4 7bdc73e4 0140f8ac 004059b8
+macrunner-xtajit-unix: dwords caller-ebp=0140f5c4 0140f8a0 7bdc6c58 0140f8ac 0140f5d4 0001000f 0140fae8 7bdba391 004081b0 00290000 00290c80 002937a0 00291078 0140f62c 7bd93c7b 00291078 0140fae8
+macrunner-xtajit: BTCpuSimulate publish-exception-context status=00000000 exception=c000001d eip=7bdc7460 esp=0140f598 eax=0140f5d4
+macrunner-xtajit: simulate exception eip-bytes guest=7bdc7460 host=000000037BDC7460 bytes=66905589e583ec1c810908000100dd711c9b0f10411c0f1049280f1145e40f11
+0138:err:seh:NtRaiseException Unhandled exception code c000001d flags 0 addr 0x7bdc7460
+[mr-run] exit=29 (prefix auto-removed on exit)
+
+## half_life_hltv
+rc=143 wow64=0 btcpu=0 unsupported=0 missing=0 vm_fail_strict=0 dll_fail=0 fixme=0 seh_tail=0 xtajit_unsupported=0
+last_tail:
+macrunner-hb-pe-relocate: module=0000087FFE080000 image_base=00006FFFFE390000 delta=FFFF987FFFCF0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDAC0000 image_base=00006FFFFDDC0000 delta=FFFF987FFFD00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD990000 image_base=00006FFFFC3B0000 delta=FFFF9880015E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD840000 image_base=00006FFFFC250000 delta=FFFF9880015F0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=00000001073DFC70 pc=000007FFD0784E30 lr=0000000000000000 sp=00000001073E0000 entry=00000001400118FC arg=000007FFD01F0000
+macrunner-hb-pe-relocate: module=0000087FFD750000 image_base=00006FFFFC150000 delta=FFFF988001600000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD580000 image_base=00006FFFF9D50000 delta=FFFF988003830000 machine=0xaa64
+0088:fixme:keyboard:NtUserActivateKeyboardLayout Changing user locale is not supported
+macrunner-hb-pe-relocate: module=0000087FFD3E0000 image_base=00006FFFFD220000 delta=FFFF9880001C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCF70000 image_base=00006FFFFD780000 delta=FFFF987FFF7F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCE90000 image_base=00006FFFFD690000 delta=FFFF987FFF800000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC870000 image_base=00006FFFFA730000 delta=FFFF988002140000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC590000 image_base=00006FFFFA440000 delta=FFFF988002150000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC460000 image_base=00006FFFFA300000 delta=FFFF988002160000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB3F0000 image_base=00006FFFFB0D0000 delta=FFFF988000320000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB1B0000 image_base=00006FFFFAE80000 delta=FFFF988000330000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB0A0000 image_base=00006FFFFAD60000 delta=FFFF988000340000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAF00000 image_base=00006FFFF9D80000 delta=FFFF988001180000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA920000 image_base=00006FFFF9790000 delta=FFFF988001190000 machine=0xaa64
+[mr-run] exit=143 (prefix auto-removed on exit)
+
+## clipboard_text_x86
+rc=143 wow64=87 btcpu=17 unsupported=0 missing=0 vm_fail_strict=0 dll_fail=0 fixme=0 seh_tail=64 xtajit_unsupported=0
+last_tail:
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037AC10000 size=219000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7ac10000 out_size=00219000
+macrunner-wow64: NtMapViewOfSection raw_args=000000030140F0A4 raw=0000003c,ffffffff,0140f10c,00000000,00000000,00000000,0140f144,00000001,00000000,00000020
+macrunner-wow64: NtMapViewOfSection enter handle=000000000000003C process=FFFFFFFFFFFFFFFF addr32=000000030140F10C addr=00000000 zero=0 commit=0 offset_ptr=0000000000000000 offset=0000000000000000 size32=000000030140F144 size=00000000 inherit=1 alloc=00000000 protect=00000020
+macrunner-wow64: NtMapViewOfSection native status=40000003 addr=000000037ABC0000 size=40000
+macrunner-xtajit: BTCpuGetBopCode -> 0000000300270000 guest=00270000
+macrunner-wow64: guest32-write query out=000000037ABE4020 remaining=4
+macrunner-wow64: guest32-write query status=00000000 base=000000037ABE4000 size=4096 state=00001000 protect=00000008
+macrunner-wow64: guest32-write protect base=000000037ABE4000 size=4096 old=00000008
+macrunner-wow64: guest32-write protect status=00000000 old=00000008
+macrunner-wow64: guest32-write memcpy out=000000037ABE4020 chunk=4 restore=1
+macrunner-wow64: guest32-write memcpy-done out=000000037ABE4020 chunk=4
+macrunner-wow64: guest32-write restore base=000000037ABE4000 size=4096 old=00000008
+macrunner-wow64: guest32-write restore-done ignored=00000008
+macrunner-wow64: NtMapViewOfSection leave status=00000000 out_addr=7abc0000 out_size=00040000
+macrunner-wow64: NtAllocateVirtualMemory pre process=FFFFFFFFFFFFFFFF addr32=000000030140F9B4 val=00000000 zero=00000000 size32=000000030140F9B0 size=80000 type=00003000 protect=00000004 current=1
+macrunner-wow64: NtAllocateVirtualMemory post status=00000000 addr=0000000305420000 guest=05420000 size=80000
+macrunner-wow64: NtQuerySystemInformation enter class=102 ptr=000000030140F750 len=432 retlen=0000000000000000
+[mr-run] exit=143 (prefix auto-removed on exit)

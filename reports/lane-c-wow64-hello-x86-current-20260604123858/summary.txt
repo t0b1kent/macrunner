@@ -1,0 +1,77 @@
+fixture=fixtures/x86/hello_x86.exe
+run_rc=123
+stdout_like=3
+wow64_markers=57
+unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=55
+hb_runtime_fail=0
+seh_invalid=5566
+after_hashes:
+89e512fb1272d0e3df030cb82aeaf542696d1c710f384ffd2f792926e1897c93  engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+89e512fb1272d0e3df030cb82aeaf542696d1c710f384ffd2f792926e1897c93  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+89e512fb1272d0e3df030cb82aeaf542696d1c710f384ffd2f792926e1897c93  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+first_relevant_lines:
+1:[mr-run] prefix=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run.yUFv0D timeout=25s exe=fixtures/x86/hello_x86.exe
+5:002c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+7:002c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+14:002c:warn:ntdll:get_smbios_from_iokit can't find AppleSMBIOS service
+445:004c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+699:008c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+1449:008c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+2224:008c:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\wow64.dll" not found (c0000034)
+2225:008c:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\wow64.dll" (status c0000034)
+2226:008c:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\wow64win.dll" not found (c0000034)
+2227:008c:warn:file:CreateFileW Unable to create file L"C:\\windows\\system32\\wow64win.dll" (status c0000034)
+3012:008c:warn:file:NtQueryAttributesFile L"\\??\\C:\\users\\crossover\\AppData\\Local\\Microsoft\\Windows\\INetCookies" not found (c0000034)
+3389:008c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+3423:0094:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+3552:0094:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+3554:0094:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+3557:0094:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+3561:0094:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+3599:009c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+3614:009c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+3738:009c:err:seh:bus_handler macrunner-hb-bus-low-stack: before-virtual pid=83603 si_code=1 align=1 pc=0xbad4007 lr=0x18eb81f8c fault=0xbad4007 esr=0x8a000000 sp=0x1063eda90 teb_stack=0x1063f8000-0x1073f0000 dealloc=0x1063f0000 x0=0x18ee38f7e x1=0x0 x2=0x18ec155e4 x3=0x18ec1563c x4=0xc83058320 x16=0xbad4007 x18=0x0 x24=0xc8204e460 x26=0x0
+3739:009c:err:seh:bus_handler macrunner-hb-bus-low-stack: after-virtual pid=83603 unhandled=3221225477 code=0xc0000005 fault=0xbad4007 sp=0x1063eda90 vstack=0x1063eda90 teb_stack=0x1063f8000-0x1073f0000 dealloc=0x1063f0000
+4195:002c:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+4209:002c:warn:file:NtCreateFile L"\\??\\C:\\windows\\system32\\wow64cpu.dll" not found (c0000034)
+4266:0024:warn:seh:dispatch_exception EXCEPTION_ACCESS_VIOLATION exception (code=c0000005) raised
+4461:004c:warn:seh:dispatch_exception RPC_S_SERVER_UNAVAILABLE exception (code=6ba) raised
+4462:004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010737da50 stack=0000000106388000-0000000107380000
+4463:004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+4464:004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD076304C
+4465:004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0763470
+4466:004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+4467:004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010737da50 stack=0000000106388000-0000000107380000
+4468:004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+4469:004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD076304C
+4470:004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0763470
+4471:004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+4472:004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010737da50 stack=0000000106388000-0000000107380000
+4473:004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+4474:004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD076304C
+4475:004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0763470
+last_log_lines:
+004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+004c:warn:seh:virtual_unwind exception data not found for pc 0000087FFF80C374, lr 0000087FFF80C378
+004c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised

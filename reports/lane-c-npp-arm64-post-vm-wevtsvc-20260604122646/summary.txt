@@ -1,0 +1,20 @@
+# Lane C Notepad++ ARM64 after VM/wevtsvc
+
+Date: 2026-06-04
+Report: reports/lane-c-npp-arm64-post-vm-wevtsvc-20260604122646
+Raw log: reports/lane-c-npp-arm64-post-vm-wevtsvc-20260604122646/run.log
+
+## Result
+- run_rc=143
+- total_lines=563603
+- unsupported=0
+- vm_fail=0
+- dll_fail=0
+- svchost_globals_lookup=0
+- fixme_stub=0
+- actctx=0
+- hb_runtime_fail=0
+- seh_invalid=563464
+
+## Interpretation
+No Lane-C-owned loader/VM/Win32-DLL regression surfaced in this GUI app probe.

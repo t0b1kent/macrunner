@@ -1,0 +1,39 @@
+stamp=20260604114741
+target=aarch64-windows
+make: `dlls/win32u/aarch64-windows/win32u.dll' is up to date.
+make_rc_aarch64-windows=0
+install_rc_aarch64-windows=0
+target=x86_64-windows
+make: `dlls/win32u/x86_64-windows/win32u.dll' is up to date.
+make_rc_x86_64-windows=0
+install_rc_x86_64-windows=0
+target=i386-windows
+make: `dlls/win32u/i386-windows/win32u.dll' is up to date.
+make_rc_i386-windows=0
+install_rc_i386-windows=0
+target=win32u.so
+gcc -std=gnu23 -c -o dlls/win32u/opentype.o /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/win32u/opentype.c \
+  -Idlls/win32u -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/win32u \
+  -Iinclude -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include -D__WINESRC__ \
+  -D_WIN32U_ -DWINE_UNIX_LIB -I/opt/homebrew/opt/freetype/include/freetype2 \
+  -I/opt/homebrew/opt/libpng/include/libpng16 -Wall -pipe -fcf-protection=none -fvisibility=hidden \
+  -fno-stack-protector -fno-strict-aliasing -Wdeclaration-after-statement -Wempty-body \
+  -Wignored-qualifiers -Winit-self -Wpointer-arith -Wstrict-prototypes -Wtype-limits \
+  -Wunused-but-set-parameter -Wvla -Wwrite-strings -gdwarf-4 -fPIC -fasynchronous-unwind-tables \
+  -g -O2 -DIS_WOW64_BUILD -DIS_WOW64_BUILD -DIS_WOW64_BUILD -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+gcc -std=gnu23 -o dlls/win32u/win32u.so -dynamiclib -install_name @rpath/win32u.so -Wl,-rpath,@loader_path\/ \
+  dlls/win32u/bitblt.o dlls/win32u/bitmap.o dlls/win32u/brush.o dlls/win32u/class.o \
+  dlls/win32u/clipboard.o dlls/win32u/clipping.o dlls/win32u/cursoricon.o dlls/win32u/d3dkmt.o \
+  dlls/win32u/dc.o dlls/win32u/dce.o dlls/win32u/defwnd.o dlls/win32u/dib.o \
+  dlls/win32u/dibdrv/bitblt.o dlls/win32u/dibdrv/dc.o dlls/win32u/dibdrv/graphics.o \
+  dlls/win32u/dibdrv/objects.o dlls/win32u/dibdrv/primitives.o dlls/win32u/driver.o \
+  dlls/win32u/emfdrv.o dlls/win32u/font.o dlls/win32u/freetype.o dlls/win32u/gdiobj.o \
+  dlls/win32u/hook.o dlls/win32u/imm.o dlls/win32u/input.o dlls/win32u/mapping.o dlls/win32u/menu.o \
+  dlls/win32u/message.o dlls/win32u/opengl.o dlls/win32u/opentype.o dlls/win32u/painting.o \
+  dlls/win32u/palette.o dlls/win32u/path.o dlls/win32u/pen.o dlls/win32u/printdrv.o \
+  dlls/win32u/rawinput.o dlls/win32u/region.o dlls/win32u/scroll.o dlls/win32u/spy.o \
+  dlls/win32u/syscall.o dlls/win32u/sysparams.o dlls/win32u/systray.o dlls/win32u/vertical.o \
+  dlls/win32u/vulkan.o dlls/win32u/window.o dlls/win32u/winstation.o dlls/ntdll/ntdll.so -framework \
+  CoreText -framework AppKit -lm
+make_rc_unix=0
+install_rc_unix=0

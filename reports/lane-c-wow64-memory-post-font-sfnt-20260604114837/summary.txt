@@ -1,0 +1,29 @@
+# Lane C WOW64/x86 memory fixture after font sfnt fallback
+
+Date: 2026-06-04
+Report: reports/lane-c-wow64-memory-post-font-sfnt-20260604114837
+Build logs: reports/build/lane-c-win32u-font-sfnt-fallback-20260604114741.log; reports/build/lane-c-ntdll-system-current-refresh-20260604114809.log
+Raw log: reports/lane-c-wow64-memory-post-font-sfnt-20260604114837/memory_x86.log
+
+## Result
+- run_rc=143
+- total_lines=1448052
+- wow64_markers=0
+- btcpu_markers=0
+- cpu_simulate_markers=0
+- bop_markers=0
+- unsupported=0
+- unsupported_font=0
+- setupapi_nodecomp=0
+- vm_fail=0
+- dll_fail=0
+- fixme_stub=0
+- core_id_stub=0
+- actctx=0
+- seh_invalid=1447912
+- hb_runtime_fail=0
+- font_fallback_warns=0
+
+## Interpretation
+No new Lane-C-owned loader/VM/Win32-DLL signature surfaced in this WOW64/x86 probe.
+This run stopped before WOW64 32-bit handoff markers.

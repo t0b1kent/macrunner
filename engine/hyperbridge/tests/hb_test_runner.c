@@ -3333,6 +3333,41 @@ TEST(interp_x64_cmpxchg8b_cmpxchg16b_family) {
     ASSERT(ctx->regs.x64.rax == 0x4142434445464748ULL);
     ASSERT(ctx->regs.x64.rdx == 0x5152535455565758ULL);
 
+    hb_context_t* jit_ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(jit_ctx != NULL);
+    jit_ctx->memory = hb_memory_create(0);
+    ASSERT(jit_ctx->memory != NULL);
+    ASSERT(hb_memory_map(jit_ctx->memory, base16, sizeof(cmpxchg16b_code), HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+    ASSERT(hb_memory_map(jit_ctx->memory, (hb_gva_t)(uintptr_t)mem128_area, sizeof(mem128_area), HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+
+    mem128[0] = 0x0102030405060708ULL;
+    mem128[1] = 0x1112131415161718ULL;
+    jit_ctx->pc = base16;
+    jit_ctx->regs.x64.rip = base16;
+    jit_ctx->regs.x64.rsi = (uint64_t)(uintptr_t)mem128_area;
+    jit_ctx->regs.x64.rax = mem128[0];
+    jit_ctx->regs.x64.rdx = mem128[1];
+    jit_ctx->regs.x64.rbx = 0x2122232425262728ULL;
+    jit_ctx->regs.x64.rcx = 0x3132333435363738ULL;
+    ASSERT(hb_runtime_run(jit_ctx, func16, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(jit_ctx->flags.zf == true);
+    ASSERT(mem128[0] == 0x2122232425262728ULL);
+    ASSERT(mem128[1] == 0x3132333435363738ULL);
+
+    mem128[0] = 0x4142434445464748ULL;
+    mem128[1] = 0x5152535455565758ULL;
+    jit_ctx->pc = base16;
+    jit_ctx->regs.x64.rip = base16;
+    jit_ctx->regs.x64.rax = 0;
+    jit_ctx->regs.x64.rdx = 0;
+    ASSERT(hb_runtime_run(jit_ctx, func16, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    ASSERT(jit_ctx->flags.zf == false);
+    ASSERT(jit_ctx->regs.x64.rax == 0x4142434445464748ULL);
+    ASSERT(jit_ctx->regs.x64.rdx == 0x5152535455565758ULL);
+
+    hb_context_destroy(jit_ctx);
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func8);
     hb_ir_func_destroy(func16);

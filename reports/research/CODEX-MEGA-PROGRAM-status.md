@@ -1441,3 +1441,30 @@ NEXT: commit this checkpoint, relink/install/codesign `ntdll.so`, build/run `tso
 NEXT: commit this Lane A checkpoint, then run Hollow Knight 900s with heartbeat and D3D/Gfx trace
 gates. The immediate pass criterion is clearing the `0x513xxx` livelock and advancing toward
 `GfxDevice`/`D3D11CreateDevice`.
+
+## Lane A checkpoint - 2026-06-04 CMPXCHG16B JIT gate
+
+- Hollow Knight with the TSO atomics/no-hoist checkpoint no longer terminates at the original
+  `0x513xxx` livelock. The next runtime stop was UnityPlayer.dll `rva=0x2bb3cf`, immediately before
+  `lock cmpxchg16b 0x40(%rsi)` at UnityPlayer.dll `rva=0x2bb400`.
+- Root fix added on the Lane A owned JIT side: `HB_IR_CMPXCHG8B` with `HB_SIZE_128` now executes
+  under the existing split-lock gate instead of returning unsupported. It enforces the x86
+  16-byte alignment requirement, compares `RDX:RAX` with the 128-bit memory value, writes
+  `RCX:RBX` on success, writes old memory back to `RDX:RAX` on failure, and updates ZF.
+- Regression coverage: the existing `interp_x64_cmpxchg8b_cmpxchg16b_family` test now also runs
+  the `lock cmpxchg16b 0x40(%rsi)` success and failure cases through `HB_BACKEND_JIT`.
+- Validation:
+  - HyperBridge build: `reports/phase4-hollow-knight/build-20260604-120409-hb-cmpxchg16b-jit-test.log`
+    PASS.
+  - `tools/hb_oracle/fast_validate_family.sh phase1_core`:
+    `reports/phase4-hollow-knight/validate-20260604-120409-phase1-core-cmpxchg16b-jit.log` PASS.
+  - Hollow Knight after the fix:
+    `reports/phase4-hollow-knight/run-20260604-115245-hk-cmpxchg16b-directmem0-300/` crosses
+    the Unity `0x2bb400` gate and records `rva_513xxx=10`, but has not reached
+    `GfxDevice`/`D3D11CreateDevice`.
+- Current active blocker: Mono asserts while constructing `System.RuntimeType`:
+  `invalid vtable method slot 16 with method System.Reflection.MemberInfo:get_Name()`, then faults
+  at mono-2.0-bdwgc.dll `rva=0x1f71a3` on `mov (%rdi),%rax` with `rdi=0`.
+
+NEXT: commit this CMPXCHG16B checkpoint, then diagnose why Mono metadata/vtable state is corrupted
+before `GfxDevice`.

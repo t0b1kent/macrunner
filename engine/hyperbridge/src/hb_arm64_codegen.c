@@ -4918,8 +4918,34 @@ static hb_result_t hb_jit_atomic_cmpxchg8b_split_locked(hb_context_t* ctx,
     bool equal;
     hb_result_t r;
 
-    if (instr->dst.size == HB_SIZE_128)
-        return HB_ERR_UNSUPPORTED_FEATURE;
+    if (instr->dst.size == HB_SIZE_128) {
+        uint64_t mem[2] = {0, 0};
+        uint64_t desired[2];
+
+        if (!ctx || !ctx->memory || instr->dst.type != HB_OP_MEM)
+            return HB_ERR_UNSUPPORTED_FEATURE;
+        addr = hb_jit_resolve_addr(ctx, &instr->dst);
+        if (addr & 0xf)
+            return HB_ERR_MEMORY_FAULT;
+        r = hb_memory_read(ctx->memory, (hb_gva_t)addr, mem, sizeof(mem));
+        if (r != HB_OK) return r;
+
+        acc = hb_context_read_reg_value(ctx, HB_REG_RAX);
+        src = hb_context_read_reg_value(ctx, HB_REG_RDX);
+        equal = mem[0] == acc && mem[1] == src;
+        if (equal) {
+            desired[0] = hb_context_read_reg_value(ctx, HB_REG_RBX);
+            desired[1] = hb_context_read_reg_value(ctx, HB_REG_RCX);
+            r = hb_memory_write(ctx->memory, (hb_gva_t)addr, desired, sizeof(desired));
+            if (r != HB_OK) return r;
+        } else {
+            hb_context_write_reg_value_sized(ctx, HB_REG_RAX, mem[0], HB_SIZE_64);
+            hb_context_write_reg_value_sized(ctx, HB_REG_RDX, mem[1], HB_SIZE_64);
+        }
+        hb_lazy_flags_clear(ctx);
+        ctx->flags.zf = equal;
+        return HB_OK;
+    }
     r = hb_jit_atomic_read_mem_value(ctx, &instr->dst, HB_SIZE_64, &addr, &old);
     if (r != HB_OK) return r;
 

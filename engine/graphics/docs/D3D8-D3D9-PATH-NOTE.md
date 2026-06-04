@@ -72,8 +72,8 @@ multi-UAV, structured/raw buffer and texture SRV-to-UAV, texture-array/3D UAV, a
 groupshared/interlocked compute readbacks, constant-buffer partial updates,
 shader-visible constant-buffer offsetting, overlap buffer copies,
 R32_UINT/R32_FLOAT UAV clear readbacks, depth-only D3D11.1 `ClearView`, and
-two-pass stability
-(`artifacts/dxmt-smoke-logs/lane-d-stability-raw-buffer-20260604-205301.outer.log`).
+five-pass stability
+(`artifacts/dxmt-smoke-logs/lane-d-longrun-compute-expanded-20260604-205810.outer.log`).
 Strict-native x64 guest `winemetal=n` binding remains green but still does not
 reach D3D11/DXGI markers (`artifacts/dxmt-x64-binding/run-20260604-165927/dxmt-x64-binding.log`).
 vkd3d/DXGI prefix dependency gates now include aarch64 standalone `d3d12.dll`

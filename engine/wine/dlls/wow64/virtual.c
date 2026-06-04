@@ -755,6 +755,8 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
     case MemoryBasicInformation:  /* MEMORY_BASIC_INFORMATION */
         if (len < sizeof(MEMORY_BASIC_INFORMATION32))
             status = STATUS_INFO_LENGTH_MISMATCH;
+        else if (!ptr)
+            status = STATUS_ACCESS_VIOLATION;
         else if (addr32 > highest_user_address)
             status = STATUS_INVALID_PARAMETER;
         else
@@ -786,15 +788,19 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
         MEMORY_SECTION_NAME32 *info32 = ptr;
         SIZE_T size = len + sizeof(*info) - sizeof(*info32);
 
-        info = Wow64AllocateTemp( size );
-        if (!(status = NtQueryVirtualMemory( handle, query_addr, class, info, size, &res_len )))
+        if (!ptr) status = STATUS_ACCESS_VIOLATION;
+        else
         {
-            info32->SectionFileName.Length = info->SectionFileName.Length;
-            info32->SectionFileName.MaximumLength = info->SectionFileName.MaximumLength;
-            info32->SectionFileName.Buffer = PtrToUlong( info32 + 1 );
-            memcpy( info32 + 1, info->SectionFileName.Buffer, info->SectionFileName.MaximumLength );
+            info = Wow64AllocateTemp( size );
+            if (!(status = NtQueryVirtualMemory( handle, query_addr, class, info, size, &res_len )))
+            {
+                info32->SectionFileName.Length = info->SectionFileName.Length;
+                info32->SectionFileName.MaximumLength = info->SectionFileName.MaximumLength;
+                info32->SectionFileName.Buffer = PtrToUlong( info32 + 1 );
+                memcpy( info32 + 1, info->SectionFileName.Buffer, info->SectionFileName.MaximumLength );
+            }
+            res_len += sizeof(*info32) - sizeof(*info);
         }
-        res_len += sizeof(*info32) - sizeof(*info);
         break;
     }
 
@@ -802,6 +808,8 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
     {
         if (len < sizeof(MEMORY_REGION_INFORMATION32))
             status = STATUS_INFO_LENGTH_MISMATCH;
+        else if (!ptr)
+            status = STATUS_ACCESS_VIOLATION;
         else if (addr32 > highest_user_address)
             status = STATUS_INVALID_PARAMETER;
         else
@@ -835,6 +843,7 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
         ULONG i, count = len / sizeof(*info32);
 
         if (len < sizeof(*info32)) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!ptr) return STATUS_ACCESS_VIOLATION;
 
         info = Wow64AllocateTemp( count * sizeof(*info) );
         for (i = 0; i < count; i++) info[i].VirtualAddress = ULongToPtr( info32[i].VirtualAddress );
@@ -851,7 +860,8 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
     {
         if (len < sizeof(MEMORY_IMAGE_INFORMATION32)) return STATUS_INFO_LENGTH_MISMATCH;
 
-        if (addr32 > highest_user_address) status = STATUS_INVALID_PARAMETER;
+        if (!ptr) status = STATUS_ACCESS_VIOLATION;
+        else if (addr32 > highest_user_address) status = STATUS_INVALID_PARAMETER;
         else
         {
             MEMORY_IMAGE_INFORMATION info;
@@ -873,6 +883,7 @@ NTSTATUS WINAPI wow64_NtQueryVirtualMemory( UINT *args )
 
     case MemoryWineUnixFuncs:
         if (len != sizeof(UINT64)) status = STATUS_INFO_LENGTH_MISMATCH;
+        else if (!ptr) status = STATUS_ACCESS_VIOLATION;
         else
         {
             UINT64 funcs = 0;

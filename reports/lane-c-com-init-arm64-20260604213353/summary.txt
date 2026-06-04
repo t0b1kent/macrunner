@@ -1,0 +1,51 @@
+app=reports/lane-c-com-init-arm64-20260604213353/com_initialize.log
+run_rc=143
+com_ok=0
+unsupported=0
+ioctl_unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=4
+native_import_nonexec=0
+hb_invalid=0
+markers=
+macrunner-hb-pe-relocate: module=0000087FFDDC0000 image_base=00006FFFFE380000 delta=FFFF987FFFA40000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD800000 image_base=00006FFFFDDB0000 delta=FFFF987FFFA50000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCF60000 image_base=00006FFFFC330000 delta=FFFF988000C30000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCAF0000 image_base=00006FFFFBEB0000 delta=FFFF988000C40000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC9C0000 image_base=00006FFFFDC70000 delta=FFFF987FFED50000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC6E0000 image_base=00006FFFFBBC0000 delta=FFFF988000B20000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC270000 image_base=00006FFFFD770000 delta=FFFF987FFEB00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC190000 image_base=00006FFFFD680000 delta=FFFF987FFEB10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC060000 image_base=00006FFFFBA80000 delta=FFFF9880005E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBF10000 image_base=00006FFFFB920000 delta=FFFF9880005F0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010C22FC70 pc=0000087FFF985270 lr=0000000000000000 sp=000000010C230000 entry=0000000140010448 arg=000000010A120000
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010742FC70 pc=000007FFD0775270 lr=0000000000000000 sp=0000000107430000 x0=000000014001D478 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFEDC0000 delta=FFFF9880009E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF330000 image_base=00006FFFFD770000 delta=FFFF988001BC0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF120000 image_base=00006FFFFEBA0000 delta=FFFF988000580000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEFD0000 image_base=00006FFFFEA40000 delta=FFFF988000590000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE920000 image_base=00006FFFFE380000 delta=FFFF9880005A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE360000 image_base=00006FFFFDDB0000 delta=FFFF9880005B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE280000 image_base=00006FFFFD680000 delta=FFFF988000C00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD9E0000 image_base=00006FFFFC330000 delta=FFFF9880016B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD570000 image_base=00006FFFFBEB0000 delta=FFFF9880016C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD440000 image_base=00006FFFFDC70000 delta=FFFF987FFF7D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD2F0000 image_base=00006FFFFB920000 delta=FFFF9880019D0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010742FC70 pc=000007FFD0775270 lr=0000000000000000 sp=0000000107430000 entry=000000014001D478 arg=000007FFD01F0000
+macrunner-hb-pe-relocate: module=0000087FFD200000 image_base=00006FFFFB820000 delta=FFFF9880019E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD030000 image_base=00006FFFFB640000 delta=FFFF9880019F0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=1 ctx=000000010F8EFC70 pc=000007FFD0775270 lr=0000000000000000 sp=000000010F8F0000 x0=0000000140012690 x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=1 ctx=000000010F8EFC70 pc=000007FFD0775270 lr=0000000000000000 sp=000000010F8F0000 entry=0000000140012690 arg=0000000000000000
+macrunner-hb-ldr-init: phase=before index=2 ctx=00000001118EFC70 pc=000007FFD0775270 lr=0000000000000000 sp=00000001118F0000 x0=0000000140012C2C x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=2 ctx=00000001118EFC70 pc=000007FFD0775270 lr=0000000000000000 sp=00000001118F0000 entry=0000000140012C2C arg=0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFC190000 image_base=00006FFFFA7A0000 delta=FFFF9880019F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBF50000 image_base=00006FFFFA550000 delta=FFFF988001A00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBE40000 image_base=00006FFFFA430000 delta=FFFF988001A10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB820000 image_base=00006FFFFCBE0000 delta=FFFF987FFEC40000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB540000 image_base=00006FFFFBBC0000 delta=FFFF987FFF980000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB410000 image_base=00006FFFFBA80000 delta=FFFF987FFF990000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=3 ctx=000000011480FC70 pc=000007FFD0775270 lr=0000000000000000 sp=0000000114810000 x0=0000087FFF368634 x1=000007FFD024D840 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024D840/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=3 ctx=000000011480FC70 pc=000007FFD0775270 lr=0000000000000000 sp=0000000114810000 entry=0000087FFF368634 arg=000007FFD024D840
+macrunner-hb-pe-relocate: module=0000087FFB210000 image_base=00006FFFFA220000 delta=FFFF988000FF0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAC30000 image_base=00006FFFF9C30000 delta=FFFF988001000000 machine=0xaa64

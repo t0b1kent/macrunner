@@ -1,0 +1,13 @@
+run_rc=143
+success=0
+wow64=0
+btcpu=0
+normalized=0
+image_not_at_base=0
+unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+native_import_nonexec=0
+hb_invalid=0
+tail=macrunner-hb-pe-relocate: module=0000087FFCF70000 image_base=00006FFFFD770000 delta=FFFF987FFF800000 machine=0xaa64 | macrunner-hb-pe-relocate: module=0000087FFCE90000 image_base=00006FFFFD680000 delta=FFFF987FFF810000 machine=0xaa64 | macrunner-hb-pe-relocate: module=0000087FFC870000 image_base=00006FFFFA720000 delta=FFFF988002150000 machine=0xaa64 | macrunner-hb-pe-relocate: module=0000087FFC590000 image_base=00006FFFFA430000 delta=FFFF988002160000 machine=0xaa64 | macrunner-hb-pe-relocate: module=0000087FFC460000 image_base=00006FFFFA2F0000 delta=FFFF988002170000 machine=0xaa64 | macrunner-hb-pe-relocate: module=0000087FFB3F0000 image_base=00006FFFFB0C0000 delta=FFFF988000330000 machine=0xaa64 | macrunner-hb-pe-relocate: module=0000087FFB1B0000 image_base=00006FFFFAE70000 delta=FFFF988000340000 machine=0xaa64 | macrunner-hb-pe-relocate: module=0000087FFB0A0000 image_base=00006FFFFAD50

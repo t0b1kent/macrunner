@@ -1,0 +1,5 @@
+fixture	rc	wow64	btcpu	success	unsupported	ioctl_unsupported	vm_fail	dll_fail	fixme_stub	native_import_nonexec	hb_invalid	log
+file_io_x86	123	252	9	0	0	0	0	0	39	0	1059	reports/lane-c-x86-wow64-api-breadth-post-loader-20260604204540/file_io_x86.log
+hello_x86	1	91	0	0	4	4	0	0	38	0	1288	reports/lane-c-x86-wow64-api-breadth-post-loader-20260604204540/hello_x86.log
+memory_x86	143	52	0	0	0	0	0	0	27	0	40872	reports/lane-c-x86-wow64-api-breadth-post-loader-20260604204540/memory_x86.log
+registry_read_x86	123	252	9	0	0	0	0	0	39	0	1454	reports/lane-c-x86-wow64-api-breadth-post-loader-20260604204540/registry_read_x86.log

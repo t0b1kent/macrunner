@@ -1,0 +1,125 @@
+aarch64-w64-mingw32-clang -c -o dlls/wow64/aarch64-windows/virtual.o /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c \
+  -Idlls/wow64 -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64 \
+  -Iinclude -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/msvcrt -D_MSVCR_VER=0 \
+  -D__WINESRC__ -D__WINE_PE_BUILD -Wall -target aarch64-windows -fuse-ld=lld --no-default-config \
+  -fno-strict-aliasing -Wdeclaration-after-statement -Wempty-body -Wignored-qualifiers -Winit-self \
+  -Wno-microsoft-enum-forward-reference -Wstrict-prototypes -Wtype-limits -Wunused-but-set-parameter \
+  -Wvla -Wwrite-strings -Wpointer-arith -Wabsolute-value -ffunction-sections -fasync-exceptions \
+  -ffp-exception-behavior=maytrap -gdwarf-4 -g -O2
+x86_64-w64-mingw32-gcc -c -o dlls/wow64/x86_64-windows/virtual.o /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c \
+  -Idlls/wow64 -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64 \
+  -Iinclude -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/msvcrt -D_MSVCR_VER=0 \
+  -D__WINESRC__ -D__WINE_PE_BUILD -Wall -target x86_64-windows -fuse-ld=lld --no-default-config \
+  -fno-strict-aliasing -Wdeclaration-after-statement -Wempty-body -Wignored-qualifiers -Winit-self \
+  -Wno-microsoft-enum-forward-reference -Wstrict-prototypes -Wtype-limits -Wunused-but-set-parameter \
+  -Wvla -Wwrite-strings -Wpointer-arith -Wabsolute-value -ffunction-sections -fasync-exceptions \
+  -ffp-exception-behavior=maytrap -fms-hotpatch -Wformat-overflow -Wnonnull -mcx16 -mcmodel=small \
+  -gdwarf-4 -g -O2
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:70:86: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:70:86: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+   70 |         MESSAGE( "macrunner-wow64: guest32-write query out=   70 |         MESSAGE( "macrunner-wow64: guest32-write query out=%p remaining=%lu\n", out, size );
+      |                                                                         ~~~          ^~~~
+      |                                                                         %llu
+%p remaining=%lu\n", /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:74:43: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+out, size );
+      |                                                                         ~~~          ^~~~
+      |                                                                         %llu
+   73 |         MESSAGE( "macrunn/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:74:43: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+er-wow64: guest32-write que   73 |         MESSAGE( "macrunner-wow64: guest32-write query statusr=%08y status=%08lx baslx base=%p esi=%p size=%lu state=%08lx protect=%08lzx\ne=%lu state=%08lx protect=%08lx\n",
+      |                                                                                  ~~~
+      |                                                                                  %llu
+   ",
+      |                                                                                  ~~~
+      |                                                                                  %llu
+74 |                  status, mbi.BaseAddress, mbi.RegionSize, mbi.State, mbi.Prot   74 |  ect );
+      |                                           ^~~~~~~~~~~~~~
+                status, mbi.BaseAddress, mbi.RegionSize, mbi.State, mbi.Protect );
+      |                                           ^~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:91:28: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+   90 |             MESSAGE( "macrunner-wow64: guest32-write pro/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:91te:28ct base=%: warning: p size=%format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+lu old=%   90 | 08lx    \n",
+        MESSAGE( "m      | acrunner-wow                                                                          ~~~
+      |                                                                           %llu64: guest32-write protect base=%p size=
+%lu old=%08lx\n",
+      |                                                                           ~~~
+      |                                                                           %llu
+   91 |                      base, protect_size, mbi.Protect );
+      |                            ^~~~~~~~~~~~
+   91 |                      base, protect_size, mbi.Protect );
+      |                            ^~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:101:23: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+  100 |         MESSAGE( "macrunner-wow64: guest32-write memcpy out=%p chunk=%lu restore=%u\n",
+      |                                                                      ~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:101:23: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+      |                                                                      %llu  100 |         MESSAGE( "macrunner-wow64: guest32-write memcpy out=%p chunk=%lu restore=%u\n",
+      |                                                                      ~~~
+      |                                                                      %llu
+
+  101 |                  out, chunk, restore );
+      |                       ^~~~~
+  101 |                  out, chunk, restore );
+      |                       ^~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:103:88: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+  103 |         MESSAGE( "macrunner-w/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:103:88: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+o  103 | w64: gu   est32-write me     MEmcpy-done out=%p chunk=%lu\SSAGE( "macrunner-wow64: guest32-wn", out, chunk );
+      |                                                                           ~~~          ^~~~~
+      |                                                                           %llu
+rite memcpy-done out=%p chunk=%lu\n", out, chunk );
+      |                                                                           ~~~          ^~~~~
+      |                                                                           %llu
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:112:28: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+  111 |          /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:112:28: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+   MESSAGE( "macrunner-wow64: guest32  111 |             MESSAGE( "macrunne-write restorr-we baow64: guest32-write restore bse=%p size=%lu old=%08lx\ase=%p size=%lu old=%n",
+      |                                                                           ~~~
+      |                                                                           %llu
+08lx\n",
+      |                                                                           ~~~
+      |                                                                           %llu
+  112 |                      base, protect_size, old_protect );
+      |                            ^~~~~~~~~~~~
+  112 |                      base, protect_size, old_protect );
+      |                            ^~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:857:57: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+  856 |             MESSAGE( "macrunner-wow64: MemoryWineUnixFuncs native status=%08lx funcs=%016llx res_len=%lu\n",
+      |                                                                                                      ~~~
+      |                                                                                                      %llu
+  857 |                      status, (unsigned long long)funcs, res_len );
+      |                                                         ^~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:870:34: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+  869 |         MESSAGE( "macrunner-wow64: MemoryWineUnixFuncs return status=%08lx retlen=%p res_len=%lu\n",
+      |                                                                                              ~~~
+      |                                                                                              %llu
+  870 |                  status, retlen, res_len );
+      |                                  ^~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:857:57: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+  856 |             MESSAGE( "macrunner-wow64: MemoryWineUnixFuncs native status=%08lx funcs=%016llx res_len=%lu\n",
+      |                                                                                                      ~~~
+      |                                                                                                      %llu
+  857 |                      status, (unsigned long long)funcs, res_len );
+      |                                                         ^~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/virtual.c:870:34: warning: format specifies type 'unsigned long' but the argument has type 'SIZE_T' (aka 'unsigned long long') [-Wformat]
+  869 |         MESSAGE( "macrunner-wow64: MemoryWineUnixFuncs return status=%08lx retlen=%p res_len=%lu\n",
+      |                                                                                              ~~~
+      |                                                                                              %llu
+  870 |                  status, retlen, res_len );
+      |                                  ^~~~~~~
+8 warnings generated.
+tools/winegcc/winegcc -o dlls/wow64/aarch64-windows/wow64.dll --wine-objdir . -b aarch64-windows -Wl,--wine-builtin -shared \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/wow64.spec \
+  -nodefaultlibs dlls/wow64/aarch64-windows/file.o dlls/wow64/aarch64-windows/process.o \
+  dlls/wow64/aarch64-windows/registry.o dlls/wow64/aarch64-windows/security.o \
+  dlls/wow64/aarch64-windows/sync.o dlls/wow64/aarch64-windows/syscall.o \
+  dlls/wow64/aarch64-windows/system.o dlls/wow64/aarch64-windows/virtual.o \
+  dlls/ntdll/aarch64-windows/libntdll.a dlls/winecrt0/aarch64-windows/libwinecrt0.a \
+  libs/compiler-rt/aarch64-windows/libcompiler-rt.a --no-default-config -Wl,-debug:dwarf
+8 warnings generated.
+tools/winegcc/winegcc -o dlls/wow64/x86_64-windows/wow64.dll --wine-objdir . -b x86_64-windows -Wl,--wine-builtin -shared \
+  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/wow64/wow64.spec \
+  -nodefaultlibs dlls/wow64/x86_64-windows/file.o dlls/wow64/x86_64-windows/process.o \
+  dlls/wow64/x86_64-windows/registry.o dlls/wow64/x86_64-windows/security.o \
+  dlls/wow64/x86_64-windows/sync.o dlls/wow64/x86_64-windows/syscall.o \
+  dlls/wow64/x86_64-windows/system.o dlls/wow64/x86_64-windows/virtual.o \
+  dlls/ntdll/x86_64-windows/libntdll.a dlls/winecrt0/x86_64-windows/libwinecrt0.a \
+  libs/compiler-rt/x86_64-windows/libcompiler-rt.a --no-default-config -fms-hotpatch -Wl,-debug:dwarf

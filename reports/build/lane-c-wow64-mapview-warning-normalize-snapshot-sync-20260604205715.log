@@ -1,0 +1,5 @@
+snapshot=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike
+bf4f38b4432dd8ff589a763a0bc537a23c1a7a7b028b158255915233f7a6295a  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/build-arm64ec-spike/dlls/wow64/aarch64-windows/wow64.dll
+bf4f38b4432dd8ff589a763a0bc537a23c1a7a7b028b158255915233f7a6295a  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/aarch64-windows/wow64.dll
+0513bebed01109c36e2a4e3c9cb6c857652b1f38ca9cd0b41032e513aa27ce03  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/build-arm64ec-spike/dlls/wow64/x86_64-windows/wow64.dll
+0513bebed01109c36e2a4e3c9cb6c857652b1f38ca9cd0b41032e513aa27ce03  /Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-c-dist-snapshots/20260604130752/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64.dll

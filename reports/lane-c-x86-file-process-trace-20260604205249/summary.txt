@@ -1,0 +1,50 @@
+run_rc=143
+success=0
+wow64=62
+btcpu=0
+unsupported=0
+vm_fail=0
+dll_fail=0
+native_import_nonexec=0
+errors=310
+tail=
+0090:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF7FB788 lr=0000087FFF7FB78C type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010734f970 stack=0000000106358000-0000000107350000
+0090:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+0090:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+0090:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF7FB788 lr=0000087FFF7FB78C type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010734f970 stack=0000000106358000-0000000107350000
+0090:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+0090:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+0090:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF7FB788 lr=0000087FFF7FB78C type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010734f970 stack=0000000106358000-0000000107350000
+0090:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+0090:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+0090:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF7FB788 lr=0000087FFF7FB78C type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010734f970 stack=0000000106358000-0000000107350000
+0090:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+0090:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+0090:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF7FB788 lr=0000087FFF7FB78C type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010734f970 stack=0000000106358000-0000000107350000
+0090:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+0090:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+0090:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF7FB788 lr=0000087FFF7FB78C type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010734f970 stack=0000000106358000-0000000107350000
+0090:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+0090:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+0090:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF7FB788 lr=0000087FFF7FB78C type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010734f970 stack=0000000106358000-0000000107350000
+0090:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+0090:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+0090:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF7FB788 lr=0000087FFF7FB78C type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010734f970 stack=0000000106358000-0000000107350000
+0090:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+0090:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+006c:trace:module:LdrShutdownThread ()
+006c:trace:module:MODULE_InitDLL (0000087FFF330000 L"rpcrt4.dll",THREAD_DETACH,0000000000000000) - CALL
+006c:trace:module:MODULE_InitDLL (0000087FFF330000,THREAD_DETACH,0000000000000000) - RETURN 1
+006c:trace:module:MODULE_InitDLL (0000087FFE360000 L"msvcrt.dll",THREAD_DETACH,0000000000000000) - CALL
+006c:trace:module:MODULE_InitDLL (0000087FFE360000,THREAD_DETACH,0000000000000000) - RETURN 1
+006c:trace:module:MODULE_InitDLL (0000087FFE920000 L"ucrtbase.dll",THREAD_DETACH,0000000000000000) - CALL
+006c:trace:module:MODULE_InitDLL (0000087FFE920000,THREAD_DETACH,0000000000000000) - RETURN 1
+005c:trace:module:LdrShutdownThread ()
+005c:trace:module:MODULE_InitDLL (0000087FFF330000 L"rpcrt4.dll",THREAD_DETACH,0000000000000000) - CALL
+005c:trace:module:MODULE_InitDLL (0000087FFF330000,THREAD_DETACH,0000000000000000) - RETURN 1
+005c:trace:module:MODULE_InitDLL (0000087FFE360000 L"msvcrt.dll",THREAD_DETACH,0000000000000000) - CALL
+005c:trace:module:MODULE_InitDLL (0000087FFE360000,THREAD_DETACH,0000000000000000) - RETURN 1
+005c:trace:module:MODULE_InitDLL (0000087FFE920000 L"ucrtbase.dll",THREAD_DETACH,0000000000000000) - CALL
+005c:trace:module:MODULE_InitDLL (0000087FFE920000,THREAD_DETACH,0000000000000000) - RETURN 1
+[mr-run] exit=143 (prefix auto-removed on exit)
+

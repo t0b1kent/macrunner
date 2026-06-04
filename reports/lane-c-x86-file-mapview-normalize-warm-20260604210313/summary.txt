@@ -1,0 +1,13 @@
+report=reports/lane-c-x86-file-mapview-normalize-warm-20260604210313/summary.txt
+run_rc=143
+success=0
+wow64=0
+btcpu=0
+normalized=0
+image_not_at_base=0
+unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+native_import_nonexec=0
+hb_invalid=0

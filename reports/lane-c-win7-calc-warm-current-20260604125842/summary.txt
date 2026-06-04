@@ -1,0 +1,128 @@
+app=Калькулятор из Windows 7/Calc/calc.exe
+run_rc=143
+file_info=Калькулятор из Windows 7/Calc/calc.exe: PE32+ executable (GUI) x86-64, for MS Windows
+wow64_markers=613
+window_markers=1
+unsupported=0
+vm_fail=0
+dll_fail=0
+fixme_stub=0
+actctx=3
+hb_runtime_fail=0
+seh_invalid=290699
+hashes:
+75a9513b7ff2b6ae34af4334b4fc9e2eee1a3554e46914b75b5fd3b571bc6d75  engine/wine/build-arm64ec-spike/dlls/ntdll/ntdll.so
+d583247d0bf6a23747851a78e6d200135bca5680651becea398c5ea38c660fa1  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so
+d583247d0bf6a23747851a78e6d200135bca5680651becea398c5ea38c660fa1  engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/ntdll.so
+relevant_lines:
+552:synced artifacts/_mr-run.Azv2YR/drive_c/windows/system32/wow64.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64.dll
+553:synced artifacts/_mr-run.Azv2YR/drive_c/windows/system32/wow64cpu.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64cpu.dll
+554:synced artifacts/_mr-run.Azv2YR/drive_c/windows/system32/wow64win.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64win.dll
+615:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/acledit.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/acledit.dll
+616:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/aclui.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/aclui.dll
+617:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/activeds.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/activeds.dll
+618:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/actxprxy.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/actxprxy.dll
+619:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/adsldp.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/adsldp.dll
+620:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/adsldpc.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/adsldpc.dll
+621:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/advapi32.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/advapi32.dll
+622:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/advpack.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/advpack.dll
+623:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/amsi.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/amsi.dll
+624:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/amstream.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/amstream.dll
+625:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/apisetschema.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/apisetschema.dll
+626:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/apphelp.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/apphelp.dll
+627:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/appxdeploymentclient.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/appxdeploymentclient.dll
+628:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/atl.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/atl.dll
+629:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/atl100.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/atl100.dll
+630:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/atl110.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/atl110.dll
+631:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/atl80.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/atl80.dll
+632:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/atl90.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/atl90.dll
+633:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/atlthunk.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/atlthunk.dll
+634:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/atmlib.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/atmlib.dll
+635:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/authz.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/authz.dll
+636:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/avicap32.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/avicap32.dll
+637:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/avifil32.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/avifil32.dll
+638:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/avrt.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/avrt.dll
+639:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/bcp47langs.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/bcp47langs.dll
+640:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/bcrypt.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/bcrypt.dll
+641:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/bcryptprimitives.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/bcryptprimitives.dll
+642:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/bluetoothapis.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/bluetoothapis.dll
+643:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/browseui.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/browseui.dll
+644:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cabinet.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cabinet.dll
+645:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cards.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cards.dll
+646:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cdosys.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cdosys.dll
+647:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cfgmgr32.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cfgmgr32.dll
+648:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/clusapi.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/clusapi.dll
+649:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/colorcnv.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/colorcnv.dll
+650:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/combase.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/combase.dll
+651:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/comcat.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/comcat.dll
+652:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/comctl32_v6.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/comctl32_v6.dll
+653:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/comctl32.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/comctl32.dll
+654:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/comdlg32.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/comdlg32.dll
+655:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/coml2.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/coml2.dll
+656:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/compstui.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/compstui.dll
+657:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/comsvcs.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/comsvcs.dll
+658:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/concrt140.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/concrt140.dll
+659:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/connect.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/connect.dll
+660:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/coremessaging.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/coremessaging.dll
+661:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/credui.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/credui.dll
+662:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/crtdll.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/crtdll.dll
+663:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/crypt32.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/crypt32.dll
+664:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cryptbase.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cryptbase.dll
+665:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cryptdlg.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cryptdlg.dll
+666:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cryptdll.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cryptdll.dll
+667:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cryptext.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cryptext.dll
+668:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cryptnet.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cryptnet.dll
+669:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cryptowinrt.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cryptowinrt.dll
+670:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cryptsp.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cryptsp.dll
+671:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cryptui.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cryptui.dll
+672:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/cryptxml.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/cryptxml.dll
+673:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/ctapi32.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/ctapi32.dll
+674:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/ctl3d32.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/ctl3d32.dll
+675:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d2d1.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d2d1.dll
+676:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3d10_1.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3d10_1.dll
+677:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3d10.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3d10.dll
+678:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3d10core.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3d10core.dll
+679:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3d11.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3d11.dll
+680:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3d12.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3d12.dll
+681:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3d12core.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3d12core.dll
+682:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3d8.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3d8.dll
+683:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3d8thk.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3d8thk.dll
+684:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3d9.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3d9.dll
+685:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3dcompiler_33.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3dcompiler_33.dll
+686:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3dcompiler_34.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3dcompiler_34.dll
+687:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3dcompiler_35.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3dcompiler_35.dll
+688:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3dcompiler_36.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3dcompiler_36.dll
+689:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3dcompiler_37.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3dcompiler_37.dll
+690:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3dcompiler_38.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3dcompiler_38.dll
+691:synced artifacts/_mr-run.Azv2YR/drive_c/windows/syswow64/d3dcompiler_39.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-windows/d3dcompiler_39.dll
+last_log_lines:
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised
+002c:warn:seh:virtual_unwind exception data not found for pc 000007FFD01E3400, lr 000007FFD01E3404
+002c:warn:seh:dispatch_exception EXCEPTION_INVALID_DISPOSITION exception (code=c0000026) raised

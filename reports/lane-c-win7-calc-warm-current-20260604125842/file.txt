@@ -1,0 +1,1 @@
+Калькулятор из Windows 7/Calc/calc.exe: PE32+ executable (GUI) x86-64, for MS Windows

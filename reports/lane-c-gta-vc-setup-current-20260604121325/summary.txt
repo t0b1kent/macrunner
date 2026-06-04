@@ -1,0 +1,23 @@
+# Lane C GTA Vice City setup PE32 current runtime
+
+Date: 2026-06-04
+Report: reports/lane-c-gta-vc-setup-current-20260604121325
+Extraction log: reports/build/lane-c-gta-vc-disc-extract-20260604121302.log
+Raw log: reports/lane-c-gta-vc-setup-current-20260604121325/run.log
+
+## Result
+- run_rc=143
+- total_lines=633717
+- wow64_markers=4
+- btcpu_markers=0
+- cpu_simulate_markers=0
+- unsupported=0
+- vm_fail=0
+- dll_fail=0
+- fixme_stub=0
+- actctx=0
+- hb_runtime_fail=0
+- seh_invalid=630030
+
+## Interpretation
+No new Lane-C-owned loader/VM/Win32-DLL signature surfaced in this GTA setup PE32 probe.

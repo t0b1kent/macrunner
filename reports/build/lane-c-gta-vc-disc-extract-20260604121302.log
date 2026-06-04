@@ -1,0 +1,31 @@
+stamp=20260604121302
+disk-guard: free before = 101 GB (min required = 30 GB)
+disk_guard_rc=0
+
+7-Zip [64] 17.05 : Copyright (c) 1999-2021 Igor Pavlov : 2017-08-28
+p7zip Version 17.05 (locale=utf8,Utf16=on,HugeFiles=on,64 bits,8 CPUs LE)
+
+Scanning the drive for archives:
+1 file, 1750302720 bytes (1670 MiB)
+
+Extracting archive: GTA VICE CITY 1C/GTA-VC.mdf
+--
+Path = GTA VICE CITY 1C/GTA-VC.mdf
+Type = Iso
+Physical Size = 1750302720
+Created = 2009-05-26 18:34:00
+Modified = 2009-05-26 18:34:00
+
+Everything is Ok
+
+Folders: 5
+Files: 199
+Size:       1749669757
+Compressed: 1750302720
+extract_rc=0
+artifacts/games/gta-vc-disc/autorun.exe
+artifacts/games/gta-vc-disc/Res/Cycle.bin
+artifacts/games/gta-vc-disc/Setup-1.bin
+artifacts/games/gta-vc-disc/Setup-2.bin
+artifacts/games/gta-vc-disc/Setup-3.bin
+artifacts/games/gta-vc-disc/Setup.exe

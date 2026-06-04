@@ -1,0 +1,5 @@
+fixture	run_rc	fixture_ok	unsupported	ioctl_unsupported	vm_fail	dll_fail	fixme_stub	actctx	hb_runtime_fail	seh_invalid
+dll_import_arm64.exe	0	0	0	0	0	0	0	6	0	3
+dll_loadlibrary_arm64.exe	0	3	0	0	0	0	0	6	0	3
+shortcut_creation_smoke_arm64.exe	0	3	0	0	0	0	0	6	0	3
+clipboard_text_arm64.exe	unknown-killed	1	0	0	0	0	0	3	0	662255

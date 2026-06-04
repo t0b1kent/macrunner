@@ -33,9 +33,20 @@ Validation:
   `reports/phase4-hollow-knight/fuzz-20260604-unaligned-direct-x64-logic-cmov.json`,
   `cases_run=10000`, families `int_logic_flags=6668`, `cmov_setcc=3332`,
   `backend_mismatch_count=0`, `oracle_mismatch_count=0`, `oracle_pass_count=10000`.
+- Forced relink/install/sign:
+  `reports/phase4-hollow-knight/build-20260604-unaligned-direct-ntdll-forced.log`,
+  `reports/phase4-hollow-knight/install-20260604-unaligned-direct-forced-ntdll.log`;
+  unsigned snapshot hash `d51564e5c78d9da93b656f560c18d8b53208d69ad2d2cb2f4502d4c854f02cc4`,
+  signed dist hash `3fa61badc006004abf8acb8b7a7144244a923fa186785b49eb2c32805d167beb`.
+- TSO litmus under MacRunner:
+  `reports/phase4-hollow-knight/tso-litmus-run-20260604-unaligned-direct/split.log`
+  has `PASS split-lock xadd`; isolated reruns in
+  `reports/phase4-hollow-knight/tso-litmus-run-20260604-unaligned-direct-isolated/`
+  have `PASS mp`, `PASS xadd`, and `PASS sb: both0_seen=0`. Earlier same-ntdll batch logs also
+  have `PASS spin` and `PASS cas`.
 
-NEXT: commit this checkpoint, relink/install/sign `ntdll.so`, rerun all TSO litmus modes, then
-resume the Hollow Knight 900s climb.
+NEXT: run Hollow Knight 900s with heartbeat capture; confirm whether it leaves the old
+`0x513xxx` gate and reaches `GfxDevice` / `D3D11CreateDevice` / swapchain / present.
 
 ## Lane A checkpoint — 2026-06-04 helper-side TSO ordering and XCHG atomicity
 Checkpointed diagnostic WIP first as `e93b485 checkpoint(Lane A): capture Mono vtable probe`.

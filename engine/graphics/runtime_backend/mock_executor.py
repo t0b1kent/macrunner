@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from typing import Iterable
 
-from engine.graphics.d3d9_to_d3d11 import apply_d3d9_wvp
+from engine.graphics.d3d9_to_d3d11 import apply_d3d9_wvp, d3d9_effective_indices
 from engine.graphics.metal_ir.render_state import RenderResult, RenderState, Vertex
 
 Color = tuple[int, int, int, int]
@@ -93,7 +93,7 @@ class MockExecutor:
         return result
 
     def _draw_indexed_triangles(self, state: RenderState, pixels: list[Color], depth: list[float]) -> None:
-        self._draw_triangles(state, pixels, depth, state.index_buffer)
+        self._draw_triangles(state, pixels, depth, d3d9_effective_indices(state.index_buffer, state.pipeline.metadata, state.topology))
 
     def _draw_triangles(self, state: RenderState, pixels: list[Color], depth: list[float], indices: list[int]) -> None:
         if state.topology in {"trianglestrip", "D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP"}:

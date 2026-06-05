@@ -13,6 +13,7 @@ SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
 DEPTH_TRACE = ROOT / "traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
+INDEX_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
 ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
 
@@ -166,6 +167,20 @@ def test_d3d9_depth_state_rejects_later_far_pixels(tmp_path):
     assert depth["z_write_enable"] is True
     assert depth["z_func"] == "D3DCMP_LESSEQUAL"
     assert state.pipeline.depth_target_bound is True
+
+
+def test_d3d9_indexed_draw_range_limits_primitives(tmp_path):
+    result = replay(INDEX_RANGE_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 350
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (4, 8, 16)
+
+    state = load_trace(INDEX_RANGE_TRACE)
+    draw = state.pipeline.metadata["d3d9_draw_range"]
+    assert draw["start_index"] == 3
+    assert draw["primitive_count"] == 1
+    assert state.index_buffer == [0, 1, 2, 3, 4, 5]
 
 
 def test_d3d9_xna_alpha_blend_sprite_records_output_merger_state(tmp_path):

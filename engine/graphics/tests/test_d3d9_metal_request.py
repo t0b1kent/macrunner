@@ -13,6 +13,7 @@ TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_r
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
 DEPTH_TRACE = ROOT / "traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
+INDEX_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
 
 
 def test_d3d9_xna_alpha_blend_writes_metal_request_contract(tmp_path):
@@ -176,3 +177,21 @@ def test_d3d9_depth_writes_metal_depth_contract(tmp_path):
     assert depth["z_enable"] is True
     assert depth["z_write_enable"] is True
     assert depth["z_func"] == "D3DCMP_LESSEQUAL"
+
+
+def test_d3d9_indexed_range_writes_effective_metal_indices(tmp_path):
+    state = load_trace(INDEX_RANGE_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(INDEX_RANGE_TRACE),
+        name="indexed-range",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "indexed_triangle"
+    assert payload["indices"] == [3, 4, 5]
+    assert payload["index_count"] == 3
+    assert payload["d3d9"]["draw_range"]["start_index"] == 3
+    assert payload["d3d9"]["draw_range"]["primitive_count"] == 1

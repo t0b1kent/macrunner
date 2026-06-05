@@ -147,6 +147,22 @@ def apply_d3d9_wvp(position: tuple[float, float, float, float], metadata: dict[s
     return tuple(sum(values[row] * float(matrix[row * 4 + col]) for row in range(4)) for col in range(4))  # type: ignore[return-value]
 
 
+def d3d9_effective_indices(index_buffer: list[int], metadata: dict[str, Any], topology: str | None) -> list[int]:
+    draw = metadata.get("d3d9_draw_range")
+    if not draw:
+        return list(index_buffer)
+    start_index = int(draw.get("start_index", 0))
+    primitive_count = int(draw.get("primitive_count", 0))
+    base_vertex = int(draw.get("base_vertex_index", 0))
+    if topology in {"trianglestrip", "D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP"}:
+        count = primitive_count + 2
+    else:
+        count = primitive_count * 3
+    if count <= 0:
+        return []
+    return [base_vertex + index for index in index_buffer[start_index:start_index + count]]
+
+
 def _color(value: Any) -> tuple[int, int, int, int]:
     if isinstance(value, int):
         argb = value
@@ -379,6 +395,14 @@ def apply_d3d9_event(state: RenderState, command: str, payload: dict[str, Any]) 
             str(payload.get("primitive_type", "D3DPT_TRIANGLELIST")),
             "trianglelist",
         )
+        if command == "draw_indexed_primitive":
+            state.pipeline.metadata["d3d9_draw_range"] = {
+                "base_vertex_index": int(payload.get("base_vertex_index", 0)),
+                "min_vertex_index": int(payload.get("min_vertex_index", 0)),
+                "num_vertices": int(payload.get("num_vertices", len(state.vertex_buffer))),
+                "start_index": int(payload.get("start_index", 0)),
+                "primitive_count": int(payload.get("primitive_count", 0)),
+            }
         if not state.pipeline.metadata.get("programmable"):
             _bind_fixed_function_shader(state)
             _update_ffp_shader_metadata(state)

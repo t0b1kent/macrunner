@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from engine.graphics.d3d9_to_d3d11 import d3d9_effective_indices
 from engine.graphics.metal_ir.render_state import RenderResult, RenderState
 from engine.graphics.runtime_backend.mock_executor import MockExecutor
 
@@ -74,10 +75,12 @@ class MetalExecutor:
         return {"request_path": str(request), "payload": payload}
 
     def request_payload(self, state: RenderState, *, ppm_path: str | Path, report_path: str | Path, trace_path: str | None = None) -> dict:
+        metadata = state.pipeline.metadata
+        indices = d3d9_effective_indices(state.index_buffer, metadata, state.topology) if state.api in {"d3d8", "d3d9"} else list(state.index_buffer)
         mode = "clear"
         if state.texture:
             mode = "texture"
-        elif state.index_buffer:
+        elif indices:
             mode = "indexed_triangle"
         elif state.vertex_buffer:
             mode = "triangle"
@@ -96,10 +99,10 @@ class MetalExecutor:
             "texture_size": list(state.texture_size) if state.texture_size else None,
             "texture_pixels": [list(pixel) for pixel in state.texture] if state.texture else None,
             "vertices": [vertex.to_dict() for vertex in state.vertex_buffer],
-            "indices": list(state.index_buffer),
+            "indices": indices,
             "index_format": state.pipeline.metadata.get("d3d9_index_format", "uint16"),
             "vertex_count": len(state.vertex_buffer),
-            "index_count": len(state.index_buffer),
+            "index_count": len(indices),
             "present_count": state.present_count,
             "frame_index": state.frame_index,
             "trace_path": trace_path,
@@ -118,7 +121,6 @@ class MetalExecutor:
             },
         }
         if state.api in {"d3d8", "d3d9"}:
-            metadata = state.pipeline.metadata
             payload["d3d9"] = {
                 "translation_target": metadata.get("translation_target"),
                 "fixed_function": metadata.get("fixed_function", False),
@@ -133,6 +135,7 @@ class MetalExecutor:
                 "wvp_matrix": metadata.get("d3d9_wvp_matrix"),
                 "index_format": metadata.get("d3d9_index_format"),
                 "index_format_raw": metadata.get("d3d9_index_format_raw"),
+                "draw_range": metadata.get("d3d9_draw_range", {}),
                 "texture_format": metadata.get("d3d9_texture_format"),
                 "ffp_shader": metadata.get("d3d9_ffp_shader", {}),
             }

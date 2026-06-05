@@ -3475,8 +3475,14 @@ static bool emit_mono_string_equal(hb_codegen_buffer_t* buf,
     return true;
 }
 
+static bool mono_metadata_fusions_disabled(void) {
+    const char* env = getenv("MACRUNNER_HB_DISABLE_MONO_METADATA_FUSIONS");
+    return env && *env && *env != '0';
+}
+
 static bool emit_mono_metadata_bsearch_loop(hb_codegen_buffer_t* buf,
                                             const hb_ir_block_t* block) {
+    if (mono_metadata_fusions_disabled()) return false;
     if (!mono_metadata_bsearch_loop_candidate(block)) return false;
     const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
     if (trace && *trace && *trace != '0') {
@@ -3493,6 +3499,7 @@ static bool emit_mono_metadata_bsearch_loop(hb_codegen_buffer_t* buf,
 
 static bool emit_mono_metadata_rowptr_entry(hb_codegen_buffer_t* buf,
                                             const hb_ir_block_t* block) {
+    if (mono_metadata_fusions_disabled()) return false;
     if (!mono_metadata_rowptr_entry_candidate(block)) return false;
     const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
     if (trace && *trace && *trace != '0') {
@@ -3509,6 +3516,7 @@ static bool emit_mono_metadata_rowptr_entry(hb_codegen_buffer_t* buf,
 
 static bool emit_mono_metadata_decode_row_loop(hb_codegen_buffer_t* buf,
                                                const hb_ir_block_t* block) {
+    if (mono_metadata_fusions_disabled()) return false;
     if (!mono_metadata_decode_row_loop_candidate(block)) return false;
     const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
     if (trace && *trace && *trace != '0') {
@@ -3525,6 +3533,7 @@ static bool emit_mono_metadata_decode_row_loop(hb_codegen_buffer_t* buf,
 
 static bool emit_mono_metadata_decode_row_entry(hb_codegen_buffer_t* buf,
                                                 const hb_ir_block_t* block) {
+    if (mono_metadata_fusions_disabled()) return false;
     if (!mono_metadata_decode_row_entry_candidate(block)) return false;
     const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
     if (trace && *trace && *trace != '0') {
@@ -3541,6 +3550,14 @@ static bool emit_mono_metadata_decode_row_entry(hb_codegen_buffer_t* buf,
 
 static bool emit_mono_metadata_decode_col(hb_codegen_buffer_t* buf,
                                           const hb_ir_block_t* block) {
+    if (mono_metadata_fusions_disabled()) return false;
+    /*
+     * Hollow Knight/Unity Mono mini_init trips System.RuntimeType vtable slot
+     * validation when this helper fuses mono_metadata_decode_row_col
+     * (mono-2.0-bdwgc.dll RVA 0x184130). Keep the rest of the metadata
+     * fast paths enabled while this column decoder falls back to normal IR.
+     */
+    return false;
     if (!mono_metadata_decode_col_candidate(block)) return false;
     const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
     if (trace && *trace && *trace != '0') {
@@ -3557,6 +3574,7 @@ static bool emit_mono_metadata_decode_col(hb_codegen_buffer_t* buf,
 
 static bool emit_mono_metadata_coded_index_search(hb_codegen_buffer_t* buf,
                                                   const hb_ir_block_t* block) {
+    if (mono_metadata_fusions_disabled()) return false;
     if (!mono_metadata_coded_index_search_candidate(block)) return false;
     const char* trace = getenv("MACRUNNER_HB_TRACE_JIT_BLOCKS");
     if (trace && *trace && *trace != '0') {

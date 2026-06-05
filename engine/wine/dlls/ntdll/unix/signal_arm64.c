@@ -37,6 +37,7 @@
 #include <unistd.h>
 #ifdef __APPLE__
 # include <dlfcn.h>
+# include <mach/arm/thread_status.h>
 #endif
 #ifdef HAVE_SYS_PARAM_H
 # include <sys/param.h>
@@ -2875,6 +2876,10 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
     macrunner_hb_chain_signal( sig, siginfo, sigcontext );
 }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+static void macrunner_hb_start_arm64ec_spin_watchdog(void);
+#endif
+
 static void macrunner_hb_install_primary_signal_handlers( const char *stage, BOOL x64_image_trigger )
 {
     struct sigaction sig_act;
@@ -2916,11 +2921,100 @@ static void macrunner_hb_install_primary_signal_handlers( const char *stage, BOO
 
     fprintf( stderr, "macrunner-hb-signal-init: pid=%d stage=%s-primary-installed rc=%d/%d/%d\n",
              getpid(), stage, segv_rc, ill_rc, bus_rc );
+#if defined(__APPLE__) && defined(__aarch64__)
+    macrunner_hb_start_arm64ec_spin_watchdog();
+#endif
 }
 
 void macrunner_hb_prepare_x64_guest_fault_handlers( const char *stage )
 {
     macrunner_hb_install_primary_signal_handlers( stage, TRUE );
+}
+#endif
+
+#if defined(__APPLE__) && defined(__aarch64__)
+static void macrunner_hb_trace_arm64ec_watchdog_bytes( mach_vm_address_t addr, char *buf,
+                                                       size_t buf_size )
+{
+    uint8_t bytes[32];
+    mach_vm_size_t out_size = 0;
+    kern_return_t kr;
+    size_t i, pos = 0;
+
+    if (!buf_size) return;
+    buf[0] = 0;
+    kr = mach_vm_read_overwrite( mach_task_self(), addr, sizeof(bytes),
+                                 (mach_vm_address_t)(uintptr_t)bytes, &out_size );
+    if (kr != KERN_SUCCESS)
+    {
+        snprintf( buf, buf_size, "read=%d", kr );
+        return;
+    }
+    for (i = 0; i < out_size && pos + 3 < buf_size; i++)
+        pos += snprintf( buf + pos, buf_size - pos, "%02x", bytes[i] );
+}
+
+static void *macrunner_hb_arm64ec_spin_watchdog_thread( void *arg )
+{
+    int sample, thread_index;
+
+    (void)arg;
+    usleep( 3000000 );
+    for (sample = 0; sample < 30; sample++)
+    {
+        thread_act_array_t threads = NULL;
+        mach_msg_type_number_t thread_count = 0;
+        kern_return_t kr = task_threads( mach_task_self(), &threads, &thread_count );
+
+        if (kr != KERN_SUCCESS)
+        {
+            fprintf( stderr, "macrunner-hb-arm64ec-watchdog: sample=%d task_threads=%d\n",
+                     sample, kr );
+            fflush( stderr );
+            usleep( 1000000 );
+            continue;
+        }
+        for (thread_index = 0; thread_index < thread_count; thread_index++)
+        {
+            arm_thread_state64_t state;
+            mach_msg_type_number_t state_count = ARM_THREAD_STATE64_COUNT;
+            char bytes[80];
+            uint64_t pc;
+
+            if (threads[thread_index] == mach_thread_self()) continue;
+            kr = thread_get_state( threads[thread_index], ARM_THREAD_STATE64,
+                                   (thread_state_t)&state, &state_count );
+            if (kr != KERN_SUCCESS) continue;
+            pc = state.__pc;
+            if (pc < 0x0000080000000000ULL) continue;
+            macrunner_hb_trace_arm64ec_watchdog_bytes( (mach_vm_address_t)(pc & ~3ULL),
+                                                       bytes, sizeof(bytes) );
+            fprintf( stderr, "macrunner-hb-arm64ec-watchdog: sample=%d thread=%d "
+                     "pc=%p lr=%p sp=%p x4=%p x16=%p x18=%p bytes=%s\n",
+                     sample, thread_index, (void *)(uintptr_t)pc,
+                     (void *)(uintptr_t)state.__lr, (void *)(uintptr_t)state.__sp,
+                     (void *)(uintptr_t)state.__x[4], (void *)(uintptr_t)state.__x[16],
+                     (void *)(uintptr_t)state.__x[18], bytes );
+            fflush( stderr );
+        }
+        if (threads)
+            vm_deallocate( mach_task_self(), (vm_address_t)threads,
+                           thread_count * sizeof(*threads) );
+        usleep( 1000000 );
+    }
+    return NULL;
+}
+
+static void macrunner_hb_start_arm64ec_spin_watchdog(void)
+{
+    static BOOL started;
+    pthread_t thread;
+    const char *env = getenv( "MACRUNNER_HB_TRACE_ARM64EC_SPIN_WATCHDOG" );
+
+    if (started || !env || !env[0] || env[0] == '0') return;
+    started = TRUE;
+    if (!pthread_create( &thread, NULL, macrunner_hb_arm64ec_spin_watchdog_thread, NULL ))
+        pthread_detach( thread );
 }
 #endif
 
@@ -2995,6 +3089,7 @@ void signal_init_process(void)
     macrunner_hb_wine_signal_handlers_ready = TRUE;
     macrunner_hb_primary_signal_pre_wine_installed = FALSE;
     macrunner_hb_install_primary_signal_handlers( "wine-process", FALSE );
+    macrunner_hb_start_arm64ec_spin_watchdog();
 #else
     macrunner_hb_note_x64_guest_fault_handlers_ready();
 #endif

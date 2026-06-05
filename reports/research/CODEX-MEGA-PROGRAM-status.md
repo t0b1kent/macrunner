@@ -7,6 +7,35 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
+## Lane A checkpoint - 2026-06-05 Mono metadata decode-col guard
+
+Root/current gate changed: TSO litmus remains green from the 2026-06-04 matrix, and the old
+`0x51589d` / `0x513xxx` region is not the window blocker. The Mono invalid-vtable assertion was
+caused by the JIT Mono metadata column fusion for `mono_metadata_decode_row_col`
+(`mono-2.0-bdwgc.dll` RVA `0x184130`). `engine/hyperbridge/src/hb_arm64_codegen.c` now keeps the
+global `MACRUNNER_HB_DISABLE_MONO_METADATA_FUSIONS` kill switch and guards the decode-col fusion so
+that block falls back to normal IR.
+
+Validation after rebuild/relink/install/sign:
+- Build/install/sign: `reports/phase4-hollow-knight/build-20260605-093236-mono-class-flags-trace.log`,
+  rc=0.
+- Targeted return trace:
+  `reports/phase4-hollow-knight/run-20260605-093914-mono-class-flags-180/` shows
+  `mono_class_get_flags+0x51` (`RVA 0xcf021`) returns correctly to `RVA 0xc1be`; no runtime-fail.
+- Fresh-prefix HK:
+  `reports/phase4-hollow-knight/run-20260605-101305-hk-freshprefix-240/` entered HyperBridge and
+  reached `hb_count=2173`, `blocks=0x1e58e2` (`1,988,834`) with `assertions=0`,
+  `D3D11CreateDevice=0`, `GfxDevice=0`.
+- Warm-prefix/no-entry variance observed in
+  `run-20260605-095008-hk-post-vtable-300`,
+  `run-20260605-095714-hk-post-vtable-validate-300`, and
+  `run-20260605-100420-hk-post-vtable-classflags-300`: `heartbeat_count=0`, loader init starts,
+  process idles until timeout. Use fresh-prefix for the next decisive HK climb.
+
+NEXT: run a fresh-prefix 900s Hollow Knight climb with heartbeat enabled. If it still times out
+before `GfxDevice` / `D3D11CreateDevice`, trace the last active post-Mono park from that 900s run;
+do not return to TSO or throughput knobs.
+
 ## Lane A checkpoint - 2026-06-04 HK `0x51589d` is assertion formatting, not a TSO spin
 Litmus verdict: `mp`, `spin`, `cas`, `xadd`, and `split` all PASS in
 `reports/phase4-hollow-knight/run-20260604-113246-tso-litmus-final-matrix-greencheck/`;

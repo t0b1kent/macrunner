@@ -199,23 +199,37 @@ class MockExecutor:
         alpha_arg1 = self._resolve_d3d9_arg(str(ffp.get("alpha_arg1", "D3DTA_DIFFUSE")), diffuse, texture, texture_factor)
         alpha_arg2 = self._resolve_d3d9_arg(str(ffp.get("alpha_arg2", "D3DTA_TEXTURE")), diffuse, texture, texture_factor)
         alpha_op = str(ffp.get("alpha_op", "D3DTOP_SELECTARG1"))
-        rgb = self._apply_d3d9_op(color_op, color_arg1, color_arg2)
-        alpha = self._apply_d3d9_op(alpha_op, alpha_arg1, alpha_arg2)[3]
+        rgb = self._apply_d3d9_op(color_op, color_arg1, color_arg2, diffuse, texture)
+        alpha = self._apply_d3d9_op(alpha_op, alpha_arg1, alpha_arg2, diffuse, texture)[3]
         shaded = (rgb[0], rgb[1], rgb[2], alpha)
         return shaded if self._passes_alpha_test(ffp, alpha) else None
 
     @staticmethod
     def _resolve_d3d9_arg(arg: str, diffuse: Color, texture: Color | None, texture_factor: Color) -> Color:
-        normalized = arg.replace("D3DTA_", "").replace("|D3DTA_COMPLEMENT", "")
+        complement = "D3DTA_COMPLEMENT" in arg
+        alpha_replicate = "D3DTA_ALPHAREPLICATE" in arg
+        normalized = (
+            arg.replace("D3DTA_", "")
+            .replace("|COMPLEMENT", "")
+            .replace("|ALPHAREPLICATE", "")
+            .replace("|D3DTA_COMPLEMENT", "")
+            .replace("|D3DTA_ALPHAREPLICATE", "")
+        )
         if normalized == "TEXTURE":
-            return texture or (255, 255, 255, 255)
-        if normalized == "TFACTOR":
-            return texture_factor
-        if normalized == "CURRENT":
-            return texture or diffuse
-        return diffuse
+            value = texture or (255, 255, 255, 255)
+        elif normalized == "TFACTOR":
+            value = texture_factor
+        elif normalized == "CURRENT":
+            value = texture or diffuse
+        else:
+            value = diffuse
+        if complement:
+            value = tuple(255 - channel for channel in value)  # type: ignore[assignment]
+        if alpha_replicate:
+            value = (value[3], value[3], value[3], value[3])
+        return value
 
-    def _apply_d3d9_op(self, op: str, lhs: Color, rhs: Color) -> Color:
+    def _apply_d3d9_op(self, op: str, lhs: Color, rhs: Color, diffuse: Color, texture: Color | None) -> Color:
         if op == "D3DTOP_SELECTARG2":
             return rhs
         if op == "D3DTOP_MODULATE":
@@ -227,10 +241,10 @@ class MockExecutor:
         if op == "D3DTOP_SUBTRACT":
             return tuple(max(0, lhs[i] - rhs[i]) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDDIFFUSEALPHA":
-            alpha = lhs[3] / 255.0
+            alpha = diffuse[3] / 255.0
             return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDTEXTUREALPHA":
-            alpha = rhs[3] / 255.0
+            alpha = (texture or (255, 255, 255, 255))[3] / 255.0
             return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_DISABLE":
             return lhs

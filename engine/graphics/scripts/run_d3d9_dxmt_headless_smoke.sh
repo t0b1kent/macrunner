@@ -10,6 +10,7 @@ else
   traces=(
     "$ROOT/traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
+    "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"

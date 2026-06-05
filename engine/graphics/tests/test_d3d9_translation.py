@@ -5,6 +5,7 @@ from engine.graphics.tools.d3d_trace_replay import load_trace, replay
 ROOT = Path(__file__).resolve().parents[1]
 TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
 TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
+TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
 ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
@@ -43,6 +44,20 @@ def test_d3d9_fixed_function_texture_modulate_emits_shader_metadata(tmp_path):
     assert state.pipeline.metadata["d3d9_ffp_shader"]["color_op"] == "D3DTOP_MODULATE"
     assert state.pipeline.metadata["d3d9_ffp_shader"]["color_arg1"] == "D3DTA_TEXTURE"
     assert state.pipeline.metadata["d3d9_ffp_shader"]["color_arg2"] == "D3DTA_DIFFUSE"
+
+
+def test_d3d9_fixed_function_texture_alpha_blend_emits_shader_metadata(tmp_path):
+    result = replay(TEXTURE_BLEND_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+
+    state = load_trace(TEXTURE_BLEND_TRACE)
+    ffp = state.pipeline.metadata["d3d9_ffp_shader"]
+    assert state.render_target_format == "bgra8"
+    assert ffp["color_op"] == "D3DTOP_BLENDTEXTUREALPHA"
+    assert ffp["color_arg1"] == "D3DTA_TEXTURE"
+    assert ffp["color_arg2"] == "D3DTA_DIFFUSE"
 
 
 def test_d3d9_programmable_xna_sprite_uses_texture_modulate_shader(tmp_path):

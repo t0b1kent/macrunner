@@ -7,6 +7,7 @@ from engine.graphics.tools.d3d_trace_replay import load_trace
 ROOT = Path(__file__).resolve().parents[1]
 XNA_ALPHA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
+TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 
 
 def test_d3d9_xna_alpha_blend_writes_metal_request_contract(tmp_path):
@@ -58,3 +59,22 @@ def test_d3d9_format_sweep_writes_metal_format_contract(tmp_path):
     assert payload["d3d9"]["texture_format"] == "bc3"
     assert payload["d3d9"]["ffp_shader"]["texture_factor"] == [255, 255, 255, 255]
     assert payload["d3d9"]["present_parameters"]["backbuffer_format"] == "D3DFMT_A2R10G10B10"
+
+
+def test_d3d9_texture_alpha_blend_writes_metal_combiner_contract(tmp_path):
+    state = load_trace(TEXTURE_BLEND_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(TEXTURE_BLEND_TRACE),
+        name="texture-alpha-blend",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "texture"
+    assert payload["shader"] == "d3d9-fixed-function"
+    assert payload["texture_pixels"][1] == [64, 255, 64, 128]
+    assert payload["d3d9"]["ffp_shader"]["color_op"] == "D3DTOP_BLENDTEXTUREALPHA"
+    assert payload["d3d9"]["ffp_shader"]["color_arg1"] == "D3DTA_TEXTURE"
+    assert payload["d3d9"]["ffp_shader"]["color_arg2"] == "D3DTA_DIFFUSE"

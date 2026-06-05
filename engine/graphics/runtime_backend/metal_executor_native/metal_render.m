@@ -118,18 +118,76 @@ static NSString *alpha_test_condition(NSString *func, NSString *alphaRef) {
     return @"true";
 }
 
+static double rgba_channel(NSArray *rgba, NSUInteger index, double fallback) {
+    if (![rgba isKindOfClass:[NSArray class]] || [rgba count] <= index) return fallback;
+    return [[rgba objectAtIndex:index] doubleValue] / 255.0;
+}
+
+static NSString *float4_rgba_literal(NSArray *rgba) {
+    return [NSString stringWithFormat:@"float4(%0.9f,%0.9f,%0.9f,%0.9f)",
+        rgba_channel(rgba, 0, 1.0),
+        rgba_channel(rgba, 1, 1.0),
+        rgba_channel(rgba, 2, 1.0),
+        rgba_channel(rgba, 3, 1.0)];
+}
+
+static NSString *d3d9_arg_expr(NSString *arg) {
+    NSString *expr = @"diffuse";
+    if ([arg containsString:@"D3DTA_TEXTURE"]) expr = @"texel";
+    else if ([arg containsString:@"D3DTA_TFACTOR"]) expr = @"tfactor";
+    else if ([arg containsString:@"D3DTA_CURRENT"]) expr = @"texel";
+    if ([arg containsString:@"D3DTA_COMPLEMENT"]) {
+        expr = [NSString stringWithFormat:@"(float4(1.0)-(%@))", expr];
+    }
+    if ([arg containsString:@"D3DTA_ALPHAREPLICATE"]) {
+        expr = [NSString stringWithFormat:@"float4((%@).a)", expr];
+    }
+    return expr;
+}
+
+static NSString *d3d9_op_expr(NSString *op, NSString *lhs, NSString *rhs) {
+    if ([op isEqualToString:@"D3DTOP_SELECTARG2"]) return rhs;
+    if ([op isEqualToString:@"D3DTOP_MODULATE"]) return [NSString stringWithFormat:@"((%@)*(%@))", lhs, rhs];
+    if ([op isEqualToString:@"D3DTOP_MODULATE2X"]) return [NSString stringWithFormat:@"saturate((%@)*(%@)*2.0)", lhs, rhs];
+    if ([op isEqualToString:@"D3DTOP_ADD"]) return [NSString stringWithFormat:@"saturate((%@)+(%@))", lhs, rhs];
+    if ([op isEqualToString:@"D3DTOP_SUBTRACT"]) return [NSString stringWithFormat:@"saturate((%@)-(%@))", lhs, rhs];
+    if ([op isEqualToString:@"D3DTOP_BLENDDIFFUSEALPHA"]) {
+        return [NSString stringWithFormat:@"((%@)*diffuse.a+(%@)*(1.0-diffuse.a))", lhs, rhs];
+    }
+    if ([op isEqualToString:@"D3DTOP_BLENDTEXTUREALPHA"]) {
+        return [NSString stringWithFormat:@"((%@)*texel.a+(%@)*(1.0-texel.a))", lhs, rhs];
+    }
+    return lhs;
+}
+
 static NSString *fragment_shader_source(BOOL textureMode, NSDictionary *req) {
+    NSString *sourceApi = req[@"source_api"] ?: @"";
     NSString *shader = req[@"shader"];
     NSDictionary *d3d9 = [req[@"d3d9"] isKindOfClass:[NSDictionary class]] ? req[@"d3d9"] : @{};
     NSDictionary *ffp = [d3d9[@"ffp_shader"] isKindOfClass:[NSDictionary class]] ? d3d9[@"ffp_shader"] : @{};
     NSString *colorOp = ffp[@"color_op"] ?: @"";
-    BOOL modulate = [shader isEqualToString:@"d3d9-programmable-texture-modulate"] || [colorOp isEqualToString:@"D3DTOP_MODULATE"];
+    NSString *alphaOp = ffp[@"alpha_op"] ?: @"D3DTOP_SELECTARG1";
+    NSString *colorArg1 = ffp[@"color_arg1"] ?: @"D3DTA_DIFFUSE";
+    NSString *colorArg2 = ffp[@"color_arg2"] ?: @"D3DTA_TEXTURE";
+    NSString *alphaArg1 = ffp[@"alpha_arg1"] ?: colorArg1;
+    NSString *alphaArg2 = ffp[@"alpha_arg2"] ?: colorArg2;
+    NSArray *textureFactor = [ffp[@"texture_factor"] isKindOfClass:[NSArray class]] ? ffp[@"texture_factor"] : @[@255, @255, @255, @255];
+    NSString *tfactor = float4_rgba_literal(textureFactor);
+    BOOL d3d9Mode = [sourceApi isEqualToString:@"d3d9"] || [sourceApi isEqualToString:@"d3d8"];
+    BOOL programmableTextureModulate = [shader isEqualToString:@"d3d9-programmable-texture-modulate"];
     BOOL alphaTest = [ffp[@"alpha_test_enable"] boolValue];
     double alphaRef = [ffp[@"alpha_ref"] doubleValue] / 255.0;
     NSString *alphaFunc = ffp[@"alpha_func"] ?: @"D3DCMP_ALWAYS";
-    NSString *colorExpr = textureMode
-        ? (modulate ? @"tex.sample(smp, in.uv) * in.color" : @"tex.sample(smp, in.uv)")
-        : @"in.color";
+    NSString *colorExpr = (!d3d9Mode && textureMode)
+        ? @"texel"
+        : (!d3d9Mode ? @"diffuse" : (programmableTextureModulate
+        ? @"(texel*diffuse)"
+        : d3d9_op_expr(colorOp, d3d9_arg_expr(colorArg1), d3d9_arg_expr(colorArg2))));
+    NSString *alphaExpr = (!d3d9Mode && textureMode)
+        ? @"texel"
+        : (!d3d9Mode ? @"diffuse" : (programmableTextureModulate
+        ? @"(texel*diffuse)"
+        : d3d9_op_expr(alphaOp, d3d9_arg_expr(alphaArg1), d3d9_arg_expr(alphaArg2))));
     NSString *alphaCode = @"";
     if (alphaTest) {
         NSString *condition = alpha_test_condition(alphaFunc, [NSString stringWithFormat:@"%0.9f", alphaRef]);
@@ -137,12 +195,12 @@ static NSString *fragment_shader_source(BOOL textureMode, NSDictionary *req) {
     }
     if (textureMode) {
         return [NSString stringWithFormat:
-            @"fragment float4 ps(O in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]]){float4 color=%@;%@ return color;}\n",
-            colorExpr, alphaCode];
+            @"fragment float4 ps(O in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]]){float4 diffuse=in.color;float4 texel=tex.sample(smp,in.uv);float4 tfactor=%@;float4 color_part=%@;float4 alpha_part=%@;float4 color=float4(color_part.rgb,alpha_part.a);%@ return color;}\n",
+            tfactor, colorExpr, alphaExpr, alphaCode];
     }
     return [NSString stringWithFormat:
-        @"fragment float4 ps(O in [[stage_in]]){float4 color=%@;%@ return color;}\n",
-        colorExpr, alphaCode];
+        @"fragment float4 ps(O in [[stage_in]]){float4 diffuse=in.color;float4 texel=diffuse;float4 tfactor=%@;float4 color_part=%@;float4 alpha_part=%@;float4 color=float4(color_part.rgb,alpha_part.a);%@ return color;}\n",
+        tfactor, colorExpr, alphaExpr, alphaCode];
 }
 
 static NSString *fnv1a_hex(NSData *data) {

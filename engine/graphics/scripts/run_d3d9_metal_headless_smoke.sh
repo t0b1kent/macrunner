@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${ALLOW_GPU_SMOKE:-0}" != "1" ]]; then
-  echo "d3d9_metal_headless_smoke=SKIP reason=ALLOW_GPU_SMOKE_not_set"
-  echo "Set ALLOW_GPU_SMOKE=1 only when HK Lane A is not using the GPU."
-  exit 77
-fi
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${OUT:-$ROOT/artifacts/d3d9-metal-headless}"
 traces=(
@@ -20,6 +14,50 @@ traces=(
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
+
+if [[ "${ALLOW_GPU_SMOKE:-0}" != "1" ]]; then
+  if [[ "${D3D9_METAL_REQUEST_ONLY:-0}" == "1" ]]; then
+    python3 - "$ROOT" "$OUT" "${traces[@]}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+out = Path(sys.argv[2])
+traces = [Path(p) for p in sys.argv[3:]]
+sys.path.insert(0, str(root.parents[1]))
+
+from engine.graphics.runtime_backend.metal_executor import MetalExecutor
+from engine.graphics.tools.d3d_trace_replay import load_trace
+
+executor = MetalExecutor(helper_path=out / "missing-metal-helper")
+for trace in traces:
+    state = load_trace(trace)
+    run_out = out / trace.stem
+    written = executor.write_request(state, run_out, trace_path=str(trace), name=trace.stem)
+    payload = written["payload"]
+    if payload["source_api"] != "d3d9":
+        raise SystemExit(f"{trace}: source_api={payload['source_api']}")
+    if payload["present_count"] < 1:
+        raise SystemExit(f"{trace}: present_count missing")
+    if "d3d9" not in payload:
+        raise SystemExit(f"{trace}: missing d3d9 request metadata")
+    print(f"request={written['request_path']}")
+    print(f"  mode={payload['mode']}")
+    print(f"  shader={payload['shader']}")
+    print(f"  rt_format={payload['render_target_format']}")
+    print(f"  tex_format={payload['d3d9'].get('texture_format')}")
+
+print(f"d3d9_metal_request_count={len(traces)}")
+print("d3d9_metal_request_smoke=PASS")
+PY
+    exit 0
+  fi
+  echo "d3d9_metal_headless_smoke=SKIP reason=ALLOW_GPU_SMOKE_not_set"
+  echo "Set ALLOW_GPU_SMOKE=1 only when HK Lane A is not using the GPU."
+  echo "Set D3D9_METAL_REQUEST_ONLY=1 for CPU-only request-contract validation."
+  exit 77
+fi
 
 for trace in "${traces[@]}"; do
   name="$(basename "$trace" .jsonl)"

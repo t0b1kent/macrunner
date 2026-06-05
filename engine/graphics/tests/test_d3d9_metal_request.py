@@ -14,6 +14,7 @@ INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jso
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
 DEPTH_TRACE = ROOT / "traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
 INDEX_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
+CULL_TRACE = ROOT / "traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
 
 
 def test_d3d9_xna_alpha_blend_writes_metal_request_contract(tmp_path):
@@ -195,3 +196,19 @@ def test_d3d9_indexed_range_writes_effective_metal_indices(tmp_path):
     assert payload["index_count"] == 3
     assert payload["d3d9"]["draw_range"]["start_index"] == 3
     assert payload["d3d9"]["draw_range"]["primitive_count"] == 1
+
+
+def test_d3d9_cullmode_writes_metal_render_state_contract(tmp_path):
+    state = load_trace(CULL_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(CULL_TRACE),
+        name="cullmode",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "indexed_triangle"
+    assert payload["indices"] == [0, 1, 2, 3, 4, 5]
+    assert payload["d3d9"]["render_states"]["D3DRS_CULLMODE"] == "D3DCULL_CW"

@@ -12,6 +12,7 @@ INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jso
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
+CULL_TRACE = ROOT / "traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
 DEPTH_TRACE = ROOT / "traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
 INDEX_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
 ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
@@ -181,6 +182,18 @@ def test_d3d9_indexed_draw_range_limits_primitives(tmp_path):
     assert draw["start_index"] == 3
     assert draw["primitive_count"] == 1
     assert state.index_buffer == [0, 1, 2, 3, 4, 5]
+
+
+def test_d3d9_cullmode_rejects_clockwise_triangles(tmp_path):
+    result = replay(CULL_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 350
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (4, 8, 16)
+
+    state = load_trace(CULL_TRACE)
+    assert state.pipeline.metadata["d3d9_render_states"]["D3DRS_CULLMODE"] == "D3DCULL_CW"
+    assert state.pipeline.metadata["d3d9_draw_range"]["primitive_count"] == 2
 
 
 def test_d3d9_xna_alpha_blend_sprite_records_output_merger_state(tmp_path):

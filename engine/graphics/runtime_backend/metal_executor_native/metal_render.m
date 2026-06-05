@@ -155,6 +155,16 @@ static MTLCompareFunction compare_function_from_d3d9(NSString *func) {
     return MTLCompareFunctionAlways;
 }
 
+static MTLCullMode cull_mode_from_d3d9(NSString *mode) {
+    if ([mode isEqualToString:@"D3DCULL_CW"] || [mode isEqualToString:@"D3DCULL_CCW"]) return MTLCullModeBack;
+    return MTLCullModeNone;
+}
+
+static MTLWinding winding_from_d3d9_cull(NSString *mode) {
+    if ([mode isEqualToString:@"D3DCULL_CCW"]) return MTLWindingClockwise;
+    return MTLWindingCounterClockwise;
+}
+
 static NSString *alpha_test_condition(NSString *func, NSString *alphaRef) {
     if ([func isEqualToString:@"D3DCMP_NEVER"]) return @"false";
     if ([func isEqualToString:@"D3DCMP_LESS"]) return [NSString stringWithFormat:@"color.a < %@", alphaRef];
@@ -395,6 +405,10 @@ static int render_request(NSString *requestPath) {
         id<MTLBuffer> vb = [device newBufferWithBytes:[vertexData bytes] length:[vertexData length] options:MTLResourceStorageModeShared];
         [enc setRenderPipelineState:ps];
         if (depthState) [enc setDepthStencilState:depthState];
+        NSDictionary *renderStates = [d3d9[@"render_states"] isKindOfClass:[NSDictionary class]] ? d3d9[@"render_states"] : @{};
+        NSString *cullMode = renderStates[@"D3DRS_CULLMODE"] ?: @"D3DCULL_NONE";
+        [enc setFrontFacingWinding:winding_from_d3d9_cull(cullMode)];
+        [enc setCullMode:cull_mode_from_d3d9(cullMode)];
         [enc setVertexBuffer:vb offset:0 atIndex:0];
         if (textureMode) {
             NSArray *textureSize = req[@"texture_size"];

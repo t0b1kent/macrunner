@@ -146,11 +146,13 @@ class MockExecutor:
         ]
         pts = [self._to_screen(v, viewport) for v in transformed]
         depths = [self._ndc_depth(v) for v in transformed]
+        area = self._edge(pts[0], pts[1], pts[2])
+        if self._culled_by_d3d9(state, area):
+            return
         min_x = max(sc_x, int(min(p[0] for p in pts)))
         max_x = min(sc_x + sc_w - 1, int(max(p[0] for p in pts) + 1))
         min_y = max(sc_y, int(min(p[1] for p in pts)))
         max_y = min(sc_y + sc_h - 1, int(max(p[1] for p in pts) + 1))
-        area = self._edge(pts[0], pts[1], pts[2])
         if abs(area) < 1e-6:
             state.validation_errors.append("degenerate triangle")
             return
@@ -174,6 +176,15 @@ class MockExecutor:
     @staticmethod
     def _edge(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
         return (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
+
+    @staticmethod
+    def _culled_by_d3d9(state: RenderState, area: float) -> bool:
+        mode = str(state.pipeline.metadata.get("d3d9_render_states", {}).get("D3DRS_CULLMODE", "D3DCULL_NONE"))
+        if mode == "D3DCULL_CW":
+            return area < 0.0
+        if mode == "D3DCULL_CCW":
+            return area > 0.0
+        return False
 
     @staticmethod
     def _ndc_depth(vertex: Vertex) -> float:

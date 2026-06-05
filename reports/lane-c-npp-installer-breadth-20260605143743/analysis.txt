@@ -1,0 +1,382 @@
+Lane C NPP installer breadth analysis
+
+Verdict:
+- COMPLETED_APPS=npp_installer_x86,npp_installer_x64_package,npp_installer_arm64_package
+- MISSING_APPS=none
+- ACTIVE_RUNS=external Hollow Knight only; not part of this non-game installer batch
+- LANE_C_FIXABLE_GAPS=none
+- ROUTED_TO_A_B=npp_installer_x64_package seh_tail=64, npp_installer_arm64_package seh_tail=64; both match the already triaged ARM64EC unwind metadata tail.
+- All three NPP installer variants have `unsupported=0`, `missing_import=0`, `vm_fail=0`, `dll_fail=0`, `fixme=0`, and `xtajit_unsupported=0`.
+- Package variants reach WOW64/BTCpu cleanly (`wow64=37/44`, `btcpu=8/9`), so no Lane-C source patch is indicated.
+
+## npp_installer_x86
+rc=143 loader=127 wow64=0 btcpu=0 unsupported=0 missing_import=0 vm_fail=0 dll_fail=0 fixme=0 seh_tail=0 xtajit_unsupported=0
+focus_tail:
+macrunner-hb-pe-relocate: module=0000087FFF120000 image_base=00006FFFFEBA0000 delta=FFFF988000580000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEFD0000 image_base=00006FFFFEA40000 delta=FFFF988000590000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE920000 image_base=00006FFFFE380000 delta=FFFF9880005A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE360000 image_base=00006FFFFDDB0000 delta=FFFF9880005B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE280000 image_base=00006FFFFD680000 delta=FFFF988000C00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE1A0000 image_base=00006FFFFD590000 delta=FFFF988000C10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDE30000 image_base=00006FFFFD210000 delta=FFFF988000C20000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010738FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=0000000107390000 entry=0000000140018AD4 arg=000007FFD01F0000
+macrunner-hb-ldr-init: phase=before index=1 ctx=00000001098CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001098D0000 x0=0000087FFF368634 x1=000007FFD024BC80 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024BC80/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001098CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001098D0000 entry=0000087FFF368634 arg=000007FFD024BC80
+macrunner-hb-ldr-init: phase=before index=2 ctx=000000010B8CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010B8D0000 x0=000000014001712C x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=2 ctx=000000010B8CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010B8D0000 entry=000000014001712C arg=0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFDD80000 image_base=00006FFFFC960000 delta=FFFF988001420000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD910000 image_base=00006FFFFC4E0000 delta=FFFF988001430000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD7E0000 image_base=00006FFFFC3A0000 delta=FFFF988001440000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD690000 image_base=00006FFFFC240000 delta=FFFF988001450000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=0 ctx=00000001073AFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001073B0000 x0=00000001400118FC x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFEDC0000 delta=FFFF9880009E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEF00000 image_base=00006FFFFC960000 delta=FFFF9880025A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEA90000 image_base=00006FFFFC4E0000 delta=FFFF9880025B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE880000 image_base=00006FFFFEBA0000 delta=FFFF987FFFCE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE730000 image_base=00006FFFFEA40000 delta=FFFF987FFFCF0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE080000 image_base=00006FFFFE380000 delta=FFFF987FFFD00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDAC0000 image_base=00006FFFFDDB0000 delta=FFFF987FFFD10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD990000 image_base=00006FFFFC3A0000 delta=FFFF9880015F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD840000 image_base=00006FFFFC240000 delta=FFFF988001600000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=00000001073AFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001073B0000 entry=00000001400118FC arg=000007FFD01F0000
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010735FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=0000000107360000 x0=000000014001D478 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFEDC0000 delta=FFFF9880009E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF330000 image_base=00006FFFFD770000 delta=FFFF988001BC0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF120000 image_base=00006FFFFEBA0000 delta=FFFF988000580000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEFD0000 image_base=00006FFFFEA40000 delta=FFFF988000590000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE920000 image_base=00006FFFFE380000 delta=FFFF9880005A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE360000 image_base=00006FFFFDDB0000 delta=FFFF9880005B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE280000 image_base=00006FFFFD680000 delta=FFFF988000C00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD9E0000 image_base=00006FFFFC960000 delta=FFFF988001080000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD570000 image_base=00006FFFFC4E0000 delta=FFFF988001090000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD440000 image_base=00006FFFFC3A0000 delta=FFFF9880010A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD2F0000 image_base=00006FFFFC240000 delta=FFFF9880010B0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010735FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=0000000107360000 entry=000000014001D478 arg=000007FFD01F0000
+macrunner-hb-pe-relocate: module=0000087FFD200000 image_base=00006FFFFC140000 delta=FFFF9880010C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD030000 image_base=00006FFFFBF60000 delta=FFFF9880010D0000 machine=0xaa64
+004c:fixme:keyboard:NtUserActivateKeyboardLayout Changing user locale is not supported
+macrunner-hb-ldr-init: phase=before index=1 ctx=000000010F7CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010F7D0000 x0=0000000140012690 x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=1 ctx=000000010F7CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010F7D0000 entry=0000000140012690 arg=0000000000000000
+macrunner-hb-ldr-init: phase=before index=2 ctx=00000001117CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001117D0000 x0=0000000140012C2C x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=2 ctx=00000001117CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001117D0000 entry=0000000140012C2C arg=0000000000000000
+0050:fixme:keyboard:NtUserActivateKeyboardLayout Changing user locale is not supported
+macrunner-hb-pe-relocate: module=0000087FFC190000 image_base=00006FFFFB0C0000 delta=FFFF9880010D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBF50000 image_base=00006FFFFAE70000 delta=FFFF9880010E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBE40000 image_base=00006FFFFAD50000 delta=FFFF9880010F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB820000 image_base=00006FFFFA720000 delta=FFFF988001100000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB540000 image_base=00006FFFFA430000 delta=FFFF988001110000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB410000 image_base=00006FFFFA2F0000 delta=FFFF988001120000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD750000 image_base=00006FFFFC140000 delta=FFFF988001610000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD580000 image_base=00006FFFFA110000 delta=FFFF988003470000 machine=0xaa64
+0044:fixme:keyboard:NtUserActivateKeyboardLayout Changing user locale is not supported
+macrunner-hb-pe-relocate: module=0000087FFD3E0000 image_base=00006FFFFD210000 delta=FFFF9880001D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCF70000 image_base=00006FFFFD770000 delta=FFFF987FFF800000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCE90000 image_base=00006FFFFD680000 delta=FFFF987FFF810000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC870000 image_base=00006FFFFA720000 delta=FFFF988002150000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC590000 image_base=00006FFFFA430000 delta=FFFF988002160000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC460000 image_base=00006FFFFA2F0000 delta=FFFF988002170000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=3 ctx=000000010D8CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010D8D0000 x0=0000087FFF368004 x1=000007FFD024DE40 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024DE40/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=3 ctx=000000010D8CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010D8D0000 entry=0000087FFF368004 arg=000007FFD024DE40
+macrunner-hb-ldr-init: phase=before index=4 ctx=000000010F8CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010F8D0000 x0=000007FFD077BF48 x1=000007FFD024FC90 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024FC90/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=4 ctx=000000010F8CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010F8D0000 entry=000007FFD077BF48 arg=000007FFD024FC90
+macrunner-hb-ldr-init: phase=before index=0 ctx=00000001073EFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001073F0000 x0=0000000140011288 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFEDC0000 delta=FFFF9880009E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF590000 image_base=00006FFFFEBA0000 delta=FFFF9880009F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF440000 image_base=00006FFFFEA40000 delta=FFFF988000A00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFED90000 image_base=00006FFFFE380000 delta=FFFF988000A10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE7D0000 image_base=00006FFFFDDB0000 delta=FFFF988000A20000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE540000 image_base=00006FFFFA050000 delta=FFFF9880044F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE460000 image_base=00006FFFFD680000 delta=FFFF988000DE0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=00000001073EFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001073F0000 entry=0000000140011288 arg=000007FFD01F0000
+macrunner-hb-pe-relocate: module=0000087FFDFF0000 image_base=00006FFFFD770000 delta=FFFF988000880000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=5 ctx=00000001119CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001119D0000 x0=0000087FFF368004 x1=000000010F8D2200 x2=0000000000000000 x3=0000000000000000 unk=000000010F8D2200/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=5 ctx=00000001119CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001119D0000 entry=0000087FFF368004 arg=000000010F8D2200
+macrunner-hb-ldr-init: phase=before index=6 ctx=00000001139CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001139D0000 x0=000007FFD077BF48 x1=000007FFD024FC90 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024FC90/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=6 ctx=00000001139CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001139D0000 entry=000007FFD077BF48 arg=000007FFD024FC90
+macrunner-hb-ldr-init: phase=before index=1 ctx=000000010992FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=0000000109930000 x0=0000087FFF45B964 x1=000007FFD02462B0 x2=0000000000000000 x3=0000000000000000 unk=000007FFD02462B0/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=1 ctx=000000010992FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=0000000109930000 entry=0000087FFF45B964 arg=000007FFD02462B0
+macrunner-hb-ldr-init: phase=before index=2 ctx=000000010B92FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010B930000 x0=0000087FFF45C2D4 x1=000007FFD02498C0 x2=0000000000000000 x3=0000000000000000 unk=000007FFD02498C0/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=2 ctx=000000010B92FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010B930000 entry=0000087FFF45C2D4 arg=000007FFD02498C0
+macrunner-hb-ldr-init: phase=before index=3 ctx=000000010D92FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010D930000 x0=0000087FFE578BF0 x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=before index=7 ctx=00000001159CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001159D0000 x0=0000087FFF368004 x1=000000010F8D71D0 x2=0000000000000000 x3=0000000000000000 unk=000000010F8D71D0/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=7 ctx=00000001159CFC70 pc=000007FFD07754E0 lr=0000000000000000 sp=00000001159D0000 entry=0000087FFF368004 arg=000000010F8D71D0
+macrunner-hb-ldr-init: phase=after-loader index=3 ctx=000000010D92FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010D930000 entry=0000087FFE578BF0 arg=0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFDED0000 image_base=00006FFFF9F20000 delta=FFFF988003FB0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=4 ctx=000000010FA2FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010FA30000 x0=0000087FFDEE2C84 x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=4 ctx=000000010FA2FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=000000010FA30000 entry=0000087FFDEE2C84 arg=0000000000000000
+macrunner-hb-ldr-init: phase=before index=5 ctx=0000000111A2FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=0000000111A30000 x0=0000087FFDEE5888 x1=0000000000000058 x2=0000000000000000 x3=0000000000000000 unk=0000000000000058/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=5 ctx=0000000111A2FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=0000000111A30000 entry=0000087FFDEE5888 arg=0000000000000058
+macrunner-hb-pe-relocate: module=0000087FFDB60000 image_base=00006FFFFD210000 delta=FFFF988000950000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010735FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=0000000107360000 x0=00000001400118FC x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFEDC0000 delta=FFFF9880009E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEF00000 image_base=00006FFFFC960000 delta=FFFF9880025A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEA90000 image_base=00006FFFFC4E0000 delta=FFFF9880025B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE880000 image_base=00006FFFFEBA0000 delta=FFFF987FFFCE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE730000 image_base=00006FFFFEA40000 delta=FFFF987FFFCF0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE080000 image_base=00006FFFFE380000 delta=FFFF987FFFD00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDAC0000 image_base=00006FFFFDDB0000 delta=FFFF987FFFD10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD990000 image_base=00006FFFFC3A0000 delta=FFFF9880015F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD840000 image_base=00006FFFFC240000 delta=FFFF988001600000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010735FC70 pc=000007FFD07754E0 lr=0000000000000000 sp=0000000107360000 entry=00000001400118FC arg=000007FFD01F0000
+macrunner-hb-pe-relocate: module=0000087FFD750000 image_base=00006FFFFC140000 delta=FFFF988001610000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD580000 image_base=00006FFFF9D40000 delta=FFFF988003840000 machine=0xaa64
+008c:fixme:keyboard:NtUserActivateKeyboardLayout Changing user locale is not supported
+macrunner-hb-pe-relocate: module=0000087FFD3E0000 image_base=00006FFFFD210000 delta=FFFF9880001D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCF70000 image_base=00006FFFFD770000 delta=FFFF987FFF800000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCE90000 image_base=00006FFFFD680000 delta=FFFF987FFF810000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC870000 image_base=00006FFFFA720000 delta=FFFF988002150000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC590000 image_base=00006FFFFA430000 delta=FFFF988002160000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC460000 image_base=00006FFFFA2F0000 delta=FFFF988002170000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB3F0000 image_base=00006FFFFB0C0000 delta=FFFF988000330000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB1B0000 image_base=00006FFFFAE70000 delta=FFFF988000340000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB0A0000 image_base=00006FFFFAD50000 delta=FFFF988000350000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAF00000 image_base=00006FFFF9D70000 delta=FFFF988001190000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA920000 image_base=00006FFFF9780000 delta=FFFF9880011A0000 machine=0xaa64
+
+## npp_installer_x64_package
+rc=143 loader=392 wow64=37 btcpu=8 unsupported=0 missing_import=0 vm_fail=0 dll_fail=0 fixme=0 seh_tail=64 xtajit_unsupported=0
+focus_tail:
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010739da50 stack=00000001063A8000-00000001073A0000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+
+## npp_installer_arm64_package
+rc=143 loader=390 wow64=44 btcpu=9 unsupported=0 missing_import=0 vm_fail=0 dll_fail=0 fixme=0 seh_tail=64 xtajit_unsupported=0
+focus_tail:
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470
+004c:err:seh:virtual_unwind macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=0000087FFF80C374 lr=0000087FFF80C378 type=1 image=0000087FFF7A0000 function=0000000000000000 sp=000000010740da50 stack=0000000106418000-0000000107410000
+004c:err:seh:RtlRaiseStatus macrunner-hb-rtl-raise-status: status=c0000026 caller=000007FFD075304C
+004c:err:seh:raise_status macrunner-hb-raise-status: status=c0000026 rec=0000000000000000 rec_code=00000000 caller=000007FFD0753470

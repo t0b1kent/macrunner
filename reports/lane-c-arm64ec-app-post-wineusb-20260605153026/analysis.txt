@@ -1,0 +1,4 @@
+Lane C ARM64/ARM64EC app post-wineusb breadth.
+
+Apps: npp_arm64 and win7_calc_rebased_reloc_x64 under dist-arm64ec-spike via scripts/mr-run.sh with separate prefixes and timeout 90 each.
+Classification: see summary.tsv. Any nonzero fixme/unsupported/missing/vm/dll/seh counter requires focused triage before source patches.

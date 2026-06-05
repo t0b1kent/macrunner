@@ -1,11 +1,12 @@
 #include "hb_runtime.h"
 #include "hb_codegen.h"
 #include "hb_memory.h"
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define HB_RUNTIME_PERSISTENT_CACHE_VERSION 15u
+#define HB_RUNTIME_PERSISTENT_CACHE_VERSION 16u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_MEM   0x01u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_STACK 0x02u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_SCAN 0x04u
@@ -54,6 +55,23 @@ typedef struct hb_cached_helper_stub {
     uint16_t instr_index;
     bool arg1_is_instr;
 } hb_cached_helper_stub_t;
+
+typedef struct hb_jit_signal_fault_frame {
+    struct hb_jit_signal_fault_frame* prev;
+    hb_jit_runtime_t* rt;
+    hb_context_t* ctx;
+    hb_block_cache_entry_t* entry;
+    hb_context_t snapshot;
+    uint64_t steps;
+    uint64_t blocks_executed;
+    uint64_t host_pc;
+    uint64_t fault_addr;
+    int signal;
+    sigjmp_buf env;
+} hb_jit_signal_fault_frame_t;
+
+static __thread hb_jit_signal_fault_frame_t* g_jit_signal_fault_frame;
+static unsigned int g_jit_signal_fault_reports;
 
 static uint64_t g_translation_cache_hits;
 static uint64_t g_translation_cache_misses;
@@ -892,6 +910,80 @@ static hb_result_t set_jit_interp_fallback_result(hb_exec_result_t* out,
     out->faulted = true;
     out->fault_reason = reason;
     return HB_OK;
+}
+
+int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int signal) {
+    hb_jit_signal_fault_frame_t* frame = g_jit_signal_fault_frame;
+    uintptr_t native_start, native_end, slab_start, slab_end;
+
+    if (!frame || !frame->rt || !frame->rt->jit_mem || !frame->entry ||
+        !frame->entry->native_code || !frame->entry->native_size)
+        return 0;
+
+    native_start = (uintptr_t)frame->entry->native_code;
+    native_end = native_start + frame->entry->native_size;
+    slab_start = (uintptr_t)frame->rt->jit_mem->executable;
+    slab_end = slab_start + frame->rt->jit_mem->used;
+    if (native_end < native_start || slab_end < slab_start) return 0;
+    if (!((uintptr_t)pc >= native_start && (uintptr_t)pc < native_end) &&
+        !((uintptr_t)pc >= slab_start && (uintptr_t)pc < slab_end))
+        return 0;
+
+    frame->host_pc = pc;
+    frame->fault_addr = fault_addr;
+    frame->signal = signal;
+    siglongjmp(frame->env, 1);
+    return 1;
+}
+
+static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
+                                                   hb_block_cache_entry_t* cached,
+                                                   hb_exec_result_t* out,
+                                                   uint64_t steps,
+                                                   uint64_t blocks_executed) {
+    typedef void (*jit_block_t)(hb_context_t*);
+    hb_jit_signal_fault_frame_t frame;
+    hb_context_t* ctx;
+    jit_block_t exec;
+
+    if (!rt || !rt->ctx || !cached || !cached->native_code || !out)
+        return HB_ERR_INVALID_ARG;
+
+    ctx = rt->ctx;
+    memset(&frame, 0, sizeof(frame));
+    frame.prev = g_jit_signal_fault_frame;
+    frame.rt = rt;
+    frame.ctx = ctx;
+    frame.entry = cached;
+    frame.snapshot = *ctx;
+    frame.steps = steps;
+    frame.blocks_executed = blocks_executed;
+    g_jit_signal_fault_frame = &frame;
+
+    if (sigsetjmp(frame.env, 1) == 0) {
+        exec = (jit_block_t)(void*)cached->native_code;
+        exec(ctx);
+        g_jit_signal_fault_frame = frame.prev;
+        return HB_OK;
+    }
+
+    g_jit_signal_fault_frame = frame.prev;
+    *ctx = frame.snapshot;
+    if (g_jit_signal_fault_reports++ < 64) {
+        fprintf(stderr,
+                "macrunner-hb-jit-signal-fallback: guest=%p native=%p-%p "
+                "pc=%p fault=%p signal=%d steps=%llu blocks=%llu\n",
+                (void*)(uintptr_t)cached->guest_addr, cached->native_code,
+                cached->native_code + cached->native_size,
+                (void*)(uintptr_t)frame.host_pc,
+                (void*)(uintptr_t)frame.fault_addr, frame.signal,
+                (unsigned long long)frame.steps,
+                (unsigned long long)frame.blocks_executed);
+        fflush(stderr);
+    }
+    return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
+                                          frame.steps, frame.blocks_executed,
+                                          "JIT native signal fault; interpreter fallback");
 }
 
 static void trace_jit_code_cache_full_once(hb_jit_runtime_t* rt,
@@ -1916,9 +2008,9 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                 }
             }
             trace_jit_cached_watch_block_once(cached);
-            typedef void (*jit_block_t)(hb_context_t*);
-            jit_block_t exec = (jit_block_t)(void*)cached->native_code;
-            exec(ctx);
+            hb_result_t run_result = run_jit_block_with_signal_guard(rt, cached, out,
+                                                                      steps, blocks_executed);
+            if (run_result != HB_OK || out->faulted) return run_result;
             trace_jit_hot_block_tick(rt, cached);
             steps += cached->steps;
         } else {
@@ -2070,10 +2162,9 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             trace_jit_cached_watch_block_once(cached);
 
             /* Execute */
-            typedef void (*jit_block_t)(hb_context_t*);
-            jit_block_t exec = (jit_block_t)(void*)dest;
-            exec = (jit_block_t)(void*)cached->native_code;
-            exec(ctx);
+            hb_result_t run_result = run_jit_block_with_signal_guard(rt, cached, out,
+                                                                      steps, blocks_executed);
+            if (run_result != HB_OK || out->faulted) return run_result;
             trace_jit_hot_block_tick(rt, cached);
             steps += cached->steps ? cached->steps : jit_block_step_count(block);
         }

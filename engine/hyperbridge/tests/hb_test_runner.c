@@ -6600,6 +6600,55 @@ TEST(jit_x64_native_cwd_family) {
     tests_passed++;
 }
 
+TEST(jit_x64_mov_mem_source_fallback_reads_memory) {
+    const uint64_t base = 0x5a00;
+    const uint64_t done_pc = base + 0x100;
+    hb_ir_func_t* func = hb_ir_func_create(base, 0);
+    ASSERT(func != NULL);
+    hb_ir_block_t* blk = hb_ir_block_create(0, base);
+    ASSERT(blk != NULL);
+    hb_ir_cfg_add_block(func->cfg, blk);
+    func->cfg->entry = blk;
+
+    hb_ir_builder_t* b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, blk);
+    hb_ir_instr_t* mov64 = hb_ir_emit_mov(
+        b, hb_ir_reg(HB_REG_RBX, HB_SIZE_64),
+        hb_ir_mem(HB_REG_COUNT, HB_REG_COUNT, 1, 0x70000001000LL, HB_SIZE_64));
+    hb_ir_instr_t* mov32 = hb_ir_emit_mov(
+        b, hb_ir_reg(HB_REG_RCX, HB_SIZE_32),
+        hb_ir_mem(HB_REG_COUNT, HB_REG_COUNT, 1, 0x70000001008LL, HB_SIZE_32));
+    hb_ir_instr_t* jmp = hb_ir_emit_jmp(b, done_pc);
+    ASSERT(mov64 != NULL && mov32 != NULL && jmp != NULL);
+    mov64->guest_addr = base;
+    mov64->guest_len = 7;
+    mov32->guest_addr = base + 7;
+    mov32->guest_len = 6;
+    jmp->guest_addr = base + 13;
+    jmp->guest_len = 5;
+    hb_ir_builder_destroy(b);
+
+    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "0", 1);
+
+    hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(512);
+    hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+    ASSERT(code_buf != NULL && cg != NULL);
+    ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    ASSERT(code_buf->size >= 96);
+    ASSERT(code_buf->size <= 220);
+
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(jit_commit_verify_failure_not_marked_executable) {
     hb_jit_buffer_t* buf = hb_jit_buffer_create(4096);
     ASSERT(buf != NULL);
@@ -23545,6 +23594,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_bswap_family();
     test_jit_x64_native_bit_scan_family();
     test_jit_x64_native_cwd_family();
+    test_jit_x64_mov_mem_source_fallback_reads_memory();
     test_jit_commit_verify_failure_not_marked_executable();
     test_jit_load_unmapped_faults();
     test_jit_store_unmapped_faults();

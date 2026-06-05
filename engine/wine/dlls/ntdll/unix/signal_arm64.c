@@ -76,6 +76,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(seh);
 
 extern NTSTATUS macrunner_hb_get_x64_thread_context( HANDLE handle, AMD64_CONTEXT *context );
 extern NTSTATUS macrunner_hb_set_x64_thread_context( HANDLE handle, const AMD64_CONTEXT *context );
+extern int hb_jit_runtime_handle_signal_fault( ULONG_PTR pc, ULONG_PTR fault_addr, int signal );
 
 /***********************************************************************
  * signal context platform-specific definitions
@@ -2190,6 +2191,10 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
              (void *)(ULONG_PTR)REGn_sig(4, context), (void *)(ULONG_PTR)REGn_sig(16, context),
              (void *)(ULONG_PTR)REGn_sig(24, context), (void *)(ULONG_PTR)REGn_sig(26, context) );
 
+    if (hb_jit_runtime_handle_signal_fault( PC_sig(context), rec.ExceptionInformation[1], signal ) ||
+        hb_jit_runtime_handle_signal_fault( LR_sig(context), rec.ExceptionInformation[1], signal ))
+        return;
+
     /* MacRunner Phase F: on macOS, executing x86_64 guest bytes on the
      * ARM64 CPU is not guaranteed to surface as EXCEPTION_EXECUTE_FAULT.
      * Some byte patterns decode as valid ARM64/SVE memory operations and
@@ -2387,6 +2392,8 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
              (void *)(ULONG_PTR)REGn_sig(26, context) );
 
     if (macrunner_hb_redirect_arm64x_hexpthk_sigill( context )) return;
+    if (hb_jit_runtime_handle_signal_fault( PC_sig(context), 0, signal ) ||
+        hb_jit_runtime_handle_signal_fault( LR_sig(context), 0, signal )) return;
     if (macrunner_hb_route_x64_callback_fault( context, 0, "sigill" )) return;
 
     if (!(PSTATE_sig( context ) & 0x10) && /* AArch64 (not WoW) */
@@ -2479,6 +2486,10 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
              (unsigned long long)get_fault_esr( context ),
              (void *)(ULONG_PTR)REGn_sig(4, context), (void *)(ULONG_PTR)REGn_sig(16, context),
              (void *)(ULONG_PTR)REGn_sig(24, context), (void *)(ULONG_PTR)REGn_sig(26, context) );
+
+    if (hb_jit_runtime_handle_signal_fault( PC_sig(context), rec.ExceptionInformation[1], signal ) ||
+        hb_jit_runtime_handle_signal_fault( LR_sig(context), rec.ExceptionInformation[1], signal ))
+        return;
 
     /* Same Phase F rule as segv_handler: macOS can surface execution of
      * x86_64 guest bytes as SIGBUS/EXC_BAD_ACCESS when the byte pattern

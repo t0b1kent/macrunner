@@ -7,6 +7,34 @@ the program). Update this file as each gate is passed. **NEXT** below is always 
 
 ---
 
+## Lane A checkpoint - 2026-06-05 JIT helper skip + live MOV fallback
+
+Root fixed in `engine/hyperbridge/src/hb_arm64_codegen.c`: the packed Windows ARM64 JIT
+prologue/epilogue changed inline epilogue size, but `emit_return_if_helper_failed()` still skipped a
+hardcoded 32 bytes on helper success. Successful helpers could branch over real instructions. The
+fix now patches the conditional branch to the actual post-epilogue offset. Also added a JIT-only
+live host-memory fallback for scalar memory-source `MOV r,[mem]` when direct-mem is disabled, so
+MinGW CRT startup can read `.refptr.__native_startup_lock` before `lock cmpxchg`.
+
+Validation:
+- Build/relink/install/sign: `reports/phase4-hollow-knight/build-20260605-160804-helper-skip-fix/`.
+- TSO litmus true PASS lines via per-mode wrappers:
+  `mp`/`spin`: `reports/phase4-hollow-knight/tso-litmus-wrappers-20260605-161459/`;
+  `cas`: `reports/phase4-hollow-knight/tso-litmus-cas-split-standalone-20260605-162203/`;
+  `xadd`: `reports/phase4-hollow-knight/tso-litmus-xadd-alone-20260605-162422/`;
+  `split`: `reports/phase4-hollow-knight/tso-litmus-split-alone-20260605-162339/`.
+  All five have `rc=0` and real `PASS ...` output. The wrapper exists because current argv/env
+  delivery to MinGW CRT is unreliable under `mr-run.sh`.
+- HK no-argv run: `reports/phase4-hollow-knight/run-20260605-163720-hk-noargv-240/` reached
+  `heartbeat_count=2388`, final `blocks=0x219829`, no Mono invalid-vtable assertion, no
+  runtime-fail, and `D3D11CreateDevice=0` / `GfxDevice=0`; it exited `rc=29` at
+  `macrunner-hb-seh-host-boundary pc=0x1059b0c80 lr=0x1059fcfb8`.
+- HK `-logFile -`/controller attempts are not decisive for D3D: one parked pre-entry in
+  `init_startup_info -> NtWaitForMultipleObjects`, and one hot-timed-out before heartbeat.
+
+NEXT: map/fix the `seh-host-boundary` from the no-argv clean path, then rerun HK no-argv toward
+`GfxDevice`/`D3D11CreateDevice`. Do not return to TSO or throughput knobs.
+
 ## Lane A checkpoint - 2026-06-05 Mono metadata decode-col guard
 
 Root/current gate changed: TSO litmus remains green from the 2026-06-04 matrix, and the old

@@ -7,6 +7,10 @@
 #include <stddef.h>
 #include <limits.h>
 #include <stdio.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 
 _Static_assert(offsetof(hb_lazy_flags_t, kind) == offsetof(hb_lazy_flags_t, pending) + 4,
                "hb_lazy_flags_t pending/kind layout changed");
@@ -359,33 +363,29 @@ static bool jit_direct_stack_enabled(void) {
     return val && val[0] && val[0] != '0';
 }
 
-/* Prologue: save x19-x23, lr; x19 = ctx */
+/* Prologue: canonical Windows ARM64 packed-unwind layout for x19-x23, lr; x19 = ctx */
 static void emit_prologue(hb_codegen_buffer_t* buf) {
-    emit_u32(buf, 0xf81f0ff3); /* STR X19, [SP, #-16]! */
-    emit_u32(buf, 0xf81f0ff4); /* STR X20, [SP, #-16]! */
-    emit_u32(buf, 0xf81f0ff5); /* STR X21, [SP, #-16]! */
-    emit_u32(buf, 0xf81f0ff6); /* STR X22, [SP, #-16]! */
-    emit_u32(buf, 0xf81f0ff7); /* STR X23, [SP, #-16]! */
-    emit_u32(buf, 0xf81f0ffe); /* STR LR, [SP, #-16]! */
+    emit_u32(buf, 0xa9bd53f3); /* STP X19, X20, [SP, #-48]! */
+    emit_u32(buf, 0xa9015bf5); /* STP X21, X22, [SP, #16] */
+    emit_u32(buf, 0xa9027bf7); /* STP X23, LR,  [SP, #32] */
     emit_mov_reg(buf, 19, 0); /* MOV X19, X0 (ctx) */
 }
 
 /* Epilogue: restore and ret */
 static void emit_epilogue(hb_codegen_buffer_t* buf) {
-    emit_u32(buf, 0xf84107fe); /* LDR LR, [SP], #16 */
-    emit_u32(buf, 0xf84107f7); /* LDR X23, [SP], #16 */
-    emit_u32(buf, 0xf84107f6); /* LDR X22, [SP], #16 */
-    emit_u32(buf, 0xf84107f5); /* LDR X21, [SP], #16 */
-    emit_u32(buf, 0xf84107f4); /* LDR X20, [SP], #16 */
-    emit_u32(buf, 0xf84107f3); /* LDR X19, [SP], #16 */
+    emit_u32(buf, 0xa9427bf7); /* LDP X23, LR,  [SP, #32] */
+    emit_u32(buf, 0xa9415bf5); /* LDP X21, X22, [SP, #16] */
+    emit_u32(buf, 0xa8c353f3); /* LDP X19, X20, [SP], #48 */
     emit_ret(buf);
 }
 
 static void emit_return_if_helper_failed(hb_codegen_buffer_t* buf) {
+    size_t ok_branch;
     emit_ldr_w(buf, 22, 19, (uint32_t)offsetof(hb_context_t, last_result));
     emit_cmp_imm(buf, 22, 0);
-    emit_bcond(buf, 0, 32); /* EQ -> skip inline epilogue */
+    ok_branch = emit_bcond_deferred(buf, 0); /* EQ -> skip inline epilogue */
     emit_epilogue(buf);
+    patch_bcond(buf, ok_branch, 0, buf->size);
 }
 
 /* x64 register file offsets in hb_context_t */
@@ -462,6 +462,10 @@ extern void     hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr
 extern void     hb_jit_helper_store_sized(hb_context_t* ctx, uint64_t addr,
                                           uint64_t val, uint64_t size);
 
+#ifdef __APPLE__
+static void* hb_jit_live_host_ptr(uint64_t addr, size_t bytes, hb_perm_t perms);
+#endif
+
 static bool is_direct_user_mem_operand(const hb_ir_operand_t* op) {
     if (!op || op->type != HB_OP_MEM) return false;
     if (op->mem.segment != 0 || op->mem.addr32) return false;
@@ -498,6 +502,35 @@ static uint32_t x64_xmm_reg_off(hb_reg_t reg) {
 
 static void emit_direct_mem_addr(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
     if (op->mem.base < HB_REG_XMM0) {
+        emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(op->mem.base));
+    } else {
+        emit_mov_imm64(buf, 21, 0);
+    }
+    if (op->mem.index < HB_REG_XMM0) {
+        uint32_t shift = (op->mem.scale == 1) ? 0 :
+                         (op->mem.scale == 2) ? 1 :
+                         (op->mem.scale == 4) ? 2 : 3;
+        emit_ldr_x(buf, 22, 19, (uint32_t)x64_reg_off(op->mem.index));
+        emit_add_reg_lsl(buf, 21, 21, 22, shift);
+    }
+    if (op->mem.disp != 0) {
+        if (op->mem.disp > 0 && op->mem.disp < 4096) {
+            emit_add_imm(buf, 21, 21, (uint32_t)op->mem.disp);
+        } else if (op->mem.disp < 0 && -op->mem.disp < 4096) {
+            emit_sub_imm(buf, 21, 21, (uint32_t)(-op->mem.disp));
+        } else {
+            emit_mov_imm64(buf, 22, (uint64_t)op->mem.disp);
+            emit_add_reg(buf, 21, 21, 22);
+        }
+    }
+}
+
+static void emit_direct_mem_addr_for_instr(hb_codegen_buffer_t* buf,
+                                           const hb_ir_operand_t* op,
+                                           const hb_ir_instr_t* instr) {
+    if (op->mem.base == HB_REG_RIP) {
+        emit_mov_imm64(buf, 21, instr ? instr->guest_addr + instr->guest_len : 0);
+    } else if (op->mem.base < HB_REG_XMM0) {
         emit_ldr_x(buf, 21, 19, (uint32_t)x64_reg_off(op->mem.base));
     } else {
         emit_mov_imm64(buf, 21, 0);
@@ -3672,6 +3705,24 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
                 return emit_interp_ir_helper(buf, instr);
             if (emit_native_scalar_mov(buf, instr))
                 return HB_OK;
+            if (instr->src1.type == HB_OP_MEM) {
+                if (is_gpr_reg_operand(&instr->dst) && is_direct_user_mem_operand(&instr->src1)) {
+                    emit_direct_mem_addr_for_instr(buf, &instr->src1, instr);
+                    emit_mov_reg(buf, 0, 19);
+                    emit_mov_reg(buf, 1, 21);
+                    emit_mov_imm_compact(buf, 2, (uint64_t)instr->dst.reg);
+                    emit_mov_imm_compact(buf, 3, (uint64_t)instr->dst.size);
+                    emit_mov_imm_compact(buf, 4, (uint64_t)instr->dst.reg_offset);
+                    emit_call_helper(buf, (void*)hb_jit_helper_load_to_reg_sized);
+                    emit_return_if_helper_failed(buf);
+                    return HB_OK;
+                }
+                emit_mov_reg(buf, 0, 19);
+                emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+                emit_call_helper(buf, (void*)hb_jit_helper_exec_mov_operand_lazy);
+                emit_return_if_helper_failed(buf);
+                return HB_OK;
+            }
             if (!is_gpr_reg_operand(&instr->dst) ||
                 (instr->src1.type == HB_OP_REG && !is_gpr_reg_operand(&instr->src1)) ||
                 instr->dst.size != HB_SIZE_64 ||
@@ -4344,6 +4395,9 @@ static hb_result_t hb_jit_helper_read_u8_tso(hb_context_t* ctx, uint64_t addr, u
     hb_result_t r;
     if (!ctx || !ctx->memory || !out) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(*out), HB_PERM_READ);
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, sizeof(*out), HB_PERM_READ);
+#endif
     if (ptr) {
         *out = hb_jit_helper_host_load_u8_acquire(ptr);
         return HB_OK;
@@ -4358,6 +4412,9 @@ static hb_result_t hb_jit_helper_read_u16_tso(hb_context_t* ctx, uint64_t addr, 
     hb_result_t r;
     if (!ctx || !ctx->memory || !out) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(*out), HB_PERM_READ);
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, sizeof(*out), HB_PERM_READ);
+#endif
     if (ptr) {
         *out = hb_jit_helper_host_load_u16_acquire(ptr);
         return HB_OK;
@@ -4372,6 +4429,9 @@ static hb_result_t hb_jit_helper_read_u32_tso(hb_context_t* ctx, uint64_t addr, 
     hb_result_t r;
     if (!ctx || !ctx->memory || !out) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(*out), HB_PERM_READ);
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, sizeof(*out), HB_PERM_READ);
+#endif
     if (ptr) {
         *out = hb_jit_helper_host_load_u32_acquire(ptr);
         return HB_OK;
@@ -4386,6 +4446,9 @@ static hb_result_t hb_jit_helper_read_u64_tso(hb_context_t* ctx, uint64_t addr, 
     hb_result_t r;
     if (!ctx || !ctx->memory || !out) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(*out), HB_PERM_READ);
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, sizeof(*out), HB_PERM_READ);
+#endif
     if (ptr) {
         *out = hb_jit_helper_host_load_u64_acquire(ptr);
         return HB_OK;
@@ -4401,6 +4464,9 @@ static hb_result_t hb_jit_helper_read_bytes_tso(hb_context_t* ctx, uint64_t addr
     hb_result_t r;
     if (!ctx || !ctx->memory || !out) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, size, HB_PERM_READ);
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, size, HB_PERM_READ);
+#endif
     if (ptr) {
         hb_jit_helper_host_load_bytes_acquire(out, ptr, size);
         return HB_OK;
@@ -4414,6 +4480,9 @@ static hb_result_t hb_jit_helper_write_u8_tso(hb_context_t* ctx, uint64_t addr, 
     void* ptr;
     if (!ctx || !ctx->memory) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(value), HB_PERM_WRITE);
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, sizeof(value), HB_PERM_WRITE);
+#endif
     if (ptr) {
         __atomic_store_n((uint8_t*)ptr, value, __ATOMIC_RELEASE);
         return HB_OK;
@@ -4426,6 +4495,9 @@ static hb_result_t hb_jit_helper_write_u16_tso(hb_context_t* ctx, uint64_t addr,
     void* ptr;
     if (!ctx || !ctx->memory) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(value), HB_PERM_WRITE);
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, sizeof(value), HB_PERM_WRITE);
+#endif
     if (hb_jit_helper_host_ptr_aligned(ptr, sizeof(value))) {
         __atomic_store_n((uint16_t*)ptr, value, __ATOMIC_RELEASE);
         return HB_OK;
@@ -4438,6 +4510,9 @@ static hb_result_t hb_jit_helper_write_u32_tso(hb_context_t* ctx, uint64_t addr,
     void* ptr;
     if (!ctx || !ctx->memory) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(value), HB_PERM_WRITE);
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, sizeof(value), HB_PERM_WRITE);
+#endif
     if (hb_jit_helper_host_ptr_aligned(ptr, sizeof(value))) {
         __atomic_store_n((uint32_t*)ptr, value, __ATOMIC_RELEASE);
         return HB_OK;
@@ -4450,6 +4525,9 @@ static hb_result_t hb_jit_helper_write_u64_tso(hb_context_t* ctx, uint64_t addr,
     void* ptr;
     if (!ctx || !ctx->memory) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(value), HB_PERM_WRITE);
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, sizeof(value), HB_PERM_WRITE);
+#endif
     if (hb_jit_helper_host_ptr_aligned(ptr, sizeof(value))) {
         __atomic_store_n((uint64_t*)ptr, value, __ATOMIC_RELEASE);
         return HB_OK;
@@ -4460,7 +4538,17 @@ static hb_result_t hb_jit_helper_write_u64_tso(hb_context_t* ctx, uint64_t addr,
 
 static hb_result_t hb_jit_helper_write_bytes_tso(hb_context_t* ctx, uint64_t addr,
                                                  const void* src, size_t size) {
+    void* ptr;
     if (!ctx || !ctx->memory || !src) return HB_ERR_MEMORY_FAULT;
+    ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, size, HB_PERM_WRITE);
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, size, HB_PERM_WRITE);
+#endif
+    if (ptr) {
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        memcpy(ptr, src, size);
+        return HB_OK;
+    }
     __atomic_thread_fence(__ATOMIC_RELEASE);
     return hb_memory_write(ctx->memory, (hb_gva_t)addr, src, size);
 }
@@ -4474,6 +4562,10 @@ static hb_result_t hb_jit_helper_exchange_u64_tso(hb_context_t* ctx, uint64_t ad
     if (!ctx || !ctx->memory || !old_out) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(value),
                              (hb_perm_t)(HB_PERM_READ | HB_PERM_WRITE));
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, sizeof(value),
+                                         (hb_perm_t)(HB_PERM_READ | HB_PERM_WRITE));
+#endif
     if (hb_jit_helper_host_ptr_aligned(ptr, sizeof(value))) {
         *old_out = __atomic_exchange_n((uint64_t*)ptr, value, __ATOMIC_SEQ_CST);
         return HB_OK;
@@ -4892,6 +4984,60 @@ static size_t hb_jit_size_bytes(hb_size_t size) {
     }
 }
 
+#ifdef __APPLE__
+static void* hb_jit_live_host_ptr(uint64_t addr, size_t bytes, hb_perm_t perms) {
+    mach_vm_address_t region = (mach_vm_address_t)addr;
+    mach_vm_size_t region_size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    kern_return_t kr;
+    vm_prot_t needed = 0;
+
+    if (!addr || !bytes || addr + bytes < addr) return NULL;
+    if ((perms & HB_PERM_READ) != 0) needed |= VM_PROT_READ;
+    if ((perms & HB_PERM_WRITE) != 0) needed |= VM_PROT_WRITE;
+    if (!needed) needed = VM_PROT_READ;
+    kr = mach_vm_region(mach_task_self(), &region, &region_size,
+                        VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info,
+                        &count, &object);
+    if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+    if (kr != KERN_SUCCESS) return NULL;
+    if (region > addr || region + region_size < addr + bytes) return NULL;
+    if ((info.protection & needed) != needed) return NULL;
+    return (void*)(uintptr_t)addr;
+}
+
+static void hb_jit_trace_live_atomic_reject(const char* op, uint64_t pc, uint64_t instr_pc,
+                                            uint64_t addr, size_t bytes) {
+    mach_vm_address_t region = (mach_vm_address_t)addr;
+    mach_vm_size_t region_size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    kern_return_t kr;
+
+    memset(&info, 0, sizeof(info));
+    kr = mach_vm_region(mach_task_self(), &region, &region_size,
+                        VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info,
+                        &count, &object);
+    if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+    fprintf(stderr,
+            "macrunner-hb-atomic-live-reject: op=%s pc=0x%llx instr=0x%llx addr=0x%llx "
+            "size=%zu mach_kr=%d region=0x%llx region_end=0x%llx prot=0x%x max=0x%x\n",
+            op ? op : "?",
+            (unsigned long long)pc,
+            (unsigned long long)instr_pc,
+            (unsigned long long)addr,
+            bytes,
+            kr,
+            (unsigned long long)region,
+            (unsigned long long)(region + region_size),
+            info.protection,
+            info.max_protection);
+}
+#endif
+
 static uint64_t hb_jit_resolve_addr(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint64_t base = 0;
     uint64_t index = 0;
@@ -4924,6 +5070,10 @@ static void* hb_jit_atomic_host_ptr(hb_context_t* ctx, const hb_ir_operand_t* op
     if (((addr & 63u) + bytes) > 64u) return NULL;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, bytes,
                              (hb_perm_t)(HB_PERM_READ | HB_PERM_WRITE));
+#ifdef __APPLE__
+    if (!ptr) ptr = hb_jit_live_host_ptr(addr, bytes,
+                                         (hb_perm_t)(HB_PERM_READ | HB_PERM_WRITE));
+#endif
     if (!ptr || (((uintptr_t)ptr) & (bytes - 1)) != 0) return NULL;
     if (addr_out) *addr_out = addr;
     return ptr;
@@ -4990,14 +5140,31 @@ static hb_result_t hb_jit_atomic_write_mem_value(hb_context_t* ctx,
 static hb_result_t hb_jit_atomic_cmpxchg(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     hb_size_t size = instr->dst.size ? instr->dst.size : instr->src1.size;
     void* ptr;
+    uint64_t addr = 0;
     uint64_t src_val = 0;
     uint64_t acc, old = 0;
     bool equal = false;
     hb_result_t r;
 
     if (!size) size = instr->src2.size ? instr->src2.size : HB_SIZE_32;
-    ptr = hb_jit_atomic_host_ptr(ctx, &instr->src1, size, NULL);
-    if (!ptr) return HB_ERR_UNSUPPORTED_FEATURE;
+    ptr = hb_jit_atomic_host_ptr(ctx, &instr->src1, size, &addr);
+    if (!ptr) {
+        if (hb_jit_trace_atomics_enabled()) {
+            addr = hb_jit_resolve_addr(ctx, &instr->src1);
+#ifdef __APPLE__
+            hb_jit_trace_live_atomic_reject("cmpxchg", ctx->pc, instr->guest_addr,
+                                            addr, hb_jit_size_bytes(size));
+#else
+            fprintf(stderr,
+                    "macrunner-hb-atomic-live-reject: op=cmpxchg pc=0x%llx instr=0x%llx addr=0x%llx size=%zu\n",
+                    (unsigned long long)ctx->pc,
+                    (unsigned long long)instr->guest_addr,
+                    (unsigned long long)addr,
+                    hb_jit_size_bytes(size));
+#endif
+        }
+        return HB_ERR_UNSUPPORTED_FEATURE;
+    }
     r = hb_flags_read_operand_value(ctx, &instr->src2, &src_val);
     if (r != HB_OK) return r;
     acc = hb_jit_trunc_to_size(hb_context_read_reg_value(ctx, HB_REG_RAX), size);

@@ -14,6 +14,7 @@ FFP_ARG_MODIFIER_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_arg_modifier_ru
 FFP_ADDSIGNED_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_addsigned_runtime.jsonl"
 FFP_BLENDFACTOR_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_blendfactoralpha_runtime.jsonl"
 FFP_DOTPRODUCT_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"
+FFP_MODULATE4X_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_modulate4x_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
@@ -171,6 +172,17 @@ def test_d3d9_ffp_blendfactoralpha_affects_shading(tmp_path):
     ffp = state.pipeline.metadata["d3d9_ffp_shader"]
     assert ffp["color_op"] == "D3DTOP_BLENDFACTORALPHA"
     assert ffp["texture_factor"] == (0, 0, 0, 128)
+
+
+def test_d3d9_ffp_modulate4x_affects_shading(tmp_path):
+    result = replay(FFP_MODULATE4X_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (129, 255, 64)
+
+    state = load_trace(FFP_MODULATE4X_TRACE)
+    assert state.pipeline.metadata["d3d9_ffp_shader"]["color_op"] == "D3DTOP_MODULATE4X"
 
 
 def test_d3d9_fixed_function_transform_emits_wvp_metadata(tmp_path):

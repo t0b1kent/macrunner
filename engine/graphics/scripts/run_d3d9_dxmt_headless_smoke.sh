@@ -18,6 +18,7 @@ else
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_blendfactoralpha_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"
+	    "$ROOT/traces/runtime_samples/d3d9_ffp_modulate4x_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_color_write_mask_runtime.jsonl"

@@ -242,6 +242,7 @@ static NSString *d3d9_op_expr(NSString *op, NSString *lhs, NSString *rhs) {
     if ([op isEqualToString:@"D3DTOP_SELECTARG2"]) return rhs;
     if ([op isEqualToString:@"D3DTOP_MODULATE"]) return [NSString stringWithFormat:@"((%@)*(%@))", lhs, rhs];
     if ([op isEqualToString:@"D3DTOP_MODULATE2X"]) return [NSString stringWithFormat:@"saturate((%@)*(%@)*2.0)", lhs, rhs];
+    if ([op isEqualToString:@"D3DTOP_MODULATE4X"]) return [NSString stringWithFormat:@"saturate((%@)*(%@)*4.0)", lhs, rhs];
     if ([op isEqualToString:@"D3DTOP_ADD"]) return [NSString stringWithFormat:@"saturate((%@)+(%@))", lhs, rhs];
     if ([op isEqualToString:@"D3DTOP_ADDSIGNED"]) return [NSString stringWithFormat:@"saturate((%@)+(%@)-0.5)", lhs, rhs];
     if ([op isEqualToString:@"D3DTOP_ADDSIGNED2X"]) return [NSString stringWithFormat:@"saturate(((%@)+(%@)-0.5)*2.0)", lhs, rhs];

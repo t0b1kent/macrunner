@@ -363,6 +363,8 @@ class MockExecutor:
             return self._modulate(lhs, rhs)
         if op == "D3DTOP_MODULATE2X":
             return tuple(min(255, _clamp_channel(lhs[i] * rhs[i] * 2.0 / 255.0)) for i in range(4))  # type: ignore[return-value]
+        if op == "D3DTOP_MODULATE4X":
+            return tuple(min(255, _clamp_channel(lhs[i] * rhs[i] * 4.0 / 255.0)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_ADD":
             return tuple(min(255, lhs[i] + rhs[i]) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_ADDSIGNED":

@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${OUT:-$ROOT/artifacts/d3d9-metal-headless}"
 traces=(
   "$ROOT/traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
+  "$ROOT/traces/runtime_samples/d3d8_renderware_fixed_function_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
@@ -40,7 +41,7 @@ for trace in traces:
     run_out = out / trace.stem
     written = executor.write_request(state, run_out, trace_path=str(trace), name=trace.stem)
     payload = written["payload"]
-    if payload["source_api"] != "d3d9":
+    if payload["source_api"] not in {"d3d8", "d3d9"}:
         raise SystemExit(f"{trace}: source_api={payload['source_api']}")
     if payload["present_count"] < 1:
         raise SystemExit(f"{trace}: present_count missing")

@@ -1,0 +1,10 @@
+{
+  "expected_status": "PASS",
+  "height": 64,
+  "max_non_background_pixels": 1400,
+  "min_non_background_pixels": 900,
+  "no_unsupported_calls": true,
+  "no_validation_errors": true,
+  "trace": "d3d8_renderware_fixed_function_runtime.jsonl",
+  "width": 64
+}

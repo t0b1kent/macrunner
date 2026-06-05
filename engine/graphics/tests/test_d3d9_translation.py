@@ -4,6 +4,7 @@ from engine.graphics.tools.d3d_trace_replay import load_trace, replay
 
 ROOT = Path(__file__).resolve().parents[1]
 TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
+D3D8_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fixed_function_runtime.jsonl"
 TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
@@ -32,6 +33,21 @@ def test_d3d9_translation_records_fixed_function_metadata():
     assert state.pipeline.input_layout == ["xyz", "diffuse", "tex1"]
     assert state.pipeline.metadata["d3d9_render_states"]["D3DRS_LIGHTING"] is False
     assert state.pipeline.metadata["d3d9_texture_stage_states"][0]["state"] == "D3DTSS_COLOROP"
+
+
+def test_d3d8_renderware_trace_uses_d3d9_translation_path(tmp_path):
+    result = replay(D3D8_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["api"] == "d3d8"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 900
+    assert result["unsupported_calls"] == 0
+
+    state = load_trace(D3D8_TRACE)
+    assert state.pipeline.metadata["translation_target"] == "d3d11"
+    assert state.pipeline.metadata["d3d9_wvp_matrix"][12] == -0.2
+    assert state.pipeline.metadata["d3d9_sampler"]["address_u"] == "D3DTADDRESS_CLAMP"
+    assert state.pipeline.metadata["d3d9_texture_format"] == "bgra8"
 
 
 def test_d3d9_fixed_function_texture_modulate_emits_shader_metadata(tmp_path):

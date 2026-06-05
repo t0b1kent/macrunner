@@ -14,6 +14,7 @@ TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture
 FFP_ARG_MODIFIER_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
 FFP_ADDSIGNED_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_addsigned_runtime.jsonl"
 FFP_BLENDFACTOR_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_blendfactoralpha_runtime.jsonl"
+FFP_BLENDDIFFUSE_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_blenddiffusealpha_runtime.jsonl"
 FFP_DOTPRODUCT_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"
 FFP_MODULATE4X_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_modulate4x_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
@@ -223,6 +224,23 @@ def test_d3d9_ffp_blendfactoralpha_writes_metal_contract(tmp_path):
     assert payload["texture_pixels"][0] == [200, 0, 0, 255]
     assert ffp["color_op"] == "D3DTOP_BLENDFACTORALPHA"
     assert ffp["texture_factor"] == [0, 0, 0, 128]
+
+
+def test_d3d9_ffp_blenddiffusealpha_writes_metal_contract(tmp_path):
+    state = load_trace(FFP_BLENDDIFFUSE_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(FFP_BLENDDIFFUSE_TRACE),
+        name="ffp-blenddiffusealpha",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    ffp = payload["d3d9"]["ffp_shader"]
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "texture"
+    assert payload["texture_pixels"][0] == [200, 0, 0, 255]
+    assert ffp["color_op"] == "D3DTOP_BLENDDIFFUSEALPHA"
 
 
 def test_d3d9_ffp_modulate4x_writes_metal_contract(tmp_path):

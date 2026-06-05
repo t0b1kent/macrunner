@@ -1,0 +1,4 @@
+Lane C GTA VC autorun.exe PE32 post-wineusb slice.
+
+Probe: artifacts/games/gta-vc-disc/autorun.exe under dist-arm64ec-spike via scripts/mr-run.sh timeout 120.
+Counters: rc=143 fixme=0 unsupported=0 missing_import=0 vm_fail=0 dll_fail=0 seh_tail=0 wow64_btcpu=0.

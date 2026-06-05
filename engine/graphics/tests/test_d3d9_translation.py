@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from engine.graphics.d3d9_to_d3d11 import D3D9_FORMATS
 from engine.graphics.tools.d3d_trace_replay import load_trace, replay
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,7 @@ DRAW_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_drawprimitive_range_runti
 INDEX_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
 ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
+LEGACY_FORMAT_TRACE = ROOT / "traces/runtime_samples/d3d9_legacy_format_expansion_runtime.jsonl"
 
 
 def _ppm_pixel(path: Path, x: int, y: int, width: int) -> tuple[int, int, int]:
@@ -316,3 +318,22 @@ def test_d3d9_format_sweep_maps_legacy_formats(tmp_path):
     assert state.render_target_format == "rgba10a2"
     assert state.depth_format == "d32f"
     assert state.pipeline.metadata["d3d9_texture_format"] == "bc3"
+
+
+def test_d3d9_legacy_format_expansion_maps_more_dxgi_contracts(tmp_path):
+    result = replay(LEGACY_FORMAT_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 900
+
+    state = load_trace(LEGACY_FORMAT_TRACE)
+    assert state.render_target_format == "rgba8"
+    assert state.depth_format == "d16"
+    assert state.pipeline.metadata["d3d9_texture_format"] == "rgba8"
+    assert D3D9_FORMATS["D3DFMT_A8B8G8R8"] == "rgba8"
+    assert D3D9_FORMATS["D3DFMT_A8P8"] == "rgba8"
+    assert D3D9_FORMATS["D3DFMT_A4L4"] == "rg8"
+    assert D3D9_FORMATS["D3DFMT_CxV8U8"] == "rg8_snorm"
+    assert D3D9_FORMATS["D3DFMT_D24FS8"] == "d24s8"
+    assert D3D9_FORMATS["D3DFMT_DF24"] == "d24x8"
+    assert D3D9_FORMATS["D3DFMT_YUY2"] == "yuv422_yuy2"

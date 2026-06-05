@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 D3D8_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fixed_function_runtime.jsonl"
 XNA_ALPHA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
+LEGACY_FORMAT_TRACE = ROOT / "traces/runtime_samples/d3d9_legacy_format_expansion_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 FFP_ARG_MODIFIER_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
@@ -91,6 +92,23 @@ def test_d3d9_format_sweep_writes_metal_format_contract(tmp_path):
     assert payload["d3d9"]["texture_format"] == "bc3"
     assert payload["d3d9"]["ffp_shader"]["texture_factor"] == [255, 255, 255, 255]
     assert payload["d3d9"]["present_parameters"]["backbuffer_format"] == "D3DFMT_A2R10G10B10"
+
+
+def test_d3d9_legacy_format_expansion_writes_metal_contract(tmp_path):
+    state = load_trace(LEGACY_FORMAT_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(LEGACY_FORMAT_TRACE),
+        name="legacy-format-expansion",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["render_target_format"] == "rgba8"
+    assert payload["depth_format"] == "d16"
+    assert payload["d3d9"]["texture_format"] == "rgba8"
+    assert payload["d3d9"]["present_parameters"]["backbuffer_format"] == "D3DFMT_X8B8G8R8"
 
 
 def test_d3d9_texture_alpha_blend_writes_metal_combiner_contract(tmp_path):

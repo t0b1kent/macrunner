@@ -19,6 +19,7 @@ traces=(
 	  "$ROOT/traces/runtime_samples/d3d9_drawprimitive_triangle_strip_runtime.jsonl"
 	  "$ROOT/traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
 	  "$ROOT/traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
+	  "$ROOT/traces/runtime_samples/d3d9_legacy_format_expansion_runtime.jsonl"
 	  "$ROOT/traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
 	  "$ROOT/traces/runtime_samples/d3d9_scissor_test_runtime.jsonl"
 	  "$ROOT/traces/runtime_samples/d3d9_triangle_strip_runtime.jsonl"

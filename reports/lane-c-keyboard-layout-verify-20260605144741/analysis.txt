@@ -1,0 +1,30 @@
+Lane C keyboard layout activation verification
+
+Gap:
+- `NtUserActivateKeyboardLayout` returned `ERROR_CALL_NOT_IMPLEMENTED` before
+  calling the active user driver when the HKL low word did not match the default
+  user locale.
+- Current macOS probes use HKL `0x419`, producing repeated
+  `Changing user locale is not supported` diagnostics and preventing the
+  winemac driver from attempting the activation.
+
+Fix:
+- `engine/wine/dlls/win32u/input.c` now lets `user_driver->pActivateKeyboardLayout`
+  handle non-default HKLs instead of rejecting them in win32u.
+
+Build:
+- `reports/build/lane-c-win32u-activate-keyboard-layout-20260605144630.log`
+  compiled `dlls/win32u/input.o` but the full DLL link failed on missing
+  Windows import/link tooling.
+- `reports/build/lane-c-win32u-activate-keyboard-layout-retry-20260605144701.log`
+  rebuilt and linked the native Unix `win32u.so`; the Windows DLL link still
+  failed on the same external toolchain issue.
+- Installed the rebuilt native Unix artifact into
+  `engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/win32u.so`.
+
+Validation:
+- `reports/lane-c-keyboard-layout-verify-20260605144741/summary.txt`
+  reports `keyboard_locale_fixme=0`, `keyboard_flag_fixme=0`.
+- The validation log shows `NtUserActivateKeyboardLayout layout 0x419, flags 0`
+  followed by `macdrv_ActivateKeyboardLayout hkl 0x419 flags 0000`.
+- Remaining `seh_tail=64` is the already routed ARM64EC unwind tail.

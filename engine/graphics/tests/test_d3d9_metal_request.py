@@ -9,6 +9,7 @@ D3D8_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fixed_function_runti
 XNA_ALPHA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
+FFP_ARG_MODIFIER_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
@@ -107,6 +108,25 @@ def test_d3d9_texture_alpha_blend_writes_metal_combiner_contract(tmp_path):
     assert payload["d3d9"]["ffp_shader"]["color_op"] == "D3DTOP_BLENDTEXTUREALPHA"
     assert payload["d3d9"]["ffp_shader"]["color_arg1"] == "D3DTA_TEXTURE"
     assert payload["d3d9"]["ffp_shader"]["color_arg2"] == "D3DTA_DIFFUSE"
+
+
+def test_d3d9_ffp_arg_modifiers_write_metal_contract(tmp_path):
+    state = load_trace(FFP_ARG_MODIFIER_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(FFP_ARG_MODIFIER_TRACE),
+        name="ffp-arg-modifier",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    ffp = payload["d3d9"]["ffp_shader"]
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "texture"
+    assert payload["texture_size"] == [1, 1]
+    assert payload["texture_pixels"][0] == [64, 128, 192, 224]
+    assert ffp["color_arg1"] == "D3DTA_TEXTURE|D3DTA_COMPLEMENT"
+    assert ffp["alpha_arg1"] == "D3DTA_TEXTURE|D3DTA_ALPHAREPLICATE"
 
 
 def test_d3d9_transform_writes_metal_wvp_contract(tmp_path):

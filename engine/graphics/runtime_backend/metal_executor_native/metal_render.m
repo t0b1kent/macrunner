@@ -243,6 +243,9 @@ static NSString *d3d9_op_expr(NSString *op, NSString *lhs, NSString *rhs) {
     if ([op isEqualToString:@"D3DTOP_MODULATE"]) return [NSString stringWithFormat:@"((%@)*(%@))", lhs, rhs];
     if ([op isEqualToString:@"D3DTOP_MODULATE2X"]) return [NSString stringWithFormat:@"saturate((%@)*(%@)*2.0)", lhs, rhs];
     if ([op isEqualToString:@"D3DTOP_ADD"]) return [NSString stringWithFormat:@"saturate((%@)+(%@))", lhs, rhs];
+    if ([op isEqualToString:@"D3DTOP_ADDSIGNED"]) return [NSString stringWithFormat:@"saturate((%@)+(%@)-0.5)", lhs, rhs];
+    if ([op isEqualToString:@"D3DTOP_ADDSIGNED2X"]) return [NSString stringWithFormat:@"saturate(((%@)+(%@)-0.5)*2.0)", lhs, rhs];
+    if ([op isEqualToString:@"D3DTOP_ADDSMOOTH"]) return [NSString stringWithFormat:@"saturate((%@)+(%@)-((%@)*(%@)))", lhs, rhs, lhs, rhs];
     if ([op isEqualToString:@"D3DTOP_SUBTRACT"]) return [NSString stringWithFormat:@"saturate((%@)-(%@))", lhs, rhs];
     if ([op isEqualToString:@"D3DTOP_BLENDDIFFUSEALPHA"]) {
         return [NSString stringWithFormat:@"((%@)*diffuse.a+(%@)*(1.0-diffuse.a))", lhs, rhs];

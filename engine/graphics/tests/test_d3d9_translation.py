@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from engine.graphics.d3d9_to_d3d11 import D3D9_FORMATS
+from engine.graphics.runtime_backend.mock_executor import MockExecutor
 from engine.graphics.tools.d3d_trace_replay import load_trace, replay
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,6 +11,7 @@ D3D8_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_triangle_strip
 TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 FFP_ARG_MODIFIER_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
+FFP_ADDSIGNED_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_addsigned_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
@@ -125,6 +127,24 @@ def test_d3d9_ffp_arg_modifiers_affect_shading(tmp_path):
     ffp = state.pipeline.metadata["d3d9_ffp_shader"]
     assert ffp["color_arg1"] == "D3DTA_TEXTURE|D3DTA_COMPLEMENT"
     assert ffp["alpha_arg1"] == "D3DTA_TEXTURE|D3DTA_ALPHAREPLICATE"
+
+
+def test_d3d9_ffp_addsigned_ops_affect_shading(tmp_path):
+    result = replay(FFP_ADDSIGNED_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (64, 128, 192)
+
+    state = load_trace(FFP_ADDSIGNED_TRACE)
+    assert state.pipeline.metadata["d3d9_ffp_shader"]["color_op"] == "D3DTOP_ADDSIGNED2X"
+    assert MockExecutor()._apply_d3d9_op(  # noqa: SLF001 - sibling combiner regression guard.
+        "D3DTOP_ADDSIGNED",
+        (96, 128, 160, 255),
+        (64, 64, 64, 255),
+        (64, 64, 64, 255),
+        (96, 128, 160, 255),
+    ) == (32, 64, 96, 255)
 
 
 def test_d3d9_fixed_function_transform_emits_wvp_metadata(tmp_path):

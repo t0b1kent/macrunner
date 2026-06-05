@@ -365,6 +365,12 @@ class MockExecutor:
             return tuple(min(255, _clamp_channel(lhs[i] * rhs[i] * 2.0 / 255.0)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_ADD":
             return tuple(min(255, lhs[i] + rhs[i]) for i in range(4))  # type: ignore[return-value]
+        if op == "D3DTOP_ADDSIGNED":
+            return tuple(_clamp_channel(lhs[i] + rhs[i] - 128) for i in range(4))  # type: ignore[return-value]
+        if op == "D3DTOP_ADDSIGNED2X":
+            return tuple(_clamp_channel((lhs[i] + rhs[i] - 128) * 2) for i in range(4))  # type: ignore[return-value]
+        if op == "D3DTOP_ADDSMOOTH":
+            return tuple(_clamp_channel(lhs[i] + rhs[i] - lhs[i] * rhs[i] / 255.0) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_SUBTRACT":
             return tuple(max(0, lhs[i] - rhs[i]) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDDIFFUSEALPHA":

@@ -94,6 +94,57 @@ static NSMutableData *texture_data_from_request(NSArray *pixels) {
     return data;
 }
 
+static MTLBlendFactor blend_factor_from_d3d9(NSString *blend) {
+    if ([blend isEqualToString:@"D3DBLEND_ZERO"]) return MTLBlendFactorZero;
+    if ([blend isEqualToString:@"D3DBLEND_SRCALPHA"]) return MTLBlendFactorSourceAlpha;
+    if ([blend isEqualToString:@"D3DBLEND_INVSRCALPHA"]) return MTLBlendFactorOneMinusSourceAlpha;
+    if ([blend isEqualToString:@"D3DBLEND_DESTALPHA"]) return MTLBlendFactorDestinationAlpha;
+    if ([blend isEqualToString:@"D3DBLEND_INVDESTALPHA"]) return MTLBlendFactorOneMinusDestinationAlpha;
+    if ([blend isEqualToString:@"D3DBLEND_SRCCOLOR"]) return MTLBlendFactorSourceColor;
+    if ([blend isEqualToString:@"D3DBLEND_INVSRCCOLOR"]) return MTLBlendFactorOneMinusSourceColor;
+    if ([blend isEqualToString:@"D3DBLEND_DESTCOLOR"]) return MTLBlendFactorDestinationColor;
+    if ([blend isEqualToString:@"D3DBLEND_INVDESTCOLOR"]) return MTLBlendFactorOneMinusDestinationColor;
+    return MTLBlendFactorOne;
+}
+
+static NSString *alpha_test_condition(NSString *func, NSString *alphaRef) {
+    if ([func isEqualToString:@"D3DCMP_NEVER"]) return @"false";
+    if ([func isEqualToString:@"D3DCMP_LESS"]) return [NSString stringWithFormat:@"color.a < %@", alphaRef];
+    if ([func isEqualToString:@"D3DCMP_EQUAL"]) return [NSString stringWithFormat:@"color.a == %@", alphaRef];
+    if ([func isEqualToString:@"D3DCMP_LESSEQUAL"]) return [NSString stringWithFormat:@"color.a <= %@", alphaRef];
+    if ([func isEqualToString:@"D3DCMP_GREATER"]) return [NSString stringWithFormat:@"color.a > %@", alphaRef];
+    if ([func isEqualToString:@"D3DCMP_NOTEQUAL"]) return [NSString stringWithFormat:@"color.a != %@", alphaRef];
+    if ([func isEqualToString:@"D3DCMP_GREATEREQUAL"]) return [NSString stringWithFormat:@"color.a >= %@", alphaRef];
+    return @"true";
+}
+
+static NSString *fragment_shader_source(BOOL textureMode, NSDictionary *req) {
+    NSString *shader = req[@"shader"];
+    NSDictionary *d3d9 = [req[@"d3d9"] isKindOfClass:[NSDictionary class]] ? req[@"d3d9"] : @{};
+    NSDictionary *ffp = [d3d9[@"ffp_shader"] isKindOfClass:[NSDictionary class]] ? d3d9[@"ffp_shader"] : @{};
+    NSString *colorOp = ffp[@"color_op"] ?: @"";
+    BOOL modulate = [shader isEqualToString:@"d3d9-programmable-texture-modulate"] || [colorOp isEqualToString:@"D3DTOP_MODULATE"];
+    BOOL alphaTest = [ffp[@"alpha_test_enable"] boolValue];
+    double alphaRef = [ffp[@"alpha_ref"] doubleValue] / 255.0;
+    NSString *alphaFunc = ffp[@"alpha_func"] ?: @"D3DCMP_ALWAYS";
+    NSString *colorExpr = textureMode
+        ? (modulate ? @"tex.sample(smp, in.uv) * in.color" : @"tex.sample(smp, in.uv)")
+        : @"in.color";
+    NSString *alphaCode = @"";
+    if (alphaTest) {
+        NSString *condition = alpha_test_condition(alphaFunc, [NSString stringWithFormat:@"%0.9f", alphaRef]);
+        alphaCode = [NSString stringWithFormat:@"if (!(%@)) discard_fragment();", condition];
+    }
+    if (textureMode) {
+        return [NSString stringWithFormat:
+            @"fragment float4 ps(O in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]]){float4 color=%@;%@ return color;}\n",
+            colorExpr, alphaCode];
+    }
+    return [NSString stringWithFormat:
+        @"fragment float4 ps(O in [[stage_in]]){float4 color=%@;%@ return color;}\n",
+        colorExpr, alphaCode];
+}
+
 static NSString *fnv1a_hex(NSData *data) {
     const uint8_t *bytes = data.bytes;
     uint64_t hash = 1469598103934665603ULL;
@@ -184,15 +235,24 @@ static int render_request(NSString *requestPath) {
 
     if ([mode isEqualToString:@"triangle"] || [mode isEqualToString:@"indexed_triangle"] || [mode isEqualToString:@"texture"]) {
         BOOL textureMode = [mode isEqualToString:@"texture"];
-        NSString *src = textureMode
-            ? @"#include <metal_stdlib>\nusing namespace metal;\nstruct V{packed_float2 p; packed_float4 c; packed_float2 uv;}; struct O{float4 position [[position]]; float4 color; float2 uv;};\nvertex O vs(uint id [[vertex_id]], const device V* v [[buffer(0)]]){O o; o.position=float4(float2(v[id].p),0,1); o.color=float4(v[id].c); o.uv=float2(v[id].uv); return o;}\nfragment float4 ps(O in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]]){return tex.sample(smp, in.uv);}\n"
-            : @"#include <metal_stdlib>\nusing namespace metal;\nstruct V{packed_float2 p; packed_float4 c; packed_float2 uv;}; struct O{float4 position [[position]]; float4 color; float2 uv;};\nvertex O vs(uint id [[vertex_id]], const device V* v [[buffer(0)]]){O o; o.position=float4(float2(v[id].p),0,1); o.color=float4(v[id].c); o.uv=float2(v[id].uv); return o;}\nfragment float4 ps(O in [[stage_in]]){return in.color;}\n";
+        NSString *src = [@"#include <metal_stdlib>\nusing namespace metal;\nstruct V{packed_float2 p; packed_float4 c; packed_float2 uv;}; struct O{float4 position [[position]]; float4 color; float2 uv;};\nvertex O vs(uint id [[vertex_id]], const device V* v [[buffer(0)]]){O o; o.position=float4(float2(v[id].p),0,1); o.color=float4(v[id].c); o.uv=float2(v[id].uv); return o;}\n" stringByAppendingString:fragment_shader_source(textureMode, req)];
         id<MTLLibrary> lib = [device newLibraryWithSource:src options:nil error:&error];
         if (!lib) { fprintf(stderr, "Metal library failed: %s\n", error.localizedDescription.UTF8String); return 7; }
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         pd.vertexFunction = [lib newFunctionWithName:@"vs"];
         pd.fragmentFunction = [lib newFunctionWithName:@"ps"];
         pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+        NSDictionary *d3d9 = [req[@"d3d9"] isKindOfClass:[NSDictionary class]] ? req[@"d3d9"] : @{};
+        NSDictionary *ffp = [d3d9[@"ffp_shader"] isKindOfClass:[NSDictionary class]] ? d3d9[@"ffp_shader"] : @{};
+        if ([ffp[@"alpha_blend_enable"] boolValue]) {
+            pd.colorAttachments[0].blendingEnabled = YES;
+            pd.colorAttachments[0].sourceRGBBlendFactor = blend_factor_from_d3d9(ffp[@"src_blend"] ?: @"D3DBLEND_ONE");
+            pd.colorAttachments[0].destinationRGBBlendFactor = blend_factor_from_d3d9(ffp[@"dest_blend"] ?: @"D3DBLEND_ZERO");
+            pd.colorAttachments[0].sourceAlphaBlendFactor = pd.colorAttachments[0].sourceRGBBlendFactor;
+            pd.colorAttachments[0].destinationAlphaBlendFactor = pd.colorAttachments[0].destinationRGBBlendFactor;
+            pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+            pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+        }
         id<MTLRenderPipelineState> ps = [device newRenderPipelineStateWithDescriptor:pd error:&error];
         if (!ps) { fprintf(stderr, "Metal pipeline failed: %s\n", error.localizedDescription.UTF8String); return 8; }
         NSMutableData *vertexData = vertex_data_from_request(req[@"vertices"]);

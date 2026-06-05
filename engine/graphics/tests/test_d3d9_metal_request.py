@@ -10,6 +10,7 @@ FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.js
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
+SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
 
 
 def test_d3d9_xna_alpha_blend_writes_metal_request_contract(tmp_path):
@@ -116,3 +117,23 @@ def test_d3d9_index32_writes_metal_index_contract(tmp_path):
     assert payload["indices"] == [0, 1, 2]
     assert payload["d3d9"]["index_format"] == "uint32"
     assert payload["d3d9"]["index_format_raw"] == "D3DFMT_INDEX32"
+
+
+def test_d3d9_sampler_writes_metal_sampler_contract(tmp_path):
+    state = load_trace(SAMPLER_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(SAMPLER_TRACE),
+        name="sampler-linear-wrap",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "texture"
+    assert len(payload["d3d9"]["sampler_states"]) == 4
+    sampler = payload["d3d9"]["sampler"]
+    assert sampler["address_u"] == "D3DTADDRESS_WRAP"
+    assert sampler["address_v"] == "D3DTADDRESS_WRAP"
+    assert sampler["min_filter"] == "D3DTEXF_LINEAR"
+    assert sampler["mag_filter"] == "D3DTEXF_LINEAR"

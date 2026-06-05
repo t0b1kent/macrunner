@@ -8,6 +8,7 @@ TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modul
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
+SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
 ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
@@ -85,6 +86,20 @@ def test_d3d9_index32_trace_records_index_format(tmp_path):
     assert state.pipeline.metadata["d3d9_index_format_raw"] == "D3DFMT_INDEX32"
     assert state.pipeline.metadata["d3d9_index_format"] == "uint32"
     assert state.index_buffer == [0, 1, 2]
+
+
+def test_d3d9_sampler_state_records_filter_and_address(tmp_path):
+    result = replay(SAMPLER_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1000
+
+    state = load_trace(SAMPLER_TRACE)
+    sampler = state.pipeline.metadata["d3d9_sampler"]
+    assert sampler["address_u"] == "D3DTADDRESS_WRAP"
+    assert sampler["address_v"] == "D3DTADDRESS_WRAP"
+    assert sampler["min_filter"] == "D3DTEXF_LINEAR"
+    assert sampler["mag_filter"] == "D3DTEXF_LINEAR"
 
 
 def test_d3d9_programmable_xna_sprite_uses_texture_modulate_shader(tmp_path):

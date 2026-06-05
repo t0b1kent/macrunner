@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Iterable
 
@@ -191,9 +192,53 @@ class MockExecutor:
         u = sum(weights[i] * tri[i].uv[0] for i in range(3))
         v = sum(weights[i] * tri[i].uv[1] for i in range(3))
         width, height = state.texture_size
+        sampler = state.pipeline.metadata.get("d3d9_sampler", {})
+        address_u = str(sampler.get("address_u", "D3DTADDRESS_CLAMP"))
+        address_v = str(sampler.get("address_v", "D3DTADDRESS_CLAMP"))
+        u = self._address_coord(u, address_u)
+        v = self._address_coord(v, address_v)
+        texture_filter = str(sampler.get("mag_filter", sampler.get("min_filter", "D3DTEXF_POINT")))
+        if texture_filter == "D3DTEXF_LINEAR":
+            return self._sample_linear(state.texture, width, height, u, v, address_u, address_v)
         tx = max(0, min(width - 1, int(u * (width - 1) + 0.5)))
         ty = max(0, min(height - 1, int(v * (height - 1) + 0.5)))
         return _color_to_u8(state.texture[ty * width + tx])
+
+    @staticmethod
+    def _address_coord(value: float, mode: str) -> float:
+        if mode == "D3DTADDRESS_WRAP":
+            return value % 1.0
+        if mode == "D3DTADDRESS_MIRROR":
+            period = value % 2.0
+            return period if period <= 1.0 else 2.0 - period
+        return max(0.0, min(1.0, value))
+
+    @staticmethod
+    def _sample_linear(texture: list[Color], width: int, height: int, u: float, v: float, address_u: str, address_v: str) -> Color:
+        x = u * (width - 1)
+        y = v * (height - 1)
+        x0 = max(0, min(width - 1, int(math.floor(x))))
+        y0 = max(0, min(height - 1, int(math.floor(y))))
+        if address_u == "D3DTADDRESS_WRAP":
+            x1 = (x0 + 1) % width
+        else:
+            x1 = max(0, min(width - 1, x0 + 1))
+        if address_v == "D3DTADDRESS_WRAP":
+            y1 = (y0 + 1) % height
+        else:
+            y1 = max(0, min(height - 1, y0 + 1))
+        fx = x - math.floor(x)
+        fy = y - math.floor(y)
+        c00 = texture[y0 * width + x0]
+        c10 = texture[y0 * width + x1]
+        c01 = texture[y1 * width + x0]
+        c11 = texture[y1 * width + x1]
+        out = []
+        for channel in range(4):
+            top = c00[channel] * (1.0 - fx) + c10[channel] * fx
+            bottom = c01[channel] * (1.0 - fx) + c11[channel] * fx
+            out.append(_clamp_channel(top * (1.0 - fy) + bottom * fy))
+        return (out[0], out[1], out[2], out[3])
 
     def _shade_d3d9(self, state: RenderState, diffuse: Color, texture: Color | None) -> Color | None:
         ffp = state.pipeline.metadata.get("d3d9_ffp_shader", {})

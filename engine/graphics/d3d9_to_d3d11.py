@@ -98,6 +98,22 @@ def _update_wvp_metadata(state: RenderState) -> None:
     state.pipeline.metadata["d3d9_wvp_matrix"] = _matrix_multiply(_matrix_multiply(world, view), projection)
 
 
+def _update_sampler_metadata(state: RenderState) -> None:
+    entries = state.pipeline.metadata.get("d3d9_sampler_states", [])
+    sampler0 = {
+        str(entry.get("state")): entry.get("value")
+        for entry in entries
+        if int(entry.get("sampler", 0)) == 0
+    }
+    state.pipeline.metadata["d3d9_sampler"] = {
+        "address_u": str(sampler0.get("D3DSAMP_ADDRESSU", "D3DTADDRESS_CLAMP")),
+        "address_v": str(sampler0.get("D3DSAMP_ADDRESSV", "D3DTADDRESS_CLAMP")),
+        "min_filter": str(sampler0.get("D3DSAMP_MINFILTER", "D3DTEXF_POINT")),
+        "mag_filter": str(sampler0.get("D3DSAMP_MAGFILTER", "D3DTEXF_POINT")),
+        "mip_filter": str(sampler0.get("D3DSAMP_MIPFILTER", "D3DTEXF_NONE")),
+    }
+
+
 def apply_d3d9_wvp(position: tuple[float, float, float, float], metadata: dict[str, Any]) -> tuple[float, float, float, float]:
     matrix = metadata.get("d3d9_wvp_matrix")
     if not matrix:
@@ -258,6 +274,11 @@ def apply_d3d9_event(state: RenderState, command: str, payload: dict[str, Any]) 
         state.pipeline.metadata.setdefault("d3d9_texture_stage_states", []).append(payload)
         _bind_fixed_function_shader(state)
         _update_ffp_shader_metadata(state)
+        return True
+
+    if command == "set_sampler_state":
+        state.pipeline.metadata.setdefault("d3d9_sampler_states", []).append(payload)
+        _update_sampler_metadata(state)
         return True
 
     if command == "set_transform":

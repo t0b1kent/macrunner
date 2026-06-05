@@ -133,6 +133,17 @@ static MTLBlendFactor blend_factor_from_d3d9(NSString *blend) {
     return MTLBlendFactorOne;
 }
 
+static MTLSamplerAddressMode address_mode_from_d3d9(NSString *mode) {
+    if ([mode isEqualToString:@"D3DTADDRESS_WRAP"]) return MTLSamplerAddressModeRepeat;
+    if ([mode isEqualToString:@"D3DTADDRESS_MIRROR"]) return MTLSamplerAddressModeMirrorRepeat;
+    return MTLSamplerAddressModeClampToEdge;
+}
+
+static MTLSamplerMinMagFilter filter_from_d3d9(NSString *filter) {
+    if ([filter isEqualToString:@"D3DTEXF_LINEAR"]) return MTLSamplerMinMagFilterLinear;
+    return MTLSamplerMinMagFilterNearest;
+}
+
 static NSString *alpha_test_condition(NSString *func, NSString *alphaRef) {
     if ([func isEqualToString:@"D3DCMP_NEVER"]) return @"false";
     if ([func isEqualToString:@"D3DCMP_LESS"]) return [NSString stringWithFormat:@"color.a < %@", alphaRef];
@@ -358,8 +369,11 @@ static int render_request(NSString *requestPath) {
             id<MTLTexture> sampleTexture = [device newTextureWithDescriptor:sd];
             [sampleTexture replaceRegion:MTLRegionMake2D(0, 0, sampleWidth, sampleHeight) mipmapLevel:0 withBytes:[texels bytes] bytesPerRow:sampleWidth * 4];
             MTLSamplerDescriptor *sdesc = [MTLSamplerDescriptor new];
-            sdesc.minFilter = MTLSamplerMinMagFilterNearest;
-            sdesc.magFilter = MTLSamplerMinMagFilterNearest;
+            NSDictionary *samplerInfo = [d3d9[@"sampler"] isKindOfClass:[NSDictionary class]] ? d3d9[@"sampler"] : @{};
+            sdesc.sAddressMode = address_mode_from_d3d9(samplerInfo[@"address_u"] ?: @"D3DTADDRESS_CLAMP");
+            sdesc.tAddressMode = address_mode_from_d3d9(samplerInfo[@"address_v"] ?: @"D3DTADDRESS_CLAMP");
+            sdesc.minFilter = filter_from_d3d9(samplerInfo[@"min_filter"] ?: @"D3DTEXF_POINT");
+            sdesc.magFilter = filter_from_d3d9(samplerInfo[@"mag_filter"] ?: @"D3DTEXF_POINT");
             id<MTLSamplerState> sampler = [device newSamplerStateWithDescriptor:sdesc];
             [enc setFragmentTexture:sampleTexture atIndex:0];
             [enc setFragmentSamplerState:sampler atIndex:0];

@@ -17,6 +17,7 @@ DEPTH_TRACE = ROOT / "traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
 INDEX_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
 CULL_TRACE = ROOT / "traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
 BASE_VERTEX_TRACE = ROOT / "traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
+COLOR_WRITE_TRACE = ROOT / "traces/runtime_samples/d3d9_color_write_mask_runtime.jsonl"
 DRAW_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_drawprimitive_range_runtime.jsonl"
 STRIP_TRACE = ROOT / "traces/runtime_samples/d3d9_triangle_strip_runtime.jsonl"
 DRAW_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d9_drawprimitive_triangle_strip_runtime.jsonl"
@@ -293,6 +294,21 @@ def test_d3d9_drawprimitive_triangle_strip_writes_sliced_vertices(tmp_path):
     assert payload["d3d9"]["draw_range"]["indexed"] is False
     assert payload["d3d9"]["draw_range"]["start_vertex"] == 1
     assert payload["d3d9"]["draw_range"]["primitive_count"] == 2
+
+
+def test_d3d9_color_write_mask_writes_metal_render_state_contract(tmp_path):
+    state = load_trace(COLOR_WRITE_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(COLOR_WRITE_TRACE),
+        name="color-write-mask",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "indexed_triangle"
+    assert payload["d3d9"]["render_states"]["D3DRS_COLORWRITEENABLE"] == 3
 
 
 def test_d3d9_cullmode_writes_metal_render_state_contract(tmp_path):

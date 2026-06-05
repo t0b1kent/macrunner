@@ -173,7 +173,7 @@ class MockExecutor:
                         continue
                     shaded = self._shade(state, transformed, (w0, w1, w2))
                     if shaded is not None:
-                        pixels[index] = self._blend_d3d9(state, shaded, pixels[index])
+                        pixels[index] = self._write_color_d3d9(state, shaded, pixels[index])
                         if self._depth_write_enabled(state):
                             depth[index] = pixel_depth
 
@@ -390,17 +390,51 @@ class MockExecutor:
             return alpha >= ref
         return True
 
-    def _blend_d3d9(self, state: RenderState, src: Color, dst: Color) -> Color:
+    def _write_color_d3d9(self, state: RenderState, src: Color, dst: Color) -> Color:
         ffp = state.pipeline.metadata.get("d3d9_ffp_shader", {})
         render_states = state.pipeline.metadata.get("d3d9_render_states", {})
         if not (ffp.get("alpha_blend_enable", False) or render_states.get("D3DRS_ALPHABLENDENABLE", False)):
-            return src
+            return self._apply_color_write_mask(render_states, src, dst)
         src_factor = self._blend_factor(str(ffp.get("src_blend", render_states.get("D3DRS_SRCBLEND", "D3DBLEND_ONE"))), src, dst)
         dst_factor = self._blend_factor(str(ffp.get("dest_blend", render_states.get("D3DRS_DESTBLEND", "D3DBLEND_ZERO"))), src, dst)
-        return tuple(
+        blended = tuple(
             _clamp_channel(src[i] * src_factor[i] + dst[i] * dst_factor[i])
             for i in range(4)
-        )  # type: ignore[return-value]
+        )
+        return self._apply_color_write_mask(render_states, blended, dst)  # type: ignore[arg-type]
+
+    @classmethod
+    def _apply_color_write_mask(cls, render_states: dict, src: Color, dst: Color) -> Color:
+        mask = cls._color_write_mask(render_states.get("D3DRS_COLORWRITEENABLE", 0x0f))
+        return tuple(src[i] if mask[i] else dst[i] for i in range(4))  # type: ignore[return-value]
+
+    @staticmethod
+    def _color_write_mask(value: object) -> tuple[bool, bool, bool, bool]:
+        bits = 0x0f
+        if isinstance(value, bool):
+            bits = 0x0f if value else 0
+        elif isinstance(value, int):
+            bits = value
+        elif isinstance(value, str):
+            text = value.strip()
+            if text.lower().startswith("0x") or text.isdigit():
+                bits = int(text, 0)
+            else:
+                bits = 0
+                for name, bit in {
+                    "RED": 0x1,
+                    "GREEN": 0x2,
+                    "BLUE": 0x4,
+                    "ALPHA": 0x8,
+                }.items():
+                    if name in text:
+                        bits |= bit
+        return (
+            bool(bits & 0x1),
+            bool(bits & 0x2),
+            bool(bits & 0x4),
+            bool(bits & 0x8),
+        )
 
     @staticmethod
     def _blend_factor(blend: str, src: Color, dst: Color) -> tuple[float, float, float, float]:

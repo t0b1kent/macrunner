@@ -16,6 +16,7 @@ DRAW_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d9_drawprimitive_triangle_st
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
 BASE_VERTEX_TRACE = ROOT / "traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
+COLOR_WRITE_TRACE = ROOT / "traces/runtime_samples/d3d9_color_write_mask_runtime.jsonl"
 CULL_TRACE = ROOT / "traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
 DEPTH_TRACE = ROOT / "traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
 DRAW_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_drawprimitive_range_runtime.jsonl"
@@ -253,6 +254,17 @@ def test_d3d9_drawprimitive_triangle_strip_slices_vertices(tmp_path):
     assert draw["indexed"] is False
     assert draw["start_vertex"] == 1
     assert draw["primitive_count"] == 2
+
+
+def test_d3d9_color_write_mask_preserves_disabled_channels(tmp_path):
+    result = replay(COLOR_WRITE_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (255, 64, 16)
+
+    state = load_trace(COLOR_WRITE_TRACE)
+    assert state.pipeline.metadata["d3d9_render_states"]["D3DRS_COLORWRITEENABLE"] == 3
 
 
 def test_d3d9_cullmode_rejects_clockwise_triangles(tmp_path):

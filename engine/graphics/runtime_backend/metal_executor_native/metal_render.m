@@ -133,6 +133,31 @@ static MTLBlendFactor blend_factor_from_d3d9(NSString *blend) {
     return MTLBlendFactorOne;
 }
 
+static MTLColorWriteMask color_write_mask_from_d3d9(id value) {
+    if (!value || value == (id)[NSNull null]) return MTLColorWriteMaskAll;
+    NSUInteger bits = 0x0f;
+    if ([value isKindOfClass:[NSString class]]) {
+        NSString *text = [(NSString *)value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([text hasPrefix:@"0x"] || [text rangeOfCharacterFromSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]].location == NSNotFound) {
+            bits = strtoul([text UTF8String], NULL, 0);
+        } else {
+            bits = 0;
+            if ([text containsString:@"RED"]) bits |= 0x1;
+            if ([text containsString:@"GREEN"]) bits |= 0x2;
+            if ([text containsString:@"BLUE"]) bits |= 0x4;
+            if ([text containsString:@"ALPHA"]) bits |= 0x8;
+        }
+    } else if ([value respondsToSelector:@selector(unsignedIntegerValue)]) {
+        bits = [value unsignedIntegerValue];
+    }
+    MTLColorWriteMask mask = 0;
+    if (bits & 0x1) mask |= MTLColorWriteMaskRed;
+    if (bits & 0x2) mask |= MTLColorWriteMaskGreen;
+    if (bits & 0x4) mask |= MTLColorWriteMaskBlue;
+    if (bits & 0x8) mask |= MTLColorWriteMaskAlpha;
+    return mask;
+}
+
 static MTLSamplerAddressMode address_mode_from_d3d9(NSString *mode) {
     if ([mode isEqualToString:@"D3DTADDRESS_WRAP"]) return MTLSamplerAddressModeRepeat;
     if ([mode isEqualToString:@"D3DTADDRESS_MIRROR"]) return MTLSamplerAddressModeMirrorRepeat;
@@ -385,6 +410,8 @@ static int render_request(NSString *requestPath) {
         pd.vertexFunction = [lib newFunctionWithName:@"vs"];
         pd.fragmentFunction = [lib newFunctionWithName:@"ps"];
         pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+        NSDictionary *renderStates = [d3d9[@"render_states"] isKindOfClass:[NSDictionary class]] ? d3d9[@"render_states"] : @{};
+        pd.colorAttachments[0].writeMask = color_write_mask_from_d3d9(renderStates[@"D3DRS_COLORWRITEENABLE"]);
         if (depthEnabled) {
             pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
         }
@@ -415,7 +442,6 @@ static int render_request(NSString *requestPath) {
         id<MTLBuffer> vb = [device newBufferWithBytes:[vertexData bytes] length:[vertexData length] options:MTLResourceStorageModeShared];
         [enc setRenderPipelineState:ps];
         if (depthState) [enc setDepthStencilState:depthState];
-        NSDictionary *renderStates = [d3d9[@"render_states"] isKindOfClass:[NSDictionary class]] ? d3d9[@"render_states"] : @{};
         NSString *cullMode = renderStates[@"D3DRS_CULLMODE"] ?: @"D3DCULL_NONE";
         [enc setFrontFacingWinding:winding_from_d3d9_cull(cullMode)];
         [enc setCullMode:cull_mode_from_d3d9(cullMode)];

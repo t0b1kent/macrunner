@@ -13,6 +13,7 @@ LEGACY_FORMAT_TRACE = ROOT / "traces/runtime_samples/d3d9_legacy_format_expansio
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 FFP_ARG_MODIFIER_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
 FFP_ADDSIGNED_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_addsigned_runtime.jsonl"
+FFP_DOTPRODUCT_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
@@ -185,6 +186,23 @@ def test_d3d9_ffp_addsigned_writes_metal_contract(tmp_path):
     assert payload["mode"] == "texture"
     assert payload["texture_pixels"][0] == [96, 128, 160, 255]
     assert ffp["color_op"] == "D3DTOP_ADDSIGNED2X"
+
+
+def test_d3d9_ffp_dotproduct3_writes_metal_contract(tmp_path):
+    state = load_trace(FFP_DOTPRODUCT_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(FFP_DOTPRODUCT_TRACE),
+        name="ffp-dotproduct3",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    ffp = payload["d3d9"]["ffp_shader"]
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "texture"
+    assert payload["texture_pixels"][0] == [255, 128, 128, 255]
+    assert ffp["color_op"] == "D3DTOP_DOTPRODUCT3"
 
 
 def test_d3d9_transform_writes_metal_wvp_contract(tmp_path):

@@ -371,6 +371,10 @@ class MockExecutor:
             return tuple(_clamp_channel((lhs[i] + rhs[i] - 128) * 2) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_ADDSMOOTH":
             return tuple(_clamp_channel(lhs[i] + rhs[i] - lhs[i] * rhs[i] / 255.0) for i in range(4))  # type: ignore[return-value]
+        if op == "D3DTOP_DOTPRODUCT3":
+            dot = sum(((lhs[i] / 127.5) - 1.0) * ((rhs[i] / 127.5) - 1.0) for i in range(3))
+            value = _clamp_channel(max(0.0, min(1.0, dot)) * 255.0)
+            return (value, value, value, lhs[3])
         if op == "D3DTOP_SUBTRACT":
             return tuple(max(0, lhs[i] - rhs[i]) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDDIFFUSEALPHA":

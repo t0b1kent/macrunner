@@ -1,0 +1,4 @@
+Lane C x64 real-app post-wineusb breadth.
+
+Apps: npp_x64, reactos_calc_x64, win7_calc_rebased_x64 under dist-arm64ec-spike via scripts/mr-run.sh with separate prefixes and timeout 90 each.
+Classification: see summary.tsv. Any nonzero fixme/unsupported/missing/vm/dll/seh counter requires focused triage before source patches.

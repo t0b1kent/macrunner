@@ -144,6 +144,17 @@ static MTLSamplerMinMagFilter filter_from_d3d9(NSString *filter) {
     return MTLSamplerMinMagFilterNearest;
 }
 
+static MTLCompareFunction compare_function_from_d3d9(NSString *func) {
+    if ([func isEqualToString:@"D3DCMP_NEVER"]) return MTLCompareFunctionNever;
+    if ([func isEqualToString:@"D3DCMP_LESS"]) return MTLCompareFunctionLess;
+    if ([func isEqualToString:@"D3DCMP_EQUAL"]) return MTLCompareFunctionEqual;
+    if ([func isEqualToString:@"D3DCMP_LESSEQUAL"]) return MTLCompareFunctionLessEqual;
+    if ([func isEqualToString:@"D3DCMP_GREATER"]) return MTLCompareFunctionGreater;
+    if ([func isEqualToString:@"D3DCMP_NOTEQUAL"]) return MTLCompareFunctionNotEqual;
+    if ([func isEqualToString:@"D3DCMP_GREATEREQUAL"]) return MTLCompareFunctionGreaterEqual;
+    return MTLCompareFunctionAlways;
+}
+
 static NSString *alpha_test_condition(NSString *func, NSString *alphaRef) {
     if ([func isEqualToString:@"D3DCMP_NEVER"]) return @"false";
     if ([func isEqualToString:@"D3DCMP_LESS"]) return [NSString stringWithFormat:@"color.a < %@", alphaRef];
@@ -285,6 +296,9 @@ static int render_request(NSString *requestPath) {
     NSUInteger width = [req[@"width"] unsignedIntegerValue] ?: 64;
     NSUInteger height = [req[@"height"] unsignedIntegerValue] ?: 64;
     NSString *mode = req[@"mode"] ?: @"clear";
+    NSDictionary *d3d9 = [req[@"d3d9"] isKindOfClass:[NSDictionary class]] ? req[@"d3d9"] : @{};
+    NSDictionary *depthInfo = [d3d9[@"depth_state"] isKindOfClass:[NSDictionary class]] ? d3d9[@"depth_state"] : @{};
+    BOOL depthEnabled = [depthInfo[@"z_enable"] boolValue];
     NSString *output = req[@"output"];
     NSString *report = req[@"report"];
     NSArray *cc = req[@"clear_color"] ?: @[ @0, @0, @0, @255 ];
@@ -299,6 +313,14 @@ static int render_request(NSString *requestPath) {
     td.storageMode = MTLStorageModeShared;
     id<MTLTexture> texture = [device newTextureWithDescriptor:td];
     if (!texture) { fprintf(stderr, "Metal texture unavailable\n"); return 6; }
+    id<MTLTexture> depthTexture = nil;
+    if (depthEnabled) {
+        MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:width height:height mipmapped:NO];
+        dd.usage = MTLTextureUsageRenderTarget;
+        dd.storageMode = MTLStorageModePrivate;
+        depthTexture = [device newTextureWithDescriptor:dd];
+        if (!depthTexture) { fprintf(stderr, "Metal depth texture unavailable\n"); return 6; }
+    }
 
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -306,6 +328,12 @@ static int render_request(NSString *requestPath) {
     rp.colorAttachments[0].loadAction = MTLLoadActionClear;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     rp.colorAttachments[0].clearColor = clear;
+    if (depthTexture) {
+        rp.depthAttachment.texture = depthTexture;
+        rp.depthAttachment.loadAction = MTLLoadActionClear;
+        rp.depthAttachment.storeAction = MTLStoreActionDontCare;
+        rp.depthAttachment.clearDepth = 1.0;
+    }
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
 
     NSArray *vp = req[@"viewport"];
@@ -337,7 +365,9 @@ static int render_request(NSString *requestPath) {
         pd.vertexFunction = [lib newFunctionWithName:@"vs"];
         pd.fragmentFunction = [lib newFunctionWithName:@"ps"];
         pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
-        NSDictionary *d3d9 = [req[@"d3d9"] isKindOfClass:[NSDictionary class]] ? req[@"d3d9"] : @{};
+        if (depthEnabled) {
+            pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+        }
         NSDictionary *ffp = [d3d9[@"ffp_shader"] isKindOfClass:[NSDictionary class]] ? d3d9[@"ffp_shader"] : @{};
         if ([ffp[@"alpha_blend_enable"] boolValue]) {
             pd.colorAttachments[0].blendingEnabled = YES;
@@ -350,6 +380,13 @@ static int render_request(NSString *requestPath) {
         }
         id<MTLRenderPipelineState> ps = [device newRenderPipelineStateWithDescriptor:pd error:&error];
         if (!ps) { fprintf(stderr, "Metal pipeline failed: %s\n", error.localizedDescription.UTF8String); return 8; }
+        id<MTLDepthStencilState> depthState = nil;
+        if (depthEnabled) {
+            MTLDepthStencilDescriptor *depthDesc = [MTLDepthStencilDescriptor new];
+            depthDesc.depthCompareFunction = compare_function_from_d3d9(depthInfo[@"z_func"] ?: @"D3DCMP_LESSEQUAL");
+            depthDesc.depthWriteEnabled = [depthInfo[@"z_write_enable"] boolValue];
+            depthState = [device newDepthStencilStateWithDescriptor:depthDesc];
+        }
         NSMutableData *vertexData = vertex_data_from_request(req[@"vertices"], d3d9[@"wvp_matrix"]);
         BOOL index32 = [req[@"index_format"] isEqualToString:@"uint32"];
         NSMutableData *indexData = index_data_from_request(req[@"indices"], index32);
@@ -357,6 +394,7 @@ static int render_request(NSString *requestPath) {
         NSUInteger indexCount = [indexData length] / (index32 ? sizeof(uint32_t) : sizeof(uint16_t));
         id<MTLBuffer> vb = [device newBufferWithBytes:[vertexData bytes] length:[vertexData length] options:MTLResourceStorageModeShared];
         [enc setRenderPipelineState:ps];
+        if (depthState) [enc setDepthStencilState:depthState];
         [enc setVertexBuffer:vb offset:0 atIndex:0];
         if (textureMode) {
             NSArray *textureSize = req[@"texture_size"];

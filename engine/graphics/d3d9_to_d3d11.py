@@ -114,6 +114,30 @@ def _update_sampler_metadata(state: RenderState) -> None:
     }
 
 
+def _bool_state(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.upper() not in {"FALSE", "0", "D3DZB_FALSE", "D3D_FALSE"}
+    return bool(value)
+
+
+def _update_depth_metadata(state: RenderState) -> None:
+    render_states = state.pipeline.metadata.get("d3d9_render_states", {})
+    depth = {
+        "z_enable": _bool_state(render_states.get("D3DRS_ZENABLE", False)),
+        "z_write_enable": _bool_state(render_states.get("D3DRS_ZWRITEENABLE", True), True),
+        "z_func": str(render_states.get("D3DRS_ZFUNC", "D3DCMP_LESSEQUAL")),
+        "format": state.depth_format,
+    }
+    state.pipeline.metadata["d3d9_depth_state"] = depth
+    state.pipeline.depth_target_bound = bool(depth["z_enable"] or state.depth_format)
+
+
 def apply_d3d9_wvp(position: tuple[float, float, float, float], metadata: dict[str, Any]) -> tuple[float, float, float, float]:
     matrix = metadata.get("d3d9_wvp_matrix")
     if not matrix:
@@ -216,6 +240,7 @@ def _update_ffp_shader_metadata(state: RenderState) -> None:
         "src_blend": str(render_states.get("D3DRS_SRCBLEND", "D3DBLEND_ONE")),
         "dest_blend": str(render_states.get("D3DRS_DESTBLEND", "D3DBLEND_ZERO")),
         "wvp_matrix": state.pipeline.metadata.get("d3d9_wvp_matrix"),
+        "depth": state.pipeline.metadata.get("d3d9_depth_state", {}),
     }
 
 
@@ -265,8 +290,13 @@ def apply_d3d9_event(state: RenderState, command: str, payload: dict[str, Any]) 
             "D3DRS_ALPHABLENDENABLE",
             "D3DRS_SRCBLEND",
             "D3DRS_DESTBLEND",
+            "D3DRS_ZENABLE",
+            "D3DRS_ZWRITEENABLE",
+            "D3DRS_ZFUNC",
         }:
             _bind_fixed_function_shader(state)
+            if str(payload.get("state")) in {"D3DRS_ZENABLE", "D3DRS_ZWRITEENABLE", "D3DRS_ZFUNC"}:
+                _update_depth_metadata(state)
             _update_ffp_shader_metadata(state)
         return True
 
@@ -340,6 +370,8 @@ def apply_d3d9_event(state: RenderState, command: str, payload: dict[str, Any]) 
         )
         state.pipeline.depth_format = state.depth_format
         state.pipeline.depth_target_bound = True
+        _update_depth_metadata(state)
+        _update_ffp_shader_metadata(state)
         return True
 
     if command in {"draw_primitive", "draw_indexed_primitive"}:

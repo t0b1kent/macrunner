@@ -128,6 +128,7 @@ class MetalExecutor:
                 "texture_stage_states": metadata.get("d3d9_texture_stage_states", []),
                 "sampler_states": metadata.get("d3d9_sampler_states", []),
                 "sampler": metadata.get("d3d9_sampler", {}),
+                "depth_state": metadata.get("d3d9_depth_state", {}),
                 "transforms": metadata.get("d3d9_transforms", {}),
                 "wvp_matrix": metadata.get("d3d9_wvp_matrix"),
                 "index_format": metadata.get("d3d9_index_format"),

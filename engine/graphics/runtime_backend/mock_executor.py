@@ -42,6 +42,7 @@ class MockExecutor:
         out_dir.mkdir(parents=True, exist_ok=True)
         background = _color_to_u8(state.clear_color)
         pixels = [background for _ in range(state.width * state.height)]
+        depth = [1.0 for _ in range(state.width * state.height)]
 
         state.pipeline.render_target_bound = True
         if state.topology:
@@ -60,9 +61,9 @@ class MockExecutor:
                     if indexed_errors:
                         state.validation_errors.extend(indexed_errors)
                     else:
-                        self._draw_indexed_triangles(state, pixels)
+                        self._draw_indexed_triangles(state, pixels, depth)
                 else:
-                    self._draw_triangles(state, pixels, list(range(len(state.vertex_buffer))))
+                    self._draw_triangles(state, pixels, depth, list(range(len(state.vertex_buffer))))
 
         ppm_path = out_dir / f"{name}.ppm"
         self._write_ppm(ppm_path, state.width, state.height, pixels)
@@ -91,10 +92,10 @@ class MockExecutor:
         result.report_path = str(report_path)
         return result
 
-    def _draw_indexed_triangles(self, state: RenderState, pixels: list[Color]) -> None:
-        self._draw_triangles(state, pixels, state.index_buffer)
+    def _draw_indexed_triangles(self, state: RenderState, pixels: list[Color], depth: list[float]) -> None:
+        self._draw_triangles(state, pixels, depth, state.index_buffer)
 
-    def _draw_triangles(self, state: RenderState, pixels: list[Color], indices: list[int]) -> None:
+    def _draw_triangles(self, state: RenderState, pixels: list[Color], depth: list[float], indices: list[int]) -> None:
         if state.topology in {"trianglestrip", "D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP"}:
             strip_indices: list[int] = []
             for offset in range(0, len(indices) - 2):
@@ -112,7 +113,7 @@ class MockExecutor:
             except IndexError:
                 state.validation_errors.append("triangle index out of bounds")
                 return
-            self._raster_triangle(state, pixels, tri)
+            self._raster_triangle(state, pixels, depth, tri)
 
     def _viewport(self, state: RenderState) -> tuple[int, int, int, int]:
         if state.viewport:
@@ -132,7 +133,7 @@ class MockExecutor:
         ndc_y = y / w
         return (vx + (ndc_x + 1.0) * 0.5 * vw, vy + (1.0 - (ndc_y + 1.0) * 0.5) * vh)
 
-    def _raster_triangle(self, state: RenderState, pixels: list[Color], tri: list[Vertex]) -> None:
+    def _raster_triangle(self, state: RenderState, pixels: list[Color], depth: list[float], tri: list[Vertex]) -> None:
         viewport = self._viewport(state)
         sc_x, sc_y, sc_w, sc_h = self._scissor(state)
         transformed = [
@@ -144,6 +145,7 @@ class MockExecutor:
             for v in tri
         ]
         pts = [self._to_screen(v, viewport) for v in transformed]
+        depths = [self._ndc_depth(v) for v in transformed]
         min_x = max(sc_x, int(min(p[0] for p in pts)))
         max_x = min(sc_x + sc_w - 1, int(max(p[0] for p in pts) + 1))
         min_y = max(sc_y, int(min(p[1] for p in pts)))
@@ -160,13 +162,56 @@ class MockExecutor:
                 w2 = self._edge(pts[0], pts[1], p) / area
                 if w0 >= -1e-6 and w1 >= -1e-6 and w2 >= -1e-6:
                     index = y * state.width + x
+                    pixel_depth = depths[0] * w0 + depths[1] * w1 + depths[2] * w2
+                    if not self._passes_depth_test(state, pixel_depth, depth[index]):
+                        continue
                     shaded = self._shade(state, transformed, (w0, w1, w2))
                     if shaded is not None:
                         pixels[index] = self._blend_d3d9(state, shaded, pixels[index])
+                        if self._depth_write_enabled(state):
+                            depth[index] = pixel_depth
 
     @staticmethod
     def _edge(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
         return (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
+
+    @staticmethod
+    def _ndc_depth(vertex: Vertex) -> float:
+        _x, _y, z, w = vertex.position
+        w = w or 1.0
+        return max(0.0, min(1.0, z / w))
+
+    @staticmethod
+    def _depth_state(state: RenderState) -> dict:
+        return state.pipeline.metadata.get("d3d9_depth_state", {})
+
+    def _depth_enabled(self, state: RenderState) -> bool:
+        return bool(self._depth_state(state).get("z_enable", False))
+
+    def _depth_write_enabled(self, state: RenderState) -> bool:
+        if not self._depth_enabled(state):
+            return False
+        return bool(self._depth_state(state).get("z_write_enable", True))
+
+    def _passes_depth_test(self, state: RenderState, incoming: float, current: float) -> bool:
+        if not self._depth_enabled(state):
+            return True
+        func = str(self._depth_state(state).get("z_func", "D3DCMP_LESSEQUAL"))
+        if func == "D3DCMP_NEVER":
+            return False
+        if func == "D3DCMP_LESS":
+            return incoming < current
+        if func == "D3DCMP_EQUAL":
+            return abs(incoming - current) < 1e-6
+        if func == "D3DCMP_LESSEQUAL":
+            return incoming <= current + 1e-6
+        if func == "D3DCMP_GREATER":
+            return incoming > current
+        if func == "D3DCMP_NOTEQUAL":
+            return abs(incoming - current) >= 1e-6
+        if func == "D3DCMP_GREATEREQUAL":
+            return incoming >= current - 1e-6
+        return True
 
     def _shade(self, state: RenderState, tri: list[Vertex], weights: tuple[float, float, float]) -> Color | None:
         shader = state.shader or "vertex-color"

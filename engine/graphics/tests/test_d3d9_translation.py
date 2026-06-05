@@ -12,8 +12,16 @@ INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jso
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
+DEPTH_TRACE = ROOT / "traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
 ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
+
+
+def _ppm_pixel(path: Path, x: int, y: int, width: int) -> tuple[int, int, int]:
+    data = path.read_bytes()
+    header_end = data.find(b"\n255\n") + len(b"\n255\n")
+    offset = header_end + (y * width + x) * 3
+    return (data[offset], data[offset + 1], data[offset + 2])
 
 
 def test_d3d9_fixed_function_trace_translates_to_d3d11_state(tmp_path):
@@ -142,6 +150,22 @@ def test_d3d9_fixed_function_alpha_test_discards_pixels(tmp_path):
     assert ffp["alpha_test_enable"] is True
     assert ffp["alpha_ref"] == 128
     assert ffp["alpha_func"] == "D3DCMP_GREATER"
+
+
+def test_d3d9_depth_state_rejects_later_far_pixels(tmp_path):
+    result = replay(DEPTH_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1000
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"])[2] > 200
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"])[0] < 80
+
+    state = load_trace(DEPTH_TRACE)
+    depth = state.pipeline.metadata["d3d9_depth_state"]
+    assert depth["z_enable"] is True
+    assert depth["z_write_enable"] is True
+    assert depth["z_func"] == "D3DCMP_LESSEQUAL"
+    assert state.pipeline.depth_target_bound is True
 
 
 def test_d3d9_xna_alpha_blend_sprite_records_output_merger_state(tmp_path):

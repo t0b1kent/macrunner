@@ -12,6 +12,7 @@ TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
+DEPTH_TRACE = ROOT / "traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
 
 
 def test_d3d9_xna_alpha_blend_writes_metal_request_contract(tmp_path):
@@ -156,3 +157,22 @@ def test_d3d9_sampler_writes_metal_sampler_contract(tmp_path):
     assert sampler["address_v"] == "D3DTADDRESS_WRAP"
     assert sampler["min_filter"] == "D3DTEXF_LINEAR"
     assert sampler["mag_filter"] == "D3DTEXF_LINEAR"
+
+
+def test_d3d9_depth_writes_metal_depth_contract(tmp_path):
+    state = load_trace(DEPTH_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(DEPTH_TRACE),
+        name="depth",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "indexed_triangle"
+    assert payload["depth_format"] == "d24s8"
+    depth = payload["d3d9"]["depth_state"]
+    assert depth["z_enable"] is True
+    assert depth["z_write_enable"] is True
+    assert depth["z_func"] == "D3DCMP_LESSEQUAL"

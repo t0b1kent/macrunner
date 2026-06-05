@@ -228,7 +228,7 @@ static NSString *d3d9_arg_expr(NSString *arg) {
     NSString *expr = @"diffuse";
     if ([arg containsString:@"D3DTA_TEXTURE"]) expr = @"texel";
     else if ([arg containsString:@"D3DTA_TFACTOR"]) expr = @"tfactor";
-    else if ([arg containsString:@"D3DTA_CURRENT"]) expr = @"texel";
+    else if ([arg containsString:@"D3DTA_CURRENT"]) expr = @"diffuse";
     if ([arg containsString:@"D3DTA_COMPLEMENT"]) {
         expr = [NSString stringWithFormat:@"(float4(1.0)-(%@))", expr];
     }
@@ -252,6 +252,9 @@ static NSString *d3d9_op_expr(NSString *op, NSString *lhs, NSString *rhs) {
     }
     if ([op isEqualToString:@"D3DTOP_SUBTRACT"]) return [NSString stringWithFormat:@"saturate((%@)-(%@))", lhs, rhs];
     if ([op isEqualToString:@"D3DTOP_BLENDDIFFUSEALPHA"]) {
+        return [NSString stringWithFormat:@"((%@)*diffuse.a+(%@)*(1.0-diffuse.a))", lhs, rhs];
+    }
+    if ([op isEqualToString:@"D3DTOP_BLENDCURRENTALPHA"]) {
         return [NSString stringWithFormat:@"((%@)*diffuse.a+(%@)*(1.0-diffuse.a))", lhs, rhs];
     }
     if ([op isEqualToString:@"D3DTOP_BLENDTEXTUREALPHA"]) {

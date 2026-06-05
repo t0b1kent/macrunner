@@ -16,6 +16,7 @@ else
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_addsigned_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
+	    "$ROOT/traces/runtime_samples/d3d9_ffp_blendcurrentalpha_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_blenddiffusealpha_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_blendfactoralpha_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"

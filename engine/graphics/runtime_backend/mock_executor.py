@@ -347,7 +347,7 @@ class MockExecutor:
         elif normalized == "TFACTOR":
             value = texture_factor
         elif normalized == "CURRENT":
-            value = texture or diffuse
+            value = diffuse
         else:
             value = diffuse
         if complement:
@@ -380,6 +380,9 @@ class MockExecutor:
         if op == "D3DTOP_SUBTRACT":
             return tuple(max(0, lhs[i] - rhs[i]) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDDIFFUSEALPHA":
+            alpha = diffuse[3] / 255.0
+            return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
+        if op == "D3DTOP_BLENDCURRENTALPHA":
             alpha = diffuse[3] / 255.0
             return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDTEXTUREALPHA":

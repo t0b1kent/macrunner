@@ -8,9 +8,10 @@ if [[ -n "${TRACE:-}" ]]; then
   traces=("$TRACE")
 else
   traces=(
-    "$ROOT/traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
-    "$ROOT/traces/runtime_samples/d3d8_renderware_fixed_function_runtime.jsonl"
-    "$ROOT/traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
+	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
+	    "$ROOT/traces/runtime_samples/d3d8_renderware_fixed_function_runtime.jsonl"
+	    "$ROOT/traces/runtime_samples/d3d8_renderware_triangle_strip_runtime.jsonl"
+	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"

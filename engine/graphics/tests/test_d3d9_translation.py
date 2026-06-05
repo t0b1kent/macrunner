@@ -6,6 +6,7 @@ from engine.graphics.tools.d3d_trace_replay import load_trace, replay
 ROOT = Path(__file__).resolve().parents[1]
 TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
 D3D8_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fixed_function_runtime.jsonl"
+D3D8_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_triangle_strip_runtime.jsonl"
 TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 FFP_ARG_MODIFIER_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
@@ -66,6 +67,21 @@ def test_d3d8_renderware_trace_uses_d3d9_translation_path(tmp_path):
     assert state.pipeline.metadata["translation_target"] == "d3d11"
     assert state.pipeline.metadata["d3d9_wvp_matrix"][12] == -0.2
     assert state.pipeline.metadata["d3d9_sampler"]["address_u"] == "D3DTADDRESS_CLAMP"
+    assert state.pipeline.metadata["d3d9_texture_format"] == "bgra8"
+
+
+def test_d3d8_renderware_triangle_strip_uses_legacy_topology_path(tmp_path):
+    result = replay(D3D8_STRIP_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["api"] == "d3d8"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 2000
+    assert result["unsupported_calls"] == 0
+
+    state = load_trace(D3D8_STRIP_TRACE)
+    assert state.topology == "trianglestrip"
+    assert state.pipeline.metadata["translation_target"] == "d3d11"
+    assert state.pipeline.metadata["d3d9_draw_range"]["primitive_count"] == 2
     assert state.pipeline.metadata["d3d9_texture_format"] == "bgra8"
 
 

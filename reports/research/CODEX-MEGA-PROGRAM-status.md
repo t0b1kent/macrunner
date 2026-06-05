@@ -1747,3 +1747,32 @@ NEXT: run the TSO litmus suite under MacRunner before any more HK diagnosis.
 NEXT: add HB JIT native signal containment so faults inside generated ARM64 code bounce back
 to `hb_jit_runtime_run` as a JIT fallback result, restoring pre-block guest state and running
 the block through the interpreter instead of entering ARM64EC PE SEH.
+
+## Lane A checkpoint - 2026-06-05 ARM64EC export-body recovery clears GetProcAddress boundary
+
+- Build/install/sign green: `reports/phase4-hollow-knight/build-20260605-083016-ntdll-heartbeat-module.log`
+  has `make_rc=0`, `codesign_rc=0`, no errors (existing warnings only).
+- Fix landed in `macrunner_hb.c`: reverse export lookup now compares both the export-table
+  thunk and `macrunner_hb_redirect_arm64x_thunk_to_native(export)` against a direct-native
+  target. This names ARM64EC native bodies like `#GetProcAddress` instead of falling through
+  as anonymous `native-direct!callback`.
+- Evidence before fix: `run-20260605-080655-hk-direct-plus-edge-90/` hit
+  `native-direct!callback target=0x87efc275e94`; direct trace named it as
+  `kernel32.dll` base `0x87efc230000`, RVA `0x45e94`. Installed PE export table maps
+  `GetProcAddress` to RVA `0x2b29c`, while COFF symbols also expose `#GetProcAddress` at
+  RVA `0x45e94`, proving the export-body redirect miss.
+- Evidence after fix: `run-20260605-081906-hk-arm64ec-export-heartbeat-90/` and
+  `run-20260605-082122-hk-arm64ec-export-heartbeat-300/` have `boundary_count=0`,
+  no Mono invalid-vtable/assertion lines, and no D3D/Gfx calls yet. The previous
+  `macrunner_hb_arm64_pe_call12` host boundary is cleared.
+- Current gate: HK now times out pre-D3D in Mono, with heartbeat module map
+  `run-20260605-083043-hk-heartbeat-module-map-100/` showing the hot cluster is
+  `mono-2.0-bdwgc.dll` base `0x87ef1370000`, mainly RVAs `0x5061xx-0x5085xx`
+  plus occasional `0x513xxx/0x514xxx`. Fusions-off comparison
+  `run-20260605-083427-hk-mono-metadata-fusions-off-after-export-300/` still reaches the
+  same cluster (`macrunner-hb-jit-fusion_count=0`), so this plateau is not solely caused
+  by Mono metadata fusion.
+
+NEXT: sample/trace the post-heartbeat wait around the Mono `0x5061xx-0x5085xx` cluster and
+determine whether the app is blocked in Mono parser work, native wait/SEH, or a wrong value
+returned by MacRunner before D3D initialization.

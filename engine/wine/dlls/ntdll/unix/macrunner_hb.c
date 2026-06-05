@@ -89,6 +89,7 @@ struct macrunner_hb_special
 #define MACRUNNER_HB_LOCAL_MAPPING_BASE 0x00006f4100000000ULL
 #define MACRUNNER_HB_LOCAL_MAPPING_VIEW_MAX 256
 #define MACRUNNER_HB_VIRTUAL_REGION_MAX 8192
+#define MACRUNNER_HB_X64_DYNAMIC_EXEC_REGION_MAX 8192
 #define MACRUNNER_HB_PSEUDO_HWINSTA 0x00006f5000000010ULL
 #define MACRUNNER_HB_PSEUDO_HDESK 0x00006f5000000020ULL
 #define MACRUNNER_HB_PSEUDO_HCURSOR_BASE 0x00006f5000010000ULL
@@ -184,6 +185,12 @@ struct macrunner_hb_virtual_region
     ULONG protect;
 };
 
+struct macrunner_hb_x64_dynamic_exec_region
+{
+    uint64_t base;
+    uint64_t end;
+};
+
 struct macrunner_hb_ir_cache_entry
 {
     uint64_t pc;
@@ -261,6 +268,10 @@ static uint64_t macrunner_hb_local_mapping_next = MACRUNNER_HB_LOCAL_MAPPING_BAS
 static pthread_mutex_t macrunner_hb_virtual_region_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct macrunner_hb_virtual_region macrunner_hb_virtual_regions[MACRUNNER_HB_VIRTUAL_REGION_MAX];
 static unsigned int macrunner_hb_virtual_region_count;
+static pthread_mutex_t macrunner_hb_x64_dynamic_exec_region_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct macrunner_hb_x64_dynamic_exec_region
+    macrunner_hb_x64_dynamic_exec_regions[MACRUNNER_HB_X64_DYNAMIC_EXEC_REGION_MAX];
+static unsigned int macrunner_hb_x64_dynamic_exec_region_count;
 static __thread void *macrunner_hb_bridge_stack_limit;
 static __thread void *macrunner_hb_bridge_stack_base;
 static __thread size_t macrunner_hb_bridge_stack_size;
@@ -472,6 +483,9 @@ static IMAGE_NT_HEADERS *macrunner_hb_image_nt_header( void *module )
     return nt;
 }
 
+static void macrunner_hb_copy_cstr( char *dst, size_t dst_size, const char *src );
+static void *macrunner_hb_redirect_arm64x_thunk_to_native( void *module, void *ptr );
+
 static void *macrunner_hb_find_named_export( void *module, const char *name )
 {
     IMAGE_DATA_DIRECTORY *dir;
@@ -506,6 +520,44 @@ static void *macrunner_hb_find_named_export( void *module, const char *name )
         return (BYTE *)module + rva;
     }
     return NULL;
+}
+
+static BOOL macrunner_hb_find_export_name_by_address( void *module, void *target,
+                                                      char *name, size_t name_size )
+{
+    IMAGE_DATA_DIRECTORY *dir;
+    IMAGE_EXPORT_DIRECTORY *exports;
+    const DWORD *names;
+    const WORD *ordinals;
+    const DWORD *functions;
+    IMAGE_NT_HEADERS *nt;
+    ULONG size;
+    unsigned int i;
+
+    if (!module || !target || !name || !name_size) return FALSE;
+    nt = macrunner_hb_image_nt_header( module );
+    if (!nt) return FALSE;
+    dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dir->VirtualAddress || !dir->Size) return FALSE;
+    exports = (IMAGE_EXPORT_DIRECTORY *)((BYTE *)module + dir->VirtualAddress);
+    names = (const DWORD *)((BYTE *)module + exports->AddressOfNames);
+    ordinals = (const WORD *)((BYTE *)module + exports->AddressOfNameOrdinals);
+    functions = (const DWORD *)((BYTE *)module + exports->AddressOfFunctions);
+    size = dir->Size;
+
+    for (i = 0; i < exports->NumberOfNames; i++)
+    {
+        DWORD rva = functions[ordinals[i]];
+        void *export_target, *native_target;
+
+        if (rva >= dir->VirtualAddress && rva < dir->VirtualAddress + size) continue;
+        export_target = (BYTE *)module + rva;
+        native_target = macrunner_hb_redirect_arm64x_thunk_to_native( module, export_target );
+        if (export_target != target && native_target != target) continue;
+        macrunner_hb_copy_cstr( name, name_size, (const char *)module + names[i] );
+        return TRUE;
+    }
+    return FALSE;
 }
 
 static BOOL macrunner_hb_read_local_memory( uintptr_t addr, void *buf, size_t size )
@@ -2408,6 +2460,49 @@ static BOOL macrunner_hb_trace_callback12_enabled(void)
     return macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CALLBACK12" );
 }
 
+static BOOL macrunner_hb_trace_pe_call12_edge_budget_allows(void)
+{
+    static int count;
+    const char *val = getenv( "MACRUNNER_HB_TRACE_PE_CALL12_EDGE_BUDGET" );
+    int limit = val && val[0] ? atoi( val ) : 2000;
+
+    if (!macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_PE_CALL12_EDGE" )) return FALSE;
+    if (limit <= 0) return TRUE;
+    if (count < limit)
+    {
+        count++;
+        return TRUE;
+    }
+    if (count == limit)
+    {
+        count++;
+        fprintf( stderr, "macrunner-hb-pe-call12-edge: budget exhausted at %d entries\n", limit );
+    }
+    return FALSE;
+}
+
+static void macrunner_hb_trace_pe_call12_edge( const char *phase,
+                                               const struct macrunner_hb_import_thunk *thunk,
+                                               void *target, const uint64_t *args,
+                                               uintptr_t stack_top, uint64_t ret )
+{
+    if (!macrunner_hb_trace_pe_call12_edge_budget_allows()) return;
+    fprintf( stderr, "macrunner-hb-pe-call12-edge: phase=%s import=%s!%s target=%p "
+             "stack_top=%p guest_rsp=%p ret=%p args=%p,%p,%p,%p,%p,%p,%p,%p\n",
+             phase, thunk ? thunk->dll_name : "(none)", thunk ? thunk->import_name : "(none)",
+             target, (void *)stack_top, (void *)macrunner_hb_native_call_guest_rsp,
+             (void *)(uintptr_t)ret,
+             args ? (void *)(uintptr_t)args[0] : NULL,
+             args ? (void *)(uintptr_t)args[1] : NULL,
+             args ? (void *)(uintptr_t)args[2] : NULL,
+             args ? (void *)(uintptr_t)args[3] : NULL,
+             args ? (void *)(uintptr_t)args[4] : NULL,
+             args ? (void *)(uintptr_t)args[5] : NULL,
+             args ? (void *)(uintptr_t)args[6] : NULL,
+             args ? (void *)(uintptr_t)args[7] : NULL );
+    fflush( stderr );
+}
+
 static BOOL macrunner_hb_trace_module_handle_enabled(void)
 {
     static int cache = -1;
@@ -4106,6 +4201,165 @@ static BOOL macrunner_hb_trace_exec_virtual_enabled(void)
     return macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_EXEC_VIRTUAL" );
 }
 
+static BOOL macrunner_hb_range_end_u64( void *base, SIZE_T size, uint64_t *start, uint64_t *end )
+{
+    uint64_t addr = (uint64_t)(uintptr_t)base;
+
+    if (!base || !size || size > UINT64_MAX - addr) return FALSE;
+    *start = addr;
+    *end = addr + size;
+    return *end > *start;
+}
+
+static BOOL macrunner_hb_x64_dynamic_exec_contains_no_lock( void *pc )
+{
+    uint64_t addr = (uint64_t)(uintptr_t)pc;
+    unsigned int count, i;
+
+    if (!pc) return FALSE;
+    count = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_region_count, __ATOMIC_ACQUIRE );
+    if (count > MACRUNNER_HB_X64_DYNAMIC_EXEC_REGION_MAX)
+        count = MACRUNNER_HB_X64_DYNAMIC_EXEC_REGION_MAX;
+    for (i = 0; i < count; i++)
+    {
+        uint64_t base = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[i].base, __ATOMIC_ACQUIRE );
+        uint64_t end = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[i].end, __ATOMIC_ACQUIRE );
+
+        if (addr >= base && addr < end) return TRUE;
+    }
+    return FALSE;
+}
+
+static void macrunner_hb_x64_dynamic_exec_remove_locked( uint64_t base, uint64_t end )
+{
+    unsigned int i;
+
+    for (i = 0; i < macrunner_hb_x64_dynamic_exec_region_count; )
+    {
+        uint64_t cur_base = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[i].base,
+                                             __ATOMIC_ACQUIRE );
+        uint64_t cur_end = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[i].end,
+                                            __ATOMIC_ACQUIRE );
+
+        if (base < cur_end && end > cur_base)
+        {
+            unsigned int last = --macrunner_hb_x64_dynamic_exec_region_count;
+            uint64_t last_base = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[last].base,
+                                                  __ATOMIC_ACQUIRE );
+            uint64_t last_end = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[last].end,
+                                                 __ATOMIC_ACQUIRE );
+
+            __atomic_store_n( &macrunner_hb_x64_dynamic_exec_regions[i].base, last_base, __ATOMIC_RELEASE );
+            __atomic_store_n( &macrunner_hb_x64_dynamic_exec_regions[i].end, last_end, __ATOMIC_RELEASE );
+            __atomic_store_n( &macrunner_hb_x64_dynamic_exec_region_count, last, __ATOMIC_RELEASE );
+            continue;
+        }
+        i++;
+    }
+}
+
+static void macrunner_hb_x64_dynamic_exec_remove_address_locked( uint64_t addr )
+{
+    unsigned int i;
+
+    for (i = 0; i < macrunner_hb_x64_dynamic_exec_region_count; )
+    {
+        uint64_t cur_base = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[i].base,
+                                             __ATOMIC_ACQUIRE );
+        uint64_t cur_end = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[i].end,
+                                            __ATOMIC_ACQUIRE );
+
+        if (addr >= cur_base && addr < cur_end)
+        {
+            unsigned int last = --macrunner_hb_x64_dynamic_exec_region_count;
+            uint64_t last_base = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[last].base,
+                                                  __ATOMIC_ACQUIRE );
+            uint64_t last_end = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[last].end,
+                                                 __ATOMIC_ACQUIRE );
+
+            __atomic_store_n( &macrunner_hb_x64_dynamic_exec_regions[i].base, last_base, __ATOMIC_RELEASE );
+            __atomic_store_n( &macrunner_hb_x64_dynamic_exec_regions[i].end, last_end, __ATOMIC_RELEASE );
+            __atomic_store_n( &macrunner_hb_x64_dynamic_exec_region_count, last, __ATOMIC_RELEASE );
+            continue;
+        }
+        i++;
+    }
+}
+
+static void macrunner_hb_note_x64_dynamic_exec_region( void *base, SIZE_T size, ULONG protect )
+{
+    uint64_t start, end;
+    unsigned int i;
+
+    if (!macrunner_hb_range_end_u64( base, size, &start, &end )) return;
+
+    pthread_mutex_lock( &macrunner_hb_x64_dynamic_exec_region_mutex );
+    macrunner_hb_x64_dynamic_exec_remove_locked( start, end );
+    if (macrunner_hb_page_protect_executable( protect ))
+    {
+        for (i = 0; i < macrunner_hb_x64_dynamic_exec_region_count; )
+        {
+            uint64_t cur_base = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[i].base,
+                                                 __ATOMIC_ACQUIRE );
+            uint64_t cur_end = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[i].end,
+                                                __ATOMIC_ACQUIRE );
+
+            if (start <= cur_end && end >= cur_base)
+            {
+                unsigned int last = --macrunner_hb_x64_dynamic_exec_region_count;
+                uint64_t last_base = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[last].base,
+                                                      __ATOMIC_ACQUIRE );
+                uint64_t last_end = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_regions[last].end,
+                                                     __ATOMIC_ACQUIRE );
+
+                if (cur_base < start) start = cur_base;
+                if (cur_end > end) end = cur_end;
+                __atomic_store_n( &macrunner_hb_x64_dynamic_exec_regions[i].base, last_base,
+                                  __ATOMIC_RELEASE );
+                __atomic_store_n( &macrunner_hb_x64_dynamic_exec_regions[i].end, last_end,
+                                  __ATOMIC_RELEASE );
+                __atomic_store_n( &macrunner_hb_x64_dynamic_exec_region_count, last, __ATOMIC_RELEASE );
+                continue;
+            }
+            i++;
+        }
+        if (macrunner_hb_x64_dynamic_exec_region_count < MACRUNNER_HB_X64_DYNAMIC_EXEC_REGION_MAX)
+        {
+            struct macrunner_hb_x64_dynamic_exec_region *region =
+                &macrunner_hb_x64_dynamic_exec_regions[macrunner_hb_x64_dynamic_exec_region_count];
+
+            __atomic_store_n( &region->base, start, __ATOMIC_RELEASE );
+            __atomic_store_n( &region->end, end, __ATOMIC_RELEASE );
+            __atomic_store_n( &macrunner_hb_x64_dynamic_exec_region_count,
+                              macrunner_hb_x64_dynamic_exec_region_count + 1, __ATOMIC_RELEASE );
+        }
+        else
+            ERR( "MacRunner x64 dynamic exec range table full, cannot register %p-%p\n",
+                 (void *)(uintptr_t)start, (void *)(uintptr_t)end );
+    }
+    if (macrunner_hb_trace_exec_virtual_enabled())
+        fprintf( stderr, "macrunner-hb-x64-dynamic-exec: base=%p size=%#zx protect=%#lx count=%u\n",
+                 base, (size_t)size, (unsigned long)protect,
+                 macrunner_hb_x64_dynamic_exec_region_count );
+    pthread_mutex_unlock( &macrunner_hb_x64_dynamic_exec_region_mutex );
+}
+
+static void macrunner_hb_forget_x64_dynamic_exec_region( void *base, SIZE_T size )
+{
+    uint64_t start, end;
+
+    if (!base) return;
+    pthread_mutex_lock( &macrunner_hb_x64_dynamic_exec_region_mutex );
+    if (macrunner_hb_range_end_u64( base, size, &start, &end ))
+        macrunner_hb_x64_dynamic_exec_remove_locked( start, end );
+    else
+        macrunner_hb_x64_dynamic_exec_remove_address_locked( (uint64_t)(uintptr_t)base );
+    if (macrunner_hb_trace_exec_virtual_enabled())
+        fprintf( stderr, "macrunner-hb-x64-dynamic-exec-remove: base=%p size=%#zx count=%u\n",
+                 base, (size_t)size, macrunner_hb_x64_dynamic_exec_region_count );
+    pthread_mutex_unlock( &macrunner_hb_x64_dynamic_exec_region_mutex );
+}
+
 static void macrunner_hb_sync_virtual_region( hb_context_t *ctx, void *base, SIZE_T size,
                                               ULONG protect )
 {
@@ -5007,6 +5261,7 @@ int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc )
 int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc )
 {
     if (!pc) return FALSE;
+    if (macrunner_hb_x64_dynamic_exec_contains_no_lock( pc )) return TRUE;
     if (!macrunner_hb_is_registered_x64_guest_address( pc )) return FALSE;
     return macrunner_hb_pc_is_x64_guest_code_module_no_lock( pc );
 }
@@ -5569,12 +5824,16 @@ static uint64_t macrunner_hb_call_arm64_pe_import12( const struct macrunner_hb_i
     else if (thunk && thunk->pe_call12)
     {
         macrunner_hb_prepare_arm64_pe_call();
+        macrunner_hb_trace_pe_call12_edge( "enter", thunk, target, args, stack_top, 0 );
         ret = macrunner_hb_arm64_pe_call12( target, args, (void *)stack_top, teb );
+        macrunner_hb_trace_pe_call12_edge( "return", thunk, target, args, stack_top, ret );
     }
     else
     {
         macrunner_hb_prepare_arm64_pe_call();
+        macrunner_hb_trace_pe_call12_edge( "enter", thunk, target, args, stack_top, 0 );
         ret = macrunner_hb_arm64_pe_call12( target, args, (void *)stack_top, teb );
+        macrunner_hb_trace_pe_call12_edge( "return", thunk, target, args, stack_top, ret );
     }
     macrunner_hb_prepare_arm64_pe_call();
     teb->Tib.StackBase = restore_base;
@@ -13516,6 +13775,7 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             {
                 macrunner_hb_remember_virtual_region( base, size, protect );
                 macrunner_hb_sync_virtual_region( ctx, base, size, protect );
+                macrunner_hb_note_x64_dynamic_exec_region( base, size, protect );
             }
             if (process == NtCurrentProcess())
                 macrunner_hb_notify_xtajit64_memory_alloc( base, size, type, protect, status );
@@ -13578,12 +13838,14 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                 {
                     macrunner_hb_forget_virtual_region_record( original_base );
                     macrunner_hb_forget_virtual_region( ctx, original_base );
+                    macrunner_hb_forget_x64_dynamic_exec_region( original_base, original_size );
                     macrunner_hb_notify_xtajit64_memory_free( original_base, original_size, type, status );
                 }
                 else if ((type & MEM_DECOMMIT) && original_size)
                 {
                     macrunner_hb_forget_virtual_region_record( original_base );
                     macrunner_hb_sync_virtual_region( ctx, original_base, original_size, PAGE_NOACCESS );
+                    macrunner_hb_forget_x64_dynamic_exec_region( original_base, original_size );
                     macrunner_hb_notify_xtajit64_memory_free( original_base, original_size, type, status );
                 }
             }
@@ -13633,6 +13895,7 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             {
                 macrunner_hb_remember_virtual_region( base, size, protect );
                 macrunner_hb_sync_virtual_region( ctx, base, size, protect );
+                macrunner_hb_note_x64_dynamic_exec_region( base, size, protect );
                 macrunner_hb_notify_xtajit64_memory_protect( base, size, protect, status );
             }
         }
@@ -17140,6 +17403,37 @@ static BOOL macrunner_hb_label_allows_direct_native( const char *label )
                      !strcmp( label, "thread" ));
 }
 
+static void macrunner_hb_trace_heartbeat_module( const char *label, uint64_t pc,
+                                                 uint64_t fallback_base,
+                                                 uint64_t fallback_size )
+{
+    LDR_DATA_TABLE_ENTRY *ldr;
+    void *module;
+    char module_name[96], ldr_base[128], ldr_full[256];
+    uintptr_t base, size;
+
+    module = macrunner_hb_module_from_pc( (void *)(uintptr_t)pc );
+    base = module ? (uintptr_t)module : (uintptr_t)fallback_base;
+    size = fallback_size;
+    module_name[0] = ldr_base[0] = ldr_full[0] = 0;
+    if (module)
+    {
+        macrunner_hb_get_export_module_name( module, module_name, sizeof(module_name) );
+        if ((ldr = macrunner_hb_ldr_entry_from_module( module )))
+        {
+            size = ldr->SizeOfImage;
+            macrunner_hb_copy_unicode_ascii( ldr_base, sizeof(ldr_base), &ldr->BaseDllName );
+            macrunner_hb_copy_unicode_ascii( ldr_full, sizeof(ldr_full), &ldr->FullDllName );
+        }
+    }
+    fprintf( stderr, "macrunner-hb-heartbeat-module: label=%s module=%s base=%p "
+             "size=%#zx pc=%p rva=%p ldr_base=%s ldr_full=%s\n",
+             label ? label : "entry", module_name[0] ? module_name : "(unknown)",
+             (void *)base, size, (void *)(uintptr_t)pc,
+             (void *)(uintptr_t)(base ? (uintptr_t)pc - base : 0),
+             ldr_base[0] ? ldr_base : "(none)", ldr_full[0] ? ldr_full : "(none)" );
+}
+
 static BOOL macrunner_hb_pc_is_syscall_dispatcher( uint64_t pc )
 {
     return pc && (pc == (uint64_t)(uintptr_t)__wine_syscall_dispatcher ||
@@ -17173,6 +17467,8 @@ static hb_result_t macrunner_hb_dispatch_x64_syscall( hb_context_t *ctx, uint64_
     SYSTEM_SERVICE_TABLE *table = &KeServiceDescriptorTable[table_idx];
     uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] = { 0 };
     uint64_t rc;
+    BOOL syscall_alloc, syscall_free, syscall_protect;
+    uint64_t free_base_before = 0, free_size_before = 0;
     unsigned int i;
 
     if (table_idx == 1 && !table->ServiceLimit)
@@ -17198,8 +17494,81 @@ static hb_result_t macrunner_hb_dispatch_x64_syscall( hb_context_t *ctx, uint64_
         thunk.target_machine = current_machine;
         strcpy( thunk.dll_name, "native-syscall" );
         snprintf( thunk.import_name, sizeof(thunk.import_name), "%04x", service );
+        syscall_alloc = thunk.target == (void *)NtAllocateVirtualMemory;
+        syscall_free = thunk.target == (void *)NtFreeVirtualMemory;
+        syscall_protect = thunk.target == (void *)NtProtectVirtualMemory;
+
+        if (syscall_free)
+        {
+            if (args[1]) hb_memory_read_u64( ctx->memory, (hb_gva_t)args[1], &free_base_before );
+            if (args[2]) hb_memory_read_u64( ctx->memory, (hb_gva_t)args[2], &free_size_before );
+        }
 
         rc = macrunner_hb_call_arm64_pe_import12_for_ctx( ctx, &thunk, args );
+        if (!rc && (HANDLE)(uintptr_t)args[0] == NtCurrentProcess())
+        {
+            if (syscall_alloc)
+            {
+                uint64_t base = 0, size = 0;
+                ULONG type = (ULONG)args[4];
+                ULONG protect = (ULONG)args[5];
+
+                if (args[1]) hb_memory_read_u64( ctx->memory, (hb_gva_t)args[1], &base );
+                if (args[3]) hb_memory_read_u64( ctx->memory, (hb_gva_t)args[3], &size );
+                if ((type & MEM_COMMIT) && base && size)
+                {
+                    macrunner_hb_remember_virtual_region( (void *)(uintptr_t)base, (SIZE_T)size, protect );
+                    macrunner_hb_sync_virtual_region( ctx, (void *)(uintptr_t)base, (SIZE_T)size, protect );
+                    macrunner_hb_note_x64_dynamic_exec_region( (void *)(uintptr_t)base, (SIZE_T)size,
+                                                               protect );
+                }
+                macrunner_hb_notify_xtajit64_memory_alloc( (void *)(uintptr_t)base, (SIZE_T)size,
+                                                           type, protect, (NTSTATUS)rc );
+            }
+            else if (syscall_protect)
+            {
+                uint64_t base = 0, size = 0;
+                ULONG protect = (ULONG)args[3];
+
+                if (args[1]) hb_memory_read_u64( ctx->memory, (hb_gva_t)args[1], &base );
+                if (args[2]) hb_memory_read_u64( ctx->memory, (hb_gva_t)args[2], &size );
+                if (base && size)
+                {
+                    macrunner_hb_remember_virtual_region( (void *)(uintptr_t)base, (SIZE_T)size, protect );
+                    macrunner_hb_sync_virtual_region( ctx, (void *)(uintptr_t)base, (SIZE_T)size, protect );
+                    macrunner_hb_note_x64_dynamic_exec_region( (void *)(uintptr_t)base, (SIZE_T)size,
+                                                               protect );
+                }
+                macrunner_hb_notify_xtajit64_memory_protect( (void *)(uintptr_t)base, (SIZE_T)size,
+                                                             protect, (NTSTATUS)rc );
+            }
+            else if (syscall_free)
+            {
+                ULONG type = (ULONG)args[3];
+
+                if (type & MEM_RELEASE)
+                {
+                    macrunner_hb_forget_virtual_region_record( (void *)(uintptr_t)free_base_before );
+                    macrunner_hb_forget_virtual_region( ctx, (void *)(uintptr_t)free_base_before );
+                    macrunner_hb_forget_x64_dynamic_exec_region( (void *)(uintptr_t)free_base_before,
+                                                                 (SIZE_T)free_size_before );
+                    macrunner_hb_notify_xtajit64_memory_free( (void *)(uintptr_t)free_base_before,
+                                                              (SIZE_T)free_size_before, type,
+                                                              (NTSTATUS)rc );
+                }
+                else if ((type & MEM_DECOMMIT) && free_size_before)
+                {
+                    macrunner_hb_forget_virtual_region_record( (void *)(uintptr_t)free_base_before );
+                    macrunner_hb_sync_virtual_region( ctx, (void *)(uintptr_t)free_base_before,
+                                                      (SIZE_T)free_size_before, PAGE_NOACCESS );
+                    macrunner_hb_forget_x64_dynamic_exec_region( (void *)(uintptr_t)free_base_before,
+                                                                 (SIZE_T)free_size_before );
+                    macrunner_hb_notify_xtajit64_memory_free( (void *)(uintptr_t)free_base_before,
+                                                              (SIZE_T)free_size_before, type,
+                                                              (NTSTATUS)rc );
+                }
+            }
+        }
         if (macrunner_hb_trace_exec_virtual_enabled() &&
             thunk.target == (void *)NtAllocateVirtualMemory)
         {
@@ -17267,6 +17636,7 @@ static hb_result_t macrunner_hb_call_direct_native_target( hb_context_t *ctx, ui
     struct macrunner_hb_import_thunk thunk;
     void *native_module = NULL;
     char native_module_name[96];
+    char native_export_name[128];
     uint64_t ret_addr = 0;
     uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] = { 0 };
     uint64_t rc;
@@ -17308,6 +17678,37 @@ static hb_result_t macrunner_hb_call_direct_native_target( hb_context_t *ctx, ui
         macrunner_hb_get_export_module_name( native_module, native_module_name, sizeof(native_module_name) );
     else
         macrunner_hb_copy_cstr( native_module_name, sizeof(native_module_name), "unknown" );
+
+    if (native_module &&
+        macrunner_hb_find_export_name_by_address( native_module, (void *)(uintptr_t)target,
+                                                  native_export_name, sizeof(native_export_name) ))
+    {
+        struct macrunner_hb_import_thunk export_thunk;
+
+        if ((registered = macrunner_hb_find_import_thunk_by_name( native_module_name, native_export_name )))
+        {
+            TRACE( "MacRunner HyperBridge routing direct native export through registered import %s!%s target=%p\n",
+                   registered->dll_name, registered->import_name, (void *)(uintptr_t)target );
+            return macrunner_hb_call_import_thunk( ctx, registered );
+        }
+        if (macrunner_hb_kernel_export_has_local_semantic( native_module_name, native_export_name ))
+        {
+            memset( &export_thunk, 0, sizeof(export_thunk) );
+            export_thunk.target = (void *)(uintptr_t)target;
+            export_thunk.target_machine = current_machine;
+            export_thunk.guest_target = target;
+            export_thunk.module_id = (uint64_t)(uintptr_t)native_module;
+            lstrcpynA( export_thunk.dll_name, native_module_name, ARRAY_SIZE(export_thunk.dll_name) );
+            lstrcpynA( export_thunk.import_name, native_export_name, ARRAY_SIZE(export_thunk.import_name) );
+            if (macrunner_hb_trace_direct_native_enabled() &&
+                macrunner_hb_trace_direct_native_budget_allows())
+                fprintf( stderr, "macrunner-hb-direct-native: recovered-export module=%s "
+                         "name=%s target=%p ret=%p pc=%p\n",
+                         native_module_name, native_export_name, (void *)(uintptr_t)target,
+                         (void *)(uintptr_t)ret_addr, (void *)(uintptr_t)ctx->pc );
+            return macrunner_hb_call_import_thunk( ctx, &export_thunk );
+        }
+    }
 
     memset( &thunk, 0, sizeof(thunk) );
     thunk.target = (void *)(uintptr_t)target;
@@ -17489,6 +17890,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     char *progress_end = NULL;
     uint64_t progress_interval = 0;
     BOOL heartbeat_enabled = heartbeat_env && *heartbeat_env && *heartbeat_env != '0';
+    BOOL heartbeat_module_enabled = heartbeat_enabled &&
+        macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_HEARTBEAT_MODULE" );
     hb_backend_t backend = (backend_env && (!strcmp( backend_env, "jit" ) ||
                                             !strcmp( backend_env, "JIT" ))) ?
                            HB_BACKEND_JIT : HB_BACKEND_INTERP;
@@ -17708,6 +18111,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                  (void *)(uintptr_t)ctx->regs.x64.r13,
                  (void *)(uintptr_t)ctx->regs.x64.r14,
                  (void *)(uintptr_t)ctx->regs.x64.r15 );
+        if (heartbeat_module_enabled)
+            macrunner_hb_trace_heartbeat_module( label, ctx->pc, image_start, image_size );
         fflush( stderr );
     }
 
@@ -18045,6 +18450,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                          (void *)(uintptr_t)ctx->regs.x64.r13,
                          (void *)(uintptr_t)ctx->regs.x64.r14,
                          (void *)(uintptr_t)ctx->regs.x64.r15 );
+                if (heartbeat_module_enabled)
+                    macrunner_hb_trace_heartbeat_module( label, block_pc, image_start, image_size );
                 fflush( stderr );
                 heartbeat_last_us = now_us ? now_us : heartbeat_last_us;
                 heartbeat_next_block = blocks + 1000;

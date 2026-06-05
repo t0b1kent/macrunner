@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 XNA_ALPHA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
+TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 
 
 def test_d3d9_xna_alpha_blend_writes_metal_request_contract(tmp_path):
@@ -78,3 +79,21 @@ def test_d3d9_texture_alpha_blend_writes_metal_combiner_contract(tmp_path):
     assert payload["d3d9"]["ffp_shader"]["color_op"] == "D3DTOP_BLENDTEXTUREALPHA"
     assert payload["d3d9"]["ffp_shader"]["color_arg1"] == "D3DTA_TEXTURE"
     assert payload["d3d9"]["ffp_shader"]["color_arg2"] == "D3DTA_DIFFUSE"
+
+
+def test_d3d9_transform_writes_metal_wvp_contract(tmp_path):
+    state = load_trace(TRANSFORM_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(TRANSFORM_TRACE),
+        name="ffp-transform",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "indexed_triangle"
+    assert payload["vertex_count"] == 3
+    assert payload["d3d9"]["transforms"]["D3DTS_WORLD"][12] == 0.35
+    assert payload["d3d9"]["wvp_matrix"][12] == 0.35
+    assert payload["d3d9"]["ffp_shader"]["wvp_matrix"][12] == 0.35

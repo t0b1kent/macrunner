@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from engine.graphics.d3d9_to_d3d11 import apply_d3d9_wvp
 from engine.graphics.metal_ir.render_state import RenderResult, RenderState, Vertex
 
 Color = tuple[int, int, int, int]
@@ -133,7 +134,15 @@ class MockExecutor:
     def _raster_triangle(self, state: RenderState, pixels: list[Color], tri: list[Vertex]) -> None:
         viewport = self._viewport(state)
         sc_x, sc_y, sc_w, sc_h = self._scissor(state)
-        pts = [self._to_screen(v, viewport) for v in tri]
+        transformed = [
+            Vertex(
+                position=apply_d3d9_wvp(v.position, state.pipeline.metadata),
+                color=v.color,
+                uv=v.uv,
+            )
+            for v in tri
+        ]
+        pts = [self._to_screen(v, viewport) for v in transformed]
         min_x = max(sc_x, int(min(p[0] for p in pts)))
         max_x = min(sc_x + sc_w - 1, int(max(p[0] for p in pts) + 1))
         min_y = max(sc_y, int(min(p[1] for p in pts)))
@@ -150,7 +159,7 @@ class MockExecutor:
                 w2 = self._edge(pts[0], pts[1], p) / area
                 if w0 >= -1e-6 and w1 >= -1e-6 and w2 >= -1e-6:
                     index = y * state.width + x
-                    shaded = self._shade(state, tri, (w0, w1, w2))
+                    shaded = self._shade(state, transformed, (w0, w1, w2))
                     if shaded is not None:
                         pixels[index] = self._blend_d3d9(state, shaded, pixels[index])
 

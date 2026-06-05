@@ -56,6 +56,57 @@ D3D9_TOPOLOGIES = {
 }
 
 
+def _identity_matrix() -> list[float]:
+    return [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+
+
+def _matrix(value: Any) -> list[float]:
+    if value is None:
+        return _identity_matrix()
+    if isinstance(value, dict):
+        value = value.get("m", value.get("matrix", []))
+    if isinstance(value, list) and len(value) == 4 and all(isinstance(row, list) for row in value):
+        flat = [float(channel) for row in value for channel in row]
+    else:
+        flat = [float(channel) for channel in list(value)]
+    if len(flat) != 16:
+        raise ValueError("D3D9 transform matrix must contain 16 values")
+    return flat
+
+
+def _matrix_multiply(lhs: list[float], rhs: list[float]) -> list[float]:
+    out = [0.0] * 16
+    for row in range(4):
+        for col in range(4):
+            out[row * 4 + col] = sum(lhs[row * 4 + k] * rhs[k * 4 + col] for k in range(4))
+    return out
+
+
+def _update_wvp_metadata(state: RenderState) -> None:
+    transforms = state.pipeline.metadata.get("d3d9_transforms", {})
+    if not transforms:
+        state.pipeline.metadata.pop("d3d9_wvp_matrix", None)
+        return
+    world = transforms.get("D3DTS_WORLD", _identity_matrix())
+    view = transforms.get("D3DTS_VIEW", _identity_matrix())
+    projection = transforms.get("D3DTS_PROJECTION", _identity_matrix())
+    state.pipeline.metadata["d3d9_wvp_matrix"] = _matrix_multiply(_matrix_multiply(world, view), projection)
+
+
+def apply_d3d9_wvp(position: tuple[float, float, float, float], metadata: dict[str, Any]) -> tuple[float, float, float, float]:
+    matrix = metadata.get("d3d9_wvp_matrix")
+    if not matrix:
+        return position
+    x, y, z, w = position
+    values = [x, y, z, w]
+    return tuple(sum(values[row] * float(matrix[row * 4 + col]) for row in range(4)) for col in range(4))  # type: ignore[return-value]
+
+
 def _color(value: Any) -> tuple[int, int, int, int]:
     if isinstance(value, int):
         argb = value
@@ -148,6 +199,7 @@ def _update_ffp_shader_metadata(state: RenderState) -> None:
         "alpha_blend_enable": bool(render_states.get("D3DRS_ALPHABLENDENABLE", False)),
         "src_blend": str(render_states.get("D3DRS_SRCBLEND", "D3DBLEND_ONE")),
         "dest_blend": str(render_states.get("D3DRS_DESTBLEND", "D3DBLEND_ZERO")),
+        "wvp_matrix": state.pipeline.metadata.get("d3d9_wvp_matrix"),
     }
 
 
@@ -209,9 +261,17 @@ def apply_d3d9_event(state: RenderState, command: str, payload: dict[str, Any]) 
         return True
 
     if command == "set_transform":
+        try:
+            matrix = _matrix(payload.get("matrix"))
+        except ValueError as exc:
+            state.validation_errors.append(str(exc))
+            return True
         state.pipeline.metadata.setdefault("d3d9_transforms", {})[
             str(payload.get("state"))
-        ] = payload.get("matrix")
+        ] = matrix
+        _bind_fixed_function_shader(state)
+        _update_wvp_metadata(state)
+        _update_ffp_shader_metadata(state)
         return True
 
     if command in {"set_stream_source", "set_vertex_buffer"}:

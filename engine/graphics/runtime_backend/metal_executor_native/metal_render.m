@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
-struct V { float p[2]; float c[4]; float uv[2]; };
+struct V { float p[4]; float c[4]; float uv[2]; };
 
 static uint8_t clamp_channel(double v) {
     if (v <= 1.0) v *= 255.0;
@@ -17,7 +17,24 @@ static float clamp_float01(double v) {
     return (float)v;
 }
 
-static NSMutableData *vertex_data_from_request(NSArray *vertices) {
+static float matrix_value(NSArray *matrix, NSUInteger index, float fallback) {
+    if (![matrix isKindOfClass:[NSArray class]] || [matrix count] <= index) return fallback;
+    return [[matrix objectAtIndex:index] floatValue];
+}
+
+static void apply_wvp(float p[4], NSArray *matrix) {
+    if (![matrix isKindOfClass:[NSArray class]] || [matrix count] != 16) return;
+    float in[4] = { p[0], p[1], p[2], p[3] };
+    for (NSUInteger col = 0; col < 4; col++) {
+        p[col] =
+            in[0] * matrix_value(matrix, col, 0.0f) +
+            in[1] * matrix_value(matrix, 4 + col, 0.0f) +
+            in[2] * matrix_value(matrix, 8 + col, 0.0f) +
+            in[3] * matrix_value(matrix, 12 + col, 0.0f);
+    }
+}
+
+static NSMutableData *vertex_data_from_request(NSArray *vertices, NSArray *wvp) {
     NSMutableData *data = [NSMutableData data];
     if ([vertices isKindOfClass:[NSArray class]] && [vertices count] > 0) {
         for (id item in vertices) {
@@ -27,11 +44,15 @@ static NSMutableData *vertex_data_from_request(NSArray *vertices) {
             NSArray *color = vertex[@"color"];
             NSArray *uv = vertex[@"uv"];
             if (![position isKindOfClass:[NSArray class]] || [position count] < 2) continue;
+            float p[4] = {
+                [[position objectAtIndex:0] floatValue],
+                [[position objectAtIndex:1] floatValue],
+                [position count] > 2 ? [[position objectAtIndex:2] floatValue] : 0.0f,
+                [position count] > 3 ? [[position objectAtIndex:3] floatValue] : 1.0f,
+            };
+            apply_wvp(p, wvp);
             struct V v = {
-                {
-                    [[position objectAtIndex:0] floatValue],
-                    [[position objectAtIndex:1] floatValue],
-                },
+                { p[0], p[1], p[2], p[3] },
                 {
                     [color isKindOfClass:[NSArray class]] && [color count] > 0 ? clamp_float01([[color objectAtIndex:0] doubleValue]) : 1.0f,
                     [color isKindOfClass:[NSArray class]] && [color count] > 1 ? clamp_float01([[color objectAtIndex:1] doubleValue]) : 1.0f,
@@ -48,9 +69,9 @@ static NSMutableData *vertex_data_from_request(NSArray *vertices) {
     }
     if ([data length] == 0) {
         struct V fallback[3] = {
-            {{ 0.0f,  0.75f}, {1, 0, 0, 1}, {0.5f, 0.0f}},
-            {{-0.75f, -0.75f}, {0, 1, 0, 1}, {0.0f, 1.0f}},
-            {{ 0.75f, -0.75f}, {0, 0, 1, 1}, {1.0f, 1.0f}},
+            {{ 0.0f,  0.75f, 0.0f, 1.0f}, {1, 0, 0, 1}, {0.5f, 0.0f}},
+            {{-0.75f, -0.75f, 0.0f, 1.0f}, {0, 1, 0, 1}, {0.0f, 1.0f}},
+            {{ 0.75f, -0.75f, 0.0f, 1.0f}, {0, 0, 1, 1}, {1.0f, 1.0f}},
         };
         [data appendBytes:fallback length:sizeof(fallback)];
     }
@@ -293,7 +314,7 @@ static int render_request(NSString *requestPath) {
 
     if ([mode isEqualToString:@"triangle"] || [mode isEqualToString:@"indexed_triangle"] || [mode isEqualToString:@"texture"]) {
         BOOL textureMode = [mode isEqualToString:@"texture"];
-        NSString *src = [@"#include <metal_stdlib>\nusing namespace metal;\nstruct V{packed_float2 p; packed_float4 c; packed_float2 uv;}; struct O{float4 position [[position]]; float4 color; float2 uv;};\nvertex O vs(uint id [[vertex_id]], const device V* v [[buffer(0)]]){O o; o.position=float4(float2(v[id].p),0,1); o.color=float4(v[id].c); o.uv=float2(v[id].uv); return o;}\n" stringByAppendingString:fragment_shader_source(textureMode, req)];
+        NSString *src = [@"#include <metal_stdlib>\nusing namespace metal;\nstruct V{packed_float4 p; packed_float4 c; packed_float2 uv;}; struct O{float4 position [[position]]; float4 color; float2 uv;};\nvertex O vs(uint id [[vertex_id]], const device V* v [[buffer(0)]]){O o; o.position=float4(v[id].p); o.color=float4(v[id].c); o.uv=float2(v[id].uv); return o;}\n" stringByAppendingString:fragment_shader_source(textureMode, req)];
         id<MTLLibrary> lib = [device newLibraryWithSource:src options:nil error:&error];
         if (!lib) { fprintf(stderr, "Metal library failed: %s\n", error.localizedDescription.UTF8String); return 7; }
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
@@ -313,7 +334,7 @@ static int render_request(NSString *requestPath) {
         }
         id<MTLRenderPipelineState> ps = [device newRenderPipelineStateWithDescriptor:pd error:&error];
         if (!ps) { fprintf(stderr, "Metal pipeline failed: %s\n", error.localizedDescription.UTF8String); return 8; }
-        NSMutableData *vertexData = vertex_data_from_request(req[@"vertices"]);
+        NSMutableData *vertexData = vertex_data_from_request(req[@"vertices"], d3d9[@"wvp_matrix"]);
         NSMutableData *indexData = index_data_from_request(req[@"indices"]);
         NSUInteger vertexCount = [vertexData length] / sizeof(struct V);
         NSUInteger indexCount = [indexData length] / sizeof(uint16_t);

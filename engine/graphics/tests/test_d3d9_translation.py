@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
 TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
+TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
 ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
@@ -58,6 +59,19 @@ def test_d3d9_fixed_function_texture_alpha_blend_emits_shader_metadata(tmp_path)
     assert ffp["color_op"] == "D3DTOP_BLENDTEXTUREALPHA"
     assert ffp["color_arg1"] == "D3DTA_TEXTURE"
     assert ffp["color_arg2"] == "D3DTA_DIFFUSE"
+
+
+def test_d3d9_fixed_function_transform_emits_wvp_metadata(tmp_path):
+    result = replay(TRANSFORM_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 900
+
+    state = load_trace(TRANSFORM_TRACE)
+    transforms = state.pipeline.metadata["d3d9_transforms"]
+    assert transforms["D3DTS_WORLD"][12] == 0.35
+    assert state.pipeline.metadata["d3d9_wvp_matrix"][12] == 0.35
+    assert state.pipeline.metadata["d3d9_ffp_shader"]["wvp_matrix"][12] == 0.35
 
 
 def test_d3d9_programmable_xna_sprite_uses_texture_modulate_shader(tmp_path):

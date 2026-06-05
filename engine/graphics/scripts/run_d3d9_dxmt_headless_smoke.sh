@@ -9,6 +9,7 @@ if [[ -n "${TRACE:-}" ]]; then
 else
   traces=(
     "$ROOT/traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
+    "$ROOT/traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
@@ -49,6 +50,7 @@ for result in results:
     min_pixels = {
         "d3d9_fixed_function_alpha_test_runtime.jsonl": 500,
         "d3d9_format_sweep_runtime.jsonl": 900,
+        "d3d9_fixed_function_transform_runtime.jsonl": 900,
     }.get(trace_name, 1000)
     print(f"trace={payload['trace_path']}")
     print(f"  status={payload['status']}")

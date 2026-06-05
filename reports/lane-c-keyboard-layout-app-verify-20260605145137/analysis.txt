@@ -1,0 +1,7 @@
+Lane C keyboard layout app-level validation
+
+Verdict:
+- npp_x64 and original Win7 calc x64 were rerun with keyboard tracing after the win32u fix.
+- summary.tsv records keyboard_locale_fixme=0 for both apps.
+- NtUserActivateKeyboardLayout reaches macdrv_ActivateKeyboardLayout where activation is attempted.
+- Remaining seh_tail entries are the already routed ARM64EC unwind metadata tail.

@@ -17,6 +17,7 @@ traces=(
   "$ROOT/traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
+  "$ROOT/traces/runtime_samples/d3d9_triangle_strip_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"

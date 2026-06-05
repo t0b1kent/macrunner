@@ -165,6 +165,16 @@ static MTLWinding winding_from_d3d9_cull(NSString *mode) {
     return MTLWindingCounterClockwise;
 }
 
+static MTLPrimitiveType primitive_type_from_request(NSDictionary *req) {
+    NSString *topology = req[@"topology"];
+    NSDictionary *pipeline = [req[@"pipeline"] isKindOfClass:[NSDictionary class]] ? req[@"pipeline"] : @{};
+    if (![topology isKindOfClass:[NSString class]]) topology = pipeline[@"primitive_topology"];
+    if ([topology isEqualToString:@"trianglestrip"] || [topology isEqualToString:@"D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP"]) {
+        return MTLPrimitiveTypeTriangleStrip;
+    }
+    return MTLPrimitiveTypeTriangle;
+}
+
 static NSString *alpha_test_condition(NSString *func, NSString *alphaRef) {
     if ([func isEqualToString:@"D3DCMP_NEVER"]) return @"false";
     if ([func isEqualToString:@"D3DCMP_LESS"]) return [NSString stringWithFormat:@"color.a < %@", alphaRef];
@@ -432,9 +442,9 @@ static int render_request(NSString *requestPath) {
         }
         if (indexCount > 0) {
             id<MTLBuffer> ib = [device newBufferWithBytes:[indexData bytes] length:[indexData length] options:MTLResourceStorageModeShared];
-            [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:indexCount indexType:(index32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16) indexBuffer:ib indexBufferOffset:0];
+            [enc drawIndexedPrimitives:primitive_type_from_request(req) indexCount:indexCount indexType:(index32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16) indexBuffer:ib indexBufferOffset:0];
         } else {
-            [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:vertexCount];
+            [enc drawPrimitives:primitive_type_from_request(req) vertexStart:0 vertexCount:vertexCount];
         }
     }
     [enc endEncoding];

@@ -10,6 +10,7 @@ TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
+STRIP_TRACE = ROOT / "traces/runtime_samples/d3d9_triangle_strip_runtime.jsonl"
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
 BASE_VERTEX_TRACE = ROOT / "traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
@@ -211,6 +212,18 @@ def test_d3d9_drawprimitive_range_limits_vertices(tmp_path):
     assert draw["indexed"] is False
     assert draw["start_vertex"] == 3
     assert draw["primitive_count"] == 1
+
+
+def test_d3d9_triangle_strip_records_topology_and_range(tmp_path):
+    result = replay(STRIP_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 2000
+
+    state = load_trace(STRIP_TRACE)
+    assert state.topology == "trianglestrip"
+    assert state.pipeline.metadata["d3d9_draw_range"]["primitive_count"] == 2
+    assert state.pipeline.metadata["d3d9_draw_range"]["indexed"] is True
 
 
 def test_d3d9_cullmode_rejects_clockwise_triangles(tmp_path):

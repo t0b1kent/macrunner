@@ -17,6 +17,7 @@ INDEX_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_indexed_range_runtime.js
 CULL_TRACE = ROOT / "traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
 BASE_VERTEX_TRACE = ROOT / "traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
 DRAW_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_drawprimitive_range_runtime.jsonl"
+STRIP_TRACE = ROOT / "traces/runtime_samples/d3d9_triangle_strip_runtime.jsonl"
 
 
 def test_d3d9_xna_alpha_blend_writes_metal_request_contract(tmp_path):
@@ -233,6 +234,23 @@ def test_d3d9_drawprimitive_range_writes_effective_metal_vertices(tmp_path):
     assert payload["vertices"][0]["position"] == [-0.95, -0.8, 0.0, 1.0]
     assert payload["d3d9"]["draw_range"]["indexed"] is False
     assert payload["d3d9"]["draw_range"]["start_vertex"] == 3
+
+
+def test_d3d9_triangle_strip_writes_metal_topology_contract(tmp_path):
+    state = load_trace(STRIP_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(STRIP_TRACE),
+        name="triangle-strip",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["topology"] == "trianglestrip"
+    assert payload["indices"] == [0, 1, 2, 3]
+    assert payload["index_count"] == 4
+    assert payload["d3d9"]["draw_range"]["primitive_count"] == 2
 
 
 def test_d3d9_cullmode_writes_metal_render_state_contract(tmp_path):

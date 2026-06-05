@@ -17,6 +17,7 @@ else
     "$ROOT/traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
+    "$ROOT/traces/runtime_samples/d3d9_drawprimitive_range_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
@@ -60,6 +61,7 @@ for result in results:
         "d3d9_fixed_function_transform_runtime.jsonl": 900,
         "d3d9_base_vertex_runtime.jsonl": 350,
         "d3d9_cullmode_runtime.jsonl": 350,
+        "d3d9_drawprimitive_range_runtime.jsonl": 350,
         "d3d9_indexed_range_runtime.jsonl": 350,
     }.get(trace_name, 1000)
     print(f"trace={payload['trace_path']}")

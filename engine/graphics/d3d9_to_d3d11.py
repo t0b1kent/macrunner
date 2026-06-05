@@ -151,6 +151,8 @@ def d3d9_effective_indices(index_buffer: list[int], metadata: dict[str, Any], to
     draw = metadata.get("d3d9_draw_range")
     if not draw:
         return list(index_buffer)
+    if draw.get("indexed") is False:
+        return []
     start_index = int(draw.get("start_index", 0))
     primitive_count = int(draw.get("primitive_count", 0))
     base_vertex = int(draw.get("base_vertex_index", 0))
@@ -161,6 +163,21 @@ def d3d9_effective_indices(index_buffer: list[int], metadata: dict[str, Any], to
     if count <= 0:
         return []
     return [base_vertex + index for index in index_buffer[start_index:start_index + count]]
+
+
+def d3d9_effective_vertex_indices(vertex_count: int, metadata: dict[str, Any], topology: str | None) -> list[int]:
+    draw = metadata.get("d3d9_draw_range")
+    if not draw or draw.get("indexed") is not False:
+        return list(range(vertex_count))
+    start_vertex = int(draw.get("start_vertex", 0))
+    primitive_count = int(draw.get("primitive_count", 0))
+    if topology in {"trianglestrip", "D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP"}:
+        count = primitive_count + 2
+    else:
+        count = primitive_count * 3
+    if count <= 0:
+        return []
+    return list(range(start_vertex, min(vertex_count, start_vertex + count)))
 
 
 def _color(value: Any) -> tuple[int, int, int, int]:
@@ -397,10 +414,17 @@ def apply_d3d9_event(state: RenderState, command: str, payload: dict[str, Any]) 
         )
         if command == "draw_indexed_primitive":
             state.pipeline.metadata["d3d9_draw_range"] = {
+                "indexed": True,
                 "base_vertex_index": int(payload.get("base_vertex_index", 0)),
                 "min_vertex_index": int(payload.get("min_vertex_index", 0)),
                 "num_vertices": int(payload.get("num_vertices", len(state.vertex_buffer))),
                 "start_index": int(payload.get("start_index", 0)),
+                "primitive_count": int(payload.get("primitive_count", 0)),
+            }
+        else:
+            state.pipeline.metadata["d3d9_draw_range"] = {
+                "indexed": False,
+                "start_vertex": int(payload.get("start_vertex", 0)),
                 "primitive_count": int(payload.get("primitive_count", 0)),
             }
         if not state.pipeline.metadata.get("programmable"):

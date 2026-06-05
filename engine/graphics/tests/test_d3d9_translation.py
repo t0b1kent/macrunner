@@ -15,6 +15,7 @@ ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test
 BASE_VERTEX_TRACE = ROOT / "traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
 CULL_TRACE = ROOT / "traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
 DEPTH_TRACE = ROOT / "traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
+DRAW_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_drawprimitive_range_runtime.jsonl"
 INDEX_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
 ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
@@ -196,6 +197,20 @@ def test_d3d9_base_vertex_offsets_indices(tmp_path):
     draw = state.pipeline.metadata["d3d9_draw_range"]
     assert draw["base_vertex_index"] == 3
     assert state.index_buffer == [0, 1, 2]
+
+
+def test_d3d9_drawprimitive_range_limits_vertices(tmp_path):
+    result = replay(DRAW_RANGE_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 350
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (4, 8, 16)
+
+    state = load_trace(DRAW_RANGE_TRACE)
+    draw = state.pipeline.metadata["d3d9_draw_range"]
+    assert draw["indexed"] is False
+    assert draw["start_vertex"] == 3
+    assert draw["primitive_count"] == 1
 
 
 def test_d3d9_cullmode_rejects_clockwise_triangles(tmp_path):

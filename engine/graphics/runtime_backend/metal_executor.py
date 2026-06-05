@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from engine.graphics.d3d9_to_d3d11 import d3d9_effective_indices
+from engine.graphics.d3d9_to_d3d11 import d3d9_effective_indices, d3d9_effective_vertex_indices
 from engine.graphics.metal_ir.render_state import RenderResult, RenderState
 from engine.graphics.runtime_backend.mock_executor import MockExecutor
 
@@ -76,7 +76,10 @@ class MetalExecutor:
 
     def request_payload(self, state: RenderState, *, ppm_path: str | Path, report_path: str | Path, trace_path: str | None = None) -> dict:
         metadata = state.pipeline.metadata
-        indices = d3d9_effective_indices(state.index_buffer, metadata, state.topology) if state.api in {"d3d8", "d3d9"} else list(state.index_buffer)
+        d3d_legacy = state.api in {"d3d8", "d3d9"}
+        legacy_non_indexed = d3d_legacy and metadata.get("d3d9_draw_range", {}).get("indexed") is False
+        indices = d3d9_effective_indices(state.index_buffer, metadata, state.topology) if d3d_legacy and not legacy_non_indexed else ([] if legacy_non_indexed else list(state.index_buffer))
+        vertices = [state.vertex_buffer[i] for i in d3d9_effective_vertex_indices(len(state.vertex_buffer), metadata, state.topology)] if legacy_non_indexed else list(state.vertex_buffer)
         mode = "clear"
         if state.texture:
             mode = "texture"
@@ -98,10 +101,10 @@ class MetalExecutor:
             "shader": state.shader,
             "texture_size": list(state.texture_size) if state.texture_size else None,
             "texture_pixels": [list(pixel) for pixel in state.texture] if state.texture else None,
-            "vertices": [vertex.to_dict() for vertex in state.vertex_buffer],
+            "vertices": [vertex.to_dict() for vertex in vertices],
             "indices": indices,
             "index_format": state.pipeline.metadata.get("d3d9_index_format", "uint16"),
-            "vertex_count": len(state.vertex_buffer),
+            "vertex_count": len(vertices),
             "index_count": len(indices),
             "present_count": state.present_count,
             "frame_index": state.frame_index,

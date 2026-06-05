@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from typing import Iterable
 
-from engine.graphics.d3d9_to_d3d11 import apply_d3d9_wvp, d3d9_effective_indices
+from engine.graphics.d3d9_to_d3d11 import apply_d3d9_wvp, d3d9_effective_indices, d3d9_effective_vertex_indices
 from engine.graphics.metal_ir.render_state import RenderResult, RenderState, Vertex
 
 Color = tuple[int, int, int, int]
@@ -56,14 +56,18 @@ class MockExecutor:
             if errors:
                 state.validation_errors.extend(errors)
             else:
-                if state.index_buffer:
+                indexed_draw = bool(state.index_buffer)
+                if state.api in {"d3d8", "d3d9"} and state.pipeline.metadata.get("d3d9_draw_range", {}).get("indexed") is False:
+                    indexed_draw = False
+                if indexed_draw:
                     indexed_errors = state.pipeline.validate_for_draw(indexed=True, require_shader=True)
                     if indexed_errors:
                         state.validation_errors.extend(indexed_errors)
                     else:
                         self._draw_indexed_triangles(state, pixels, depth)
                 else:
-                    self._draw_triangles(state, pixels, depth, list(range(len(state.vertex_buffer))))
+                    indices = d3d9_effective_vertex_indices(len(state.vertex_buffer), state.pipeline.metadata, state.topology) if state.api in {"d3d8", "d3d9"} else list(range(len(state.vertex_buffer)))
+                    self._draw_triangles(state, pixels, depth, indices)
 
         ppm_path = out_dir / f"{name}.ppm"
         self._write_ppm(ppm_path, state.width, state.height, pixels)

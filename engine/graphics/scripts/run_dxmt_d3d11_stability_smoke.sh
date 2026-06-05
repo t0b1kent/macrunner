@@ -13,6 +13,7 @@ DXMT_STABILITY_REPEAT_COUNT="${DXMT_STABILITY_REPEAT_COUNT:-2}"
 DXMT_STABILITY_FRAMES="${DXMT_STABILITY_FRAMES:-1200}"
 DXMT_STABILITY_MIN_MS="${DXMT_STABILITY_MIN_MS:-60000}"
 DXMT_STABILITY_TIMEOUT_SECONDS="${DXMT_STABILITY_TIMEOUT_SECONDS:-180}"
+DXMT_STABILITY_LEAK_BUDGET_KB="${DXMT_STABILITY_LEAK_BUDGET_KB:-262144}"
 
 mkdir -p "$LOG_DIR"
 "$PROJECT_ROOT/scripts/disk-guard.sh" --check-only >/dev/null
@@ -23,6 +24,7 @@ set +e
   SMOKE_REPEAT_COUNT="$DXMT_STABILITY_REPEAT_COUNT" \
   SMOKE_STABILITY_FRAMES="$DXMT_STABILITY_FRAMES" \
   SMOKE_STABILITY_MIN_MS="$DXMT_STABILITY_MIN_MS" \
+  DXMT_SMOKE_LEAK_BUDGET_KB="$DXMT_STABILITY_LEAK_BUDGET_KB" \
   "$PROJECT_ROOT/engine/graphics/scripts/run_dxmt_d3d11_headless_smoke.sh" "$ARCH"
 ) >"$OUTER_LOG" 2>&1
 rc=$?
@@ -33,7 +35,8 @@ echo "arch=$ARCH"
 echo "repeat_count=$DXMT_STABILITY_REPEAT_COUNT"
 echo "stability_frames=$DXMT_STABILITY_FRAMES"
 echo "stability_min_ms=$DXMT_STABILITY_MIN_MS"
-grep -E "^(run=|run_exit_code=|UnityMultithreadProbe|UnityBatchProbe|UnityStabilityProbe|exit_code=)" "$OUTER_LOG" | tail -240 || true
+echo "leak_budget_kb=$DXMT_STABILITY_LEAK_BUDGET_KB"
+grep -E "^(run=|run_exit_code=|UnityMultithreadProbe|UnityBatchProbe|UnityStabilityProbe|UnityLeakProbe|exit_code=)" "$OUTER_LOG" | tail -240 || true
 
 if [[ "$rc" -ne 0 ]]; then
   echo "stability_smoke_result=FAIL rc=$rc"
@@ -44,12 +47,14 @@ expected_runs="$DXMT_STABILITY_REPEAT_COUNT"
 pass_runs="$(rg -c "UnityStabilityProbe result=PASS" "$OUTER_LOG" || true)"
 batch_runs="$(rg -c "UnityBatchProbe result=PASS" "$OUTER_LOG" || true)"
 multithread_runs="$(rg -c "UnityMultithreadProbe result=PASS" "$OUTER_LOG" || true)"
+leak_runs="$(rg -c "UnityLeakProbe .* result=PASS" "$OUTER_LOG" || true)"
 
 echo "stability_pass_runs=$pass_runs"
 echo "batch_pass_runs=$batch_runs"
 echo "multithread_pass_runs=$multithread_runs"
+echo "leak_pass_runs=$leak_runs"
 
-if [[ "$pass_runs" -lt "$expected_runs" || "$batch_runs" -lt "$expected_runs" || "$multithread_runs" -lt "$expected_runs" ]]; then
+if [[ "$pass_runs" -lt "$expected_runs" || "$batch_runs" -lt "$expected_runs" || "$multithread_runs" -lt "$expected_runs" || "$leak_runs" -lt "$expected_runs" ]]; then
   echo "stability_smoke_result=FAIL reason=missing_phase6_markers"
   exit 1
 fi

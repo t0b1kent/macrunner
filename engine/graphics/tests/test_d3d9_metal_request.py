@@ -25,6 +25,10 @@ def test_d3d9_xna_alpha_blend_writes_metal_request_contract(tmp_path):
     assert payload["render_target_format"] == "bgra8"
     assert payload["vertex_count"] == 4
     assert payload["index_count"] == 6
+    assert len(payload["vertices"]) == 4
+    assert payload["indices"] == [0, 1, 2, 2, 1, 3]
+    assert payload["texture_size"] == [2, 2]
+    assert payload["texture_pixels"][0] == [255, 255, 255, 128]
     assert payload["present_count"] == 1
     assert payload["pipeline"]["vertex_shader"] == "xna_sprite_vs_3_0"
     assert payload["pipeline"]["pixel_shader"] == "xna_sprite_ps_3_0"
@@ -49,6 +53,8 @@ def test_d3d9_format_sweep_writes_metal_format_contract(tmp_path):
     assert payload["source_api"] == "d3d9"
     assert payload["render_target_format"] == "rgba10a2"
     assert payload["depth_format"] == "d32f"
+    assert payload["texture_size"] == [2, 2]
+    assert payload["texture_pixels"][0] == [0, 255, 255, 255]
     assert payload["d3d9"]["texture_format"] == "bc3"
     assert payload["d3d9"]["ffp_shader"]["texture_factor"] == [255, 255, 255, 255]
     assert payload["d3d9"]["present_parameters"]["backbuffer_format"] == "D3DFMT_A2R10G10B10"

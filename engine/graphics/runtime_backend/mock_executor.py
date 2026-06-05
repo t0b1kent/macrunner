@@ -326,8 +326,8 @@ class MockExecutor:
         alpha_arg1 = self._resolve_d3d9_arg(str(ffp.get("alpha_arg1", "D3DTA_DIFFUSE")), diffuse, texture, texture_factor)
         alpha_arg2 = self._resolve_d3d9_arg(str(ffp.get("alpha_arg2", "D3DTA_TEXTURE")), diffuse, texture, texture_factor)
         alpha_op = str(ffp.get("alpha_op", "D3DTOP_SELECTARG1"))
-        rgb = self._apply_d3d9_op(color_op, color_arg1, color_arg2, diffuse, texture)
-        alpha = self._apply_d3d9_op(alpha_op, alpha_arg1, alpha_arg2, diffuse, texture)[3]
+        rgb = self._apply_d3d9_op(color_op, color_arg1, color_arg2, diffuse, texture, texture_factor)
+        alpha = self._apply_d3d9_op(alpha_op, alpha_arg1, alpha_arg2, diffuse, texture, texture_factor)[3]
         shaded = (rgb[0], rgb[1], rgb[2], alpha)
         return shaded if self._passes_alpha_test(ffp, alpha) else None
 
@@ -356,7 +356,7 @@ class MockExecutor:
             value = (value[3], value[3], value[3], value[3])
         return value
 
-    def _apply_d3d9_op(self, op: str, lhs: Color, rhs: Color, diffuse: Color, texture: Color | None) -> Color:
+    def _apply_d3d9_op(self, op: str, lhs: Color, rhs: Color, diffuse: Color, texture: Color | None, texture_factor: Color = (255, 255, 255, 255)) -> Color:
         if op == "D3DTOP_SELECTARG2":
             return rhs
         if op == "D3DTOP_MODULATE":
@@ -382,6 +382,9 @@ class MockExecutor:
             return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDTEXTUREALPHA":
             alpha = (texture or (255, 255, 255, 255))[3] / 255.0
+            return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
+        if op == "D3DTOP_BLENDFACTORALPHA":
+            alpha = texture_factor[3] / 255.0
             return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_DISABLE":
             return lhs

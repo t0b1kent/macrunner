@@ -256,6 +256,9 @@ static NSString *d3d9_op_expr(NSString *op, NSString *lhs, NSString *rhs) {
     if ([op isEqualToString:@"D3DTOP_BLENDTEXTUREALPHA"]) {
         return [NSString stringWithFormat:@"((%@)*texel.a+(%@)*(1.0-texel.a))", lhs, rhs];
     }
+    if ([op isEqualToString:@"D3DTOP_BLENDFACTORALPHA"]) {
+        return [NSString stringWithFormat:@"((%@)*tfactor.a+(%@)*(1.0-tfactor.a))", lhs, rhs];
+    }
     return lhs;
 }
 

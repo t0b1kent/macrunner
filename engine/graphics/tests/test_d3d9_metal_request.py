@@ -13,6 +13,7 @@ FFP_ARG_MODIFIER_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_arg_modifier_ru
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
+SCISSOR_TRACE = ROOT / "traces/runtime_samples/d3d9_scissor_test_runtime.jsonl"
 DEPTH_TRACE = ROOT / "traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
 INDEX_RANGE_TRACE = ROOT / "traces/runtime_samples/d3d9_indexed_range_runtime.jsonl"
 CULL_TRACE = ROOT / "traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
@@ -184,6 +185,21 @@ def test_d3d9_sampler_writes_metal_sampler_contract(tmp_path):
     assert sampler["address_v"] == "D3DTADDRESS_WRAP"
     assert sampler["min_filter"] == "D3DTEXF_LINEAR"
     assert sampler["mag_filter"] == "D3DTEXF_LINEAR"
+
+
+def test_d3d9_scissor_writes_metal_scissor_contract(tmp_path):
+    state = load_trace(SCISSOR_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(SCISSOR_TRACE),
+        name="scissor",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["scissor"] == [16, 16, 32, 32]
+    assert payload["d3d9"]["render_states"]["D3DRS_SCISSORTESTENABLE"] is True
 
 
 def test_d3d9_depth_writes_metal_depth_contract(tmp_path):

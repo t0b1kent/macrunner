@@ -12,6 +12,7 @@ TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_r
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
 STRIP_TRACE = ROOT / "traces/runtime_samples/d3d9_triangle_strip_runtime.jsonl"
+SCISSOR_TRACE = ROOT / "traces/runtime_samples/d3d9_scissor_test_runtime.jsonl"
 DRAW_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d9_drawprimitive_triangle_strip_runtime.jsonl"
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
@@ -145,6 +146,19 @@ def test_d3d9_sampler_state_records_filter_and_address(tmp_path):
     assert sampler["address_v"] == "D3DTADDRESS_WRAP"
     assert sampler["min_filter"] == "D3DTEXF_LINEAR"
     assert sampler["mag_filter"] == "D3DTEXF_LINEAR"
+
+
+def test_d3d9_scissor_state_clips_rasterization(tmp_path):
+    result = replay(SCISSOR_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] == 1024
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (26, 255, 51)
+    assert _ppm_pixel(Path(result["ppm_path"]), 8, 32, result["width"]) == (4, 8, 16)
+
+    state = load_trace(SCISSOR_TRACE)
+    assert state.scissor == (16, 16, 32, 32)
+    assert state.pipeline.metadata["d3d9_render_states"]["D3DRS_SCISSORTESTENABLE"] is True
 
 
 def test_d3d9_programmable_xna_sprite_uses_texture_modulate_shader(tmp_path):

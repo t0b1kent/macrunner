@@ -9,6 +9,16 @@ from engine.graphics.metal_ir.render_state import RenderResult, RenderState
 from engine.graphics.runtime_backend.mock_executor import MockExecutor
 
 
+def _d3d9_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
 class MetalExecutor:
     """Real Metal executor wrapper.
 
@@ -80,6 +90,10 @@ class MetalExecutor:
         legacy_non_indexed = d3d_legacy and metadata.get("d3d9_draw_range", {}).get("indexed") is False
         indices = d3d9_effective_indices(state.index_buffer, metadata, state.topology) if d3d_legacy and not legacy_non_indexed else ([] if legacy_non_indexed else list(state.index_buffer))
         vertices = [state.vertex_buffer[i] for i in d3d9_effective_vertex_indices(len(state.vertex_buffer), metadata, state.topology)] if legacy_non_indexed else list(state.vertex_buffer)
+        scissor = state.scissor
+        if d3d_legacy:
+            scissor_enabled = _d3d9_bool(metadata.get("d3d9_render_states", {}).get("D3DRS_SCISSORTESTENABLE", False))
+            scissor = state.scissor if scissor_enabled else None
         mode = "clear"
         if state.texture:
             mode = "texture"
@@ -97,7 +111,7 @@ class MetalExecutor:
             "clear_color": list(state.clear_color),
             "topology": state.topology,
             "viewport": list(state.viewport) if state.viewport else None,
-            "scissor": list(state.scissor) if state.scissor else None,
+            "scissor": list(scissor) if scissor else None,
             "shader": state.shader,
             "texture_size": list(state.texture_size) if state.texture_size else None,
             "texture_pixels": [list(pixel) for pixel in state.texture] if state.texture else None,

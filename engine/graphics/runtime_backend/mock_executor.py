@@ -125,9 +125,22 @@ class MockExecutor:
         return (0, 0, state.width, state.height)
 
     def _scissor(self, state: RenderState) -> tuple[int, int, int, int]:
+        if state.api in {"d3d8", "d3d9"} and not self._d3d9_render_state_bool(state, "D3DRS_SCISSORTESTENABLE", False):
+            return (0, 0, state.width, state.height)
         if state.scissor:
             return state.scissor
         return (0, 0, state.width, state.height)
+
+    @staticmethod
+    def _d3d9_render_state_bool(state: RenderState, key: str, default: bool = False) -> bool:
+        value = state.pipeline.metadata.get("d3d9_render_states", {}).get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return default
 
     def _to_screen(self, vertex: Vertex, viewport: tuple[int, int, int, int]) -> tuple[float, float]:
         vx, vy, vw, vh = viewport

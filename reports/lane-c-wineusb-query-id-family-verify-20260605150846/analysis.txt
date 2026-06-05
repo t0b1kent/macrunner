@@ -1,0 +1,11 @@
+Lane C wineusb BUS_QUERY_ID_TYPE family verification
+
+Probe: reports/installer-e2e/shell_icon_probe.exe under dist-arm64ec-spike via scripts/mr-run.sh timeout 90.
+Result: BusQueryContainerID fixme count is 0; BusQueryDeviceSerialNumber fixme count is 0; any wineusb unhandled query count is 0.
+Lane-C attributable counters: unsupported=0 missing_import=0 vm_fail=0 dll_fail=0.
+Routed residuals: seh_tail=0.
+Artifacts installed:
+- aarch64-windows/wineusb.sys sha256 6dbb67e3215f2b456dc50030c481dd63f9debe10c5323ac74acbd2ad02611554
+- x86_64-windows/wineusb.sys sha256 d7858753b8f510168be403697852e4c301882ff17265bc645c280878cba27f2e
+- i386-windows/wineusb.sys sha256 7f2cb09223f2dcecf85f82ae92791a0f289d9a3a889a61c80292ac30b3558914
+- aarch64-unix/wineusb.so sha256 87300f1cce7bd9a3b585c2b44b6589c1d5e80a971ad370c76ccdf35e1c0e95f4

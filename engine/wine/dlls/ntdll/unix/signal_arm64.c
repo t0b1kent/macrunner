@@ -2954,13 +2954,68 @@ static void macrunner_hb_trace_arm64ec_watchdog_bytes( mach_vm_address_t addr, c
         pos += snprintf( buf + pos, buf_size - pos, "%02x", bytes[i] );
 }
 
+static void macrunner_hb_trace_arm64ec_watchdog_ascii( mach_vm_address_t addr, char *buf,
+                                                       size_t buf_size )
+{
+    uint8_t bytes[48];
+    mach_vm_size_t out_size = 0;
+    kern_return_t kr;
+    size_t i, pos = 0;
+
+    if (!buf_size) return;
+    buf[0] = 0;
+    if (!addr)
+    {
+        snprintf( buf, buf_size, "null" );
+        return;
+    }
+
+    kr = mach_vm_read_overwrite( mach_task_self(), addr, sizeof(bytes),
+                                 (mach_vm_address_t)(uintptr_t)bytes, &out_size );
+    if (kr != KERN_SUCCESS)
+    {
+        snprintf( buf, buf_size, "read=%d", kr );
+        return;
+    }
+
+    for (i = 0; i < out_size && pos + 2 < buf_size; i++)
+    {
+        uint8_t c = bytes[i];
+
+        if (!c) break;
+        buf[pos++] = (c >= 0x21 && c <= 0x7e) ? (char)c : '.';
+    }
+    buf[pos] = 0;
+}
+
+static unsigned int macrunner_hb_arm64ec_watchdog_env_u32( const char *name, unsigned int fallback,
+                                                           unsigned int min_value, unsigned int max_value )
+{
+    const char *env = getenv( name );
+    char *end;
+    unsigned long value;
+
+    if (!env || !env[0]) return fallback;
+    value = strtoul( env, &end, 0 );
+    if (end == env) return fallback;
+    if (value < min_value) value = min_value;
+    if (value > max_value) value = max_value;
+    return (unsigned int)value;
+}
+
 static void *macrunner_hb_arm64ec_spin_watchdog_thread( void *arg )
 {
+    unsigned int delay_ms = macrunner_hb_arm64ec_watchdog_env_u32(
+        "MACRUNNER_HB_TRACE_ARM64EC_SPIN_WATCHDOG_DELAY_MS", 3000, 0, 600000 );
+    unsigned int interval_ms = macrunner_hb_arm64ec_watchdog_env_u32(
+        "MACRUNNER_HB_TRACE_ARM64EC_SPIN_WATCHDOG_INTERVAL_MS", 1000, 10, 60000 );
+    unsigned int sample_count = macrunner_hb_arm64ec_watchdog_env_u32(
+        "MACRUNNER_HB_TRACE_ARM64EC_SPIN_WATCHDOG_SAMPLES", 30, 1, 10000 );
     int sample, thread_index;
 
     (void)arg;
-    usleep( 3000000 );
-    for (sample = 0; sample < 30; sample++)
+    usleep( (useconds_t)delay_ms * 1000 );
+    for (sample = 0; sample < sample_count; sample++)
     {
         thread_act_array_t threads = NULL;
         mach_msg_type_number_t thread_count = 0;
@@ -2971,7 +3026,7 @@ static void *macrunner_hb_arm64ec_spin_watchdog_thread( void *arg )
             fprintf( stderr, "macrunner-hb-arm64ec-watchdog: sample=%d task_threads=%d\n",
                      sample, kr );
             fflush( stderr );
-            usleep( 1000000 );
+            usleep( (useconds_t)interval_ms * 1000 );
             continue;
         }
         for (thread_index = 0; thread_index < thread_count; thread_index++)
@@ -2979,6 +3034,7 @@ static void *macrunner_hb_arm64ec_spin_watchdog_thread( void *arg )
             arm_thread_state64_t state;
             mach_msg_type_number_t state_count = ARM_THREAD_STATE64_COUNT;
             char bytes[80];
+            char x0s[80], x1s[80], x14s[80], x20s[80];
             uint64_t pc;
 
             if (threads[thread_index] == mach_thread_self()) continue;
@@ -2989,18 +3045,34 @@ static void *macrunner_hb_arm64ec_spin_watchdog_thread( void *arg )
             if (pc < 0x0000080000000000ULL) continue;
             macrunner_hb_trace_arm64ec_watchdog_bytes( (mach_vm_address_t)(pc & ~3ULL),
                                                        bytes, sizeof(bytes) );
-            fprintf( stderr, "macrunner-hb-arm64ec-watchdog: sample=%d thread=%d "
-                     "pc=%p lr=%p sp=%p x4=%p x16=%p x18=%p bytes=%s\n",
-                     sample, thread_index, (void *)(uintptr_t)pc,
-                     (void *)(uintptr_t)state.__lr, (void *)(uintptr_t)state.__sp,
-                     (void *)(uintptr_t)state.__x[4], (void *)(uintptr_t)state.__x[16],
-                     (void *)(uintptr_t)state.__x[18], bytes );
+            macrunner_hb_trace_arm64ec_watchdog_ascii( (mach_vm_address_t)state.__x[0],
+                                                       x0s, sizeof(x0s) );
+            macrunner_hb_trace_arm64ec_watchdog_ascii( (mach_vm_address_t)state.__x[1],
+                                                       x1s, sizeof(x1s) );
+            macrunner_hb_trace_arm64ec_watchdog_ascii( (mach_vm_address_t)state.__x[14],
+                                                       x14s, sizeof(x14s) );
+            macrunner_hb_trace_arm64ec_watchdog_ascii( (mach_vm_address_t)state.__x[20],
+                                                       x20s, sizeof(x20s) );
+            fprintf( stderr, "macrunner-hb-arm64ec-watchdog: pid=%d sample=%d thread=%d "
+                      "pc=%p lr=%p sp=%p x0=%p x1=%p x2=%p x3=%p x4=%p "
+                      "x8=%p x9=%p x10=%p x11=%p x12=%p x13=%p x14=%p "
+                      "x16=%p x18=%p x20=%p x0s=%s x1s=%s x14s=%s x20s=%s bytes=%s\n",
+                      getpid(), sample, thread_index, (void *)(uintptr_t)pc,
+                      (void *)(uintptr_t)state.__lr, (void *)(uintptr_t)state.__sp,
+                      (void *)(uintptr_t)state.__x[0], (void *)(uintptr_t)state.__x[1],
+                      (void *)(uintptr_t)state.__x[2], (void *)(uintptr_t)state.__x[3],
+                      (void *)(uintptr_t)state.__x[4], (void *)(uintptr_t)state.__x[8],
+                      (void *)(uintptr_t)state.__x[9], (void *)(uintptr_t)state.__x[10],
+                      (void *)(uintptr_t)state.__x[11], (void *)(uintptr_t)state.__x[12],
+                      (void *)(uintptr_t)state.__x[13], (void *)(uintptr_t)state.__x[14],
+                      (void *)(uintptr_t)state.__x[16], (void *)(uintptr_t)state.__x[18],
+                      (void *)(uintptr_t)state.__x[20], x0s, x1s, x14s, x20s, bytes );
             fflush( stderr );
         }
         if (threads)
             vm_deallocate( mach_task_self(), (vm_address_t)threads,
                            thread_count * sizeof(*threads) );
-        usleep( 1000000 );
+        usleep( (useconds_t)interval_ms * 1000 );
     }
     return NULL;
 }

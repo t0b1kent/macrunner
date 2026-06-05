@@ -2137,6 +2137,114 @@ static void macrunner_hb_trace_mono_class_flags_probe( const char *phase, const 
     fflush( stderr );
 }
 
+static void macrunner_hb_trace_mono_jitinfo_helper_probe( const char *phase, const char *label,
+                                                          hb_context_t *ctx, uint64_t image_start,
+                                                          uint64_t block_pc, uint64_t blocks,
+                                                          uint64_t steps, hb_result_t ret,
+                                                          hb_result_t out_result,
+                                                          uint64_t out_steps )
+{
+    static int budget = 120;
+    uint64_t rva = block_pc - image_start;
+    uint64_t obj0 = 0, obj8 = 0, stack0 = 0, stack_m8 = 0;
+    uint32_t obj20 = 0;
+    hb_result_t obj0_r = HB_ERR_NOT_FOUND, obj8_r = HB_ERR_NOT_FOUND, obj20_r = HB_ERR_NOT_FOUND;
+    hb_result_t stack0_r = HB_ERR_NOT_FOUND, stack_m8_r = HB_ERR_NOT_FOUND;
+
+    if (!ctx || !ctx->memory) return;
+    if (!macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_MONO_JITINFO_HELPER" )) return;
+    if (rva < 0x14fa80 || rva > 0x14fa94) return;
+    if (budget <= 0) return;
+    budget--;
+
+    obj0_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rcx, &obj0 );
+    obj8_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rcx + 0x08, &obj8 );
+    obj20_r = hb_memory_read_u32( ctx->memory, (hb_gva_t)ctx->regs.x64.rcx + 0x20, &obj20 );
+    stack0_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &stack0 );
+    if (ctx->regs.x64.rsp >= 8)
+        stack_m8_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp - 8, &stack_m8 );
+
+    fprintf( stderr, "macrunner-hb-mono-jitinfo-helper: phase=%s label=%s block=%s steps=%s "
+             "rva=%p block_pc=%p pc=%p ret=%s out=%s out_steps=%s "
+             "rax=%p rcx=%p rcx_plus8=%p rdx=%p rsi=%p rdi=%p rsp=%p "
+             "obj0=%p/%s obj8=%p/%s obj20=%08x/%s stack0=%p/%s stack_m8=%p/%s "
+             "rbx=%p rbp=%p r8=%p r9=%p r14=%p r15=%p budget_left=%d\n",
+             phase, label ? label : "entry", wine_dbgstr_longlong(blocks),
+             wine_dbgstr_longlong(steps), (void *)(uintptr_t)rva, (void *)(uintptr_t)block_pc,
+             (void *)(uintptr_t)ctx->pc, hb_result_string(ret), hb_result_string(out_result),
+             wine_dbgstr_longlong(out_steps), (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rcx, (void *)(uintptr_t)(ctx->regs.x64.rcx + 8),
+             (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi, (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (void *)(uintptr_t)obj0, hb_result_string(obj0_r), (void *)(uintptr_t)obj8,
+             hb_result_string(obj8_r), obj20, hb_result_string(obj20_r),
+             (void *)(uintptr_t)stack0, hb_result_string(stack0_r),
+             (void *)(uintptr_t)stack_m8, hb_result_string(stack_m8_r),
+             (void *)(uintptr_t)ctx->regs.x64.rbx, (void *)(uintptr_t)ctx->regs.x64.rbp,
+             (void *)(uintptr_t)ctx->regs.x64.r8, (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.r14, (void *)(uintptr_t)ctx->regs.x64.r15,
+             budget );
+    fflush( stderr );
+}
+
+static void macrunner_hb_trace_mono_sync_wrapper_probe( const char *phase, const char *label,
+                                                        hb_context_t *ctx, uint64_t image_start,
+                                                        uint64_t block_pc, uint64_t blocks,
+                                                        uint64_t steps, hb_result_t ret,
+                                                        hb_result_t out_result,
+                                                        uint64_t out_steps )
+{
+    static int budget = 160;
+    uint64_t rva = block_pc - image_start;
+    uint64_t stack0 = 0, stack_m8 = 0, iat_release_srw = 0, iat_leave_cs = 0, iat_tls_set = 0;
+    uint32_t use_cs = 0, tls_flag = 0, tls_index = 0;
+    hb_result_t stack0_r = HB_ERR_NOT_FOUND, stack_m8_r = HB_ERR_NOT_FOUND;
+    hb_result_t use_cs_r = HB_ERR_NOT_FOUND, tls_flag_r = HB_ERR_NOT_FOUND, tls_index_r = HB_ERR_NOT_FOUND;
+    hb_result_t release_r = HB_ERR_NOT_FOUND, leave_r = HB_ERR_NOT_FOUND, tls_set_r = HB_ERR_NOT_FOUND;
+
+    if (!ctx || !ctx->memory) return;
+    if (!macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_MONO_SYNC_WRAPPER" )) return;
+    if (rva < 0x150d50 || rva > 0x150f40) return;
+    if (budget <= 0) return;
+    budget--;
+
+    use_cs_r = hb_memory_read_u32( ctx->memory, (hb_gva_t)image_start + 0x741530, &use_cs );
+    tls_flag_r = hb_memory_read_u32( ctx->memory, (hb_gva_t)image_start + 0x741500, &tls_flag );
+    tls_index_r = hb_memory_read_u32( ctx->memory, (hb_gva_t)image_start + 0x741540, &tls_index );
+    release_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)image_start + 0x5752d0, &iat_release_srw );
+    leave_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)image_start + 0x5753d0, &iat_leave_cs );
+    tls_set_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)image_start + 0x5754c8, &iat_tls_set );
+    stack0_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &stack0 );
+    if (ctx->regs.x64.rsp >= 8)
+        stack_m8_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp - 8, &stack_m8 );
+
+    fprintf( stderr, "macrunner-hb-mono-sync-wrapper: phase=%s label=%s block=%s steps=%s "
+             "rva=%p block_pc=%p pc=%p ret=%s out=%s out_steps=%s "
+             "use_cs=%u/%s tls_flag=%u/%s tls_index=%u/%s lock_srw=%p lock_cs=%p "
+             "iat_release_srw=%p/%s iat_leave_cs=%p/%s iat_tls_set=%p/%s "
+             "rax=%p rcx=%p rdx=%p r8=%p r9=%p rsp=%p stack0=%p/%s stack_m8=%p/%s "
+             "rbx=%p rbp=%p rsi=%p rdi=%p r14=%p r15=%p budget_left=%d\n",
+             phase, label ? label : "entry", wine_dbgstr_longlong(blocks),
+             wine_dbgstr_longlong(steps), (void *)(uintptr_t)rva, (void *)(uintptr_t)block_pc,
+             (void *)(uintptr_t)ctx->pc, hb_result_string(ret), hb_result_string(out_result),
+             wine_dbgstr_longlong(out_steps), use_cs, hb_result_string(use_cs_r),
+             tls_flag, hb_result_string(tls_flag_r), tls_index, hb_result_string(tls_index_r),
+             (void *)(uintptr_t)(image_start + 0x741508), (void *)(uintptr_t)(image_start + 0x741508),
+             (void *)(uintptr_t)iat_release_srw, hb_result_string(release_r),
+             (void *)(uintptr_t)iat_leave_cs, hb_result_string(leave_r),
+             (void *)(uintptr_t)iat_tls_set, hb_result_string(tls_set_r),
+             (void *)(uintptr_t)ctx->regs.x64.rax, (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9, (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (void *)(uintptr_t)stack0, hb_result_string(stack0_r),
+             (void *)(uintptr_t)stack_m8, hb_result_string(stack_m8_r),
+             (void *)(uintptr_t)ctx->regs.x64.rbx, (void *)(uintptr_t)ctx->regs.x64.rbp,
+             (void *)(uintptr_t)ctx->regs.x64.rsi, (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.r14, (void *)(uintptr_t)ctx->regs.x64.r15,
+             budget );
+    fflush( stderr );
+}
+
 static void macrunner_hb_trace_mono_method_enum_probe( const char *phase, const char *label,
                                                        hb_context_t *ctx, uint64_t image_start,
                                                        uint64_t block_pc, uint64_t blocks,
@@ -17958,6 +18066,10 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                                                     blocks, steps, HB_OK, HB_OK, 0 );
         macrunner_hb_trace_mono_class_flags_probe( "before", label, ctx, image_start, block_pc,
                                                    blocks, steps, HB_OK, HB_OK, 0 );
+        macrunner_hb_trace_mono_jitinfo_helper_probe( "before", label, ctx, image_start, block_pc,
+                                                      blocks, steps, HB_OK, HB_OK, 0 );
+        macrunner_hb_trace_mono_sync_wrapper_probe( "before", label, ctx, image_start, block_pc,
+                                                    blocks, steps, HB_OK, HB_OK, 0 );
         macrunner_hb_trace_mono_515_loop( "before", label, ctx, image_start, block_pc,
                                           blocks, steps );
         if (blocks <= 80)
@@ -18042,6 +18154,12 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         macrunner_hb_trace_mono_class_flags_probe( "after", label, ctx, image_start, block_pc,
                                                    blocks, steps + out.steps_executed, ret,
                                                    out.result, out.steps_executed );
+        macrunner_hb_trace_mono_jitinfo_helper_probe( "after", label, ctx, image_start, block_pc,
+                                                      blocks, steps + out.steps_executed, ret,
+                                                      out.result, out.steps_executed );
+        macrunner_hb_trace_mono_sync_wrapper_probe( "after", label, ctx, image_start, block_pc,
+                                                    blocks, steps + out.steps_executed, ret,
+                                                    out.result, out.steps_executed );
         macrunner_hb_trace_mono_515_loop( "after", label, ctx, image_start, block_pc,
                                           blocks, steps + out.steps_executed );
         if (transient_func)

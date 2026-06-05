@@ -1684,3 +1684,30 @@ TSO/CMPXCHG16B gates.
   `blocks=0x1a876a` (`1738602`), `rva=0x51589d`. D3D/Gfx counts remain 0 in this short proof.
 
 NEXT: run the TSO litmus suite under MacRunner before any more HK diagnosis.
+
+## Lane A checkpoint - 2026-06-05 Mono assertion cleared; next gate is HB JIT signal recovery
+
+- TSO verdict: `reports/research/tso_litmus.c` cases `mp`, `spin`, `cas`, `xadd`, and
+  `split` all PASS under MacRunner. The former `0x513xxx`/`0x515xxx` plateau is not the
+  window gate; it was Mono assertion formatting.
+- Mono metadata verdict: disabling/guarding the Mono metadata `decode_col` fusion removes
+  `System.RuntimeType invalid vtable method slot 16 (get_Name)`. Post-guard HK no longer
+  logs that assertion, but still stays before graphics (`GfxDevice=0`, `D3D11CreateDevice=0`).
+- Current HK plateau: fresh JIT runs reach about `hb=2169`, `blocks=0x1e4fee`/`0x1e5797`
+  with no Mono assertion and no D3D/Gfx calls.
+- New root evidence: `WINEDEBUG=+seh` run
+  `reports/phase4-hollow-knight/run-20260605-124824-hk-seh-attempt2-abs-300/` repeats
+  `dispatch_exception code=c0000026 (EXCEPTION_INVALID_DISPOSITION)` from
+  `ntdll!raise_status+0x84`. The first invalid unwind follows
+  `EXCEPTION_DATATYPE_MISALIGNMENT` at guest/live address `0x87eff24e308`; Wine then tries
+  to unwind `pc=0x1090e0fb4 lr=0x1090e0fb8`, which is inside the 128 MB HyperBridge JIT
+  slab (`VM_ALLOCATE 0x1088e0000-0x1108e0000`) and has no ARM64EC unwind metadata.
+- Delayed ARM64EC watchdog corroborates the hot native loop in `RtlLookupFunctionEntry`,
+  `process_unwind_codes`, `call_seh_handlers`, and `raise_status`.
+- Interpreter split: `MACRUNNER_HB_BACKEND=interp` attempts do not produce the C0000026
+  unwind storm, but also barely start (`hb=2` at 120s), so this is evidence for the escaped
+  JIT host-signal path, not a viable product path.
+
+NEXT: add HB JIT native signal containment so faults inside generated ARM64 code bounce back
+to `hb_jit_runtime_run` as a JIT fallback result, restoring pre-block guest state and running
+the block through the interpreter instead of entering ARM64EC PE SEH.

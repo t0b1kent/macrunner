@@ -29,6 +29,14 @@ Validation:
   `heartbeat_count=2388`, final `blocks=0x219829`, no Mono invalid-vtable assertion, no
   runtime-fail, and `D3D11CreateDevice=0` / `GfxDevice=0`; it exited `rc=29` at
   `macrunner-hb-seh-host-boundary pc=0x1059b0c80 lr=0x1059fcfb8`.
+- Fresh current fusions-off check:
+  `reports/phase4-hollow-knight/run-20260605-170129-hk-fusions-off-minimal-300/` ran with
+  `MACRUNNER_HB_DISABLE_MONO_METADATA_FUSIONS=1`, reached `heartbeat_count=972`, and had
+  `invalid_vtable=0`, `RuntimeType=0`, `get_Name=0`, `runtime_fail=0`, `jit_fallback=0`.
+  It timed out at `rva=0x27f1de` with a live sample showing generated JIT code dominated by
+  `hb_jit_helper_exec_load_operand_lazy` / `hb_jit_helper_exec_extend_operand_lazy` and
+  `hb_memory_read`/`mach_vm_read_overwrite`. Verdict: the invalid-vtable corruption is cleared;
+  disabling metadata fusions is too slow and is not the D3D route.
 - HK `-logFile -`/controller attempts are not decisive for D3D: one parked pre-entry in
   `init_startup_info -> NtWaitForMultipleObjects`, and one hot-timed-out before heartbeat.
 

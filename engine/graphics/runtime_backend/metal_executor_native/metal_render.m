@@ -78,12 +78,17 @@ static NSMutableData *vertex_data_from_request(NSArray *vertices, NSArray *wvp) 
     return data;
 }
 
-static NSMutableData *index_data_from_request(NSArray *indices) {
+static NSMutableData *index_data_from_request(NSArray *indices, BOOL index32) {
     NSMutableData *data = [NSMutableData data];
     if (![indices isKindOfClass:[NSArray class]]) return data;
     for (id item in indices) {
-        uint16_t index = (uint16_t)[item unsignedIntegerValue];
-        [data appendBytes:&index length:sizeof(index)];
+        if (index32) {
+            uint32_t index = (uint32_t)[item unsignedIntegerValue];
+            [data appendBytes:&index length:sizeof(index)];
+        } else {
+            uint16_t index = (uint16_t)[item unsignedIntegerValue];
+            [data appendBytes:&index length:sizeof(index)];
+        }
     }
     return data;
 }
@@ -335,9 +340,10 @@ static int render_request(NSString *requestPath) {
         id<MTLRenderPipelineState> ps = [device newRenderPipelineStateWithDescriptor:pd error:&error];
         if (!ps) { fprintf(stderr, "Metal pipeline failed: %s\n", error.localizedDescription.UTF8String); return 8; }
         NSMutableData *vertexData = vertex_data_from_request(req[@"vertices"], d3d9[@"wvp_matrix"]);
-        NSMutableData *indexData = index_data_from_request(req[@"indices"]);
+        BOOL index32 = [req[@"index_format"] isEqualToString:@"uint32"];
+        NSMutableData *indexData = index_data_from_request(req[@"indices"], index32);
         NSUInteger vertexCount = [vertexData length] / sizeof(struct V);
-        NSUInteger indexCount = [indexData length] / sizeof(uint16_t);
+        NSUInteger indexCount = [indexData length] / (index32 ? sizeof(uint32_t) : sizeof(uint16_t));
         id<MTLBuffer> vb = [device newBufferWithBytes:[vertexData bytes] length:[vertexData length] options:MTLResourceStorageModeShared];
         [enc setRenderPipelineState:ps];
         [enc setVertexBuffer:vb offset:0 atIndex:0];
@@ -360,7 +366,7 @@ static int render_request(NSString *requestPath) {
         }
         if (indexCount > 0) {
             id<MTLBuffer> ib = [device newBufferWithBytes:[indexData bytes] length:[indexData length] options:MTLResourceStorageModeShared];
-            [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:indexCount indexType:MTLIndexTypeUInt16 indexBuffer:ib indexBufferOffset:0];
+            [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:indexCount indexType:(index32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16) indexBuffer:ib indexBufferOffset:0];
         } else {
             [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:vertexCount];
         }

@@ -282,6 +282,9 @@ def apply_d3d9_event(state: RenderState, command: str, payload: dict[str, Any]) 
     if command in {"set_indices", "set_index_buffer"}:
         state.index_buffer = [int(index) for index in payload.get("indices", [])]
         state.pipeline.index_buffer_bound = bool(state.index_buffer)
+        index_format = str(payload.get("format", "D3DFMT_INDEX16"))
+        state.pipeline.metadata["d3d9_index_format_raw"] = index_format
+        state.pipeline.metadata["d3d9_index_format"] = "uint32" if index_format == "D3DFMT_INDEX32" else "uint16"
         return True
 
     if command == "set_texture":

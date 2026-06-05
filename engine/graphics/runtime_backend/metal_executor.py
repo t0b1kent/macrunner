@@ -97,6 +97,7 @@ class MetalExecutor:
             "texture_pixels": [list(pixel) for pixel in state.texture] if state.texture else None,
             "vertices": [vertex.to_dict() for vertex in state.vertex_buffer],
             "indices": list(state.index_buffer),
+            "index_format": state.pipeline.metadata.get("d3d9_index_format", "uint16"),
             "vertex_count": len(state.vertex_buffer),
             "index_count": len(state.index_buffer),
             "present_count": state.present_count,
@@ -127,6 +128,8 @@ class MetalExecutor:
                 "texture_stage_states": metadata.get("d3d9_texture_stage_states", []),
                 "transforms": metadata.get("d3d9_transforms", {}),
                 "wvp_matrix": metadata.get("d3d9_wvp_matrix"),
+                "index_format": metadata.get("d3d9_index_format"),
+                "index_format_raw": metadata.get("d3d9_index_format_raw"),
                 "texture_format": metadata.get("d3d9_texture_format"),
                 "ffp_shader": metadata.get("d3d9_ffp_shader", {}),
             }

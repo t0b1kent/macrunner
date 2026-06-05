@@ -9,6 +9,7 @@ XNA_ALPHA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_run
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
+INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 
 
 def test_d3d9_xna_alpha_blend_writes_metal_request_contract(tmp_path):
@@ -97,3 +98,21 @@ def test_d3d9_transform_writes_metal_wvp_contract(tmp_path):
     assert payload["d3d9"]["transforms"]["D3DTS_WORLD"][12] == 0.35
     assert payload["d3d9"]["wvp_matrix"][12] == 0.35
     assert payload["d3d9"]["ffp_shader"]["wvp_matrix"][12] == 0.35
+
+
+def test_d3d9_index32_writes_metal_index_contract(tmp_path):
+    state = load_trace(INDEX32_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(INDEX32_TRACE),
+        name="index32",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "indexed_triangle"
+    assert payload["index_format"] == "uint32"
+    assert payload["indices"] == [0, 1, 2]
+    assert payload["d3d9"]["index_format"] == "uint32"
+    assert payload["d3d9"]["index_format_raw"] == "D3DFMT_INDEX32"

@@ -7,6 +7,7 @@ TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_triangle_runtime.json
 TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
+INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
 ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
@@ -72,6 +73,18 @@ def test_d3d9_fixed_function_transform_emits_wvp_metadata(tmp_path):
     assert transforms["D3DTS_WORLD"][12] == 0.35
     assert state.pipeline.metadata["d3d9_wvp_matrix"][12] == 0.35
     assert state.pipeline.metadata["d3d9_ffp_shader"]["wvp_matrix"][12] == 0.35
+
+
+def test_d3d9_index32_trace_records_index_format(tmp_path):
+    result = replay(INDEX32_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1000
+
+    state = load_trace(INDEX32_TRACE)
+    assert state.pipeline.metadata["d3d9_index_format_raw"] == "D3DFMT_INDEX32"
+    assert state.pipeline.metadata["d3d9_index_format"] == "uint32"
+    assert state.index_buffer == [0, 1, 2]
 
 
 def test_d3d9_programmable_xna_sprite_uses_texture_modulate_shader(tmp_path):

@@ -1,0 +1,4 @@
+Lane C dialog/shell fixme scan after wineusb BUS_QUERY_ID_TYPE family checkpoint.
+
+Probe: reports/installer-e2e/shell_icon_probe.exe under dist-arm64ec-spike via scripts/mr-run.sh timeout 90.
+Counters: rc=143 fixme=0 unsupported=0 missing_import=0 vm_fail=0 dll_fail=0 seh_tail=0.

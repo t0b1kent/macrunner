@@ -195,3 +195,104 @@ def normalize_profile_arch(architecture: str | None) -> str:
         return architecture
     return "unknown"
 
+
+# ---------------------------------------------------------------------------
+# Profile lookup by SHA-256 or exe name (for analyze_full / exe_analyzer)
+# ---------------------------------------------------------------------------
+
+def _iter_profile_files(base: Path | None = None) -> list[Path]:
+    """Yield all .json profile files under the profiles directory."""
+    root = base or PROFILE_DIR
+    return [p for p in root.rglob("*.json") if p.is_file()]
+
+
+def find_profile_by_sha(sha256: str, base: Path | None = None) -> dict[str, Any] | None:
+    """Scan all profiles for a matching sha256 field.
+
+    Returns a match dict or None.
+    """
+    for p in _iter_profile_files(base):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, Mapping):
+            continue
+        # Support top-level sha256 or inside overrides
+        sha_field = data.get("sha256") or data.get("overrides", {}).get("sha256")
+        if sha_field and sha_field.lower() == sha256.lower():
+            return _make_match(data, str(p))
+        sha_list = data.get("sha256_list") or data.get("overrides", {}).get("sha256_list", [])
+        if isinstance(sha_list, list) and sha256.lower() in [s.lower() for s in sha_list]:
+            return _make_match(data, str(p))
+    return None
+
+
+def find_profile_by_name(exe_stem: str, base: Path | None = None) -> dict[str, Any] | None:
+    """Fuzzy-match exe stem (filename without extension) against profile names and ids."""
+    stem_lower = exe_stem.lower().replace("-", "").replace("_", "").replace(" ", "")
+    best: tuple[int, dict[str, Any] | None] = (0, None)
+
+    for p in _iter_profile_files(base):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, Mapping):
+            continue
+
+        cands = [
+            data.get("name", ""),
+            data.get("id", ""),
+            p.stem,
+        ]
+        for cand in cands:
+            cl = cand.lower().replace("-", "").replace("_", "").replace(" ", "")
+            # Exact match
+            if cl == stem_lower:
+                return _make_match(data, str(p))
+            # Substring match — score by overlap length
+            score = 0
+            if stem_lower in cl or cl in stem_lower:
+                score = min(len(stem_lower), len(cl))
+            if score > best[0]:
+                best = (score, _make_match(data, str(p)))
+
+    return best[1] if best[0] >= 4 else None
+
+
+def _make_match(data: Mapping[str, Any], source: str) -> dict[str, Any]:
+    """Build a compact match dict from a raw profile payload."""
+    overrides = data.get("overrides") if isinstance(data.get("overrides"), Mapping) else {}
+    lane = overrides.get("recommended_lane") or data.get("recommended_lane") or data.get("default_lane")
+    env: dict[str, str] = {}
+    raw_env = overrides.get("env") or data.get("env") or {}
+    if isinstance(raw_env, Mapping):
+        env = {str(k): str(v) for k, v in raw_env.items()}
+    anti_cheat = overrides.get("anti_cheat") or data.get("anti_cheat") or {}
+    return {
+        "profile_id":  data.get("id", ""),
+        "profile_name": data.get("name", ""),
+        "source": source,
+        "recommended_lane": lane,
+        "env": env,
+        "anti_cheat": anti_cheat,
+    }
+
+
+def lookup_profile_for_exe(
+    path: "Path | None" = None,
+    sha256: str | None = None,
+    base: Path | None = None,
+) -> dict[str, Any] | None:
+    """Look up a profile for a given exe: SHA first, then stem-name fallback."""
+    if sha256:
+        match = find_profile_by_sha(sha256, base)
+        if match:
+            return match
+    if path is not None:
+        match = find_profile_by_name(Path(path).stem, base)
+        if match:
+            return match
+    return None
+

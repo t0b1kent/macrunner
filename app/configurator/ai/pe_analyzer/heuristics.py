@@ -10,9 +10,251 @@ Legal constraint: never suggest circumvention.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.configurator.ai.pe_analyzer import PEAnalysisResult
+
+
+# ---------------------------------------------------------------------------
+# Raw-bytes string extraction (no lief required)
+# ---------------------------------------------------------------------------
+
+def extract_strings(raw: bytes, min_len: int = 5) -> list[str]:
+    """Extract printable ASCII strings from raw PE bytes (like `strings` utility)."""
+    results: list[str] = []
+    current: list[str] = []
+    for b in raw:
+        if 0x20 <= b < 0x7F:
+            current.append(chr(b))
+        else:
+            if len(current) >= min_len:
+                results.append("".join(current))
+            current = []
+    if len(current) >= min_len:
+        results.append("".join(current))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Anti-cheat / kernel-driver detection from raw strings (note-117 kill-filter)
+# ---------------------------------------------------------------------------
+
+# Kernel-mode AC systems — presence implies "unsupported: kernel driver"
+_AC_KERNEL: dict[str, list[str]] = {
+    "EasyAntiCheat": [
+        "easyanticheat", "eac_launcher", "eaclauncher", "easy_anti_cheat",
+        "easyanticheat_x64.sys", "easyanticheat_x86.sys",
+    ],
+    "BattlEye": [
+        "beclient", "battleye", "beservice", "be_x64", "be_x86",
+        "bedaisy.sys", "beclient_x64", "beclient_x86",
+    ],
+    "Vanguard": [
+        "vgk.sys", "vgc.sys", "riot vanguard", "vanguard", "vgk", "riotvanguard",
+    ],
+}
+
+# User-mode AC — detected but not immediately unsupported
+_AC_USER: dict[str, list[str]] = {
+    "PunkBuster": ["pbcl.dll", "pbsv.dll", "pbsv.exe", "punkbuster"],
+    "VAC":        ["vac_test", "steamservice", "valve_vac"],
+    "XIGNCODE3":  ["xhunter1.sys", "xigncode"],
+    "GameGuard":  ["npgamemon", "npggnt.des", "gameguard"],
+    "nProtect":   ["nprotect", "nsvmon"],
+}
+
+
+def detect_anticheat_full(
+    raw_or_strings: bytes | list[str],
+    imports: set[str] | None = None,
+    section_names: set[str] | None = None,
+) -> dict[str, Any]:
+    """Comprehensive anti-cheat detection from raw bytes or pre-extracted strings.
+
+    Returns a dict suitable for profile.anti_cheat and note-117 kill-filter:
+      {
+        "detected": bool,
+        "names": [str, ...],          # detected AC names
+        "kernel_driver": bool,        # True → note-117 kill: unsupported
+        "verdict": str,               # "none" | "user-mode-only" | "unsupported: kernel driver"
+        "details": {name: {"kernel": bool}},
+      }
+    """
+    if isinstance(raw_or_strings, bytes):
+        strings = extract_strings(raw_or_strings)
+    else:
+        strings = raw_or_strings
+
+    str_lower = " ".join(strings).lower()
+    imp_lower = {i.lower() for i in (imports or set())}
+    sec_lower = {s.lower() for s in (section_names or set())}
+
+    detected: dict[str, dict[str, bool]] = {}
+
+    for name, patterns in _AC_KERNEL.items():
+        hit = (
+            any(p in str_lower for p in patterns)
+            or any(p in imp_lower for p in patterns)
+            or any(p in sec_lower for p in patterns)
+        )
+        if hit:
+            detected[name] = {"kernel": True}
+
+    for name, patterns in _AC_USER.items():
+        hit = (
+            any(p in str_lower for p in patterns)
+            or any(p in imp_lower for p in patterns)
+        )
+        if hit:
+            detected[name] = {"kernel": False}
+
+    has_kernel = any(v["kernel"] for v in detected.values())
+    names = list(detected.keys())
+
+    # note-117 kill-filter: kernel-mode AC → verdict "unsupported: kernel driver"
+    if not names:
+        verdict = "none"
+    elif has_kernel:
+        verdict = "unsupported: kernel driver"
+    else:
+        verdict = "user-mode-only"
+
+    return {
+        "detected": bool(names),
+        "names": names,
+        "kernel_driver": has_kernel,
+        "verdict": verdict,
+        "details": detected,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Engine fingerprint (sections + imports + strings + version info)
+# ---------------------------------------------------------------------------
+
+_ENGINE_RULES: list[tuple[str, list[str], list[str], list[str]]] = [
+    # (engine_name, import_hints, string_hints, section_hints)
+    ("Unity", [
+        "unityplayer.dll", "mono.dll", "mono-2.0-bdwgc.dll",
+        "il2cpp.dll", "baselib.dll",
+    ], [
+        "unity", "unityplayer", "unityengine", "il2cpp", "mono-2.0",
+    ], [
+        "unity", "il2cpp",
+    ]),
+    ("Unreal", [
+        "ue4game-win64-shipping.exe", "d3d11rhi.dll", "d3d12rhi.dll",
+        "rendercore.dll", "coreuobject.dll",
+    ], [
+        "unreal engine", "ue4game", "ue5game", "uobject", "gengine",
+        "unrealengine", "blueprintgeneratednodes",
+    ], [
+        "ue4", "ue5",
+    ]),
+    ("Godot", [], [
+        "gdscript", "gdnative", "godot_engine", "godotengine",
+        "gd_script", "gdextension",
+    ], [
+        "godot",
+    ]),
+    ("GameMaker", [], [
+        "gamemaker", "yoyo games", "yoyo_games", "gms2", "gml_script",
+        "runner.exe", "game maker studio",
+    ], [
+        "gamemaker",
+    ]),
+    ("Source", [
+        "tier0.dll", "vstdlib.dll", "vphysics.dll",
+    ], [
+        "valve corporation", "source engine", "goldsrc",
+    ], []),
+    ("RPGMaker", [], [
+        "rpg maker", "rpgmaker", "rgssad",
+    ], []),
+]
+
+_VERSION_UNITY_RE = re.compile(r"Unity\s+([\d]+\.[\d]+\.[\d]+[a-z0-9]*)", re.IGNORECASE)
+_VERSION_UE_RE = re.compile(r"(?:Unreal Engine|UE)\s*([\d]+\.[\d]+(?:\.[\d]+)?)", re.IGNORECASE)
+
+
+def detect_engine_fingerprint(
+    imports: list[str],
+    raw_or_strings: bytes | list[str],
+    section_names: list[str] | None = None,
+    version_info: str | None = None,
+) -> dict[str, Any]:
+    """Detect game engine from imports, raw strings, section names, and version info.
+
+    Returns: {"engine": str|None, "version": str|None, "confidence": float}
+    """
+    if isinstance(raw_or_strings, bytes):
+        strings = extract_strings(raw_or_strings)
+    else:
+        strings = raw_or_strings
+
+    imp_lower = {i.lower() for i in imports}
+    sec_lower = {(s.lower().strip("\x00 ")) for s in (section_names or [])}
+    str_block = " ".join(strings)
+    str_lower = str_block.lower()
+    ver_lower = (version_info or "").lower()
+
+    for engine, imp_hints, str_hints, sec_hints in _ENGINE_RULES:
+        imp_hit = any(h in imp_lower for h in imp_hints)
+        str_hit = any(h in str_lower or h in ver_lower for h in str_hints)
+        sec_hit = any(h in s for s in sec_lower for h in sec_hints)
+
+        if not (imp_hit or str_hit or sec_hit):
+            continue
+
+        # Score to assign confidence
+        score = sum([imp_hit, str_hit, sec_hit])
+        confidence = min(0.95, 0.55 + 0.20 * score)
+
+        # Extract version if possible
+        version: str | None = None
+        if engine == "Unity":
+            m = _VERSION_UNITY_RE.search(str_block) or _VERSION_UNITY_RE.search(version_info or "")
+            version = m.group(1) if m else None
+        elif engine == "Unreal":
+            m = _VERSION_UE_RE.search(str_block) or _VERSION_UE_RE.search(version_info or "")
+            version = m.group(1) if m else None
+
+        return {"engine": engine, "version": version, "confidence": confidence}
+
+    return {"engine": None, "version": None, "confidence": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# Dynamic import scan (LoadLibrary string references)
+# ---------------------------------------------------------------------------
+
+_DLL_NAME_RE = re.compile(r"([A-Za-z0-9_\-]+\.dll)", re.IGNORECASE)
+
+
+def scan_dynamic_imports(raw_or_strings: bytes | list[str]) -> list[str]:
+    """Find DLL names likely loaded dynamically (LoadLibrary) via string scanning.
+
+    Extracts all *.dll name tokens from printable strings in the binary that are
+    NOT in the static import table — caller should diff against static imports.
+    """
+    if isinstance(raw_or_strings, bytes):
+        strings = extract_strings(raw_or_strings, min_len=4)
+    else:
+        strings = raw_or_strings
+
+    found: set[str] = set()
+    for s in strings:
+        # Only short-ish tokens (no full path)
+        if len(s) > 64:
+            continue
+        for m in _DLL_NAME_RE.finditer(s):
+            dll = m.group(1).lower()
+            # Skip trivially short or clearly internal names
+            if len(dll) >= 6:
+                found.add(dll)
+
+    return sorted(found)
 
 
 def _has_import(imports: Any, names: tuple[str, ...]) -> bool:

@@ -1,0 +1,73 @@
+{
+  "mode": "x86",
+  "seed": 42,
+  "iterations": 200,
+  "checked_count": 79,
+  "unique_bugs_count": 16,
+  "bugs": {
+    "and:interp_error:0/-5": {
+      "repro": "672457",
+      "diff": "interp_error:0/-5"
+    },
+    "fsub:interp_error:0/-9": {
+      "repro": "d820",
+      "diff": "interp_error:0/-9"
+    },
+    "dec:flag.cf": {
+      "repro": "654e",
+      "diff": "flag.cf expected=1 actual=0"
+    },
+    "inc:flag.cf": {
+      "repro": "40",
+      "diff": "flag.cf expected=1 actual=0"
+    },
+    "sbb:interp_error:0/-5": {
+      "repro": "671d19f4501d",
+      "diff": "interp_error:0/-5"
+    },
+    "cwd:interp_error:0/-5": {
+      "repro": "99",
+      "diff": "interp_error:0/-5"
+    },
+    "rep insd:interp_error:0/-5": {
+      "repro": "6d",
+      "diff": "interp_error:0/-5"
+    },
+    "in:interp_error:0/-9": {
+      "repro": "ed",
+      "diff": "interp_error:0/-9"
+    },
+    "pop:interp_error:0/-5": {
+      "repro": "675b",
+      "diff": "interp_error:0/-5"
+    },
+    "add:interp_error:0/-5": {
+      "repro": "670419",
+      "diff": "interp_error:0/-5"
+    },
+    "insb:interp_error:0/-9": {
+      "repro": "6c",
+      "diff": "interp_error:0/-9"
+    },
+    "push:reg.esp": {
+      "repro": "6654",
+      "diff": "reg.esp expected=0x71000ffe actual=0x71000ffc"
+    },
+    "salc:reg.eax": {
+      "repro": "d6",
+      "diff": "reg.eax expected=0x700010ff actual=0x70001001"
+    },
+    "out:interp_error:0/-9": {
+      "repro": "e6b2",
+      "diff": "interp_error:0/-9"
+    },
+    "fdivr:interp_error:0/-9": {
+      "repro": "d838",
+      "diff": "interp_error:0/-9"
+    },
+    "ficom:interp_error:0/-5": {
+      "repro": "da55e3",
+      "diff": "interp_error:0/-5"
+    }
+  }
+}

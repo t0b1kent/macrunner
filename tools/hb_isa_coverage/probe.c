@@ -59,7 +59,11 @@ int main(void) {
 
         hb_decoded_t d;
         memset(&d, 0, sizeof(d));
+#ifdef MODE_64
+        hb_result_t dr = hb_decode_x64(code, len, 0x100000ULL, &d);
+#else
         hb_result_t dr = hb_decode_x86(code, len, 0x100000ULL, &d);
+#endif
         int lift = 999;
         const char* op = "NONE";
         uint8_t dlen = 0;
@@ -73,7 +77,11 @@ int main(void) {
                 hb_ir_cfg_add_block(func->cfg, block);
                 func->cfg->entry = block;
                 hb_ir_builder_set_block(builder, block);
+#ifdef MODE_64
+                lift = hb_lift_x64(&d, builder);
+#else
                 lift = hb_lift_x86(&d, builder);
+#endif
             } else {
                 lift = HB_ERR_OUT_OF_MEMORY;
             }

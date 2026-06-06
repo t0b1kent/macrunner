@@ -11,3 +11,4 @@
 09:30 · Repack CRC stress-harness · Patched & compiled native unarc on macOS, implemented extract_and_verify.py and run_repack_smoke.sh, verified Rung A PASS, and Rungs B-D BLOCKED · Done.
 09:47 · Start ISA coverage tool · Read specs and target files · Find decoder implementation under engine/ · Done.
 10:15 · Run coverage analysis · Generated systematic & real corpus of 11,077 cases, found 291 missing, 242 mismatched, and 1,082 semantic mismatches, outputting reports/research/HB-X86-32-ISA-COVERAGE-matrix.md · Done.
+09:57 · Phase 0 · Framework hardening · Initialize generalized i386/x86_64 CLI and shrinker design

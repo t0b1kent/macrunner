@@ -1,0 +1,156 @@
+{
+  "final_verdict": "BLOCKED",
+  "final_owner": "Lane A",
+  "final_class": "PE32_WOW64CPU_NOT_LOADED",
+  "final_confidence": 0.95,
+  "final_next_action": "Ensure wow64cpu.dll is loaded to enable x86_64 to i386 translation transitions.",
+  "why_primary_won": "Primary class 'PE32_WOW64CPU_NOT_LOADED' (priority 75) outranked secondary classes: GENERIC_WOW64_FAULT, WAIT_TRACE_INSUFFICIENT, WINDOW_TRACE_INSUFFICIENT, ARM64EC_CALLBACK_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, D3D_TRACE_INSUFFICIENT.",
+  "secondary_classes": [
+    "GENERIC_WOW64_FAULT",
+    "WAIT_TRACE_INSUFFICIENT",
+    "WINDOW_TRACE_INSUFFICIENT",
+    "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+    "SMC_TRACE_INSUFFICIENT",
+    "D3D_TRACE_INSUFFICIENT"
+  ],
+  "missing_markers": {
+    "critical": [],
+    "secondary": []
+  },
+  "next_run_env": {},
+  "analyzers": {
+    "analyze_waits.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "WAIT_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with synchronization object tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "WAIT_OBJECT",
+          "SET_EVENT"
+        ],
+        "secondary": [
+          "RELEASE_SEMAPHORE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SYNCHRONIZATION": "1"
+      }
+    },
+    "analyze_window_gate.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "WINDOW_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with window and message gate logging active.",
+      "missing_markers": {
+        "critical": [
+          "WM_NCCREATE_RETURN",
+          "THREAD_DESKTOP"
+        ],
+        "secondary": [
+          "CREATESTRUCT_VALID",
+          "REGISTER_CLASS_HINSTANCE",
+          "CREATE_WINDOW_HINSTANCE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_NCCREATE": "1",
+        "MACRUNNER_HB_TRACE_CREATEWINDOW": "1"
+      }
+    },
+    "analyze_arm64ec_callbacks.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with ARM64EC callback tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "ARM64EC_CALLBACK",
+          "ARM64EC_CALLBACK_RETURN"
+        ],
+        "secondary": []
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_CALLBACKS": "1"
+      }
+    },
+    "analyze_smc.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "SMC_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with self-modifying code (SMC) tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "TB_GENERATE",
+          "TB_INVALIDATE"
+        ],
+        "secondary": [
+          "SMC_WRITE",
+          "FLUSH_ICACHE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SMC": "1"
+      }
+    },
+    "analyze_d3d_gate.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane C",
+      "class": "D3D_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with D3D and graphics gate logging enabled.",
+      "missing_markers": {
+        "critical": [
+          "D3D_ENTRY",
+          "MODULE_MAP"
+        ],
+        "secondary": []
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_D3D": "1"
+      }
+    },
+    "analyze_pe32_wow64_handoff.py": {
+      "verdict": "BLOCKED",
+      "owner": "Lane A",
+      "class": "PE32_WOW64CPU_NOT_LOADED",
+      "confidence": 0.95,
+      "evidence": [
+        "[0] signal init: macrunner-hb-signal-init: pid=91421 stage=x64-image-map-start trace=0",
+        "[0] signal init: macrunner-hb-signal-init: pid=91421 stage=x64-image-map-primary-installed rc=0/0/0"
+      ],
+      "next_action": "Ensure wow64cpu.dll is loaded to enable x86_64 to i386 translation transitions.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    },
+    "analyze_generic_fallback.py": {
+      "verdict": "BLOCKED",
+      "owner": "Lane A",
+      "class": "GENERIC_WOW64_FAULT",
+      "confidence": 0.5,
+      "evidence": [
+        "syswow64/wow64.dll exists=0",
+        "syswow64/xtajit.dll exists=0",
+        "syswow64/wow64cpu.dll exists=0"
+      ],
+      "next_action": "WOW64 subsystem initialisation or thunking issue. Check that wow64cpu.dll/xtajit.dll are deployed to syswow64 in the prefix. Enable MACRUNNER_HB_TRACE_WOW64=1.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    }
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "final_verdict": "BLOCKED",
+  "final_owner": "Lane A",
+  "final_class": "GFXDEVICE_SEH_HOST_BOUNDARY_BEFORE_D3D11",
+  "final_confidence": 0.95,
+  "final_next_action": "Resolve/trace macrunner-hb-seh-host-boundary pc=000000010CFFF015 before D3D11CreateDevice; map pc to module/RVA and classify SEH/ARM64EC boundary.",
+  "why_primary_won": "Primary class 'GFXDEVICE_SEH_HOST_BOUNDARY_BEFORE_D3D11' (priority 89) outranked secondary classes: GENERIC_INVALID_DISPOSITION_SEH, WAIT_TRACE_INSUFFICIENT, ARM64EC_CALLBACK_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, PE32_HANDOFF_TRACE_INSUFFICIENT.",
+  "secondary_classes": [
+    "GENERIC_INVALID_DISPOSITION_SEH",
+    "WAIT_TRACE_INSUFFICIENT",
+    "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+    "SMC_TRACE_INSUFFICIENT",
+    "PE32_HANDOFF_TRACE_INSUFFICIENT"
+  ],
+  "missing_markers": {
+    "critical": [],
+    "secondary": []
+  },
+  "next_run_env": {},
+  "analyzers": {
+    "analyze_waits.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "WAIT_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with synchronization object tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "WAIT_OBJECT",
+          "SET_EVENT"
+        ],
+        "secondary": [
+          "RELEASE_SEMAPHORE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SYNCHRONIZATION": "1"
+      }
+    },
+    "analyze_window_gate.py": {
+      "verdict": "PASS",
+      "owner": "Lane A",
+      "class": "WINDOW_GATE_SUCCESSFUL",
+      "confidence": 0.95,
+      "evidence": [],
+      "next_action": "No action required. Unity CreateWindow succeeded.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    },
+    "analyze_arm64ec_callbacks.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with ARM64EC callback tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "ARM64EC_CALLBACK",
+          "ARM64EC_CALLBACK_RETURN"
+        ],
+        "secondary": []
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_CALLBACKS": "1"
+      }
+    },
+    "analyze_smc.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "SMC_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with self-modifying code (SMC) tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "TB_GENERATE",
+          "TB_INVALIDATE"
+        ],
+        "secondary": [
+          "SMC_WRITE",
+          "FLUSH_ICACHE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SMC": "1"
+      }
+    },
+    "analyze_d3d_gate.py": {
+      "verdict": "BLOCKED",
+      "owner": "Lane A",
+      "class": "GFXDEVICE_SEH_HOST_BOUNDARY_BEFORE_D3D11",
+      "confidence": 0.95,
+      "evidence": [
+        "SEH Host boundary hit: macrunner-hb-seh-host-boundary-detail: side=arm64 tid=0024 pc=000000010CFFF015 lr=000000010CFFF015 sp=000000011aca9a80 exception=c0000026 flags=00000001 ldr_status=8000001a module=0000000000000000 resume=stop-unwind"
+      ],
+      "next_action": "Resolve/trace macrunner-hb-seh-host-boundary pc=000000010CFFF015 before D3D11CreateDevice; map pc to module/RVA and classify SEH/ARM64EC boundary.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    },
+    "analyze_pe32_wow64_handoff.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "PE32_HANDOFF_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with WOW64 and BTCPU handoff tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "PE32_HANDOFF",
+          "WOW64_INIT"
+        ],
+        "secondary": [
+          "MODULE_MAP"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_WOW64": "1"
+      }
+    },
+    "analyze_generic_fallback.py": {
+      "verdict": "BLOCKED",
+      "owner": "Lane A",
+      "class": "GENERIC_INVALID_DISPOSITION_SEH",
+      "confidence": 0.55,
+      "evidence": [
+        "macrunner-hb-seh-host-boundary-detail: side=arm64 tid=0024 pc=000000010cfff015 lr=000000010cfff015 sp=000000011aca9a80 exception=c0000026 flags=00000001 ldr_status=8000001a module=0000000000000000 res",
+        "macrunner-hb-seh-host-boundary: pc=000000010cfff015 lr=000000010cfff015 sp=000000011aca9a80"
+      ],
+      "next_action": "SEH unwind hit a host-call thunk with no PE unwind metadata. Map pc to module/RVA; add RtlInstallFunctionTableCallback for the thunk region or synthesize the unwind in virtual_unwind (signal_arm64.c). Enable MACRUNNER_HB_TRACE_SEH=1 for the full detail line.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    }
+  }
+}

@@ -444,4 +444,26 @@ if [[ "$pass_count" -eq 0 || "$fail_count" -ne 0 ]]; then
   exit 1
 fi
 
+RENDER_LOG="$RUN_DIR/headless-real-shader-corpus.log"
+set +e
+DXMT_HK_SHADER_BLOB_SOURCE="$BLOB_DIR" \
+  DXMT_HK_SHADER_CORPUS_LIMIT="$pass_count" \
+  DXMT_HK_SHADER_RENDER_LIMIT="${HK_UNITY_SHADER_RENDER_LIMIT:-2}" \
+  SMOKE_REPEAT_COUNT=1 \
+  SMOKE_STABILITY_FRAMES=1 \
+  "$PROJECT_ROOT/engine/graphics/scripts/run_dxmt_d3d11_headless_smoke.sh" "$ARCH" \
+  >"$RENDER_LOG" 2>&1
+render_rc=$?
+set -e
+
+echo "hk_unity_shader_render_log=$RENDER_LOG"
+grep -E "UnityRealShaderCorpusProbe|hk_shader_blob|exit_code=" "$RENDER_LOG" || true
+if [[ "$render_rc" -ne 0 ]] ||
+  ! grep -q "UnityRealShaderCorpusProbe result=PASS" "$RENDER_LOG"; then
+  echo "hk_unity_shader_render_result=FAIL rc=$render_rc"
+  echo "hk_unity_shader_dxbc_result=FAIL"
+  exit 1
+fi
+
+echo "hk_unity_shader_render_result=PASS"
 echo "hk_unity_shader_dxbc_result=PASS"

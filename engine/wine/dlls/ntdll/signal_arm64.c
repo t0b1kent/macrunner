@@ -205,6 +205,14 @@ static BOOL macrunner_hb_unwind_syscall_data_boundary( DISPATCHER_CONTEXT *dispa
     return TRUE;
 }
 
+/* Forward declaration — defined later in the virtual_unwind section */
+static PRUNTIME_FUNCTION macrunner_hb_register_wow64_arm64_pe_pdata( DWORD64 pc, DWORD64 *out_image_base );
+
+/* Discriminator state: set in the trace function (before x64main transitions) and consumed
+ * in the data-boundary guard to distinguish CASE A (init-phase genuine) from CASE B (false positive). */
+static DWORD64 macrunner_hb_tagged_pc_last_fixed_g;
+static BOOL    macrunner_hb_tagged_pc_first_was_init_g;
+
 static BOOL macrunner_hb_fix_syscall_data_boundary_exception( EXCEPTION_RECORD *rec, CONTEXT *context )
 {
     struct macrunner_hb_syscall_frame *frame, *prev;
@@ -220,6 +228,43 @@ static BOOL macrunner_hb_fix_syscall_data_boundary_exception( EXCEPTION_RECORD *
     if (!(prev = frame->prev_frame) || !prev->pc || !prev->sp) return FALSE;
     if (macrunner_hb_pc_inside_syscall_frame( prev->pc, frame )) return FALSE;
 
+    /* False-positive guard: if frame->pc is valid WOW64 executable code (pdata found) the
+     * syscall frame is genuine and context->Pc only overlaps the frame range by ASLR coincidence
+     * (CASE B — skip repair, let ARM64EC dispatch handle it normally).
+     *
+     * Exception: if the immediately-preceding tagged-PC fix saw x64main=0 at trace time
+     * (CASE A — init-phase transition where Peb->ImageBaseAddress changed on another thread
+     * between the trace and fix calls), the repair is still needed even though pdata exists.
+     *
+     * Discriminator state is written by macrunner_hb_trace_tagged_exception_context (first_was_init)
+     * and macrunner_hb_fix_tagged_arm64ec_misalignment (last_fixed) then cleared here after use. */
+    {
+        DWORD64 fp_base = 0;
+        if (macrunner_hb_register_wow64_arm64_pe_pdata( frame->pc, &fp_base ) != NULL)
+        {
+            BOOL init_phase = macrunner_hb_tagged_pc_first_was_init_g &&
+                              macrunner_hb_tagged_pc_last_fixed_g == context->Pc;
+            macrunner_hb_tagged_pc_last_fixed_g      = 0;
+            macrunner_hb_tagged_pc_first_was_init_g  = FALSE;
+            if (!init_phase)
+            {
+                if (report_count++ < 64)
+                    MESSAGE( "macrunner-hb-arm64ec-syscall-data-repair-skip: tid=%04lx "
+                             "pc=%p frame=%p frame_pc=%p base=%p valid-wow64-code skip\n",
+                             tid, (void *)(ULONG_PTR)context->Pc, frame,
+                             (void *)(ULONG_PTR)frame->pc, (void *)(ULONG_PTR)fp_base );
+                return FALSE;
+            }
+            if (report_count++ < 64)
+                MESSAGE( "macrunner-hb-arm64ec-syscall-data-repair-init-phase: tid=%04lx "
+                         "pc=%p frame=%p frame_pc=%p init-phase allow\n",
+                         tid, (void *)(ULONG_PTR)context->Pc, frame,
+                         (void *)(ULONG_PTR)frame->pc );
+        }
+        macrunner_hb_tagged_pc_last_fixed_g     = 0;
+        macrunner_hb_tagged_pc_first_was_init_g = FALSE;
+    }
+
     if (report_count++ < 64)
         MESSAGE( "macrunner-hb-arm64ec-syscall-data-repair: tid=%04lx pc=%p lr=%p "
                  "frame=%p bad_frame_pc=%p bad_frame_lr=%p prev=%p prev_pc=%p "
@@ -234,6 +279,46 @@ static BOOL macrunner_hb_fix_syscall_data_boundary_exception( EXCEPTION_RECORD *
     return TRUE;
 }
 
+/* FIX 2: host code faulted (ACCESS_VIOLATION) while inside a WOW64 ARM64 thunk call.
+ * The syscall_frame->pc is in the WOW64 range (>HOST_BOUNDARY_MAX).  Restore context
+ * from prev_frame so the exception is delivered to the Windows PE code that invoked
+ * the thunk, letting normal SEH handle it instead of terminating. */
+static BOOL macrunner_hb_fix_wow64_thunk_boundary_exception( EXCEPTION_RECORD *rec, CONTEXT *context )
+{
+    struct macrunner_hb_syscall_frame *frame, *prev;
+    LDR_DATA_TABLE_ENTRY *module = NULL;
+    static unsigned int report_count;
+    DWORD tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
+    DWORD64 pc;
+
+    if (!rec || !context) return FALSE;
+    if (rec->ExceptionCode != STATUS_ACCESS_VIOLATION) return FALSE;
+    if (rec->ExceptionFlags) return FALSE;
+    if (!macrunner_hb_is_x64_main_process()) return FALSE;
+    if (!(frame = macrunner_hb_current_syscall_frame())) return FALSE;
+    if (frame->pc < MACRUNNER_HB_HOST_BOUNDARY_MAX) return FALSE;
+
+    pc = context->Pc;
+    if (pc != 0)
+    {
+        if (pc < MACRUNNER_HB_HOST_BOUNDARY_MIN || pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX) return FALSE;
+        if (LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module ) == STATUS_SUCCESS) return FALSE;
+    }
+
+    if (!(prev = frame->prev_frame) || !prev->pc || !prev->sp) return FALSE;
+    if (macrunner_hb_pc_inside_syscall_frame( prev->pc, frame )) return FALSE;
+
+    if (report_count++ < 16)
+        MESSAGE( "macrunner-hb-wow64-thunk-av: tid=%04lx pc=%p frame=%p frame_pc=%p "
+                 "prev_pc=%p resume=restore-prev\n",
+                 tid, (void *)(ULONG_PTR)pc, frame,
+                 (void *)(ULONG_PTR)frame->pc, (void *)(ULONG_PTR)prev->pc );
+
+    macrunner_hb_restore_syscall_prev_frame_context( context, prev );
+    rec->ExceptionAddress = (void *)(ULONG_PTR)context->Pc;
+    return TRUE;
+}
+
 static void macrunner_hb_trace_tagged_exception_context( EXCEPTION_RECORD *rec, CONTEXT *context )
 {
     static unsigned int report_count;
@@ -241,6 +326,15 @@ static void macrunner_hb_trace_tagged_exception_context( EXCEPTION_RECORD *rec, 
     if (!rec || !context) return;
     if (rec->ExceptionCode != STATUS_DATATYPE_MISALIGNMENT && !(context->Pc & 1) && !(context->Lr & 1))
         return;
+
+    /* Capture x64main state BEFORE the transition (another thread may set the flag between
+     * this trace call and the subsequent fix call).  Only record for the tagged-PC case that
+     * the fix will actually process, so CASE A (init-phase) is distinguishable from CASE B. */
+    if (rec->ExceptionCode == STATUS_DATATYPE_MISALIGNMENT && !rec->ExceptionFlags &&
+        (context->Pc & 1) &&
+        context->Pc >= MACRUNNER_HB_HOST_BOUNDARY_MIN && context->Pc < MACRUNNER_HB_HOST_BOUNDARY_MAX)
+        macrunner_hb_tagged_pc_first_was_init_g = !macrunner_hb_is_x64_main_process();
+
     if (report_count++ >= 64) return;
 
     MESSAGE( "macrunner-hb-arm64ec-exception-context: code=%08lx flags=%08lx pc=%p lr=%p "
@@ -273,6 +367,7 @@ static BOOL macrunner_hb_fix_tagged_arm64ec_misalignment( EXCEPTION_RECORD *rec,
     context->Pc = fixed_pc;
     if (context->Lr == pc) context->Lr = fixed_pc;
     rec->ExceptionAddress = (void *)(ULONG_PTR)fixed_pc;
+    macrunner_hb_tagged_pc_last_fixed_g = fixed_pc;
     return TRUE;
 }
 
@@ -343,9 +438,133 @@ __ASM_GLOBAL_FUNC( RtlCaptureContext,
                     "ret" )
 
 
+static LONG CALLBACK macrunner_hb_pe_scan_fault( EXCEPTION_POINTERS *ep )
+{
+    (void)ep;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 /**********************************************************************
  *           virtual_unwind
  */
+/* FIX 1: WOW64 ARM64 thunk CFI.
+ * ARM64 PE modules loaded at 0x87FFF... (above HOST_BOUNDARY_MAX) by the WOW64
+ * layer are not tracked by the PE-side LDR, so RtlLookupFunctionEntry misses them.
+ * When the unwind fails for such a PC, scan backwards for the containing PE, register
+ * its exception table via RtlAddFunctionTable, and look up the RUNTIME_FUNCTION entry. */
+/* Look up the RUNTIME_FUNCTION covering pc directly from the PE at known_base.
+ * Returns the entry if found, NULL if pdata doesn't cover this pc. */
+static PRUNTIME_FUNCTION macrunner_hb_pdata_lookup_at_base( DWORD64 pc, DWORD64 known_base,
+                                                            DWORD64 *out_image_base )
+{
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_DATA_DIRECTORY *dir;
+    PRUNTIME_FUNCTION funcs, lo, hi, mid;
+    char *base = (char *)(ULONG_PTR)known_base;
+    DWORD count, rva, next_rva;
+    static unsigned int report_count;
+
+    __TRY
+    {
+        nt = (IMAGE_NT_HEADERS *)(base + ((IMAGE_DOS_HEADER *)base)->e_lfanew);
+        dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+        if (!dir->VirtualAddress || !dir->Size) return NULL;
+        funcs = (PRUNTIME_FUNCTION)(base + dir->VirtualAddress);
+        count = dir->Size / sizeof(*funcs);
+
+        rva = (DWORD)(pc - known_base);
+        if (report_count++ < 16)
+            MESSAGE( "macrunner-hb-wow64-arm64-pdata: direct base=%p rva=%08lx count=%lu\n",
+                     base, rva, (unsigned long)count );
+
+        lo = funcs; hi = funcs + count;
+        while (lo < hi)
+        {
+            mid = lo + (hi - lo) / 2;
+            if (rva < mid->BeginAddress) { hi = mid; }
+            else
+            {
+                next_rva = (mid + 1 < funcs + count) ? (mid + 1)->BeginAddress : ~0u;
+                if (rva < next_rva)
+                {
+                    if (out_image_base) *out_image_base = known_base;
+                    return mid;
+                }
+                lo = mid + 1;
+            }
+        }
+    }
+    __EXCEPT(macrunner_hb_pe_scan_fault) {}
+    __ENDTRY
+    return NULL;
+}
+
+static PRUNTIME_FUNCTION macrunner_hb_register_wow64_arm64_pe_pdata( DWORD64 pc, DWORD64 *out_image_base )
+{
+    IMAGE_DOS_HEADER *dos;
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_DATA_DIRECTORY *dir;
+    PRUNTIME_FUNCTION funcs, lo, hi, mid;
+    char *base;
+    DWORD i, count, rva, next_rva;
+    static unsigned int report_count;
+
+    if (!out_image_base) return NULL;
+    if (!pc || pc <= MACRUNNER_HB_HOST_BOUNDARY_MAX) return NULL;
+
+    base = (char *)((ULONG_PTR)pc & ~(ULONG_PTR)0xfff);
+    __TRY
+    {
+        for (i = 0; i <= 256; i++, base -= 0x1000)
+        {
+            dos = (IMAGE_DOS_HEADER *)base;
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE) continue;
+            if (dos->e_lfanew <= 0 || dos->e_lfanew > 0x800) continue;
+            nt = (IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE) continue;
+            if (nt->FileHeader.Machine != IMAGE_FILE_MACHINE_ARM64) continue;
+            if (nt->OptionalHeader.SizeOfImage == 0) continue;
+            if ((ULONG_PTR)base + nt->OptionalHeader.SizeOfImage <= (ULONG_PTR)pc) continue;
+
+            dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+            if (!dir->VirtualAddress || !dir->Size) return NULL;
+
+            funcs = (PRUNTIME_FUNCTION)(base + dir->VirtualAddress);
+            count = dir->Size / sizeof(*funcs);
+
+            if (report_count++ < 16)
+                MESSAGE( "macrunner-hb-wow64-arm64-pdata: scan base=%p size=%08lx "
+                         "pc=%p rva=%08lx count=%lu\n",
+                         base, nt->OptionalHeader.SizeOfImage,
+                         (void *)(ULONG_PTR)pc,
+                         (DWORD)(pc - (DWORD64)(ULONG_PTR)base),
+                         (unsigned long)count );
+
+            rva = (DWORD)(pc - (DWORD64)(ULONG_PTR)base);
+            lo = funcs; hi = funcs + count;
+            while (lo < hi)
+            {
+                mid = lo + (hi - lo) / 2;
+                if (rva < mid->BeginAddress) { hi = mid; }
+                else
+                {
+                    next_rva = (mid + 1 < funcs + count) ? (mid + 1)->BeginAddress : ~0u;
+                    if (rva < next_rva)
+                    {
+                        *out_image_base = (DWORD64)(ULONG_PTR)base;
+                        return mid;
+                    }
+                    lo = mid + 1;
+                }
+            }
+            return NULL;
+        }
+    }
+    __EXCEPT(macrunner_hb_pe_scan_fault) {}
+    __ENDTRY
+    return NULL;
+}
+
 static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEXT *context )
 {
     DISPATCHER_CONTEXT_NONVOLREG_ARM64 *nonvol_regs;
@@ -450,6 +669,31 @@ static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEX
     }
 
     dispatch->FunctionEntry = RtlLookupFunctionEntry( pc, &dispatch->ImageBase, dispatch->HistoryTable );
+
+    /* FIX 1: WOW64 ARM64 pc above HOST_BOUNDARY_MAX — LDR may know ImageBase but have no
+     * registered .pdata (bulk CFI missed this thunk page).  Try the PE's own exception
+     * directory: direct lookup when base is known, backward scan otherwise. */
+    if (!dispatch->FunctionEntry && pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX)
+    {
+        if (dispatch->ImageBase)
+            dispatch->FunctionEntry = macrunner_hb_pdata_lookup_at_base(
+                pc, dispatch->ImageBase, &dispatch->ImageBase );
+        if (!dispatch->FunctionEntry)
+            dispatch->FunctionEntry = macrunner_hb_register_wow64_arm64_pe_pdata(
+                pc, &dispatch->ImageBase );
+    }
+
+    /* FIX 1b: WOW64 ARM64 leaf function — no .pdata entry (normal for thunks).  Stop
+     * unwind using LR rather than letting RtlVirtualUnwind2 raise c0000026. */
+    if (!dispatch->FunctionEntry && pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX)
+    {
+        static unsigned int wow64_leaf_count;
+        if (wow64_leaf_count++ < 16)
+            MESSAGE( "macrunner-hb-wow64-arm64-leaf: pc=%p image=%p stopping-unwind\n",
+                     (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)dispatch->ImageBase );
+        macrunner_hb_stop_unwind_at_boundary( dispatch, context );
+        return STATUS_SUCCESS;
+    }
 
 unwind_with_function_entry:
     if (RtlVirtualUnwind2( type, dispatch->ImageBase, pc, dispatch->FunctionEntry, context,
@@ -562,6 +806,8 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
     if (macrunner_hb_fix_tagged_arm64ec_misalignment( rec, orig_context ))
         return STATUS_SUCCESS;
     if (macrunner_hb_fix_syscall_data_boundary_exception( rec, orig_context ))
+        return STATUS_SUCCESS;
+    if (macrunner_hb_fix_wow64_thunk_boundary_exception( rec, orig_context ))
         return STATUS_SUCCESS;
 
     if (!(context = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(*context) )))

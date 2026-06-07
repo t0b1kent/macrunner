@@ -28,7 +28,11 @@ if [ -d "$WINE_UNIX_LIB" ]; then
 fi
 
 if [ "$(basename "$DIST")" = "dist-arm64ec-spike" ]; then
-  export MACRUNNER_HB_X64_LOADER="${MACRUNNER_HB_X64_LOADER:-1}"
+  # x64 lane is forced by selected image architecture; keep explicit override
+  # out of this generic wrapper for PE32/manual x86 paths.
+  if [ "${MACRUNNER_HB_X64_LOADER:-}" = "" ]; then
+    export MACRUNNER_HB_X64_LOADER="1"
+  fi
   export MACRUNNER_HB_BACKEND="${MACRUNNER_HB_BACKEND:-jit}"
   export MACRUNNER_HB_JIT_DIRECT_MEM="${MACRUNNER_HB_JIT_DIRECT_MEM:-0}"
   export MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN="${MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN:-1}"
@@ -40,7 +44,29 @@ if [ "$(basename "$DIST")" = "dist-arm64ec-spike" ]; then
   export WINELOADERNOEXEC="${WINELOADERNOEXEC:-1}"
 fi
 
+if [ "${MACRUNNER_FLIGHT_RECORDER:-0}" != "0" ]; then
+  FLIGHT_PATH="${MACRUNNER_FLIGHT_RECORDER_PATH:-${MACRUNNER_FLIGHT_RECORDER_FILE:-${MACRUNNER_FLIGHT_PATH:-}}}"
+  if [ -z "$FLIGHT_PATH" ]; then
+    if [ -n "${MACRUNNER_RUN_DIR:-}" ]; then
+      # TRIAGE-NEEDS fix: keep flight.jsonl inside the run dir so the analyzer gets deep data
+      # (not the throwaway artifacts/flight/<ts>-<pid>/ dir that triage never sees).
+      FLIGHT_PATH="$MACRUNNER_RUN_DIR/flight.jsonl"
+    else
+      FLIGHT_DIR="$ROOT/artifacts/flight/$(date +%Y%m%d-%H%M%S)-$$"
+      FLIGHT_PATH="$FLIGHT_DIR/flight.jsonl"
+    fi
+  fi
+  mkdir -p "$(dirname "$FLIGHT_PATH")"
+  export MACRUNNER_FLIGHT_RECORDER_PATH="$FLIGHT_PATH"
+  export MACRUNNER_FLIGHT_RECORDER_FILE="$FLIGHT_PATH"
+  export MACRUNNER_FLIGHT_PATH="$FLIGHT_PATH"
+  echo "[mr-run] flight=$FLIGHT_PATH" >&2
+fi
+
+services_bg_pid=""
+
 cleanup() {
+  [ -n "$services_bg_pid" ] && kill "$services_bg_pid" 2>/dev/null || true
   WINEPREFIX="$PREFIX" DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
     DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
     "$WSRV" -k >/dev/null 2>&1 || true
@@ -178,6 +204,26 @@ if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" = "dxmt" ]; then
     fi
   fi
   export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-d3d11,dxgi,d3d10core,winemetal=n,b}"
+  # Route DXMT file logging to run dir so ERR/WARN are visible when WINEDEBUG=-all silences __wine_dbg_output.
+  if [ -z "${DXMT_LOG_PATH:-}" ]; then
+    export DXMT_LOG_PATH="${MACRUNNER_RUN_DIR:-$PREFIX}"
+  fi
+  export DXMT_LOG_LEVEL="${DXMT_LOG_LEVEL:-info}"
+
+fi
+
+# Start services.exe (Wine SCM) → auto-starts rpcss.exe → creates \pipe\epmapper.
+# Required for COM/RPC calls (CoInitialize, RPC) for any game that hits 0x6ba.
+# Opt-in: set MACRUNNER_MR_RUN_START_SERVICES=1 (works for dxmt, PE32, HK — any dist).
+if [ "${MACRUNNER_MR_RUN_START_SERVICES:-0}" = "1" ]; then
+  echo "[mr-run] starting services.exe → rpcss → \\pipe\\epmapper" >&2
+  WINEPREFIX="$PREFIX" WINEDEBUG=-all \
+    DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+    DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+    "$WINE" services.exe >/dev/null 2>&1 &
+  services_bg_pid=$!
+  sleep 3
+  echo "[mr-run] services.exe pid=$services_bg_pid started" >&2
 fi
 
 echo "[mr-run] prefix=$PREFIX timeout=${TMO}s exe=$EXE" >&2
@@ -218,4 +264,14 @@ else
   fi
 fi
 echo "[mr-run] exit=$rc (prefix auto-removed on exit)" >&2
+
+# Auto-triage: when the caller exports MACRUNNER_RUN_DIR (the dir it captured run.log into), classify
+# the run so EVERY lane gets a triage-summary (OWNER/CLASS/CONFIDENCE/NEXT_ACTION) without invoking
+# the analyzer by hand. Opt-out with MACRUNNER_NO_AUTOTRIAGE=1. Never affects the run's exit code.
+if [ -n "${MACRUNNER_RUN_DIR:-}" ] && [ "${MACRUNNER_NO_AUTOTRIAGE:-0}" = "0" ] \
+   && [ -f "$ROOT/tools/triage/classify_run.py" ]; then
+  python3 "$ROOT/tools/triage/classify_run.py" "$MACRUNNER_RUN_DIR" >/dev/null 2>&1 || true
+  [ -f "$MACRUNNER_RUN_DIR/triage-summary.txt" ] && \
+    echo "[mr-run] triage -> $MACRUNNER_RUN_DIR/triage-summary.txt" >&2
+fi
 exit $rc

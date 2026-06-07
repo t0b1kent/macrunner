@@ -53,3 +53,22 @@ LOOP-STATUS: CONTINUE
     - Full smoke: airconv=128/128 reflected=128 created=128 rendered=2 result=PASS rc=0
   Next: Phase4 — GS/HS/DS/CS from backlog; DXMT argument-buffer dummy-binding for 126 remaining PS
 LOOP-STATUS: CONTINUE
+
+10:05 · checkpoint · PSO-SILENT-FAIL root cause fully traced; rendered=2 clean state confirmed
+  Root cause of 80 texture-using PS silent PSO fail:
+    - D3DReflect BoundResources=0 for all 128 HK blobs (reflection broken on ARM64)
+    - 126/128 PS blobs use argument_buffer_struct (textures/samplers) per airconv .ll scan
+    - PSO creation returns nil+nil (no exception, no NSError) → DXMT skips SetPSO → Draw w/o PSO → ObjC exception in encodeCommands
+    - Dummy texture/sampler binding does NOT fix it (PSO fails BEFORE arg-buffer encoding)
+    - SM50/airconv compile_result IS non-null → cache path hit → function_ NOT null
+    - Hypothesis: cached Metal library produces valid function_ handle, but PSO descriptor has
+      silent incompatibility — likely MTLFunction from wrong shader variant in cache, OR
+      Metal silently rejects function combination (getUTF8String() returned empty/null on err)
+    - Next: clear DXMT shader cache, rerun, check if first-compile (non-cache) fails or succeeds
+    - Alternative fix: pair each HK PS blob with its correct HK VS blob (same sub-program) instead
+      of using our synthetic fullscreen VS — attribute indices would then match exactly
+  Phase 4: HS/DS/GS/CS ALL GREEN (UnityTessellationProbe, UnityDrawProbe, UnityComputeProbe PASS)
+  Phase 5: sRGB PASS, MSAA partial, gamma all 4 modes PASS
+  Confirmed clean baseline: airconv=128/128 reflected=128 created=128 rendered=2 result=PASS rc=0
+  Next: DXMT shader cache investigation OR HK VS-PS pairing to reach rendered>2
+LOOP-STATUS: CONTINUE

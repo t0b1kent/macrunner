@@ -93,6 +93,12 @@ static inline void set_reg_ex(hb_decoded_t* out, int slot, int r, uint8_t sz, ui
     else if (slot == 3) out->op3.reg_offset = reg_offset;
 }
 
+static inline void replace_reg_index(hb_decoded_t* out, int slot, int r) {
+    if (slot == 1 && out->op1.is_reg) out->op1.reg = r;
+    else if (slot == 2 && out->op2.is_reg) out->op2.reg = r;
+    else if (slot == 3 && out->op3.is_reg) out->op3.reg = r;
+}
+
 static inline void set_imm(hb_decoded_t* out, int slot, int64_t v, uint8_t sz) {
     if (slot == 1) {
         out->op1.present = true;
@@ -290,6 +296,42 @@ static bool sse2_0f_variable_shift_opcode(uint8_t op) {
            op == 0xf1 || op == 0xf2 || op == 0xf3;
 }
 
+static uint8_t evex_packed_int_mask_lane(int ins) {
+    switch (ins) {
+        case HB_INS_PUNPCKLBW: case HB_INS_PUNPCKHBW:
+        case HB_INS_PACKSSWB: case HB_INS_PACKUSWB:
+        case HB_INS_PADDB: case HB_INS_PSUBB:
+        case HB_INS_PSUBUSB: case HB_INS_PSUBSB:
+        case HB_INS_PMINUB: case HB_INS_PMAXUB:
+        case HB_INS_PADDUSB: case HB_INS_PADDSB:
+        case HB_INS_PAVGB: case HB_INS_PSHUFB:
+        case HB_INS_PSIGNB: case HB_INS_PABSB:
+            return 1;
+        case HB_INS_PUNPCKLWD: case HB_INS_PUNPCKHWD:
+        case HB_INS_PACKSSDW:
+        case HB_INS_PADDW: case HB_INS_PSUBW:
+        case HB_INS_PMULLW: case HB_INS_PSUBUSW:
+        case HB_INS_PSUBSW: case HB_INS_PMINSW:
+        case HB_INS_PADDUSW: case HB_INS_PADDSW:
+        case HB_INS_PMAXSW: case HB_INS_PAVGW:
+        case HB_INS_PMULHUW: case HB_INS_PMULHW:
+        case HB_INS_PMADDUBSW: case HB_INS_PMULHRSW:
+        case HB_INS_PSIGNW: case HB_INS_PABSW:
+            return 2;
+        case HB_INS_PUNPCKLDQ: case HB_INS_PUNPCKHDQ:
+        case HB_INS_PADDD: case HB_INS_PSUBD:
+        case HB_INS_PMADDWD: case HB_INS_PMULLD:
+        case HB_INS_PSIGND: case HB_INS_PABSD:
+            return 4;
+        case HB_INS_PUNPCKLQDQ: case HB_INS_PUNPCKHQDQ:
+        case HB_INS_PADDQ: case HB_INS_PSUBQ:
+        case HB_INS_PMULUDQ: case HB_INS_PSADBW:
+            return 8;
+        default:
+            return 0;
+    }
+}
+
 static int sse41_0f38_opcode(uint8_t op) {
     switch (op) {
         case 0x10: return HB_INS_PBLENDVB;
@@ -338,6 +380,9 @@ static int sse41_0f3a_opcode(uint8_t op) {
         case 0x0d: return HB_INS_BLENDPD;
         case 0x0e: return HB_INS_PBLENDW;
         case 0x0f: return HB_INS_PALIGNR;
+        case 0x40: return HB_INS_DPPS;
+        case 0x41: return HB_INS_DPPD;
+        case 0x42: return HB_INS_MPSADBW;
         case 0x44: return HB_INS_PCLMULQDQ;
         case 0x60: return HB_INS_PCMPESTRM;
         case 0x61: return HB_INS_PCMPESTRI;
@@ -350,25 +395,44 @@ static int sse41_0f3a_opcode(uint8_t op) {
 
 static int fma3_0f38_opcode(uint8_t op, bool vex_w) {
     switch (op) {
+        case 0x96: return vex_w ? HB_INS_VFMADDSUB132PD : HB_INS_VFMADDSUB132PS;
+        case 0x97: return vex_w ? HB_INS_VFMSUBADD132PD : HB_INS_VFMSUBADD132PS;
         case 0x98: return vex_w ? HB_INS_VFMADD132PD : HB_INS_VFMADD132PS;
         case 0x99: return vex_w ? HB_INS_VFMADD132SD : HB_INS_VFMADD132SS;
         case 0x9a: return vex_w ? HB_INS_VFMSUB132PD : HB_INS_VFMSUB132PS;
         case 0x9b: return vex_w ? HB_INS_VFMSUB132SD : HB_INS_VFMSUB132SS;
+        case 0x9c: return vex_w ? HB_INS_VFNMADD132PD : HB_INS_VFNMADD132PS;
+        case 0x9d: return vex_w ? HB_INS_VFNMADD132SD : HB_INS_VFNMADD132SS;
+        case 0x9e: return vex_w ? HB_INS_VFNMSUB132PD : HB_INS_VFNMSUB132PS;
+        case 0x9f: return vex_w ? HB_INS_VFNMSUB132SD : HB_INS_VFNMSUB132SS;
+        case 0xa6: return vex_w ? HB_INS_VFMADDSUB213PD : HB_INS_VFMADDSUB213PS;
+        case 0xa7: return vex_w ? HB_INS_VFMSUBADD213PD : HB_INS_VFMSUBADD213PS;
         case 0xa8: return vex_w ? HB_INS_VFMADD213PD : HB_INS_VFMADD213PS;
         case 0xa9: return vex_w ? HB_INS_VFMADD213SD : HB_INS_VFMADD213SS;
         case 0xaa: return vex_w ? HB_INS_VFMSUB213PD : HB_INS_VFMSUB213PS;
         case 0xab: return vex_w ? HB_INS_VFMSUB213SD : HB_INS_VFMSUB213SS;
+        case 0xac: return vex_w ? HB_INS_VFNMADD213PD : HB_INS_VFNMADD213PS;
+        case 0xad: return vex_w ? HB_INS_VFNMADD213SD : HB_INS_VFNMADD213SS;
+        case 0xae: return vex_w ? HB_INS_VFNMSUB213PD : HB_INS_VFNMSUB213PS;
+        case 0xaf: return vex_w ? HB_INS_VFNMSUB213SD : HB_INS_VFNMSUB213SS;
+        case 0xb6: return vex_w ? HB_INS_VFMADDSUB231PD : HB_INS_VFMADDSUB231PS;
+        case 0xb7: return vex_w ? HB_INS_VFMSUBADD231PD : HB_INS_VFMSUBADD231PS;
         case 0xb8: return vex_w ? HB_INS_VFMADD231PD : HB_INS_VFMADD231PS;
         case 0xb9: return vex_w ? HB_INS_VFMADD231SD : HB_INS_VFMADD231SS;
         case 0xba: return vex_w ? HB_INS_VFMSUB231PD : HB_INS_VFMSUB231PS;
         case 0xbb: return vex_w ? HB_INS_VFMSUB231SD : HB_INS_VFMSUB231SS;
+        case 0xbc: return vex_w ? HB_INS_VFNMADD231PD : HB_INS_VFNMADD231PS;
+        case 0xbd: return vex_w ? HB_INS_VFNMADD231SD : HB_INS_VFNMADD231SS;
+        case 0xbe: return vex_w ? HB_INS_VFNMSUB231PD : HB_INS_VFNMSUB231PS;
+        case 0xbf: return vex_w ? HB_INS_VFNMSUB231SD : HB_INS_VFNMSUB231SS;
         default: return 0;
     }
 }
 
 static bool fma3_opcode_is_scalar(uint8_t op) {
-    return op == 0x99 || op == 0x9b || op == 0xa9 ||
-           op == 0xab || op == 0xb9 || op == 0xbb;
+    return op == 0x99 || op == 0x9b || op == 0x9d || op == 0x9f ||
+           op == 0xa9 || op == 0xab || op == 0xad || op == 0xaf ||
+           op == 0xb9 || op == 0xbb || op == 0xbd || op == 0xbf;
 }
 
 static hb_result_t parse_modrm(hb_dec_t* d, uint8_t modrm,
@@ -840,7 +904,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode == 0xC5 || opcode == 0xC4 || opcode == 0x62) {
         uint8_t vex_opcode, vex_map = 1, vex_pp = 0, vex_l = 0, vex_w = 0, vex_v = 0;
         uint8_t evex_p0 = 0, evex_p2 = 0, evex_aaa = 0, evex_ll = 0;
-        bool evex_z = false, evex_r2 = false;
+        bool evex_z = false, evex_r2 = false, evex_b = false;
         if (opcode == 0xC5) {
             if (!can_read(d, 2)) return HB_ERR_DECODE_FAILED;
             uint8_t vex2 = read_u8(d);
@@ -878,8 +942,15 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             vex_pp = evex_p1 & 3;
             evex_z = (evex_p2 >> 7) != 0;
             evex_ll = (evex_p2 >> 5) & 3;
+            evex_b = ((evex_p2 >> 4) & 1) != 0;
             evex_aaa = evex_p2 & 7;
             vex_opcode = read_u8(d);
+            out->evex = true;
+            out->evex_mask = evex_aaa;
+            out->evex_zero = evex_z;
+            out->evex_broadcast = false;
+            out->evex_rounding = 0;
+            out->evex_mask_lane = 0;
         }
         out->writes_flags = false;
         if (opcode == 0x62) {
@@ -889,12 +960,209 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                 out->opcode = HB_INS_VEC;
                 return HB_OK;
             }
-            if (evex_aaa != 0 || evex_z || evex_r2 || vex_v >= 16) {
-                out->opcode = HB_INS_VEC;
-            } else if (vex_map == 1) {
-                if (vex_opcode == 0x58 && vex_pp == 0 && !vex_w) mapped = HB_INS_ADDPS;
-                else if ((vex_opcode == 0x6f || vex_opcode == 0x7f) && vex_pp == 1) mapped = HB_INS_SSE_MOV;
+            if (vex_map == 1) {
+                if ((vex_opcode == 0x10 || vex_opcode == 0x11 ||
+                     vex_opcode == 0x28 || vex_opcode == 0x29) &&
+                    vex_pp == 0 && !vex_w) { mapped = HB_INS_SSE_MOV; out->evex_mask_lane = 4; }
+                else if ((vex_opcode == 0x10 || vex_opcode == 0x11 ||
+                          vex_opcode == 0x28 || vex_opcode == 0x29) &&
+                         vex_pp == 1 && vex_w) { mapped = HB_INS_SSE_MOV; out->evex_mask_lane = 8; }
+                else if ((vex_opcode == 0x10 || vex_opcode == 0x11) &&
+                         vex_pp == 2 && !vex_w) { mapped = HB_INS_SSE_MOV; out->evex_mask_lane = 4; }
+                else if ((vex_opcode == 0x10 || vex_opcode == 0x11) &&
+                         vex_pp == 3 && vex_w) { mapped = HB_INS_SSE_MOV; out->evex_mask_lane = 8; }
+                else if (vex_opcode == 0x14 && vex_pp == 0 && !vex_w) { mapped = HB_INS_UNPCKLPS; out->evex_mask_lane = 4; }
+                else if (vex_opcode == 0x14 && vex_pp == 1 && vex_w) { mapped = HB_INS_UNPCKLPD; out->evex_mask_lane = 8; }
+                else if (vex_opcode == 0x15 && vex_pp == 0 && !vex_w) { mapped = HB_INS_UNPCKHPS; out->evex_mask_lane = 4; }
+                else if (vex_opcode == 0x15 && vex_pp == 1 && vex_w) { mapped = HB_INS_UNPCKHPD; out->evex_mask_lane = 8; }
+                else if (vex_opcode == 0x70 && (vex_pp == 1 || vex_pp == 2 || vex_pp == 3) && !vex_w) {
+                    uint8_t mask_lane = vex_pp == 1 ? 4 : 2;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = vex_pp == 1 ? HB_INS_PSHUFD :
+                                  (vex_pp == 2 ? HB_INS_PSHUFHW : HB_INS_PSHUFLW);
+                    out->evex_mask_lane = mask_lane;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    int evex_reg = (int)(((modrm >> 3) & 7u) | (rex_r ? 8u : 0u) | (evex_r2 ? 16u : 0u));
+                    int evex_rm_reg = (int)((modrm & 7u) | (rex_b ? 8u : 0u) | (rex_x ? 16u : 0u));
+                    replace_reg_index(out, 1, evex_reg);
+                    if (((modrm >> 6) & 3u) == 3) replace_reg_index(out, 2, evex_rm_reg);
+                    mark_vec_operand(out, 1, vec_size);
+                    if (out->op2.is_reg) mark_vec_operand(out, 2, vec_size);
+                    else if (out->op2.is_mem) out->op2.size = vec_size;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    set_imm(out, 3, read_u8(d), 1);
+                    return HB_OK;
+                }
+                else if (vex_opcode == 0xc6 && vex_pp == 0 && !vex_w) { mapped = HB_INS_SHUFPS; out->evex_mask_lane = 4; }
+                else if (vex_opcode == 0xc6 && vex_pp == 1 && vex_w) { mapped = HB_INS_SHUFPD; out->evex_mask_lane = 8; }
+                else if (vex_opcode == 0x58 && vex_pp == 0 && !vex_w) mapped = HB_INS_ADDPS;
+                else if (vex_opcode == 0x58 && vex_pp == 1 && vex_w) mapped = HB_INS_ADDPD;
+                else if (vex_opcode == 0x58 && vex_pp == 2 && !vex_w) mapped = HB_INS_ADDSS;
+                else if (vex_opcode == 0x58 && vex_pp == 3 && vex_w) mapped = HB_INS_ADDSD;
+                else if (vex_opcode == 0x51 && vex_pp == 0 && !vex_w) mapped = HB_INS_SQRTPS;
+                else if (vex_opcode == 0x51 && vex_pp == 1 && vex_w) mapped = HB_INS_SQRTPD;
+                else if (vex_opcode == 0x51 && vex_pp == 2 && !vex_w) mapped = HB_INS_SQRTSS;
+                else if (vex_opcode == 0x51 && vex_pp == 3 && vex_w) mapped = HB_INS_SQRTSD;
+                else if (vex_opcode == 0x54 && vex_pp == 0 && !vex_w) { mapped = HB_INS_XMM_AND; out->evex_mask_lane = 4; }
+                else if (vex_opcode == 0x54 && vex_pp == 1 && vex_w) { mapped = HB_INS_XMM_AND; out->evex_mask_lane = 8; }
+                else if (vex_opcode == 0x55 && vex_pp == 0 && !vex_w) { mapped = HB_INS_XMM_ANDN; out->evex_mask_lane = 4; }
+                else if (vex_opcode == 0x55 && vex_pp == 1 && vex_w) { mapped = HB_INS_XMM_ANDN; out->evex_mask_lane = 8; }
+                else if (vex_opcode == 0x56 && vex_pp == 0 && !vex_w) { mapped = HB_INS_XMM_OR; out->evex_mask_lane = 4; }
+                else if (vex_opcode == 0x56 && vex_pp == 1 && vex_w) { mapped = HB_INS_XMM_OR; out->evex_mask_lane = 8; }
+                else if (vex_opcode == 0x57 && vex_pp == 0 && !vex_w) { mapped = HB_INS_XORPS; out->evex_mask_lane = 4; }
+                else if (vex_opcode == 0x57 && vex_pp == 1 && vex_w) { mapped = HB_INS_XORPS; out->evex_mask_lane = 8; }
+                else if (vex_opcode == 0x59 && vex_pp == 0 && !vex_w) mapped = HB_INS_MULPS;
+                else if (vex_opcode == 0x59 && vex_pp == 1 && vex_w) mapped = HB_INS_MULPD;
+                else if (vex_opcode == 0x59 && vex_pp == 2 && !vex_w) mapped = HB_INS_MULSS;
+                else if (vex_opcode == 0x59 && vex_pp == 3 && vex_w) mapped = HB_INS_MULSD;
+                else if (vex_opcode == 0x5c && vex_pp == 0 && !vex_w) mapped = HB_INS_SUBPS;
+                else if (vex_opcode == 0x5c && vex_pp == 1 && vex_w) mapped = HB_INS_SUBPD;
+                else if (vex_opcode == 0x5c && vex_pp == 2 && !vex_w) mapped = HB_INS_SUBSS;
+                else if (vex_opcode == 0x5c && vex_pp == 3 && vex_w) mapped = HB_INS_SUBSD;
+                else if (vex_opcode == 0x5d && vex_pp == 0 && !vex_w) mapped = HB_INS_MINPS;
+                else if (vex_opcode == 0x5d && vex_pp == 1 && vex_w) mapped = HB_INS_MINPD;
+                else if (vex_opcode == 0x5d && vex_pp == 2 && !vex_w) mapped = HB_INS_MINSS;
+                else if (vex_opcode == 0x5d && vex_pp == 3 && vex_w) mapped = HB_INS_MINSD;
+                else if (vex_opcode == 0x5e && vex_pp == 0 && !vex_w) mapped = HB_INS_DIVPS;
+                else if (vex_opcode == 0x5e && vex_pp == 1 && vex_w) mapped = HB_INS_DIVPD;
+                else if (vex_opcode == 0x5e && vex_pp == 2 && !vex_w) mapped = HB_INS_DIVSS;
+                else if (vex_opcode == 0x5e && vex_pp == 3 && vex_w) mapped = HB_INS_DIVSD;
+                else if (vex_opcode == 0x5f && vex_pp == 0 && !vex_w) mapped = HB_INS_MAXPS;
+                else if (vex_opcode == 0x5f && vex_pp == 1 && vex_w) mapped = HB_INS_MAXPD;
+                else if (vex_opcode == 0x5f && vex_pp == 2 && !vex_w) mapped = HB_INS_MAXSS;
+                else if (vex_opcode == 0x5f && vex_pp == 3 && vex_w) mapped = HB_INS_MAXSD;
+                else if (vex_opcode == 0xdb && vex_pp == 1) { mapped = HB_INS_XMM_AND; out->evex_mask_lane = vex_w ? 8 : 4; }
+                else if (vex_opcode == 0xdf && vex_pp == 1) { mapped = HB_INS_XMM_ANDN; out->evex_mask_lane = vex_w ? 8 : 4; }
+                else if (vex_opcode == 0xeb && vex_pp == 1) { mapped = HB_INS_XMM_OR; out->evex_mask_lane = vex_w ? 8 : 4; }
+                else if (vex_opcode == 0xef && vex_pp == 1) { mapped = HB_INS_PXOR; out->evex_mask_lane = vex_w ? 8 : 4; }
+                else if ((vex_opcode == 0x6f || vex_opcode == 0x7f) && vex_pp == 1) {
+                    mapped = HB_INS_SSE_MOV;
+                    out->evex_mask_lane = vex_w ? 8 : 4;
+                }
+                else if ((vex_opcode == 0x6f || vex_opcode == 0x7f) && vex_pp == 2) {
+                    mapped = HB_INS_SSE_MOV;
+                    out->evex_mask_lane = vex_w ? 8 : 4;
+                }
+                else if ((vex_opcode == 0x6f || vex_opcode == 0x7f) && vex_pp == 3) {
+                    mapped = HB_INS_SSE_MOV;
+                    out->evex_mask_lane = vex_w ? 2 : 1;
+                }
+                else if (vex_pp == 1) {
+                    if (vex_w) {
+                        switch (vex_opcode) {
+                            case 0x6c: mapped = HB_INS_PUNPCKLQDQ; break;
+                            case 0x6d: mapped = HB_INS_PUNPCKHQDQ; break;
+                            case 0xd4: mapped = HB_INS_PADDQ; break;
+                            case 0xf4: mapped = HB_INS_PMULUDQ; break;
+                            case 0xf6: mapped = HB_INS_PSADBW; break;
+                            case 0xfb: mapped = HB_INS_PSUBQ; break;
+                            default: break;
+                        }
+                    } else {
+                        switch (vex_opcode) {
+                            case 0xfc: mapped = HB_INS_PADDB; break;
+                            case 0xfd: mapped = HB_INS_PADDW; break;
+                            case 0xfe: mapped = HB_INS_PADDD; break;
+                            case 0xf8: mapped = HB_INS_PSUBB; break;
+                            case 0xf9: mapped = HB_INS_PSUBW; break;
+                            case 0xfa: mapped = HB_INS_PSUBD; break;
+                            default: break;
+                        }
+                        if (!mapped) mapped = sse2_0f_unpack_pack_opcode(vex_opcode);
+                        if (mapped == HB_INS_PUNPCKLQDQ || mapped == HB_INS_PUNPCKHQDQ) mapped = 0;
+                        if (!mapped && !sse2_0f_variable_shift_opcode(vex_opcode) &&
+                            vex_opcode != 0xc4 && vex_opcode != 0xc5) {
+                            mapped = sse2_0f_packed_opcode(vex_opcode);
+                            if (mapped == HB_INS_PADDQ || mapped == HB_INS_PSUBQ ||
+                                mapped == HB_INS_PMULUDQ) {
+                                mapped = 0;
+                            }
+                        }
+                    }
+                    if (mapped) out->evex_mask_lane = evex_packed_int_mask_lane(mapped);
+                    if (mapped && out->evex_mask_lane == 0) mapped = 0;
+                }
             } else if (vex_map == 2 && vex_pp == 1) {
+                if (vex_opcode == 0x18 || vex_opcode == 0x19 ||
+                    vex_opcode == 0x1a || vex_opcode == 0x1b) {
+                    uint8_t src_bytes = 0;
+                    uint8_t mask_lane = 0;
+                    bool allow_reg_src = false;
+                    if (vex_opcode == 0x18 && !vex_w) {
+                        mapped = HB_INS_VBROADCASTSS;
+                        src_bytes = 4;
+                        mask_lane = 4;
+                        allow_reg_src = true;
+                    } else if (vex_opcode == 0x19 && !vex_w) {
+                        mapped = HB_INS_VBROADCASTF32X2;
+                        src_bytes = 8;
+                        mask_lane = 4;
+                        allow_reg_src = true;
+                    } else if (vex_opcode == 0x19 && vex_w) {
+                        mapped = HB_INS_VBROADCASTSD;
+                        src_bytes = 8;
+                        mask_lane = 8;
+                        allow_reg_src = true;
+                    } else if (vex_opcode == 0x1a && !vex_w) {
+                        mapped = HB_INS_VBROADCASTF32X4;
+                        src_bytes = 16;
+                        mask_lane = 4;
+                    } else if (vex_opcode == 0x1a && vex_w) {
+                        mapped = HB_INS_VBROADCASTF64X2;
+                        src_bytes = 16;
+                        mask_lane = 8;
+                    } else if (vex_opcode == 0x1b && !vex_w) {
+                        if (evex_ll != 2) return HB_ERR_UNSUPPORTED_OPCODE;
+                        mapped = HB_INS_VBROADCASTF32X8;
+                        src_bytes = 32;
+                        mask_lane = 4;
+                    } else if (vex_opcode == 0x1b && vex_w) {
+                        if (evex_ll != 2) return HB_ERR_UNSUPPORTED_OPCODE;
+                        mapped = HB_INS_VBROADCASTF64X4;
+                        src_bytes = 32;
+                        mask_lane = 8;
+                    } else {
+                        return HB_ERR_UNSUPPORTED_OPCODE;
+                    }
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    if (((modrm >> 6) & 3u) == 3 && !allow_reg_src) return HB_ERR_UNSUPPORTED_OPCODE;
+                    out->opcode = mapped;
+                    out->evex_mask_lane = mask_lane;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                src_bytes, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_vec_operand(out, 1, vec_size);
+                    if (out->op2.is_reg) mark_xmm_operand(out, 2);
+                    if (out->op2.is_mem) out->op2.size = src_bytes;
+                    return HB_OK;
+                }
+                if (vex_opcode == 0x78 || vex_opcode == 0x79 ||
+                    vex_opcode == 0x58 || vex_opcode == 0x59) {
+                    uint8_t lane = 0;
+                    uint8_t src_bytes = 0;
+                    if (vex_opcode == 0x78) { mapped = HB_INS_VPBROADCASTB; lane = 1; }
+                    else if (vex_opcode == 0x79) { mapped = HB_INS_VPBROADCASTW; lane = 2; }
+                    else if (vex_opcode == 0x58 && !vex_w) { mapped = HB_INS_VPBROADCASTD; lane = 4; }
+                    else if (vex_opcode == 0x59 && !vex_w) { mapped = HB_INS_VBROADCASTI32X2; lane = 4; src_bytes = 8; }
+                    else if (vex_opcode == 0x59 && vex_w) { mapped = HB_INS_VPBROADCASTQ; lane = 8; }
+                    else return HB_ERR_UNSUPPORTED_OPCODE;
+                    if (!src_bytes) src_bytes = lane;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = mapped;
+                    out->evex_mask_lane = lane;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                src_bytes, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_vec_operand(out, 1, vec_size);
+                    if (out->op2.is_reg) mark_xmm_operand(out, 2);
+                    if (out->op2.is_mem) out->op2.size = src_bytes;
+                    return HB_OK;
+                }
                 if (vex_opcode == 0xcf) mapped = HB_INS_VGF2P8MULB;
                 else if (vex_opcode >= 0xdc && vex_opcode <= 0xdf) {
                     switch (vex_opcode) {
@@ -905,16 +1173,91 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                         default: break;
                     }
                 }
+                else if (!vex_w) {
+                    mapped = ssse3_0f38_opcode(vex_opcode);
+                    if (mapped) out->evex_mask_lane = evex_packed_int_mask_lane(mapped);
+                    if (mapped && out->evex_mask_lane == 0) mapped = 0;
+                }
             }
             if (mapped) {
                 if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
                 uint8_t modrm = read_u8(d);
+                bool evex_broadcast = false;
+                uint8_t evex_broadcast_size = 0;
+                if (evex_b) {
+                    if (mapped == HB_INS_ADDPS || mapped == HB_INS_SUBPS ||
+                        mapped == HB_INS_MULPS || mapped == HB_INS_DIVPS ||
+                        mapped == HB_INS_ADDPD || mapped == HB_INS_SUBPD ||
+                        mapped == HB_INS_MULPD || mapped == HB_INS_DIVPD ||
+                        mapped == HB_INS_MINPS || mapped == HB_INS_MAXPS ||
+                        mapped == HB_INS_MINPD || mapped == HB_INS_MAXPD ||
+                        mapped == HB_INS_XMM_AND || mapped == HB_INS_XMM_ANDN ||
+                        mapped == HB_INS_XMM_OR || mapped == HB_INS_XORPS ||
+                        mapped == HB_INS_PXOR) {
+                        if ((modrm >> 6) == 3) {
+                            if (mapped == HB_INS_ADDPS) out->evex_rounding = (uint8_t)(evex_ll + 1);
+                            else return HB_ERR_UNSUPPORTED_OPCODE;
+                        } else {
+                            if (evex_ll != 2) return HB_ERR_UNSUPPORTED_OPCODE;
+                            evex_broadcast = true;
+                            evex_broadcast_size = (mapped == HB_INS_ADDPD || mapped == HB_INS_SUBPD ||
+                                                   mapped == HB_INS_MULPD || mapped == HB_INS_DIVPD ||
+                                                   mapped == HB_INS_MINPD || mapped == HB_INS_MAXPD ||
+                                                   out->evex_mask_lane == 8) ? 8 : 4;
+                        }
+                        vec_size = 64;
+                    } else {
+                        return HB_ERR_UNSUPPORTED_OPCODE;
+                    }
+                }
                 out->opcode = mapped;
+                out->evex_broadcast = evex_broadcast;
                 bool is_mov = mapped == HB_INS_SSE_MOV;
-                bool store = is_mov && vex_opcode == 0x7f;
+                bool scalar_evex_mov = is_mov && (vex_opcode == 0x10 || vex_opcode == 0x11) &&
+                                       (vex_pp == 2 || vex_pp == 3);
+                bool scalar_evex = mapped == HB_INS_ADDSS || mapped == HB_INS_ADDSD ||
+                                   mapped == HB_INS_SUBSS || mapped == HB_INS_SUBSD ||
+                                   mapped == HB_INS_MULSS || mapped == HB_INS_MULSD ||
+                                   mapped == HB_INS_DIVSS || mapped == HB_INS_DIVSD ||
+                                   mapped == HB_INS_SQRTSS || mapped == HB_INS_SQRTSD ||
+                                   mapped == HB_INS_MINSS || mapped == HB_INS_MINSD ||
+                                   mapped == HB_INS_MAXSS || mapped == HB_INS_MAXSD;
+                uint8_t operand_vec_size = (scalar_evex || scalar_evex_mov) ? 16 : vec_size;
+                uint8_t scalar_lane = (mapped == HB_INS_ADDSD || mapped == HB_INS_SUBSD ||
+                                       mapped == HB_INS_MULSD || mapped == HB_INS_DIVSD ||
+                                       mapped == HB_INS_SQRTSD || mapped == HB_INS_MINSD ||
+                                       mapped == HB_INS_MAXSD || (scalar_evex_mov && vex_pp == 3)) ? 8 : 4;
+                bool store = is_mov && (vex_opcode == 0x11 || vex_opcode == 0x29 || vex_opcode == 0x7f);
                 hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
-                                            vec_size, out, 1, 2, store);
+                                            operand_vec_size, out, 1, 2, store);
                 if (r != HB_OK) return r;
+                int evex_reg = (int)(((modrm >> 3) & 7u) | (rex_r ? 8u : 0u) | (evex_r2 ? 16u : 0u));
+                int evex_rm_reg = (int)((modrm & 7u) | (rex_b ? 8u : 0u) | (rex_x ? 16u : 0u));
+                if (store) {
+                    replace_reg_index(out, 1, evex_rm_reg);
+                    replace_reg_index(out, 2, evex_reg);
+                } else {
+                    replace_reg_index(out, 1, evex_reg);
+                    if (((modrm >> 6) & 3u) == 3) replace_reg_index(out, 2, evex_rm_reg);
+                }
+                if (scalar_evex_mov) {
+                    if (((modrm >> 6) & 3u) == 3) {
+                        hb_decoded_t tmp = *out;
+                        out->op3 = tmp.op2;
+                        memset(&out->op2, 0, sizeof(out->op2));
+                        set_reg(out, 2, vex_v, 16);
+                        mark_vec_operand(out, 1, 16);
+                        mark_vec_operand(out, 2, 16);
+                        mark_vec_operand(out, 3, scalar_lane);
+                    } else if (store) {
+                        if (out->op1.is_mem) out->op1.size = scalar_lane;
+                        mark_vec_operand(out, 2, 16);
+                    } else {
+                        mark_vec_operand(out, 1, 16);
+                        if (out->op2.is_mem) out->op2.size = scalar_lane;
+                    }
+                    return HB_OK;
+                }
                 if (is_mov) {
                     mark_vec_operands(out, vec_size);
                     return HB_OK;
@@ -922,11 +1265,48 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                 hb_decoded_t tmp = *out;
                 out->op3 = tmp.op2;
                 memset(&out->op2, 0, sizeof(out->op2));
-                set_reg(out, 2, vex_v, vec_size);
-                mark_vec_operand(out, 1, vec_size);
-                mark_vec_operand(out, 2, vec_size);
-                mark_vec_operand(out, 3, vec_size);
-                if (out->op3.is_mem) out->op3.size = vec_size;
+                set_reg(out, 2, vex_v, operand_vec_size);
+                mark_vec_operand(out, 1, operand_vec_size);
+                mark_vec_operand(out, 2, operand_vec_size);
+                mark_vec_operand(out, 3, operand_vec_size);
+                if (out->op3.is_mem) out->op3.size = scalar_evex ? scalar_lane : (evex_broadcast ? evex_broadcast_size : vec_size);
+                if (mapped == HB_INS_SHUFPS || mapped == HB_INS_SHUFPD) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    set_extra_imm8(out, read_u8(d));
+                }
+                return HB_OK;
+            }
+            if (vex_map == 1 && vex_opcode == 0xc2) {
+                bool scalar = vex_pp == 2 || vex_pp == 3;
+                bool is_pd = vex_pp == 1 || vex_pp == 3;
+                uint8_t lane = is_pd ? 8 : 4;
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                switch (vex_pp) {
+                    case 0: out->opcode = HB_INS_VCMPPS; break;
+                    case 1: out->opcode = HB_INS_VCMPPD; break;
+                    case 2: out->opcode = HB_INS_VCMPSS; break;
+                    case 3: out->opcode = HB_INS_VCMPSD; break;
+                    default: return HB_ERR_UNSUPPORTED_OPCODE;
+                }
+                bool evex_broadcast = evex_b && ((modrm >> 6) != 3) && !scalar;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                            scalar ? 16 : vec_size, out, 1, 3, false);
+                if (r != HB_OK) return r;
+                int evex_rm_reg = (int)((modrm & 7u) | (rex_b ? 8u : 0u) | (rex_x ? 16u : 0u));
+                uint8_t kdst = (modrm >> 3) & 7u;
+                memset(&out->op1, 0, sizeof(out->op1));
+                set_imm(out, 1, kdst, 1);
+                memset(&out->op2, 0, sizeof(out->op2));
+                set_reg(out, 2, vex_v, scalar ? 16 : vec_size);
+                if (((modrm >> 6) & 3u) == 3) replace_reg_index(out, 3, evex_rm_reg);
+                mark_vec_operand(out, 2, scalar ? 16 : vec_size);
+                if (out->op3.is_reg) mark_vec_operand(out, 3, scalar ? 16 : vec_size);
+                else if (out->op3.is_mem) out->op3.size = evex_broadcast ? lane : (scalar ? lane : vec_size);
+                out->evex_broadcast = evex_broadcast;
+                out->evex_mask_lane = lane;
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                set_extra_imm8(out, read_u8(d));
                 return HB_OK;
             }
             out->opcode = HB_INS_VEC;
@@ -936,7 +1316,117 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         } else {
             uint8_t vec_size = vex_l ? 32 : 16;
             int mapped = 0;
+            if (vex_map == 2 && !vex_l &&
+                ((vex_pp == 0 && (vex_opcode == 0xf2 || vex_opcode == 0xf3 ||
+                                  vex_opcode == 0xf5 || vex_opcode == 0xf7)) ||
+                 ((vex_pp == 1 || vex_pp == 2 || vex_pp == 3) && vex_opcode == 0xf7) ||
+                 ((vex_pp == 2 || vex_pp == 3) && vex_opcode == 0xf5) ||
+                 (vex_pp == 3 && vex_opcode == 0xf6))) {
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                uint8_t ext = (modrm >> 3) & 7;
+                uint8_t size = vex_w ? 8 : 4;
+                if (vex_pp == 0 && vex_opcode == 0xf2) {
+                    out->opcode = HB_INS_ANDN;
+                    hb_result_t r = parse_modrm(d, modrm, vex_w, rex_r, rex_x, rex_b, 4, out, 1, 3, false);
+                    if (r != HB_OK) return r;
+                    set_reg(out, 2, vex_v, size);
+                    out->op1.size = size;
+                    out->op2.size = size;
+                    out->op3.size = size;
+                    return HB_OK;
+                }
+                if (vex_pp == 0 && vex_opcode == 0xf3) {
+                    if (ext == 1) out->opcode = HB_INS_BLSR;
+                    else if (ext == 2) out->opcode = HB_INS_BLSMSK;
+                    else if (ext == 3) out->opcode = HB_INS_BLSI;
+                    else return HB_ERR_UNSUPPORTED_OPCODE;
+                    hb_result_t r = parse_modrm_ext(d, modrm, vex_w, rex_b, 4, out, 2);
+                    if (r != HB_OK) return r;
+                    set_reg(out, 1, vex_v, size);
+                    out->op2.size = size;
+                    return HB_OK;
+                }
+                if ((vex_pp == 0 && (vex_opcode == 0xf5 || vex_opcode == 0xf7)) ||
+                    ((vex_pp == 1 || vex_pp == 2 || vex_pp == 3) && vex_opcode == 0xf7) ||
+                    ((vex_pp == 2 || vex_pp == 3) && vex_opcode == 0xf5)) {
+                    if (vex_pp == 0 && vex_opcode == 0xf5) out->opcode = HB_INS_BZHI;
+                    else if (vex_pp == 0 && vex_opcode == 0xf7) out->opcode = HB_INS_BEXTR;
+                    else if (vex_pp == 1 && vex_opcode == 0xf7) out->opcode = HB_INS_SHLX;
+                    else if (vex_pp == 2 && vex_opcode == 0xf7) out->opcode = HB_INS_SARX;
+                    else if (vex_pp == 3 && vex_opcode == 0xf7) out->opcode = HB_INS_SHRX;
+                    else if (vex_pp == 2 && vex_opcode == 0xf5) out->opcode = HB_INS_PEXT;
+                    else if (vex_pp == 3 && vex_opcode == 0xf5) out->opcode = HB_INS_PDEP;
+                    else return HB_ERR_UNSUPPORTED_OPCODE;
+                    if (out->opcode == HB_INS_PEXT || out->opcode == HB_INS_PDEP) {
+                        hb_result_t r = parse_modrm(d, modrm, vex_w, rex_r, rex_x, rex_b, 4, out, 1, 3, false);
+                        if (r != HB_OK) return r;
+                        set_reg(out, 2, vex_v, size);
+                        out->op1.size = size;
+                        out->op2.size = size;
+                        out->op3.size = size;
+                        return HB_OK;
+                    }
+                    hb_result_t r = parse_modrm(d, modrm, vex_w, rex_r, rex_x, rex_b, 4, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    set_reg(out, 3, vex_v, size);
+                    out->op1.size = size;
+                    out->op2.size = size;
+                    out->op3.size = size;
+                    return HB_OK;
+                }
+                if (vex_pp == 3 && vex_opcode == 0xf6) {
+                    out->opcode = HB_INS_MULX;
+                    hb_result_t r = parse_modrm(d, modrm, vex_w, rex_r, rex_x, rex_b, 4, out, 1, 3, false);
+                    if (r != HB_OK) return r;
+                    set_reg(out, 2, vex_v, size);
+                    out->op1.size = size;
+                    out->op2.size = size;
+                    out->op3.size = size;
+                    return HB_OK;
+                }
+            }
+            if (vex_map == 3 && vex_pp == 3 && !vex_l && vex_opcode == 0xf0) {
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                uint8_t size = vex_w ? 8 : 4;
+                out->opcode = HB_INS_RORX;
+                hb_result_t r = parse_modrm(d, modrm, vex_w, rex_r, rex_x, rex_b, 4, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                set_imm(out, 3, read_u8(d), 1);
+                out->op1.size = size;
+                out->op2.size = size;
+                return HB_OK;
+            }
             if (vex_map == 1) {
+                if (vex_opcode == 0xc2) {
+                    uint8_t lane = (vex_pp == 1 || vex_pp == 3) ? 8 : 4;
+                    bool scalar = vex_pp == 2 || vex_pp == 3;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    switch (vex_pp) {
+                        case 0: out->opcode = HB_INS_VCMPPS; break;
+                        case 1: out->opcode = HB_INS_VCMPPD; break;
+                        case 2: out->opcode = HB_INS_VCMPSS; break;
+                        case 3: out->opcode = HB_INS_VCMPSD; break;
+                        default: return HB_ERR_UNSUPPORTED_OPCODE;
+                    }
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                scalar ? 16 : vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    hb_decoded_t tmp = *out;
+                    out->op3 = tmp.op2;
+                    memset(&out->op2, 0, sizeof(out->op2));
+                    set_reg(out, 2, vex_v, 16);
+                    mark_vec_operand(out, 1, scalar ? 16 : vec_size);
+                    mark_vec_operand(out, 2, 16);
+                    if (out->op3.is_reg) mark_vec_operand(out, 3, scalar ? 16 : vec_size);
+                    else if (out->op3.is_mem) out->op3.size = scalar ? lane : vec_size;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    set_extra_imm8(out, read_u8(d));
+                    return HB_OK;
+                }
                 if (vex_opcode == 0x6e && vex_pp == 1) {
                     if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
                     uint8_t modrm = read_u8(d);
@@ -945,6 +1435,99 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                     if (r != HB_OK) return r;
                     mark_xmm_operand(out, 1);
                     out->op2.size = vex_w ? 8 : 4;
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x7e || vex_opcode == 0xd6) && vex_pp == 1) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    uint8_t size = (vex_opcode == 0xd6 || vex_w) ? 8 : 4;
+                    out->opcode = HB_INS_MOVD;
+                    hb_result_t r = parse_modrm(d, modrm, vex_w, rex_r, rex_x, rex_b,
+                                                size, out, 1, 2, true);
+                    if (r != HB_OK) return r;
+                    if (vex_opcode == 0xd6 && out->op1.is_reg) mark_xmm_operand(out, 1);
+                    mark_xmm_operand(out, 2);
+                    out->op1.size = size;
+                    return HB_OK;
+                }
+                if (vex_opcode == 0x7e && vex_pp == 2) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = HB_INS_MOVD;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                8, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_xmm_operand(out, 1);
+                    if (out->op2.is_reg) mark_xmm_operand(out, 2);
+                    else if (out->op2.is_mem) out->op2.size = 8;
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x50 && (vex_pp == 0 || vex_pp == 1)) ||
+                    (vex_opcode == 0xd7 && vex_pp == 1)) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = vex_opcode == 0xd7 ? HB_INS_PMOVMSKB :
+                                  (vex_pp == 1 ? HB_INS_MOVMSKPD : HB_INS_MOVMSKPS);
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                4, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    if (!out->op2.is_reg) return HB_ERR_UNSUPPORTED_OPCODE;
+                    mark_xmm_operand(out, 2);
+                    out->op1.size = 4;
+                    return HB_OK;
+                }
+                if (vex_opcode == 0xae && vex_pp == 0) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    uint8_t mod = (modrm >> 6) & 3;
+                    uint8_t ext = (modrm >> 3) & 7;
+                    if (mod == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+                    if (ext == 2) {
+                        out->opcode = HB_INS_NOP;
+                        return parse_modrm_ext(d, modrm, false, rex_b, 4, out, 1);
+                    }
+                    if (ext == 3) {
+                        out->opcode = HB_INS_MOV;
+                        hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 4, out, 1);
+                        if (r != HB_OK) return r;
+                        set_imm(out, 2, HB_X64_DEFAULT_MXCSR, 4);
+                        return HB_OK;
+                    }
+                    return HB_ERR_UNSUPPORTED_OPCODE;
+                }
+                if (vex_opcode == 0xf7 && vex_pp == 1 && !vex_l) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    if ((modrm >> 6) != 3) return HB_ERR_UNSUPPORTED_OPCODE;
+                    out->opcode = HB_INS_VMASKMOVDQU;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                16, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_xmm_operand(out, 1);
+                    mark_xmm_operand(out, 2);
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0xc4 || vex_opcode == 0xc5) && vex_pp == 1 && !vex_w && !vex_l) {
+                    bool extract = vex_opcode == 0xc5;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = extract ? HB_INS_PEXTRW : HB_INS_PINSRW;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 4, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t imm = read_u8(d);
+                    set_extra_imm8(out, imm);
+                    if (extract) {
+                        mark_xmm_operand(out, 2);
+                    } else {
+                        hb_decoded_t tmp = *out;
+                        out->op3 = tmp.op2;
+                        memset(&out->op2, 0, sizeof(out->op2));
+                        set_reg(out, 2, vex_v, 16);
+                        mark_xmm_operand(out, 1);
+                        mark_xmm_operand(out, 2);
+                        if (out->op3.is_mem) out->op3.size = 2;
+                    }
                     return HB_OK;
                 }
                 if ((vex_opcode == 0x6f || vex_opcode == 0x7f) &&
@@ -969,6 +1552,229 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                                                 vex_opcode == 0x11 || vex_opcode == 0x29);
                     if (r != HB_OK) return r;
                     mark_vec_operands(out, vec_size);
+                    return HB_OK;
+                }
+                if (((vex_opcode == 0x2b) && (vex_pp == 0 || vex_pp == 1)) ||
+                    ((vex_opcode == 0xe7) && vex_pp == 1)) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+                    out->opcode = HB_INS_SSE_MOV;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, true);
+                    if (r != HB_OK) return r;
+                    mark_vec_operands(out, vec_size);
+                    return HB_OK;
+                }
+                if (vex_opcode == 0xf0 && vex_pp == 3) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+                    out->opcode = HB_INS_SSE_MOV;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_vec_operands(out, vec_size);
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x2e || vex_opcode == 0x2f) &&
+                    (vex_pp == 0 || vex_pp == 1)) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    bool is_pd = vex_pp == 1;
+                    out->opcode = is_pd ? HB_INS_COMISD : HB_INS_COMISS;
+                    out->writes_flags = true;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                is_pd ? 8 : 4, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_xmm_operand(out, 1);
+                    mark_xmm_operand(out, 2);
+                    if (out->op2.is_mem) out->op2.size = is_pd ? 8 : 4;
+                    return HB_OK;
+                }
+                if (vex_opcode == 0x70 && (vex_pp == 1 || vex_pp == 2 || vex_pp == 3)) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    if (vex_pp == 1) out->opcode = HB_INS_PSHUFD;
+                    else if (vex_pp == 2) out->opcode = HB_INS_PSHUFHW;
+                    else out->opcode = HB_INS_PSHUFLW;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_vec_operand(out, 1, vec_size);
+                    if (out->op2.is_reg) mark_vec_operand(out, 2, vec_size);
+                    else if (out->op2.is_mem) out->op2.size = vec_size;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    set_imm(out, 3, read_u8(d), 1);
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x12 && (vex_pp == 2 || vex_pp == 3)) ||
+                    (vex_opcode == 0x16 && vex_pp == 2)) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    if (vex_opcode == 0x12 && vex_pp == 2) out->opcode = HB_INS_VMOVSLDUP;
+                    else if (vex_opcode == 0x12) out->opcode = HB_INS_VMOVDDUP;
+                    else out->opcode = HB_INS_VMOVSHDUP;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_vec_operand(out, 1, vec_size);
+                    if (out->op2.is_reg) mark_vec_operand(out, 2, vec_size);
+                    else if (out->op2.is_mem) out->op2.size = vec_size;
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x5a && (vex_pp == 0 || vex_pp == 1)) ||
+                    (vex_opcode == 0x5b && (vex_pp == 0 || vex_pp == 1 || vex_pp == 2)) ||
+                    (vex_opcode == 0xe6 && (vex_pp == 1 || vex_pp == 2 || vex_pp == 3))) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    uint8_t dst_size = vec_size;
+                    uint8_t src_size = vec_size;
+                    if (vex_opcode == 0x5a) {
+                        if (vex_pp == 0) {
+                            out->opcode = HB_INS_CVTPS2PD;
+                            src_size = vex_l ? 16 : 8;
+                        } else {
+                            out->opcode = HB_INS_CVTPD2PS;
+                            dst_size = 16;
+                            src_size = vex_l ? 32 : 16;
+                        }
+                    } else if (vex_opcode == 0x5b) {
+                        if (vex_pp == 0) out->opcode = HB_INS_CVTDQ2PS;
+                        else if (vex_pp == 1) out->opcode = HB_INS_CVTPS2DQ;
+                        else out->opcode = HB_INS_CVTTPS2DQ;
+                    } else {
+                        if (vex_pp == 1) {
+                            out->opcode = HB_INS_CVTTPD2DQ;
+                            dst_size = 16;
+                            src_size = vex_l ? 32 : 16;
+                        } else if (vex_pp == 2) {
+                            out->opcode = HB_INS_CVTDQ2PD;
+                            src_size = vex_l ? 16 : 8;
+                        } else {
+                            out->opcode = HB_INS_CVTPD2DQ;
+                            dst_size = 16;
+                            src_size = vex_l ? 32 : 16;
+                        }
+                    }
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                src_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_vec_operand(out, 1, dst_size);
+                    if (out->op2.is_reg) mark_vec_operand(out, 2, src_size);
+                    else if (out->op2.is_mem) out->op2.size = src_size;
+                    return HB_OK;
+                }
+                if (vex_opcode == 0x5a && (vex_pp == 2 || vex_pp == 3)) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    uint8_t lane = vex_pp == 3 ? 8 : 4;
+                    out->opcode = vex_pp == 3 ? HB_INS_CVTSD2SS : HB_INS_CVTSS2SD;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                lane, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    hb_decoded_t tmp = *out;
+                    out->op3 = tmp.op2;
+                    memset(&out->op2, 0, sizeof(out->op2));
+                    set_reg(out, 2, vex_v, 16);
+                    mark_vec_operand(out, 1, 16);
+                    mark_vec_operand(out, 2, 16);
+                    if (out->op3.is_reg) mark_vec_operand(out, 3, 16);
+                    else if (out->op3.is_mem) out->op3.size = lane;
+                    return HB_OK;
+                }
+                if (vex_opcode == 0x2a && (vex_pp == 2 || vex_pp == 3)) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = vex_pp == 3 ? HB_INS_CVTSI2SD : HB_INS_CVTSI2SS;
+                    hb_result_t r = parse_modrm(d, modrm, vex_w, rex_r, rex_x, rex_b,
+                                                vex_w ? 8 : 4, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    hb_decoded_t tmp = *out;
+                    out->op3 = tmp.op2;
+                    memset(&out->op2, 0, sizeof(out->op2));
+                    set_reg(out, 2, vex_v, 16);
+                    mark_vec_operand(out, 1, 16);
+                    mark_vec_operand(out, 2, 16);
+                    out->op3.size = vex_w ? 8 : 4;
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x2c || vex_opcode == 0x2d) &&
+                    (vex_pp == 2 || vex_pp == 3)) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    bool is_sd = vex_pp == 3;
+                    bool truncate = vex_opcode == 0x2c;
+                    if (is_sd) out->opcode = truncate ? HB_INS_CVTTSD2SI : HB_INS_CVTSD2SI;
+                    else out->opcode = truncate ? HB_INS_CVTTSS2SI : HB_INS_CVTSS2SI;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                is_sd ? 8 : 4, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    out->op1.size = vex_w ? 8 : 4;
+                    mark_xmm_operand(out, 2);
+                    if (out->op2.is_mem) out->op2.size = is_sd ? 8 : 4;
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x52 || vex_opcode == 0x53) && vex_pp == 2) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = vex_opcode == 0x52 ? HB_INS_RSQRTSS : HB_INS_RCPSS;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                4, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    hb_decoded_t tmp = *out;
+                    out->op3 = tmp.op2;
+                    memset(&out->op2, 0, sizeof(out->op2));
+                    set_reg(out, 2, vex_v, 16);
+                    mark_vec_operand(out, 1, 16);
+                    mark_vec_operand(out, 2, 16);
+                    if (out->op3.is_reg) mark_vec_operand(out, 3, 16);
+                    else if (out->op3.is_mem) out->op3.size = 4;
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x12 || vex_opcode == 0x13 ||
+                     vex_opcode == 0x16 || vex_opcode == 0x17) &&
+                    (vex_pp == 0 || vex_pp == 1) && !vex_l) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    uint8_t mod = (modrm >> 6) & 3;
+                    if (mod == 3) {
+                        if (vex_pp != 0 || vex_opcode == 0x13 || vex_opcode == 0x17)
+                            return HB_ERR_UNSUPPORTED_OPCODE;
+                        out->opcode = vex_opcode == 0x12 ? HB_INS_VMOVHLPS : HB_INS_VMOVLHPS;
+                        hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                    16, out, 1, 2, false);
+                        if (r != HB_OK) return r;
+                        hb_decoded_t tmp = *out;
+                        out->op3 = tmp.op2;
+                        memset(&out->op2, 0, sizeof(out->op2));
+                        set_reg(out, 2, vex_v, 16);
+                        mark_vec_operand(out, 1, 16);
+                        mark_vec_operand(out, 2, 16);
+                        mark_vec_operand(out, 3, 16);
+                        return HB_OK;
+                    }
+                    bool store = vex_opcode == 0x13 || vex_opcode == 0x17;
+                    bool high = vex_opcode == 0x16 || vex_opcode == 0x17;
+                    if (store && vex_v != 0) return HB_ERR_UNSUPPORTED_OPCODE;
+                    if (vex_pp == 1) out->opcode = high ? HB_INS_VMOVHPD : HB_INS_VMOVLPD;
+                    else out->opcode = high ? HB_INS_VMOVHPS : HB_INS_VMOVLPS;
+                    out->writes_flags = false;
+                    if (store) {
+                        hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                    8, out, 1, 2, true);
+                        if (r != HB_OK) return r;
+                        mark_xmm_operand(out, 2);
+                        out->op1.size = 8;
+                        return HB_OK;
+                    }
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                8, out, 1, 3, false);
+                    if (r != HB_OK) return r;
+                    set_reg(out, 2, vex_v, 16);
+                    mark_vec_operand(out, 1, 16);
+                    mark_vec_operand(out, 2, 16);
+                    if (out->op3.is_mem) out->op3.size = 8;
                     return HB_OK;
                 }
                 if ((vex_opcode == 0x10 || vex_opcode == 0x11) &&
@@ -1008,13 +1814,77 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                     }
                     return HB_OK;
                 }
+                if ((vex_opcode == 0xc6) && (vex_pp == 0 || vex_pp == 1)) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = vex_pp == 1 ? HB_INS_SHUFPD : HB_INS_SHUFPS;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    hb_decoded_t tmp = *out;
+                    out->op3 = tmp.op2;
+                    memset(&out->op2, 0, sizeof(out->op2));
+                    set_reg(out, 2, vex_v, vec_size);
+                    mark_vec_operand(out, 1, vec_size);
+                    mark_vec_operand(out, 2, vec_size);
+                    if (out->op3.is_reg) mark_vec_operand(out, 3, vec_size);
+                    else if (out->op3.is_mem) out->op3.size = vec_size;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    set_extra_imm8(out, read_u8(d));
+                    return HB_OK;
+                }
+                if (vex_pp == 1 && (vex_opcode == 0x71 || vex_opcode == 0x72 || vex_opcode == 0x73)) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    uint8_t ext = (modrm >> 3) & 7;
+                    if (vex_opcode == 0x71 && ext == 2) mapped = HB_INS_PSRLW;
+                    else if (vex_opcode == 0x71 && ext == 4) mapped = HB_INS_PSRAW;
+                    else if (vex_opcode == 0x71 && ext == 6) mapped = HB_INS_PSLLW;
+                    else if (vex_opcode == 0x72 && ext == 2) mapped = HB_INS_PSRLD;
+                    else if (vex_opcode == 0x72 && ext == 4) mapped = HB_INS_PSRAD;
+                    else if (vex_opcode == 0x72 && ext == 6) mapped = HB_INS_PSLLD;
+                    else if (vex_opcode == 0x73 && ext == 2) mapped = HB_INS_PSRLQ;
+                    else if (vex_opcode == 0x73 && ext == 3) mapped = HB_INS_PSRLDQ;
+                    else if (vex_opcode == 0x73 && ext == 6) mapped = HB_INS_PSLLQ;
+                    else if (vex_opcode == 0x73 && ext == 7) mapped = HB_INS_PSLLDQ;
+                    else return HB_ERR_UNSUPPORTED_OPCODE;
+                    out->opcode = mapped;
+                    out->writes_flags = false;
+                    set_reg(out, 1, vex_v, vec_size);
+                    hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, vec_size, out, 2);
+                    if (r != HB_OK) return r;
+                    mark_vec_operand(out, 1, vec_size);
+                    mark_vec_operand(out, 2, vec_size);
+                    if (out->op2.is_mem) out->op2.size = vec_size;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    set_imm(out, 3, read_u8(d), 1);
+                    return HB_OK;
+                }
                 switch (vex_opcode) {
+                    case 0x14:
+                        if (vex_pp == 0 || vex_pp == 1) mapped = vex_pp == 1 ? HB_INS_UNPCKLPD : HB_INS_UNPCKLPS;
+                        break;
+                    case 0x15:
+                        if (vex_pp == 0 || vex_pp == 1) mapped = vex_pp == 1 ? HB_INS_UNPCKHPD : HB_INS_UNPCKHPS;
+                        break;
+                    case 0x7c:
+                        if (vex_pp == 1 || vex_pp == 3) mapped = vex_pp == 1 ? HB_INS_VHADDPD : HB_INS_VHADDPS;
+                        break;
+                    case 0x7d:
+                        if (vex_pp == 1 || vex_pp == 3) mapped = vex_pp == 1 ? HB_INS_VHSUBPD : HB_INS_VHSUBPS;
+                        break;
                     case 0x54: mapped = HB_INS_XMM_AND; break;
                     case 0x55: mapped = HB_INS_XMM_ANDN; break;
                     case 0x56: mapped = HB_INS_XMM_OR; break;
                     case 0x57: mapped = HB_INS_XORPS; break;
                     case 0x51:
                         mapped = vex_pp == 1 ? HB_INS_SQRTPD : (vex_pp == 2 ? HB_INS_SQRTSS : (vex_pp == 3 ? HB_INS_SQRTSD : HB_INS_SQRTPS));
+                        break;
+                    case 0x52:
+                        if (vex_pp == 0) mapped = HB_INS_RSQRTPS;
+                        break;
+                    case 0x53:
+                        if (vex_pp == 0) mapped = HB_INS_RCPPS;
                         break;
                     case 0x58:
                         mapped = vex_pp == 1 ? HB_INS_ADDPD : (vex_pp == 2 ? HB_INS_ADDSS : (vex_pp == 3 ? HB_INS_ADDSD : HB_INS_ADDPS));
@@ -1033,6 +1903,9 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                         break;
                     case 0x5f:
                         mapped = vex_pp == 1 ? HB_INS_MAXPD : (vex_pp == 2 ? HB_INS_MAXSS : (vex_pp == 3 ? HB_INS_MAXSD : HB_INS_MAXPS));
+                        break;
+                    case 0xd0:
+                        if (vex_pp == 1 || vex_pp == 3) mapped = vex_pp == 1 ? HB_INS_VADDSUBPD : HB_INS_VADDSUBPS;
                         break;
                     case 0xdb: mapped = HB_INS_XMM_AND; break;
                     case 0xdf: mapped = HB_INS_XMM_ANDN; break;
@@ -1058,6 +1931,48 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                     mapped = sse2_0f_compare_opcode(vex_opcode);
                 }
             } else if (vex_map == 2 && vex_pp == 1) {
+                if ((vex_opcode == 0x0e || vex_opcode == 0x0f) && !vex_w) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = vex_opcode == 0x0f ? HB_INS_VTESTPD : HB_INS_VTESTPS;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_vec_operand(out, 1, vec_size);
+                    if (out->op2.is_reg) mark_vec_operand(out, 2, vec_size);
+                    else if (out->op2.is_mem) out->op2.size = vec_size;
+                    return HB_OK;
+                }
+                if (!mapped && (vex_opcode == 0x18 || vex_opcode == 0x19 ||
+                                vex_opcode == 0x1a)) {
+                    uint8_t src_bytes = 0;
+                    bool allow_reg_src = false;
+                    if (vex_opcode == 0x18 && !vex_w) {
+                        mapped = HB_INS_VBROADCASTSS;
+                        src_bytes = 4;
+                        allow_reg_src = true;
+                    } else if (vex_opcode == 0x19 && !vex_w && vex_l) {
+                        mapped = HB_INS_VBROADCASTSD;
+                        src_bytes = 8;
+                        allow_reg_src = true;
+                    } else if (vex_opcode == 0x1a && !vex_w && vex_l) {
+                        mapped = HB_INS_VBROADCASTF32X4;
+                        src_bytes = 16;
+                    } else {
+                        return HB_ERR_UNSUPPORTED_OPCODE;
+                    }
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    if (((modrm >> 6) & 3u) == 3 && !allow_reg_src) return HB_ERR_UNSUPPORTED_OPCODE;
+                    out->opcode = mapped;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                src_bytes, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_vec_operand(out, 1, vec_size);
+                    if (out->op2.is_reg) mark_xmm_operand(out, 2);
+                    if (out->op2.is_mem) out->op2.size = src_bytes;
+                    return HB_OK;
+                }
                 if (vex_opcode == 0x13 && !vex_w) {
                     uint8_t src_bytes = vex_l ? 16 : 8;
                     uint8_t dst_bytes = vex_l ? 32 : 16;
@@ -1076,12 +1991,39 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                     }
                     return HB_OK;
                 }
+                if (vex_opcode == 0x2a) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+                    out->opcode = HB_INS_SSE_MOV;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    mark_vec_operands(out, vec_size);
+                    return HB_OK;
+                }
+                if (!mapped && (vex_opcode == 0x0c || vex_opcode == 0x0d) && !vex_w) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = vex_opcode == 0x0c ? HB_INS_VPERMILPS : HB_INS_VPERMILPD;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    hb_decoded_t tmp = *out;
+                    out->op3 = tmp.op2;
+                    memset(&out->op2, 0, sizeof(out->op2));
+                    set_reg(out, 2, vex_v, vec_size);
+                    mark_vec_operand(out, 1, vec_size);
+                    mark_vec_operand(out, 2, vec_size);
+                    if (out->op3.is_reg) mark_vec_operand(out, 3, vec_size);
+                    else if (out->op3.is_mem) out->op3.size = vec_size;
+                    return HB_OK;
+                }
                 if (!mapped) mapped = fma3_0f38_opcode(vex_opcode, vex_w);
-                if (mapped && mapped >= HB_INS_VFMADD132PS && mapped <= HB_INS_VFMSUB231SD) {
+                if (mapped && mapped >= HB_INS_VFMADD132PS && mapped <= HB_INS_VFNMSUB231SD) {
                     bool scalar = fma3_opcode_is_scalar(vex_opcode);
                     uint8_t lane = vex_w ? 8 : 4;
                     uint8_t op_bytes = scalar ? 16 : vec_size;
-                    if (scalar && vex_l) return HB_ERR_UNSUPPORTED_OPCODE;
                     if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
                     uint8_t modrm = read_u8(d);
                     out->opcode = mapped;
@@ -1100,6 +2042,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                 }
                 mapped = ssse3_0f38_opcode(vex_opcode);
                 if (!mapped && vex_opcode == 0xcf) mapped = HB_INS_VGF2P8MULB;
+                if (!mapped && vex_opcode == 0xdb) mapped = HB_INS_AESIMC;
                 if (!mapped && vex_opcode >= 0xdc && vex_opcode <= 0xdf) {
                     switch (vex_opcode) {
                         case 0xdc: mapped = HB_INS_VAESENC; break;
@@ -1109,7 +2052,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                         default: break;
                     }
                 }
-                if (!mapped && vex_opcode != 0xdb) mapped = sse41_0f38_opcode(vex_opcode);
+                if (!mapped) mapped = sse41_0f38_opcode(vex_opcode);
                 if (!mapped && vex_opcode >= 0x90 && vex_opcode <= 0x93) {
                     uint8_t elem = 4, index = 4, count = 0, dest_size = vec_size;
                     if (vex_opcode == 0x90) {
@@ -1269,6 +2212,22 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                     return HB_OK;
                 }
             } else if (vex_map == 3 && vex_pp == 1) {
+                if ((vex_opcode == 0x04 || vex_opcode == 0x05) && !vex_w) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = vex_opcode == 0x04 ? HB_INS_VPERMILPS : HB_INS_VPERMILPD;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t imm = read_u8(d);
+                    mark_vec_operand(out, 1, vec_size);
+                    if (out->op2.is_reg) mark_vec_operand(out, 2, vec_size);
+                    else if (out->op2.is_mem) out->op2.size = vec_size;
+                    set_imm(out, 3, imm, 1);
+                    set_extra_imm8(out, imm);
+                    return HB_OK;
+                }
                 if (vex_opcode == 0x1d && !vex_w) {
                     uint8_t result_bytes = vex_l ? 16 : 8;
                     if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
@@ -1287,6 +2246,168 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                         out->op1.size = result_bytes;
                     }
                     mark_vec_operand(out, 2, vec_size);
+                    return HB_OK;
+                }
+                if (vex_opcode >= 0x08 && vex_opcode <= 0x0b && vex_pp == 1) {
+                    bool scalar = vex_opcode == 0x0a || vex_opcode == 0x0b;
+                    uint8_t lane = (vex_opcode == 0x09 || vex_opcode == 0x0b) ? 8 : 4;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    switch (vex_opcode) {
+                        case 0x08: out->opcode = HB_INS_ROUNDPS; break;
+                        case 0x09: out->opcode = HB_INS_ROUNDPD; break;
+                        case 0x0a: out->opcode = HB_INS_ROUNDSS; break;
+                        case 0x0b: out->opcode = HB_INS_ROUNDSD; break;
+                        default: return HB_ERR_UNSUPPORTED_OPCODE;
+                    }
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                scalar ? lane : vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t imm = read_u8(d);
+                    set_extra_imm8(out, imm);
+                    if (scalar) {
+                        hb_decoded_t tmp = *out;
+                        out->op3 = tmp.op2;
+                        memset(&out->op2, 0, sizeof(out->op2));
+                        set_reg(out, 2, vex_v, 16);
+                        mark_vec_operand(out, 1, 16);
+                        mark_vec_operand(out, 2, 16);
+                        if (out->op3.is_reg) mark_vec_operand(out, 3, 16);
+                        else if (out->op3.is_mem) out->op3.size = lane;
+                    } else {
+                        mark_vec_operand(out, 1, vec_size);
+                        if (out->op2.is_reg) mark_vec_operand(out, 2, vec_size);
+                        else if (out->op2.is_mem) out->op2.size = vec_size;
+                    }
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x40 || vex_opcode == 0x41) && vex_pp == 1 && !vex_w) {
+                    bool fp64 = vex_opcode == 0x41;
+                    if (fp64 && vex_l) return HB_ERR_UNSUPPORTED_OPCODE;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = fp64 ? HB_INS_DPPD : HB_INS_DPPS;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                fp64 ? 16 : vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t imm = read_u8(d);
+                    set_extra_imm8(out, imm);
+                    hb_decoded_t tmp = *out;
+                    out->op3 = tmp.op2;
+                    memset(&out->op2, 0, sizeof(out->op2));
+                    set_reg(out, 2, vex_v, fp64 ? 16 : vec_size);
+                    mark_vec_operand(out, 1, fp64 ? 16 : vec_size);
+                    mark_vec_operand(out, 2, fp64 ? 16 : vec_size);
+                    if (out->op3.is_reg) mark_vec_operand(out, 3, fp64 ? 16 : vec_size);
+                    else if (out->op3.is_mem) out->op3.size = fp64 ? 16 : vec_size;
+                    return HB_OK;
+                }
+                if (vex_opcode == 0x42 && vex_pp == 1 && !vex_w && !vex_l) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = HB_INS_VMPSADBW;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t imm = read_u8(d);
+                    set_extra_imm8(out, imm);
+                    hb_decoded_t tmp = *out;
+                    out->op3 = tmp.op2;
+                    memset(&out->op2, 0, sizeof(out->op2));
+                    set_reg(out, 2, vex_v, 16);
+                    mark_vec_operand(out, 1, 16);
+                    mark_vec_operand(out, 2, 16);
+                    if (out->op3.is_reg) mark_vec_operand(out, 3, 16);
+                    else if (out->op3.is_mem) out->op3.size = 16;
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x17 || vex_opcode == 0x21) && vex_pp == 1 && !vex_l) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = vex_opcode == 0x17 ? HB_INS_EXTRACTPS : HB_INS_INSERTPS;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 4, out, 1, 2,
+                                                vex_opcode == 0x17);
+                    if (r != HB_OK) return r;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t imm = read_u8(d);
+                    set_extra_imm8(out, imm);
+                    if (vex_opcode == 0x17) {
+                        mark_xmm_operand(out, 2);
+                        if (out->op1.is_mem) out->op1.size = 4;
+                    } else {
+                        hb_decoded_t tmp = *out;
+                        out->op3 = tmp.op2;
+                        memset(&out->op2, 0, sizeof(out->op2));
+                        set_reg(out, 2, vex_v, 16);
+                        mark_xmm_operand(out, 1);
+                        mark_xmm_operand(out, 2);
+                        if (out->op3.is_reg) mark_xmm_operand(out, 3);
+                        else if (out->op3.is_mem) out->op3.size = 4;
+                    }
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x14 || vex_opcode == 0x15 || vex_opcode == 0x16 ||
+                     vex_opcode == 0x20 || vex_opcode == 0x22) && vex_pp == 1 && !vex_l) {
+                    bool extract = vex_opcode == 0x14 || vex_opcode == 0x15 || vex_opcode == 0x16;
+                    uint8_t elem_size = 4;
+                    if (vex_opcode == 0x14 || vex_opcode == 0x20) elem_size = 1;
+                    else if (vex_opcode == 0x15) elem_size = 2;
+                    else if (vex_w) elem_size = 8;
+                    if ((vex_opcode == 0x14 || vex_opcode == 0x15 || vex_opcode == 0x20) && vex_w) {
+                        return HB_ERR_UNSUPPORTED_OPCODE;
+                    }
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    if (extract) {
+                        if (vex_opcode == 0x14) out->opcode = HB_INS_PEXTRB;
+                        else if (vex_opcode == 0x15) out->opcode = HB_INS_PEXTRW;
+                        else out->opcode = vex_w ? HB_INS_PEXTRQ : HB_INS_PEXTRD;
+                        hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                    elem_size == 8 ? 8 : 4, out, 1, 2, true);
+                        if (r != HB_OK) return r;
+                        if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                        set_extra_imm8(out, read_u8(d));
+                        mark_xmm_operand(out, 2);
+                        if (out->op1.is_mem) out->op1.size = elem_size;
+                    } else {
+                        if (vex_opcode == 0x20) out->opcode = HB_INS_PINSRB;
+                        else out->opcode = vex_w ? HB_INS_PINSRQ : HB_INS_PINSRD;
+                        hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                    elem_size == 8 ? 8 : 4, out, 1, 2, false);
+                        if (r != HB_OK) return r;
+                        if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                        uint8_t imm = read_u8(d);
+                        set_extra_imm8(out, imm);
+                        hb_decoded_t tmp = *out;
+                        out->op3 = tmp.op2;
+                        memset(&out->op2, 0, sizeof(out->op2));
+                        set_reg(out, 2, vex_v, 16);
+                        mark_xmm_operand(out, 1);
+                        mark_xmm_operand(out, 2);
+                        if (out->op3.is_mem) out->op3.size = elem_size;
+                    }
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0xce || vex_opcode == 0xcf) && vex_pp == 1 && vex_w) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    out->opcode = vex_opcode == 0xce ? HB_INS_VGF2P8AFFINEQB : HB_INS_VGF2P8AFFINEINVQB;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t imm = read_u8(d);
+                    set_extra_imm8(out, imm);
+                    hb_decoded_t tmp = *out;
+                    out->op3 = tmp.op2;
+                    memset(&out->op2, 0, sizeof(out->op2));
+                    set_reg(out, 2, vex_v, vec_size);
+                    mark_vec_operand(out, 1, vec_size);
+                    mark_vec_operand(out, 2, vec_size);
+                    if (out->op3.is_reg) mark_vec_operand(out, 3, vec_size);
+                    else if (out->op3.is_mem) out->op3.size = vec_size;
                     return HB_OK;
                 }
                 if (vex_opcode == 0x44) {
@@ -1368,6 +2489,30 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                         if (out->op3.is_reg) mark_vec_operand(out, 3, rm_size);
                         else if (out->op3.is_mem) out->op3.size = rm_size;
                     }
+                    return HB_OK;
+                }
+                if ((vex_opcode == 0x4a || vex_opcode == 0x4b || vex_opcode == 0x4c) && !vex_w) {
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    uint8_t modrm = read_u8(d);
+                    switch (vex_opcode) {
+                        case 0x4a: out->opcode = HB_INS_VBLENDVPS; break;
+                        case 0x4b: out->opcode = HB_INS_VBLENDVPD; break;
+                        case 0x4c: out->opcode = HB_INS_VPBLENDVB; break;
+                        default: return HB_ERR_UNSUPPORTED_OPCODE;
+                    }
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                vec_size, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    hb_decoded_t tmp = *out;
+                    out->op3 = tmp.op2;
+                    memset(&out->op2, 0, sizeof(out->op2));
+                    set_reg(out, 2, vex_v, vec_size);
+                    mark_vec_operand(out, 1, vec_size);
+                    mark_vec_operand(out, 2, vec_size);
+                    if (out->op3.is_reg) mark_vec_operand(out, 3, vec_size);
+                    else if (out->op3.is_mem) out->op3.size = vec_size;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    set_extra_imm8(out, read_u8(d));
                     return HB_OK;
                 }
                 mapped = sse41_0f3a_opcode(vex_opcode);
@@ -2240,16 +3385,128 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         if (op2 == 0x38) {
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t op3 = read_u8(d);
-            int vec_opcode = operand16 ? ssse3_0f38_opcode(op3) : 0;
+            if (prefix_f2 && (op3 == 0xf0 || op3 == 0xf1)) {
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                out->opcode = HB_INS_CRC32;
+                out->writes_flags = false;
+                uint8_t dst_size = rex_w ? 8 : 4;
+                uint8_t src_size = (op3 == 0xf0) ? 1 : (rex_w ? 8 : (operand16 ? 2 : 4));
+                hb_result_t r = parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b,
+                                            op3 == 0xf0 ? 4 : src_size, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                out->op1.size = dst_size;
+                if (op3 == 0xf0) {
+                    if (out->op2.is_reg) {
+                        uint8_t ro = 0;
+                        out->op2.reg = reg8_idx(modrm & 7, out->has_rex, rex_b, &ro);
+                        out->op2.reg_offset = ro;
+                    }
+                    out->op2.size = 1;
+                } else {
+                    out->op2.size = src_size;
+                }
+                return HB_OK;
+            }
+            if ((operand16 || prefix_f3) && op3 == 0xf6) {
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                out->opcode = prefix_f3 ? HB_INS_ADOX : HB_INS_ADCX;
+                out->writes_flags = true;
+                hb_result_t r = parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b, 4, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                out->op1.size = rex_w ? 8 : 4;
+                out->op2.size = rex_w ? 8 : 4;
+                return HB_OK;
+            }
+            bool movbe_redundant_f3_rex = prefix_f3 && has_rex && !prefix_f2;
+            if (((!prefix_f2 && !prefix_f3) || movbe_redundant_f3_rex) &&
+                (op3 == 0xf0 || op3 == 0xf1)) {
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+                uint8_t size = movbe_redundant_f3_rex ? (operand16 ? 2 : 4) :
+                               (rex_w ? 8 : (operand16 ? 2 : 4));
+                out->opcode = HB_INS_MOVBE;
+                out->writes_flags = false;
+                hb_result_t r = parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b,
+                                            size, out, 1, 2, op3 == 0xf1);
+                if (r != HB_OK) return r;
+                out->op1.size = size;
+                out->op2.size = size;
+                return HB_OK;
+            }
+            if (op3 == 0xf9) {
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+                uint8_t size = rex_w ? 8 : 4;
+                out->opcode = HB_INS_MOVDIRI;
+                out->writes_flags = false;
+                hb_result_t r = parse_modrm(d, modrm, rex_w, rex_r, rex_x, rex_b,
+                                            size, out, 1, 2, true);
+                if (r != HB_OK) return r;
+                out->op1.size = size;
+                out->op2.size = size;
+                return HB_OK;
+            }
+            if (operand16 && op3 == 0xf8) {
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+                out->opcode = HB_INS_MOVDIR64B;
+                out->writes_flags = false;
+                hb_result_t r = parse_modrm(d, modrm, true, rex_r, rex_x, rex_b, 8, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                out->op1.size = 8;
+                if (out->op2.is_mem) out->op2.size = 64;
+                return HB_OK;
+            }
+            if (op3 >= 0xc8 && op3 <= 0xcd) {
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                switch (op3) {
+                    case 0xc8: out->opcode = HB_INS_SHA1NEXTE; break;
+                    case 0xc9: out->opcode = HB_INS_SHA1MSG1; break;
+                    case 0xca: out->opcode = HB_INS_SHA1MSG2; break;
+                    case 0xcb: out->opcode = HB_INS_SHA256RNDS2; break;
+                    case 0xcc: out->opcode = HB_INS_SHA256MSG1; break;
+                    case 0xcd: out->opcode = HB_INS_SHA256MSG2; break;
+                    default: return HB_ERR_UNSUPPORTED_OPCODE;
+                }
+                out->writes_flags = false;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                mark_xmm_operand(out, 1);
+                mark_xmm_operand(out, 2);
+                if (out->op2.is_mem) out->op2.size = 16;
+                return HB_OK;
+            }
+            if (operand16 && op3 == 0x2a) {
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                uint8_t modrm = read_u8(d);
+                if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+                out->opcode = HB_INS_MOVNTDQA;
+                out->writes_flags = false;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                mark_xmm_operand(out, 1);
+                if (out->op2.is_mem) out->op2.size = 16;
+                return HB_OK;
+            }
+            bool redundant_rex_mmx = (prefix_f2 || prefix_f3) && has_rex && !operand16 && !(prefix_f2 && prefix_f3);
+            int vec_opcode = (operand16 || (!prefix_f2 && !prefix_f3) || redundant_rex_mmx) ?
+                             ssse3_0f38_opcode(op3) : 0;
             if (!vec_opcode && operand16) vec_opcode = sse41_0f38_opcode(op3);
             if (vec_opcode) {
                 if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
                 uint8_t modrm = read_u8(d);
                 out->opcode = vec_opcode;
                 out->writes_flags = false;
-                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+                uint8_t vec_bytes = operand16 ? 16 : 8;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, vec_bytes, out, 1, 2, false);
                 if (r != HB_OK) return r;
-                mark_vec_operands(out, 16);
+                mark_vec_operands(out, vec_bytes);
                 return HB_OK;
             }
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
@@ -2265,13 +3522,121 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             if (!can_read(d, 2)) return HB_ERR_DECODE_FAILED;
             uint8_t op3 = read_u8(d);
             uint8_t modrm = read_u8(d);
-            int vec_opcode = operand16 ? sse41_0f3a_opcode(op3) : 0;
+            if (op3 == 0xcc) {
+                out->opcode = HB_INS_SHA1RNDS4;
+                out->writes_flags = false;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                set_extra_imm8(out, read_u8(d));
+                mark_xmm_operand(out, 1);
+                mark_xmm_operand(out, 2);
+                if (out->op2.is_mem) out->op2.size = 16;
+                return HB_OK;
+            }
+            if (operand16 && op3 >= 0x08 && op3 <= 0x0b) {
+                bool scalar = op3 == 0x0a || op3 == 0x0b;
+                size_t mem_size = (op3 == 0x09 || op3 == 0x0b) ? 8 : (scalar ? 4 : 16);
+                switch (op3) {
+                    case 0x08: out->opcode = HB_INS_ROUNDPS; break;
+                    case 0x09: out->opcode = HB_INS_ROUNDPD; break;
+                    case 0x0a: out->opcode = HB_INS_ROUNDSS; break;
+                    case 0x0b: out->opcode = HB_INS_ROUNDSD; break;
+                    default: return HB_ERR_UNSUPPORTED_OPCODE;
+                }
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, mem_size, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                set_extra_imm8(out, read_u8(d));
+                mark_xmm_operand(out, 1);
+                mark_xmm_operand(out, 2);
+                if (out->op2.is_mem) out->op2.size = mem_size;
+                return HB_OK;
+            }
+            if (operand16 && (op3 == 0x40 || op3 == 0x41)) {
+                size_t mem_size = 16;
+                out->opcode = op3 == 0x41 ? HB_INS_DPPD : HB_INS_DPPS;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, mem_size, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                set_extra_imm8(out, read_u8(d));
+                mark_xmm_operand(out, 1);
+                mark_xmm_operand(out, 2);
+                if (out->op2.is_mem) out->op2.size = mem_size;
+                return HB_OK;
+            }
+            if (operand16 && (op3 == 0x17 || op3 == 0x21)) {
+                bool extract = op3 == 0x17;
+                out->opcode = extract ? HB_INS_EXTRACTPS : HB_INS_INSERTPS;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 4, out, 1, 2, extract);
+                if (r != HB_OK) return r;
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                set_extra_imm8(out, read_u8(d));
+                if (extract) {
+                    mark_xmm_operand(out, 2);
+                    if (out->op1.is_mem) out->op1.size = 4;
+                } else {
+                    mark_xmm_operand(out, 1);
+                    if (out->op2.is_reg) mark_xmm_operand(out, 2);
+                    else if (out->op2.is_mem) out->op2.size = 4;
+                }
+                return HB_OK;
+            }
+            if (operand16 && (op3 == 0x14 || op3 == 0x15 || op3 == 0x16 ||
+                              op3 == 0x20 || op3 == 0x22)) {
+                bool extract = op3 == 0x14 || op3 == 0x15 || op3 == 0x16;
+                uint8_t elem_size = 4;
+                if (op3 == 0x14 || op3 == 0x20) elem_size = 1;
+                else if (op3 == 0x15) elem_size = 2;
+                else if (rex_w) elem_size = 8;
+                if (extract) {
+                    if (op3 == 0x14) out->opcode = HB_INS_PEXTRB;
+                    else if (op3 == 0x15) out->opcode = HB_INS_PEXTRW;
+                    else out->opcode = rex_w ? HB_INS_PEXTRQ : HB_INS_PEXTRD;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                elem_size == 8 ? 8 : 4, out, 1, 2, true);
+                    if (r != HB_OK) return r;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    set_extra_imm8(out, read_u8(d));
+                    mark_xmm_operand(out, 2);
+                    if (out->op1.is_mem) out->op1.size = elem_size;
+                } else {
+                    if (op3 == 0x20) out->opcode = HB_INS_PINSRB;
+                    else out->opcode = rex_w ? HB_INS_PINSRQ : HB_INS_PINSRD;
+                    hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                                elem_size == 8 ? 8 : 4, out, 1, 2, false);
+                    if (r != HB_OK) return r;
+                    if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                    set_extra_imm8(out, read_u8(d));
+                    mark_xmm_operand(out, 1);
+                    if (out->op2.is_mem) out->op2.size = elem_size;
+                }
+                return HB_OK;
+            }
+            if (operand16 && (op3 == 0xce || op3 == 0xcf)) {
+                out->opcode = op3 == 0xce ? HB_INS_GF2P8AFFINEQB : HB_INS_GF2P8AFFINEINVQB;
+                hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+                if (r != HB_OK) return r;
+                if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+                set_extra_imm8(out, read_u8(d));
+                mark_xmm_operand(out, 1);
+                mark_xmm_operand(out, 2);
+                if (out->op2.is_mem) out->op2.size = 16;
+                return HB_OK;
+            }
+            bool palignr_redundant_rex_mmx = (prefix_f2 || prefix_f3) && has_rex && !operand16 &&
+                                             !(prefix_f2 && prefix_f3) && op3 == 0x0f;
+            int vec_opcode = operand16 ? sse41_0f3a_opcode(op3) :
+                             (((!prefix_f2 && !prefix_f3 && op3 == 0x0f) ||
+                               palignr_redundant_rex_mmx) ? HB_INS_PALIGNR : 0);
             out->opcode = vec_opcode ? vec_opcode : HB_INS_VEC;
-            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 16, out, 1, 2, false);
+            uint8_t vec_bytes = operand16 ? 16 : 8;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                        vec_opcode ? vec_bytes : 16, out, 1, 2, false);
             if (r != HB_OK) return r;
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             set_imm(out, 3, read_u8(d), 1);
-            mark_vec_operands(out, 16);
+            mark_vec_operands(out, vec_opcode ? vec_bytes : 16);
             return HB_OK;
         }
         /* Jcc near */
@@ -2492,17 +3857,29 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             if (out->op2.is_mem) out->op2.size = 8;
             return HB_OK;
         }
-        if (prefix_f3 && op2 == 0xE6) {
-            /* CVTDQ2PD xmm, xmm/m64: convert two signed dwords to two doubles. */
+        if ((prefix_f3 || prefix_f2 || operand16) && op2 == 0xE6) {
+            /* Packed 0F E6 conversion family:
+             *   F3 0F E6    CVTDQ2PD xmm, xmm/m64
+             *   F2 0F E6    CVTPD2DQ xmm, xmm/m128
+             *   66 0F E6    CVTTPD2DQ xmm, xmm/m128
+             */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
-            out->opcode = HB_INS_CVTDQ2PD;
+            size_t mem_size = 16;
+            if (prefix_f3) {
+                out->opcode = HB_INS_CVTDQ2PD;
+                mem_size = 8;
+            } else if (prefix_f2) {
+                out->opcode = HB_INS_CVTPD2DQ;
+            } else {
+                out->opcode = HB_INS_CVTTPD2DQ;
+            }
             out->writes_flags = false;
-            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 8, out, 1, 2, false);
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, mem_size, out, 1, 2, false);
             if (r != HB_OK) return r;
             mark_xmm_operand(out, 1);
             mark_xmm_operand(out, 2);
-            if (out->op2.is_mem) out->op2.size = 8;
+            if (out->op2.is_mem) out->op2.size = mem_size;
             return HB_OK;
         }
         if ((!operand16 && !prefix_f2 && !prefix_f3 && op2 == 0x5B) ||
@@ -2728,6 +4105,31 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
             out->opcode = HB_INS_CVTTSS2SI;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 4, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            out->op1.size = rex_w ? 8 : 4;
+            mark_xmm_operand(out, 2);
+            if (out->op2.is_mem) out->op2.size = 4;
+            return HB_OK;
+        }
+        if (prefix_f2 && op2 == 0x2D) {
+            /* CVTSD2SI r32/r64, xmm/m64 */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = HB_INS_CVTSD2SI;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 8, out, 1, 2, false);
+            if (r != HB_OK) return r;
+            out->op1.size = rex_w ? 8 : 4;
+            mark_xmm_operand(out, 2);
+            return HB_OK;
+        }
+        if (prefix_f3 && op2 == 0x2D) {
+            /* CVTSS2SI r32/r64, xmm/m32 */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            out->opcode = HB_INS_CVTSS2SI;
             out->writes_flags = false;
             hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 4, out, 1, 2, false);
             if (r != HB_OK) return r;
@@ -3233,6 +4635,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             if (op2 == 0xC4) mark_xmm_operand(out, 1);
             else if (op2 == 0xC5) mark_xmm_operand(out, 2);
             else mark_vec_operands(out, 16);
+            if (op2 == 0xC4 && out->op2.is_mem) out->op2.size = 2;
             if (op2 == 0xC4 || op2 == 0xC5) {
                 if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
                 set_imm(out, 3, read_u8(d), 1);
@@ -3887,9 +5290,35 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_LZCNT: return "LZCNT";
         case HB_INS_BSR: return "BSR";
         case HB_INS_BSWAP: return "BSWAP";
+        case HB_INS_MOVBE: return "MOVBE";
+        case HB_INS_MOVDIRI: return "MOVDIRI";
+        case HB_INS_MOVDIR64B: return "MOVDIR64B";
+        case HB_INS_CRC32: return "CRC32";
+        case HB_INS_ANDN: return "ANDN";
+        case HB_INS_BEXTR: return "BEXTR";
+        case HB_INS_BLSI: return "BLSI";
+        case HB_INS_BLSMSK: return "BLSMSK";
+        case HB_INS_BLSR: return "BLSR";
+        case HB_INS_BZHI: return "BZHI";
+        case HB_INS_MULX: return "MULX";
+        case HB_INS_PDEP: return "PDEP";
+        case HB_INS_PEXT: return "PEXT";
+        case HB_INS_RORX: return "RORX";
+        case HB_INS_SARX: return "SARX";
+        case HB_INS_SHLX: return "SHLX";
+        case HB_INS_SHRX: return "SHRX";
+        case HB_INS_ADCX: return "ADCX";
+        case HB_INS_ADOX: return "ADOX";
         case HB_INS_SSE_MOV: return "SSE_MOV";
+        case HB_INS_MOVNTDQA: return "MOVNTDQA";
         case HB_INS_MOVHLPS: return "MOVHLPS";
         case HB_INS_MOVLHPS: return "MOVLHPS";
+        case HB_INS_VMOVHLPS: return "VMOVHLPS";
+        case HB_INS_VMOVLHPS: return "VMOVLHPS";
+        case HB_INS_VMOVLPS: return "VMOVLPS";
+        case HB_INS_VMOVHPS: return "VMOVHPS";
+        case HB_INS_VMOVLPD: return "VMOVLPD";
+        case HB_INS_VMOVHPD: return "VMOVHPD";
         case HB_INS_MOVHPS: return "MOVHPS";
         case HB_INS_MOVHPD: return "MOVHPD";
         case HB_INS_XMM_AND: return "XMM_AND";
@@ -3934,6 +5363,14 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_PSHUFB: return "PSHUFB";
         case HB_INS_PINSRW: return "PINSRW";
         case HB_INS_PEXTRW: return "PEXTRW";
+        case HB_INS_PINSRB: return "PINSRB";
+        case HB_INS_PINSRD: return "PINSRD";
+        case HB_INS_PINSRQ: return "PINSRQ";
+        case HB_INS_PEXTRB: return "PEXTRB";
+        case HB_INS_PEXTRD: return "PEXTRD";
+        case HB_INS_PEXTRQ: return "PEXTRQ";
+        case HB_INS_INSERTPS: return "INSERTPS";
+        case HB_INS_EXTRACTPS: return "EXTRACTPS";
         case HB_INS_PSHUFD: return "PSHUFD";
         case HB_INS_PSHUFLW: return "PSHUFLW";
         case HB_INS_PSHUFHW: return "PSHUFHW";
@@ -3964,6 +5401,8 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_PABSW: return "PABSW";
         case HB_INS_PABSD: return "PABSD";
         case HB_INS_PTEST: return "PTEST";
+        case HB_INS_VTESTPS: return "VTESTPS";
+        case HB_INS_VTESTPD: return "VTESTPD";
         case HB_INS_PMOVSXBW: return "PMOVSXBW";
         case HB_INS_PMOVSXBD: return "PMOVSXBD";
         case HB_INS_PMOVSXBQ: return "PMOVSXBQ";
@@ -3990,6 +5429,8 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_PMAXUD: return "PMAXUD";
         case HB_INS_PMULLD: return "PMULLD";
         case HB_INS_PHMINPOSUW: return "PHMINPOSUW";
+        case HB_INS_MPSADBW: return "MPSADBW";
+        case HB_INS_VMPSADBW: return "VMPSADBW";
         case HB_INS_PALIGNR: return "PALIGNR";
         case HB_INS_PBLENDW: return "PBLENDW";
         case HB_INS_BLENDPS: return "BLENDPS";
@@ -4012,10 +5453,23 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_VPBROADCASTW: return "VPBROADCASTW";
         case HB_INS_VPBROADCASTD: return "VPBROADCASTD";
         case HB_INS_VPBROADCASTQ: return "VPBROADCASTQ";
+        case HB_INS_VBROADCASTSS: return "VBROADCASTSS";
+        case HB_INS_VBROADCASTSD: return "VBROADCASTSD";
+        case HB_INS_VBROADCASTF32X2: return "VBROADCASTF32X2";
+        case HB_INS_VBROADCASTF64X2: return "VBROADCASTF64X2";
+        case HB_INS_VBROADCASTF32X4: return "VBROADCASTF32X4";
+        case HB_INS_VBROADCASTF64X4: return "VBROADCASTF64X4";
+        case HB_INS_VBROADCASTF32X8: return "VBROADCASTF32X8";
+        case HB_INS_VBROADCASTI32X2: return "VBROADCASTI32X2";
         case HB_INS_VBROADCASTI128: return "VBROADCASTI128";
         case HB_INS_VPBLENDD: return "VPBLENDD";
         case HB_INS_VPERMQ: return "VPERMQ";
         case HB_INS_VPERMPD: return "VPERMPD";
+        case HB_INS_VPERMILPS: return "VPERMILPS";
+        case HB_INS_VPERMILPD: return "VPERMILPD";
+        case HB_INS_VBLENDVPS: return "VBLENDVPS";
+        case HB_INS_VBLENDVPD: return "VBLENDVPD";
+        case HB_INS_VPBLENDVB: return "VPBLENDVB";
         case HB_INS_VINSERTF128: return "VINSERTF128";
         case HB_INS_VINSERTI128: return "VINSERTI128";
         case HB_INS_VEXTRACTF128: return "VEXTRACTF128";
@@ -4041,10 +5495,22 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_VAESDECLAST: return "VAESDECLAST";
         case HB_INS_GF2P8MULB: return "GF2P8MULB";
         case HB_INS_VGF2P8MULB: return "VGF2P8MULB";
+        case HB_INS_GF2P8AFFINEQB: return "GF2P8AFFINEQB";
+        case HB_INS_GF2P8AFFINEINVQB: return "GF2P8AFFINEINVQB";
+        case HB_INS_VGF2P8AFFINEQB: return "VGF2P8AFFINEQB";
+        case HB_INS_VGF2P8AFFINEINVQB: return "VGF2P8AFFINEINVQB";
+        case HB_INS_SHA1NEXTE: return "SHA1NEXTE";
+        case HB_INS_SHA1MSG1: return "SHA1MSG1";
+        case HB_INS_SHA1MSG2: return "SHA1MSG2";
+        case HB_INS_SHA256RNDS2: return "SHA256RNDS2";
+        case HB_INS_SHA256MSG1: return "SHA256MSG1";
+        case HB_INS_SHA256MSG2: return "SHA256MSG2";
+        case HB_INS_SHA1RNDS4: return "SHA1RNDS4";
         case HB_INS_VPERMD: return "VPERMD";
         case HB_INS_VPERMPS: return "VPERMPS";
         case HB_INS_VMASKMOVPS: return "VMASKMOVPS";
         case HB_INS_VMASKMOVPD: return "VMASKMOVPD";
+        case HB_INS_VMASKMOVDQU: return "VMASKMOVDQU";
         case HB_INS_VPMASKMOVD: return "VPMASKMOVD";
         case HB_INS_VPMASKMOVQ: return "VPMASKMOVQ";
         case HB_INS_VGATHERDPS: return "VGATHERDPS";
@@ -4066,6 +5532,8 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_CVTTPS2DQ: return "CVTTPS2DQ";
         case HB_INS_CVTPS2PD: return "CVTPS2PD";
         case HB_INS_CVTPD2PS: return "CVTPD2PS";
+        case HB_INS_CVTPD2DQ: return "CVTPD2DQ";
+        case HB_INS_CVTTPD2DQ: return "CVTTPD2DQ";
         case HB_INS_CVTSS2SD: return "CVTSS2SD";
         case HB_INS_CVTSD2SS: return "CVTSD2SS";
         case HB_INS_CVTSI2SD: return "CVTSI2SD";
@@ -4078,6 +5546,12 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_RSQRTSS: return "RSQRTSS";
         case HB_INS_RCPPS: return "RCPPS";
         case HB_INS_RCPSS: return "RCPSS";
+        case HB_INS_ROUNDPS: return "ROUNDPS";
+        case HB_INS_ROUNDPD: return "ROUNDPD";
+        case HB_INS_ROUNDSS: return "ROUNDSS";
+        case HB_INS_ROUNDSD: return "ROUNDSD";
+        case HB_INS_DPPS: return "DPPS";
+        case HB_INS_DPPD: return "DPPD";
         case HB_INS_ADDPS: return "ADDPS";
         case HB_INS_ADDPD: return "ADDPD";
         case HB_INS_ADDSS: return "ADDSS";
@@ -4126,10 +5600,61 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_VFMSUB231PD: return "VFMSUB231PD";
         case HB_INS_VFMSUB231SS: return "VFMSUB231SS";
         case HB_INS_VFMSUB231SD: return "VFMSUB231SD";
+        case HB_INS_VFMADDSUB132PS: return "VFMADDSUB132PS";
+        case HB_INS_VFMADDSUB132PD: return "VFMADDSUB132PD";
+        case HB_INS_VFMSUBADD132PS: return "VFMSUBADD132PS";
+        case HB_INS_VFMSUBADD132PD: return "VFMSUBADD132PD";
+        case HB_INS_VFMADDSUB213PS: return "VFMADDSUB213PS";
+        case HB_INS_VFMADDSUB213PD: return "VFMADDSUB213PD";
+        case HB_INS_VFMSUBADD213PS: return "VFMSUBADD213PS";
+        case HB_INS_VFMSUBADD213PD: return "VFMSUBADD213PD";
+        case HB_INS_VFMADDSUB231PS: return "VFMADDSUB231PS";
+        case HB_INS_VFMADDSUB231PD: return "VFMADDSUB231PD";
+        case HB_INS_VFMSUBADD231PS: return "VFMSUBADD231PS";
+        case HB_INS_VFMSUBADD231PD: return "VFMSUBADD231PD";
+        case HB_INS_VFNMADD132PS: return "VFNMADD132PS";
+        case HB_INS_VFNMADD132PD: return "VFNMADD132PD";
+        case HB_INS_VFNMADD132SS: return "VFNMADD132SS";
+        case HB_INS_VFNMADD132SD: return "VFNMADD132SD";
+        case HB_INS_VFNMSUB132PS: return "VFNMSUB132PS";
+        case HB_INS_VFNMSUB132PD: return "VFNMSUB132PD";
+        case HB_INS_VFNMSUB132SS: return "VFNMSUB132SS";
+        case HB_INS_VFNMSUB132SD: return "VFNMSUB132SD";
+        case HB_INS_VFNMADD213PS: return "VFNMADD213PS";
+        case HB_INS_VFNMADD213PD: return "VFNMADD213PD";
+        case HB_INS_VFNMADD213SS: return "VFNMADD213SS";
+        case HB_INS_VFNMADD213SD: return "VFNMADD213SD";
+        case HB_INS_VFNMSUB213PS: return "VFNMSUB213PS";
+        case HB_INS_VFNMSUB213PD: return "VFNMSUB213PD";
+        case HB_INS_VFNMSUB213SS: return "VFNMSUB213SS";
+        case HB_INS_VFNMSUB213SD: return "VFNMSUB213SD";
+        case HB_INS_VFNMADD231PS: return "VFNMADD231PS";
+        case HB_INS_VFNMADD231PD: return "VFNMADD231PD";
+        case HB_INS_VFNMADD231SS: return "VFNMADD231SS";
+        case HB_INS_VFNMADD231SD: return "VFNMADD231SD";
+        case HB_INS_VFNMSUB231PS: return "VFNMSUB231PS";
+        case HB_INS_VFNMSUB231PD: return "VFNMSUB231PD";
+        case HB_INS_VFNMSUB231SS: return "VFNMSUB231SS";
+        case HB_INS_VFNMSUB231SD: return "VFNMSUB231SD";
         case HB_INS_VCVTPH2PS: return "VCVTPH2PS";
         case HB_INS_VCVTPS2PH: return "VCVTPS2PH";
+        case HB_INS_VCMPPS: return "VCMPPS";
+        case HB_INS_VCMPPD: return "VCMPPD";
+        case HB_INS_VCMPSS: return "VCMPSS";
+        case HB_INS_VCMPSD: return "VCMPSD";
+        case HB_INS_VHADDPS: return "VHADDPS";
+        case HB_INS_VHADDPD: return "VHADDPD";
+        case HB_INS_VHSUBPS: return "VHSUBPS";
+        case HB_INS_VHSUBPD: return "VHSUBPD";
+        case HB_INS_VADDSUBPS: return "VADDSUBPS";
+        case HB_INS_VADDSUBPD: return "VADDSUBPD";
+        case HB_INS_VMOVSLDUP: return "VMOVSLDUP";
+        case HB_INS_VMOVSHDUP: return "VMOVSHDUP";
+        case HB_INS_VMOVDDUP: return "VMOVDDUP";
         case HB_INS_COMISS: return "COMISS";
         case HB_INS_COMISD: return "COMISD";
+        case HB_INS_CVTSD2SI: return "CVTSD2SI";
+        case HB_INS_CVTSS2SI: return "CVTSS2SI";
         case HB_INS_CVTTSD2SI: return "CVTTSD2SI";
         case HB_INS_CVTTSS2SI: return "CVTTSS2SI";
         case HB_INS_PADDB: return "PADDB";
@@ -4151,6 +5676,12 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_X87_FLDCW: return "X87_FLDCW";
         case HB_INS_X87_FNSTCW: return "X87_FNSTCW";
         case HB_INS_X87_FNSTSW: return "X87_FNSTSW";
+        case HB_INS_X87_FLDENV: return "X87_FLDENV";
+        case HB_INS_X87_FNSTENV: return "X87_FNSTENV";
+        case HB_INS_X87_FRSTOR: return "X87_FRSTOR";
+        case HB_INS_X87_FNSAVE: return "X87_FNSAVE";
+        case HB_INS_X87_FXSAVE: return "X87_FXSAVE";
+        case HB_INS_X87_FXRSTOR: return "X87_FXRSTOR";
         case HB_INS_X87_FADD: return "X87_FADD";
         case HB_INS_X87_FMUL: return "X87_FMUL";
         case HB_INS_X87_FCOM: return "X87_FCOM";

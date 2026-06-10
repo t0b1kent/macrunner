@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#define HB_X86_DEFAULT_MXCSR 0x1f80u
+
 typedef struct {
     const uint8_t* code;
     size_t len;
@@ -604,8 +606,9 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             if (reg_op == 0) { out->opcode = HB_INS_X87_FLD; size = 4; }
             else if (reg_op == 2) { out->opcode = HB_INS_X87_FST; size = 4; }
             else if (reg_op == 3) { out->opcode = HB_INS_X87_FSTP; size = 4; }
+            else if (reg_op == 4) { out->opcode = HB_INS_X87_FLDENV; size = 28; }
             else if (reg_op == 5) { out->opcode = HB_INS_X87_FLDCW; size = 2; }
-            else if (reg_op == 6) { out->opcode = HB_INS_X87_FNSTSW; size = 2; }
+            else if (reg_op == 6) { out->opcode = HB_INS_X87_FNSTENV; size = 28; }
             else if (reg_op == 7) { out->opcode = HB_INS_X87_FNSTCW; size = 2; }
             else return HB_ERR_UNSUPPORTED_OPCODE;
             break;
@@ -647,6 +650,9 @@ static hb_result_t decode_x87(hb_dec_t* d, uint8_t opcode, hb_decoded_t* out) {
             if (reg_op == 0) { out->opcode = HB_INS_X87_FLD; size = 8; }
             else if (reg_op == 2) { out->opcode = HB_INS_X87_FST; size = 8; }
             else if (reg_op == 3) { out->opcode = HB_INS_X87_FSTP; size = 8; }
+            else if (reg_op == 4) { out->opcode = HB_INS_X87_FRSTOR; size = 108; }
+            else if (reg_op == 6) { out->opcode = HB_INS_X87_FNSAVE; size = 108; }
+            else if (reg_op == 7) { out->opcode = HB_INS_X87_FNSTSW; size = 2; }
             else return HB_ERR_UNSUPPORTED_OPCODE;
             break;
         case 0xdf:
@@ -1238,6 +1244,46 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             out->opcode = HB_INS_NOP;
             return parse_modrm_ext(d, modrm, 1, out, 1);
         }
+        if (op2 == 0xAE) {
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            uint8_t mod = (modrm >> 6) & 3;
+            uint8_t ext = (modrm >> 3) & 7;
+            if (mod == 3) {
+                if ((modrm & 7) == 0 && (ext == 5 || ext == 6 || ext == 7)) {
+                    out->opcode = HB_INS_FENCE;
+                    set_imm(out, 1, ext == 5 ? HB_FENCE_ACQUIRE :
+                                    ext == 6 ? HB_FENCE_FULL : HB_FENCE_RELEASE, 1);
+                    return HB_OK;
+                }
+                return HB_ERR_UNSUPPORTED_OPCODE;
+            }
+            if (ext == 0) {
+                out->opcode = HB_INS_X87_FXSAVE;
+                return parse_modrm_ext(d, modrm, HB_SIZE_512, out, 1);
+            }
+            if (ext == 1) {
+                out->opcode = HB_INS_X87_FXRSTOR;
+                return parse_modrm_ext(d, modrm, HB_SIZE_512, out, 1);
+            }
+            if (ext == 2) {
+                out->opcode = HB_INS_NOP;
+                return parse_modrm_ext(d, modrm, 4, out, 1);
+            }
+            if (ext == 3) {
+                hb_result_t r;
+                out->opcode = HB_INS_MOV;
+                r = parse_modrm_ext(d, modrm, 4, out, 1);
+                if (r != HB_OK) return r;
+                set_imm(out, 2, HB_X86_DEFAULT_MXCSR, 4);
+                return HB_OK;
+            }
+            if (ext == 7) {
+                out->opcode = HB_INS_NOP;
+                return parse_modrm_ext(d, modrm, 1, out, 1);
+            }
+            return HB_ERR_UNSUPPORTED_OPCODE;
+        }
         d->pos--;
     }
 
@@ -1312,7 +1358,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             out->writes_flags = true;
             return parse_modrm_ext(d, modrm, 1, out, 1);
         }
-        if (opcode == 0x0F) {
+        if (opcode == 0x0F && !prefix_f2 && !prefix_f3) {
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t op2 = read_u8(d);
             if (op2 == 0xB0 || op2 == 0xB1 || op2 == 0xC0 || op2 == 0xC1) {

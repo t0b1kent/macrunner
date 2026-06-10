@@ -941,7 +941,12 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             hb_ir_operand_t dst = operand_from_dec(dec, 1);
             hb_ir_operand_t src = operand_from_dec(dec, 2);
             hb_ir_instr_t *i = hb_ir_emit(b, op);
-            if (i) { i->dst = dst; i->src1 = src; }
+            if (i) {
+                i->dst = dst;
+                i->src1 = src;
+                if (dec->opcode == HB_INS_CVTSS2SD || dec->opcode == HB_INS_CVTSD2SS)
+                    i->src2 = hb_ir_none();
+            }
             emit(b, i, dec);
             return HB_OK;
         }
@@ -1087,6 +1092,24 @@ hb_result_t hb_lift_x86(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             return HB_OK;
         case HB_INS_X87_FNSTSW:
             emit(b, hb_ir_emit_unop(b, HB_IR_X87_FNSTSW, operand_from_dec(dec, 1), hb_ir_none()), dec);
+            return HB_OK;
+        case HB_INS_X87_FLDENV:
+            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FLDENV, hb_ir_none(), operand_from_dec(dec, 1)), dec);
+            return HB_OK;
+        case HB_INS_X87_FNSTENV:
+            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FNSTENV, operand_from_dec(dec, 1), hb_ir_none()), dec);
+            return HB_OK;
+        case HB_INS_X87_FRSTOR:
+            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FRSTOR, hb_ir_none(), operand_from_dec(dec, 1)), dec);
+            return HB_OK;
+        case HB_INS_X87_FNSAVE:
+            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FNSAVE, operand_from_dec(dec, 1), hb_ir_none()), dec);
+            return HB_OK;
+        case HB_INS_X87_FXSAVE:
+            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FXSAVE, operand_from_dec(dec, 1), hb_ir_none()), dec);
+            return HB_OK;
+        case HB_INS_X87_FXRSTOR:
+            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FXRSTOR, hb_ir_none(), operand_from_dec(dec, 1)), dec);
             return HB_OK;
         case HB_INS_X87_FADD:
             emit(b, hb_ir_emit_unop(b, HB_IR_X87_FADD, hb_ir_none(), operand_from_dec(dec, 1)), dec);

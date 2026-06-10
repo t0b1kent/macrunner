@@ -364,7 +364,7 @@ static void trace_live_vm_access_fail(const char* op, hb_gva_t addr, size_t size
             cached ? cached->perm : 0);
 }
 
-static hb_result_t write_live_vm_region(hb_gva_t addr, const void* in, size_t size,
+static hb_result_t write_live_vm_region(hb_memory_t* mem, hb_gva_t addr, const void* in, size_t size,
                                         const hb_region_t* region) {
     mach_port_t task = mach_task_self();
     kern_return_t kr = mach_vm_write(task, (mach_vm_address_t)addr,
@@ -373,6 +373,17 @@ static hb_result_t write_live_vm_region(hb_gva_t addr, const void* in, size_t si
 
     if (kr == KERN_SUCCESS) return HB_OK;
     trace_live_vm_access_fail("write", addr, size, kr, region);
+
+    /* Windows guard-page / stack growth: the page is reserved in Wine's view
+     * but not yet committed by macOS, so mach_vm_write faults.  Let the embedder
+     * run virtual_handle_fault to commit the page (and grow the guest stack),
+     * then retry once. */
+    if (mem && mem->special_grow && mem->special_grow(mem->special_user, addr)) {
+        kr = mach_vm_write(task, (mach_vm_address_t)addr, (vm_offset_t)(uintptr_t)in,
+                           (mach_msg_type_number_t)size);
+        if (kr == KERN_SUCCESS) return HB_OK;
+        trace_live_vm_access_fail("write-after-grow", addr, size, kr, region);
+    }
 
     if (region && (region->perm & HB_PERM_WRITE)) {
         mach_vm_address_t protect_base = (mach_vm_address_t)host_page_floor((uintptr_t)addr);
@@ -423,18 +434,34 @@ static void trace_bad_native_write(const char* path, hb_gva_t addr, const void* 
 }
 
 static bool trace_guest_write_match(hb_gva_t addr, size_t size) {
-    const char* spec = getenv("MACRUNNER_HB_TRACE_GUEST_WRITE");
-    char* endp = NULL;
+    static unsigned long long cached_start = 0, cached_stop = 0;
+    static int cache_valid = 0;
     unsigned long long start, stop;
     hb_gva_t top;
 
-    if (!spec || !*spec) return false;
-    start = strtoull(spec, &endp, 0);
-    if (endp == spec) return false;
-    if (*endp == '-' || *endp == ':')
-        stop = strtoull(endp + 1, NULL, 0);
-    else
-        stop = start + 1;
+    if (!__atomic_load_n(&cache_valid, __ATOMIC_RELAXED)) {
+        const char* spec = getenv("MACRUNNER_HB_TRACE_GUEST_WRITE");
+        char* endp = NULL;
+        if (!spec || !*spec) {
+            __atomic_store_n(&cached_start, 0, __ATOMIC_RELAXED);
+            __atomic_store_n(&cached_stop, 0, __ATOMIC_RELAXED);
+        } else {
+            start = strtoull(spec, &endp, 0);
+            if (endp == spec) {
+                __atomic_store_n(&cached_start, 0, __ATOMIC_RELAXED);
+                __atomic_store_n(&cached_stop, 0, __ATOMIC_RELAXED);
+            } else {
+                stop = (*endp == '-' || *endp == ':') ? strtoull(endp + 1, NULL, 0) : start + 1;
+                __atomic_store_n(&cached_start, start, __ATOMIC_RELAXED);
+                __atomic_store_n(&cached_stop, stop, __ATOMIC_RELAXED);
+            }
+        }
+        __atomic_store_n(&cache_valid, 1, __ATOMIC_RELAXED);
+    }
+
+    start = __atomic_load_n(&cached_start, __ATOMIC_RELAXED);
+    stop  = __atomic_load_n(&cached_stop,  __ATOMIC_RELAXED);
+    if (start == stop) return false;
     top = addr + size;
     if (top < addr) top = UINT64_MAX;
     return addr < (hb_gva_t)stop && top > (hb_gva_t)start;
@@ -610,6 +637,15 @@ hb_result_t hb_memory_guest32_protect(hb_memory_t* mem, uint32_t base, size_t si
     bool touched_exec = false;
 
     if (!mem || !size) return HB_ERR_INVALID_ARG;
+
+#ifdef __APPLE__
+    /* MacRunner sentinel trace: log every call that touches the sentinel page [0x7BD8E000, 0x7BD8F000). */
+    if ((hb_gva_t)base <= 0x7BD8E000u && (hb_gva_t)base + (hb_gva_t)size > 0x7BD8E000u) {
+        fprintf(stderr, "macrunner-hb-sentinel-protect: caller base=%08x size=%zx perm=%d\n",
+                base, size, (int)perm);
+        fflush(stderr);
+    }
+#endif
     start = page_floor_gva(base);
     top = page_ceil_gva((hb_gva_t)base + (hb_gva_t)size);
     if (top > HB_GUEST32_SIZE || top <= start) return HB_ERR_INVALID_ARG;
@@ -707,6 +743,7 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
      * CPU again, bypassing the signal bridge.
      */
     if (!r->allocated && !r->is_guest32) {
+        if ((r->perm | perm) & HB_PERM_EXEC) bump_generation(mem, r);
         r->perm = perm;
         (void)size;
         return HB_OK;
@@ -715,6 +752,12 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
     if (r->is_guest32) {
         if ((r->perm | perm) & HB_PERM_EXEC) bump_generation(mem, r);
         r->perm = perm;
+#ifdef __APPLE__
+        /* Sync host mprotect so perm metadata and actual page protection stay
+         * consistent — skipping this can leave pages PROT_NONE while perm says
+         * READ, which feeds the memcpy-on-PROT_NONE crash. */
+        if (r->host_base) guest32_sync_host_protection(r, r->base, r->size);
+#endif
         (void)size;
         return HB_OK;
     }
@@ -755,16 +798,8 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
     }
 #ifdef __APPLE__
     if (region && !region->allocated && !region->host_base) {
-        if (direct_live_memory_enabled()) {
-            memcpy(out, (const void*)(uintptr_t)addr, size);
-            return HB_OK;
-        }
-        mach_vm_size_t copied = 0;
-        kern_return_t kr = mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)addr,
-                                                  (mach_vm_size_t)size,
-                                                  (mach_vm_address_t)(uintptr_t)out, &copied);
-        if (kr != KERN_SUCCESS || copied != size) trace_live_vm_access_fail("read", addr, size, kr, region);
-        return (kr == KERN_SUCCESS && copied == size) ? HB_OK : HB_ERR_MEMORY_FAULT;
+        memcpy(out, (const void*)(uintptr_t)addr, size);
+        return HB_OK;
     }
 #endif
     if (region && region->host_base) {
@@ -772,7 +807,12 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
         if (region->is_guest32)
         {
             const void* host = region_host_ptr(region, addr);
-            if (direct_live_memory_enabled() || guest32_direct_copy_safe(region, addr, size))
+            /* Use memcpy only when live-memory mode is enabled AND the access is
+             * known safe (aligned, single page).  In all other cases use the Mach
+             * read path so a PROT_NONE host page returns HB_ERR_MEMORY_FAULT
+             * instead of crashing inside memcpy (PC in libc = outside JIT slab =
+             * signal guard misses it = recursive c0000005 fault loop). */
+            if (direct_live_memory_enabled() && guest32_direct_copy_safe(region, addr, size))
             {
                 memcpy(out, host, size);
                 return HB_OK;
@@ -791,12 +831,44 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
 
 hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, size_t size) {
     hb_region_t* region;
+    int grow_retried = 0;
     if (!mem || !in) return HB_ERR_INVALID_ARG;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return HB_ERR_MEMORY_FAULT;
     trace_bad_native_write("hb_memory_write", addr, in, size);
     trace_guest_write("hb_memory_write", addr, in, size);
+grow_retry:
     region = find_region_normalized(mem, addr);
+#ifdef __APPLE__
+    if ((addr & 0xfff) >= 0xfe0 && getenv("MACRUNNER_HB_TRACE_JIT_HELPER_FAIL")) {
+        static int t;
+        if (t++ < 12) {
+            int branch = (!region || addr + size > region->base + region->size || !(region->perm & HB_PERM_WRITE)) ? 0
+                       : (!region->allocated && !region->host_base) ? (region->perm & HB_PERM_EXEC ? 2 : 1)
+                       : region->host_base ? 3 : 4;
+            fprintf(stderr, "macrunner-hb-wedge-write: addr=0x%llx size=%zu region=%p base=0x%llx rsize=0x%llx "
+                    "perm=%d alloc=%d host=%p branch=%d\n",
+                    (unsigned long long)addr, size, (void*)region,
+                    region ? (unsigned long long)region->base : 0,
+                    region ? (unsigned long long)region->size : 0,
+                    region ? (int)region->perm : -1, region ? (int)region->allocated : -1,
+                    region ? region->host_base : NULL, branch);
+        }
+    }
+#endif
     if (!region || addr + size > region->base + region->size || !(region->perm & HB_PERM_WRITE)) {
+#ifdef __APPLE__
+        /* MacRunner sentinel trace: log write blocked on sentinel range or null-zone. */
+        if ((addr >= 0x7BD8E000u && addr < 0x7BD8F000u) || addr < 0x1000u) {
+            fprintf(stderr,
+                    "macrunner-hb-write-blocked: addr=%08llx size=%zu "
+                    "region=%s perm=%d no_w=%d\n",
+                    (unsigned long long)addr, size,
+                    region ? "found" : "null",
+                    region ? (int)region->perm : -1,
+                    region ? !(region->perm & HB_PERM_WRITE) : 1);
+            fflush(stderr);
+        }
+#endif
         if (hb_memory_can_write_span(mem, addr, size)) {
             const uint8_t* src = in;
             hb_gva_t cur = addr;
@@ -815,15 +887,37 @@ hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, siz
             return HB_OK;
         }
         if (mem->special_write && mem->special_write(mem->special_user, addr, in, size) == HB_OK) return HB_OK;
+        /* Guest stack growth below the recorded region bottom (x64 CALL/PUSH at
+         * rsp already under region->base): the page may be Wine-reserved guard
+         * space that virtual_handle_fault can commit.  Let the embedder grow,
+         * then redo the region lookup and the whole write once. */
+        if (!grow_retried && mem->special_grow && mem->special_grow(mem->special_user, addr)) {
+            grow_retried = 1;
+            goto grow_retry;
+        }
+        {
+            static int traced;
+            if (traced++ < 8)
+                fprintf(stderr, "macrunner-hb-write-deny: addr=0x%llx size=%zu region=%p base=0x%llx "
+                        "rsize=0x%llx perm=%d alloc=%d host=%p\n",
+                        (unsigned long long)addr, size, (void*)region,
+                        region ? (unsigned long long)region->base : 0,
+                        region ? (unsigned long long)region->size : 0,
+                        region ? (int)region->perm : -1,
+                        region ? (int)region->allocated : -1,
+                        region ? region->host_base : NULL);
+        }
         return HB_ERR_MEMORY_FAULT;
     }
 #ifdef __APPLE__
     if (region && !region->allocated && !region->host_base) {
-        if (direct_live_memory_enabled()) {
+        if (!(region->perm & HB_PERM_EXEC)) {
             memcpy((void*)(uintptr_t)addr, in, size);
             return HB_OK;
         }
-        return write_live_vm_region(addr, in, size, region);
+        hb_result_t result = write_live_vm_region(mem, addr, in, size, region);
+        if (result == HB_OK) bump_generation(mem, region);
+        return result;
     }
 #endif
     if (region && region->host_base) {
@@ -838,9 +932,34 @@ hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, siz
             else
             {
                 hb_result_t result = mach_copy_to_host(host, in, size);
-                if (result != HB_OK && (region->perm & HB_PERM_WRITE) &&
-                    guest32_sync_host_protection(region, addr, size) == HB_OK)
-                    result = mach_copy_to_host(host, in, size);
+                if (result != HB_OK) {
+                    hb_result_t sync_r = HB_ERR_MEMORY_FAULT;
+                    if (region->perm & HB_PERM_WRITE) {
+                        sync_r = guest32_sync_host_protection(region, addr, size);
+                        if (sync_r == HB_OK) result = mach_copy_to_host(host, in, size);
+                    }
+#ifdef __APPLE__
+                    /* MacRunner sentinel trace: log mach_copy_to_host failure on sentinel page. */
+                    if (addr >= 0x7BD8E000u && addr < 0x7BD8F000u) {
+                        mach_vm_address_t dbg_addr = (mach_vm_address_t)(uintptr_t)host;
+                        mach_vm_size_t dbg_sz = 0;
+                        vm_region_basic_info_data_64_t dbg_ri;
+                        mach_msg_type_number_t dbg_cnt = VM_REGION_BASIC_INFO_COUNT_64;
+                        mach_port_t dbg_obj = MACH_PORT_NULL;
+                        memset(&dbg_ri, 0, sizeof(dbg_ri));
+                        mach_vm_region(mach_task_self(), &dbg_addr, &dbg_sz, VM_REGION_BASIC_INFO_64,
+                                       (vm_region_info_t)&dbg_ri, &dbg_cnt, &dbg_obj);
+                        if (dbg_obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), dbg_obj);
+                        fprintf(stderr,
+                                "macrunner-hb-sentinel-write-fail: addr=%08llx perm=%d "
+                                "mach_prot=0x%x max_prot=0x%x sync_r=%d retry_r=%d\n",
+                                (unsigned long long)addr, (int)region->perm,
+                                (int)dbg_ri.protection, (int)dbg_ri.max_protection,
+                                (int)sync_r, (int)result);
+                        fflush(stderr);
+                    }
+#endif
+                }
                 if (result != HB_OK) return result;
             }
             if (region->perm & HB_PERM_EXEC) bump_generation(mem, region);
@@ -871,10 +990,12 @@ void* hb_memory_host_ptr(hb_memory_t* mem, hb_gva_t addr, size_t size, hb_perm_t
     if (!region || addr + size > region->base + region->size) return NULL;
     if ((region->perm & perm) != perm) return NULL;
 #ifdef __APPLE__
-    if (region->host_base && region->is_guest32 && guest32_copy_needs_mach(region, addr, size))
+    if (region->host_base && region->is_guest32 && (perm & HB_PERM_WRITE) &&
+        guest32_copy_needs_mach(region, addr, size))
         return NULL;
 #endif
     if (region->host_base) return region_host_ptr(region, addr);
+    if ((perm & HB_PERM_WRITE) && (region->perm & HB_PERM_EXEC)) return NULL;
     return (void*)(uintptr_t)addr;
 }
 
@@ -886,6 +1007,11 @@ void hb_memory_set_special_handlers(hb_memory_t* mem,
     mem->special_read = read_fn;
     mem->special_write = write_fn;
     mem->special_user = user;
+}
+
+void hb_memory_set_grow_handler(hb_memory_t* mem, bool (*grow_fn)(void* user, hb_gva_t addr)) {
+    if (!mem) return;
+    mem->special_grow = grow_fn;
 }
 
 #define RW_U(bits) \
@@ -925,8 +1051,31 @@ static hb_region_t* find_region_normalized(hb_memory_t* mem, hb_gva_t addr) {
             }
         }
     }
+
+    /* Check MRU cache first: invalidate on generation change */
+    if (mem->hot_gen != mem->generation) {
+        mem->hot[0] = mem->hot[1] = mem->hot[2] = mem->hot[3] = NULL;
+        mem->hot_gen = mem->generation;
+    }
+    for (int i = 0; i < 4; i++) {
+        hb_region_t* c = mem->hot[i];
+        if (c && addr >= c->base && addr < c->base + c->size) {
+            /* Promote to front */
+            if (i != 0) { mem->hot[i] = mem->hot[0]; mem->hot[0] = c; }
+            return c;
+        }
+    }
+
+    /* Slow path: linear scan */
     for (hb_region_t* r = mem->regions; r; r = r->next) {
-        if (addr >= r->base && addr < r->base + r->size) return r;
+        if (addr >= r->base && addr < r->base + r->size) {
+            /* Insert at front, evict slot 3 */
+            mem->hot[3] = mem->hot[2];
+            mem->hot[2] = mem->hot[1];
+            mem->hot[1] = mem->hot[0];
+            mem->hot[0] = r;
+            return r;
+        }
     }
     return NULL;
 }

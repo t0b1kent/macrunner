@@ -1,5 +1,6 @@
 #include "hb_codegen.h"
 #include "hb_runtime.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -16,6 +17,8 @@
 #    define MAP_JIT 0x800
 #  endif
 #endif
+
+#define HB_JIT_BUFFER_MAGIC 0x48424a4954425546ull /* HBJITBUF */
 
 static bool force_jit_verify_failure(void) {
     const char* value = getenv("MACRUNNER_HB_TEST_FORCE_JIT_VERIFY_FAIL");
@@ -54,6 +57,19 @@ static bool jit_range_has_prot(const void* ptr, size_t size, int required) {
     return jit_addr_has_prot(start, required) && jit_addr_has_prot(end, required);
 }
 
+static bool hb_jit_buffer_is_valid(const hb_jit_buffer_t* buf) {
+    if (!buf) return false;
+    if (!jit_range_has_prot(buf, sizeof(*buf), PROT_READ)) return false;
+    return buf->magic == HB_JIT_BUFFER_MAGIC;
+}
+
+static hb_result_t hb_jit_buffer_invalid(const char* fn, const hb_jit_buffer_t* buf) {
+    fprintf(stderr, "macrunner-hb-jit-buffer-invalid: fn=%s buf=%p caller=%p\n",
+            fn ? fn : "unknown", (const void*)buf, __builtin_return_address(0));
+    fflush(stderr);
+    return HB_ERR_INVALID_ARG;
+}
+
 hb_jit_buffer_t* hb_jit_buffer_create(size_t size) {
     hb_jit_buffer_t* buf = calloc(1, sizeof(hb_jit_buffer_t));
     if (!buf) return NULL;
@@ -84,18 +100,20 @@ hb_jit_buffer_t* hb_jit_buffer_create(size_t size) {
     }
 #endif
     buf->executable = buf->writable; /* on Apple Silicon with Hardened Runtime this needs special handling */
+    buf->magic = HB_JIT_BUFFER_MAGIC;
     return buf;
 }
 
 void hb_jit_buffer_destroy(hb_jit_buffer_t* buf) {
-    if (!buf) return;
+    if (!hb_jit_buffer_is_valid(buf)) return;
+    buf->magic = 0;
     if (buf->writable && buf->writable != MAP_FAILED) munmap(buf->writable, buf->size);
     free(buf);
 }
 
 hb_result_t hb_jit_buffer_commit(hb_jit_buffer_t* buf) {
     size_t dirty_start, dirty_end;
-    if (!buf) return HB_ERR_INVALID_ARG;
+    if (!hb_jit_buffer_is_valid(buf)) return hb_jit_buffer_invalid("commit", buf);
     buf->is_executable = false;
     dirty_start = buf->dirty_start <= buf->used ? buf->dirty_start : 0;
     dirty_end = buf->used <= buf->size ? buf->used : buf->size;
@@ -121,7 +139,7 @@ hb_result_t hb_jit_buffer_commit(hb_jit_buffer_t* buf) {
 }
 
 hb_result_t hb_jit_buffer_make_writable(hb_jit_buffer_t* buf) {
-    if (!buf) return HB_ERR_INVALID_ARG;
+    if (!hb_jit_buffer_is_valid(buf)) return hb_jit_buffer_invalid("make-writable", buf);
 #if defined(__APPLE__) && defined(__aarch64__)
     if (buf->thread_jit_write_protect) {
         pthread_jit_write_protect_np(0);
@@ -141,7 +159,7 @@ hb_result_t hb_jit_buffer_make_executable(hb_jit_buffer_t* buf) {
 }
 
 void hb_jit_buffer_flush_icache(hb_jit_buffer_t* buf) {
-    if (!buf || !buf->writable) return;
+    if (!hb_jit_buffer_is_valid(buf) || !buf->writable) return;
     __builtin___clear_cache((char*)buf->writable, (char*)buf->writable + buf->used);
 }
 

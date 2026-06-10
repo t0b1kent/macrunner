@@ -515,7 +515,11 @@ static uint64_t resolve_operand_addr(hb_context_t* ctx, const hb_ir_operand_t* o
     if (op->mem.index < HB_REG_COUNT) index = hb_context_read_reg_value(ctx, op->mem.index);
     if (op->mem.segment == 0x64) base += ctx->fs_base;
     else if (op->mem.segment == 0x65) base += ctx->gs_base;
-    return base + index * op->mem.scale + (uint64_t)op->mem.disp;
+    uint64_t ea = base + index * op->mem.scale + (uint64_t)op->mem.disp;
+    /* Truncate to 32 bits in i386 mode or with 0x67 address-size override. */
+    if (ctx->mode == HB_MODE_32BIT || op->mem.addr32)
+        ea = (uint32_t)ea;
+    return ea;
 }
 
 hb_result_t hb_flags_read_operand_value(hb_context_t* ctx, const hb_ir_operand_t* op, uint64_t* out) {

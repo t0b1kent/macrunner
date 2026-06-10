@@ -48,6 +48,7 @@ struct hb_cache {
     hb_disk_entry_t* entries;
     size_t count;
     size_t cap;
+    bool dirty;
 };
 
 static void free_entries(hb_disk_entry_t* entries, size_t count) {
@@ -84,6 +85,25 @@ static int read_header(FILE* fp, uint32_t format_version, uint32_t abi_version) 
     if (memcmp(h.magic, HB_AOT_MAGIC, 4) != 0) return -1;
     if (h.version != (format_version ? format_version : HB_AOT_VERSION)) return -1;
     if (h.abi_version != (abi_version ? abi_version : HB_AOT_ABI)) return -1;
+    return 0;
+}
+
+static int write_entry(FILE* fp, const hb_disk_entry_t* entry) {
+    hb_aot_entry_meta_t meta;
+
+    if (!fp || !entry) return -1;
+    memset(&meta, 0, sizeof(meta));
+    meta.key_size = sizeof(hb_cache_key_t);
+    meta.native_size = (uint32_t)entry->native_size;
+    meta.steps = entry->steps;
+    meta.valid = entry->valid;
+    meta.unsupported = entry->unsupported;
+    if (fwrite(&meta, sizeof(meta), 1, fp) != 1 ||
+        fwrite(&entry->key, sizeof(entry->key), 1, fp) != 1)
+        return -1;
+    if (entry->native_size && entry->native_code &&
+        fwrite(entry->native_code, 1, entry->native_size, fp) != entry->native_size)
+        return -1;
     return 0;
 }
 
@@ -185,25 +205,26 @@ static hb_result_t write_entries_atomic(hb_cache_t* c, const hb_disk_entry_t* en
     if (!fp) return HB_ERR_NOT_FOUND;
     if (write_header(fp, c->format_version, c->abi_version) != 0) { fclose(fp); unlink(tmp); return HB_ERR_NOT_FOUND; }
     for (size_t i = 0; i < count; i++) {
-        hb_aot_entry_meta_t meta;
-        memset(&meta, 0, sizeof(meta));
-        meta.key_size = sizeof(hb_cache_key_t);
-        meta.native_size = (uint32_t)entries[i].native_size;
-        meta.steps = entries[i].steps;
-        meta.valid = entries[i].valid;
-        meta.unsupported = entries[i].unsupported;
-        if (fwrite(&meta, sizeof(meta), 1, fp) != 1 || fwrite(&entries[i].key, sizeof(entries[i].key), 1, fp) != 1) {
-            fclose(fp); unlink(tmp); return HB_ERR_NOT_FOUND;
-        }
-        if (entries[i].native_size && entries[i].native_code) {
-            if (fwrite(entries[i].native_code, 1, entries[i].native_size, fp) != entries[i].native_size) {
-                fclose(fp); unlink(tmp); return HB_ERR_NOT_FOUND;
-            }
-        }
+        if (write_entry(fp, &entries[i]) != 0) { fclose(fp); unlink(tmp); return HB_ERR_NOT_FOUND; }
     }
     if (flush_and_sync(fp) != 0) { fclose(fp); unlink(tmp); return HB_ERR_NOT_FOUND; }
     if (fclose(fp) != 0) { unlink(tmp); return HB_ERR_NOT_FOUND; }
     if (rename(tmp, c->path) != 0) { unlink(tmp); return HB_ERR_NOT_FOUND; }
+    c->dirty = false;
+    return HB_OK;
+}
+
+static hb_result_t append_entry(hb_cache_t* c, const hb_disk_entry_t* entry) {
+    FILE* fp;
+
+    if (!c || !entry) return HB_ERR_INVALID_ARG;
+    if (force_aot_sync_failure()) return HB_ERR_NOT_FOUND;
+    fp = fopen(c->path, "ab");
+    if (!fp) return HB_ERR_NOT_FOUND;
+    if (write_entry(fp, entry) != 0) { fclose(fp); return HB_ERR_NOT_FOUND; }
+    if (fflush(fp) != 0) { fclose(fp); return HB_ERR_NOT_FOUND; }
+    if (fclose(fp) != 0) return HB_ERR_NOT_FOUND;
+    c->dirty = true;
     return HB_OK;
 }
 
@@ -240,25 +261,30 @@ void hb_cache_destroy(hb_cache_t* cache) {
     free_entries(cache->entries, cache->count);
     free(cache);
 }
-void hb_cache_close(hb_cache_t* cache) { hb_cache_destroy(cache); }
+void hb_cache_close(hb_cache_t* cache) {
+    if (!cache) return;
+    if (cache->dirty) (void)write_entries_atomic(cache, cache->entries, cache->count);
+    hb_cache_destroy(cache);
+}
 
 hb_result_t hb_cache_get(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t** out) {
     if (!cache || !key || !out) return HB_ERR_INVALID_ARG;
     *out = NULL;
     cache->stats.lookups++;
-    for (size_t i = 0; i < cache->count; i++) {
-        if (memcmp(&cache->entries[i].key, key, sizeof(*key)) == 0) {
+    for (size_t i = cache->count; i > 0; i--) {
+        size_t pos = i - 1;
+        if (memcmp(&cache->entries[pos].key, key, sizeof(*key)) == 0) {
             hb_cache_entry_t* e = calloc(1, sizeof(*e));
             if (!e) return HB_ERR_OUT_OF_MEMORY;
-            e->key = cache->entries[i].key;
-            e->valid = cache->entries[i].valid != 0;
-            e->unsupported = cache->entries[i].unsupported != 0;
-            e->steps = cache->entries[i].steps;
-            e->native_size = cache->entries[i].native_size;
+            e->key = cache->entries[pos].key;
+            e->valid = cache->entries[pos].valid != 0;
+            e->unsupported = cache->entries[pos].unsupported != 0;
+            e->steps = cache->entries[pos].steps;
+            e->native_size = cache->entries[pos].native_size;
             if (e->native_size) {
                 e->native_code = malloc(e->native_size);
                 if (!e->native_code) { free(e); return HB_ERR_OUT_OF_MEMORY; }
-                memcpy(e->native_code, cache->entries[i].native_code, e->native_size);
+                memcpy(e->native_code, cache->entries[pos].native_code, e->native_size);
             }
             *out = e;
             cache->stats.hits++;
@@ -275,10 +301,17 @@ hb_result_t hb_cache_lookup(hb_cache_t* cache, const hb_cache_key_t* key, hb_cac
 
 hb_result_t hb_cache_put(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t* entry) {
     size_t pos;
+    bool replacing;
     if (!cache || !key || !entry) return HB_ERR_INVALID_ARG;
-    for (pos = 0; pos < cache->count; pos++) {
-        if (memcmp(&cache->entries[pos].key, key, sizeof(*key)) == 0) break;
+    pos = cache->count;
+    for (size_t i = cache->count; i > 0; i--) {
+        size_t candidate = i - 1;
+        if (memcmp(&cache->entries[candidate].key, key, sizeof(*key)) == 0) {
+            pos = candidate;
+            break;
+        }
     }
+    replacing = pos != cache->count;
     if (pos == cache->count) {
         if (cache->count >= cache->cap) {
             size_t new_cap = cache->cap ? cache->cap * 2 : 16;
@@ -305,7 +338,8 @@ hb_result_t hb_cache_put(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_
         cache->stats.bytes_stored += entry->native_size;
     }
     cache->stats.entries_stored++;
-    return write_entries_atomic(cache, cache->entries, cache->count);
+    (void)replacing;
+    return append_entry(cache, &cache->entries[pos]);
 }
 
 hb_result_t hb_cache_store(hb_cache_t* cache, const hb_cache_key_t* key, const uint8_t* native_blob, size_t native_size, const hb_cache_entry_t* metadata) {

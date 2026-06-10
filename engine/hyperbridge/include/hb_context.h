@@ -197,6 +197,17 @@ struct hb_context {
        EVEX semantics; existing XMM/YMM storage remains unchanged. */
     uint64_t zmm_hi[16][4];
     uint64_t k[8];
+
+    /* Interpreter-only low/high storage for AVX-512 ZMM16..31. Kept appended so
+       earlier hb_context_t offsets remain stable for existing ARM64 JIT code. */
+    uint64_t xmm_ext[16][2];
+    uint64_t ymm_hi_ext[16][2];
+    uint64_t zmm_hi_ext[16][4];
+
+    /* x86-32 guest address space base in the host virtual address space.
+     * Set once at thread init from hb_memory_guest32_base(). Used by the
+     * ARM64 JIT to convert 32-bit guest EAs to host pointers. Zero for x64. */
+    uint64_t guest32_base;
 };
 
 hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend);

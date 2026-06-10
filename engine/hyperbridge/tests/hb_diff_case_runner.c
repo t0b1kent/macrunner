@@ -42,6 +42,11 @@ typedef struct {
     uint64_t lazy_count;
     uint8_t xmm[16][16];
     uint8_t ymm_hi[16][16];
+    uint8_t zmm_hi[16][32];
+    uint8_t xmm_ext[16][16];
+    uint8_t ymm_hi_ext[16][16];
+    uint8_t zmm_hi_ext[16][32];
+    uint64_t k[8];
     uint16_t x87_cw;
     uint16_t x87_sw;
     uint16_t x87_tag;
@@ -235,9 +240,14 @@ static hb_result_t init_context(hb_context_t* ctx, uint64_t seed, const uint8_t*
             if (i < 8) memcpy(ctx->regs.x86.xmm[i], tmp, sizeof(tmp));
         } else {
             fill_random(&rng, (uint8_t*)ctx->regs.x64.xmm[i], 16);
+            fill_random(&rng, (uint8_t*)ctx->xmm_ext[i], 16);
+            fill_random(&rng, (uint8_t*)ctx->ymm_hi_ext[i], 16);
+            fill_random(&rng, (uint8_t*)ctx->zmm_hi_ext[i], 32);
         }
         fill_random(&rng, (uint8_t*)ctx->ymm_hi[i], 16);
+        fill_random(&rng, (uint8_t*)ctx->zmm_hi[i], 32);
     }
+    for (unsigned i = 0; i < 8; i++) ctx->k[i] = splitmix64_next(&rng);
     return HB_OK;
 }
 
@@ -284,10 +294,15 @@ static void capture_snapshot(hb_context_t* ctx, hb_diff_snapshot_t* s,
         s->gpr[14] = ctx->regs.x64.r14; s->gpr[15] = ctx->regs.x64.r15;
         s->rflags = ctx->regs.x64.rflags;
         for (unsigned i = 0; i < 16; i++) memcpy(s->xmm[i], ctx->regs.x64.xmm[i], 16);
+        for (unsigned i = 0; i < 16; i++) memcpy(s->xmm_ext[i], ctx->xmm_ext[i], 16);
+        for (unsigned i = 0; i < 16; i++) memcpy(s->ymm_hi_ext[i], ctx->ymm_hi_ext[i], 16);
+        for (unsigned i = 0; i < 16; i++) memcpy(s->zmm_hi_ext[i], ctx->zmm_hi_ext[i], 32);
     }
     s->rip = ctx->pc;
     s->flags = ctx->flags;
     for (unsigned i = 0; i < 16; i++) memcpy(s->ymm_hi[i], ctx->ymm_hi[i], 16);
+    for (unsigned i = 0; i < 16; i++) memcpy(s->zmm_hi[i], ctx->zmm_hi[i], 32);
+    for (unsigned i = 0; i < 8; i++) s->k[i] = ctx->k[i];
     if (ctx->memory) {
         (void)hb_memory_read(ctx->memory, HB_DIFF_DATA_BASE, s->data, sizeof(s->data));
         (void)hb_memory_read(ctx->memory, HB_DIFF_STACK_BASE, s->stack, sizeof(s->stack));
@@ -392,6 +407,28 @@ static bool snapshots_equal(const hb_diff_snapshot_t* a, const hb_diff_snapshot_
             snprintf(field, field_size, "ymm_hi%u", i);
             return false;
         }
+        if (memcmp(a->zmm_hi[i], b->zmm_hi[i], 32) != 0) {
+            snprintf(field, field_size, "zmm_hi%u", i);
+            return false;
+        }
+        if (memcmp(a->xmm_ext[i], b->xmm_ext[i], 16) != 0) {
+            snprintf(field, field_size, "xmm%u", i + 16);
+            return false;
+        }
+        if (memcmp(a->ymm_hi_ext[i], b->ymm_hi_ext[i], 16) != 0) {
+            snprintf(field, field_size, "ymm_hi%u", i + 16);
+            return false;
+        }
+        if (memcmp(a->zmm_hi_ext[i], b->zmm_hi_ext[i], 32) != 0) {
+            snprintf(field, field_size, "zmm_hi%u", i + 16);
+            return false;
+        }
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        if (a->k[i] != b->k[i]) {
+            snprintf(field, field_size, "k%u", i);
+            return false;
+        }
     }
     for (size_t i = 0; i < sizeof(a->data); i++) {
         if (a->data[i] != b->data[i]) {
@@ -430,6 +467,26 @@ static void print_vec_array_json(const uint8_t v[16][16]) {
     putchar(']');
 }
 
+static void print_zmm_hi_array_json(const uint8_t v[16][32]) {
+    putchar('[');
+    for (unsigned i = 0; i < 16; i++) {
+        if (i) putchar(',');
+        putchar('"');
+        print_hex_bytes(v[i], 32);
+        putchar('"');
+    }
+    putchar(']');
+}
+
+static void print_k_array_json(const uint64_t k[8]) {
+    putchar('[');
+    for (unsigned i = 0; i < 8; i++) {
+        if (i) putchar(',');
+        printf("\"0x%016" PRIx64 "\"", k[i]);
+    }
+    putchar(']');
+}
+
 static void print_flags_json(const hb_flags_t* f) {
     printf("{\"cf\":%u,\"pf\":%u,\"af\":%u,\"zf\":%u,\"sf\":%u,\"of\":%u}",
            f->cf ? 1 : 0, f->pf ? 1 : 0, f->af ? 1 : 0,
@@ -452,12 +509,24 @@ static void print_snapshot_json(const char* name, const hb_diff_snapshot_t* s) {
     print_vec_array_json(s->xmm);
     printf(",\"ymm_hi\":");
     print_vec_array_json(s->ymm_hi);
+    printf(",\"zmm_hi\":");
+    print_zmm_hi_array_json(s->zmm_hi);
+    printf(",\"xmm_ext\":");
+    print_vec_array_json(s->xmm_ext);
+    printf(",\"ymm_hi_ext\":");
+    print_vec_array_json(s->ymm_hi_ext);
+    printf(",\"zmm_hi_ext\":");
+    print_zmm_hi_array_json(s->zmm_hi_ext);
+    printf(",\"k\":");
+    print_k_array_json(s->k);
     printf(",\"data_hash\":\"0x%016" PRIx64 "\",\"stack_hash\":\"0x%016" PRIx64 "\"",
            fnv1a64(s->data, sizeof(s->data)), fnv1a64(s->stack, sizeof(s->stack)));
     printf(",\"xmm0\":\"");
     print_hex_bytes(s->xmm[0], 16);
     printf("\",\"ymm0_hi\":\"");
     print_hex_bytes(s->ymm_hi[0], 16);
+    printf("\",\"zmm0_hi\":\"");
+    print_hex_bytes(s->zmm_hi[0], 32);
     printf("\"");
     if (s->arch == HB_ARCH_X86) {
         printf(",\"x87\":{\"cw\":\"0x%04x\",\"sw\":\"0x%04x\",\"tag\":\"0x%04x\"}",

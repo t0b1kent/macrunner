@@ -237,6 +237,16 @@ static unsigned char macrunner_hb_tls_slots[MACRUNNER_HB_TLS_SLOT_MAX];
 static unsigned char macrunner_hb_fls_slots[MACRUNNER_HB_TLS_SLOT_MAX];
 static uint64_t macrunner_hb_fls_callbacks[MACRUNNER_HB_TLS_SLOT_MAX];
 static struct macrunner_hb_tls_thread_values macrunner_hb_tls_thread_values[MACRUNNER_HB_TLS_THREAD_MAX];
+
+/* Rolling ring of the last block-at probe hits; dumped at runtime-fail so the
+ * FINAL pre-death visits (not the first N) are captured. */
+struct macrunner_hb_blockat_ring
+{
+    uint64_t rcx, rdx, r8, r9, rsp;
+    char s_r9[97];
+};
+static struct macrunner_hb_blockat_ring macrunner_hb_blockat_ring[8];
+static unsigned int macrunner_hb_blockat_ring_next;
 static pthread_mutex_t macrunner_hb_x64_thread_context_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct macrunner_hb_x64_thread_context_entry macrunner_hb_x64_thread_contexts[MACRUNNER_HB_X64_THREAD_CONTEXT_MAX];
 static pthread_mutex_t macrunner_hb_error_mode_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -256,7 +266,16 @@ static ATOM macrunner_hb_synthetic_class_next = 0xc000;
 static uint64_t macrunner_hb_synthetic_hwnd_next = MACRUNNER_HB_PSEUDO_HWND_BASE;
 static pthread_mutex_t macrunner_hb_slist_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t macrunner_hb_local_heap_mutex = PTHREAD_MUTEX_INITIALIZER;
-static struct macrunner_hb_local_heap macrunner_hb_local_heaps[MACRUNNER_HB_LOCAL_HEAP_MAX];
+/* Live-allocation bookkeeping is a growing open-addressing hash table: a fixed
+ * 8192-entry linear array overflowed during Mono corlib init (g_malloc(38)
+ * "failed" with plenty of memory free -> infinite error-print recursion ->
+ * guest stack death).  Keyed by block base, tombstone deletion, doubles at
+ * 75% load.  All access under macrunner_hb_local_heap_mutex. */
+#define MACRUNNER_HB_LOCAL_HEAP_TOMBSTONE ((void *)(uintptr_t)-1)
+static struct macrunner_hb_local_heap *macrunner_hb_local_heaps;
+static size_t macrunner_hb_local_heap_capacity;
+static size_t macrunner_hb_local_heap_count;
+static size_t macrunner_hb_local_heap_tombstones;
 static struct macrunner_hb_local_heap_arena macrunner_hb_local_heap_arenas[MACRUNNER_HB_LOCAL_HEAP_ARENA_MAX];
 static pthread_mutex_t macrunner_hb_local_file_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct macrunner_hb_local_file macrunner_hb_local_files[MACRUNNER_HB_LOCAL_FILE_MAX];
@@ -3454,6 +3473,43 @@ static hb_result_t macrunner_hb_special_read( void *user, hb_gva_t addr, void *o
     return HB_OK;
 }
 
+/* Windows guard-page semantics for guest writes: a CALL pushing one qword
+ * below a page-aligned RSP must clear the guard and retry (mono grows its
+ * VirtualAlloc'd thread stacks this way; HB helpers otherwise surface it as
+ * MEMORY_FAULT and the run dies at rva 0x4fe309-class blocks). */
+static BOOL macrunner_hb_try_grow_guard_page( hb_gva_t addr )
+{
+    EXCEPTION_RECORD rec = { 0 };
+    NTSTATUS status;
+
+    rec.ExceptionCode = STATUS_ACCESS_VIOLATION;
+    rec.NumberParameters = 2;
+    rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
+    rec.ExceptionInformation[1] = (ULONG_PTR)addr;
+    status = virtual_handle_fault( &rec, NULL );
+    if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_JIT_HELPER_FAIL" ))
+    {
+        MEMORY_BASIC_INFORMATION mbi = { 0 };
+        SIZE_T got = 0;
+        NtQueryVirtualMemory( NtCurrentProcess(), (void *)(uintptr_t)addr,
+                              MemoryBasicInformation, &mbi, sizeof(mbi), &got );
+        fprintf( stderr, "macrunner-hb-guard-grow: addr=0x%llx status=%x state=%x protect=%x "
+                 "base=%p size=%llx\n",
+                 (unsigned long long)addr, (unsigned int)status,
+                 (unsigned int)mbi.State, (unsigned int)mbi.Protect,
+                 mbi.BaseAddress, (unsigned long long)mbi.RegionSize );
+        fflush( stderr );
+    }
+    return status == STATUS_SUCCESS || status == STATUS_GUARD_PAGE_VIOLATION;
+}
+
+static bool macrunner_hb_special_grow( void *user, hb_gva_t addr )
+{
+    (void)user;
+    if (addr < 0x1000) return false;
+    return macrunner_hb_try_grow_guard_page( addr ) ? true : false;
+}
+
 static hb_result_t macrunner_hb_special_write( void *user, hb_gva_t addr, const void *in, size_t size )
 {
     if (!user || !in) return HB_ERR_MEMORY_FAULT;
@@ -3473,6 +3529,7 @@ static hb_result_t macrunner_hb_special_write( void *user, hb_gva_t addr, const 
         const unsigned char *src = in;
         mach_vm_address_t cur = (mach_vm_address_t)addr;
         size_t remaining = size;
+        unsigned int guard_retries = 0;
 
         /*
          * The live VM map is a snapshot taken when the x64 bridge starts.
@@ -3496,6 +3553,11 @@ static hb_result_t macrunner_hb_special_write( void *user, hb_gva_t addr, const 
             if (object != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), object );
             if (kr != KERN_SUCCESS || !(info.protection & VM_PROT_WRITE))
             {
+                if (guard_retries < 4 && macrunner_hb_try_grow_guard_page( cur ))
+                {
+                    guard_retries++;
+                    continue;
+                }
                 macrunner_hb_trace_special_vm_fault( "write-region", addr, cur, remaining, kr,
                                                      region, region_size, info.protection );
                 return HB_ERR_MEMORY_FAULT;
@@ -3515,6 +3577,11 @@ static hb_result_t macrunner_hb_special_write( void *user, hb_gva_t addr, const 
                                 (mach_msg_type_number_t)chunk );
             if (kr != KERN_SUCCESS)
             {
+                if (guard_retries < 4 && macrunner_hb_try_grow_guard_page( cur ))
+                {
+                    guard_retries++;
+                    continue;
+                }
                 macrunner_hb_trace_special_vm_fault( "write-copy", addr, cur, remaining, kr,
                                                      region, region_size, info.protection );
                 return HB_ERR_MEMORY_FAULT;
@@ -4096,51 +4163,109 @@ static SIZE_T macrunner_hb_local_heap_allocation_size( SIZE_T requested_size )
     return (size + align_mask) & ~align_mask;
 }
 
+static size_t macrunner_hb_local_heap_hash( const void *ptr, size_t capacity )
+{
+    uintptr_t h = (uintptr_t)ptr;
+
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
+    return (size_t)h & (capacity - 1);
+}
+
+/* caller holds macrunner_hb_local_heap_mutex; new_capacity is a power of two */
+static BOOL macrunner_hb_local_heap_rehash( size_t new_capacity )
+{
+    struct macrunner_hb_local_heap *new_table = calloc( new_capacity, sizeof(*new_table) );
+    size_t i, j;
+
+    if (!new_table) return FALSE;
+    for (i = 0; i < macrunner_hb_local_heap_capacity; i++)
+    {
+        struct macrunner_hb_local_heap *e = &macrunner_hb_local_heaps[i];
+
+        if (!e->base || e->base == MACRUNNER_HB_LOCAL_HEAP_TOMBSTONE) continue;
+        j = macrunner_hb_local_heap_hash( e->base, new_capacity );
+        while (new_table[j].base) j = (j + 1) & (new_capacity - 1);
+        new_table[j] = *e;
+    }
+    free( macrunner_hb_local_heaps );
+    macrunner_hb_local_heaps = new_table;
+    macrunner_hb_local_heap_capacity = new_capacity;
+    macrunner_hb_local_heap_tombstones = 0;
+    return TRUE;
+}
+
 static BOOL macrunner_hb_local_heap_remember( void *ptr, SIZE_T requested_size,
                                               SIZE_T allocation_size,
                                               void *allocation_base, BOOL arena_backed )
 {
-    unsigned int i;
+    size_t j, insert = (size_t)-1;
 
     if (!ptr) return TRUE;
     pthread_mutex_lock( &macrunner_hb_local_heap_mutex );
-    for (i = 0; i < MACRUNNER_HB_LOCAL_HEAP_MAX; i++)
+    if (!macrunner_hb_local_heaps && !macrunner_hb_local_heap_rehash( 16384 ))
     {
-        if (macrunner_hb_local_heaps[i].base == ptr)
-        {
-            pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
-            return TRUE;
-        }
-        if (!macrunner_hb_local_heaps[i].base)
-        {
-            macrunner_hb_local_heaps[i].base = ptr;
-            macrunner_hb_local_heaps[i].requested_size = requested_size;
-            macrunner_hb_local_heaps[i].allocation_size = allocation_size;
-            macrunner_hb_local_heaps[i].allocation_base = allocation_base ? allocation_base : ptr;
-            macrunner_hb_local_heaps[i].arena_backed = arena_backed;
-            pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
-            return TRUE;
-        }
+        pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+        return FALSE;
     }
+    if ((macrunner_hb_local_heap_count + macrunner_hb_local_heap_tombstones + 1) * 4 >=
+            macrunner_hb_local_heap_capacity * 3 &&
+        !macrunner_hb_local_heap_rehash( macrunner_hb_local_heap_capacity * 2 ))
+    {
+        pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+        return FALSE;
+    }
+    j = macrunner_hb_local_heap_hash( ptr, macrunner_hb_local_heap_capacity );
+    while (macrunner_hb_local_heaps[j].base)
+    {
+        if (macrunner_hb_local_heaps[j].base == ptr)
+        {
+            pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+            return TRUE;
+        }
+        if (macrunner_hb_local_heaps[j].base == MACRUNNER_HB_LOCAL_HEAP_TOMBSTONE &&
+            insert == (size_t)-1)
+            insert = j;
+        j = (j + 1) & (macrunner_hb_local_heap_capacity - 1);
+    }
+    if (insert == (size_t)-1) insert = j;
+    else macrunner_hb_local_heap_tombstones--;
+    macrunner_hb_local_heaps[insert].base = ptr;
+    macrunner_hb_local_heaps[insert].requested_size = requested_size;
+    macrunner_hb_local_heaps[insert].allocation_size = allocation_size;
+    macrunner_hb_local_heaps[insert].allocation_base = allocation_base ? allocation_base : ptr;
+    macrunner_hb_local_heaps[insert].arena_backed = arena_backed;
+    macrunner_hb_local_heap_count++;
     pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
-    return FALSE;
+    return TRUE;
 }
 
 static BOOL macrunner_hb_local_heap_forget( void *ptr, struct macrunner_hb_local_heap *entry )
 {
-    unsigned int i;
+    size_t j;
 
     if (!ptr) return TRUE;
     pthread_mutex_lock( &macrunner_hb_local_heap_mutex );
-    for (i = 0; i < MACRUNNER_HB_LOCAL_HEAP_MAX; i++)
+    if (!macrunner_hb_local_heaps)
     {
-        if (macrunner_hb_local_heaps[i].base == ptr)
+        pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+        return FALSE;
+    }
+    j = macrunner_hb_local_heap_hash( ptr, macrunner_hb_local_heap_capacity );
+    while (macrunner_hb_local_heaps[j].base)
+    {
+        if (macrunner_hb_local_heaps[j].base == ptr)
         {
-            if (entry) *entry = macrunner_hb_local_heaps[i];
-            memset( &macrunner_hb_local_heaps[i], 0, sizeof(macrunner_hb_local_heaps[i]) );
+            if (entry) *entry = macrunner_hb_local_heaps[j];
+            memset( &macrunner_hb_local_heaps[j], 0, sizeof(macrunner_hb_local_heaps[j]) );
+            macrunner_hb_local_heaps[j].base = MACRUNNER_HB_LOCAL_HEAP_TOMBSTONE;
+            macrunner_hb_local_heap_count--;
+            macrunner_hb_local_heap_tombstones++;
             pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
             return TRUE;
         }
+        j = (j + 1) & (macrunner_hb_local_heap_capacity - 1);
     }
     pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
     return FALSE;
@@ -4149,19 +4274,26 @@ static BOOL macrunner_hb_local_heap_forget( void *ptr, struct macrunner_hb_local
 static BOOL macrunner_hb_local_heap_lookup( void *ptr, SIZE_T *requested_size,
                                             SIZE_T *allocation_size )
 {
-    unsigned int i;
+    size_t j;
 
     if (!ptr) return FALSE;
     pthread_mutex_lock( &macrunner_hb_local_heap_mutex );
-    for (i = 0; i < MACRUNNER_HB_LOCAL_HEAP_MAX; i++)
+    if (!macrunner_hb_local_heaps)
     {
-        if (macrunner_hb_local_heaps[i].base == ptr)
+        pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
+        return FALSE;
+    }
+    j = macrunner_hb_local_heap_hash( ptr, macrunner_hb_local_heap_capacity );
+    while (macrunner_hb_local_heaps[j].base)
+    {
+        if (macrunner_hb_local_heaps[j].base == ptr)
         {
-            if (requested_size) *requested_size = macrunner_hb_local_heaps[i].requested_size;
-            if (allocation_size) *allocation_size = macrunner_hb_local_heaps[i].allocation_size;
+            if (requested_size) *requested_size = macrunner_hb_local_heaps[j].requested_size;
+            if (allocation_size) *allocation_size = macrunner_hb_local_heaps[j].allocation_size;
             pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
             return TRUE;
         }
+        j = (j + 1) & (macrunner_hb_local_heap_capacity - 1);
     }
     pthread_mutex_unlock( &macrunner_hb_local_heap_mutex );
     return FALSE;
@@ -5625,12 +5757,26 @@ struct macrunner_hb_pe_callback12_frame
 
 __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call12,
                    "stp x29, x30, [sp, #-0xd0]!\n\t"
+                   __ASM_CFI(".cfi_def_cfa_offset 0xd0\n\t")
+                   __ASM_CFI(".cfi_offset 29,-0xd0\n\t")
+                   __ASM_CFI(".cfi_offset 30,-0xc8\n\t")
                    "mov x29, sp\n\t"
+                   __ASM_CFI(".cfi_def_cfa_register 29\n\t")
                    "stp x19, x20, [x29, #0x10]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 19,0x10\n\t")
+                   __ASM_CFI(".cfi_rel_offset 20,0x18\n\t")
                    "stp x21, x22, [x29, #0x20]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 21,0x20\n\t")
+                   __ASM_CFI(".cfi_rel_offset 22,0x28\n\t")
                    "stp x23, x24, [x29, #0x30]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 23,0x30\n\t")
+                   __ASM_CFI(".cfi_rel_offset 24,0x38\n\t")
                    "stp x25, x26, [x29, #0x40]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 25,0x40\n\t")
+                   __ASM_CFI(".cfi_rel_offset 26,0x48\n\t")
                    "stp x27, x28, [x29, #0x50]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 27,0x50\n\t")
+                   __ASM_CFI(".cfi_rel_offset 28,0x58\n\t")
                    "stp d8,  d9,  [x29, #0x60]\n\t"
                    "stp d10, d11, [x29, #0x70]\n\t"
                    "stp d12, d13, [x29, #0x80]\n\t"
@@ -5693,10 +5839,20 @@ __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call12,
                    "ldp d10, d11, [x29, #0x70]\n\t"
                    "ldp d8,  d9,  [x29, #0x60]\n\t"
                    "ldp x27, x28, [x29, #0x50]\n\t"
+                   __ASM_CFI(".cfi_same_value 27\n\t")
+                   __ASM_CFI(".cfi_same_value 28\n\t")
                    "ldp x25, x26, [x29, #0x40]\n\t"
+                   __ASM_CFI(".cfi_same_value 25\n\t")
+                   __ASM_CFI(".cfi_same_value 26\n\t")
                    "ldp x23, x24, [x29, #0x30]\n\t"
+                   __ASM_CFI(".cfi_same_value 23\n\t")
+                   __ASM_CFI(".cfi_same_value 24\n\t")
                    "ldp x21, x22, [x29, #0x20]\n\t"
+                   __ASM_CFI(".cfi_same_value 21\n\t")
+                   __ASM_CFI(".cfi_same_value 22\n\t")
                    "ldp x19, x20, [x29, #0x10]\n\t"
+                   __ASM_CFI(".cfi_same_value 19\n\t")
+                   __ASM_CFI(".cfi_same_value 20\n\t")
                    "ldp x29, x30, [sp], #0xd0\n\t"
                    "ret" )
 #endif
@@ -16396,6 +16552,7 @@ NTSTATUS macrunner_hb_x64_import_context( void *args )
     special.peb = teb ? teb->Peb : NULL;
     hb_memory_set_special_handlers( ctx->memory, macrunner_hb_special_read,
                                     macrunner_hb_special_write, &special );
+    hb_memory_set_grow_handler( ctx->memory, macrunner_hb_special_grow );
 
     ret = macrunner_hb_map_live_address_space( ctx->memory );
     if (ret != HB_OK)
@@ -17868,6 +18025,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     hb_exec_result_t out;
     ULONG64 blocks = 0, steps = 0, jit_fallbacks = 0;
     uint64_t last_block_pc = 0;
+    uint64_t rsp_ledger_before = 0;
+    BOOL rsp_ledger_armed = FALSE;
     uint64_t block_limit = macrunner_hb_get_block_limit( label );
     uint64_t step_limit = macrunner_hb_get_step_limit( label, block_limit );
     uint64_t image_start = (uint64_t)(uintptr_t)image_base;
@@ -17964,6 +18123,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     old_teb_deallocation_stack = teb->DeallocationStack;
     hb_memory_set_special_handlers( ctx->memory, macrunner_hb_special_read,
                                     macrunner_hb_special_write, &special );
+    hb_memory_set_grow_handler( ctx->memory, macrunner_hb_special_grow );
 
     ret = macrunner_hb_map_live_address_space( ctx->memory );
     if (debug_enabled)
@@ -18413,6 +18573,63 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         if (trace_npp_open_pack) macrunner_hb_trace_npp_open_pack( ctx, image_start, "before-block" );
         block_pc = ctx->pc;
         last_block_pc = block_pc;
+        /* Windowed per-block rsp ledger: outer-loop view, works for BOTH backends
+         * (JIT path included).  Env window is read once; budget bounds output. */
+        {
+            static int ledger_state; /* 0=unread 1=off 2=on */
+            static uint64_t ledger_lo, ledger_hi;
+            static unsigned int ledger_used;
+
+            if (!ledger_state)
+            {
+                const char *lo = getenv( "MACRUNNER_HB_TRACE_RSP_LEDGER_START" );
+                const char *hi = getenv( "MACRUNNER_HB_TRACE_RSP_LEDGER_END" );
+                if (lo && lo[0])
+                {
+                    ledger_lo = strtoull( lo, NULL, 0 );
+                    ledger_hi = hi && hi[0] ? strtoull( hi, NULL, 0 ) : ledger_lo;
+                    ledger_state = 2;
+                }
+                else ledger_state = 1;
+            }
+            rsp_ledger_armed = (ledger_state == 2 && block_pc >= ledger_lo &&
+                                block_pc <= ledger_hi && ledger_used < 6000);
+            if (rsp_ledger_armed) ledger_used++;
+            rsp_ledger_before = ctx->regs.x64.rsp;
+        }
+        /* Block-at probe: dump UCRT putc-validator state the moment its
+         * error path executes (leadbyte+NUL verdict), not at stack death. */
+        {
+            static int blockat_state; /* 0=unread 1=off 2=on */
+            static uint64_t blockat_addr;
+            static unsigned int blockat_used;
+
+            if (!blockat_state)
+            {
+                const char *at = getenv( "MACRUNNER_HB_TRACE_BLOCK_AT" );
+                if (at && at[0]) { blockat_addr = strtoull( at, NULL, 0 ); blockat_state = 2; }
+                else blockat_state = 1;
+            }
+            if (blockat_state == 2 && block_pc == blockat_addr)
+            {
+                struct macrunner_hb_blockat_ring *slot =
+                    &macrunner_hb_blockat_ring[macrunner_hb_blockat_ring_next++ % 8];
+                unsigned int si;
+
+                slot->rcx = ctx->regs.x64.rcx;
+                slot->rdx = ctx->regs.x64.rdx;
+                slot->r8 = ctx->regs.x64.r8;
+                slot->r9 = ctx->regs.x64.r9;
+                slot->rsp = ctx->regs.x64.rsp;
+                memset( slot->s_r9, 0, sizeof(slot->s_r9) );
+                if (slot->r9 > 0x10000)
+                    hb_memory_read( ctx->memory, (hb_gva_t)slot->r9, slot->s_r9, 96 );
+                for (si = 0; si < 96; si++)
+                    if (slot->s_r9[si] && ((unsigned char)slot->s_r9[si] < 0x20 ||
+                                           (unsigned char)slot->s_r9[si] > 0x7e))
+                        slot->s_r9[si] = '.';
+            }
+        }
         if (trace_thread_run)
         {
             fprintf( stderr, "macrunner-ui-input: stage=hb_run_x64_before_block "
@@ -18584,6 +18801,15 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
             else hb_ir_func_destroy( func );
         }
         steps += out.steps_executed;
+        if (rsp_ledger_armed)
+            fprintf( stderr, "macrunner-hb-rsp-ledger: block=%p next=%p rsp_before=%p rsp_after=%p "
+                     "d=%lld ret=%s out=%s steps=%s\n",
+                     (void *)(uintptr_t)block_pc, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)rsp_ledger_before,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp,
+                     (long long)(ctx->regs.x64.rsp - rsp_ledger_before),
+                     hb_result_string(ret), hb_result_string(out.result),
+                     wine_dbgstr_longlong(out.steps_executed) );
         macrunner_hb_trace_mono_vtable_write_probe( "after", label, ctx, image_start, block_pc,
                                                     blocks, steps, ret, out.result,
                                                     out.steps_executed );
@@ -18665,6 +18891,108 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                       (void *)(uintptr_t)ctx->regs.x64.r10,
                       (void *)(uintptr_t)ctx->regs.x64.r11,
                       fault_full[0] ? fault_full : "(unknown)" );
+            /* Dump the rolling block-at ring: the LAST visits before death. */
+            {
+                static int ring_dumped;
+                if (!ring_dumped++ && macrunner_hb_blockat_ring_next)
+                {
+                    unsigned int ri, count = macrunner_hb_blockat_ring_next < 8 ?
+                                             macrunner_hb_blockat_ring_next : 8;
+                    fprintf( stderr, "macrunner-hb-blockat-ring: total_hits=%u\n",
+                             macrunner_hb_blockat_ring_next );
+                    for (ri = 0; ri < count; ri++)
+                    {
+                        struct macrunner_hb_blockat_ring *slot =
+                            &macrunner_hb_blockat_ring[(macrunner_hb_blockat_ring_next - count + ri) % 8];
+                        fprintf( stderr, "macrunner-hb-blockat-ring[%u]: rcx=%p rdx=%p r8=%p r9=%p rsp=%p s_r9=\"%s\"\n",
+                                 ri, (void *)(uintptr_t)slot->rcx, (void *)(uintptr_t)slot->rdx,
+                                 (void *)(uintptr_t)slot->r8, (void *)(uintptr_t)slot->r9,
+                                 (void *)(uintptr_t)slot->rsp, slot->s_r9 );
+                    }
+                    fflush( stderr );
+                }
+            }
+            /* UCRT putc-validator forensics: dump the stream struct, the locale
+             * ctype chain and the in-flight output buffer text at death. */
+            {
+                static int crt_traced;
+                if (crt_traced++ < 2 && ctx->regs.x64.rcx)
+                {
+                    uint64_t stream = ctx->regs.x64.rcx, p1 = 0, p2 = 0, table = 0, bufdesc = 0;
+                    uint64_t buf_cur = 0, buf_end = 0;
+                    uint8_t cur_ch = 0;
+                    uint16_t w[8];
+                    char text[161];
+                    unsigned int ti;
+
+                    hb_memory_read( ctx->memory, (hb_gva_t)stream + 0x41, &cur_ch, 1 );
+                    hb_memory_read( ctx->memory, (hb_gva_t)stream + 8, &p1, 8 );
+                    if (p1) hb_memory_read( ctx->memory, (hb_gva_t)p1, &p2, 8 );
+                    if (p2) hb_memory_read( ctx->memory, (hb_gva_t)p2, &table, 8 );
+                    memset( w, 0, sizeof(w) );
+                    if (table)
+                        for (ti = 0; ti < 8; ti++)
+                            hb_memory_read( ctx->memory, (hb_gva_t)table + 2 * "  ae0AE\x7f"[ti], &w[ti], 2 );
+                    hb_memory_read( ctx->memory, (hb_gva_t)stream + 0x468, &bufdesc, 8 );
+                    if (bufdesc)
+                    {
+                        hb_memory_read( ctx->memory, (hb_gva_t)bufdesc, &buf_cur, 8 );
+                        hb_memory_read( ctx->memory, (hb_gva_t)bufdesc + 8, &buf_end, 8 );
+                    }
+                    memset( text, 0, sizeof(text) );
+                    if (buf_cur > 160)
+                        hb_memory_read( ctx->memory, (hb_gva_t)(buf_cur - 160), text, 160 );
+                    for (ti = 0; ti < 160; ti++)
+                        if (text[ti] && (text[ti] < 0x20 || (unsigned char)text[ti] > 0x7e)) text[ti] = '.';
+                    fprintf( stderr, "macrunner-hb-crt-forensics: stream=%p ch=0x%02x p1=%p p2=%p table=%p "
+                             "w[sp,a,e,0,A,E,7f]=%04x,%04x,%04x,%04x,%04x,%04x,%04x bufdesc=%p cur=%p end=%p\n",
+                             (void *)(uintptr_t)stream, cur_ch, (void *)(uintptr_t)p1,
+                             (void *)(uintptr_t)p2, (void *)(uintptr_t)table,
+                             w[1], w[2], w[3], w[4], w[5], w[6], w[7],
+                             (void *)(uintptr_t)bufdesc, (void *)(uintptr_t)buf_cur,
+                             (void *)(uintptr_t)buf_end );
+                    fprintf( stderr, "macrunner-hb-crt-text: tail160=\"%s\"\n", text );
+                    fflush( stderr );
+                }
+            }
+            /* One-shot guest stack backtrace: name the call cycle when a thread
+             * dies at the stack bottom (runaway recursion vs real workload). */
+            {
+                static int bt_traced;
+                if (bt_traced++ < 2)
+                {
+                    uint64_t start = ctx->regs.x64.rsp & ~7ULL;
+                    uint64_t stack_top_bt = ctx->memory->stack_top;
+                    const uint64_t *slot;
+                    unsigned int printed = 0, idx;
+
+                    if (start < ctx->memory->stack_bottom) start = ctx->memory->stack_bottom;
+                    slot = (const uint64_t *)(uintptr_t)start;
+                    fprintf( stderr, "macrunner-hb-fail-backtrace: rsp=%p walk_from=%p stack_top=%p\n",
+                             (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)start,
+                             (void *)(uintptr_t)stack_top_bt );
+                    for (idx = 0; idx < 0x4000 && printed < 48 &&
+                         (uint64_t)(uintptr_t)&slot[idx] + 8 <= stack_top_bt; idx++)
+                    {
+                        uint64_t val = slot[idx];
+                        LDR_DATA_TABLE_ENTRY *mod;
+                        char mod_name[64];
+
+                        if (val < 0x10000 || val > 0x7fffffffffffULL) continue;
+                        mod = macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)val );
+                        if (!mod) continue;
+                        if (!macrunner_hb_pc_in_executable_section( mod->DllBase, val )) continue;
+                        mod_name[0] = 0;
+                        macrunner_hb_copy_unicode_ascii( mod_name, sizeof(mod_name), &mod->BaseDllName );
+                        fprintf( stderr, "macrunner-hb-fail-bt[%u]: slot=%p val=%p module=%s rva=%p\n",
+                                 printed, (void *)&slot[idx], (void *)(uintptr_t)val,
+                                 mod_name[0] ? mod_name : "(unknown)",
+                                 (void *)(uintptr_t)(val - (uintptr_t)mod->DllBase) );
+                        printed++;
+                    }
+                    fflush( stderr );
+                }
+            }
             ERR( "MacRunner HyperBridge run failed %s pc=%p ret=%s out=%s reason=%s "
                  "rax=%p rcx=%p rdx=%p rsi=%p rdi=%p rsp=%p\n",
                  label ? label : "entry", (void *)(uintptr_t)ctx->pc,

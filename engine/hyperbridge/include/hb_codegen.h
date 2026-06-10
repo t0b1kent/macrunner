@@ -14,6 +14,7 @@ typedef struct {
     uint8_t* code;
     size_t size;
     size_t capacity;
+    hb_arch_t arch;  /* guest architecture — defaults to HB_ARCH_X64 (=0) */
 } hb_codegen_buffer_t;
 
 /* ARM64 codegen */
@@ -63,6 +64,7 @@ typedef struct {
     size_t dirty_start;
     bool is_executable;
     bool thread_jit_write_protect;
+    uint64_t magic;
 } hb_jit_buffer_t;
 
 hb_jit_buffer_t* hb_jit_buffer_create(size_t size);

@@ -58,6 +58,17 @@ typedef struct hb_memory {
     hb_result_t (*special_read)(void* user, hb_gva_t addr, void* out, size_t size);
     hb_result_t (*special_write)(void* user, hb_gva_t addr, const void* in, size_t size);
     void* special_user;
+    /* Host-side fault recovery: when a live-VM access faults on a page the host
+     * has reserved-but-not-committed (e.g. a Windows guard page below a guest
+     * stack), this lets the embedder run virtual_handle_fault and commit it so
+     * the access can be retried.  Returns true if the page may now be valid. */
+    bool (*special_grow)(void* user, hb_gva_t addr);
+
+    /* MRU region cache: hot[0] is the most recently used region.
+     * hot_gen tracks the memory generation at which the cache was filled;
+     * if generation changes (map/unmap/protect), the cache is cleared. */
+    hb_region_t* hot[4];
+    uint64_t     hot_gen;
 } hb_memory_t;
 
 hb_memory_t* hb_memory_create(size_t max_size);
@@ -84,6 +95,7 @@ void hb_memory_set_special_handlers(hb_memory_t* mem,
                                     hb_result_t (*read_fn)(void* user, hb_gva_t addr, void* out, size_t size),
                                     hb_result_t (*write_fn)(void* user, hb_gva_t addr, const void* in, size_t size),
                                     void* user);
+void hb_memory_set_grow_handler(hb_memory_t* mem, bool (*grow_fn)(void* user, hb_gva_t addr));
 
 hb_result_t hb_memory_read_u8(hb_memory_t* mem, hb_gva_t addr, uint8_t* out);
 hb_result_t hb_memory_read_u16(hb_memory_t* mem, hb_gva_t addr, uint16_t* out);

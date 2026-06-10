@@ -19,6 +19,20 @@ static uint64_t read_x64_block_limit_env(void) {
     return (uint64_t)parsed;
 }
 
+static uint64_t read_step_limit_env(hb_arch_t arch) {
+    const char* name = (arch == HB_ARCH_X86) ? "MACRUNNER_HB_X86_STEP_LIMIT" : "MACRUNNER_HB_STEP_LIMIT";
+    const char* value = getenv(name);
+    uint64_t fallback = (arch == HB_ARCH_X86) ? 10000000ULL : 1000000ULL;
+
+    if (!value || !*value) return fallback;
+
+    errno = 0;
+    char* end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 0);
+    if (errno != 0 || end == value) return fallback;
+    return (uint64_t)parsed;
+}
+
 hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend) {
     hb_context_t* ctx = calloc(1, sizeof(hb_context_t));
     if (!ctx) return NULL;
@@ -27,7 +41,7 @@ hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend) {
     ctx->backend = backend;
     ctx->config.arch = arch;
     ctx->config.backend = backend;
-    ctx->step_limit = 1000000;
+    ctx->step_limit = read_step_limit_env(arch);
     ctx->block_limit = (arch == HB_ARCH_X64) ? read_x64_block_limit_env() : 0;
     ctx->exit_code = 0;
     ctx->last_result = HB_OK;
@@ -51,6 +65,9 @@ hb_result_t hb_context_reset(hb_context_t* ctx) {
     memset(ctx->ymm_hi, 0, sizeof(ctx->ymm_hi));
     memset(ctx->zmm_hi, 0, sizeof(ctx->zmm_hi));
     memset(ctx->k, 0, sizeof(ctx->k));
+    memset(ctx->xmm_ext, 0, sizeof(ctx->xmm_ext));
+    memset(ctx->ymm_hi_ext, 0, sizeof(ctx->ymm_hi_ext));
+    memset(ctx->zmm_hi_ext, 0, sizeof(ctx->zmm_hi_ext));
     memset(&ctx->flags, 0, sizeof(ctx->flags));
     memset(&ctx->lazy_flags, 0, sizeof(ctx->lazy_flags));
     ctx->step_count = 0;

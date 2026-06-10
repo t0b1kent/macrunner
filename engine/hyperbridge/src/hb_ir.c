@@ -309,7 +309,9 @@ static const char* reg_names[] = {
     "r8","r9","r10","r11","r12","r13","r14","r15",
     "rip",
     "xmm0","xmm1","xmm2","xmm3","xmm4","xmm5","xmm6","xmm7",
-    "xmm8","xmm9","xmm10","xmm11","xmm12","xmm13","xmm14","xmm15"
+    "xmm8","xmm9","xmm10","xmm11","xmm12","xmm13","xmm14","xmm15",
+    "xmm16","xmm17","xmm18","xmm19","xmm20","xmm21","xmm22","xmm23",
+    "xmm24","xmm25","xmm26","xmm27","xmm28","xmm29","xmm30","xmm31"
 };
 
 const char* hb_reg_name(hb_reg_t reg) {

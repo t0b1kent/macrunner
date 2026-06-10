@@ -734,6 +734,8 @@ NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
  * state. */
 extern void __wine_pe_x18_thunk(void);
 __ASM_GLOBAL_FUNC( __wine_pe_x18_thunk,
+                   __ASM_CFI(".cfi_def_cfa 31,0\n\t")
+                   __ASM_CFI(".cfi_same_value 30\n\t")
                    "mov x18, x10\n\t"  /* TEB */
                    "br  x16" )         /* real PE entry */
 
@@ -749,6 +751,8 @@ __ASM_GLOBAL_FUNC( __wine_pe_x18_thunk,
  * holding meaningful state across instructions. */
 extern void __wine_pe_x18_resume_thunk(void);
 __ASM_GLOBAL_FUNC( __wine_pe_x18_resume_thunk,
+                   __ASM_CFI(".cfi_def_cfa 31,0\n\t")
+                   __ASM_CFI(".cfi_same_value 30\n\t")
                    "mov x18, x10\n\t"           /* x18 = TEB */
                    "ldr x10, [x18, #0x3d8]\n\t" /* TEB_APPLE_X18_SAVE_X10_OFFSET */
                    "ldr x16, [x18, #0x3e0]\n\t" /* TEB_APPLE_X18_SAVE_X16_OFFSET */
@@ -849,17 +853,31 @@ void macrunner_hb_trace_x64_callback_preserve( ULONG64 target, ULONG64 saved_x26
  * x19-x28 (RtlProcessFlsData uses x26 for fls_data across FLS callbacks). */
 __ASM_GLOBAL_FUNC( macrunner_hb_x64_callback_trampoline,
                    "stp x29, x30, [sp, #-0x100]!\n\t"
+                   __ASM_CFI(".cfi_def_cfa_offset 0x100\n\t")
+                   __ASM_CFI(".cfi_offset 29,-0x100\n\t")
+                   __ASM_CFI(".cfi_offset 30,-0xf8\n\t")
                    "mov x29, sp\n\t"
+                   __ASM_CFI(".cfi_def_cfa_register 29\n\t")
                    "stp x0, x1, [x29, #0x10]\n\t"
                    "stp x2, x3, [x29, #0x20]\n\t"
                    "stp x4, x5, [x29, #0x30]\n\t"
                    "stp x6, x7, [x29, #0x40]\n\t"
                    "str x16, [x29, #0x58]\n\t"
                    "stp x19, x20, [x29, #0x60]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 19,0x60\n\t")
+                   __ASM_CFI(".cfi_rel_offset 20,0x68\n\t")
                    "stp x21, x22, [x29, #0x70]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 21,0x70\n\t")
+                   __ASM_CFI(".cfi_rel_offset 22,0x78\n\t")
                    "stp x23, x24, [x29, #0x80]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 23,0x80\n\t")
+                   __ASM_CFI(".cfi_rel_offset 24,0x88\n\t")
                    "stp x25, x26, [x29, #0x90]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 25,0x90\n\t")
+                   __ASM_CFI(".cfi_rel_offset 26,0x98\n\t")
                    "stp x27, x28, [x29, #0xa0]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 27,0xa0\n\t")
+                   __ASM_CFI(".cfi_rel_offset 28,0xa8\n\t")
                    "stp d8,  d9,  [x29, #0xb0]\n\t"
                    "stp d10, d11, [x29, #0xc0]\n\t"
                    "stp d12, d13, [x29, #0xd0]\n\t"
@@ -885,10 +903,20 @@ __ASM_GLOBAL_FUNC( macrunner_hb_x64_callback_trampoline,
                    "ldp d10, d11, [x29, #0xc0]\n\t"
                    "ldp d8,  d9,  [x29, #0xb0]\n\t"
                    "ldp x27, x28, [x29, #0xa0]\n\t"
+                   __ASM_CFI(".cfi_same_value 27\n\t")
+                   __ASM_CFI(".cfi_same_value 28\n\t")
                    "ldp x25, x26, [x29, #0x90]\n\t"
+                   __ASM_CFI(".cfi_same_value 25\n\t")
+                   __ASM_CFI(".cfi_same_value 26\n\t")
                    "ldp x23, x24, [x29, #0x80]\n\t"
+                   __ASM_CFI(".cfi_same_value 23\n\t")
+                   __ASM_CFI(".cfi_same_value 24\n\t")
                    "ldp x21, x22, [x29, #0x70]\n\t"
+                   __ASM_CFI(".cfi_same_value 21\n\t")
+                   __ASM_CFI(".cfi_same_value 22\n\t")
                    "ldp x19, x20, [x29, #0x60]\n\t"
+                   __ASM_CFI(".cfi_same_value 19\n\t")
+                   __ASM_CFI(".cfi_same_value 20\n\t")
                    "ldp x29, x30, [sp], #0x100\n\t"
                    "ret" )
 

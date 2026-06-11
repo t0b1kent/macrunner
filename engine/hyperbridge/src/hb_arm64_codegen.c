@@ -1270,6 +1270,7 @@ static void emit_native_stack_push_x20(hb_codegen_buffer_t* buf) {
 }
 
 static bool emit_native_push(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    if (buf->arch == HB_ARCH_X86) return false;  /* i386: direct-stack breaks the prologue (DIRECT_STACK=0 default for x86) */
     if (!jit_direct_stack_enabled() || !instr || instr->op != HB_IR_PUSH) return false;
     if (instr->src1.type == HB_OP_REG) {
         if (!is_plain_gpr_reg_operand(&instr->src1) || instr->src1.size != HB_SIZE_64)
@@ -1285,6 +1286,7 @@ static bool emit_native_push(hb_codegen_buffer_t* buf, const hb_ir_instr_t* inst
 }
 
 static bool emit_native_pop(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
+    if (buf->arch == HB_ARCH_X86) return false;  /* i386: direct-stack breaks the prologue (DIRECT_STACK=0 default for x86) */
     if (!jit_direct_stack_enabled() || !instr || instr->op != HB_IR_POP) return false;
     if (!is_plain_gpr_reg_operand(&instr->dst) || instr->dst.size != HB_SIZE_64)
         return false;

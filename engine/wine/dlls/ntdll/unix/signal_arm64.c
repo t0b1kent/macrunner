@@ -920,12 +920,22 @@ __ASM_GLOBAL_FUNC( macrunner_hb_x64_callback_trampoline,
                    "ldp x29, x30, [sp], #0x100\n\t"
                    "ret" )
 
+static BOOL macrunner_hb_redirect_arm64x_hexpthk_sigill( ucontext_t *context );
+
 static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PTR fault_addr,
                                                    const char *source )
 {
     ULONG_PTR pc, raw_pc, x4_target, x16_target;
     BOOL raw_is_guest, fault_is_guest, x4_is_guest, x16_is_guest, sigill_source;
     static int rejected_trace_count;
+
+    /* A native ARM64 indirect call can land on an imported ARM64X x64 entry thunk
+     * (optionally still carrying the CodeMap type tag in the low 2 bits).  Redirect
+     * straight to the native ARM64 target rather than emulating the thunk as an x64
+     * callback: the tag puts the PC mid-instruction (the recorded spin/OOM) and even
+     * the aligned thunk cannot be JIT-executed.  This covers the SEGV/BUS fault
+     * sources too (ill_handler already tries the redirect before reaching here). */
+    if (macrunner_hb_redirect_arm64x_hexpthk_sigill( context )) return TRUE;
 
     if (!macrunner_hb_x64_fault_routing_enabled()) return FALSE;
     raw_pc = PC_sig(context);
@@ -1863,15 +1873,33 @@ static BOOL macrunner_hb_redirect_arm64x_hexpthk_sigill( ucontext_t *context )
     static const unsigned char thunk_prefix[] = { 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x20, 0x55, 0x5d, 0xe9 };
     unsigned char bytes[sizeof(thunk_prefix) + sizeof(LONG)];
     ULONG_PTR pc = PC_sig(context);
-    ULONG_PTR thunk = REGn_sig(16, context);
-    ULONG_PTR target;
+    ULONG_PTR candidates[3];
+    unsigned int ci;
+    ULONG_PTR thunk = 0, target;
     void *module;
     LONG rel;
 
-    if (!thunk || pc < thunk || pc >= thunk + sizeof(bytes)) return FALSE;
-    if (!virtual_check_buffer_for_read( (void *)thunk, sizeof(bytes) )) return FALSE;
-    macrunner_signal_copy_bytes( bytes, (void *)thunk, sizeof(bytes) );
-    if (memcmp( bytes, thunk_prefix, sizeof(thunk_prefix) )) return FALSE;
+    /* The faulting ARM64X x64 entry-thunk address can arrive tagged with the CodeMap
+     * type in the low 2 bits (entry_thunk | type) and/or in a register other than x16
+     * (a native `blr x8` to an imported thunk leaves the target in another reg, and the
+     * fault PC inside the thunk).  Probe x16 and x4 with the tag stripped, plus the
+     * 16-aligned address the fault PC lies within; accept the first whose bytes are the
+     * fast-forward entry-thunk prologue and that the fault PC falls within. */
+    candidates[0] = REGn_sig(16, context) & ~(ULONG_PTR)3;
+    candidates[1] = REGn_sig(4, context) & ~(ULONG_PTR)3;
+    candidates[2] = pc & ~(ULONG_PTR)15;
+    for (ci = 0; ci < ARRAY_SIZE(candidates); ci++)
+    {
+        ULONG_PTR c = candidates[ci];
+
+        if (!c || pc < c || pc >= c + sizeof(bytes)) continue;
+        if (!virtual_check_buffer_for_read( (void *)c, sizeof(bytes) )) continue;
+        macrunner_signal_copy_bytes( bytes, (void *)c, sizeof(bytes) );
+        if (memcmp( bytes, thunk_prefix, sizeof(thunk_prefix) )) continue;
+        thunk = c;
+        break;
+    }
+    if (!thunk) return FALSE;
 
     module = macrunner_hb_readable_pe_module_from_pc( thunk );
     if (!module || macrunner_hb_readable_pe_module_from_pc( pc ) != module) return FALSE;

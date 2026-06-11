@@ -344,8 +344,328 @@ __ASM_GLOBAL_FUNC( RtlCaptureContext,
 
 
 /**********************************************************************
+ * ARM64EC frame fallback for the plain-ARM64 dispatcher.
+ *
+ * ARM64X hybrid builtins keep the unwind data of their ARM64EC ranges in
+ * the CHPE ExtraRFETable (AMD64 RUNTIME_FUNCTION/UNWIND_INFO format); the
+ * ARM64-side RtlLookupFunctionEntry only consults the native ARM64 .pdata,
+ * so unwinding through an EC frame used to raise STATUS_INVALID_DISPOSITION
+ * and recurse (the c0000026 storms).  Walk the frame here by interpreting
+ * the AMD64 unwind ops directly on the ARM64 context through the fixed
+ * ARM64EC register mapping.  EC handlers are not invoked (frame walk only).
+ */
+
+struct macrunner_ec_runtime_function
+{
+    DWORD BeginAddress;
+    DWORD EndAddress;
+    DWORD UnwindData;
+};
+
+struct macrunner_ec_opcode
+{
+    BYTE offset;
+    BYTE code : 4;
+    BYTE info : 4;
+};
+
+struct macrunner_ec_unwind_info
+{
+    BYTE version : 3;
+    BYTE flags : 5;
+    BYTE prolog;
+    BYTE count;
+    BYTE frame_reg : 4;
+    BYTE frame_offset : 4;
+    struct macrunner_ec_opcode opcodes[1];
+};
+
+#ifndef UNW_FLAG_CHAININFO
+#define UNW_FLAG_CHAININFO 4
+#endif
+
+#define MACRUNNER_EC_UWOP_PUSH_NONVOL     0
+#define MACRUNNER_EC_UWOP_ALLOC_LARGE     1
+#define MACRUNNER_EC_UWOP_ALLOC_SMALL     2
+#define MACRUNNER_EC_UWOP_SET_FPREG       3
+#define MACRUNNER_EC_UWOP_SAVE_NONVOL     4
+#define MACRUNNER_EC_UWOP_SAVE_NONVOL_FAR 5
+#define MACRUNNER_EC_UWOP_EPILOG          6
+#define MACRUNNER_EC_UWOP_SAVE_XMM128     8
+#define MACRUNNER_EC_UWOP_SAVE_XMM128_FAR 9
+#define MACRUNNER_EC_UWOP_PUSH_MACHFRAME  10
+
+/* x64 register number -> ARM64 context slot per the ARM64EC mapping */
+static DWORD64 *macrunner_ec_int_reg( CONTEXT *context, unsigned int reg )
+{
+    switch (reg)
+    {
+    case 0:  return &context->X8;   /* rax */
+    case 1:  return &context->X0;   /* rcx */
+    case 2:  return &context->X1;   /* rdx */
+    case 3:  return &context->X27;  /* rbx */
+    case 4:  return &context->Sp;   /* rsp */
+    case 5:  return &context->Fp;   /* rbp */
+    case 6:  return &context->X25;  /* rsi */
+    case 7:  return &context->X26;  /* rdi */
+    case 8:  return &context->X2;   /* r8 */
+    case 9:  return &context->X3;   /* r9 */
+    case 10: return &context->X4;   /* r10 */
+    case 11: return &context->X5;   /* r11 */
+    case 12: return &context->X19;  /* r12 */
+    case 13: return &context->X20;  /* r13 */
+    case 14: return &context->X21;  /* r14 */
+    case 15: return &context->X22;  /* r15 */
+    }
+    return NULL;
+}
+
+static int macrunner_ec_opcode_size( struct macrunner_ec_opcode op )
+{
+    switch (op.code)
+    {
+    case MACRUNNER_EC_UWOP_ALLOC_LARGE:
+        return 2 + (op.info != 0);
+    case MACRUNNER_EC_UWOP_SAVE_NONVOL:
+    case MACRUNNER_EC_UWOP_SAVE_XMM128:
+    case MACRUNNER_EC_UWOP_EPILOG:
+        return 2;
+    case MACRUNNER_EC_UWOP_SAVE_NONVOL_FAR:
+    case MACRUNNER_EC_UWOP_SAVE_XMM128_FAR:
+        return 3;
+    default:
+        return 1;
+    }
+}
+
+static IMAGE_ARM64EC_METADATA *macrunner_ec_module_metadata( ULONG_PTR base )
+{
+    const IMAGE_NT_HEADERS *nt;
+    const IMAGE_LOAD_CONFIG_DIRECTORY *cfg;
+    ULONG size;
+
+    if (!base) return NULL;
+    if (!(nt = RtlImageNtHeader( (void *)base ))) return NULL;
+    cfg = RtlImageDirectoryEntryToData( (void *)base, TRUE, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG, &size );
+    if (!cfg || size <= offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, CHPEMetadataPointer )) return NULL;
+    if (cfg->CHPEMetadataPointer <= base ||
+        cfg->CHPEMetadataPointer >= base + nt->OptionalHeader.SizeOfImage)
+        return NULL;
+    return (IMAGE_ARM64EC_METADATA *)(ULONG_PTR)cfg->CHPEMetadataPointer;
+}
+
+static BOOL macrunner_ec_virtual_unwind_frame( DISPATCHER_CONTEXT *dispatch, CONTEXT *context,
+                                               DWORD64 pc )
+{
+    /* lld-built ARM64X hybrids carry NO unwind data at all for their EC
+     * ranges (ExtraRFETable=0, x64-view exception dir zeroed by the ARM64X
+     * fixups), so unwind by EPILOGUE SCAN: interpret forward from pc a
+     * strict whitelist of ARM64 epilogue instructions until ret/br x30.
+     * Any other instruction bails out to the old invalid-disposition path. */
+    CONTEXT walk = *context;
+    const DWORD *insn;
+    unsigned int steps;
+    BOOL done = FALSE, lr_restored = FALSE;
+
+    /* pc was just executing (it is a live frame address) — instructions
+     * there are mapped; no LDR registration required (guest-arena module
+     * copies are not in the loader list). */
+    if (pc < 0x10000 || (pc & 3)) return FALSE;
+    insn = (const DWORD *)(ULONG_PTR)pc;
+
+    for (steps = 0; steps < 64 && !done; steps++, insn++)
+    {
+        DWORD op = *insn;
+
+        /* the frame's own call instruction (pc points AT the bl/blr that
+         * called the faulting child) — step over it */
+        if (steps == 0 && ((op & 0xfc000000u) == 0x94000000u ||   /* bl */
+                           (op & 0xfffffc1fu) == 0xd63f0000u))    /* blr */
+            continue;
+
+        if ((op & 0xffc003e0u) == 0xa94003e0u)        /* ldp xA, xB, [sp, #imm] */
+        {
+            unsigned int rt = op & 0x1f, rt2 = (op >> 10) & 0x1f;
+            int imm = ((int)((op >> 15) & 0x7f) << 25) >> 22;  /* signed imm7 * 8 */
+            if (rt < 31)  walk.X[rt]  = *(DWORD64 *)(walk.Sp + imm);
+            if (rt2 < 31) walk.X[rt2] = *(DWORD64 *)(walk.Sp + imm + 8);
+            if (rt == 30 || rt2 == 30) lr_restored = TRUE;
+        }
+        else if ((op & 0xffc003e0u) == 0xa8c003e0u)   /* ldp xA, xB, [sp], #imm (post-index) */
+        {
+            unsigned int rt = op & 0x1f, rt2 = (op >> 10) & 0x1f;
+            int imm = ((int)((op >> 15) & 0x7f) << 25) >> 22;
+            if (rt < 31)  walk.X[rt]  = *(DWORD64 *)walk.Sp;
+            if (rt2 < 31) walk.X[rt2] = *(DWORD64 *)(walk.Sp + 8);
+            walk.Sp += imm;
+            if (rt == 30 || rt2 == 30) lr_restored = TRUE;
+        }
+        else if ((op & 0xffc003e0u) == 0xf94003e0u)   /* ldr xA, [sp, #imm] */
+        {
+            unsigned int rt = op & 0x1f;
+            DWORD64 imm = ((op >> 10) & 0xfff) * 8;
+            if (rt < 31) walk.X[rt] = *(DWORD64 *)(walk.Sp + imm);
+            if (rt == 30) lr_restored = TRUE;
+        }
+        else if ((op & 0xffe00fe0u) == 0xf84007e0u)   /* ldr xA, [sp], #imm (post-index) */
+        {
+            unsigned int rt = op & 0x1f;
+            int imm = ((int)((op >> 12) & 0x1ff) << 23) >> 23;
+            if (rt < 31) walk.X[rt] = *(DWORD64 *)walk.Sp;
+            walk.Sp += imm;
+            if (rt == 30) lr_restored = TRUE;
+        }
+        else if ((op & 0xff8003ffu) == 0x910003ffu)   /* add sp, sp, #imm[, lsl #12] */
+        {
+            DWORD64 imm = (op >> 10) & 0xfff;
+            if (op & 0x400000) imm <<= 12;
+            walk.Sp += imm;
+        }
+        else if ((op & 0xff8003ffu) == 0x910003bfu)   /* add sp, x29, #imm (incl. mov sp, x29) */
+        {
+            DWORD64 imm = (op >> 10) & 0xfff;
+            if (op & 0x400000) imm <<= 12;
+            walk.Sp = walk.Fp + imm;
+        }
+        else if (op == 0xd65f03c0u || op == 0xd61f03c0u ||  /* ret / br x30 */
+                 (op & 0xfffffc1fu) == 0xd61f0000u)         /* br xN: tail thunk */
+        {
+            /* pc points at this frame's own call, so the live lr belongs to
+             * the callee — the scan must have reloaded lr from the stack for
+             * the walk to be valid */
+            if (!lr_restored) return FALSE;
+            done = TRUE;
+            break;
+        }
+        else if ((op & 0xfffff01fu) == 0xd503201fu) ; /* hint family: nop/pac/bti */
+        else return FALSE;                            /* not a clean epilogue */
+    }
+    if (!done) return FALSE;
+    if (!walk.Lr || walk.Lr == pc) return FALSE;
+
+    *context = walk;
+    context->Pc = walk.Lr;
+    context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+
+    dispatch->EstablisherFrame = context->Sp;
+    dispatch->LanguageHandler = NULL;
+    dispatch->HandlerData = NULL;
+
+    {
+        static unsigned int trace_count;
+        if (trace_count++ < 16)
+            ERR( "macrunner-hb-seh-ec-unwind: epilogue-scan pc=%p image=%p -> new pc=%p sp=%016I64x\n",
+                 (void *)pc, (void *)dispatch->ImageBase, (void *)context->Pc, context->Sp );
+    }
+    return TRUE;
+}
+
+/* Fallback unwinder for MID-FUNCTION EC frames with no unwind data, where the
+ * epilogue-scan above bails because pc is not at an epilogue (e.g. rpcrt4 RVA
+ * 0x3E600 in the 0x6ba RPC_S_SERVER_UNAVAILABLE SEH cascade — a `bl` site, not a
+ * ret).  lld ARM64X has ExtraRFETable=0 so there is genuinely no metadata; the
+ * only remaining signal is the ARM64 frame-pointer (x29) chain that ABI-compliant
+ * EC prologues maintain: [x29]=caller x29, [x29+8]=return address.  Heavily
+ * validated (16-aligned, in the thread stack, chain climbs upward, return addr
+ * is plausible code) so a frameless function or garbage fp bails to the old
+ * invalid-disposition path instead of unwinding into nonsense. */
+static BOOL macrunner_ec_fp_chain_unwind( DISPATCHER_CONTEXT *dispatch, CONTEXT *context, DWORD64 pc )
+{
+    TEB *teb = NtCurrentTeb();
+    ULONG_PTR stack_lo = (ULONG_PTR)teb->Tib.StackLimit;
+    ULONG_PTR stack_hi = (ULONG_PTR)teb->Tib.StackBase;
+    ULONG_PTR fp = (ULONG_PTR)context->Fp;
+    ULONG_PTR sp = (ULONG_PTR)context->Sp;
+    ULONG_PTR new_fp = 0, new_pc = 0;
+    const char *bail = NULL;
+
+    if (!fp || (fp & 0xf)) bail = "fp-null-or-unaligned";
+    else if (fp < stack_lo || fp + 0x10 > stack_hi) bail = "fp-out-of-stack";
+    else
+    {
+        new_fp = ((const ULONG_PTR *)fp)[0];   /* saved caller x29 */
+        new_pc = ((const ULONG_PTR *)fp)[1];   /* saved lr / return address */
+        if (!new_pc || new_pc == pc || (new_pc & 3) || new_pc < 0x10000) bail = "bad-new-pc";
+        else if (new_fp && (new_fp <= fp || (new_fp & 0xf) || new_fp + 0x10 > stack_hi)) bail = "bad-new-fp";
+    }
+    if (bail)
+    {
+        static unsigned int fpb;
+        if (fpb++ < 16)
+            ERR( "macrunner-hb-seh-ec-fpchain-bail: reason=%s pc=%p fp=%p sp=%p lr=%p stack=%p-%p new_fp=%p new_pc=%p\n",
+                 bail, (void *)pc, (void *)fp, (void *)sp, (void *)(ULONG_PTR)context->Lr,
+                 (void *)stack_lo, (void *)stack_hi, (void *)new_fp, (void *)new_pc );
+        return FALSE;
+    }
+
+    context->Sp  = fp + 0x10;
+    context->Fp  = new_fp;
+    context->Lr  = new_pc;
+    context->Pc  = new_pc;
+    context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+    dispatch->EstablisherFrame = context->Sp;
+    dispatch->LanguageHandler = NULL;
+    dispatch->HandlerData = NULL;
+    {
+        static unsigned int fp_trace;
+        if (fp_trace++ < 16)
+            ERR( "macrunner-hb-seh-ec-fpchain: pc=%p fp=%p -> new pc=%p new fp=%p sp=%016I64x\n",
+                 (void *)pc, (void *)fp, (void *)new_pc, (void *)new_fp, context->Sp );
+    }
+    return TRUE;
+}
+
+
+/**********************************************************************
  *           virtual_unwind
  */
+/* Arena exception-data index consult (operator (c1)->(c2)): recover the
+ * RUNTIME_FUNCTION for a pc in a mapped-but-UNREGISTERED guest-arena module
+ * alias.  The arena alias is an execution-view (deliberately not in the loader
+ * list, to preserve module identity), but it is a full contiguous image copy
+ * carrying the real ARM64 .pdata — so we locate the image base (MZ-scan down
+ * from pc; [base,pc] is wholly mapped, the scan never reads below base) and
+ * binary-search its exception directory exactly as RtlLookupFunctionEntry would
+ * for a registered module.  This is the native RtlAddFunctionTable semantics for
+ * out-of-list code; a map-time-populated sorted range index will later replace
+ * the per-call scan with O(log n) lookup (same RUNTIME_FUNCTION result). */
+static void macrunner_hb_arena_consult_function_entry( DWORD64 pc, RUNTIME_FUNCTION **entry_out,
+                                                       ULONG_PTR *base_out )
+{
+    ULONG_PTR img_floor = pc & ~0x0fffffffULL;   /* 256MB-aligned backstop */
+    ULONG_PTR base = 0, p;
+    RUNTIME_FUNCTION *table;
+    ULONG size = 0, rva, count;
+    LONG lo, hi, found = -1;
+
+    *entry_out = NULL;
+    if (pc < 0x10000 || (pc & 3)) return;
+    for (p = pc & ~0xfffULL; p >= img_floor; p -= 0x1000)
+        if (*(const USHORT *)p == 0x5a4d) { base = p; break; }   /* 'MZ' header */
+    if (!base || !RtlImageNtHeader( (void *)base )) return;
+    table = RtlImageDirectoryEntryToData( (void *)base, TRUE, IMAGE_DIRECTORY_ENTRY_EXCEPTION, &size );
+    if (!table || size < sizeof(*table)) return;
+    count = size / sizeof(*table);
+    rva = (ULONG)(pc - base);
+    /* largest BeginAddress <= rva (the function containing pc) */
+    lo = 0; hi = (LONG)count - 1;
+    while (lo <= hi)
+    {
+        LONG mid = lo + (hi - lo) / 2;
+        if (table[mid].BeginAddress <= rva) { found = mid; lo = mid + 1; }
+        else hi = mid - 1;
+    }
+    if (found < 0) return;
+    *entry_out = &table[found];
+    *base_out  = base;
+    {
+        static unsigned int t;
+        if (t++ < 16)
+            ERR( "macrunner-hb-arena-fde: pc=%p base=%p rva=%#x begin=%#x count=%lu\n",
+                 (void *)pc, (void *)base, rva, table[found].BeginAddress, (unsigned long)count );
+    }
+}
+
 static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEXT *context )
 {
     DISPATCHER_CONTEXT_NONVOLREG_ARM64 *nonvol_regs;
@@ -450,12 +770,28 @@ static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEX
     }
 
     dispatch->FunctionEntry = RtlLookupFunctionEntry( pc, &dispatch->ImageBase, dispatch->HistoryTable );
+    if (!dispatch->FunctionEntry)
+    {
+        /* (c) EC-unwind: guest-arena module aliases are execution-views NOT in the
+         * loader list (by design — registering would dup module identity), so
+         * RtlLookupFunctionEntry can't find their exception data even though it is
+         * present in the image.  Consult the arena exception index (native
+         * RtlAddFunctionTable-style dynamic function tables, populated at arena
+         * map-time) to recover the real RUNTIME_FUNCTION + image base; then the
+         * normal RtlVirtualUnwind2 below unwinds the frame with genuine .pdata. */
+        macrunner_hb_arena_consult_function_entry( pc, (RUNTIME_FUNCTION **)&dispatch->FunctionEntry,
+                                                   &dispatch->ImageBase );
+    }
 
 unwind_with_function_entry:
     if (RtlVirtualUnwind2( type, dispatch->ImageBase, pc, dispatch->FunctionEntry, context,
                            NULL, &dispatch->HandlerData, &dispatch->EstablisherFrame,
                            NULL, NULL, NULL, &dispatch->LanguageHandler, 0 ))
     {
+        if (!dispatch->FunctionEntry &&
+            (macrunner_ec_virtual_unwind_frame( dispatch, context, pc ) ||
+             macrunner_ec_fp_chain_unwind( dispatch, context, pc )))
+            return STATUS_SUCCESS;
         if (macrunner_hb_trace_arm64_seh_invalid_disposition())
             ERR( "macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=%p lr=%p "
                  "type=%lu image=%p function=%p sp=%016I64x stack=%p-%p\n",

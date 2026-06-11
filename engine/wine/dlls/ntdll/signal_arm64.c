@@ -666,6 +666,200 @@ static void macrunner_hb_arena_consult_function_entry( DWORD64 pc, RUNTIME_FUNCT
     }
 }
 
+/* MacRunner Lane A (2026-06-12): WOW64/i386 ARM64-PE pdata unwind machinery, RESTORED
+ * from stash@{1} (lane-a-forward-fixes) in its delta-#4 form — aaf425d had deleted it
+ * (246 lines) while consolidating bulk-CFI, regressing the i386 unwind path (80000002).
+ * Gated !macrunner_hb_is_x64_main_process() at the call site so HK/x64 keeps using
+ * arena-fde (the f69cdbc cascade fix is untouched).  ARM64 PE modules loaded by the
+ * WOW64 layer above HOST_BOUNDARY_MAX are not tracked by the PE-side LDR; ARM64X
+ * counterparts (ucrtbase) also have DataDirectory[3] -> .reloc, so scan section
+ * headers for a ".pdata" section by name. */
+static LONG CALLBACK macrunner_hb_pe_scan_fault( EXCEPTION_POINTERS *ep )
+{
+    (void)ep;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/* ARM64 RUNTIME_FUNCTION end-RVA: use FunctionLength (in 4-byte units) from the packed
+ * header (Flag != 0) or from the XDATA block (Flag == 0). */
+#define MACRUNNER_HB_ARM64_FUNC_END(entry, base_ptr) \
+    ((entry)->Flag \
+     ? (entry)->BeginAddress + 4u * (entry)->FunctionLength \
+     : (entry)->BeginAddress + 4u * \
+       ((const IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY_XDATA *)((base_ptr) + (entry)->UnwindData))->FunctionLength)
+
+static PRUNTIME_FUNCTION macrunner_hb_pdata_lookup_at_base( DWORD64 pc, DWORD64 known_base,
+                                                            DWORD64 *out_image_base )
+{
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_DATA_DIRECTORY *dir;
+    PRUNTIME_FUNCTION funcs, lo, hi, mid;
+    char *base = (char *)(ULONG_PTR)known_base;
+    DWORD count, rva;
+    static unsigned int report_count;
+
+    __TRY
+    {
+        nt = (IMAGE_NT_HEADERS *)(base + ((IMAGE_DOS_HEADER *)base)->e_lfanew);
+        dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+        if (!dir->VirtualAddress || !dir->Size) return NULL;
+        funcs = (PRUNTIME_FUNCTION)(base + dir->VirtualAddress);
+        count = dir->Size / sizeof(*funcs);
+
+        rva = (DWORD)(pc - known_base);
+        if (report_count++ < 16)
+            MESSAGE( "macrunner-hb-wow64-arm64-pdata: direct base=%p rva=%08lx count=%lu\n",
+                     base, rva, (unsigned long)count );
+
+        lo = funcs; hi = funcs + count;
+        while (lo < hi)
+        {
+            mid = lo + (hi - lo) / 2;
+            if (rva < mid->BeginAddress) { hi = mid; }
+            else if (rva < MACRUNNER_HB_ARM64_FUNC_END(mid, base))
+            {
+                if (out_image_base) *out_image_base = known_base;
+                return mid;
+            }
+            else { lo = mid + 1; }
+        }
+
+        /* DataDirectory[3] may point to wrong section (ARM64X ucrtbase: .reloc, not .pdata).
+         * Scan section headers for a ".pdata" section and retry only if it differs. */
+        {
+            IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION( nt );
+            WORD i;
+            for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+            {
+                if (memcmp( sec->Name, ".pdata\0\0", 8 ) != 0) continue;
+                if (!sec->VirtualAddress || !sec->SizeOfRawData) continue;
+                if (sec->VirtualAddress == dir->VirtualAddress) break; /* already tried */
+                funcs = (PRUNTIME_FUNCTION)(base + sec->VirtualAddress);
+                count = sec->SizeOfRawData / sizeof(*funcs);
+                if (report_count <= 32)
+                    MESSAGE( "macrunner-hb-wow64-arm64-pdata: section-fallback base=%p"
+                             " rva=%08lx count=%lu\n", base, rva, (unsigned long)count );
+                lo = funcs; hi = funcs + count;
+                while (lo < hi)
+                {
+                    mid = lo + (hi - lo) / 2;
+                    if (rva < mid->BeginAddress) { hi = mid; }
+                    else if (rva < MACRUNNER_HB_ARM64_FUNC_END(mid, base))
+                    {
+                        if (out_image_base) *out_image_base = known_base;
+                        return mid;
+                    }
+                    else { lo = mid + 1; }
+                }
+                break;
+            }
+        }
+    }
+    __EXCEPT(macrunner_hb_pe_scan_fault) {}
+    __ENDTRY
+    return NULL;
+}
+
+static PRUNTIME_FUNCTION macrunner_hb_register_wow64_arm64_pe_pdata( DWORD64 pc, DWORD64 *out_image_base )
+{
+    IMAGE_DOS_HEADER *dos;
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_DATA_DIRECTORY *dir;
+    IMAGE_SECTION_HEADER *sec;
+    PRUNTIME_FUNCTION funcs, lo, hi, mid;
+    char *base;
+    DWORD i, count, rva;
+    WORD j;
+    static unsigned int report_count;
+
+    if (!out_image_base) return NULL;
+    if (!pc || pc <= MACRUNNER_HB_HOST_BOUNDARY_MAX) return NULL;
+
+    base = (char *)((ULONG_PTR)pc & ~(ULONG_PTR)0xfff);
+    __TRY
+    {
+        for (i = 0; i <= 256; i++, base -= 0x1000)
+        {
+            dos = (IMAGE_DOS_HEADER *)base;
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE) continue;
+            if (dos->e_lfanew <= 0 || dos->e_lfanew > 0x800) continue;
+            nt = (IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE) continue;
+            if (nt->OptionalHeader.SizeOfImage == 0) continue;
+            if ((ULONG_PTR)base + nt->OptionalHeader.SizeOfImage <= (ULONG_PTR)pc) continue;
+
+            if (nt->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64)
+            {
+                /* Native ARM64 PE — use DataDirectory[3] directly. */
+                dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+                if (!dir->VirtualAddress || !dir->Size) return NULL;
+                funcs = (PRUNTIME_FUNCTION)(base + dir->VirtualAddress);
+                count = dir->Size / sizeof(*funcs);
+            }
+            else if (nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64)
+            {
+                /* ARM64X counterpart: machine=AMD64 in memory after update_arm64x_mapping().
+                 * Verify this is really an ARM64X module by checking CHPE metadata pointer. */
+                IMAGE_DATA_DIRECTORY *lc_dir =
+                    &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+                BOOL is_arm64x = FALSE;
+                if (lc_dir->VirtualAddress && lc_dir->Size)
+                {
+                    IMAGE_LOAD_CONFIG_DIRECTORY *cfg =
+                        (IMAGE_LOAD_CONFIG_DIRECTORY *)(base + lc_dir->VirtualAddress);
+                    DWORD lc_size = min(lc_dir->Size, cfg->Size);
+                    if (lc_size > offsetof(IMAGE_LOAD_CONFIG_DIRECTORY, CHPEMetadataPointer)
+                        && cfg->CHPEMetadataPointer > (ULONG_PTR)base
+                        && cfg->CHPEMetadataPointer <
+                               (ULONG_PTR)base + nt->OptionalHeader.SizeOfImage)
+                        is_arm64x = TRUE;
+                }
+                if (!is_arm64x) continue;
+                /* ARM64X: DataDirectory[3] may point to wrong section (ucrtbase: .reloc).
+                 * Always use section-header scan for .pdata. */
+                funcs = NULL; count = 0;
+                sec = IMAGE_FIRST_SECTION( nt );
+                for (j = 0; j < nt->FileHeader.NumberOfSections; j++, sec++)
+                {
+                    if (memcmp( sec->Name, ".pdata\0\0", 8 ) != 0) continue;
+                    if (!sec->VirtualAddress || !sec->SizeOfRawData) continue;
+                    funcs = (PRUNTIME_FUNCTION)(base + sec->VirtualAddress);
+                    count = sec->SizeOfRawData / sizeof(*funcs);
+                    break;
+                }
+                if (!funcs || !count) return NULL;
+            }
+            else continue;
+
+            if (report_count++ < 16)
+                MESSAGE( "macrunner-hb-wow64-arm64-pdata: scan base=%p machine=%04x size=%08lx "
+                         "pc=%p rva=%08lx count=%lu\n",
+                         base, nt->FileHeader.Machine, nt->OptionalHeader.SizeOfImage,
+                         (void *)(ULONG_PTR)pc,
+                         (DWORD)(pc - (DWORD64)(ULONG_PTR)base),
+                         (unsigned long)count );
+
+            rva = (DWORD)(pc - (DWORD64)(ULONG_PTR)base);
+            lo = funcs; hi = funcs + count;
+            while (lo < hi)
+            {
+                mid = lo + (hi - lo) / 2;
+                if (rva < mid->BeginAddress) { hi = mid; }
+                else if (rva < MACRUNNER_HB_ARM64_FUNC_END(mid, base))
+                {
+                    *out_image_base = (DWORD64)(ULONG_PTR)base;
+                    return mid;
+                }
+                else { lo = mid + 1; }
+            }
+            return NULL;
+        }
+    }
+    __EXCEPT(macrunner_hb_pe_scan_fault) {}
+    __ENDTRY
+    return NULL;
+}
+
 static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEXT *context )
 {
     DISPATCHER_CONTEXT_NONVOLREG_ARM64 *nonvol_regs;
@@ -770,6 +964,34 @@ static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEX
     }
 
     dispatch->FunctionEntry = RtlLookupFunctionEntry( pc, &dispatch->ImageBase, dispatch->HistoryTable );
+
+    /* WOW64/i386: ARM64 PE modules loaded by the WOW64 layer above HOST_BOUNDARY_MAX are
+     * not tracked by the PE-side LDR, so RtlLookupFunctionEntry misses them.  GATED
+     * !macrunner_hb_is_x64_main_process(): HK/x64 SKIPS this and uses arena-fde below
+     * (protects the f69cdbc cascade fix); only the i386/wow64 host takes this path. */
+    if (!dispatch->FunctionEntry && !macrunner_hb_is_x64_main_process() &&
+        pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX)
+    {
+        if (dispatch->ImageBase)
+            dispatch->FunctionEntry = macrunner_hb_pdata_lookup_at_base(
+                pc, dispatch->ImageBase, &dispatch->ImageBase );
+        if (!dispatch->FunctionEntry)
+            dispatch->FunctionEntry = macrunner_hb_register_wow64_arm64_pe_pdata(
+                pc, &dispatch->ImageBase );
+    }
+    /* WOW64/i386 leaf function — no .pdata entry (normal for thunks).  Stop unwind via
+     * LR rather than letting RtlVirtualUnwind2 raise c0000026.  Same gating. */
+    if (!dispatch->FunctionEntry && !macrunner_hb_is_x64_main_process() &&
+        pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX)
+    {
+        static unsigned int wow64_leaf_count;
+        if (wow64_leaf_count++ < 16)
+            MESSAGE( "macrunner-hb-wow64-arm64-leaf: pc=%p image=%p stopping-unwind\n",
+                     (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)dispatch->ImageBase );
+        macrunner_hb_stop_unwind_at_boundary( dispatch, context );
+        return STATUS_SUCCESS;
+    }
+
     if (!dispatch->FunctionEntry)
     {
         /* (c) EC-unwind: guest-arena module aliases are execution-views NOT in the

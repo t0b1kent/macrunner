@@ -2451,7 +2451,36 @@ static DLLENTRYPROC macrunner_hb_find_disk_native_entry( WINE_MODREF *target_mod
                                         nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].VirtualAddress,
                                         sizeof(*cfg) );
     if (!cfg || !cfg->CHPEMetadataPointer) goto done_data;
-    if (!(entry = nt->OptionalHeader.AddressOfEntryPoint)) goto done_data;
+
+    /* MacRunner Lane A (2026-06-12, FIX): derive the NATIVE ARM64 entry from the ARM64X
+     * CHPE metadata's AlternateEntryPoint (winnt.h IMAGE_ARM64EC_METADATA field index 10 /
+     * +0x28), read from the on-DISK (native base) layout.  The disk OptionalHeader.
+     * AddressOfEntryPoint is the native entry RVA, BUT the loader maps DllBase as the
+     * AMD64/EC VIEW and the ARM64X DVRT relocs flip BOTH AddressOfEntryPoint and
+     * AlternateEntryPoint between views; so applying the disk AEP RVA to the EC-view base
+     * hits the wrong bytes (user32: disk AEP 0x2eb64 lands in the DragDetect EC export
+     * thunk -> bad entry -> SIGILL -> Phase-F reject -> recursive dispatch -> c0000026).
+     * AlternateEntryPoint's RVA (= __arm64x_native_entrypoint) lives in the
+     * non-view-swapped .text, so it is identical in both views and correct under the
+     * EC-view DllBase.  MUST read the DISK metadata, NOT macrunner_hb_get_arm64x_metadata(
+     * DllBase): the in-memory EC view's AlternateEntryPoint is itself DVRT-flipped to the EC
+     * AEP.  Fall back to the disk AEP if the metadata is absent/unreadable (never worse). */
+    {
+        const IMAGE_ARM64EC_METADATA *disk_meta = NULL;
+        ULONG64 meta_va = cfg->CHPEMetadataPointer;
+        ULONG64 img_base = nt->OptionalHeader.ImageBase;
+        ULONG alt = 0;
+
+        if (meta_va > img_base && meta_va - img_base < nt->OptionalHeader.SizeOfImage)
+            disk_meta = macrunner_hb_file_rva_to_ptr( data, size, sections,
+                                                      nt->FileHeader.NumberOfSections,
+                                                      (DWORD)(meta_va - img_base),
+                                                      sizeof(*disk_meta) );
+        if (disk_meta && disk_meta->AlternateEntryPoint) alt = disk_meta->AlternateEntryPoint;
+
+        entry = alt ? alt : nt->OptionalHeader.AddressOfEntryPoint;
+    }
+    if (!entry) goto done_data;
     if (entry >= nt->OptionalHeader.SizeOfImage ||
         (ULONG_PTR)target_mod->ldr.DllBase > ~(ULONG_PTR)0 - entry)
         goto done_data;
@@ -5039,9 +5068,25 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
 
             if (wm->ldr.Flags & LDR_WINE_INTERNAL)
             {
+                /* user32: its process_attach publishes Peb->KernelCallbackTable;
+                 * with the entry skipped the table stays NULL and every win32u
+                 * kernel callback (window-proc dispatch) faults at [NULL+id*8],
+                 * so the window can never be driven.  Native user32 callbacks
+                 * reach the guest WNDPROC through the x64 callback route. */
                 BOOL needs_native_entry = !wcsicmp( wm->ldr.BaseDllName.Buffer, L"win32u.dll" ) ||
-                                          !wcsicmp( wm->ldr.BaseDllName.Buffer, L"kernelbase.dll" );
+                                          !wcsicmp( wm->ldr.BaseDllName.Buffer, L"kernelbase.dll" ) ||
+                                          !wcsicmp( wm->ldr.BaseDllName.Buffer, L"user32.dll" );
                 DLLENTRYPROC native_entry = NULL;
+
+                /* Fill the ARM64X dispatch slots for EVERY hybrid builtin at
+                 * attach: __icall_helper_arm64ec loads __os_arm64x_dispatch_icall
+                 * and branches through it, so a NULL slot is a branch-to-zero
+                 * (ws2_32 died this way during Mono/Unity init, lr=...3fa4).
+                 * The update only inspects this module's own headers/metadata —
+                 * no LDR recursion; the recursion warning below applies to the
+                 * native-entry lookup, which stays allowlisted. */
+                if (reason == DLL_PROCESS_ATTACH)
+                    macrunner_hb_update_arm64x_native_dispatch_metadata( wm );
 
                 /*
                  * Most AMD64 Wine builtins are intentionally not executed in

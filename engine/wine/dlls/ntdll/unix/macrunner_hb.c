@@ -214,6 +214,15 @@ struct macrunner_hb_x64_thread_context_entry
     DWORD tid;
     hb_context_t *ctx;
     AMD64_CONTEXT snapshot;
+    /* A thread that calls NtSetContextThread(GetCurrentThread) during its
+     * ARM64EC x64-emulation bootstrap — before the run-loop registers its live
+     * hb_context — leaves the requested register state here as a pending seed.
+     * The run-loop adopts it into the fresh ctx on entry (regs + ctx->pc) so the
+     * self-set returns SUCCESS instead of spin-retrying STATUS_INVALID_HANDLE.
+     * seed_flags accumulates the CONTEXT_* groups carried across partial sets;
+     * consuming the seed under the mutex prevents a seed-vs-remote-set double-apply. */
+    BOOL pending_seed;
+    DWORD seed_flags;
 };
 
 static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULONG64 *ret_value,
@@ -948,10 +957,17 @@ static int macrunner_hb_trace_wait_semantic_enabled(void)
 static int macrunner_hb_trace_wait_semantic_budget_allows(void)
 {
     static int count;
-    const char *val = getenv( "MACRUNNER_HB_TRACE_WAIT_SEMANTIC_BUDGET" );
-    int limit = val && val[0] ? atoi( val ) : 400;
+    const char *val;
+    int limit;
 
+    /* Cheap memoized gate FIRST.  This runs on the per-NtSetContextThread hot
+     * path (guest x64 context restore, set_x64_thread_context:1338); the getenv
+     * below is unmemoized and was paid on EVERY call even with tracing off — a
+     * heavy observer tax (sample: getenv/__findenv_locked ~13% of the spinning
+     * thread during boot).  The budget only matters once tracing is enabled. */
     if (!macrunner_hb_trace_wait_semantic_enabled()) return 0;
+    val = getenv( "MACRUNNER_HB_TRACE_WAIT_SEMANTIC_BUDGET" );
+    limit = val && val[0] ? atoi( val ) : 400;
     if (limit <= 0) return 1;
     if (count < limit)
     {
@@ -1183,21 +1199,80 @@ static BOOL macrunner_hb_should_register_x64_context_label( const char *label )
     return label && !strcmp( label, "thread" );
 }
 
-static void macrunner_hb_register_current_x64_context( hb_context_t *ctx, const char *label )
+/* Adopt a pending self-NtSetContextThread seed into the freshly-created ctx
+ * (caller holds macrunner_hb_x64_thread_context_mutex).  Mirrors the live-apply
+ * in set_x64_thread_context.  Returns the seeded Rip iff the seed carried
+ * CONTEXT_CONTROL, so the run-loop can override the entry passed to
+ * hb_abi_x64_call (the synthetic call frame otherwise always starts at the
+ * passed entry and the CONTROL seed would be silently discarded). */
+static uint64_t macrunner_hb_adopt_seed_into_ctx_locked( struct macrunner_hb_x64_thread_context_entry *entry,
+                                                         hb_context_t *ctx )
+{
+    const AMD64_CONTEXT *s = &entry->snapshot;
+    DWORD bits = macrunner_hb_amd64_context_bits( entry->seed_flags );
+    hb_regs_x64_t *regs = &ctx->regs.x64;
+    uint64_t seed_entry = 0;
+    unsigned int i;
+
+    if (bits & (CONTEXT_AMD64_INTEGER & ~CONTEXT_AMD64))
+    {
+        regs->rax = s->Rax; regs->rcx = s->Rcx; regs->rdx = s->Rdx; regs->rbx = s->Rbx;
+        regs->rsp = s->Rsp; regs->rbp = s->Rbp; regs->rsi = s->Rsi; regs->rdi = s->Rdi;
+        regs->r8 = s->R8; regs->r9 = s->R9; regs->r10 = s->R10; regs->r11 = s->R11;
+        regs->r12 = s->R12; regs->r13 = s->R13; regs->r14 = s->R14; regs->r15 = s->R15;
+    }
+    if (bits & (CONTEXT_AMD64_CONTROL & ~CONTEXT_AMD64))
+    {
+        regs->rsp = s->Rsp;
+        regs->rip = s->Rip;
+        regs->rflags = s->EFlags | 2;
+        ctx->pc = s->Rip;
+        seed_entry = s->Rip;
+    }
+    if (bits & (CONTEXT_AMD64_FLOATING_POINT & ~CONTEXT_AMD64))
+        for (i = 0; i < 16; i++)
+        {
+            regs->xmm[i][0] = s->FltSave.XmmRegisters[i].Low;
+            regs->xmm[i][1] = (uint64_t)s->FltSave.XmmRegisters[i].High;
+        }
+    return seed_entry;
+}
+
+/* Registers the running thread's live x64 ctx and adopts any pending bootstrap
+ * seed.  Returns the seeded Rip override (0 if none) for the run-loop to pass to
+ * hb_abi_x64_call. */
+static uint64_t macrunner_hb_register_current_x64_context( hb_context_t *ctx, const char *label )
 {
     struct macrunner_hb_x64_thread_context_entry *entry;
     DWORD tid;
+    uint64_t seed_entry = 0;
 
-    if (!ctx || !macrunner_hb_should_register_x64_context_label( label )) return;
+    if (!ctx) return 0;
     tid = macrunner_hb_current_tid();
+    if (!tid) return 0;
     pthread_mutex_lock( &macrunner_hb_x64_thread_context_mutex );
-    entry = macrunner_hb_find_x64_thread_context_locked( tid, TRUE );
-    if (entry)
+    /* Adoption is label-agnostic: the seeded thread may run under any label, and
+     * gating it to "thread" would silently drop the seed for non-thread runs. */
+    entry = macrunner_hb_find_x64_thread_context_locked( tid, FALSE );
+    if (entry && entry->pending_seed)
     {
+        seed_entry = macrunner_hb_adopt_seed_into_ctx_locked( entry, ctx );
+        entry->pending_seed = FALSE;        /* consumed under the mutex */
+        entry->seed_flags = 0;
         entry->ctx = ctx;
         macrunner_hb_update_x64_thread_snapshot_locked( entry, ctx );
     }
+    else if (macrunner_hb_should_register_x64_context_label( label ))
+    {
+        entry = macrunner_hb_find_x64_thread_context_locked( tid, TRUE );
+        if (entry)
+        {
+            entry->ctx = ctx;
+            macrunner_hb_update_x64_thread_snapshot_locked( entry, ctx );
+        }
+    }
     pthread_mutex_unlock( &macrunner_hb_x64_thread_context_mutex );
+    return seed_entry;
 }
 
 static void macrunner_hb_update_current_x64_context( hb_context_t *ctx, const char *label )
@@ -1222,7 +1297,11 @@ static void macrunner_hb_unregister_current_x64_context( hb_context_t *ctx, cons
     struct macrunner_hb_x64_thread_context_entry *entry;
     DWORD tid;
 
-    if (!ctx || !macrunner_hb_should_register_x64_context_label( label )) return;
+    /* Label-agnostic: a seed adopted under ANY label set entry->ctx, so teardown
+     * must clear it regardless of label or entry->ctx would dangle after the ctx
+     * is destroyed.  The entry->ctx == ctx guard keeps this scoped to our entry. */
+    (void)label;
+    if (!ctx) return;
     tid = macrunner_hb_current_tid();
     pthread_mutex_lock( &macrunner_hb_x64_thread_context_mutex );
     entry = macrunner_hb_find_x64_thread_context_locked( tid, FALSE );
@@ -1292,7 +1371,26 @@ NTSTATUS macrunner_hb_set_x64_thread_context( HANDLE handle, const AMD64_CONTEXT
     pthread_mutex_lock( &macrunner_hb_x64_thread_context_mutex );
     entry = macrunner_hb_find_x64_thread_context_locked( tid, FALSE );
     if (!entry || !entry->ctx)
-        status = STATUS_INVALID_HANDLE;
+    {
+        /* No live hb_context for this tid yet — the thread is in its ARM64EC
+         * x64-emulation bootstrap and set its own context (or a remote setter
+         * raced ahead of the target's run-loop entry).  Stash the requested
+         * register state as a pending seed the run-loop adopts on entry, and
+         * return SUCCESS so the bootstrap proceeds instead of spin-retrying
+         * STATUS_INVALID_HANDLE.  Self-set must RETURN to the caller (no jump):
+         * the run-loop's for(;;) re-reads ctx->pc, which is the redirect. */
+        entry = macrunner_hb_find_x64_thread_context_locked( tid, TRUE );
+        if (!entry)
+            status = STATUS_NO_MEMORY;
+        else
+        {
+            macrunner_hb_copy_amd64_context_fields( &entry->snapshot, context,
+                                                    context->ContextFlags );
+            entry->seed_flags |= context->ContextFlags;   /* accumulate partial sets */
+            entry->pending_seed = TRUE;
+            status = STATUS_SUCCESS;
+        }
+    }
     else
     {
         hb_regs_x64_t *regs = &entry->ctx->regs.x64;
@@ -15382,6 +15480,113 @@ static BOOL macrunner_hb_try_ntdll_version_semantic( hb_context_t *ctx, void *im
         return TRUE;
     }
 
+    /* Guest ntdll's own RtlVerifyVersionInfo dereferences a lazily-initialized
+     * current-version global that never gets set up under the HB loader path
+     * (version_init runs in guest LdrInitialize only) -> NULL deref.  Answer
+     * the version predicate natively instead. */
+    target = macrunner_hb_find_named_export( image_base, "RtlVerifyVersionInfo" );
+    if (target && ctx->pc == (uint64_t)(uintptr_t)target)
+    {
+        RTL_OSVERSIONINFOEXW info;
+        DWORD type_mask = (DWORD)ctx->regs.x64.rdx;
+        ULONGLONG cond_mask = ctx->regs.x64.r8;
+        WORD cur_sp_major = 0, cur_sp_minor = 0, cur_suite = 0x100 /* VER_SUITE_SINGLEUSERTS */;
+        NTSTATUS vstatus = STATUS_SUCCESS;
+
+        if (!ctx->regs.x64.rcx || !type_mask || !cond_mask)
+        {
+            macrunner_hb_finish_import( ctx, ret_addr, STATUS_INVALID_PARAMETER );
+            return TRUE;
+        }
+        memset( &info, 0, sizeof(info) );
+        if (hb_memory_read( ctx->memory, (hb_gva_t)ctx->regs.x64.rcx, &info, sizeof(info) ) != HB_OK)
+            return FALSE;
+
+#define MACRUNNER_HB_VER_COND(shift) ((unsigned char)((cond_mask >> ((shift) * 3)) & 7))
+#define MACRUNNER_HB_VER_CMP(left, right, cond) \
+        do { \
+            switch (cond) \
+            { \
+            case VER_EQUAL:         if ((left) != (right)) vstatus = STATUS_REVISION_MISMATCH; break; \
+            case VER_GREATER:       if ((left) <= (right)) vstatus = STATUS_REVISION_MISMATCH; break; \
+            case VER_GREATER_EQUAL: if ((left) <  (right)) vstatus = STATUS_REVISION_MISMATCH; break; \
+            case VER_LESS:          if ((left) >= (right)) vstatus = STATUS_REVISION_MISMATCH; break; \
+            case VER_LESS_EQUAL:    if ((left) >  (right)) vstatus = STATUS_REVISION_MISMATCH; break; \
+            default:                vstatus = STATUS_INVALID_PARAMETER; break; \
+            } \
+        } while (0)
+
+        if (type_mask & VER_PRODUCT_TYPE)
+            MACRUNNER_HB_VER_CMP( product_type, info.wProductType, MACRUNNER_HB_VER_COND( 7 ) );
+        if (!vstatus && (type_mask & VER_SUITENAME))
+        {
+            switch (MACRUNNER_HB_VER_COND( 6 ))
+            {
+            case VER_AND:
+                if ((info.wSuiteMask & cur_suite) != info.wSuiteMask) vstatus = STATUS_REVISION_MISMATCH;
+                break;
+            case VER_OR:
+                if (!(info.wSuiteMask & cur_suite) && info.wSuiteMask) vstatus = STATUS_REVISION_MISMATCH;
+                break;
+            default:
+                vstatus = STATUS_INVALID_PARAMETER;
+                break;
+            }
+        }
+        if (!vstatus && (type_mask & VER_PLATFORMID))
+            MACRUNNER_HB_VER_CMP( platform, info.dwPlatformId, MACRUNNER_HB_VER_COND( 3 ) );
+        if (!vstatus && (type_mask & VER_BUILDNUMBER))
+            MACRUNNER_HB_VER_CMP( build, info.dwBuildNumber, MACRUNNER_HB_VER_COND( 2 ) );
+        if (!vstatus &&
+            (type_mask & (VER_MAJORVERSION | VER_MINORVERSION |
+                          VER_SERVICEPACKMAJOR | VER_SERVICEPACKMINOR)))
+        {
+            unsigned char condition = 0;
+            BOOL do_next = TRUE;
+
+            if (type_mask & VER_MAJORVERSION)            condition = MACRUNNER_HB_VER_COND( 1 );
+            else if (type_mask & VER_MINORVERSION)       condition = MACRUNNER_HB_VER_COND( 0 );
+            else if (type_mask & VER_SERVICEPACKMAJOR)   condition = MACRUNNER_HB_VER_COND( 5 );
+            else if (type_mask & VER_SERVICEPACKMINOR)   condition = MACRUNNER_HB_VER_COND( 4 );
+
+            if (type_mask & VER_MAJORVERSION)
+            {
+                MACRUNNER_HB_VER_CMP( major, info.dwMajorVersion, condition );
+                do_next = (major == info.dwMajorVersion) &&
+                          ((condition != VER_EQUAL) || (vstatus == STATUS_SUCCESS));
+            }
+            if ((type_mask & VER_MINORVERSION) && do_next)
+            {
+                vstatus = STATUS_SUCCESS;
+                MACRUNNER_HB_VER_CMP( minor, info.dwMinorVersion, condition );
+                do_next = (minor == info.dwMinorVersion) &&
+                          ((condition != VER_EQUAL) || (vstatus == STATUS_SUCCESS));
+            }
+            if ((type_mask & VER_SERVICEPACKMAJOR) && do_next)
+            {
+                vstatus = STATUS_SUCCESS;
+                MACRUNNER_HB_VER_CMP( cur_sp_major, info.wServicePackMajor, condition );
+                do_next = (cur_sp_major == info.wServicePackMajor) &&
+                          ((condition != VER_EQUAL) || (vstatus == STATUS_SUCCESS));
+            }
+            if ((type_mask & VER_SERVICEPACKMINOR) && do_next)
+            {
+                vstatus = STATUS_SUCCESS;
+                MACRUNNER_HB_VER_CMP( cur_sp_minor, info.wServicePackMinor, condition );
+            }
+        }
+#undef MACRUNNER_HB_VER_CMP
+#undef MACRUNNER_HB_VER_COND
+
+        macrunner_hb_finish_import( ctx, ret_addr, vstatus );
+        if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_VERSION_SEMANTIC" ))
+            fprintf( stderr, "macrunner-hb-version-semantic: RtlVerifyVersionInfo type_mask=0x%lx "
+                     "cond=0x%llx -> status=%08x ret=%p\n",
+                     (unsigned long)type_mask, (unsigned long long)cond_mask,
+                     (unsigned int)vstatus, (void *)(uintptr_t)ret_addr );
+        return TRUE;
+    }
+
     target = macrunner_hb_find_named_export( image_base, "RtlGetProductInfo" );
     if (target && ctx->pc == (uint64_t)(uintptr_t)target)
     {
@@ -18033,6 +18238,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     uint64_t image_size = macrunner_hb_module_size( image_base );
     size_t stack_size = macrunner_hb_x64_stack_size( image_base );
     void *stack_base = NULL;
+    uint64_t seed_entry = 0;
     void *old_bridge_stack_limit = macrunner_hb_bridge_stack_limit;
     void *old_bridge_stack_base = macrunner_hb_bridge_stack_base;
     size_t old_bridge_stack_size = macrunner_hb_bridge_stack_size;
@@ -18095,7 +18301,9 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     }
     ctx = hb_context_create( HB_ARCH_X64, backend );
     if (!ctx) return STATUS_NO_MEMORY;
-    macrunner_hb_register_current_x64_context( ctx, label );
+    /* Adopts any pending bootstrap seed into ctx; returns the seeded Rip (when
+     * the seed carried CONTEXT_CONTROL) to override the entry point below. */
+    seed_entry = macrunner_hb_register_current_x64_context( ctx, label );
     hb_context_set_block_limit( ctx, block_limit );
     hb_context_set_step_limit( ctx, step_limit );
     ctx->memory = hb_memory_create( 0 );
@@ -18218,7 +18426,10 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                  (void *)(uintptr_t)call->r8, (void *)(uintptr_t)call->r9, call->stack_arg_count );
         fflush( stderr );
     }
-    ret = hb_abi_x64_call( ctx, (uint64_t)(uintptr_t)entry, call, NULL );
+    /* A CONTROL-bearing bootstrap seed overrides the passed entry: the thread
+     * asked to start at its own Rip, not the run-loop's nominal entry. */
+    ret = hb_abi_x64_call( ctx, seed_entry ? seed_entry : (uint64_t)(uintptr_t)entry,
+                           call, NULL );
     macrunner_hb_update_current_x64_context( ctx, label );
     if (debug_enabled)
         ERR( "MacRunner HyperBridge after abi %s entry=%p result=%s pc=%p rsp=%p\n",

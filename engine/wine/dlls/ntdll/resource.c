@@ -174,7 +174,18 @@ static const IMAGE_RESOURCE_DIRECTORY *find_entry_by_id( const IMAGE_RESOURCE_DI
             }
             break;
         }
-        if (entry[pos].Id > id) max = pos - 1;
+        if (entry[pos].Id > id)
+        {
+            /* MacRunner Lane A #3 (2026-06-12): min/max/pos are ULONG, so `max = pos - 1`
+             * at pos 0 underflows to 0xFFFFFFFF and the next iteration computes
+             * pos = 0x7FFFFFFF, driving entry[pos] far past the (validated) array into
+             * unmapped/arena memory -> access violation.  This is reached whenever an id
+             * below entry[0].Id is searched in a directory with no named entries (e.g. a
+             * neutral-language fallback, id=0).  A pos-0 "greater" means the id is below the
+             * whole range: stop the search (not found) instead of underflowing. */
+            if (!pos) break;
+            max = pos - 1;
+        }
         else min = pos + 1;
     }
     TRACE("root %p dir %p id %04x not found\n", root, dir, id );

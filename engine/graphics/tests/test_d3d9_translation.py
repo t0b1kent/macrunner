@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
 D3D8_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fixed_function_runtime.jsonl"
 D3D8_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_triangle_strip_runtime.jsonl"
+D3D8_FOG_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl"
+D3D8_ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_test_runtime.jsonl"
 TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 FFP_ARG_MODIFIER_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
@@ -17,6 +19,8 @@ FFP_BLENDCURRENT_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_blendcurrentalp
 FFP_BLENDDIFFUSE_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_blenddiffusealpha_runtime.jsonl"
 FFP_DOTPRODUCT_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"
 FFP_MODULATE4X_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_modulate4x_runtime.jsonl"
+FFP_MULTIPLYADD_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_multiplyadd_runtime.jsonl"
+FFP_LERP_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_lerp_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
@@ -25,6 +29,7 @@ SCISSOR_TRACE = ROOT / "traces/runtime_samples/d3d9_scissor_test_runtime.jsonl"
 DRAW_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d9_drawprimitive_triangle_strip_runtime.jsonl"
 XNA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_programmable_sprite_runtime.jsonl"
 ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
+FOG_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_fog_runtime.jsonl"
 BASE_VERTEX_TRACE = ROOT / "traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
 COLOR_WRITE_TRACE = ROOT / "traces/runtime_samples/d3d9_color_write_mask_runtime.jsonl"
 CULL_TRACE = ROOT / "traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
@@ -92,6 +97,38 @@ def test_d3d8_renderware_triangle_strip_uses_legacy_topology_path(tmp_path):
     assert state.pipeline.metadata["d3d9_texture_format"] == "bgra8"
 
 
+def test_d3d8_renderware_fog_uses_legacy_render_state_path(tmp_path):
+    result = replay(D3D8_FOG_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["api"] == "d3d8"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (128, 128, 0)
+
+    state = load_trace(D3D8_FOG_TRACE)
+    fog = state.pipeline.metadata["d3d9_fog_state"]
+    assert fog["enable"] is True
+    assert fog["color"] == (255, 0, 0, 255)
+    assert fog["vertex_mode"] == "D3DFOG_LINEAR"
+    assert fog["start"] == 0.0
+    assert fog["end"] == 1.0
+    assert state.pipeline.metadata["d3d9_ffp_shader"]["fog"] == fog
+
+
+def test_d3d8_renderware_alpha_test_uses_legacy_alpha_state_path(tmp_path):
+    result = replay(D3D8_ALPHA_TEST_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["api"] == "d3d8"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 500
+
+    state = load_trace(D3D8_ALPHA_TEST_TRACE)
+    ffp = state.pipeline.metadata["d3d9_ffp_shader"]
+    assert ffp["alpha_test_enable"] is True
+    assert ffp["alpha_ref"] == 128
+    assert ffp["alpha_func"] == "D3DCMP_GREATER"
+
+
 def test_d3d9_fixed_function_texture_modulate_emits_shader_metadata(tmp_path):
     result = replay(TEXTURE_TRACE, tmp_path, "mock", fail_on_unsupported=True)
     assert result["status"] == "PASS"
@@ -147,8 +184,9 @@ def test_d3d9_ffp_addsigned_ops_affect_shading(tmp_path):
         "D3DTOP_ADDSIGNED",
         (96, 128, 160, 255),
         (64, 64, 64, 255),
-        (64, 64, 64, 255),
         (96, 128, 160, 255),
+        (96, 128, 160, 255),
+        (64, 64, 64, 255),
     ) == (32, 64, 96, 255)
 
 
@@ -209,6 +247,52 @@ def test_d3d9_ffp_modulate4x_affects_shading(tmp_path):
 
     state = load_trace(FFP_MODULATE4X_TRACE)
     assert state.pipeline.metadata["d3d9_ffp_shader"]["color_op"] == "D3DTOP_MODULATE4X"
+
+
+def test_d3d9_ffp_multiplyadd_ops_affect_shading(tmp_path):
+    result = replay(FFP_MULTIPLYADD_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (96, 144, 255)
+
+    state = load_trace(FFP_MULTIPLYADD_TRACE)
+    ffp = state.pipeline.metadata["d3d9_ffp_shader"]
+    assert ffp["color_op"] == "D3DTOP_MULTIPLYADD"
+    assert ffp["color_arg0"] == "D3DTA_TFACTOR"
+    assert ffp["color_arg1"] == "D3DTA_TEXTURE"
+    assert ffp["color_arg2"] == "D3DTA_CURRENT"
+    assert MockExecutor()._apply_d3d9_op(  # noqa: SLF001 - sibling combiner regression guard.
+        "D3DTOP_MULTIPLYADD",
+        (32, 16, 128, 255),
+        (64, 128, 160, 255),
+        (255, 255, 255, 255),
+        (64, 128, 160, 255),
+        None,
+    ) == (96, 144, 255, 255)
+
+
+def test_d3d9_ffp_lerp_ops_affect_shading(tmp_path):
+    result = replay(FFP_LERP_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (128, 127, 0)
+
+    state = load_trace(FFP_LERP_TRACE)
+    ffp = state.pipeline.metadata["d3d9_ffp_shader"]
+    assert ffp["color_op"] == "D3DTOP_LERP"
+    assert ffp["color_arg0"] == "D3DTA_TFACTOR"
+    assert ffp["color_arg1"] == "D3DTA_TEXTURE"
+    assert ffp["color_arg2"] == "D3DTA_CURRENT"
+    assert MockExecutor()._apply_d3d9_op(  # noqa: SLF001 - sibling combiner regression guard.
+        "D3DTOP_LERP",
+        (128, 128, 128, 255),
+        (255, 0, 0, 255),
+        (0, 255, 0, 255),
+        (64, 128, 160, 255),
+        None,
+    ) == (128, 127, 0, 255)
 
 
 def test_d3d9_fixed_function_transform_emits_wvp_metadata(tmp_path):
@@ -287,6 +371,23 @@ def test_d3d9_fixed_function_alpha_test_discards_pixels(tmp_path):
     assert ffp["alpha_test_enable"] is True
     assert ffp["alpha_ref"] == 128
     assert ffp["alpha_func"] == "D3DCMP_GREATER"
+
+
+def test_d3d9_fixed_function_linear_fog_blends_rgb(tmp_path):
+    result = replay(FOG_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (128, 128, 0)
+
+    state = load_trace(FOG_TRACE)
+    fog = state.pipeline.metadata["d3d9_fog_state"]
+    assert fog["enable"] is True
+    assert fog["color"] == (255, 0, 0, 255)
+    assert fog["vertex_mode"] == "D3DFOG_LINEAR"
+    assert fog["start"] == 0.0
+    assert fog["end"] == 1.0
+    assert state.pipeline.metadata["d3d9_ffp_shader"]["fog"] == fog
 
 
 def test_d3d9_depth_state_rejects_later_far_pixels(tmp_path):

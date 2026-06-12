@@ -7,6 +7,8 @@ from engine.graphics.tools.d3d_trace_replay import load_trace
 ROOT = Path(__file__).resolve().parents[1]
 D3D8_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fixed_function_runtime.jsonl"
 D3D8_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_triangle_strip_runtime.jsonl"
+D3D8_FOG_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl"
+D3D8_ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_test_runtime.jsonl"
 XNA_ALPHA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
 LEGACY_FORMAT_TRACE = ROOT / "traces/runtime_samples/d3d9_legacy_format_expansion_runtime.jsonl"
@@ -18,7 +20,10 @@ FFP_BLENDCURRENT_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_blendcurrentalp
 FFP_BLENDDIFFUSE_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_blenddiffusealpha_runtime.jsonl"
 FFP_DOTPRODUCT_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"
 FFP_MODULATE4X_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_modulate4x_runtime.jsonl"
+FFP_MULTIPLYADD_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_multiplyadd_runtime.jsonl"
+FFP_LERP_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_lerp_runtime.jsonl"
 TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
+FOG_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_fog_runtime.jsonl"
 INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
 SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
 SCISSOR_TRACE = ROOT / "traces/runtime_samples/d3d9_scissor_test_runtime.jsonl"
@@ -98,6 +103,47 @@ def test_d3d8_renderware_triangle_strip_writes_metal_contract(tmp_path):
     assert payload["index_count"] == 4
     assert payload["d3d9"]["draw_range"]["primitive_count"] == 2
     assert payload["d3d9"]["texture_format"] == "bgra8"
+
+
+def test_d3d8_renderware_fog_writes_metal_request_contract(tmp_path):
+    state = load_trace(D3D8_FOG_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(D3D8_FOG_TRACE),
+        name="d3d8-renderware-fog",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    fog = payload["d3d9"]["fog_state"]
+    assert payload["source_api"] == "d3d8"
+    assert payload["mode"] == "indexed_triangle"
+    assert fog["enable"] is True
+    assert fog["color"] == [255, 0, 0, 255]
+    assert fog["vertex_mode"] == "D3DFOG_LINEAR"
+    assert fog["start"] == 0.0
+    assert fog["end"] == 1.0
+    assert payload["d3d9"]["ffp_shader"]["fog"] == fog
+
+
+def test_d3d8_renderware_alpha_test_writes_metal_request_contract(tmp_path):
+    state = load_trace(D3D8_ALPHA_TEST_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(D3D8_ALPHA_TEST_TRACE),
+        name="d3d8-renderware-alpha-test",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    assert payload["source_api"] == "d3d8"
+    assert payload["mode"] == "texture"
+    assert payload["d3d9"]["render_states"]["D3DRS_ALPHATESTENABLE"] is True
+    assert payload["d3d9"]["render_states"]["D3DRS_ALPHAREF"] == 128
+    assert payload["d3d9"]["render_states"]["D3DRS_ALPHAFUNC"] == "D3DCMP_GREATER"
+    assert payload["d3d9"]["ffp_shader"]["alpha_test_enable"] is True
+    assert payload["d3d9"]["ffp_shader"]["alpha_ref"] == 128
+    assert payload["d3d9"]["ffp_shader"]["alpha_func"] == "D3DCMP_GREATER"
 
 
 def test_d3d9_format_sweep_writes_metal_format_contract(tmp_path):
@@ -279,6 +325,46 @@ def test_d3d9_ffp_modulate4x_writes_metal_contract(tmp_path):
     assert ffp["color_op"] == "D3DTOP_MODULATE4X"
 
 
+def test_d3d9_ffp_multiplyadd_writes_metal_contract(tmp_path):
+    state = load_trace(FFP_MULTIPLYADD_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(FFP_MULTIPLYADD_TRACE),
+        name="ffp-multiplyadd",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    ffp = payload["d3d9"]["ffp_shader"]
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "texture"
+    assert payload["texture_pixels"][0] == [64, 128, 160, 255]
+    assert ffp["color_op"] == "D3DTOP_MULTIPLYADD"
+    assert ffp["color_arg0"] == "D3DTA_TFACTOR"
+    assert ffp["color_arg1"] == "D3DTA_TEXTURE"
+    assert ffp["color_arg2"] == "D3DTA_CURRENT"
+
+
+def test_d3d9_ffp_lerp_writes_metal_contract(tmp_path):
+    state = load_trace(FFP_LERP_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(FFP_LERP_TRACE),
+        name="ffp-lerp",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    ffp = payload["d3d9"]["ffp_shader"]
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "texture"
+    assert payload["texture_pixels"][0] == [255, 0, 0, 255]
+    assert ffp["color_op"] == "D3DTOP_LERP"
+    assert ffp["color_arg0"] == "D3DTA_TFACTOR"
+    assert ffp["color_arg1"] == "D3DTA_TEXTURE"
+    assert ffp["color_arg2"] == "D3DTA_CURRENT"
+
+
 def test_d3d9_transform_writes_metal_wvp_contract(tmp_path):
     state = load_trace(TRANSFORM_TRACE)
     written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
@@ -295,6 +381,27 @@ def test_d3d9_transform_writes_metal_wvp_contract(tmp_path):
     assert payload["d3d9"]["transforms"]["D3DTS_WORLD"][12] == 0.35
     assert payload["d3d9"]["wvp_matrix"][12] == 0.35
     assert payload["d3d9"]["ffp_shader"]["wvp_matrix"][12] == 0.35
+
+
+def test_d3d9_fog_writes_metal_fog_contract(tmp_path):
+    state = load_trace(FOG_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(FOG_TRACE),
+        name="ffp-fog",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    fog = payload["d3d9"]["fog_state"]
+    assert payload["source_api"] == "d3d9"
+    assert payload["mode"] == "indexed_triangle"
+    assert fog["enable"] is True
+    assert fog["color"] == [255, 0, 0, 255]
+    assert fog["vertex_mode"] == "D3DFOG_LINEAR"
+    assert fog["start"] == 0.0
+    assert fog["end"] == 1.0
+    assert payload["d3d9"]["ffp_shader"]["fog"] == fog
 
 
 def test_d3d9_index32_writes_metal_index_contract(tmp_path):

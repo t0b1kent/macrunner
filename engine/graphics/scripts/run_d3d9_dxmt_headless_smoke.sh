@@ -9,8 +9,10 @@ if [[ -n "${TRACE:-}" ]]; then
 else
   traces=(
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_triangle_runtime.jsonl"
-	    "$ROOT/traces/runtime_samples/d3d8_renderware_fixed_function_runtime.jsonl"
-	    "$ROOT/traces/runtime_samples/d3d8_renderware_triangle_strip_runtime.jsonl"
+    "$ROOT/traces/runtime_samples/d3d8_renderware_fixed_function_runtime.jsonl"
+    "$ROOT/traces/runtime_samples/d3d8_renderware_triangle_strip_runtime.jsonl"
+    "$ROOT/traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl"
+    "$ROOT/traces/runtime_samples/d3d8_renderware_alpha_test_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
@@ -21,8 +23,11 @@ else
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_blendfactoralpha_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_ffp_modulate4x_runtime.jsonl"
-	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
-	    "$ROOT/traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
+	    "$ROOT/traces/runtime_samples/d3d9_ffp_multiplyadd_runtime.jsonl"
+		    "$ROOT/traces/runtime_samples/d3d9_ffp_lerp_runtime.jsonl"
+		    "$ROOT/traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
+		    "$ROOT/traces/runtime_samples/d3d9_fixed_function_fog_runtime.jsonl"
+		    "$ROOT/traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_color_write_mask_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
@@ -76,6 +81,7 @@ for result in results:
         "d3d9_cullmode_runtime.jsonl": 350,
         "d3d9_drawprimitive_range_runtime.jsonl": 350,
         "d3d9_indexed_range_runtime.jsonl": 350,
+        "d3d8_renderware_alpha_test_runtime.jsonl": 500,
     }.get(trace_name, 1000)
     print(f"trace={payload['trace_path']}")
     print(f"  status={payload['status']}")

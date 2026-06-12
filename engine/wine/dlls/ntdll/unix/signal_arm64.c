@@ -2969,8 +2969,23 @@ static void macrunner_hb_install_primary_signal_handlers( const char *stage, BOO
     fprintf( stderr, "macrunner-hb-signal-init: pid=%d stage=%s-start trace=%d\n",
              getpid(), stage, macrunner_trace );
 
+    /* MacRunner Lane A (nested-exception spin fix, 2026-06-12): mask SIGSEGV/SIGBUS
+     * while this handler runs (drop SA_NODEFER).  On Apple, macOS wipes x18 on
+     * sigreturn so PE code takes a dense storm of healable x18/TEB faults; if a
+     * GENUINE guest access-violation (e.g. Mono-JIT deref of a NULL/garbage pointer)
+     * fires WHILE the handler is still dispatching a preceding fault on the SA_ONSTACK
+     * signal stack, SA_NODEFER let it pre-empt re-entrantly.  Its saved SP is then in
+     * the signal-stack band, so virtual_setup_exception sees is_inside_signal_stack()
+     * and calls abort_thread(1) -> the main thread dies and the boot spins to timeout
+     * (stochastic ~1/2).  Masking defers the second fault until after sigreturn, when
+     * SP is back on the thread stack, so it dispatches as an ordinary in-guest SEH AV
+     * instead of aborting.  The x18-heal paths never deliberately re-fault (they only
+     * touch already-mapped TEB + patch sigcontext), so masking is safe; this matches
+     * upstream Wine's segv_handler posture (no SA_NODEFER). */
     sigemptyset( &sig_act.sa_mask );
-    sig_act.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK | SA_NODEFER;
+    sigaddset( &sig_act.sa_mask, SIGSEGV );
+    sigaddset( &sig_act.sa_mask, SIGBUS );
+    sig_act.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
     sig_act.sa_sigaction = macrunner_hb_primary_signal_handler;
 
     segv_rc = sigaction( SIGSEGV, &sig_act, &macrunner_hb_prev_segv_action );

@@ -186,6 +186,7 @@ class MockExecutor:
                         continue
                     shaded = self._shade(state, transformed, (w0, w1, w2))
                     if shaded is not None:
+                        shaded = self._apply_d3d9_fog(state, shaded, pixel_depth)
                         pixels[index] = self._write_color_d3d9(state, shaded, pixels[index])
                         if self._depth_write_enabled(state):
                             depth[index] = pixel_depth
@@ -245,13 +246,22 @@ class MockExecutor:
         shader = state.shader or "vertex-color"
         if shader == "solid-color":
             return _color_to_u8(tri[0].color)
-        diffuse = self._interpolate_diffuse(tri, weights)
+        diffuse = self._flat_diffuse(state, shader, tri) or self._interpolate_diffuse(tri, weights)
         texture = self._sample_texture(state, tri, weights)
         if shader == "texture-sample" and texture is not None:
             return texture
         if shader in {"d3d9-fixed-function", "d3d9-programmable-texture-modulate"}:
             return self._shade_d3d9(state, diffuse, texture)
         return diffuse
+
+    @staticmethod
+    def _flat_diffuse(state: RenderState, shader: str, tri: list[Vertex]) -> Color | None:
+        if shader not in {"d3d9-fixed-function", "d3d9-programmable-texture-modulate"}:
+            return None
+        ffp = state.pipeline.metadata.get("d3d9_ffp_shader", {})
+        if str(ffp.get("shade_mode", "D3DSHADE_GOURAUD")) != "D3DSHADE_FLAT":
+            return None
+        return _color_to_u8(tri[0].color)
 
     def _interpolate_diffuse(self, tri: list[Vertex], weights: tuple[float, float, float]) -> Color:
         channels: list[float] = []
@@ -320,14 +330,16 @@ class MockExecutor:
             return shaded if self._passes_alpha_test(ffp, shaded[3]) else None
 
         texture_factor = _color_to_u8(ffp.get("texture_factor", [255, 255, 255, 255]))
+        color_arg0 = self._resolve_d3d9_arg(str(ffp.get("color_arg0", "D3DTA_CURRENT")), diffuse, texture, texture_factor)
         color_arg1 = self._resolve_d3d9_arg(str(ffp.get("color_arg1", "D3DTA_DIFFUSE")), diffuse, texture, texture_factor)
         color_arg2 = self._resolve_d3d9_arg(str(ffp.get("color_arg2", "D3DTA_TEXTURE")), diffuse, texture, texture_factor)
         color_op = str(ffp.get("color_op", "D3DTOP_SELECTARG1"))
+        alpha_arg0 = self._resolve_d3d9_arg(str(ffp.get("alpha_arg0", "D3DTA_CURRENT")), diffuse, texture, texture_factor)
         alpha_arg1 = self._resolve_d3d9_arg(str(ffp.get("alpha_arg1", "D3DTA_DIFFUSE")), diffuse, texture, texture_factor)
         alpha_arg2 = self._resolve_d3d9_arg(str(ffp.get("alpha_arg2", "D3DTA_TEXTURE")), diffuse, texture, texture_factor)
         alpha_op = str(ffp.get("alpha_op", "D3DTOP_SELECTARG1"))
-        rgb = self._apply_d3d9_op(color_op, color_arg1, color_arg2, diffuse, texture, texture_factor)
-        alpha = self._apply_d3d9_op(alpha_op, alpha_arg1, alpha_arg2, diffuse, texture, texture_factor)[3]
+        rgb = self._apply_d3d9_op(color_op, color_arg0, color_arg1, color_arg2, diffuse, texture, texture_factor)
+        alpha = self._apply_d3d9_op(alpha_op, alpha_arg0, alpha_arg1, alpha_arg2, diffuse, texture, texture_factor)[3]
         shaded = (rgb[0], rgb[1], rgb[2], alpha)
         return shaded if self._passes_alpha_test(ffp, alpha) else None
 
@@ -356,44 +368,60 @@ class MockExecutor:
             value = (value[3], value[3], value[3], value[3])
         return value
 
-    def _apply_d3d9_op(self, op: str, lhs: Color, rhs: Color, diffuse: Color, texture: Color | None, texture_factor: Color = (255, 255, 255, 255)) -> Color:
+    def _apply_d3d9_op(
+        self,
+        op: str,
+        arg0: Color,
+        arg1: Color,
+        arg2: Color,
+        diffuse: Color,
+        texture: Color | None,
+        texture_factor: Color = (255, 255, 255, 255),
+    ) -> Color:
         if op == "D3DTOP_SELECTARG2":
-            return rhs
+            return arg2
         if op == "D3DTOP_MODULATE":
-            return self._modulate(lhs, rhs)
+            return self._modulate(arg1, arg2)
         if op == "D3DTOP_MODULATE2X":
-            return tuple(min(255, _clamp_channel(lhs[i] * rhs[i] * 2.0 / 255.0)) for i in range(4))  # type: ignore[return-value]
+            return tuple(min(255, _clamp_channel(arg1[i] * arg2[i] * 2.0 / 255.0)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_MODULATE4X":
-            return tuple(min(255, _clamp_channel(lhs[i] * rhs[i] * 4.0 / 255.0)) for i in range(4))  # type: ignore[return-value]
+            return tuple(min(255, _clamp_channel(arg1[i] * arg2[i] * 4.0 / 255.0)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_ADD":
-            return tuple(min(255, lhs[i] + rhs[i]) for i in range(4))  # type: ignore[return-value]
+            return tuple(min(255, arg1[i] + arg2[i]) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_ADDSIGNED":
-            return tuple(_clamp_channel(lhs[i] + rhs[i] - 128) for i in range(4))  # type: ignore[return-value]
+            return tuple(_clamp_channel(arg1[i] + arg2[i] - 128) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_ADDSIGNED2X":
-            return tuple(_clamp_channel((lhs[i] + rhs[i] - 128) * 2) for i in range(4))  # type: ignore[return-value]
+            return tuple(_clamp_channel((arg1[i] + arg2[i] - 128) * 2) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_ADDSMOOTH":
-            return tuple(_clamp_channel(lhs[i] + rhs[i] - lhs[i] * rhs[i] / 255.0) for i in range(4))  # type: ignore[return-value]
+            return tuple(_clamp_channel(arg1[i] + arg2[i] - arg1[i] * arg2[i] / 255.0) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_DOTPRODUCT3":
-            dot = sum(((lhs[i] / 127.5) - 1.0) * ((rhs[i] / 127.5) - 1.0) for i in range(3))
+            dot = sum(((arg1[i] / 127.5) - 1.0) * ((arg2[i] / 127.5) - 1.0) for i in range(3))
             value = _clamp_channel(max(0.0, min(1.0, dot)) * 255.0)
-            return (value, value, value, lhs[3])
+            return (value, value, value, arg1[3])
         if op == "D3DTOP_SUBTRACT":
-            return tuple(max(0, lhs[i] - rhs[i]) for i in range(4))  # type: ignore[return-value]
+            return tuple(max(0, arg1[i] - arg2[i]) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDDIFFUSEALPHA":
             alpha = diffuse[3] / 255.0
-            return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
+            return tuple(_clamp_channel(arg1[i] * alpha + arg2[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDCURRENTALPHA":
             alpha = diffuse[3] / 255.0
-            return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
+            return tuple(_clamp_channel(arg1[i] * alpha + arg2[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDTEXTUREALPHA":
             alpha = (texture or (255, 255, 255, 255))[3] / 255.0
-            return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
+            return tuple(_clamp_channel(arg1[i] * alpha + arg2[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
         if op == "D3DTOP_BLENDFACTORALPHA":
             alpha = texture_factor[3] / 255.0
-            return tuple(_clamp_channel(lhs[i] * alpha + rhs[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
+            return tuple(_clamp_channel(arg1[i] * alpha + arg2[i] * (1.0 - alpha)) for i in range(4))  # type: ignore[return-value]
+        if op == "D3DTOP_MULTIPLYADD":
+            return tuple(_clamp_channel(arg1[i] * arg2[i] / 255.0 + arg0[i]) for i in range(4))  # type: ignore[return-value]
+        if op == "D3DTOP_LERP":
+            return tuple(
+                _clamp_channel(arg2[i] * (1.0 - arg0[i] / 255.0) + arg1[i] * arg0[i] / 255.0)
+                for i in range(4)
+            )  # type: ignore[return-value]
         if op == "D3DTOP_DISABLE":
-            return lhs
-        return lhs
+            return arg1
+        return arg1
 
     @staticmethod
     def _modulate(lhs: Color, rhs: Color) -> Color:
@@ -420,6 +448,35 @@ class MockExecutor:
         if func == "D3DCMP_GREATEREQUAL":
             return alpha >= ref
         return True
+
+    @staticmethod
+    def _apply_d3d9_fog(state: RenderState, src: Color, depth: float) -> Color:
+        ffp = state.pipeline.metadata.get("d3d9_ffp_shader", {})
+        fog = ffp.get("fog") or state.pipeline.metadata.get("d3d9_fog_state", {})
+        if not fog.get("enable", False):
+            return src
+        mode = str(fog.get("table_mode") or fog.get("vertex_mode") or "D3DFOG_NONE")
+        if mode == "D3DFOG_NONE":
+            mode = str(fog.get("vertex_mode") or "D3DFOG_NONE")
+        if mode == "D3DFOG_LINEAR":
+            start = float(fog.get("start", 0.0))
+            end = float(fog.get("end", 1.0))
+            span = end - start
+            factor = 0.0 if abs(span) < 1e-6 and depth >= end else 1.0 if abs(span) < 1e-6 else (end - depth) / span
+        elif mode == "D3DFOG_EXP":
+            factor = math.exp(-float(fog.get("density", 1.0)) * depth)
+        elif mode == "D3DFOG_EXP2":
+            factor = math.exp(-((float(fog.get("density", 1.0)) * depth) ** 2))
+        else:
+            return src
+        factor = max(0.0, min(1.0, factor))
+        fog_color = _color_to_u8(fog.get("color", (0, 0, 0, 255)))
+        return (
+            _clamp_channel(src[0] * factor + fog_color[0] * (1.0 - factor)),
+            _clamp_channel(src[1] * factor + fog_color[1] * (1.0 - factor)),
+            _clamp_channel(src[2] * factor + fog_color[2] * (1.0 - factor)),
+            src[3],
+        )
 
     def _write_color_d3d9(self, state: RenderState, src: Color, dst: Color) -> Color:
         ffp = state.pipeline.metadata.get("d3d9_ffp_shader", {})

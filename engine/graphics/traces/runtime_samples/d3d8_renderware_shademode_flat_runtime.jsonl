@@ -1,0 +1,15 @@
+{"api":"d3d8","command":"create_device","payload":{"width":64,"height":64,"backbuffer_format":"D3DFMT_X8R8G8B8","auto_depth_stencil_format":"D3DFMT_D24S8","swap_effect":"D3DSWAPEFFECT_DISCARD","windowed":true}}
+{"api":"d3d8","command":"create_swapchain","payload":{"width":64,"height":64,"backbuffer_format":"D3DFMT_X8R8G8B8","presentation_interval":"D3DPRESENT_INTERVAL_IMMEDIATE"}}
+{"api":"d3d8","command":"clear","payload":{"color":[4,8,16,255]}}
+{"api":"d3d8","command":"begin_scene","payload":{}}
+{"api":"d3d8","command":"set_viewport","payload":{"x":0,"y":0,"width":64,"height":64}}
+{"api":"d3d8","command":"set_render_state","payload":{"state":"D3DRS_LIGHTING","value":false}}
+{"api":"d3d8","command":"set_render_state","payload":{"state":"D3DRS_SHADEMODE","value":"D3DSHADE_FLAT"}}
+{"api":"d3d8","command":"set_texture_stage_state","payload":{"stage":0,"state":"D3DTSS_COLOROP","value":"D3DTOP_SELECTARG1"}}
+{"api":"d3d8","command":"set_texture_stage_state","payload":{"stage":0,"state":"D3DTSS_COLORARG1","value":"D3DTA_DIFFUSE"}}
+{"api":"d3d8","command":"set_fvf","payload":{"fvf":"XYZ|DIFFUSE"}}
+{"api":"d3d8","command":"set_stream_source","payload":{"stride":16,"vertices":[{"position":[-0.9,-0.9,0.0,1.0],"color":[1.0,0.0,0.0,1.0]},{"position":[-0.9,0.9,0.0,1.0],"color":[0.0,1.0,0.0,1.0]},{"position":[0.9,-0.9,0.0,1.0],"color":[0.0,0.0,1.0,1.0]},{"position":[0.9,0.9,0.0,1.0],"color":[1.0,1.0,1.0,1.0]}]}}
+{"api":"d3d8","command":"set_indices","payload":{"format":"D3DFMT_INDEX16","indices":[0,1,2,2,1,3]}}
+{"api":"d3d8","command":"draw_indexed_primitive","payload":{"primitive_type":"D3DPT_TRIANGLELIST","base_vertex_index":0,"min_vertex_index":0,"num_vertices":4,"start_index":0,"primitive_count":2}}
+{"api":"d3d8","command":"end_scene","payload":{}}
+{"api":"d3d8","command":"present","payload":{}}

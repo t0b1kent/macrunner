@@ -103,5 +103,15 @@ The opt-in D3D12 device diagnostic currently returns
 which confirms device bring-up is future D3D12 backend work rather than a D3D8/9
 gate.
 Real Unity present is therefore still not a D3D8/D3D9 implementation gate.
-D3D8/D3D9 work should wait for future ownership plus Lane C PE32/WOW64 readiness
-for 32-bit game targets.
+
+## 2026-06-13 Lane D Continuation
+
+Lane D now owns headless D3D8/D3D9 matrix increments while HK/dist/ntdll remain
+out of scope. The current RenderWare slice covers D3D8 fixed-function triangle
+list, triangle strip, fog, alpha-test, and `D3DRS_SHADEMODE=D3DSHADE_FLAT`
+first-vertex diffuse semantics through the D3D9-to-DXMT path. Validation is
+headless only: `run_d3d9_dxmt_headless_smoke.sh` and
+`D3D9_METAL_REQUEST_ONLY=1 run_d3d9_metal_headless_smoke.sh` both pass `35/35`
+traces. Real Vice City/GTA validation still waits for the 32-bit app path and
+GPU slot, but the graphics matrix should keep expanding with isolated
+RenderWare fixed-function states first.

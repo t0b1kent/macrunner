@@ -143,6 +143,16 @@ def _bool_state(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
+def _float_state(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return float(value.strip())
+    return default
+
+
 def _update_depth_metadata(state: RenderState) -> None:
     render_states = state.pipeline.metadata.get("d3d9_render_states", {})
     depth = {
@@ -153,6 +163,19 @@ def _update_depth_metadata(state: RenderState) -> None:
     }
     state.pipeline.metadata["d3d9_depth_state"] = depth
     state.pipeline.depth_target_bound = bool(depth["z_enable"] or state.depth_format)
+
+
+def _update_fog_metadata(state: RenderState) -> None:
+    render_states = state.pipeline.metadata.get("d3d9_render_states", {})
+    state.pipeline.metadata["d3d9_fog_state"] = {
+        "enable": _bool_state(render_states.get("D3DRS_FOGENABLE", False)),
+        "color": _color(render_states.get("D3DRS_FOGCOLOR", [0, 0, 0, 255])),
+        "vertex_mode": str(render_states.get("D3DRS_FOGVERTEXMODE", "D3DFOG_NONE")),
+        "table_mode": str(render_states.get("D3DRS_FOGTABLEMODE", "D3DFOG_NONE")),
+        "start": _float_state(render_states.get("D3DRS_FOGSTART"), 0.0),
+        "end": _float_state(render_states.get("D3DRS_FOGEND"), 1.0),
+        "density": _float_state(render_states.get("D3DRS_FOGDENSITY"), 1.0),
+    }
 
 
 def apply_d3d9_wvp(position: tuple[float, float, float, float], metadata: dict[str, Any]) -> tuple[float, float, float, float]:
@@ -269,20 +292,25 @@ def _update_ffp_shader_metadata(state: RenderState) -> None:
         if int(entry.get("stage", 0)) == 0
     }
     color_op = str(stage0.get("D3DTSS_COLOROP", "D3DTOP_SELECTARG1"))
+    color_arg0 = str(stage0.get("D3DTSS_COLORARG0", "D3DTA_CURRENT"))
     color_arg1 = str(stage0.get("D3DTSS_COLORARG1", "D3DTA_DIFFUSE"))
     color_arg2 = str(stage0.get("D3DTSS_COLORARG2", "D3DTA_TEXTURE"))
     alpha_op = str(stage0.get("D3DTSS_ALPHAOP", "D3DTOP_SELECTARG1"))
+    alpha_arg0 = str(stage0.get("D3DTSS_ALPHAARG0", color_arg0))
     alpha_arg1 = str(stage0.get("D3DTSS_ALPHAARG1", color_arg1))
     alpha_arg2 = str(stage0.get("D3DTSS_ALPHAARG2", color_arg2))
     render_states = state.pipeline.metadata.get("d3d9_render_states", {})
     state.pipeline.metadata["d3d9_ffp_shader"] = {
         "color_op": color_op,
+        "color_arg0": color_arg0,
         "color_arg1": color_arg1,
         "color_arg2": color_arg2,
         "alpha_op": alpha_op,
+        "alpha_arg0": alpha_arg0,
         "alpha_arg1": alpha_arg1,
         "alpha_arg2": alpha_arg2,
         "texture_factor": _color(render_states.get("D3DRS_TEXTUREFACTOR", [255, 255, 255, 255])),
+        "shade_mode": str(render_states.get("D3DRS_SHADEMODE", "D3DSHADE_GOURAUD")),
         "alpha_test_enable": bool(render_states.get("D3DRS_ALPHATESTENABLE", False)),
         "alpha_ref": int(render_states.get("D3DRS_ALPHAREF", 0)),
         "alpha_func": str(render_states.get("D3DRS_ALPHAFUNC", "D3DCMP_ALWAYS")),
@@ -291,6 +319,7 @@ def _update_ffp_shader_metadata(state: RenderState) -> None:
         "dest_blend": str(render_states.get("D3DRS_DESTBLEND", "D3DBLEND_ZERO")),
         "wvp_matrix": state.pipeline.metadata.get("d3d9_wvp_matrix"),
         "depth": state.pipeline.metadata.get("d3d9_depth_state", {}),
+        "fog": state.pipeline.metadata.get("d3d9_fog_state", {}),
     }
 
 
@@ -334,6 +363,7 @@ def apply_d3d9_event(state: RenderState, command: str, payload: dict[str, Any]) 
         ] = payload.get("value")
         if str(payload.get("state")) in {
             "D3DRS_TEXTUREFACTOR",
+            "D3DRS_SHADEMODE",
             "D3DRS_ALPHATESTENABLE",
             "D3DRS_ALPHAREF",
             "D3DRS_ALPHAFUNC",
@@ -343,10 +373,27 @@ def apply_d3d9_event(state: RenderState, command: str, payload: dict[str, Any]) 
             "D3DRS_ZENABLE",
             "D3DRS_ZWRITEENABLE",
             "D3DRS_ZFUNC",
+            "D3DRS_FOGENABLE",
+            "D3DRS_FOGCOLOR",
+            "D3DRS_FOGVERTEXMODE",
+            "D3DRS_FOGTABLEMODE",
+            "D3DRS_FOGSTART",
+            "D3DRS_FOGEND",
+            "D3DRS_FOGDENSITY",
         }:
             _bind_fixed_function_shader(state)
             if str(payload.get("state")) in {"D3DRS_ZENABLE", "D3DRS_ZWRITEENABLE", "D3DRS_ZFUNC"}:
                 _update_depth_metadata(state)
+            if str(payload.get("state")) in {
+                "D3DRS_FOGENABLE",
+                "D3DRS_FOGCOLOR",
+                "D3DRS_FOGVERTEXMODE",
+                "D3DRS_FOGTABLEMODE",
+                "D3DRS_FOGSTART",
+                "D3DRS_FOGEND",
+                "D3DRS_FOGDENSITY",
+            }:
+                _update_fog_metadata(state)
             _update_ffp_shader_metadata(state)
         return True
 

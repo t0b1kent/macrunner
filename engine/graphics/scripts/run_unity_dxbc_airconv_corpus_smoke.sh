@@ -165,11 +165,9 @@ def iter_unitypy_blobs(path: Path):
     except Exception:
         return []
 
-    for obj in env.objects:
-        obj_type = str(getattr(obj, "type", "")).lower()
-        if "shader" not in obj_type:
-            continue
-
+    for i, obj in enumerate(env.objects):
+        obj_type = str(getattr(obj, "type", f"object_{i}")).lower()
+        obj_id = getattr(obj, "path_id", i)
         try:
             obj_data = obj.read()
         except Exception:
@@ -177,7 +175,7 @@ def iter_unitypy_blobs(path: Path):
 
         for i, payload in enumerate(walk_bytes(obj_data)):
             for off, size, blob in iter_dxbc_blobs_from_bytes(payload):
-                yield obj_type, f"{obj_type}_{i}", off, size, blob
+                yield obj_type, f"{obj_type}_{obj_id}_{i}", off, size, blob
 
 
 data_dirs = iter_data_dirs(root)

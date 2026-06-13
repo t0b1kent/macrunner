@@ -3810,6 +3810,93 @@ static BOOL is_import_dll_system( LDR_DATA_TABLE_ENTRY *mod, const IMAGE_IMPORT_
     return !_stricmp( name, "ntdll.dll" ) || !_stricmp( name, "kernel32.dll" );
 }
 
+static SIZE_T macrunner_hb_arm64x_native_import_prefix_count( WINE_MODREF *wm,
+                                                              const IMAGE_THUNK_DATA *import_list,
+                                                              const IMAGE_THUNK_DATA *thunk_list )
+{
+    HMODULE module = wm->ldr.DllBase;
+    IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
+    SIZE_T count = 0;
+
+    if (!macrunner_hb_x64_main_requested()) return 0;
+    if (!(wm->ldr.Flags & LDR_WINE_INTERNAL)) return 0;
+    if (!nt || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) return 0;
+    if (!macrunner_hb_get_arm64x_metadata( module )) return 0;
+
+    while (count < 16)
+    {
+        const IMAGE_THUNK_DATA *prev_import = import_list - count - 1;
+        const IMAGE_THUNK_DATA *prev_thunk = thunk_list - count - 1;
+
+        if (!image_contains_array( module, prev_import, 1, sizeof(*prev_import) ) ||
+            !image_contains_array( module, prev_thunk, 1, sizeof(*prev_thunk) ))
+            break;
+        if (!prev_import->u1.Ordinal) break;
+        if (prev_thunk->u1.Function != prev_import->u1.Ordinal) break;
+        if (!IMAGE_SNAP_BY_ORDINAL( prev_import->u1.Ordinal ) &&
+            !image_import_by_name( module, (DWORD)prev_import->u1.AddressOfData ))
+            break;
+        count++;
+    }
+    return count;
+}
+
+static void macrunner_hb_resolve_arm64x_native_import_prefix( WINE_MODREF *wm, WINE_MODREF *wmImp,
+                                                              const char *dll_name, LPCWSTR load_path,
+                                                              const IMAGE_THUNK_DATA *import_list,
+                                                              IMAGE_THUNK_DATA *thunk_list,
+                                                              SIZE_T prefix_count )
+{
+    WINE_MODREF *native_wm = macrunner_hb_load_native_counterpart_module( wmImp );
+    IMAGE_NT_HEADERS *native_nt = native_wm ? RtlImageNtHeader( native_wm->ldr.DllBase ) : NULL;
+    HMODULE native_mod;
+    const IMAGE_EXPORT_DIRECTORY *exports;
+    DWORD exp_size;
+    SIZE_T i;
+    static unsigned int report_count;
+
+    if (!prefix_count || !native_nt || native_nt->FileHeader.Machine != IMAGE_FILE_MACHINE_ARM64)
+        return;
+    native_mod = native_wm->ldr.DllBase;
+    exports = RtlImageDirectoryEntryToData( native_mod, TRUE, IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size );
+    if (!exports) return;
+
+    for (i = prefix_count; i; i--)
+    {
+        const IMAGE_THUNK_DATA *src = import_list - i;
+        IMAGE_THUNK_DATA *dst = thunk_list - i;
+        const char *import_name;
+        ULONG_PTR target;
+        char ordinal_name[24];
+
+        if (IMAGE_SNAP_BY_ORDINAL( src->u1.Ordinal ))
+        {
+            int ordinal = IMAGE_ORDINAL( src->u1.Ordinal );
+            target = (ULONG_PTR)find_ordinal_export( native_mod, exports, exp_size,
+                                                     ordinal - exports->Base, load_path, wm, FALSE );
+            macrunner_hb_format_ordinal_import_name( ordinal_name, sizeof(ordinal_name), ordinal );
+            import_name = ordinal_name;
+        }
+        else
+        {
+            const IMAGE_IMPORT_BY_NAME *pe_name =
+                image_import_by_name( wm->ldr.DllBase, (DWORD)src->u1.AddressOfData );
+            if (!pe_name) continue;
+            import_name = (const char *)pe_name->Name;
+            target = (ULONG_PTR)find_named_export( native_mod, exports, exp_size, import_name,
+                                                   pe_name->Hint, load_path, wm, FALSE );
+        }
+
+        if (!target) continue;
+        dst->u1.Function = target;
+        if (report_count++ < 32)
+            MESSAGE( "macrunner-hb-arm64x-native-import-prefix: module=%s dll=%s import=%s "
+                     "slot=%p target=%p native=%p\n",
+                     debugstr_w(wm->ldr.BaseDllName.Buffer), dll_name, import_name, dst,
+                     (void *)target, native_mod );
+    }
+}
+
 /**********************************************************************
  *	    insert_single_list_tail
  */
@@ -4210,7 +4297,7 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
     DWORD exp_size;
     const IMAGE_THUNK_DATA *import_list;
     IMAGE_THUNK_DATA *thunk_list;
-    SIZE_T i, import_count;
+    SIZE_T i, import_count, arm64x_native_prefix_count = 0;
     WCHAR buffer[256];
     const char *name = image_rva_string( module, descr->Name );
     DWORD len;
@@ -4276,6 +4363,7 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
             return FALSE;
         }
     }
+    arm64x_native_prefix_count = macrunner_hb_arm64x_native_import_prefix_count( wm, import_list, thunk_list );
 
     status = build_import_name( wm, buffer, name, len );
     force_native_imports = macrunner_hb_x64_main_requested() &&
@@ -4333,8 +4421,8 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
 
     /* unprotect the import address table since it can be located in
      * readonly section */
-    protect_base = thunk_list;
-    protect_size = import_count * sizeof(*thunk_list);
+    protect_base = thunk_list - arm64x_native_prefix_count;
+    protect_size = (import_count + arm64x_native_prefix_count) * sizeof(*thunk_list);
     status = NtProtectVirtualMemory( NtCurrentProcess(), &protect_base,
                                      &protect_size, PAGE_READWRITE, &protect_old );
     if (status)
@@ -4383,6 +4471,10 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
         }
         goto done;
     }
+
+    macrunner_hb_resolve_arm64x_native_import_prefix( wm, wmImp, name, load_path,
+                                                      import_list, thunk_list,
+                                                      arm64x_native_prefix_count );
 
     while (import_count--)
     {

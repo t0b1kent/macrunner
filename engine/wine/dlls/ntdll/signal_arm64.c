@@ -146,6 +146,31 @@ static inline BOOL macrunner_hb_is_host_boundary_pc( DWORD64 pc, const CONTEXT *
     return pc == 0 || (context->Lr == 0 && (pc == ~(DWORD64)3 || pc == 0));
 }
 
+static BOOL macrunner_hb_is_plausible_recovered_pc( DWORD64 pc, const char **reason )
+{
+    TEB *teb = NtCurrentTeb();
+    LDR_DATA_TABLE_ENTRY *module = NULL;
+    ULONG_PTR stack_lo = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
+    ULONG_PTR stack_hi = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
+
+    if (!pc) { if (reason) *reason = "pc-null"; return FALSE; }
+    if ((pc & 3) || pc == ~(DWORD64)3) { if (reason) *reason = "pc-unaligned"; return FALSE; }
+    if (pc < 0x10000) { if (reason) *reason = "pc-low"; return FALSE; }
+    if (stack_lo && stack_hi && pc >= stack_lo && pc < stack_hi)
+    {
+        if (reason) *reason = "pc-in-stack";
+        return FALSE;
+    }
+    if (macrunner_hb_is_import_thunk_pc( pc )) return TRUE;
+    if (pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX) return TRUE;
+    if (pc >= MACRUNNER_HB_HOST_BOUNDARY_MIN &&
+        LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module ) == STATUS_SUCCESS && module)
+        return TRUE;
+
+    if (reason) *reason = "pc-not-code";
+    return FALSE;
+}
+
 static inline void macrunner_hb_stop_unwind_at_boundary( DISPATCHER_CONTEXT *dispatch, CONTEXT *context )
 {
     dispatch->ImageBase = 0;
@@ -275,6 +300,119 @@ static void macrunner_hb_trace_tagged_exception_context( EXCEPTION_RECORD *rec, 
              "sp=%016I64x x64main=%u\n",
              rec->ExceptionCode, rec->ExceptionFlags, (void *)context->Pc, (void *)context->Lr,
              context->Sp, macrunner_hb_is_x64_main_process() );
+}
+
+static void macrunner_hb_copy_unicode_ascii( char *dst, size_t dst_len, const UNICODE_STRING *src )
+{
+    unsigned int i, len;
+
+    if (!dst_len) return;
+    dst[0] = 0;
+    if (!src || !src->Buffer) return;
+
+    len = min( src->Length / sizeof(WCHAR), (dst_len - 1) );
+    for (i = 0; i < len; i++)
+    {
+        WCHAR ch = src->Buffer[i];
+        dst[i] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
+    }
+    dst[len] = 0;
+}
+
+static BOOL macrunner_hb_query_env_uint( const WCHAR *nameW, unsigned int *value )
+{
+    WCHAR buffer[32];
+    UNICODE_STRING name, val;
+    unsigned int i, result = 0;
+
+    RtlInitUnicodeString( &name, nameW );
+    val.Length = 0;
+    val.MaximumLength = sizeof(buffer);
+    val.Buffer = buffer;
+    if (RtlQueryEnvironmentVariable_U( NULL, &name, &val ) != STATUS_SUCCESS)
+        return FALSE;
+
+    buffer[min( val.Length / sizeof(WCHAR), ARRAY_SIZE(buffer) - 1 )] = 0;
+    for (i = 0; buffer[i] >= '0' && buffer[i] <= '9'; i++)
+        result = result * 10 + buffer[i] - '0';
+    if (value) *value = result;
+    return i > 0;
+}
+
+static BOOL macrunner_hb_trace_first_chance_enabled( unsigned int *budget )
+{
+    static BOOL initialized, enabled;
+    static unsigned int trace_budget;
+    static const WCHAR traceW[] =
+        {'M','A','C','R','U','N','N','E','R','_','H','B','_','T','R','A','C','E','_',
+         'F','I','R','S','T','_','C','H','A','N','C','E',0};
+    static const WCHAR budgetW[] =
+        {'M','A','C','R','U','N','N','E','R','_','H','B','_','T','R','A','C','E','_',
+         'F','I','R','S','T','_','C','H','A','N','C','E','_','B','U','D','G','E','T',0};
+    unsigned int value;
+
+    if (!initialized)
+    {
+        if (macrunner_hb_query_env_uint( traceW, &value ) && value)
+        {
+            enabled = TRUE;
+            trace_budget = 256;
+            if (macrunner_hb_query_env_uint( budgetW, &value ) && value)
+                trace_budget = value;
+        }
+        initialized = TRUE;
+    }
+    if (budget) *budget = trace_budget;
+    return enabled;
+}
+
+static void macrunner_hb_trace_first_chance_exception( EXCEPTION_RECORD *rec, CONTEXT *context )
+{
+    static unsigned int report_count;
+    unsigned int budget;
+    TEB *teb = NtCurrentTeb();
+    LDR_DATA_TABLE_ENTRY *module = NULL;
+    LDR_DATA_TABLE_ENTRY *lr_module = NULL;
+    NTSTATUS ldr_status;
+    NTSTATUS lr_ldr_status;
+    ULONG_PTR pc, lr, module_base = 0, lr_module_base = 0, rva = 0, lr_rva = 0;
+    char module_name[96] = "-";
+    char lr_module_name[96] = "-";
+
+    if (!rec || !context || !teb) return;
+    if (!macrunner_hb_trace_first_chance_enabled( &budget )) return;
+    if (report_count++ >= budget) return;
+    if (!macrunner_hb_is_x64_main_process()) return;
+
+    pc = (ULONG_PTR)context->Pc;
+    lr = (ULONG_PTR)context->Lr;
+    ldr_status = LdrFindEntryForAddress( (void *)pc, &module );
+    if (ldr_status == STATUS_SUCCESS && module)
+    {
+        module_base = (ULONG_PTR)module->DllBase;
+        rva = pc - module_base;
+        macrunner_hb_copy_unicode_ascii( module_name, sizeof(module_name), &module->BaseDllName );
+    }
+    lr_ldr_status = LdrFindEntryForAddress( (void *)lr, &lr_module );
+    if (lr_ldr_status == STATUS_SUCCESS && lr_module)
+    {
+        lr_module_base = (ULONG_PTR)lr_module->DllBase;
+        lr_rva = lr - lr_module_base;
+        macrunner_hb_copy_unicode_ascii( lr_module_name, sizeof(lr_module_name),
+                                         &lr_module->BaseDllName );
+    }
+
+    MESSAGE( "macrunner-hb-seh-first-chance: tid=%04lx code=%08lx flags=%08lx "
+             "addr=%p pc=%p lr=%p sp=%016I64x fp=%p ldr=%08lx module=%p "
+             "rva=%08Ix name=%s lr_ldr=%08lx lr_module=%p lr_rva=%08Ix lr_name=%s "
+             "stack=%p-%p params=%lu info0=%016I64x info1=%016I64x\n",
+             HandleToULong( teb->ClientId.UniqueThread ), rec->ExceptionCode, rec->ExceptionFlags,
+             rec->ExceptionAddress, (void *)pc, (void *)lr,
+             context->Sp, (void *)(ULONG_PTR)context->Fp, ldr_status, (void *)module_base,
+             rva, module_name, lr_ldr_status, (void *)lr_module_base, lr_rva, lr_module_name,
+             teb->Tib.StackLimit, teb->Tib.StackBase, rec->NumberParameters,
+             rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0,
+             rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0 );
 }
 
 static BOOL macrunner_hb_fix_tagged_arm64ec_misalignment( EXCEPTION_RECORD *rec, CONTEXT *context )
@@ -494,6 +632,7 @@ static BOOL macrunner_ec_virtual_unwind_frame( DISPATCHER_CONTEXT *dispatch, CON
     const DWORD *insn;
     unsigned int steps;
     BOOL done = FALSE, lr_restored = FALSE;
+    const char *bad_pc = NULL;
 
     /* pc was just executing (it is a live frame address) — instructions
      * there are mapped; no LDR registration required (guest-arena module
@@ -569,7 +708,19 @@ static BOOL macrunner_ec_virtual_unwind_frame( DISPATCHER_CONTEXT *dispatch, CON
         else return FALSE;                            /* not a clean epilogue */
     }
     if (!done) return FALSE;
-    if (!walk.Lr || walk.Lr == pc) return FALSE;
+    if (macrunner_hb_is_plausible_recovered_pc( walk.Lr, &bad_pc ) && walk.Lr == pc)
+        bad_pc = "pc-no-progress";
+    if (bad_pc)
+    {
+        static unsigned int bad_count;
+        if (bad_count++ < 32)
+            MESSAGE( "macrunner-hb-seh-ec-unwind-bail: reason=%s pc=%p image=%p "
+                     "new_pc=%p sp=%016I64x stack=%p-%p\n",
+                     bad_pc, (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)dispatch->ImageBase,
+                     (void *)(ULONG_PTR)walk.Lr, walk.Sp,
+                     NtCurrentTeb()->Tib.StackLimit, NtCurrentTeb()->Tib.StackBase );
+        return FALSE;
+    }
 
     *context = walk;
     context->Pc = walk.Lr;
@@ -648,6 +799,8 @@ static BOOL macrunner_ec_fp_chain_unwind( DISPATCHER_CONTEXT *dispatch, CONTEXT 
 /**********************************************************************
  *           virtual_unwind
  */
+static LONG CALLBACK macrunner_hb_pe_scan_fault( EXCEPTION_POINTERS *ep );
+
 /* Arena exception-data index consult (operator (c1)->(c2)): recover the
  * RUNTIME_FUNCTION for a pc in a mapped-but-UNREGISTERED guest-arena module
  * alias.  The arena alias is an execution-view (deliberately not in the loader
@@ -669,8 +822,15 @@ static void macrunner_hb_arena_consult_function_entry( DWORD64 pc, RUNTIME_FUNCT
 
     *entry_out = NULL;
     if (pc < 0x10000 || (pc & 3)) return;
-    for (p = pc & ~0xfffULL; p >= img_floor; p -= 0x1000)
-        if (*(const USHORT *)p == 0x5a4d) { base = p; break; }   /* 'MZ' header */
+    if (pc < MACRUNNER_HB_HOST_BOUNDARY_MAX) return;
+
+    __TRY
+    {
+        for (p = pc & ~0xfffULL; p >= img_floor; p -= 0x1000)
+            if (*(const USHORT *)p == 0x5a4d) { base = p; break; }   /* 'MZ' header */
+    }
+    __EXCEPT(macrunner_hb_pe_scan_fault) { base = 0; }
+    __ENDTRY
     if (!base || !RtlImageNtHeader( (void *)base )) return;
     table = RtlImageDirectoryEntryToData( (void *)base, TRUE, IMAGE_DIRECTORY_ENTRY_EXCEPTION, &size );
     if (!table || size < sizeof(*table)) return;
@@ -999,7 +1159,9 @@ static BOOL macrunner_hb_arm64_no_pdata_frameless_unwind( DISPATCHER_CONTEXT *di
             {
                 BOOL found_lr_save = FALSE;
 
-                if (!macrunner_hb_arm64_sp_preindex_frame( op, &frame_size )) continue;
+                if (!macrunner_hb_arm64_sp_preindex_frame( op, &frame_size ) &&
+                    !macrunner_hb_arm64_sp_sub_imm( op, &frame_size ))
+                    continue;
                 for (fwd = 4; fwd <= 64 && insn_pc + fwd < pc; fwd += 4)
                 {
                     DWORD fop = *(const DWORD *)(ULONG_PTR)(insn_pc + fwd);
@@ -1026,9 +1188,38 @@ static BOOL macrunner_hb_arm64_no_pdata_frameless_unwind( DISPATCHER_CONTEXT *di
             if (sp + frame_size > stack_hi) return FALSE;
             if (sp + slot + sizeof(saved_lr) > stack_hi) return FALSE;
             saved_lr = *(const DWORD64 *)(sp + slot);
-            if (!saved_lr || saved_lr == pc || saved_lr == context->Lr ||
-                (saved_lr & 3) || saved_lr < 0x10000)
-                return FALSE;
+            {
+                const char *bad_pc = NULL, *same_reason = NULL;
+                if (!macrunner_hb_is_plausible_recovered_pc( saved_lr, &bad_pc ))
+                {
+                    static unsigned int bad_count;
+                    if (bad_count++ < 32)
+                        MESSAGE( "macrunner-hb-wow64-arm64-frameless-bail: reason=%s "
+                                 "pc=%p image=%p saved_lr=%p sp=%016I64x frame=%lu slot=%lu "
+                                 "stack=%p-%p\n",
+                                 bad_pc, (void *)(ULONG_PTR)pc,
+                                 (void *)(ULONG_PTR)dispatch->ImageBase,
+                                 (void *)(ULONG_PTR)saved_lr, (DWORD64)sp,
+                                 (unsigned long)frame_size, (unsigned long)slot,
+                                 (void *)stack_lo, (void *)stack_hi );
+                    return FALSE;
+                }
+                if (saved_lr == pc || saved_lr == context->Lr)
+                {
+                    static unsigned int same_count;
+                    same_reason = saved_lr == pc ? "pc-no-progress" : "pc-same-live-lr";
+                    if (same_count++ < 32)
+                        MESSAGE( "macrunner-hb-wow64-arm64-frameless-bail: reason=%s "
+                                 "pc=%p image=%p saved_lr=%p sp=%016I64x frame=%lu slot=%lu "
+                                 "stack=%p-%p\n",
+                                 same_reason, (void *)(ULONG_PTR)pc,
+                                 (void *)(ULONG_PTR)dispatch->ImageBase,
+                                 (void *)(ULONG_PTR)saved_lr, (DWORD64)sp,
+                                 (unsigned long)frame_size, (unsigned long)slot,
+                                 (void *)stack_lo, (void *)stack_hi );
+                    return FALSE;
+                }
+            }
 
             context->Sp = sp + frame_size;
             context->Lr = saved_lr;
@@ -1433,17 +1624,27 @@ __ASM_GLOBAL_FUNC( call_seh_handler,
  */
 NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
 {
+    struct macrunner_hb_unwind_seen
+    {
+        DWORD64 pc;
+        DWORD64 fp;
+        DWORD64 sp;
+    };
     EXCEPTION_REGISTRATION_RECORD *teb_frame = NtCurrentTeb()->Tib.ExceptionList;
     const EXCEPTION_RECORD *old_record = macrunner_hb_current_exception_record;
     DISPATCHER_CONTEXT_NONVOLREG_ARM64 nonvol_regs;
     UNWIND_HISTORY_TABLE table;
     DISPATCHER_CONTEXT dispatch;
+    struct macrunner_hb_unwind_seen unwind_seen[32];
+    unsigned int unwind_seen_count = 0;
     CONTEXT *context;
     NTSTATUS status;
     ULONG_PTR frame;
     DWORD res;
+    unsigned int i;
 
     macrunner_hb_trace_tagged_exception_context( rec, orig_context );
+    macrunner_hb_trace_first_chance_exception( rec, orig_context );
     if (rec->ExceptionCode == STATUS_STACK_OVERFLOW)
         if (macrunner_hb_stack_overflow_repeat_guard( rec, orig_context ))
             return STATUS_UNHANDLED_EXCEPTION;
@@ -1463,6 +1664,29 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
 
     for (;;)
     {
+        for (i = 0; i < unwind_seen_count; i++)
+        {
+            if (unwind_seen[i].pc == context->Pc &&
+                unwind_seen[i].fp == context->Fp &&
+                unwind_seen[i].sp == context->Sp)
+            {
+                if (macrunner_hb_trace_arm64_seh_invalid_disposition())
+                    ERR( "macrunner-hb-seh-invalid: reason=unwind-no-progress pc=%p "
+                         "fp=%p sp=%016I64x rec_code=%08lx stack=%p-%p\n",
+                         (void *)(ULONG_PTR)context->Pc, (void *)(ULONG_PTR)context->Fp,
+                         context->Sp, rec->ExceptionCode, NtCurrentTeb()->Tib.StackLimit,
+                         NtCurrentTeb()->Tib.StackBase );
+                status = STATUS_INVALID_DISPOSITION;
+                goto done;
+            }
+        }
+        if (unwind_seen_count < ARRAY_SIZE(unwind_seen))
+        {
+            unwind_seen[unwind_seen_count].pc = context->Pc;
+            unwind_seen[unwind_seen_count].fp = context->Fp;
+            unwind_seen[unwind_seen_count].sp = context->Sp;
+            unwind_seen_count++;
+        }
         status = virtual_unwind( UNW_FLAG_EHANDLER, &dispatch, context );
         if (status != STATUS_SUCCESS) goto done;
 

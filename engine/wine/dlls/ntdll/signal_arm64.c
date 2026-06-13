@@ -933,6 +933,19 @@ static BOOL macrunner_hb_arm64_sp_preindex_frame( DWORD op, DWORD *frame_size )
     return FALSE;
 }
 
+static BOOL macrunner_hb_arm64_sp_sub_imm( DWORD op, DWORD *size )
+{
+    if ((op & 0xff8003ffu) == 0xd10003ffu)        /* sub sp, sp, #imm */
+    {
+        DWORD imm = (op >> 10) & 0xfff;
+        if (op & 0x00400000u) imm <<= 12;
+        if (!imm || imm > 0x20000 || (imm & 0xf)) return FALSE;
+        *size = imm;
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static BOOL macrunner_hb_arm64_lr_sp_offset_slot( DWORD op, DWORD *slot )
 {
     if ((op & 0xffc003e0u) == 0xa90003e0u)        /* stp xA, xB, [sp, #imm] */
@@ -976,11 +989,11 @@ static BOOL macrunner_hb_arm64_no_pdata_frameless_unwind( DISPATCHER_CONTEXT *di
             call_site = TRUE;
         if (!call_site) return FALSE;
 
-        for (scan = 1; scan <= 96 && pc >= scan * 4; scan++)
+        for (scan = 1; scan <= 256 && pc >= scan * 4; scan++)
         {
             DWORD64 insn_pc = pc - scan * 4;
             DWORD op = *(const DWORD *)(ULONG_PTR)insn_pc;
-            DWORD fwd;
+            DWORD fwd, alloc;
 
             if (!macrunner_hb_arm64_lr_preindex_slot( op, &slot, &frame_size ))
             {
@@ -997,6 +1010,17 @@ static BOOL macrunner_hb_arm64_no_pdata_frameless_unwind( DISPATCHER_CONTEXT *di
                     }
                 }
                 if (!found_lr_save || slot + sizeof(saved_lr) > frame_size) continue;
+            }
+            for (fwd = 4; fwd <= 1024 && insn_pc + fwd < pc; fwd += 4)
+            {
+                DWORD fop = *(const DWORD *)(ULONG_PTR)(insn_pc + fwd);
+                if (macrunner_hb_arm64_sp_sub_imm( fop, &alloc ))
+                {
+                    if (frame_size > 0x20000 - alloc || slot > 0x20000 - alloc)
+                        return FALSE;
+                    frame_size += alloc;
+                    slot += alloc;
+                }
             }
 
             if (sp + frame_size > stack_hi) return FALSE;

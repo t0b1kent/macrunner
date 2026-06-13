@@ -859,6 +859,21 @@ static BOOL macrunner_signal_read_memory( void *dst, const void *src, size_t siz
 #endif
 }
 
+static BOOL macrunner_signal_write_memory( void *dst, const void *src, size_t size )
+{
+    if (!size) return TRUE;
+    if (!dst || !src) return FALSE;
+#ifdef __APPLE__
+    if ((mach_msg_type_number_t)size != size) return FALSE;
+    return mach_vm_write( mach_task_self(), (mach_vm_address_t)dst,
+                          (vm_offset_t)(uintptr_t)src,
+                          (mach_msg_type_number_t)size ) == KERN_SUCCESS;
+#else
+    macrunner_signal_copy_bytes( dst, src, size );
+    return TRUE;
+#endif
+}
+
 static BOOL macrunner_signal_read_u32_aligned( ULONG_PTR pc, ULONG *instr )
 {
     if (!instr || (pc & 3)) return FALSE;
@@ -1233,6 +1248,7 @@ static void setup_x18_resume_from_sigcontext( ucontext_t *context )
  */
 static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec, CONTEXT *context )
 {
+    struct exc_stack_layout layout;
     struct exc_stack_layout *stack;
     void *stack_ptr = (void *)(SP_sig(sigcontext) & ~15);
     NTSTATUS status;
@@ -1263,11 +1279,24 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
             context->Sp = safe_sp;
     }
 #endif
-    macrunner_signal_copy_bytes( &stack->rec, rec, sizeof(stack->rec) );
-    macrunner_signal_copy_bytes( &stack->context, context, sizeof(stack->context) );
-    context_init_empty_xstate( &stack->context, stack->redzone );
-    stack->sp = stack->context.Sp;
-    stack->pc = stack->context.Pc;
+    memset( &layout, 0, sizeof(layout) );
+    macrunner_signal_copy_bytes( &layout.rec, rec, sizeof(layout.rec) );
+    macrunner_signal_copy_bytes( &layout.context, context, sizeof(layout.context) );
+    context_init_empty_xstate( &layout.context, layout.redzone );
+    layout.sp = layout.context.Sp;
+    layout.pc = layout.context.Pc;
+    if (!macrunner_signal_write_memory( stack, &layout, sizeof(layout) ))
+    {
+        macrunner_signal_writef( "macrunner-hb-exception-stack-write-failed: pid=%d "
+                                 "code=%#lx flags=%#lx addr=%p pc=%p sp=%p "
+                                 "stack=%p stack_ptr=%p teb_stack=%p-%p\n",
+                                 getpid(), rec->ExceptionCode, rec->ExceptionFlags,
+                                 rec->ExceptionAddress, (void *)(ULONG_PTR)context->Pc,
+                                 (void *)(ULONG_PTR)context->Sp, stack, stack_ptr,
+                                 NtCurrentTeb() ? NtCurrentTeb()->Tib.StackLimit : NULL,
+                                 NtCurrentTeb() ? NtCurrentTeb()->Tib.StackBase : NULL );
+        abort_thread(1);
+    }
 
     SP_sig(sigcontext) = (ULONG_PTR)stack;
 #if defined(__APPLE__)
@@ -1282,8 +1311,8 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
         ERR( "macrunner-hb-stack-setup: pid=%d stack=%p sig_sp=%p saved_sp=%p "
              "stack_sp=%p stack_pc=%p teb_stack=%p-%p dealloc=%p\n",
              getpid(), stack, (void *)(ULONG_PTR)SP_sig(sigcontext),
-             (void *)(ULONG_PTR)stack->context.Sp, (void *)(ULONG_PTR)stack->sp,
-             (void *)(ULONG_PTR)stack->pc, NtCurrentTeb() ? NtCurrentTeb()->Tib.StackLimit : NULL,
+             (void *)(ULONG_PTR)layout.context.Sp, (void *)(ULONG_PTR)layout.sp,
+             (void *)(ULONG_PTR)layout.pc, NtCurrentTeb() ? NtCurrentTeb()->Tib.StackLimit : NULL,
              NtCurrentTeb() ? NtCurrentTeb()->Tib.StackBase : NULL,
              NtCurrentTeb() ? NtCurrentTeb()->DeallocationStack : NULL );
 }

@@ -375,9 +375,12 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
     struct syscall_frame *frame = get_syscall_frame();
     NTSTATUS ret = STATUS_SUCCESS;
     BOOL self = (handle == GetCurrentThread());
-    DWORD flags = context->ContextFlags & ~CONTEXT_ARM64;
+    const AMD64_CONTEXT *amd64_context = (const AMD64_CONTEXT *)context;
+    DWORD arm64_flags = context->ContextFlags;
+    DWORD amd64_flags = amd64_context->ContextFlags;
+    DWORD flags = arm64_flags & ~CONTEXT_ARM64;
 
-    if (((const AMD64_CONTEXT *)context)->ContextFlags & CONTEXT_AMD64)
+    if ((amd64_flags & CONTEXT_AMD64) && !(arm64_flags & CONTEXT_ARM64))
         return macrunner_hb_set_x64_thread_context( handle, (const AMD64_CONTEXT *)context );
 
     if (self && (flags & CONTEXT_DEBUG_REGISTERS)) self = FALSE;
@@ -767,6 +770,8 @@ TEB *__wine_get_current_teb_for_x18(void)
 extern int macrunner_hb_pc_is_x64_guest_code( void *pc );
 extern int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc );
 extern int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc );
+extern void *macrunner_hb_pe_module_from_pc_no_lock( void *pc );
+extern int macrunner_hb_pc_is_pe_code_module_no_lock( void *pc );
 extern ULONG64 macrunner_hb_normalize_x64_callback_pc( ULONG64 pc );
 extern ULONG64 macrunner_hb_normalize_x64_tls_callback_pc( ULONG64 pc, ULONG64 image_base,
                                                            ULONG64 reason );
@@ -833,6 +838,45 @@ static void macrunner_signal_copy_bytes( void *dst, const void *src, size_t size
     const volatile unsigned char *s = src;
 
     while (size--) *d++ = *s++;
+}
+
+static BOOL macrunner_signal_read_memory( void *dst, const void *src, size_t size )
+{
+    if (!size) return TRUE;
+    if (!dst || !src) return FALSE;
+#ifdef __APPLE__
+    {
+        mach_vm_size_t out_size = 0;
+        kern_return_t kr = mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)src,
+                                                   (mach_vm_size_t)size,
+                                                   (mach_vm_address_t)dst, &out_size );
+        return kr == KERN_SUCCESS && out_size == size;
+    }
+#else
+    if (!virtual_is_valid_code_address( (void *)src, size )) return FALSE;
+    macrunner_signal_copy_bytes( dst, src, size );
+    return TRUE;
+#endif
+}
+
+static BOOL macrunner_signal_read_u32_aligned( ULONG_PTR pc, ULONG *instr )
+{
+    if (!instr || (pc & 3)) return FALSE;
+    return macrunner_signal_read_memory( instr, (void *)pc, sizeof(*instr) );
+}
+
+static void macrunner_signal_writef( const char *format, ... )
+{
+    char buffer[512];
+    va_list args;
+    int len;
+
+    va_start( args, format );
+    len = vsnprintf( buffer, sizeof(buffer), format, args );
+    va_end( args );
+    if (len <= 0) return;
+    if ((size_t)len >= sizeof(buffer)) len = sizeof(buffer) - 1;
+    write( STDERR_FILENO, buffer, len );
 }
 
 void macrunner_hb_trace_x64_callback_preserve( ULONG64 target, ULONG64 saved_x26,
@@ -1696,12 +1740,7 @@ static BOOL memory_access_base_copied_from_x18( DWORD *pc, int base_reg )
         DWORD *prev_pc = pc - i;
         DWORD prev;
 
-        /* A faulting PE instruction can sit at the first word of a mapped
-         * page.  Looking behind it without validating the address faults
-         * inside segv_handler itself, causing the services.exe CPU spin seen
-         * during wineboot. */
-        if (!virtual_is_valid_code_address( prev_pc, sizeof(prev) )) return FALSE;
-        prev = *prev_pc;
+        if (!macrunner_signal_read_memory( &prev, prev_pc, sizeof(prev) )) return FALSE;
 
         /* mov xN, x18 is encoded as orr xN, xzr, x18.  Compilers often
          * materialize the TEB base this way before a short branch and
@@ -1724,8 +1763,7 @@ static BOOL memory_access_base_loaded_wow_teb_from_x18( DWORD *pc, int base_reg 
         DWORD prev;
         int offset_reg;
 
-        if (!virtual_is_valid_code_address( prev_pc, sizeof(prev) )) return FALSE;
-        prev = *prev_pc;
+        if (!macrunner_signal_read_memory( &prev, prev_pc, sizeof(prev) )) return FALSE;
 
         /* add xBase, x18, xOffset */
         if ((prev & 0xffe0fc00) != 0x8b000000) continue;
@@ -1737,8 +1775,7 @@ static BOOL memory_access_base_loaded_wow_teb_from_x18( DWORD *pc, int base_reg 
             DWORD *load_pc = pc - j;
             DWORD load;
 
-            if (!virtual_is_valid_code_address( load_pc, sizeof(load) )) return FALSE;
-            load = *load_pc;
+            if (!macrunner_signal_read_memory( &load, load_pc, sizeof(load) )) return FALSE;
 
             /* ldrsw xOffset, [x18, #TEB.WowTebOffset] */
             if ((load & 0xffc00000) == 0xb9800000 &&
@@ -1872,12 +1909,32 @@ static BOOL macrunner_hb_redirect_arm64x_hexpthk_sigill( ucontext_t *context )
 {
     static const unsigned char thunk_prefix[] = { 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x20, 0x55, 0x5d, 0xe9 };
     unsigned char bytes[sizeof(thunk_prefix) + sizeof(LONG)];
+    unsigned char pc_prefix[2];
     ULONG_PTR pc = PC_sig(context);
-    ULONG_PTR candidates[3];
+    ULONG_PTR candidates[5];
     unsigned int ci;
     ULONG_PTR thunk = 0, target;
     void *module;
     LONG rel;
+    static int trace_candidates = -1;
+    static int trace_count;
+
+    if (trace_candidates < 0)
+        trace_candidates = getenv( "MACRUNNER_HB_TRACE_HEXPTHK_CANDIDATE" ) ? 1 : 0;
+
+    if (macrunner_hb_pc_is_x64_guest_code_module_no_lock( (void *)pc ))
+    {
+        if (macrunner_signal_read_memory( pc_prefix, (void *)pc, sizeof(pc_prefix) ) &&
+            pc_prefix[0] == 0xff && pc_prefix[1] == 0x25)
+        {
+            if (macrunner_hb_trace_callback_route_enabled())
+                fprintf( stderr, "macrunner-hb-arm64x-hexpthk-skip-import-jmp: pc=%p x4=%p x16=%p lr=%p\n",
+                         (void *)pc, (void *)(ULONG_PTR)REGn_sig(4, context),
+                         (void *)(ULONG_PTR)REGn_sig(16, context),
+                         (void *)(ULONG_PTR)LR_sig(context) );
+            return FALSE;
+        }
+    }
 
     /* The faulting ARM64X x64 entry-thunk address can arrive tagged with the CodeMap
      * type in the low 2 bits (entry_thunk | type) and/or in a register other than x16
@@ -1886,27 +1943,58 @@ static BOOL macrunner_hb_redirect_arm64x_hexpthk_sigill( ucontext_t *context )
      * 16-aligned address the fault PC lies within; accept the first whose bytes are the
      * fast-forward entry-thunk prologue and that the fault PC falls within. */
     candidates[0] = REGn_sig(16, context) & ~(ULONG_PTR)3;
-    candidates[1] = REGn_sig(4, context) & ~(ULONG_PTR)3;
-    candidates[2] = pc & ~(ULONG_PTR)15;
+    candidates[1] = REGn_sig(8, context) & ~(ULONG_PTR)3;
+    candidates[2] = REGn_sig(17, context) & ~(ULONG_PTR)3;
+    candidates[3] = REGn_sig(4, context) & ~(ULONG_PTR)3;
+    candidates[4] = pc & ~(ULONG_PTR)15;
     for (ci = 0; ci < ARRAY_SIZE(candidates); ci++)
     {
         ULONG_PTR c = candidates[ci];
+        BOOL pe_code;
 
         if (!c || pc < c || pc >= c + sizeof(bytes)) continue;
-        if (!virtual_check_buffer_for_read( (void *)c, sizeof(bytes) )) continue;
-        macrunner_signal_copy_bytes( bytes, (void *)c, sizeof(bytes) );
+        pe_code = macrunner_hb_pc_is_pe_code_module_no_lock( (void *)c );
+        if (!pe_code)
+        {
+            if (trace_candidates && trace_count++ < 2048)
+                fprintf( stderr, "macrunner-hb-hexpthk-candidate: pc=%p ci=%u c=%p pe_code=0 "
+                         "x4=%p x8=%p x16=%p x17=%p lr=%p sp=%p\n",
+                         (void *)pc, ci, (void *)c,
+                         (void *)(ULONG_PTR)REGn_sig(4, context),
+                         (void *)(ULONG_PTR)REGn_sig(8, context),
+                         (void *)(ULONG_PTR)REGn_sig(16, context),
+                         (void *)(ULONG_PTR)REGn_sig(17, context),
+                         (void *)(ULONG_PTR)LR_sig(context),
+                         (void *)(ULONG_PTR)SP_sig(context) );
+            continue;
+        }
+        if (!macrunner_signal_read_memory( bytes, (void *)c, sizeof(bytes) )) continue;
+        if (trace_candidates && trace_count++ < 2048)
+            fprintf( stderr, "macrunner-hb-hexpthk-candidate: pc=%p ci=%u c=%p pe_code=1 "
+                     "bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x "
+                     "match=%d x4=%p x8=%p x16=%p x17=%p lr=%p sp=%p\n",
+                     (void *)pc, ci, (void *)c,
+                     bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+                     bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13],
+                     !memcmp( bytes, thunk_prefix, sizeof(thunk_prefix) ),
+                     (void *)(ULONG_PTR)REGn_sig(4, context),
+                     (void *)(ULONG_PTR)REGn_sig(8, context),
+                     (void *)(ULONG_PTR)REGn_sig(16, context),
+                     (void *)(ULONG_PTR)REGn_sig(17, context),
+                     (void *)(ULONG_PTR)LR_sig(context),
+                     (void *)(ULONG_PTR)SP_sig(context) );
         if (memcmp( bytes, thunk_prefix, sizeof(thunk_prefix) )) continue;
         thunk = c;
         break;
     }
     if (!thunk) return FALSE;
 
-    module = macrunner_hb_readable_pe_module_from_pc( thunk );
-    if (!module || macrunner_hb_readable_pe_module_from_pc( pc ) != module) return FALSE;
+    module = macrunner_hb_pe_module_from_pc_no_lock( (void *)thunk );
+    if (!module || macrunner_hb_pe_module_from_pc_no_lock( (void *)pc ) != module) return FALSE;
     memcpy( &rel, bytes + sizeof(thunk_prefix), sizeof(rel) );
     target = thunk + sizeof(bytes) + rel;
-    if ((target & 3) || macrunner_hb_readable_pe_module_from_pc( target ) != module) return FALSE;
-    if (!virtual_check_buffer_for_read( (void *)target, sizeof(DWORD) )) return FALSE;
+    if ((target & 3) || macrunner_hb_pe_module_from_pc_no_lock( (void *)target ) != module) return FALSE;
+    if (!macrunner_hb_pc_is_pe_code_module_no_lock( (void *)target )) return FALSE;
 
     if (macrunner_hb_trace_callback_route_enabled())
         fprintf( stderr, "macrunner-hb-arm64x-hexpthk-redirect: pc=%p thunk=%p target=%p\n",
@@ -2432,7 +2520,7 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     static int macrunner_hb_ill_trace_count;
     ULONG instr = 0;
 
-    if (!(PC_sig( context ) & 3)) instr = *(ULONG *)PC_sig( context );
+    macrunner_signal_read_u32_aligned( PC_sig( context ), &instr );
 
     if (macrunner_hb_trace_callback_route_enabled() && macrunner_hb_ill_trace_count++ < 16)
         ERR( "macrunner-hb-signal-entry: kind=ill pid=%d pc=%p sp=%p instr=%#lx "
@@ -2622,7 +2710,11 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         if (!(PSTATE_sig( context ) & 0x10) && /* AArch64 (not WoW) */
             !(PC_sig( context ) & 3))
         {
-            ULONG imm = (*(ULONG *)PC_sig( context ) >> 5) & 0xffff;
+            ULONG instr;
+            ULONG imm;
+
+            if (!macrunner_signal_read_u32_aligned( PC_sig( context ), &instr )) break;
+            imm = (instr >> 5) & 0xffff;
             switch (imm)
             {
             case 0xf000:
@@ -2888,18 +2980,18 @@ static void macrunner_hb_chain_signal( int sig, siginfo_t *siginfo, void *sigcon
             static unsigned int early_bus_count;
 
             if (early_bus_count++ < 4)
-                fprintf( stderr, "macrunner-hb-early-native-bus: pid=%d pc=%p fault=%p "
-                         "routing-to-wine-bus-handler\n",
-                         getpid(), (void *)(ULONG_PTR)PC_sig((ucontext_t *)sigcontext),
-                         (void *)(ULONG_PTR)siginfo->si_addr );
+                macrunner_signal_writef( "macrunner-hb-early-native-bus: pid=%d pc=%p fault=%p "
+                                         "routing-to-wine-bus-handler\n",
+                                         getpid(), (void *)(ULONG_PTR)PC_sig((ucontext_t *)sigcontext),
+                                         (void *)(ULONG_PTR)siginfo->si_addr );
             bus_handler( sig, siginfo, sigcontext );
             return;
         }
-        fprintf( stderr, "macrunner-hb-early-nonx64-signal: pid=%d sig=%d pc=%p fault=%p "
-                 "prev_flags=%#x prev_handler=%p prev_sigaction=%p\n",
-                 getpid(), sig, (void *)(ULONG_PTR)PC_sig((ucontext_t *)sigcontext),
-                 (void *)(ULONG_PTR)(sig == SIGILL ? 0 : (ULONG_PTR)siginfo->si_addr),
-                 prev->sa_flags, prev->sa_handler, prev->sa_sigaction );
+        macrunner_signal_writef( "macrunner-hb-early-nonx64-signal: pid=%d sig=%d pc=%p fault=%p "
+                                 "prev_flags=%#x prev_handler=%p prev_sigaction=%p\n",
+                                 getpid(), sig, (void *)(ULONG_PTR)PC_sig((ucontext_t *)sigcontext),
+                                 (void *)(ULONG_PTR)(sig == SIGILL ? 0 : (ULONG_PTR)siginfo->si_addr),
+                                 prev->sa_flags, prev->sa_handler, prev->sa_sigaction );
         signal( sig, SIG_DFL );
         raise( sig );
         return;

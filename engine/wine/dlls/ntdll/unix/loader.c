@@ -115,6 +115,7 @@ void *p__wine_ctrl_routine = NULL;
 SYSTEM_DLL_INIT_BLOCK *pLdrSystemDllInitBlock = NULL;
 
 extern typeof(NtReadFile) __wine_rpc_NtReadFile;
+extern void macrunner_hb_register_x64_original_exec_sections( void *module, const IMAGE_NT_HEADERS *nt );
 
 static void stub_syscall( const char *name )
 {
@@ -1281,6 +1282,7 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
     memcpy( dos + 1, builtin_signature, sizeof(builtin_signature) );
 
     *nt = *nt_descr;
+    macrunner_hb_register_x64_original_exec_sections( addr, nt_descr );
 
     delta_ptr = (INT_PTR)nt_descr - (INT_PTR)addr;
     if (delta_ptr < 0 || delta_ptr > INT_MAX) return STATUS_INVALID_IMAGE_FORMAT;

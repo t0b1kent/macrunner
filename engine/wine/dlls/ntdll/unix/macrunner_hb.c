@@ -300,10 +300,33 @@ static pthread_mutex_t macrunner_hb_x64_dynamic_exec_region_mutex = PTHREAD_MUTE
 static struct macrunner_hb_x64_dynamic_exec_region
     macrunner_hb_x64_dynamic_exec_regions[MACRUNNER_HB_X64_DYNAMIC_EXEC_REGION_MAX];
 static unsigned int macrunner_hb_x64_dynamic_exec_region_count;
+#define MACRUNNER_HB_X64_ORIGINAL_EXEC_RANGE_MAX 4096
+struct macrunner_hb_x64_original_exec_range
+{
+    void *module;
+    uint64_t start;
+    uint64_t end;
+};
+static struct macrunner_hb_x64_original_exec_range
+    macrunner_hb_x64_original_exec_ranges[MACRUNNER_HB_X64_ORIGINAL_EXEC_RANGE_MAX];
+static unsigned int macrunner_hb_x64_original_exec_range_count;
 static __thread void *macrunner_hb_bridge_stack_limit;
 static __thread void *macrunner_hb_bridge_stack_base;
 static __thread size_t macrunner_hb_bridge_stack_size;
 static __thread uintptr_t macrunner_hb_native_call_guest_rsp;
+
+static void macrunner_hb_drop_x64_original_exec_sections( void *module )
+{
+    unsigned int count = __atomic_load_n( &macrunner_hb_x64_original_exec_range_count, __ATOMIC_ACQUIRE );
+    unsigned int i;
+
+    if (!module) return;
+    for (i = 0; i < count; i++)
+    {
+        if (macrunner_hb_x64_original_exec_ranges[i].module == module)
+            macrunner_hb_x64_original_exec_ranges[i].module = NULL;
+    }
+}
 static __thread void *macrunner_hb_original_stack_limit;
 static __thread void *macrunner_hb_original_stack_base;
 static pthread_mutex_t macrunner_hb_wow64_guest32_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -606,6 +629,7 @@ static BOOL macrunner_hb_read_local_memory( uintptr_t addr, void *buf, size_t si
 }
 
 #define MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE 64
+#define MACRUNNER_HB_MODULE_FROM_PC_NEG_CACHE_SIZE 128
 
 struct macrunner_hb_module_from_pc_cache_entry
 {
@@ -616,6 +640,28 @@ struct macrunner_hb_module_from_pc_cache_entry
 
 static __thread struct macrunner_hb_module_from_pc_cache_entry macrunner_hb_module_from_pc_cache[MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE];
 static __thread unsigned int macrunner_hb_module_from_pc_cache_next;
+static __thread uintptr_t macrunner_hb_module_from_pc_neg_cache[MACRUNNER_HB_MODULE_FROM_PC_NEG_CACHE_SIZE];
+static __thread unsigned int macrunner_hb_module_from_pc_neg_cache_next;
+
+static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc );
+
+static BOOL macrunner_hb_module_from_pc_neg_cache_has( uintptr_t page )
+{
+    unsigned int i;
+
+    if (!page) return FALSE;
+    for (i = 0; i < MACRUNNER_HB_MODULE_FROM_PC_NEG_CACHE_SIZE; i++)
+        if (macrunner_hb_module_from_pc_neg_cache[i] == page)
+            return TRUE;
+    return FALSE;
+}
+
+static void macrunner_hb_module_from_pc_neg_cache_put( uintptr_t page )
+{
+    if (!page) return;
+    macrunner_hb_module_from_pc_neg_cache[
+        macrunner_hb_module_from_pc_neg_cache_next++ % MACRUNNER_HB_MODULE_FROM_PC_NEG_CACHE_SIZE] = page;
+}
 
 static void macrunner_hb_module_from_pc_cache_put( uintptr_t start, size_t size, void *module )
 {
@@ -633,7 +679,9 @@ static void macrunner_hb_module_from_pc_cache_put( uintptr_t start, size_t size,
 static void *macrunner_hb_module_from_pc( void *pc )
 {
     uintptr_t addr = (uintptr_t)pc;
-    uintptr_t p = (uintptr_t)pc & ~(uintptr_t)0xfff;
+    uintptr_t page = (uintptr_t)pc & ~(uintptr_t)0xfff;
+    uintptr_t p = page;
+    LDR_DATA_TABLE_ENTRY *ldr;
     unsigned int i;
 
     for (i = 0; i < MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE; i++)
@@ -643,6 +691,21 @@ static void *macrunner_hb_module_from_pc( void *pc )
         if (entry->module && addr >= entry->start && addr < entry->end)
             return entry->module;
     }
+
+    if ((ldr = macrunner_hb_ldr_entry_from_pc( pc )))
+    {
+        uintptr_t start = (uintptr_t)ldr->DllBase;
+        size_t size = ldr->SizeOfImage;
+
+        if (start && size && addr >= start && addr < start + size)
+        {
+            macrunner_hb_module_from_pc_cache_put( start, size, ldr->DllBase );
+            return ldr->DllBase;
+        }
+    }
+
+    if (macrunner_hb_module_from_pc_neg_cache_has( page ))
+        return NULL;
 
     for (i = 0; i < 0x100000 && p >= 0x1000; i++, p -= 0x1000)
     {
@@ -662,6 +725,7 @@ static void *macrunner_hb_module_from_pc( void *pc )
             macrunner_hb_module_from_pc_cache_put( p, image_size, (void *)p );
         return (void *)p;
     }
+    macrunner_hb_module_from_pc_neg_cache_put( page );
     return NULL;
 }
 
@@ -731,15 +795,19 @@ static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc )
     PEB *peb = NtCurrentTeb()->Peb;
     LIST_ENTRY *head, *entry;
     uintptr_t addr = (uintptr_t)pc;
+    unsigned int guard = 0;
 
     if (!peb || !peb->LdrData) return NULL;
     head = &peb->LdrData->InMemoryOrderModuleList;
-    for (entry = head->Flink; entry && entry != head; entry = entry->Flink)
+    for (entry = head->Flink; entry && entry != head && guard++ < 4096; entry = entry->Flink)
     {
         LDR_DATA_TABLE_ENTRY *ldr = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks );
         uintptr_t base = (uintptr_t)ldr->DllBase;
+        uintptr_t size = ldr->SizeOfImage;
 
-        if (base && addr >= base && addr < base + ldr->SizeOfImage) return ldr;
+        if (!entry->Flink || !entry->Blink) break;
+        if (!base || !size || size > UINTPTR_MAX - base) continue;
+        if (addr >= base && addr < base + size) return ldr;
     }
     return NULL;
 }
@@ -748,13 +816,16 @@ static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_module( void *module )
 {
     PEB *peb = NtCurrentTeb()->Peb;
     LIST_ENTRY *head, *entry;
+    unsigned int guard = 0;
 
     if (!peb || !peb->LdrData || !module) return NULL;
     head = &peb->LdrData->InMemoryOrderModuleList;
-    for (entry = head->Flink; entry && entry != head; entry = entry->Flink)
+    for (entry = head->Flink; entry && entry != head && guard++ < 4096; entry = entry->Flink)
     {
         LDR_DATA_TABLE_ENTRY *ldr = CONTAINING_RECORD( entry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks );
 
+        if (!entry->Flink || !entry->Blink) break;
+        if (!ldr->DllBase || !ldr->SizeOfImage) continue;
         if (ldr->DllBase == module) return ldr;
     }
     return NULL;
@@ -5281,15 +5352,82 @@ static size_t macrunner_hb_x64_stack_size( void *module )
     return (size + 0xffff) & ~(size_t)0xffff;
 }
 
+void macrunner_hb_register_x64_original_exec_sections( void *module, const IMAGE_NT_HEADERS *nt )
+{
+    IMAGE_SECTION_HEADER *sec;
+    unsigned int i;
+
+    if (!module || !nt || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) return;
+    sec = IMAGE_FIRST_SECTION( nt );
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+    {
+        uint64_t start, end;
+        DWORD size;
+        unsigned int count, j;
+
+        if (!(sec->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+        size = sec->Misc.VirtualSize ? sec->Misc.VirtualSize : sec->SizeOfRawData;
+        if (!size) continue;
+        start = (uint64_t)(uintptr_t)module + sec->VirtualAddress;
+        end = start + size;
+        count = __atomic_load_n( &macrunner_hb_x64_original_exec_range_count, __ATOMIC_ACQUIRE );
+        for (j = 0; j < count; j++)
+        {
+            const struct macrunner_hb_x64_original_exec_range *range =
+                &macrunner_hb_x64_original_exec_ranges[j];
+
+            if (range->module == module && range->start == start && range->end == end)
+                break;
+        }
+        if (j < count) continue;
+        if (count >= MACRUNNER_HB_X64_ORIGINAL_EXEC_RANGE_MAX)
+        {
+            static int warned;
+
+            if (!warned++)
+                fprintf( stderr, "macrunner-hb-original-exec: range table full, dropping module=%p\n",
+                         module );
+            macrunner_hb_drop_x64_original_exec_sections( module );
+            return;
+        }
+        macrunner_hb_x64_original_exec_ranges[count].module = module;
+        macrunner_hb_x64_original_exec_ranges[count].start = start;
+        macrunner_hb_x64_original_exec_ranges[count].end = end;
+        __atomic_store_n( &macrunner_hb_x64_original_exec_range_count, count + 1, __ATOMIC_RELEASE );
+    }
+}
+
+static int macrunner_hb_pc_in_original_exec_section( void *module, uint64_t pc )
+{
+    unsigned int count = __atomic_load_n( &macrunner_hb_x64_original_exec_range_count, __ATOMIC_ACQUIRE );
+    unsigned int i;
+    int saw_module = FALSE;
+
+    if (!module || !pc) return -1;
+    for (i = 0; i < count; i++)
+    {
+        const struct macrunner_hb_x64_original_exec_range *range =
+            &macrunner_hb_x64_original_exec_ranges[i];
+
+        if (range->module != module) continue;
+        saw_module = TRUE;
+        if (pc >= range->start && pc < range->end) return TRUE;
+    }
+    return saw_module ? FALSE : -1;
+}
+
 static int macrunner_hb_pc_in_executable_section( void *module, uint64_t pc )
 {
     IMAGE_NT_HEADERS *nt = macrunner_hb_image_nt_header( module );
     IMAGE_SECTION_HEADER *sec;
     uint64_t base = (uint64_t)(uintptr_t)module;
     DWORD rva;
+    int original_exec;
     unsigned int i;
 
     if (!nt || pc < base) return FALSE;
+    original_exec = macrunner_hb_pc_in_original_exec_section( module, pc );
+    if (original_exec >= 0) return original_exec;
     rva = (DWORD)(pc - base);
     sec = IMAGE_FIRST_SECTION( nt );
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
@@ -5485,6 +5623,23 @@ int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc )
 
     module = macrunner_hb_module_from_pc( pc );
     if (!module || macrunner_hb_module_machine( module ) != IMAGE_FILE_MACHINE_AMD64) return FALSE;
+    return macrunner_hb_pc_in_executable_section( module, (uint64_t)(uintptr_t)pc );
+}
+
+void *macrunner_hb_pe_module_from_pc_no_lock( void *pc )
+{
+    LDR_DATA_TABLE_ENTRY *ldr;
+
+    if (!pc) return NULL;
+    if ((ldr = macrunner_hb_ldr_entry_from_pc( pc ))) return ldr->DllBase;
+    return macrunner_hb_module_from_pc( pc );
+}
+
+int macrunner_hb_pc_is_pe_code_module_no_lock( void *pc )
+{
+    void *module = macrunner_hb_pe_module_from_pc_no_lock( pc );
+
+    if (!module) return FALSE;
     return macrunner_hb_pc_in_executable_section( module, (uint64_t)(uintptr_t)pc );
 }
 
@@ -19310,25 +19465,31 @@ NTSTATUS macrunner_hb_x64_thread_entry( void *args )
     struct macrunner_hb_x64_thread_entry_params *params = args;
     hb_abi_x64_call_t call;
     NTSTATUS status;
+    void *image_base, *entry_module;
 
     if (!params || !params->entry) return STATUS_INVALID_PARAMETER;
+
+    image_base = NtCurrentTeb()->Peb->ImageBaseAddress;
+    entry_module = macrunner_hb_module_from_pc( params->entry );
+    if (entry_module && macrunner_hb_module_machine( entry_module ) == IMAGE_FILE_MACHINE_AMD64)
+        image_base = entry_module;
 
     memset( &call, 0, sizeof(call) );
     call.rcx = (uint64_t)(uintptr_t)params->arg;
 
     if (macrunner_hb_debug_enabled())
         ERR( "MacRunner HyperBridge unix thread entry begin entry=%p arg=%p image=%p\n",
-             params->entry, params->arg, NtCurrentTeb()->Peb->ImageBaseAddress );
+             params->entry, params->arg, image_base );
     if (macrunner_hb_trace_thread_lifecycle_enabled())
     {
         fprintf( stderr, "macrunner-ui-input: stage=hb_x64_thread_entry_begin entry=%p arg=%p image=%p\n",
-                 params->entry, params->arg, NtCurrentTeb()->Peb->ImageBaseAddress );
+                 params->entry, params->arg, image_base );
         fflush( stderr );
     }
 
     status = macrunner_hb_run_x64( params->entry, &call, &params->ret,
                                    &params->blocks, &params->steps, "thread",
-                                   NtCurrentTeb()->Peb->ImageBaseAddress );
+                                   image_base );
     if (macrunner_hb_trace_thread_lifecycle_enabled())
     {
         fprintf( stderr, "macrunner-ui-input: stage=hb_x64_thread_entry_return entry=%p arg=%p status=%lx ret=%s blocks=%s steps=%s\n",

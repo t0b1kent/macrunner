@@ -12,6 +12,7 @@ traces=(
   "$ROOT/traces/runtime_samples/d3d8_renderware_alpha_blend_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d8_renderware_depth_cull_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d8_renderware_shademode_flat_runtime.jsonl"
+  "$ROOT/traces/runtime_samples/d3d8_renderware_texture_blend_runtime.jsonl"
   "$ROOT/traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 	  "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 	  "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"

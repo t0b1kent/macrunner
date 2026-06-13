@@ -284,3 +284,6 @@ LOOP-STATUS: CONTINUE
 12:49 · PSO corpus validation blocked · dx11_headless_smoke builds, but both HK corpus run and baseline no-corpus run exit 137 inside mr-run before first app printf; not a PSO-specific signal · next commit harness then wait/retry after Wine launch path stabilizes
 12:49 · dxmt corpus harness commit · 51b63a6 dx11: add Unity shader corpus readback smoke; build PASS but runtime blocked by mr-run exit 137 before app output · next parent wrapper/progress commit
 12:49 · parent corpus wrapper commit · 5b8f3a3 Lane D: wire Unity shader corpus into headless smoke · next status verify then continue within non-HK graphics lane
+12:53 · D3D8 texture-stage increment · added RenderWare D3DTOP_BLENDTEXTUREALPHA trace plus translation/Metal-request/smoke wiring · next pytest + mock/Metal-request smokes
+12:55 · D3D8 texture-stage validation · pytest 73 passed; mock headless full matrix d3d9_trace_count=38 PASS; Metal request-only count=38 PASS · next stage named files and commit
+12:55 · commit · 8b9e32c Lane D: add D3D8 RenderWare texture-stage blend · next continue next owned headless graphics increment

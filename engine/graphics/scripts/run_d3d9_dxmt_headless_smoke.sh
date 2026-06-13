@@ -16,6 +16,7 @@ else
     "$ROOT/traces/runtime_samples/d3d8_renderware_alpha_blend_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d8_renderware_depth_cull_runtime.jsonl"
     "$ROOT/traces/runtime_samples/d3d8_renderware_shademode_flat_runtime.jsonl"
+    "$ROOT/traces/runtime_samples/d3d8_renderware_texture_blend_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
@@ -88,6 +89,7 @@ for result in results:
         "d3d8_renderware_alpha_blend_runtime.jsonl": 1200,
         "d3d8_renderware_depth_cull_runtime.jsonl": 1200,
         "d3d8_renderware_shademode_flat_runtime.jsonl": 2500,
+        "d3d8_renderware_texture_blend_runtime.jsonl": 1200,
     }.get(trace_name, 1000)
     print(f"trace={payload['trace_path']}")
     print(f"  status={payload['status']}")

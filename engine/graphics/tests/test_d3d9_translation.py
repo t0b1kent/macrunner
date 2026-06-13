@@ -13,6 +13,7 @@ D3D8_ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_tes
 D3D8_ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_blend_runtime.jsonl"
 D3D8_DEPTH_CULL_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_depth_cull_runtime.jsonl"
 D3D8_SHADEMODE_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_shademode_flat_runtime.jsonl"
+D3D8_TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_texture_blend_runtime.jsonl"
 TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
 FFP_ARG_MODIFIER_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
@@ -183,6 +184,23 @@ def test_d3d8_renderware_shademode_flat_uses_first_vertex_color(tmp_path):
     ffp = state.pipeline.metadata["d3d9_ffp_shader"]
     assert state.pipeline.metadata["d3d9_render_states"]["D3DRS_SHADEMODE"] == "D3DSHADE_FLAT"
     assert ffp["shade_mode"] == "D3DSHADE_FLAT"
+
+
+def test_d3d8_renderware_texture_alpha_blend_uses_legacy_tss_path(tmp_path):
+    result = replay(D3D8_TEXTURE_BLEND_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["api"] == "d3d8"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+
+    state = load_trace(D3D8_TEXTURE_BLEND_TRACE)
+    ffp = state.pipeline.metadata["d3d9_ffp_shader"]
+    assert state.render_target_format == "bgra8"
+    assert state.pipeline.metadata["d3d9_texture_format"] == "bgra8"
+    assert ffp["color_op"] == "D3DTOP_BLENDTEXTUREALPHA"
+    assert ffp["color_arg1"] == "D3DTA_TEXTURE"
+    assert ffp["color_arg2"] == "D3DTA_DIFFUSE"
+    assert ffp["alpha_op"] == "D3DTOP_SELECTARG1"
 
 
 def test_d3d9_fixed_function_texture_modulate_emits_shader_metadata(tmp_path):

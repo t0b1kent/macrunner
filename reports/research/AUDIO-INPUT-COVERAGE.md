@@ -35,10 +35,19 @@ Observed in this pilot:
 - `xinput-probe` → `PASS`, `xinput probe ok` (no attached pad/events)
 - `x64-winmm-tone-play` → `TIMEOUT` (30s cap)
 - `x64-mmdevapi-enum-render` → `TIMEOUT` (30s cap)
-- `x64-dsound-buffer-mix` → `GAP` (`missing executable`)
-- `x64-xaudio2-source-voice` → `GAP` (`missing executable`)
+- `x64-dsound-buffer-mix` → was `GAP` (`missing executable`) in this pilot
+- `x64-xaudio2-source-voice` → was `GAP` (`missing executable`) in this pilot
 
 This is not yet an acceptance matrix run; matrix remains blocked-by-Lane-A above.
+
+## x64 fixture prep
+
+Prepared 2026-06-13:
+- `fixtures/x64/dsound_buffer_mix_x64.exe` built from `engine/audio-tests/mix_dsound.c`
+- `fixtures/x64/xaudio2_source_voice_x64.exe` built from `engine/audio-tests/voice_xaudio2.c`
+- `engine/audio-tests/build-audio-tests.sh` now regenerates both files
+
+Next x64 acceptance after Lane A unblocks should no longer report DSound/XAudio2 fixture `GAP`.
 
 ## Target outcome (phase goal)
 

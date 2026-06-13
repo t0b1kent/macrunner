@@ -115,6 +115,11 @@ static BOOL macrunner_hb_trace_arm64_seh_invalid_disposition(void)
     return count++ < 64;
 }
 
+static LONG CALLBACK macrunner_hb_pe_scan_fault( EXCEPTION_POINTERS *ep );
+static BOOL macrunner_hb_find_pc_section( DWORD64 pc, char section_name[9],
+                                          DWORD *section_characteristics );
+static int macrunner_hb_arm64x_code_range_kind( ULONG_PTR base, DWORD64 pc );
+
 static inline BOOL macrunner_hb_is_unix_dispatcher_boundary_pc( DWORD64 pc )
 {
     if (!macrunner_hb_is_x64_main_process()) return FALSE;
@@ -146,12 +151,20 @@ static inline BOOL macrunner_hb_is_host_boundary_pc( DWORD64 pc, const CONTEXT *
     return pc == 0 || (context->Lr == 0 && (pc == ~(DWORD64)3 || pc == 0));
 }
 
+static inline BOOL macrunner_hb_current_exception_is_datatype_misalignment(void)
+{
+    const EXCEPTION_RECORD *rec = macrunner_hb_current_exception_record;
+
+    return rec && rec->ExceptionCode == STATUS_DATATYPE_MISALIGNMENT && !rec->ExceptionFlags;
+}
+
 static BOOL macrunner_hb_is_plausible_recovered_pc( DWORD64 pc, const char **reason )
 {
     TEB *teb = NtCurrentTeb();
-    LDR_DATA_TABLE_ENTRY *module = NULL;
     ULONG_PTR stack_lo = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
     ULONG_PTR stack_hi = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
+    char section_name[9];
+    DWORD section_characteristics;
 
     if (!pc) { if (reason) *reason = "pc-null"; return FALSE; }
     if ((pc & 3) || pc == ~(DWORD64)3) { if (reason) *reason = "pc-unaligned"; return FALSE; }
@@ -162,12 +175,68 @@ static BOOL macrunner_hb_is_plausible_recovered_pc( DWORD64 pc, const char **rea
         return FALSE;
     }
     if (macrunner_hb_is_import_thunk_pc( pc )) return TRUE;
-    if (pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX) return TRUE;
     if (pc >= MACRUNNER_HB_HOST_BOUNDARY_MIN &&
-        LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module ) == STATUS_SUCCESS && module)
+        macrunner_hb_find_pc_section( pc, section_name, &section_characteristics ))
+    {
+        LDR_DATA_TABLE_ENTRY *module = NULL;
+
+        if (!(section_characteristics & IMAGE_SCN_MEM_EXECUTE))
+        {
+            if (reason) *reason = "pc-nonexec-section";
+            return FALSE;
+        }
+        if (pc < MACRUNNER_HB_HOST_BOUNDARY_MAX)
+        {
+            if (reason) *reason = "pc-emulator-band";
+            return FALSE;
+        }
+        if (LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module ) == STATUS_SUCCESS &&
+            module && macrunner_hb_arm64x_code_range_kind( (ULONG_PTR)module->DllBase, pc ) == 0)
+        {
+            if (reason) *reason = "pc-x64-code-range";
+            return FALSE;
+        }
         return TRUE;
+    }
 
     if (reason) *reason = "pc-not-code";
+    return FALSE;
+}
+
+static BOOL macrunner_hb_find_pc_section( DWORD64 pc, char section_name[9],
+                                          DWORD *section_characteristics )
+{
+    LDR_DATA_TABLE_ENTRY *module = NULL;
+    IMAGE_NT_HEADERS *nt;
+    ULONG_PTR base, rva;
+    IMAGE_SECTION_HEADER *sec;
+    WORD i;
+
+    if (section_name) memset( section_name, 0, 9 );
+    if (section_characteristics) *section_characteristics = 0;
+    if (!pc) return FALSE;
+    if (LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module ) != STATUS_SUCCESS || !module)
+        return FALSE;
+
+    __TRY
+    {
+        base = (ULONG_PTR)module->DllBase;
+        nt = RtlImageNtHeader( module->DllBase );
+        if (!base || !nt || pc < base || pc >= base + nt->OptionalHeader.SizeOfImage) return FALSE;
+        rva = (ULONG_PTR)pc - base;
+        sec = IMAGE_FIRST_SECTION( nt );
+        for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+        {
+            ULONG_PTR start = sec->VirtualAddress;
+            ULONG_PTR end = start + max( sec->Misc.VirtualSize, sec->SizeOfRawData );
+
+            if (!start || rva < start || rva >= end) continue;
+            if (section_name) memcpy( section_name, sec->Name, 8 );
+            if (section_characteristics) *section_characteristics = sec->Characteristics;
+            return TRUE;
+        }
+    }
+    __EXCEPT(macrunner_hb_pe_scan_fault) {}
     return FALSE;
 }
 
@@ -184,7 +253,7 @@ static inline void macrunner_hb_stop_unwind_at_boundary( DISPATCHER_CONTEXT *dis
 static inline BOOL macrunner_hb_unwind_leaf_via_lr( DISPATCHER_CONTEXT *dispatch, CONTEXT *context,
                                                     DWORD64 pc, DWORD64 lr )
 {
-    if (!lr || lr == pc || lr == ~(DWORD64)3) return FALSE;
+    if (!lr || lr == pc || lr == pc + 4 || lr == ~(DWORD64)3) return FALSE;
 
     dispatch->ImageBase = 0;
     dispatch->FunctionEntry = NULL;
@@ -192,21 +261,18 @@ static inline BOOL macrunner_hb_unwind_leaf_via_lr( DISPATCHER_CONTEXT *dispatch
     dispatch->EstablisherFrame = context->Sp;
     dispatch->LanguageHandler = NULL;
     context->Pc = lr;
-    if (lr == pc + 4) context->ContextFlags &= ~CONTEXT_UNWOUND_TO_CALL;
-    else context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+    context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
     return TRUE;
 }
 
-static inline BOOL macrunner_hb_is_wow64_arm64_pdata_no_progress_leaf( DWORD64 pc, DWORD64 lr, DWORD64 sp,
-                                                                       const DISPATCHER_CONTEXT *dispatch,
-                                                                       const CONTEXT *context )
+static inline BOOL macrunner_hb_unwind_made_no_progress( DWORD64 pc, DWORD64 prev_sp,
+                                                         DWORD64 prev_fp, const CONTEXT *context )
 {
-    if (macrunner_hb_is_x64_main_process()) return FALSE;
-    if (pc < MACRUNNER_HB_HOST_BOUNDARY_MAX) return FALSE;
-    if (!dispatch->ImageBase || !dispatch->FunctionEntry) return FALSE;
-    if (!lr || lr != pc + 4) return FALSE;
-    if (context->Pc != lr || context->Sp != sp) return FALSE;
-    return TRUE;
+    if (!context) return TRUE;
+    if (context->Pc == pc || context->Pc == pc + 4) return TRUE;
+    if (context->Sp == prev_sp) return TRUE;
+    if (prev_fp && context->Fp <= prev_fp) return TRUE;
+    return FALSE;
 }
 
 static inline BOOL macrunner_hb_pc_inside_syscall_frame( DWORD64 pc,
@@ -442,7 +508,6 @@ static BOOL macrunner_hb_fix_tagged_arm64ec_misalignment( EXCEPTION_RECORD *rec,
     return TRUE;
 }
 
-
 /*******************************************************************
  *         syscalls
  */
@@ -604,6 +669,8 @@ static int macrunner_ec_opcode_size( struct macrunner_ec_opcode op )
     }
 }
 
+static LONG CALLBACK macrunner_hb_pe_scan_fault( EXCEPTION_POINTERS *ep );
+
 static IMAGE_ARM64EC_METADATA *macrunner_ec_module_metadata( ULONG_PTR base )
 {
     const IMAGE_NT_HEADERS *nt;
@@ -618,6 +685,60 @@ static IMAGE_ARM64EC_METADATA *macrunner_ec_module_metadata( ULONG_PTR base )
         cfg->CHPEMetadataPointer >= base + nt->OptionalHeader.SizeOfImage)
         return NULL;
     return (IMAGE_ARM64EC_METADATA *)(ULONG_PTR)cfg->CHPEMetadataPointer;
+}
+
+static int macrunner_hb_arm64x_code_range_kind( ULONG_PTR base, DWORD64 pc )
+{
+    IMAGE_ARM64EC_METADATA *metadata = macrunner_ec_module_metadata( base );
+    IMAGE_NT_HEADERS *nt;
+    const IMAGE_CHPE_RANGE_ENTRY *map;
+    DWORD64 rva;
+    ULONG i, max_count;
+
+    if (!metadata || !metadata->CodeMap || !metadata->CodeMapCount || pc < base) return -1;
+    if (!(nt = RtlImageNtHeader( (void *)base )) || !nt->OptionalHeader.SizeOfImage) return -1;
+    if (pc >= base + nt->OptionalHeader.SizeOfImage) return -1;
+    if (metadata->CodeMap >= nt->OptionalHeader.SizeOfImage) return -1;
+
+    max_count = (nt->OptionalHeader.SizeOfImage - metadata->CodeMap) / sizeof(*map);
+    if (metadata->CodeMapCount > max_count) return -1;
+    rva = pc - base;
+    map = (const IMAGE_CHPE_RANGE_ENTRY *)(base + metadata->CodeMap);
+
+    __TRY
+    {
+        for (i = 0; i < metadata->CodeMapCount; i++)
+        {
+            IMAGE_CHPE_RANGE_ENTRY entry;
+            ULONG start, end;
+
+            memcpy( &entry, &map[i], sizeof(entry) );
+            start = entry.StartOffset & ~1u;
+            if (entry.Length > ~start) continue;
+            end = start + entry.Length;
+            if (rva >= start && rva < end) return entry.NativeCode ? 1 : 0;
+        }
+    }
+    __EXCEPT(macrunner_hb_pe_scan_fault) {}
+    __ENDTRY
+    return -1;
+}
+
+static BOOL macrunner_hb_pc_unsafe_for_arm64_unwind( DISPATCHER_CONTEXT *dispatch,
+                                                     CONTEXT *context, DWORD64 pc )
+{
+    TEB *teb = NtCurrentTeb();
+    ULONG_PTR stack_lo = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
+    ULONG_PTR stack_hi = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
+    ULONG_PTR sp = context ? (ULONG_PTR)context->Sp : 0;
+
+    if (pc < MACRUNNER_HB_HOST_BOUNDARY_MAX) return TRUE;
+    if (dispatch && dispatch->ImageBase &&
+        macrunner_hb_arm64x_code_range_kind( dispatch->ImageBase, pc ) == 0)
+        return TRUE;
+    if (stack_lo && stack_hi && (!sp || sp < stack_lo || sp + 0x10 > stack_hi))
+        return TRUE;
+    return FALSE;
 }
 
 static BOOL macrunner_ec_virtual_unwind_frame( DISPATCHER_CONTEXT *dispatch, CONTEXT *context,
@@ -757,14 +878,26 @@ static BOOL macrunner_ec_fp_chain_unwind( DISPATCHER_CONTEXT *dispatch, CONTEXT 
     ULONG_PTR sp = (ULONG_PTR)context->Sp;
     ULONG_PTR new_fp = 0, new_pc = 0;
     const char *bail = NULL;
+    BOOL stop_unwind = FALSE;
 
     if (!fp || (fp & 0xf)) bail = "fp-null-or-unaligned";
-    else if (fp < stack_lo || fp + 0x10 > stack_hi) bail = "fp-out-of-stack";
+    else if (fp < stack_lo || fp + 0x10 > stack_hi)
+    {
+        bail = "fp-out-of-stack";
+        stop_unwind = TRUE;
+    }
     else
     {
+        const char *pc_reason = NULL;
+
         new_fp = ((const ULONG_PTR *)fp)[0];   /* saved caller x29 */
         new_pc = ((const ULONG_PTR *)fp)[1];   /* saved lr / return address */
         if (!new_pc || new_pc == pc || (new_pc & 3) || new_pc < 0x10000) bail = "bad-new-pc";
+        else if (!macrunner_hb_is_plausible_recovered_pc( new_pc, &pc_reason ))
+        {
+            bail = pc_reason ? pc_reason : "bad-new-pc";
+            stop_unwind = TRUE;
+        }
         else if (new_fp && (new_fp <= fp || (new_fp & 0xf) || new_fp + 0x10 > stack_hi)) bail = "bad-new-fp";
     }
     if (bail)
@@ -772,9 +905,15 @@ static BOOL macrunner_ec_fp_chain_unwind( DISPATCHER_CONTEXT *dispatch, CONTEXT 
         static unsigned int fpb;
         if (fpb++ < 16)
             MESSAGE( "macrunner-hb-seh-ec-fpchain-bail: reason=%s pc=%p fp=%p sp=%p lr=%p "
-                     "stack=%p-%p new_fp=%p new_pc=%p\n",
+                     "stack=%p-%p new_fp=%p new_pc=%p action=%s\n",
                      bail, (void *)pc, (void *)fp, (void *)sp, (void *)(ULONG_PTR)context->Lr,
-                     (void *)stack_lo, (void *)stack_hi, (void *)new_fp, (void *)new_pc );
+                     (void *)stack_lo, (void *)stack_hi, (void *)new_fp, (void *)new_pc,
+                     stop_unwind ? "stop-unwind" : "fallback" );
+        if (stop_unwind)
+        {
+            macrunner_hb_stop_unwind_at_boundary( dispatch, context );
+            return TRUE;
+        }
         return FALSE;
     }
 
@@ -793,6 +932,36 @@ static BOOL macrunner_ec_fp_chain_unwind( DISPATCHER_CONTEXT *dispatch, CONTEXT 
                      (void *)pc, (void *)fp, (void *)new_pc, (void *)new_fp, context->Sp );
     }
     return TRUE;
+}
+
+static BOOL macrunner_hb_arm64_no_pdata_frameless_unwind( DISPATCHER_CONTEXT *dispatch,
+                                                          CONTEXT *context, DWORD64 pc );
+
+static BOOL macrunner_hb_try_arm64_unwind_methods( DISPATCHER_CONTEXT *dispatch,
+                                                   CONTEXT *context, DWORD64 pc )
+{
+    if (macrunner_hb_pc_unsafe_for_arm64_unwind( dispatch, context, pc ))
+    {
+        static unsigned int unsafe_count;
+        TEB *teb = NtCurrentTeb();
+        ULONG_PTR stack_lo = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
+        ULONG_PTR stack_hi = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
+        int kind = dispatch && dispatch->ImageBase ?
+            macrunner_hb_arm64x_code_range_kind( dispatch->ImageBase, pc ) : -1;
+
+        if (unsafe_count++ < 32)
+            MESSAGE( "macrunner-hb-arm64-unwind-unsafe-boundary: pc=%p image=%p "
+                     "kind=%d sp=%016I64x stack=%p-%p action=stop-unwind\n",
+                     (void *)(ULONG_PTR)pc,
+                     dispatch ? (void *)(ULONG_PTR)dispatch->ImageBase : NULL,
+                     kind, context ? context->Sp : 0, (void *)stack_lo, (void *)stack_hi );
+        macrunner_hb_stop_unwind_at_boundary( dispatch, context );
+        return TRUE;
+    }
+
+    return macrunner_ec_virtual_unwind_frame( dispatch, context, pc ) ||
+           macrunner_hb_arm64_no_pdata_frameless_unwind( dispatch, context, pc ) ||
+           macrunner_ec_fp_chain_unwind( dispatch, context, pc );
 }
 
 
@@ -890,6 +1059,16 @@ static PRUNTIME_FUNCTION macrunner_hb_pdata_lookup_at_base( DWORD64 pc, DWORD64 
     __TRY
     {
         nt = (IMAGE_NT_HEADERS *)(base + ((IMAGE_DOS_HEADER *)base)->e_lfanew);
+        if (macrunner_hb_arm64x_code_range_kind( known_base, pc ) == 0)
+        {
+            static unsigned int x64_range_count;
+
+            if (out_image_base) *out_image_base = known_base;
+            if (x64_range_count++ < 16)
+                MESSAGE( "macrunner-hb-wow64-arm64-pdata: skip-x64-range base=%p rva=%08lx\n",
+                         base, (DWORD)(pc - known_base) );
+            return NULL;
+        }
         dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
         if (!dir->VirtualAddress || !dir->Size) return NULL;
         funcs = (PRUNTIME_FUNCTION)(base + dir->VirtualAddress);
@@ -976,6 +1155,18 @@ static PRUNTIME_FUNCTION macrunner_hb_register_wow64_arm64_pe_pdata( DWORD64 pc,
             if (nt->Signature != IMAGE_NT_SIGNATURE) continue;
             if (nt->OptionalHeader.SizeOfImage == 0) continue;
             if ((ULONG_PTR)base + nt->OptionalHeader.SizeOfImage <= (ULONG_PTR)pc) continue;
+            if (macrunner_hb_arm64x_code_range_kind( (ULONG_PTR)base, pc ) == 0)
+            {
+                static unsigned int x64_range_count;
+
+                *out_image_base = (DWORD64)(ULONG_PTR)base;
+                if (x64_range_count++ < 16)
+                    MESSAGE( "macrunner-hb-wow64-arm64-pdata: scan-skip-x64-range "
+                             "base=%p machine=%04x pc=%p rva=%08lx\n",
+                             base, nt->FileHeader.Machine, (void *)(ULONG_PTR)pc,
+                             (DWORD)(pc - (DWORD64)(ULONG_PTR)base) );
+                return NULL;
+            }
 
             if (nt->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64)
             {
@@ -1253,7 +1444,8 @@ static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEX
     DWORD64 pc;
     DWORD64 raw_pc;
     DWORD64 lookup_pc;
-    DWORD64 unwind_lr, unwind_sp;
+    DWORD64 unwind_lr, unwind_sp, unwind_fp;
+    CONTEXT unwind_context;
     NTSTATUS status;
     int i;
 
@@ -1356,13 +1548,13 @@ restart:
     }
 
     dispatch->FunctionEntry = RtlLookupFunctionEntry( pc, &dispatch->ImageBase, dispatch->HistoryTable );
+    if (!dispatch->FunctionEntry && pc < MACRUNNER_HB_HOST_BOUNDARY_MAX &&
+        macrunner_hb_try_arm64_unwind_methods( dispatch, context, pc ))
+        return STATUS_SUCCESS;
 
-    /* WOW64/i386: ARM64 PE modules loaded by the WOW64 layer above HOST_BOUNDARY_MAX are
-     * not tracked by the PE-side LDR, so RtlLookupFunctionEntry misses them.  GATED
-     * !macrunner_hb_is_x64_main_process(): HK/x64 SKIPS this and uses arena-fde below
-     * (protects the f69cdbc cascade fix); only the i386/wow64 host takes this path. */
-    if (!dispatch->FunctionEntry && !macrunner_hb_is_x64_main_process() &&
-        pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX)
+    /* ARM64 PE modules loaded above HOST_BOUNDARY_MAX are not always tracked by the
+     * PE-side LDR, so RtlLookupFunctionEntry can miss valid ARM64/ARM64X pdata. */
+    if (!dispatch->FunctionEntry && pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX)
     {
         if (dispatch->ImageBase)
             dispatch->FunctionEntry = macrunner_hb_pdata_lookup_at_base(
@@ -1395,17 +1587,26 @@ restart:
             }
         }
     }
-    /* WOW64/i386 leaf function — no .pdata entry (normal for thunks).  Stop unwind via
-     * LR rather than letting RtlVirtualUnwind2 raise c0000026.  Same gating. */
-    if (!dispatch->FunctionEntry && !macrunner_hb_is_x64_main_process() &&
-        pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX)
+    /* Leaf function with no .pdata entry (normal for thunks).  Stop unwind via the
+     * ordered fallback chain rather than letting RtlVirtualUnwind2 raise c0000026. */
+    if (!dispatch->FunctionEntry && pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX)
     {
         static unsigned int wow64_leaf_count;
+        static unsigned int wow64_x64_range_count;
         BOOL resumed;
 
-        if (macrunner_ec_virtual_unwind_frame( dispatch, context, pc ) ||
-            macrunner_hb_arm64_no_pdata_frameless_unwind( dispatch, context, pc ) ||
-            macrunner_ec_fp_chain_unwind( dispatch, context, pc ))
+        if (dispatch->ImageBase &&
+            macrunner_hb_arm64x_code_range_kind( dispatch->ImageBase, pc ) == 0 &&
+            macrunner_hb_current_exception_is_datatype_misalignment())
+        {
+            if (wow64_x64_range_count++ < 16)
+                MESSAGE( "macrunner-hb-wow64-arm64-leaf: pc=%p image=%p "
+                         "x64-range stop-unwind\n",
+                         (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)dispatch->ImageBase );
+            macrunner_hb_stop_unwind_at_boundary( dispatch, context );
+            return STATUS_SUCCESS;
+        }
+        if (macrunner_hb_try_arm64_unwind_methods( dispatch, context, pc ))
             return STATUS_SUCCESS;
         resumed = macrunner_hb_unwind_leaf_via_lr( dispatch, context, pc, context->Lr );
         if (wow64_leaf_count++ < 16)
@@ -1435,20 +1636,38 @@ restart:
 unwind_with_function_entry:
     unwind_lr = context->Lr;
     unwind_sp = context->Sp;
+    unwind_fp = context->Fp;
+    unwind_context = *context;
     status = RtlVirtualUnwind2( type, dispatch->ImageBase, pc, dispatch->FunctionEntry, context,
                                 NULL, &dispatch->HandlerData, &dispatch->EstablisherFrame,
                                 NULL, NULL, NULL, &dispatch->LanguageHandler, 0 );
-    if (status == STATUS_SUCCESS &&
-        macrunner_hb_is_wow64_arm64_pdata_no_progress_leaf( pc, unwind_lr, unwind_sp, dispatch, context ))
+    if (macrunner_hb_pc_unsafe_for_arm64_unwind( dispatch, &unwind_context, pc ))
     {
-        static unsigned int wow64_pdata_leaf_count;
-        BOOL resumed = macrunner_hb_unwind_leaf_via_lr( dispatch, context, pc, unwind_lr );
-        if (wow64_pdata_leaf_count++ < 16)
-            MESSAGE( "macrunner-hb-wow64-arm64-leaf: pc=%p lr=%p image=%p function=%p "
-                     "sp=%016I64x reason=pdata-no-progress %s\n",
-                     (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)unwind_lr,
-                     (void *)(ULONG_PTR)dispatch->ImageBase, dispatch->FunctionEntry, unwind_sp,
-                     resumed ? "resume=lr" : "stopping-unwind" );
+        *context = unwind_context;
+        macrunner_hb_try_arm64_unwind_methods( dispatch, context, pc );
+        return STATUS_SUCCESS;
+    }
+    if (macrunner_hb_unwind_made_no_progress( pc, unwind_sp, unwind_fp, context ))
+    {
+        static unsigned int no_progress_count;
+        BOOL resumed;
+        char sec_name[9];
+        DWORD sec_chars;
+
+        macrunner_hb_find_pc_section( context->Pc, sec_name, &sec_chars );
+        if (no_progress_count++ < 32)
+            MESSAGE( "macrunner-hb-unwind-no-progress: pc=%p after_pc=%p lr=%p "
+                     "status=%08lx image=%p function=%p before_sp=%016I64x "
+                     "after_sp=%016I64x before_fp=%p after_fp=%p section=%s chars=%08lx\n",
+                     (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)context->Pc,
+                     (void *)(ULONG_PTR)unwind_lr, status, (void *)(ULONG_PTR)dispatch->ImageBase,
+                     dispatch->FunctionEntry, unwind_sp, context->Sp,
+                     (void *)(ULONG_PTR)unwind_fp, (void *)(ULONG_PTR)context->Fp,
+                     sec_name, sec_chars );
+
+        if (macrunner_hb_try_arm64_unwind_methods( dispatch, context, pc ))
+            return STATUS_SUCCESS;
+        resumed = macrunner_hb_unwind_leaf_via_lr( dispatch, context, pc, unwind_lr );
         if (resumed) return STATUS_SUCCESS;
         macrunner_hb_stop_unwind_at_boundary( dispatch, context );
         return STATUS_SUCCESS;
@@ -1456,9 +1675,7 @@ unwind_with_function_entry:
     if (status != STATUS_SUCCESS)
     {
         if (!dispatch->FunctionEntry &&
-            (macrunner_ec_virtual_unwind_frame( dispatch, context, pc ) ||
-             macrunner_hb_arm64_no_pdata_frameless_unwind( dispatch, context, pc ) ||
-             macrunner_ec_fp_chain_unwind( dispatch, context, pc )))
+            macrunner_hb_try_arm64_unwind_methods( dispatch, context, pc ))
             return STATUS_SUCCESS;
         if (macrunner_hb_trace_arm64_seh_invalid_disposition())
             ERR( "macrunner-hb-seh-invalid: reason=unwind-metadata-missing pc=%p lr=%p "
@@ -1601,7 +1818,6 @@ static BOOL macrunner_hb_stack_overflow_repeat_guard( EXCEPTION_RECORD *rec, CON
     return slot->repeat >= 2;
 }
 
-
 /***********************************************************************
  *		call_seh_handler
  */
@@ -1646,8 +1862,10 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
     macrunner_hb_trace_tagged_exception_context( rec, orig_context );
     macrunner_hb_trace_first_chance_exception( rec, orig_context );
     if (rec->ExceptionCode == STATUS_STACK_OVERFLOW)
+    {
         if (macrunner_hb_stack_overflow_repeat_guard( rec, orig_context ))
             return STATUS_UNHANDLED_EXCEPTION;
+    }
     if (macrunner_hb_fix_tagged_arm64ec_misalignment( rec, orig_context ))
         return STATUS_SUCCESS;
     if (macrunner_hb_fix_syscall_data_boundary_exception( rec, orig_context ))
@@ -1671,13 +1889,13 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
                 unwind_seen[i].sp == context->Sp)
             {
                 if (macrunner_hb_trace_arm64_seh_invalid_disposition())
-                    ERR( "macrunner-hb-seh-invalid: reason=unwind-no-progress pc=%p "
+                    ERR( "macrunner-hb-seh-boundary: reason=unwind-no-progress pc=%p "
                          "fp=%p sp=%016I64x rec_code=%08lx stack=%p-%p\n",
                          (void *)(ULONG_PTR)context->Pc, (void *)(ULONG_PTR)context->Fp,
                          context->Sp, rec->ExceptionCode, NtCurrentTeb()->Tib.StackLimit,
                          NtCurrentTeb()->Tib.StackBase );
-                status = STATUS_INVALID_DISPOSITION;
-                goto done;
+                macrunner_hb_stop_unwind_at_boundary( &dispatch, context );
+                goto unwind_done;
             }
         }
         if (unwind_seen_count < ARRAY_SIZE(unwind_seen))

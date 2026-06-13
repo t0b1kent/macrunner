@@ -1903,6 +1903,23 @@ static BOOL macrunner_hb_target_is_native_thunk( WINE_MODREF *target_mod, ULONG_
     return target_mod && macrunner_hb_address_in_section( target_mod->ldr.DllBase, ".hexpthk", target );
 }
 
+static BOOL macrunner_hb_target_is_native_thunk_or_mid( WINE_MODREF *target_mod, ULONG_PTR target,
+                                                       ULONG_PTR *thunk_start )
+{
+    if (macrunner_hb_target_is_native_thunk( target_mod, target ))
+    {
+        if (thunk_start) *thunk_start = target;
+        return TRUE;
+    }
+    if ((target & 0xf) == 2 && target >= 2 &&
+        macrunner_hb_target_is_native_thunk( target_mod, target - 2 ))
+    {
+        if (thunk_start) *thunk_start = target - 2;
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static BOOL macrunner_hb_importer_is_native_wine_builtin( WINE_MODREF *importer )
 {
     if (!importer) return FALSE;
@@ -2544,6 +2561,35 @@ static void *macrunner_hb_redirect_arm64x_thunk_to_native( HMODULE module, void 
     return ptr;
 }
 
+static void *macrunner_hb_find_native_target_for_thunk_import( WINE_MODREF *target_mod,
+                                                              const char *import_name,
+                                                              ULONG_PTR thunk_target )
+{
+    void *native_target;
+
+    if (!target_mod || !import_name || !thunk_target) return NULL;
+
+    native_target = macrunner_hb_find_disk_export_outside_section( target_mod, import_name, ".hexpthk" );
+    if (!native_target)
+        native_target = macrunner_hb_find_export_outside_section( target_mod->ldr.DllBase, import_name, ".hexpthk" );
+    if (!native_target)
+    {
+        void *redirected = macrunner_hb_redirect_arm64x_thunk_to_native( target_mod->ldr.DllBase,
+                                                                         (void *)thunk_target );
+
+        if (redirected != (void *)thunk_target &&
+            !macrunner_hb_address_in_section( target_mod->ldr.DllBase, ".hexpthk",
+                                              (ULONG_PTR)redirected ))
+            native_target = redirected;
+    }
+
+    if (native_target &&
+        macrunner_hb_address_in_executable_section( target_mod->ldr.DllBase,
+                                                    (ULONG_PTR)native_target ))
+        return native_target;
+    return NULL;
+}
+
 #if defined(__aarch64__) && !defined(__arm64ec__)
 static void __attribute__((naked)) macrunner_hb_arm64x_native_dispatch_ret(void)
 {
@@ -3139,6 +3185,7 @@ static ULONG_PTR macrunner_hb_maybe_register_import_thunk( WINE_MODREF *importer
     BOOL native_thunk;
     BOOL native_counterpart = FALSE;
     BOOL semantic_stub = FALSE;
+    ULONG_PTR thunk_target = 0;
     WCHAR trace_value[8] = {0};
     BOOL trace_iat = get_env( L"MACRUNNER_HB_TRACE_IAT", trace_value, sizeof(trace_value) ) &&
                      trace_value[0] && trace_value[0] != '0';
@@ -3181,21 +3228,15 @@ static ULONG_PTR macrunner_hb_maybe_register_import_thunk( WINE_MODREF *importer
     native_thunk = (target_nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 ||
                     target_nt->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64X ||
                     target_nt->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64EC) &&
-                   macrunner_hb_target_is_native_thunk( target_mod, target );
+                   macrunner_hb_target_is_native_thunk_or_mid( target_mod, target, &thunk_target );
     if (semantic_stub && trace_iat)
         TRACE( "MacRunner HyperBridge IAT semantic stub %s!%s target=%p\n",
                dll_name, import_name, (void *)target );
     if (native_thunk)
     {
-        void *native_target = macrunner_hb_find_disk_export_outside_section( target_mod, import_name,
-                                                                             ".hexpthk" );
+        void *native_target = macrunner_hb_find_native_target_for_thunk_import( target_mod, import_name,
+                                                                               thunk_target );
 
-        if (!native_target || native_target == (void *)target)
-            native_target = macrunner_hb_find_export_outside_section( target_mod->ldr.DllBase, import_name,
-                                                                      ".hexpthk" );
-        if (!native_target || native_target == (void *)target)
-            native_target = macrunner_hb_redirect_arm64x_thunk_to_native( target_mod->ldr.DllBase,
-                                                                          (void *)target );
         if (!native_target || native_target == (void *)target)
         {
             WARN( "MacRunner HyperBridge refusing unsafe native import thunk %s!%s target=%p: "
@@ -3312,12 +3353,28 @@ static ULONG_PTR macrunner_hb_fix_native_import_target( WINE_MODREF *importer, W
                                                         ULONG_PTR target )
 {
     void *native_target;
+    ULONG_PTR thunk_target = 0;
 
     if (!target || !importer || !target_mod || !dll_name || !import_name) return target;
     if (!macrunner_hb_x64_main_requested()) return target;
     if (current_machine != IMAGE_FILE_MACHINE_ARM64) return target;
     if (!macrunner_hb_importer_is_native_wine_builtin( importer )) return target;
     if (!(target_mod->ldr.Flags & LDR_WINE_INTERNAL)) return target;
+    if (macrunner_hb_target_is_native_thunk_or_mid( target_mod, target, &thunk_target ))
+    {
+        native_target = macrunner_hb_find_native_target_for_thunk_import( target_mod, import_name,
+                                                                         thunk_target );
+        if (native_target)
+        {
+            TRACE( "MacRunner HyperBridge repaired native thunk import %s -> %s!%s %p -> %p\n",
+                   debugstr_w(importer->ldr.BaseDllName.Buffer), dll_name, import_name,
+                   (void *)target, native_target );
+            return (ULONG_PTR)native_target;
+        }
+        WARN( "MacRunner HyperBridge native thunk import %s -> %s!%s unresolved target=%p thunk=%p\n",
+              debugstr_w(importer->ldr.BaseDllName.Buffer), dll_name, import_name,
+              (void *)target, (void *)thunk_target );
+    }
     if (macrunner_hb_address_in_executable_section( target_mod->ldr.DllBase, target )) return target;
     else
     {
@@ -3394,6 +3451,29 @@ static ULONG_PTR macrunner_hb_fix_native_import_target( WINE_MODREF *importer, W
     WARN( "MacRunner HyperBridge native import %s -> %s!%s resolved to non-executable %p\n",
           debugstr_w(importer->ldr.BaseDllName.Buffer), dll_name, import_name, (void *)target );
     return target;
+}
+
+static ULONG_PTR macrunner_hb_resolve_native_import_target( WINE_MODREF *target_mod, const char *dll_name,
+                                                            const char *import_name, ULONG_PTR target )
+{
+    IMAGE_NT_HEADERS *target_nt;
+    void *native_target;
+
+    if (!target || !target_mod) return target;
+    if (!(target_mod->ldr.Flags & LDR_WINE_INTERNAL)) return target;
+    if (!(target_nt = RtlImageNtHeader( target_mod->ldr.DllBase ))) return target;
+    if (target_nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 &&
+        target_nt->FileHeader.Machine != IMAGE_FILE_MACHINE_ARM64X &&
+        target_nt->FileHeader.Machine != IMAGE_FILE_MACHINE_ARM64EC &&
+        !macrunner_hb_get_arm64x_metadata( target_mod->ldr.DllBase ))
+        return target;
+
+    native_target = macrunner_hb_resolve_arm64x_native_target( (void *)target );
+    if (native_target && native_target != (void *)target)
+        TRACE( "MacRunner HyperBridge resolved native import %s!%s %p -> %p\\n",
+               dll_name ? dll_name : "?", import_name ? import_name : "?",
+               (void *)target, native_target );
+    return native_target ? (ULONG_PTR)native_target : target;
 }
 
 static BOOL macrunner_hb_delay_load_prefers_native_builtin( void *base, const char *dll_name )
@@ -3855,7 +3935,9 @@ static void macrunner_hb_resolve_arm64x_native_import_prefix( WINE_MODREF *wm, W
     SIZE_T i;
     static unsigned int report_count;
 
-    if (!prefix_count || !native_nt || native_nt->FileHeader.Machine != IMAGE_FILE_MACHINE_ARM64)
+    if (!prefix_count || !native_nt ||
+        (native_nt->FileHeader.Machine != IMAGE_FILE_MACHINE_ARM64 &&
+         !macrunner_hb_get_arm64x_metadata( native_wm->ldr.DllBase )))
         return;
     native_mod = native_wm->ldr.DllBase;
     exports = RtlImageDirectoryEntryToData( native_mod, TRUE, IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size );
@@ -3887,6 +3969,7 @@ static void macrunner_hb_resolve_arm64x_native_import_prefix( WINE_MODREF *wm, W
                                                    pe_name->Hint, load_path, wm, FALSE );
         }
 
+        target = (ULONG_PTR)macrunner_hb_resolve_arm64x_native_target( (void *)target );
         if (!target) continue;
         dst->u1.Function = target;
         if (report_count++ < 32)
@@ -4484,7 +4567,11 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
             char ordinal_name[24];
 
             thunk_list->u1.Function = (ULONG_PTR)find_ordinal_export( imp_mod, exports, exp_size,
-                                                                      ordinal - exports->Base, load_path, wm, FALSE );
+                                                                       ordinal - exports->Base, load_path, wm, FALSE );
+            macrunner_hb_format_ordinal_import_name( ordinal_name, sizeof(ordinal_name), ordinal );
+            if (force_native_imports)
+                thunk_list->u1.Function = macrunner_hb_resolve_native_import_target( wmImp, name, ordinal_name,
+                                                                                    thunk_list->u1.Function );
             if (!thunk_list->u1.Function)
             {
                 thunk_list->u1.Function = allocate_stub( name, IntToPtr(ordinal) );
@@ -4492,7 +4579,6 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
                      name, ordinal, debugstr_w(wm->ldr.FullDllName.Buffer),
                      (void *)thunk_list->u1.Function );
             }
-            macrunner_hb_format_ordinal_import_name( ordinal_name, sizeof(ordinal_name), ordinal );
             thunk_list->u1.Function = macrunner_hb_maybe_register_import_thunk( wm, wmImp, name,
                                                                                 ordinal_name,
                                                                                 thunk_list->u1.Function );
@@ -4508,6 +4594,10 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
             thunk_list->u1.Function = macrunner_hb_fix_native_import_target( wm, wmImp, name,
                                                                              (const char *)pe_name->Name,
                                                                              thunk_list->u1.Function );
+            if (force_native_imports)
+                thunk_list->u1.Function = macrunner_hb_resolve_native_import_target( wmImp, name,
+                                                                                    (const char *)pe_name->Name,
+                                                                                    thunk_list->u1.Function );
             if (!thunk_list->u1.Function)
             {
                 thunk_list->u1.Function = allocate_stub( name, (const char*)pe_name->Name );
@@ -5245,14 +5335,6 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
             if (macrunner_hb_trace_bootstrap())
                 MESSAGE( "macrunner-hb-bootstrap-dll-entry: module=%s entry=%p reason=%s module_base=%p\n",
                          debugstr_w(wm->ldr.BaseDllName.Buffer), entry, reason_names[reason], module );
-            if (macrunner_hb_trace_bootstrap() && wm->ldr.BaseDllName.Buffer &&
-                !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemetal.dll" ))
-            {
-                void **ref50d8 = image_rva_range( module, 0x50d8, sizeof(*ref50d8) );
-
-                MESSAGE( "macrunner-hb-bootstrap-reloc-probe: module=%s ref50d8=%p\n",
-                         debugstr_w(wm->ldr.BaseDllName.Buffer), ref50d8 ? *ref50d8 : NULL );
-            }
             status = WINE_UNIX_CALL( unix_macrunner_hb_x64_dll_entry, &params );
             retv = params.ret;
             if (macrunner_hb_trace_bootstrap())

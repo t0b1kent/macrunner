@@ -11,6 +11,7 @@ D3D8_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_triangle_strip
 D3D8_FOG_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl"
 D3D8_ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_test_runtime.jsonl"
 D3D8_ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_blend_runtime.jsonl"
+D3D8_DEPTH_CULL_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_depth_cull_runtime.jsonl"
 D3D8_SHADEMODE_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_shademode_flat_runtime.jsonl"
 TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
@@ -148,6 +149,25 @@ def test_d3d8_renderware_alpha_blend_uses_legacy_output_merger_path(tmp_path):
     assert ffp["alpha_blend_enable"] is True
     assert ffp["src_blend"] == "D3DBLEND_SRCALPHA"
     assert ffp["dest_blend"] == "D3DBLEND_INVSRCALPHA"
+
+
+def test_d3d8_renderware_depth_cull_uses_legacy_render_state_path(tmp_path):
+    result = replay(D3D8_DEPTH_CULL_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["api"] == "d3d8"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (255, 25, 25)
+    assert _ppm_pixel(Path(result["ppm_path"]), 50, 40, result["width"]) == (4, 8, 16)
+
+    state = load_trace(D3D8_DEPTH_CULL_TRACE)
+    render_states = state.pipeline.metadata["d3d9_render_states"]
+    depth = state.pipeline.metadata["d3d9_depth_state"]
+    assert render_states["D3DRS_CULLMODE"] == "D3DCULL_CW"
+    assert depth["z_enable"] is True
+    assert depth["z_write_enable"] is False
+    assert depth["z_func"] == "D3DCMP_LESSEQUAL"
+    assert state.pipeline.depth_target_bound is True
 
 
 def test_d3d8_renderware_shademode_flat_uses_first_vertex_color(tmp_path):

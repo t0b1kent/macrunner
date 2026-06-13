@@ -10,6 +10,7 @@ D3D8_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_triangle_strip
 D3D8_FOG_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl"
 D3D8_ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_test_runtime.jsonl"
 D3D8_ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_blend_runtime.jsonl"
+D3D8_DEPTH_CULL_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_depth_cull_runtime.jsonl"
 D3D8_SHADEMODE_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_shademode_flat_runtime.jsonl"
 XNA_ALPHA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
@@ -168,6 +169,27 @@ def test_d3d8_renderware_alpha_blend_writes_metal_request_contract(tmp_path):
     assert ffp["alpha_blend_enable"] is True
     assert ffp["src_blend"] == "D3DBLEND_SRCALPHA"
     assert ffp["dest_blend"] == "D3DBLEND_INVSRCALPHA"
+
+
+def test_d3d8_renderware_depth_cull_writes_metal_request_contract(tmp_path):
+    state = load_trace(D3D8_DEPTH_CULL_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(D3D8_DEPTH_CULL_TRACE),
+        name="d3d8-renderware-depth-cull",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    render_states = payload["d3d9"]["render_states"]
+    depth = payload["d3d9"]["depth_state"]
+    assert payload["source_api"] == "d3d8"
+    assert payload["mode"] == "indexed_triangle"
+    assert payload["depth_format"] == "d24s8"
+    assert render_states["D3DRS_CULLMODE"] == "D3DCULL_CW"
+    assert depth["z_enable"] is True
+    assert depth["z_write_enable"] is False
+    assert depth["z_func"] == "D3DCMP_LESSEQUAL"
 
 
 def test_d3d8_renderware_shademode_writes_metal_request_contract(tmp_path):

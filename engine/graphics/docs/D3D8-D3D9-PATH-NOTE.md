@@ -108,11 +108,11 @@ Real Unity present is therefore still not a D3D8/D3D9 implementation gate.
 
 Lane D now owns headless D3D8/D3D9 matrix increments while HK/dist/ntdll remain
 out of scope. The current RenderWare slice covers D3D8 fixed-function triangle
-list, triangle strip, fog, alpha-test, material alpha-blend, and
-`D3DRS_SHADEMODE=D3DSHADE_FLAT` first-vertex diffuse semantics through the
-D3D9-to-DXMT path. Validation is
+list, triangle strip, fog, alpha-test, material alpha-blend, depth/cull
+render states, and `D3DRS_SHADEMODE=D3DSHADE_FLAT` first-vertex diffuse
+semantics through the D3D9-to-DXMT path. Validation is
 headless only: `run_d3d9_dxmt_headless_smoke.sh` and
-`D3D9_METAL_REQUEST_ONLY=1 run_d3d9_metal_headless_smoke.sh` both pass `36/36`
+`D3D9_METAL_REQUEST_ONLY=1 run_d3d9_metal_headless_smoke.sh` both pass `37/37`
 traces. Real Vice City/GTA validation still waits for the 32-bit app path and
 GPU slot, but the graphics matrix should keep expanding with isolated
 RenderWare fixed-function states first.

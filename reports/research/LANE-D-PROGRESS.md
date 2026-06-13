@@ -265,3 +265,7 @@ LOOP-STATUS: CONTINUE
 11:40 · D3D8 alpha-blend increment start · targeting RenderWare material alpha via existing D3D9 FFP/output-merger path; headless only, no HK/dist/ntdll · next inspect current alpha-blend traces/tests
 11:45 · D3D8 alpha-blend trace/tests · added RenderWare material alpha-blend JSONL plus mock pixel and Metal request assertions; single replay PASS center=(128,0,127) · next run focused pytest and 36-trace headless smokes
 11:46 · D3D8 alpha-blend validation · pytest 69 passed; mock headless smoke count=36; Metal request-only smoke count=36 PASS · next stage named Lane D files with git add -f and commit checkpoint
+11:47 · commit · 0f99e16 Lane D: add D3D8 RenderWare alpha blend matrix increment · next continue next headless D3D8/9 fixed-function matrix item
+11:49 · D3D8 depth/cull increment start · targeting RenderWare `ZENABLE/ZWRITEENABLE/ZFUNC/CULLMODE` via D3D8-to-D3D9 metadata and mock pixels; headless only · next add deterministic depth-write-off/cull trace
+11:51 · D3D8 depth/cull trace/tests · added RenderWare depth-write-off plus CW cull JSONL, mock pixel assertions, Metal request contract, and 37-trace docs/script updates · next run focused pytest and headless smokes
+11:52 · D3D8 depth/cull validation · pytest 71 passed; mock headless smoke count=37 with pipefail; Metal request-only count=37 PASS · next stage named files and commit checkpoint

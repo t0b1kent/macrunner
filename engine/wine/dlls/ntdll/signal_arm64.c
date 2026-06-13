@@ -156,6 +156,34 @@ static inline void macrunner_hb_stop_unwind_at_boundary( DISPATCHER_CONTEXT *dis
     context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
 }
 
+static inline BOOL macrunner_hb_unwind_leaf_via_lr( DISPATCHER_CONTEXT *dispatch, CONTEXT *context,
+                                                    DWORD64 pc, DWORD64 lr )
+{
+    if (!lr || lr == pc || lr == ~(DWORD64)3) return FALSE;
+
+    dispatch->ImageBase = 0;
+    dispatch->FunctionEntry = NULL;
+    dispatch->HandlerData = NULL;
+    dispatch->EstablisherFrame = context->Sp;
+    dispatch->LanguageHandler = NULL;
+    context->Pc = lr;
+    if (lr == pc + 4) context->ContextFlags &= ~CONTEXT_UNWOUND_TO_CALL;
+    else context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+    return TRUE;
+}
+
+static inline BOOL macrunner_hb_is_wow64_arm64_pdata_no_progress_leaf( DWORD64 pc, DWORD64 lr, DWORD64 sp,
+                                                                       const DISPATCHER_CONTEXT *dispatch,
+                                                                       const CONTEXT *context )
+{
+    if (macrunner_hb_is_x64_main_process()) return FALSE;
+    if (pc < MACRUNNER_HB_HOST_BOUNDARY_MAX) return FALSE;
+    if (!dispatch->ImageBase || !dispatch->FunctionEntry) return FALSE;
+    if (!lr || lr != pc + 4) return FALSE;
+    if (context->Pc != lr || context->Sp != sp) return FALSE;
+    return TRUE;
+}
+
 static inline BOOL macrunner_hb_pc_inside_syscall_frame( DWORD64 pc,
                                                          const struct macrunner_hb_syscall_frame *frame )
 {
@@ -592,9 +620,10 @@ static BOOL macrunner_ec_fp_chain_unwind( DISPATCHER_CONTEXT *dispatch, CONTEXT 
     {
         static unsigned int fpb;
         if (fpb++ < 16)
-            ERR( "macrunner-hb-seh-ec-fpchain-bail: reason=%s pc=%p fp=%p sp=%p lr=%p stack=%p-%p new_fp=%p new_pc=%p\n",
-                 bail, (void *)pc, (void *)fp, (void *)sp, (void *)(ULONG_PTR)context->Lr,
-                 (void *)stack_lo, (void *)stack_hi, (void *)new_fp, (void *)new_pc );
+            MESSAGE( "macrunner-hb-seh-ec-fpchain-bail: reason=%s pc=%p fp=%p sp=%p lr=%p "
+                     "stack=%p-%p new_fp=%p new_pc=%p\n",
+                     bail, (void *)pc, (void *)fp, (void *)sp, (void *)(ULONG_PTR)context->Lr,
+                     (void *)stack_lo, (void *)stack_hi, (void *)new_fp, (void *)new_pc );
         return FALSE;
     }
 
@@ -609,8 +638,8 @@ static BOOL macrunner_ec_fp_chain_unwind( DISPATCHER_CONTEXT *dispatch, CONTEXT 
     {
         static unsigned int fp_trace;
         if (fp_trace++ < 16)
-            ERR( "macrunner-hb-seh-ec-fpchain: pc=%p fp=%p -> new pc=%p new fp=%p sp=%016I64x\n",
-                 (void *)pc, (void *)fp, (void *)new_pc, (void *)new_fp, context->Sp );
+            MESSAGE( "macrunner-hb-seh-ec-fpchain: pc=%p fp=%p -> new pc=%p new fp=%p sp=%016I64x\n",
+                     (void *)pc, (void *)fp, (void *)new_pc, (void *)new_fp, context->Sp );
     }
     return TRUE;
 }
@@ -860,14 +889,162 @@ static PRUNTIME_FUNCTION macrunner_hb_register_wow64_arm64_pe_pdata( DWORD64 pc,
     return NULL;
 }
 
+static BOOL macrunner_hb_arm64_call_insn( DWORD op )
+{
+    return (op & 0xfc000000u) == 0x94000000u ||   /* bl */
+           (op & 0xfffffc1fu) == 0xd63f0000u;     /* blr xN */
+}
+
+static BOOL macrunner_hb_arm64_lr_preindex_slot( DWORD op, DWORD *slot, DWORD *frame_size )
+{
+    if ((op & 0xffe00fffu) == 0xf8000ffeu)        /* str x30, [sp, #imm]! */
+    {
+        int imm = ((int)((op >> 12) & 0x1ff) << 23) >> 23;
+        if (imm >= 0 || imm < -0x1000 || (imm & 0xf)) return FALSE;
+        *slot = 0;
+        *frame_size = (DWORD)-imm;
+        return TRUE;
+    }
+
+    if ((op & 0xffc003e0u) == 0xa98003e0u)        /* stp xA, xB, [sp, #imm]! */
+    {
+        unsigned int rt = op & 0x1f, rt2 = (op >> 10) & 0x1f;
+        int imm = (((int)((op >> 15) & 0x7f) << 25) >> 25) * 8;
+        if (imm >= 0 || imm < -0x1000 || (imm & 0xf)) return FALSE;
+        if (rt == 30) *slot = 0;
+        else if (rt2 == 30) *slot = 8;
+        else return FALSE;
+        *frame_size = (DWORD)-imm;
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOL macrunner_hb_arm64_sp_preindex_frame( DWORD op, DWORD *frame_size )
+{
+    if ((op & 0xffc003e0u) == 0xa98003e0u)        /* stp xA, xB, [sp, #imm]! */
+    {
+        int imm = (((int)((op >> 15) & 0x7f) << 25) >> 25) * 8;
+        if (imm >= 0 || imm < -0x1000 || (imm & 0xf)) return FALSE;
+        *frame_size = (DWORD)-imm;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL macrunner_hb_arm64_lr_sp_offset_slot( DWORD op, DWORD *slot )
+{
+    if ((op & 0xffc003e0u) == 0xa90003e0u)        /* stp xA, xB, [sp, #imm] */
+    {
+        unsigned int rt = op & 0x1f, rt2 = (op >> 10) & 0x1f;
+        int imm = (((int)((op >> 15) & 0x7f) << 25) >> 25) * 8;
+        if (imm < 0 || imm > 0x1000) return FALSE;
+        if (rt == 30) *slot = (DWORD)imm;
+        else if (rt2 == 30) *slot = (DWORD)(imm + 8);
+        else return FALSE;
+        return TRUE;
+    }
+
+    if ((op & 0xffc003e0u) == 0xf90003e0u && (op & 0x1f) == 30) /* str x30, [sp, #imm] */
+    {
+        *slot = ((op >> 10) & 0xfff) * 8;
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOL macrunner_hb_arm64_no_pdata_frameless_unwind( DISPATCHER_CONTEXT *dispatch,
+                                                          CONTEXT *context, DWORD64 pc )
+{
+    ULONG_PTR stack_lo = (ULONG_PTR)NtCurrentTeb()->Tib.StackLimit;
+    ULONG_PTR stack_hi = (ULONG_PTR)NtCurrentTeb()->Tib.StackBase;
+    ULONG_PTR sp = (ULONG_PTR)context->Sp;
+    DWORD64 saved_lr = 0;
+    DWORD slot = 0, frame_size = 0, scan;
+    BOOL call_site = FALSE;
+
+    if (pc < 0x10000 || (pc & 3)) return FALSE;
+    if (!sp || (sp & 0xf) || sp < stack_lo || sp + 0x10 > stack_hi) return FALSE;
+
+    __TRY
+    {
+        if (macrunner_hb_arm64_call_insn( *(const DWORD *)(ULONG_PTR)pc ))
+            call_site = TRUE;
+        else if (pc >= 4 && macrunner_hb_arm64_call_insn( *(const DWORD *)(ULONG_PTR)(pc - 4) ))
+            call_site = TRUE;
+        if (!call_site) return FALSE;
+
+        for (scan = 1; scan <= 96 && pc >= scan * 4; scan++)
+        {
+            DWORD64 insn_pc = pc - scan * 4;
+            DWORD op = *(const DWORD *)(ULONG_PTR)insn_pc;
+            DWORD fwd;
+
+            if (!macrunner_hb_arm64_lr_preindex_slot( op, &slot, &frame_size ))
+            {
+                BOOL found_lr_save = FALSE;
+
+                if (!macrunner_hb_arm64_sp_preindex_frame( op, &frame_size )) continue;
+                for (fwd = 4; fwd <= 64 && insn_pc + fwd < pc; fwd += 4)
+                {
+                    DWORD fop = *(const DWORD *)(ULONG_PTR)(insn_pc + fwd);
+                    if (macrunner_hb_arm64_lr_sp_offset_slot( fop, &slot ))
+                    {
+                        found_lr_save = TRUE;
+                        break;
+                    }
+                }
+                if (!found_lr_save || slot + sizeof(saved_lr) > frame_size) continue;
+            }
+
+            if (sp + frame_size > stack_hi) return FALSE;
+            if (sp + slot + sizeof(saved_lr) > stack_hi) return FALSE;
+            saved_lr = *(const DWORD64 *)(sp + slot);
+            if (!saved_lr || saved_lr == pc || saved_lr == context->Lr ||
+                (saved_lr & 3) || saved_lr < 0x10000)
+                return FALSE;
+
+            context->Sp = sp + frame_size;
+            context->Lr = saved_lr;
+            context->Pc = saved_lr;
+            context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+            dispatch->EstablisherFrame = context->Sp;
+            dispatch->LanguageHandler = NULL;
+            dispatch->HandlerData = NULL;
+
+            {
+                static unsigned int trace_count;
+                if (trace_count++ < 16)
+                    MESSAGE( "macrunner-hb-wow64-arm64-frameless: pc=%p image=%p "
+                             "saved_lr=%p sp=%016I64x frame=%lu slot=%lu\n",
+                             (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)dispatch->ImageBase,
+                             (void *)(ULONG_PTR)saved_lr, (DWORD64)sp,
+                             (unsigned long)frame_size, (unsigned long)slot );
+            }
+            return TRUE;
+        }
+    }
+    __EXCEPT(macrunner_hb_pe_scan_fault) {}
+    __ENDTRY
+
+    return FALSE;
+}
+
 static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEXT *context )
 {
     DISPATCHER_CONTEXT_NONVOLREG_ARM64 *nonvol_regs;
-    DWORD64 pc = context->Pc;
-    DWORD64 raw_pc = pc;
+    DWORD64 pc;
+    DWORD64 raw_pc;
     DWORD64 lookup_pc;
+    DWORD64 unwind_lr, unwind_sp;
+    NTSTATUS status;
     int i;
 
+restart:
+    pc = context->Pc;
+    raw_pc = pc;
     dispatch->ScopeIndex = 0;
     dispatch->ControlPc  = pc;
     dispatch->ControlPcIsUnwound = (context->ContextFlags & CONTEXT_UNWOUND_TO_CALL) != 0;
@@ -978,6 +1155,30 @@ static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEX
         if (!dispatch->FunctionEntry)
             dispatch->FunctionEntry = macrunner_hb_register_wow64_arm64_pe_pdata(
                 pc, &dispatch->ImageBase );
+        if (!dispatch->FunctionEntry && pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX + 4)
+        {
+            DWORD64 return_pc = pc - 4;
+            DWORD64 return_image = dispatch->ImageBase;
+
+            if (return_image)
+                dispatch->FunctionEntry = macrunner_hb_pdata_lookup_at_base(
+                    return_pc, return_image, &return_image );
+            if (!dispatch->FunctionEntry)
+                dispatch->FunctionEntry = macrunner_hb_register_wow64_arm64_pe_pdata(
+                    return_pc, &return_image );
+            if (dispatch->FunctionEntry)
+            {
+                static unsigned int return_lookup_count;
+                if (return_lookup_count++ < 16)
+                    MESSAGE( "macrunner-hb-wow64-arm64-pdata: return-address pc=%p "
+                             "lookup_pc=%p image=%p function=%p\n",
+                             (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)return_pc,
+                             (void *)(ULONG_PTR)return_image, dispatch->FunctionEntry );
+                pc = return_pc;
+                dispatch->ControlPc = pc;
+                dispatch->ImageBase = return_image;
+            }
+        }
     }
     /* WOW64/i386 leaf function — no .pdata entry (normal for thunks).  Stop unwind via
      * LR rather than letting RtlVirtualUnwind2 raise c0000026.  Same gating. */
@@ -985,9 +1186,20 @@ static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEX
         pc >= MACRUNNER_HB_HOST_BOUNDARY_MAX)
     {
         static unsigned int wow64_leaf_count;
+        BOOL resumed;
+
+        if (macrunner_ec_virtual_unwind_frame( dispatch, context, pc ) ||
+            macrunner_hb_arm64_no_pdata_frameless_unwind( dispatch, context, pc ) ||
+            macrunner_ec_fp_chain_unwind( dispatch, context, pc ))
+            return STATUS_SUCCESS;
+        resumed = macrunner_hb_unwind_leaf_via_lr( dispatch, context, pc, context->Lr );
         if (wow64_leaf_count++ < 16)
-            MESSAGE( "macrunner-hb-wow64-arm64-leaf: pc=%p image=%p stopping-unwind\n",
-                     (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)dispatch->ImageBase );
+            MESSAGE( "macrunner-hb-wow64-arm64-leaf: pc=%p lr=%p image=%p "
+                     "%s\n",
+                     (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)context->Lr,
+                     (void *)(ULONG_PTR)dispatch->ImageBase,
+                     resumed ? "resume=lr" : "stopping-unwind" );
+        if (resumed) return STATUS_SUCCESS;
         macrunner_hb_stop_unwind_at_boundary( dispatch, context );
         return STATUS_SUCCESS;
     }
@@ -1006,12 +1218,31 @@ static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEX
     }
 
 unwind_with_function_entry:
-    if (RtlVirtualUnwind2( type, dispatch->ImageBase, pc, dispatch->FunctionEntry, context,
-                           NULL, &dispatch->HandlerData, &dispatch->EstablisherFrame,
-                           NULL, NULL, NULL, &dispatch->LanguageHandler, 0 ))
+    unwind_lr = context->Lr;
+    unwind_sp = context->Sp;
+    status = RtlVirtualUnwind2( type, dispatch->ImageBase, pc, dispatch->FunctionEntry, context,
+                                NULL, &dispatch->HandlerData, &dispatch->EstablisherFrame,
+                                NULL, NULL, NULL, &dispatch->LanguageHandler, 0 );
+    if (status == STATUS_SUCCESS &&
+        macrunner_hb_is_wow64_arm64_pdata_no_progress_leaf( pc, unwind_lr, unwind_sp, dispatch, context ))
+    {
+        static unsigned int wow64_pdata_leaf_count;
+        BOOL resumed = macrunner_hb_unwind_leaf_via_lr( dispatch, context, pc, unwind_lr );
+        if (wow64_pdata_leaf_count++ < 16)
+            MESSAGE( "macrunner-hb-wow64-arm64-leaf: pc=%p lr=%p image=%p function=%p "
+                     "sp=%016I64x reason=pdata-no-progress %s\n",
+                     (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)unwind_lr,
+                     (void *)(ULONG_PTR)dispatch->ImageBase, dispatch->FunctionEntry, unwind_sp,
+                     resumed ? "resume=lr" : "stopping-unwind" );
+        if (resumed) return STATUS_SUCCESS;
+        macrunner_hb_stop_unwind_at_boundary( dispatch, context );
+        return STATUS_SUCCESS;
+    }
+    if (status != STATUS_SUCCESS)
     {
         if (!dispatch->FunctionEntry &&
             (macrunner_ec_virtual_unwind_frame( dispatch, context, pc ) ||
+             macrunner_hb_arm64_no_pdata_frameless_unwind( dispatch, context, pc ) ||
              macrunner_ec_fp_chain_unwind( dispatch, context, pc )))
             return STATUS_SUCCESS;
         if (macrunner_hb_trace_arm64_seh_invalid_disposition())
@@ -1083,6 +1314,78 @@ EXCEPTION_DISPOSITION WINAPI nested_exception_handler( EXCEPTION_RECORD *rec, vo
     return ExceptionNestedException;
 }
 
+static BOOL macrunner_hb_stack_overflow_repeat_guard( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
+{
+    struct macrunner_hb_stack_overflow_seen
+    {
+        DWORD tid;
+        DWORD64 pc;
+        DWORD64 sp;
+        DWORD64 addr;
+        unsigned int repeat;
+    };
+    static struct macrunner_hb_stack_overflow_seen seen[32];
+    static unsigned int report_count;
+    TEB *teb = NtCurrentTeb();
+    ULONG_PTR stack_lo = (ULONG_PTR)teb->Tib.StackLimit;
+    ULONG_PTR stack_hi = (ULONG_PTR)teb->Tib.StackBase;
+    DWORD tid = HandleToULong( teb->ClientId.UniqueThread );
+    DWORD64 pc = orig_context->Pc;
+    DWORD64 sp = orig_context->Sp;
+    DWORD64 addr = (DWORD64)(ULONG_PTR)rec->ExceptionAddress;
+    DWORD64 bt[4] = { orig_context->Lr, 0, 0, 0 };
+    LDR_DATA_TABLE_ENTRY *module = NULL;
+    ULONG_PTR module_base = 0, rva = 0;
+    unsigned int i;
+    struct macrunner_hb_stack_overflow_seen *slot = &seen[tid % ARRAY_SIZE(seen)];
+
+    if (slot->tid == tid && slot->pc == pc && slot->sp == sp && slot->addr == addr) slot->repeat++;
+    else
+    {
+        slot->tid = tid;
+        slot->pc = pc;
+        slot->sp = sp;
+        slot->addr = addr;
+        slot->repeat = 1;
+    }
+
+    if (LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module ) == STATUS_SUCCESS && module)
+    {
+        module_base = (ULONG_PTR)module->DllBase;
+        rva = (ULONG_PTR)pc - module_base;
+    }
+
+    __TRY
+    {
+        ULONG_PTR fp = (ULONG_PTR)orig_context->Fp;
+        for (i = 1; i < ARRAY_SIZE(bt); i++)
+        {
+            if (!fp || (fp & 0xf) || fp < stack_lo || fp + 0x10 > stack_hi) break;
+            bt[i] = ((const DWORD64 *)fp)[1];
+            fp = ((const DWORD64 *)fp)[0];
+        }
+    }
+    __EXCEPT(macrunner_hb_pe_scan_fault) {}
+    __ENDTRY
+
+    if (report_count++ < 32)
+        MESSAGE( "macrunner-hb-seh-stack-overflow-record: repeat=%u tid=%04lx addr=%p "
+                 "flags=%08lx orig_pc=%p orig_lr=%p orig_sp=%016I64x fp=%p "
+                 "module=%p rva=%08Ix stack=%p-%p bt=%p,%p,%p,%p params=%lu "
+                 "info0=%016I64x info1=%016I64x%s\n",
+                 slot->repeat, tid, rec->ExceptionAddress, rec->ExceptionFlags,
+                 (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)orig_context->Lr, sp,
+                 (void *)(ULONG_PTR)orig_context->Fp, (void *)module_base, rva,
+                 (void *)stack_lo, (void *)stack_hi, (void *)(ULONG_PTR)bt[0],
+                 (void *)(ULONG_PTR)bt[1], (void *)(ULONG_PTR)bt[2],
+                 (void *)(ULONG_PTR)bt[3], rec->NumberParameters,
+                 rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0,
+                 rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0,
+                 slot->repeat >= 2 ? " bail=repeat" : "" );
+
+    return slot->repeat >= 2;
+}
+
 
 /***********************************************************************
  *		call_seh_handler
@@ -1117,6 +1420,9 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
     DWORD res;
 
     macrunner_hb_trace_tagged_exception_context( rec, orig_context );
+    if (rec->ExceptionCode == STATUS_STACK_OVERFLOW)
+        if (macrunner_hb_stack_overflow_repeat_guard( rec, orig_context ))
+            return STATUS_UNHANDLED_EXCEPTION;
     if (macrunner_hb_fix_tagged_arm64ec_misalignment( rec, orig_context ))
         return STATUS_SUCCESS;
     if (macrunner_hb_fix_syscall_data_boundary_exception( rec, orig_context ))

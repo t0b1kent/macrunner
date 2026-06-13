@@ -261,3 +261,7 @@ LOOP-STATUS: CONTINUE
 09:00 · checkpoint audit · staged empty; AI War 2/fog files already landed in 983d33f under Lane D scope · next continue D3D8 fixed-function increment without rewriting history
 09:05 · D3D8 shademode flat increment · added translator/mock/request/tests/runtime trace for D3DRS_SHADEMODE flat first-vertex colors; pytest 67 passed · next run full headless smokes
 09:07 · D3D8 shademode full smoke · mock 35/35 PASS and Metal request 35/35 PASS; no GPU/dist/HK touched · next update DXMT graphics matrix + readiness note
+09:10 · commit · 58fc4c5 Lane D: add D3D8 RenderWare flat shade matrix increment · next continue next headless D3D8/9 matrix item
+11:40 · D3D8 alpha-blend increment start · targeting RenderWare material alpha via existing D3D9 FFP/output-merger path; headless only, no HK/dist/ntdll · next inspect current alpha-blend traces/tests
+11:45 · D3D8 alpha-blend trace/tests · added RenderWare material alpha-blend JSONL plus mock pixel and Metal request assertions; single replay PASS center=(128,0,127) · next run focused pytest and 36-trace headless smokes
+11:46 · D3D8 alpha-blend validation · pytest 69 passed; mock headless smoke count=36; Metal request-only smoke count=36 PASS · next stage named Lane D files with git add -f and commit checkpoint

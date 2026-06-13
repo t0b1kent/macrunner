@@ -10,6 +10,7 @@ D3D8_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fixed_function_runti
 D3D8_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_triangle_strip_runtime.jsonl"
 D3D8_FOG_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl"
 D3D8_ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_test_runtime.jsonl"
+D3D8_ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_blend_runtime.jsonl"
 D3D8_SHADEMODE_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_shademode_flat_runtime.jsonl"
 TEXTURE_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
 TEXTURE_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
@@ -128,6 +129,25 @@ def test_d3d8_renderware_alpha_test_uses_legacy_alpha_state_path(tmp_path):
     assert ffp["alpha_test_enable"] is True
     assert ffp["alpha_ref"] == 128
     assert ffp["alpha_func"] == "D3DCMP_GREATER"
+
+
+def test_d3d8_renderware_alpha_blend_uses_legacy_output_merger_path(tmp_path):
+    result = replay(D3D8_ALPHA_BLEND_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+    assert result["status"] == "PASS"
+    assert result["api"] == "d3d8"
+    assert result["present_count"] == 1
+    assert result["non_background_pixels"] > 1200
+    assert _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"]) == (128, 0, 127)
+
+    state = load_trace(D3D8_ALPHA_BLEND_TRACE)
+    render_states = state.pipeline.metadata["d3d9_render_states"]
+    ffp = state.pipeline.metadata["d3d9_ffp_shader"]
+    assert render_states["D3DRS_ALPHABLENDENABLE"] is True
+    assert render_states["D3DRS_SRCBLEND"] == "D3DBLEND_SRCALPHA"
+    assert render_states["D3DRS_DESTBLEND"] == "D3DBLEND_INVSRCALPHA"
+    assert ffp["alpha_blend_enable"] is True
+    assert ffp["src_blend"] == "D3DBLEND_SRCALPHA"
+    assert ffp["dest_blend"] == "D3DBLEND_INVSRCALPHA"
 
 
 def test_d3d8_renderware_shademode_flat_uses_first_vertex_color(tmp_path):

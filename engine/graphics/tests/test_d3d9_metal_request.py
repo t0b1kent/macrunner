@@ -9,6 +9,7 @@ D3D8_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fixed_function_runti
 D3D8_STRIP_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_triangle_strip_runtime.jsonl"
 D3D8_FOG_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl"
 D3D8_ALPHA_TEST_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_test_runtime.jsonl"
+D3D8_ALPHA_BLEND_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_alpha_blend_runtime.jsonl"
 D3D8_SHADEMODE_TRACE = ROOT / "traces/runtime_samples/d3d8_renderware_shademode_flat_runtime.jsonl"
 XNA_ALPHA_TRACE = ROOT / "traces/runtime_samples/d3d9_xna_alpha_blend_sprite_runtime.jsonl"
 FORMAT_SWEEP_TRACE = ROOT / "traces/runtime_samples/d3d9_format_sweep_runtime.jsonl"
@@ -145,6 +146,28 @@ def test_d3d8_renderware_alpha_test_writes_metal_request_contract(tmp_path):
     assert payload["d3d9"]["ffp_shader"]["alpha_test_enable"] is True
     assert payload["d3d9"]["ffp_shader"]["alpha_ref"] == 128
     assert payload["d3d9"]["ffp_shader"]["alpha_func"] == "D3DCMP_GREATER"
+
+
+def test_d3d8_renderware_alpha_blend_writes_metal_request_contract(tmp_path):
+    state = load_trace(D3D8_ALPHA_BLEND_TRACE)
+    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+        state,
+        tmp_path,
+        trace_path=str(D3D8_ALPHA_BLEND_TRACE),
+        name="d3d8-renderware-alpha-blend",
+    )
+
+    payload = json.loads(Path(written["request_path"]).read_text())
+    render_states = payload["d3d9"]["render_states"]
+    ffp = payload["d3d9"]["ffp_shader"]
+    assert payload["source_api"] == "d3d8"
+    assert payload["mode"] == "indexed_triangle"
+    assert render_states["D3DRS_ALPHABLENDENABLE"] is True
+    assert render_states["D3DRS_SRCBLEND"] == "D3DBLEND_SRCALPHA"
+    assert render_states["D3DRS_DESTBLEND"] == "D3DBLEND_INVSRCALPHA"
+    assert ffp["alpha_blend_enable"] is True
+    assert ffp["src_blend"] == "D3DBLEND_SRCALPHA"
+    assert ffp["dest_blend"] == "D3DBLEND_INVSRCALPHA"
 
 
 def test_d3d8_renderware_shademode_writes_metal_request_contract(tmp_path):

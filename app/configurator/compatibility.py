@@ -322,30 +322,63 @@ def _dxmt_windows_arch(selected_machine: str | None) -> str:
     return "x86_64-windows"
 
 
+def _overlay_root_for_runtime(env: dict[str, str], backend_name: str) -> Path:
+    run_dir = env.get("MACRUNNER_RUN_DIR")
+    if run_dir:
+        return Path(run_dir) / f"{backend_name}-runtime-overlay"
+    prefix = env.get("WINEPREFIX")
+    if prefix:
+        return Path(prefix) / f"{backend_name}-runtime-overlay"
+    return Path("/tmp") / f"{backend_name}-runtime-overlay"
+
+
+def _install_overlay_dll(overlay_dir: Path, source: Path) -> Path:
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    destination = overlay_dir / source.name
+    shutil.copy2(source, destination)
+    return destination
+
+
 def _apply_graphics_runtime_env(env: dict[str, str], graphics_backend: str | None) -> None:
     force_dxmt = env.get("MACRUNNER_FORCE_DXMT") == "1" or os.environ.get("MACRUNNER_FORCE_DXMT") == "1"
     if force_dxmt:
         env["MACRUNNER_FORCE_DXMT"] = "1"
         env["MACRUNNER_GRAPHICS_BACKEND"] = "d3dmetal"
         graphics_backend = "d3dmetal"
-    if graphics_backend != "d3dmetal":
-        return
 
     root = Path(env.get("MACRUNNER_ROOT") or Path(__file__).resolve().parents[2])
-    dxmt_root = root / "engine" / "graphics" / "dist" / "dxmt"
-    dxmt_windows = dxmt_root / _dxmt_windows_arch(env.get("MACRUNNER_SELECTED_MACHINE"))
-    dxmt_unix = dxmt_root / "aarch64-unix"
-    _append_path_env(env, "WINEDLLPATH", [dxmt_windows, dxmt_unix])
-    _merge_winedll_overrides(
-        env,
-        {
-            "d3d10core": "n,b",
-            "d3d11": "n,b",
-            "d3d12": "n,b",
-            "dxgi": "n,b",
-            "winemetal": "n,b",
-        },
-    )
+    selected_machine = env.get("MACRUNNER_SELECTED_MACHINE")
+    if graphics_backend == "d3dmetal":
+        dxmt_root = root / "engine" / "graphics" / "dist" / "dxmt"
+        dxmt_windows = dxmt_root / _dxmt_windows_arch(selected_machine)
+        dxmt_unix = dxmt_root / "aarch64-unix"
+        _append_path_env(env, "WINEDLLPATH", [dxmt_windows, dxmt_unix])
+        _merge_winedll_overrides(
+            env,
+            {
+                "d3d10core": "n,b",
+                "d3d11": "n,b",
+                "d3d12": "n,b",
+                "dxgi": "n,b",
+                "winemetal": "n,b",
+            },
+        )
+    elif graphics_backend == "dxvk-moltenvk":
+        dxvk_root = root / "engine" / "graphics" / "dist" / "dxvk"
+        dxvk_windows = dxvk_root / _dxmt_windows_arch(selected_machine)
+        d3d9_dll = dxvk_windows / "d3d9.dll"
+        if d3d9_dll.exists():
+            overlay_root = _overlay_root_for_runtime(env, "dxvk")
+            overlay_machine_dir = overlay_root / _dxmt_windows_arch(selected_machine)
+            _install_overlay_dll(overlay_machine_dir, d3d9_dll)
+            _append_path_env(env, "WINEDLLPATH", [overlay_machine_dir])
+            env["WINESYSTEMDLLPATH"] = str(overlay_machine_dir)
+        _merge_winedll_overrides(
+            env,
+            {
+                "d3d9": "n,b",
+            },
+        )
 
 
 def _engine_command(engine: EngineDefinition, exe_path: str, args: Sequence[str], lane: str) -> list[str]:
@@ -856,12 +889,17 @@ def _terminate_process_group(pid: int, grace_sec: float = 2.0) -> None:
         pass
 
 
-def _cleanup_wine_runtime() -> None:
+def _cleanup_wine_runtime(plan: CompatibilityPlan) -> None:
     cleanup = Path(__file__).resolve().parents[2] / "scripts" / "cleanup-wine-runtime.py"
     if cleanup.exists():
-        subprocess.run([str(cleanup), "--quiet"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cmd = [str(cleanup), "--quiet", "--prefix", plan.env.get("WINEPREFIX") or plan.wineprefix]
+        wineserver = plan.env.get("WINESERVER")
+        if wineserver:
+            cmd.extend(["--wineserver", wineserver])
+        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return
-    for temp_path in glob.glob("/var/folders/*/*/*/T/winetemp-*"):
+    prefix_tmp = Path(plan.env.get("TMPDIR") or Path(plan.wineprefix) / "tmp")
+    for temp_path in glob.glob(str(prefix_tmp / "winetemp-*")):
         shutil.rmtree(temp_path, ignore_errors=True)
 
 
@@ -958,7 +996,7 @@ def _launch(
                     stderr += "\nMacRunner timeout: process group did not fully exit after SIGKILL.\n"
                 returncode = 124
     finally:
-        _cleanup_wine_runtime()
+        _cleanup_wine_runtime(plan)
     duration_ms = int((time.monotonic() - start) * 1000)
     if stdout:
         sys.stdout.write(stdout)
@@ -1066,7 +1104,7 @@ def _launch_capture(
                     stderr += "\nMacRunner timeout: process group did not fully exit after SIGKILL.\n"
                 returncode = 124
     finally:
-        _cleanup_wine_runtime()
+        _cleanup_wine_runtime(plan)
     duration_ms = int((time.monotonic() - start) * 1000)
 
     return {

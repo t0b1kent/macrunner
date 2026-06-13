@@ -7,6 +7,7 @@
 - `hl.exe` и `Diablo` i386 уже в L6-trace: ожидаем PE32/WOW64/BTCpu путь до окна.
 - Инициализация `ai-war2-unity-corpus` подтверждена через `_Data`: Mono JIT (не IL2CPP).
 - Блокер `audio-native-ARM64` по аудио-цепочке закрыт.
+- Текущий рабочий коридор: HK (x64 Unity) и `hl.exe` (L6) идут как два независимых фидбэк-пина. Следом поднимаются 2-3 ближайших таргета, чья engine/API-кривая ближе всего к уже пройденным шагам.
 
 | Игра | exe | PE machine | Движок | API (по движку) | API (по импортам DLL) | Блокеры x64 пути | Блокеры i386 пути | Блокер D3D9-слоя | Готовность таргета | Очередь запуска |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -26,8 +27,10 @@
 | № | Тайтл | Логика близости |
 |---|---|---|
 | 2 | AI War 2 | `Unity + D3D11 + x64` — тот же графический трек, что у HK |
-| 3 | Diablo/Hellfire | `i386 + PE32/WOW64+Btcpu + окно` — тот же lane-чекпоинт, что у hl.exe |
-| 4 | GTA VC | `RenderWare + D3D8 + setup/launcher` — ближайший по legacy i386/редистам к hl |
+| 3 | Diablo/Hellfire | `i386 + PE32/WOW64 + окно` — тот же lane-чекпоинт, что у hl.exe |
+| 4 | GTA VC | `RenderWare + D3D8 + setup/launcher` — следующий legacy-i386 путь после DirectDraw/GoldSrc |
+
+Итого: очереди на ближайшую серию запусков после очистки текущих blockers — `AI War 2 -> Diablo/Hellfire -> GTA VC`.
 
 ## Run-обвязки + ожидаемые marker-ladders (pipeline-ready, без запусков)
 

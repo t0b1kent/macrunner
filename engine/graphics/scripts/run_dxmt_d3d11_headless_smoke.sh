@@ -24,6 +24,7 @@ SMOKE_REPEAT_COUNT="${SMOKE_REPEAT_COUNT:-1}"
 SMOKE_STABILITY_FRAMES="${SMOKE_STABILITY_FRAMES:-180}"
 SMOKE_STABILITY_MIN_MS="${SMOKE_STABILITY_MIN_MS:-0}"
 SMOKE_VISIBLE_WINDOW="${SMOKE_VISIBLE_WINDOW:-0}"
+DXMT_SMOKE_LEAK_BUDGET_KB="${DXMT_SMOKE_LEAK_BUDGET_KB:-0}"
 POSTPROCESS_WINEMETAL_ONLY=false
 
 case "$DXMT_SMOKE_BIND_MODE" in
@@ -140,6 +141,17 @@ cp -f "$WINEMETAL_SO" "$APP_DIR/winemetal.dll.so"
 cp -f "$WINEMETAL_SO" "$PREFIX_SYSTEM32/winemetal.so"
 cp -f "$WINEMETAL_SO" "$PREFIX_SYSTEM32/winemetal.dll.so"
 
+HK_SHADER_BLOB_ENV="${DXMT_HK_SHADER_BLOB_DIR:-}"
+if [[ -n "${DXMT_HK_SHADER_BLOB_SOURCE:-}" ]]; then
+  if ! compgen -G "$DXMT_HK_SHADER_BLOB_SOURCE/*.dxbc" >/dev/null; then
+    echo "missing HK shader blobs under $DXMT_HK_SHADER_BLOB_SOURCE" >&2
+    exit 28
+  fi
+  HK_SHADER_BLOB_ENV="$DXMT_HK_SHADER_BLOB_SOURCE"
+  echo "hk_shader_blob_source=$DXMT_HK_SHADER_BLOB_SOURCE"
+  echo "hk_shader_blob_dir=$HK_SHADER_BLOB_ENV"
+fi
+
 echo "built=$EXE"
 echo "prefix=$PREFIX"
 echo "system32=$PREFIX_SYSTEM32"
@@ -154,6 +166,7 @@ echo "log=$LOG"
 echo "repeat_count=$SMOKE_REPEAT_COUNT"
 echo "stability_frames=$SMOKE_STABILITY_FRAMES"
 echo "stability_min_ms=$SMOKE_STABILITY_MIN_MS"
+echo "leak_budget_kb=$DXMT_SMOKE_LEAK_BUDGET_KB"
 echo "visible_window=$SMOKE_VISIBLE_WINDOW"
 
 if [[ ! "$SMOKE_REPEAT_COUNT" =~ ^[0-9]+$ || "$SMOKE_REPEAT_COUNT" -lt 1 ]]; then
@@ -182,7 +195,8 @@ SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnityOutputCapabilityProbe|UnityAdapterNotif
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|invalid_buffer"
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnitySRGBSampleProbe|UnityComputeProbe|texture1d_mip1_rgba|array_slice1_resolved_rgba|array_slice[01]_mip1_rgba|array_slice[01]_mip1_copy_rgba|cube_face5_mip1_rgba|cube_array_face11_rgba|typed_buffer|multi_uav|srv_uav|raw_buffer|texture_srv_uav|texture_array_uav|texture3d_uav|groupshared_atomic"
 SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnityWarpProbe"
-SUMMARY_FOCUS_PATTERN="UnityFeatureProbe|UnityWarpProbe|UnityLeakProbe|uav_clear|ClearUnorderedAccessView|dynamic_constant|partial_constant|constant_partial_words|overlap_copy|constant_offset|CSSetConstantBuffers1|CSGetConstantBuffers1|PIPELINE_STATISTICS pending|SO_STATISTICS pending|SO_OVERFLOW_PREDICATE pending|ClearView\\(depth_|RSGetViewports\\(multi\\)|RSGetScissorRects\\(multi\\)|UnitySRGBSampleProbe|texture1d_mip1_rgba|array_slice1_resolved_rgba|array_slice[01]_mip1_rgba|array_slice[01]_mip1_copy_rgba|cube_face5_mip1_rgba|cube_array_face11_rgba|typed_buffer_values|multi_uav[01]_values|srv_uav_values|raw_buffer_values|texture_srv_uav_value|texture_array_uav_values|texture3d_uav_values|groupshared_atomic_values"
+SUMMARY_PATTERN="${SUMMARY_PATTERN}|UnityRealShaderCorpusProbe|hk_shader_blob"
+SUMMARY_FOCUS_PATTERN="UnityFeatureProbe|UnityWarpProbe|UnityLeakProbe|uav_clear|ClearUnorderedAccessView|dynamic_constant|partial_constant|constant_partial_words|overlap_copy|constant_offset|CSSetConstantBuffers1|CSGetConstantBuffers1|PIPELINE_STATISTICS pending|SO_STATISTICS pending|SO_OVERFLOW_PREDICATE pending|ClearView\\(depth_|RSGetViewports\\(multi\\)|RSGetScissorRects\\(multi\\)|UnitySRGBSampleProbe|texture1d_mip1_rgba|array_slice1_resolved_rgba|array_slice[01]_mip1_rgba|array_slice[01]_mip1_copy_rgba|cube_face5_mip1_rgba|cube_array_face11_rgba|typed_buffer_values|multi_uav[01]_values|srv_uav_values|raw_buffer_values|texture_srv_uav_value|texture_array_uav_values|texture3d_uav_values|groupshared_atomic_values|UnityRealShaderCorpusProbe"
 
 SMOKE_RC=0
 for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
@@ -207,9 +221,15 @@ for ((run = 1; run <= SMOKE_REPEAT_COUNT; run++)); do
       WINEDEBUG="${WINEDEBUG_SMOKE:--all,+loaddll}" \
       DXMT_SMOKE_STABILITY_FRAMES="$SMOKE_STABILITY_FRAMES" \
       DXMT_SMOKE_STABILITY_MIN_MS="$SMOKE_STABILITY_MIN_MS" \
+      DXMT_SMOKE_LEAK_BUDGET_KB="$DXMT_SMOKE_LEAK_BUDGET_KB" \
       DXMT_SMOKE_FORCE_MESSAGE_WINDOW="${DXMT_SMOKE_FORCE_MESSAGE_WINDOW:-0}" \
       DXMT_SMOKE_FULLSCREEN_ENTER="${DXMT_SMOKE_FULLSCREEN_ENTER:-0}" \
       DXMT_SMOKE_VISIBLE_WINDOW="$SMOKE_VISIBLE_WINDOW" \
+      DXMT_HK_SHADER_BLOB_DIR="$HK_SHADER_BLOB_ENV" \
+      DXMT_HK_SHADER_CORPUS_LIMIT="${DXMT_HK_SHADER_CORPUS_LIMIT:-256}" \
+      DXMT_HK_SHADER_RENDER_LIMIT="${DXMT_HK_SHADER_RENDER_LIMIT:-1}" \
+      DXMT_HK_SHADER_PAIRED_RENDER_LIMIT="${DXMT_HK_SHADER_PAIRED_RENDER_LIMIT:-256}" \
+      DXMT_HEADLESS=1 \
       "$PROJECT_ROOT/scripts/mr-run.sh" "$WINE_DIST" "$APP_DIR/dx11_headless_smoke.exe" "$SMOKE_TIMEOUT_SECONDS"
   ) >"$RUN_LOG" 2>&1
   run_rc=$?

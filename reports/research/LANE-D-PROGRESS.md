@@ -279,3 +279,8 @@ LOOP-STATUS: CONTINUE
 12:39 · readiness patch hygiene · fixed arm64 Wine patch hunk so non-x86/non-arm fallback stays plain CAMetalLayer; no extra Wine source dirtied · next scoped stage+commit
 12:42 · dxmt readiness commit · 95851f4 dxmt: harden live present readiness (orphan gate, nil drawable guard, PSO diagnostics, dummy texture SRV fallback) · next parent Wine patch commit
 12:42 · parent readiness commit · b9c6ac9 Lane D: unhide arm64 live CAMetalLayer bridge (Wine patch-set arm64 bridge + removed event re-hide) · next verify statuses and continue PSO readiness
+12:43 · PSO blocker continue · commits landed (dxmt 95851f4, parent bdbe45e); moving to argument_buffer_struct PSO failures, headless only · next locate shader/argument-buffer generation path
+12:45 · PSO corpus harness patch · GenRender now invokes PS + read_first_pixel and default paired_render_limit=256; no live/HK run, headless harness only · next build dx11_headless_smoke
+12:49 · PSO corpus validation blocked · dx11_headless_smoke builds, but both HK corpus run and baseline no-corpus run exit 137 inside mr-run before first app printf; not a PSO-specific signal · next commit harness then wait/retry after Wine launch path stabilizes
+12:49 · dxmt corpus harness commit · 51b63a6 dx11: add Unity shader corpus readback smoke; build PASS but runtime blocked by mr-run exit 137 before app output · next parent wrapper/progress commit
+12:49 · parent corpus wrapper commit · 5b8f3a3 Lane D: wire Unity shader corpus into headless smoke · next status verify then continue within non-HK graphics lane

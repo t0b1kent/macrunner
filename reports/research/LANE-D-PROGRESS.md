@@ -120,8 +120,9 @@ LOOP-STATUS: CONTINUE
     engine/dxmt/src/winemetal/unix/winemetal_unix.c _CreateMetalViewFromHWND:
       • WINEMETAL_TRACE_HWND=1 traces which macdrv precondition fails (no symbols / win_data=NULL /
         client_cocoa_view=NULL) via fprintf(stderr)
-      • DXMT_HEADLESS gate: macdrv fail + NOT DXMT_HEADLESS → ret_view=0 → swapchain abort() fires loudly
-        instead of silently presenting to detached orphan layer
+      • Readiness correction 2026-06-13: macdrv fail + DXMT_HEADLESS=1 → 1x1 headless fallback;
+        DXMT_ALLOW_ORPHAN_WINDOW=1 → explicit diagnostic orphan NSWindow; otherwise aborts loudly
+        instead of silently presenting to a detached orphan layer
     engine/graphics/scripts/run_dxmt_d3d11_headless_smoke.sh: DXMT_HEADLESS=1 in env -i block
     engine/dxmt/src/dxgi/dxgi_factory.cpp EnumAdapters1: warn when MTLCopyAllDevices()=0 adapters
   Build: dxgi.dll d3d11.dll winemetal.so compile clean
@@ -269,3 +270,12 @@ LOOP-STATUS: CONTINUE
 11:49 · D3D8 depth/cull increment start · targeting RenderWare `ZENABLE/ZWRITEENABLE/ZFUNC/CULLMODE` via D3D8-to-D3D9 metadata and mock pixels; headless only · next add deterministic depth-write-off/cull trace
 11:51 · D3D8 depth/cull trace/tests · added RenderWare depth-write-off plus CW cull JSONL, mock pixel assertions, Metal request contract, and 37-trace docs/script updates · next run focused pytest and headless smokes
 11:52 · D3D8 depth/cull validation · pytest 71 passed; mock headless smoke count=37 with pipefail; Metal request-only count=37 PASS · next stage named files and commit checkpoint
+11:53 · commit · 80216f1 Lane D: add D3D8 RenderWare depth cull matrix increment · next continue next headless D3D8/9 fixed-function matrix item
+12:21 · readiness audit pivot · NOT-READY: live arm64 HWND→CAMetalLayer path and PSO blockers now priority; HK pre-DXGI remains Lane A · next confirm GAP1 x86_64-only guards
+12:23 · GAP1 confirmed · `d3dmetal.c`, `d3dmetal_objc.m`, and `cocoa_window.m` guard macdrv/WineMetalLayer/CLIENT_SURFACE_PRESENTED under `__x86_64__`, leaving arm64 live HWND path structurally hidden · next remove silent orphan fallback and add nextDrawable nil guard
+12:25 · cheap readiness fixes · gated orphan NSWindow fallback behind `DXMT_ALLOW_ORPHAN_WINDOW=1` with abort/log otherwise; added `nextDrawable` nil logging and skip-present guard · next inspect arm64 macdrv/WineMetalLayer unhide scope
+12:28 · arm64 live HWND source unhide · widened d3dmetal/WineMetalLayer guards to `__x86_64__ || __aarch64__` and made Cocoa `WineMetalView` use `WineMetalLayer` on arm64 so CLIENT_SURFACE_PRESENTED can fire · next inspect PSO argument-buffer blocker
+12:31 · PSO loud diagnostics · missing-PSO draw guards now log once per encoder; D3D11 PSO creation logs nil NSError, function handles, formats, reflection cb/arg counts, and immutable buffer masks · next compile-validate DXMT/winemac without dist deploy
+12:39 · readiness patch hygiene · fixed arm64 Wine patch hunk so non-x86/non-arm fallback stays plain CAMetalLayer; no extra Wine source dirtied · next scoped stage+commit
+12:42 · dxmt readiness commit · 95851f4 dxmt: harden live present readiness (orphan gate, nil drawable guard, PSO diagnostics, dummy texture SRV fallback) · next parent Wine patch commit
+12:42 · parent readiness commit · b9c6ac9 Lane D: unhide arm64 live CAMetalLayer bridge (Wine patch-set arm64 bridge + removed event re-hide) · next verify statuses and continue PSO readiness

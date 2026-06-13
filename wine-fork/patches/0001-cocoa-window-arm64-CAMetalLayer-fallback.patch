@@ -1,32 +1,47 @@
 From: MacRunner <noreply@macrunner.app>
-Subject: [PATCH] winemac.drv: arm64 fallback for CAMetalLayer when D3DMetal unavailable
+Subject: [PATCH] winemac.drv: enable D3DMetal layer bridge on arm64
 
-CrossOver's d3dmetal_objc.h declares WineMetalLayer only under
-__x86_64__ (since D3DMetal is x86_64-only by Apple's licensing).
-But cocoa_window.m used WineMetalLayer unconditionally, which breaks
-the arm64-native winemac.drv build.
+MacRunner's arm64-native DXMT path still needs the winemac.drv D3DMetal
+bridge pieces: macdrv_functions for HWND->client_cocoa_view lookup,
+WineMetalLayer so nextDrawable posts CLIENT_SURFACE_PRESENTED, and a
+CAMetalLayer attached to the real WineContentView.
 
-This patch adds a plain CAMetalLayer fallback for non-x86_64 hosts.
-On arm64 native, D3DMetal is not in the path anyway — graphics go
-through DXMT or DXVK+MoltenVK.
+Keeping those pieces x86_64-only made the live arm64 path fall back to a
+detached orphan window. Build the bridge on arm64 as well; D3DMetal itself
+is not required for this path, only the Wine layer/client-surface glue.
 
 ---
- dlls/winemac.drv/cocoa_window.m | 5 +++++
- 1 file changed, 5 insertions(+)
+ dlls/winemac.drv/cocoa_window.m    | 6 +++++-
+ dlls/winemac.drv/d3dmetal.c        | 2 +-
+ dlls/winemac.drv/d3dmetal_objc.h   | 2 +-
+ dlls/winemac.drv/d3dmetal_objc.m   | 2 +-
+ 4 files changed, 8 insertions(+), 4 deletions(-)
 
 diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
 --- a/dlls/winemac.drv/cocoa_window.m
 +++ b/dlls/winemac.drv/cocoa_window.m
-@@ -982,7 +982,12 @@
-
-     - (CALayer*) makeBackingLayer
-     {
-+#if defined(__x86_64__)
-         CAMetalLayer *layer = [WineMetalLayer layer];   /* CW HACK 22435 — D3DMetal only on x86_64 */
+@@ -985,1 +985,5 @@
+-        CAMetalLayer *layer = [WineMetalLayer layer];   /* CW HACK 22435 */
++#if defined(__x86_64__) || defined(__aarch64__)
++        CAMetalLayer *layer = [WineMetalLayer layer];   /* CW HACK 22435 - D3DMetal/DXMT live present */
 +#else
-+        /* MacRunner: on arm64 native host, D3DMetal is not used; plain CAMetalLayer is fine. */
 +        CAMetalLayer *layer = [CAMetalLayer layer];
 +#endif
-         layer.device = _device;
-         layer.framebufferOnly = YES;
-         layer.magnificationFilter = kCAFilterNearest;
+diff --git a/dlls/winemac.drv/d3dmetal.c b/dlls/winemac.drv/d3dmetal.c
+--- a/dlls/winemac.drv/d3dmetal.c
++++ b/dlls/winemac.drv/d3dmetal.c
+@@ -25,1 +25,1 @@
+-#if defined(__x86_64__)
++#if defined(__x86_64__) || defined(__aarch64__)
+diff --git a/dlls/winemac.drv/d3dmetal_objc.h b/dlls/winemac.drv/d3dmetal_objc.h
+--- a/dlls/winemac.drv/d3dmetal_objc.h
++++ b/dlls/winemac.drv/d3dmetal_objc.h
+@@ -21,1 +21,1 @@
+-#if defined(__x86_64__)
++#if defined(__x86_64__) || defined(__aarch64__)
+diff --git a/dlls/winemac.drv/d3dmetal_objc.m b/dlls/winemac.drv/d3dmetal_objc.m
+--- a/dlls/winemac.drv/d3dmetal_objc.m
++++ b/dlls/winemac.drv/d3dmetal_objc.m
+@@ -21,1 +21,1 @@
+-#if defined(__x86_64__)
++#if defined(__x86_64__) || defined(__aarch64__)

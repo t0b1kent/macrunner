@@ -530,6 +530,33 @@ static bool is_absolute_mem64_operand(const hb_ir_operand_t* op) {
            op->mem.scale == 1;
 }
 
+/*
+ * KUSER_SHARED_DATA lives at the canonical low Windows VA 0x7ffe0000, and the
+ * Wine x64 syscall-dispatcher pointer sits in the slot right after it at
+ * 0x7ffe1000 (8 bytes).  Neither can be host-mapped on macOS arm64: the low 2GB
+ * range is covered by PAGEZERO (see ntdll virtual.c), so Wine relocates the live
+ * KUSER page to WINE_USER_SHARED_DATA_ADDRESS and the interpreter translates the
+ * canonical address in macrunner_hb_special_read().  The JIT direct-mem fast path
+ * has no such translation: a baked LDR of e.g. 0x7ffe0308 (the SystemCall flag
+ * read in every x64 syscall thunk via `test byte ptr [0x7ffe0308], 1`) would
+ * fault.  So absolute (register-less) accesses into this range must drop out of
+ * the direct-mem path and fall back to the helper/lazy emit, which routes through
+ * special_read.  Only the constant low-address form is special-cased here, so
+ * register-bearing and non-KUSER scalar memory stays direct (no runtime cost). */
+#define HB_KUSER_SHARED_DATA_GVA 0x7ffe0000ULL
+#define HB_KUSER_GUARD_END       0x7ffe1008ULL /* KUSER page + 8-byte dispatcher slot */
+
+static bool mem_operand_is_kuser_absolute(const hb_ir_operand_t* op) {
+    uint64_t addr, end;
+    if (!op || op->type != HB_OP_MEM) return false;
+    if (op->mem.base != HB_REG_COUNT || op->mem.index != HB_REG_COUNT) return false;
+    if (op->mem.addr32 || op->mem.segment != 0) return false;
+    addr = (uint64_t)op->mem.disp;
+    end = addr + (op->size ? (uint64_t)op->size : 1ULL);
+    if (end < addr) return false; /* overflow guard */
+    return addr < HB_KUSER_GUARD_END && end > HB_KUSER_SHARED_DATA_GVA;
+}
+
 static bool is_direct_user_xmm_mem_operand(const hb_ir_operand_t* op) {
     if (!op || op->type != HB_OP_MEM || op->size != HB_SIZE_128) return false;
     if (op->mem.segment != 0 || op->mem.addr32) return false;
@@ -541,10 +568,12 @@ static bool is_direct_user_xmm_mem_operand(const hb_ir_operand_t* op) {
 }
 
 static bool direct_user_mem_allowed(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
+    if (mem_operand_is_kuser_absolute(op)) return false;
     return direct_mem_codegen_arch_enabled(buf) && is_direct_user_mem_operand(op);
 }
 
 static bool direct_user_xmm_mem_allowed(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
+    if (mem_operand_is_kuser_absolute(op)) return false;
     return direct_mem_codegen_arch_enabled(buf) && is_direct_user_xmm_mem_operand(op);
 }
 
@@ -4646,8 +4675,11 @@ static hb_result_t hb_jit_helper_write_u32_tso(hb_context_t* ctx, uint64_t addr,
 
 static hb_result_t hb_jit_helper_write_u64_tso(hb_context_t* ctx, uint64_t addr, uint64_t value) {
     void* ptr;
+    void* mem_ptr;
+    hb_result_t r;
     if (!ctx || !ctx->memory) return HB_ERR_MEMORY_FAULT;
-    ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(value), HB_PERM_WRITE);
+    mem_ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, sizeof(value), HB_PERM_WRITE);
+    ptr = mem_ptr;
 #ifdef __APPLE__
     if (!ptr) ptr = hb_jit_live_host_ptr(addr, sizeof(value), HB_PERM_WRITE);
 #endif
@@ -4656,7 +4688,14 @@ static hb_result_t hb_jit_helper_write_u64_tso(hb_context_t* ctx, uint64_t addr,
         return HB_OK;
     }
     __atomic_thread_fence(__ATOMIC_RELEASE);
-    return hb_memory_write_u64(ctx->memory, addr, value);
+    r = hb_memory_write_u64(ctx->memory, addr, value);
+    if (r != HB_OK) {
+        static int traced;
+        if (traced++ < 8)
+            fprintf(stderr, "macrunner-hb-tso-write-fail: addr=0x%llx r=%d mem_ptr=%p live_ptr=%p\n",
+                    (unsigned long long)addr, (int)r, mem_ptr, ptr);
+    }
+    return r;
 }
 
 static hb_result_t hb_jit_helper_write_bytes_tso(hb_context_t* ctx, uint64_t addr,
@@ -4872,6 +4911,13 @@ void hb_jit_helper_push(hb_context_t* ctx, uint64_t val) {
         r = hb_jit_helper_write_u64_tso(ctx, new_rsp, val);
         if (r == HB_OK) ctx->regs.x64.rsp = new_rsp;
     }
+    if (r != HB_OK) {
+        static int traced;
+        if (traced++ < 8)
+            fprintf(stderr, "macrunner-hb-push-fail: rsp=0x%llx r=%d mode=%d\n",
+                    (unsigned long long)(ctx->mode == HB_MODE_32BIT ?
+                        (uint64_t)ctx->regs.x86.esp : ctx->regs.x64.rsp), (int)r, (int)ctx->mode);
+    }
     ctx->last_result = r;
 }
 
@@ -4908,6 +4954,12 @@ void hb_jit_helper_exec_call_operand(hb_context_t* ctx, const hb_ir_instr_t* ins
         if (r == HB_OK) ctx->regs.x64.rsp = new_rsp;
     }
     if (r != HB_OK) {
+        static int traced;
+        if (traced++ < 8)
+            fprintf(stderr, "macrunner-hb-callop-fail: rsp=0x%llx r=%d target=0x%llx\n",
+                    (unsigned long long)(ctx->mode == HB_MODE_32BIT ?
+                        (uint64_t)ctx->regs.x86.esp : ctx->regs.x64.rsp), (int)r,
+                    (unsigned long long)target);
         ctx->last_result = r;
         return;
     }

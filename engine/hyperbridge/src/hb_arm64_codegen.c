@@ -4403,6 +4403,15 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_CVTTPS2DQ:
         case HB_IR_CVTPS2PD:
         case HB_IR_CVTPD2PS:
+        /* MacRunner: CVTPD2DQ/CVTTPD2DQ (packed double -> packed dword, round/truncate)
+         * were missing from the JIT-supported set, so any block containing them fell
+         * back to the interpreter WHOLE-BLOCK. HK's hot double-math fns (exp2/pow:
+         * UnityPlayer rva 0x19cc7be x7058, 0x19cc232/0x19cd6c6 x458) hit this in a tight
+         * loop -> catastrophic slowdown/stall during render setup. They route through
+         * emit_interp_ir_helper (per-instr interp call) like the other CVT ops; only
+         * these 2 ops call the helper, the rest of the block stays native. */
+        case HB_IR_CVTPD2DQ:
+        case HB_IR_CVTTPD2DQ:
         case HB_IR_CVTSS2SD:
         case HB_IR_CVTSD2SS:
         case HB_IR_CVTSI2SD:
@@ -4426,6 +4435,13 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_COMISD:
         case HB_IR_CVTTSD2SI:
         case HB_IR_CVTTSS2SI:
+        /* MacRunner: CVTSS2SI/CVTSD2SI (NON-truncating scalar float->int, MXCSR
+         * round-mode dependent) were missing from codegen (only the truncating
+         * CVTTSS2SI/CVTTSD2SI were here). HK's float->int rounding helper (UnityPlayer
+         * rva 0x19cc97c, the STMXCSR/cvtss2si/LDMXCSR sequence) whole-block-fell-back
+         * on these -> the new hot loop after the CVTPD2DQ fix. Route via interp helper. */
+        case HB_IR_CVTSS2SI:
+        case HB_IR_CVTSD2SI:
         case HB_IR_PADD:
         case HB_IR_PSUB:
         case HB_IR_X87_FLD:

@@ -19757,11 +19757,31 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                                  out.result == HB_ERR_UNSUPPORTED_FEATURE ||
                                  out.result == HB_ERR_INTERNAL))
             {
-                if (++jit_fallbacks <= 20)
-                    fprintf( stderr, "macrunner-hb-jit-fallback: label=%s pc=%p out=%s reason=%s\n",
+                if (++jit_fallbacks <= 8000)
+                {
+                    /* MacRunner: rank the JIT-fallback (unsupported-opcode) set — dump
+                     * 16 guest bytes at block_pc + steps_executed (the failing op is the
+                     * steps_executed-th instr in the block) so each distinct opcode can be
+                     * decoded from the log and ranked by fire-count. Interpreter handles
+                     * all these correctly; this is a SPEED gap, bulk-JIT the hot set. */
+                    char fb[48]; fb[0] = 0;
+                    if (ctx->memory)
+                    {
+                        char *p = fb;
+                        for (int i = 0; i < 16 && (size_t)(p - fb) < sizeof(fb) - 3; i++)
+                        {
+                            uint8_t b = 0;
+                            if (hb_memory_read_u8( ctx->memory, (hb_gva_t)(block_pc + i), &b ) != HB_OK) break;
+                            p += snprintf( p, sizeof(fb) - (p - fb), "%s%02x", i ? "" : "", b );
+                            if (i < 15 && (size_t)(p - fb) < sizeof(fb) - 1) *p++ = ' ', *p = 0;
+                        }
+                    }
+                    fprintf( stderr, "macrunner-hb-jit-fallback: label=%s pc=%p out=%s reason=%s steps=%llu gbytes=%s\n",
                              label ? label : "entry", (void *)(uintptr_t)block_pc,
                              hb_result_string(out.result),
-                             out.fault_reason ? out.fault_reason : "none" );
+                             out.fault_reason ? out.fault_reason : "none",
+                             (unsigned long long)out.steps_executed, fb );
+                }
                 ctx->last_result = HB_OK;
                 memset( &out, 0, sizeof(out) );
                 ret = hb_runtime_run( ctx, func, HB_BACKEND_INTERP, &out );

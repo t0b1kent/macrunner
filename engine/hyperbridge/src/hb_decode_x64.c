@@ -3341,7 +3341,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             (op2 == 0x2A || op2 == 0x2C || op2 == 0x2D ||
             (op2 >= 0x60 && op2 <= 0x6B) || op2 == 0x6E ||
             op2 == 0x70 || (op2 >= 0x74 && op2 <= 0x76) ||
-            op2 == 0x7E || op2 == 0xC2 || op2 == 0xC4 || op2 == 0xC5 ||
+            op2 == 0x7E || op2 == 0xC4 || op2 == 0xC5 ||
             (op2 >= 0xD1 && op2 <= 0xD5) || (op2 >= 0xD7 && op2 <= 0xE5) ||
             (op2 >= 0xE8 && op2 <= 0xEF) || (op2 >= 0xF1 && op2 <= 0xF7) ||
             (op2 >= 0xF8 && op2 <= 0xFE))) {
@@ -3350,7 +3350,9 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             out->opcode = HB_INS_MMX;
             hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b, 8, out, 1, 2, false);
             if (r != HB_OK) return r;
-            if (op2 == 0x70 || op2 == 0xC2 || op2 == 0xC4 || op2 == 0xC5) {
+            /* MacRunner: 0xC2 removed here — no-prefix 0F C2 is CMPPS (SSE, not MMX);
+             * it now falls through to the generic_0f_vec path below. */
+            if (op2 == 0x70 || op2 == 0xC4 || op2 == 0xC5) {
                 if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
                 set_imm(out, 3, read_u8(d), 1);
             }
@@ -4618,7 +4620,15 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                                  op2 == 0xD6)) {
             generic_0f_vec = true;
         }
-        if ((operand16 || prefix_f2 || prefix_f3) && op2 == 0xC2) {
+        if (op2 == 0xC2) {
+            /* 0F C2 /r ib = CMP{PS,PD,SS,SD} (imm8 predicate). The prefix selects
+             * the variant: none=CMPPS (packed single), 66=CMPPD, F3=CMPSS, F2=CMPSD.
+             * MacRunner: the no-prefix CMPPS case was missing from the gate (only
+             * 66/F2/F3 were handled) -> no-prefix 0F C2 fell through to
+             * HB_ERR_UNSUPPORTED_OPCODE. Unity 6 math/culling uses CMPLTPS
+             * (predicate 1) at UnityPlayer rva 0x633f60. The imm8 predicate is read
+             * uniformly below, so all 8 predicates (EQ/LT/LE/UNORD/NEQ/NLT/NLE/ORD)
+             * are covered. */
             generic_0f_vec = true;
             generic_0f_imm8 = true;
         }
@@ -4660,6 +4670,16 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             uint8_t modrm = read_u8(d);
             if (generic_0f_sys) out->opcode = HB_INS_SYS;
             else if (generic_0f_mmx) out->opcode = HB_INS_MMX;
+            else if (op2 == 0xC2) {
+                /* 0F C2 = CMP{PS,PD,SS,SD} — the lift resolves the vec op via
+                 * vec_op_from_ins(dec->opcode), so emit the SPECIFIC opcode
+                 * (generic HB_INS_VEC would not resolve to a vop). Prefix selects
+                 * the variant; imm8 predicate read below covers all 8 predicates. */
+                if (operand16) out->opcode = HB_INS_VCMPPD;
+                else if (prefix_f3) out->opcode = HB_INS_VCMPSS;
+                else if (prefix_f2) out->opcode = HB_INS_VCMPSD;
+                else out->opcode = HB_INS_VCMPPS;
+            }
             else out->opcode = HB_INS_VEC;
             out->writes_flags = false;
             hb_result_t r = parse_modrm(d, modrm, generic_0f_sys && rex_w,

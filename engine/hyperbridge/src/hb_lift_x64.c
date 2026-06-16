@@ -1109,6 +1109,17 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
                            ((dec->opcode == HB_INS_VPERMILPS || dec->opcode == HB_INS_VPERMILPD) &&
                             dec->op3.is_imm)) {
                     i->src1 = operand_from_dec(dec, 2);
+                } else if ((dec->opcode == HB_INS_VCMPPS || dec->opcode == HB_INS_VCMPPD ||
+                            dec->opcode == HB_INS_VCMPSS || dec->opcode == HB_INS_VCMPSD) &&
+                           dec->op3.is_imm) {
+                    /* MacRunner: legacy (non-VEX) CMP{PS,PD,SS,SD} = 2-operand form
+                     * `cmpXXps dst, src, imm8`: dst is ALSO the first compare operand,
+                     * src is op2, the imm8 predicate is op3 (read via dec_imm8). The VEX
+                     * 3-operand form (src1=op2, src2=op3-reg, imm8 separate) is handled
+                     * by the branch below. Without this, src2 was set to op3 = the imm8,
+                     * read as a vector operand -> INTERNAL/memory fault. */
+                    i->src1 = dst;
+                    i->src2 = operand_from_dec(dec, 2);
                 } else if (dec->opcode == HB_INS_VPBLENDD ||
                            dec->opcode == HB_INS_VBLENDVPS || dec->opcode == HB_INS_VBLENDVPD ||
                            dec->opcode == HB_INS_VPBLENDVB ||

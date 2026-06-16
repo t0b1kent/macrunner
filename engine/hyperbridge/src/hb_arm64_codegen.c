@@ -154,13 +154,21 @@ static void emit_ldrh_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) 
 }
 
 static void emit_ldar_to_reg(hb_codegen_buffer_t* buf, int rt, int rn, hb_size_t size) {
+    /* MacRunner: x86 permits UNALIGNED ordinary loads, but ARM64 LDAR (load-acquire)
+     * faults SIGBUS (BUS_ADRALN) on a non-naturally-aligned address. Mono's string
+     * compare (`cmp [rdx+8], r12` with rdx 4-aligned) hit this and livelocked.
+     * Emit a plain LDR (unaligned-safe) + DMB ISHLD instead: the barrier preserves
+     * x86 TSO load-acquire ordering (orders this load before subsequent loads+stores)
+     * while LDR handles any alignment. Applies to ALL TSO loads (cmp operand, ret,
+     * stack, general) since they all route through here. */
     switch (size) {
-        case HB_SIZE_8:  emit_u32(buf, 0x08dffc00 | (rn << 5) | rt); break; /* LDARB Wt, [Xn] */
-        case HB_SIZE_16: emit_u32(buf, 0x48dffc00 | (rn << 5) | rt); break; /* LDARH Wt, [Xn] */
-        case HB_SIZE_32: emit_u32(buf, 0x88dffc00 | (rn << 5) | rt); break; /* LDAR Wt, [Xn] */
+        case HB_SIZE_8:  emit_u32(buf, 0x39400000 | (rn << 5) | rt); break; /* LDRB Wt, [Xn] */
+        case HB_SIZE_16: emit_u32(buf, 0x79400000 | (rn << 5) | rt); break; /* LDRH Wt, [Xn] */
+        case HB_SIZE_32: emit_u32(buf, 0xb9400000 | (rn << 5) | rt); break; /* LDR Wt, [Xn] */
         case HB_SIZE_64:
-        default:         emit_u32(buf, 0xc8dffc00 | (rn << 5) | rt); break; /* LDAR Xt, [Xn] */
+        default:         emit_u32(buf, 0xf9400000 | (rn << 5) | rt); break; /* LDR Xt, [Xn] */
     }
+    emit_u32(buf, 0xd50339bf); /* DMB ISHLD — acquire ordering (loads-before vs loads+stores-after) */
 }
 
 static void emit_str_x(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {

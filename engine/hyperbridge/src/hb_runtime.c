@@ -1148,6 +1148,12 @@ int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int sig
     frame->host_pc = pc;
     frame->fault_addr = fault_addr;
     frame->signal = signal;
+    {
+        static int traced;
+        if (traced++ < 8 && getenv("MACRUNNER_HB_TRACE_JIT_HELPER_FAIL"))
+            fprintf(stderr, "macrunner-hb-jit-native-sigfault: host_pc=0x%llx fault=0x%llx sig=%d\n",
+                    (unsigned long long)pc, (unsigned long long)fault_addr, signal);
+    }
     siglongjmp(frame->env, 1);
     return 1;
 }
@@ -1186,15 +1192,50 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
     g_jit_signal_fault_frame = frame.prev;
     *ctx = frame.snapshot;
     if (g_jit_signal_fault_reports++ < 64) {
+        /* MacRunner: dump the guest x86 bytes at the block entry (steps=0 means the
+         * fault is at/near the first instruction) + the fault-address alignment, to
+         * pin a misaligned LOCK atomic (SIGBUS=10 from JIT atomic lowered to LDXR/STXR
+         * on an unaligned address). */
+        char gb[64]; gb[0]=0;
+        if (ctx && ctx->memory) {
+            char *p = gb; uint64_t ga = cached->guest_addr;
+            for (int i = 0; i < 16 && (size_t)(p-gb) < sizeof(gb)-3; i++) {
+                uint8_t b = 0;
+                if (hb_memory_read_u8(ctx->memory, (hb_gva_t)(ga + i), &b) != HB_OK) break;
+                p += snprintf(p, sizeof(gb)-(p-gb), "%s%02x", i?" ":"", b);
+            }
+        }
+        {
+            /* Dump the native ARM64 words around the faulting host pc (JIT code is
+             * host-mapped readable) to see if the 8-byte load was lowered to an
+             * alignment-requiring instruction (LDAR/LDXR/atomic) vs a plain LDR. */
+            const uint32_t *hp = (const uint32_t *)(uintptr_t)(frame.host_pc & ~3ull);
+            if (frame.host_pc >= (uint64_t)(uintptr_t)cached->native_code &&
+                frame.host_pc < (uint64_t)(uintptr_t)(cached->native_code + cached->native_size))
+                fprintf(stderr, "macrunner-hb-jit-natinsn: hostpc=%p w[-2..+2]= %08x %08x [%08x] %08x %08x\n",
+                        (void*)(uintptr_t)frame.host_pc,
+                        hp[-2], hp[-1], hp[0], hp[1], hp[2]);
+        }
+        fprintf(stderr,
+                "macrunner-hb-jit-regs: rax=%llx rcx=%llx rdx=%llx rbx=%llx rsp=%llx rbp=%llx "
+                "rsi=%llx rdi=%llx r12=%llx fault=%llx rdx+8=%llx\n",
+                (unsigned long long)ctx->regs.x64.rax, (unsigned long long)ctx->regs.x64.rcx,
+                (unsigned long long)ctx->regs.x64.rdx, (unsigned long long)ctx->regs.x64.rbx,
+                (unsigned long long)ctx->regs.x64.rsp, (unsigned long long)ctx->regs.x64.rbp,
+                (unsigned long long)ctx->regs.x64.rsi, (unsigned long long)ctx->regs.x64.rdi,
+                (unsigned long long)ctx->regs.x64.r12,
+                (unsigned long long)frame.fault_addr,
+                (unsigned long long)(ctx->regs.x64.rdx + 8));
         fprintf(stderr,
                 "macrunner-hb-jit-signal-fallback: guest=%p native=%p-%p "
-                "pc=%p fault=%p signal=%d steps=%llu blocks=%llu\n",
+                "pc=%p fault=%p signal=%d steps=%llu blocks=%llu fault_align=%llu gbytes=%s\n",
                 (void*)(uintptr_t)cached->guest_addr, cached->native_code,
                 cached->native_code + cached->native_size,
                 (void*)(uintptr_t)frame.host_pc,
                 (void*)(uintptr_t)frame.fault_addr, frame.signal,
                 (unsigned long long)frame.steps,
-                (unsigned long long)frame.blocks_executed);
+                (unsigned long long)frame.blocks_executed,
+                (unsigned long long)(frame.fault_addr & 0xf), gb);
         fflush(stderr);
     }
     return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
@@ -2407,7 +2448,14 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
         sync_arch_pc_after_jit_block(ctx);
         trace_x86_low_pc_after_block(ctx, block, steps, blocks_executed);
         if (ctx->last_result != HB_OK) {
-            if (trace_jit_helper_fault_enabled()) trace_jit_helper_fault_block(ctx, block);
+            if (trace_jit_helper_fault_enabled()) {
+                static int t;
+                if (t++ < 8)
+                    fprintf(stderr, "macrunner-hb-block-fault-pc: pc=0x%llx last=%d guest_addr=0x%llx\n",
+                            (unsigned long long)ctx->pc, (int)ctx->last_result,
+                            block ? (unsigned long long)block->guest_addr : 0);
+                trace_jit_helper_fault_block(ctx, block);
+            }
             set_helper_fault_result(out, ctx, steps, blocks_executed);
             return HB_OK;
         }

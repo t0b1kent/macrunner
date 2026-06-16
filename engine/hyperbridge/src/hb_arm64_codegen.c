@@ -4925,6 +4925,37 @@ static void trace_x86_branch_operand(hb_context_t* ctx, const hb_ir_instr_t* ins
                                      const char* kind, uint64_t target,
                                      hb_result_t result);
 
+/* MacRunner diag: guest called/jumped a NULL function pointer. Log the call-site
+ * guest RIP + the target SOURCE (which [mem]/reg loaded 0) with CLEAN guest state,
+ * before the synthesized exec fault. Unix-side fprintf works (HB in ntdll.so). */
+static void hb_diag_nullcall(hb_context_t* ctx, const hb_ir_instr_t* instr, const char* where) {
+    static int nc_n;
+    uint64_t ea = 0, base = 0;
+    if (!ctx || !instr || nc_n++ >= 24) return;
+    if (instr->src1.type == HB_OP_MEM) {
+        base = (instr->src1.mem.base < HB_REG_COUNT) ?
+               hb_context_read_reg_value(ctx, instr->src1.mem.base) : 0;
+        uint64_t idx = (instr->src1.mem.index < HB_REG_COUNT) ?
+               hb_context_read_reg_value(ctx, instr->src1.mem.index) : 0;
+        ea = base + idx * instr->src1.mem.scale + (uint64_t)instr->src1.mem.disp;
+    }
+    fprintf(stderr, "macrunner-hb-jit-nullcall: where=%s guest_pc=0x%llx len=%u src_type=%d "
+            "src_reg=%d mem_base=%d mem_idx=%d mem_scale=%d mem_disp=0x%llx ea=0x%llx base_val=0x%llx "
+            "rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rsp=0x%llx rbp=0x%llx rsi=0x%llx rdi=0x%llx\n",
+            where, (unsigned long long)instr->guest_addr, instr->guest_len, (int)instr->src1.type,
+            (instr->src1.type == HB_OP_REG) ? (int)instr->src1.reg : -1,
+            (instr->src1.type == HB_OP_MEM) ? (int)instr->src1.mem.base : -1,
+            (instr->src1.type == HB_OP_MEM) ? (int)instr->src1.mem.index : -1,
+            (instr->src1.type == HB_OP_MEM) ? (int)instr->src1.mem.scale : 0,
+            (unsigned long long)((instr->src1.type == HB_OP_MEM) ? (uint64_t)instr->src1.mem.disp : 0),
+            (unsigned long long)ea, (unsigned long long)base,
+            (unsigned long long)ctx->regs.x64.rax, (unsigned long long)ctx->regs.x64.rcx,
+            (unsigned long long)ctx->regs.x64.rdx, (unsigned long long)ctx->regs.x64.rbx,
+            (unsigned long long)ctx->regs.x64.rsp, (unsigned long long)ctx->regs.x64.rbp,
+            (unsigned long long)ctx->regs.x64.rsi, (unsigned long long)ctx->regs.x64.rdi);
+    fflush(stderr);
+}
+
 void hb_jit_helper_exec_call_operand(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     uint64_t target = instr ? instr->target : 0;
     uint64_t ret_addr;
@@ -4940,8 +4971,23 @@ void hb_jit_helper_exec_call_operand(hb_context_t* ctx, const hb_ir_instr_t* ins
         }
     }
     if (!target) {
+        hb_diag_nullcall(ctx, instr, "call");
         ctx->last_result = HB_ERR_EXEC_FAULT;
         return;
+    }
+    /* MacRunner: trace import-region (0x6f00...) call targets so we can compare the
+     * CreateDXGIFactory2 call (works) vs the D3D11CreateDevice call (device lost).
+     * Gated by env; the run-loop dispatches pc in the import region via the import
+     * thunk -> pe_call12. If D3D11CreateDevice's call does not appear here, it takes
+     * a different codegen path. */
+    if (target >= 0x00006f0000001b00ULL && target < 0x00006f0000001c00ULL) {
+        static int co_n;
+        if (getenv("MACRUNNER_TRACE_CALLOP") && co_n++ < 200)
+            fprintf(stderr, "macrunner-hb-callop-import: call_site_guest_pc=0x%llx target=0x%llx "
+                    "rcx=0x%llx rdx=0x%llx r8=0x%llx rsp=0x%llx\n",
+                    (unsigned long long)instr->guest_addr, (unsigned long long)target,
+                    (unsigned long long)ctx->regs.x64.rcx, (unsigned long long)ctx->regs.x64.rdx,
+                    (unsigned long long)ctx->regs.x64.r8, (unsigned long long)ctx->regs.x64.rsp);
     }
     ret_addr = instr->guest_addr + instr->guest_len;
     if (ctx->mode == HB_MODE_32BIT) {
@@ -5102,6 +5148,7 @@ void hb_jit_helper_exec_xfg_dispatch_call(hb_context_t* ctx, const hb_ir_instr_t
         return;
     }
     if (!target) {
+        hb_diag_nullcall(ctx, instr, "xfg");
         ctx->last_result = HB_ERR_EXEC_FAULT;
         return;
     }
@@ -5129,6 +5176,7 @@ void hb_jit_helper_exec_jmp_operand(hb_context_t* ctx, const hb_ir_instr_t* inst
         }
     }
     if (!target) {
+        hb_diag_nullcall(ctx, instr, "jmp");
         ctx->last_result = HB_ERR_EXEC_FAULT;
         return;
     }
@@ -6210,6 +6258,22 @@ static hb_result_t hb_jit_helper_exec_ret_exact(hb_context_t* ctx,
         r = hb_jit_helper_read_u64_tso(ctx, ctx->regs.x64.rsp, &ret_addr);
         if (r != HB_OK) return r;
         ctx->regs.x64.rsp += 8 + ret_imm;
+    }
+    if (!ret_addr) {
+        /* MacRunner diag: the guest RET'd to a NULL return address -> pc=0 ->
+         * native-dispatched -> execute-at-0. Log the RET site (the function that
+         * returned to 0) + regs. ret_addr==0 is rare (corrupted return). */
+        static int retn;
+        if (retn++ < 16)
+            fprintf(stderr, "macrunner-hb-jit-retnull: ret_site_guest_pc=0x%llx rsp_after=0x%llx "
+                    "ret_imm=%llu rax=0x%llx rcx=0x%llx rdx=0x%llx rbx=0x%llx rbp=0x%llx "
+                    "rsi=0x%llx rdi=0x%llx\n",
+                    (unsigned long long)instr->guest_addr, (unsigned long long)ctx->regs.x64.rsp,
+                    (unsigned long long)ret_imm, (unsigned long long)ctx->regs.x64.rax,
+                    (unsigned long long)ctx->regs.x64.rcx, (unsigned long long)ctx->regs.x64.rdx,
+                    (unsigned long long)ctx->regs.x64.rbx, (unsigned long long)ctx->regs.x64.rbp,
+                    (unsigned long long)ctx->regs.x64.rsi, (unsigned long long)ctx->regs.x64.rdi);
+        fflush(stderr);
     }
     ctx->pc = ret_addr;
     hb_jit_helper_sync_pc(ctx);

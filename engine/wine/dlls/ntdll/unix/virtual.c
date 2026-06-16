@@ -4193,6 +4193,52 @@ no_dynamic_reloc:
 #ifdef VALGRIND_LOAD_PDB_DEBUGINFO
     VALGRIND_LOAD_PDB_DEBUGINFO(fd, ptr, total_size, ptr - (char *)wine_server_get_ptr( image_info->base ));
 #endif
+
+#if defined(__APPLE__) && defined(__aarch64__)
+    /* MacRunner BSS-tail diagnostic (env-gated, read-only): the x64 JIT faulted reading a .data
+     * BSS-tail address (UnityPlayer +0x1F40460, VirtualSize >> SizeOfRawData). Static reading shows
+     * map_view commits the whole image host-RW and set_vprot covers the full VirtualSize, so dump the
+     * REAL host protection (mach_vm_region) + wine guest vprot at each x64-guest section's start /
+     * BSS-tail / deep page to pin whether the tail is actually committed at load. */
+    if (macrunner_hb_is_x64_guest_image( image_info ) && getenv( "MACRUNNER_DIAG_BSS" ))
+    {
+        for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
+        {
+            SIZE_T vsz = sec[i].Misc.VirtualSize;
+            SIZE_T raw = sec[i].SizeOfRawData;
+            SIZE_T eff_raw, tail_off;
+            struct { const char *what; SIZE_T off; } pts[3];
+            int p;
+
+            if (!vsz) continue;
+            eff_raw = min( raw, vsz );
+            if (!round_size_checked( 0, eff_raw, host_page_mask, &tail_off )) tail_off = 0;
+            pts[0].what = "start";    pts[0].off = 0;
+            pts[1].what = "bss-tail"; pts[1].off = (tail_off < vsz) ? tail_off : vsz - 1;
+            pts[2].what = "deep";     pts[2].off = (vsz > host_page_size) ? (vsz - host_page_size) : 0;
+            for (p = 0; p < 3; p++)
+            {
+                char *a = ptr + sec[i].VirtualAddress + pts[p].off;
+                mach_vm_address_t ra = (mach_vm_address_t)(uintptr_t)a;
+                mach_vm_size_t rs = 0;
+                vm_region_basic_info_data_64_t info;
+                mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+                mach_port_t obj = MACH_PORT_NULL;
+                kern_return_t kr = mach_vm_region( mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64,
+                                                   (vm_region_info_t)&info, &cnt, &obj );
+
+                fprintf( stderr, "macrunner-diag-bss: %s sec=%.8s va=%#x vsz=%#lx raw=%#lx pt=%s off=%#lx "
+                         "host=%p vm_base=%p vm_size=%#llx kr=%d hostprot=%#x guestvprot=%#x\n",
+                         debugstr_us(nt_name), sec[i].Name, sec[i].VirtualAddress,
+                         (unsigned long)vsz, (unsigned long)raw, pts[p].what, (unsigned long)pts[p].off, a,
+                         (kr == KERN_SUCCESS) ? (void *)(uintptr_t)ra : NULL,
+                         (kr == KERN_SUCCESS) ? (unsigned long long)rs : 0ull, kr,
+                         (kr == KERN_SUCCESS) ? info.protection : 0, get_page_vprot( a ) );
+            }
+        }
+    }
+#endif
+
     status = STATUS_SUCCESS;
 
 done:
@@ -5747,6 +5793,17 @@ NTSTATUS virtual_handle_fault( EXCEPTION_RECORD *rec, void *stack )
         }
         else ret = grow_thread_stack( page, &stack_info );
     }
+#if defined(__APPLE__) && defined(__aarch64__)
+    else if (!is_inside_signal_stack( stack ) && err != EXCEPTION_EXECUTE_FAULT)
+    {
+        struct thread_stack_info stack_info;
+
+        if (is_inside_thread_stack( addr, &stack_info ) &&
+            page < stack_info.limit && page + host_page_size >= stack_info.limit &&
+            (char *)stack >= stack_info.limit && (char *)stack <= stack_info.end)
+            ret = grow_thread_stack( page, &stack_info );
+    }
+#endif
     else if (err == EXCEPTION_WRITE_FAULT)
     {
         if (vprot & VPROT_WRITEWATCH)

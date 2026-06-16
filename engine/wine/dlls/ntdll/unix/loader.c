@@ -2023,6 +2023,22 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
 
     TRACE( "looking for %s for file %s\n", debugstr_a(file + pos + 1), debugstr_us(nt_name) );
 
+#if defined(__APPLE__)
+    /* MacRunner DXMT-routing diagnostic (env-gated): the x64-guest's DXGI/D3D11 calls dispatch to the
+     * native ARM64 twin, which loaded as WINE's (not DXMT's) -> wined3d -> no Metal device. Log every
+     * find_builtin_dll resolution of a graphics frontend to see the machine/pe_dir/Fix-A outcome. */
+    if (getenv( "MACRUNNER_DIAG_DXMT" ))
+    {
+        const char *gname = file + pos + 1;
+        if (!strcmp(gname,"d3d11.dll") || !strcmp(gname,"dxgi.dll") ||
+            !strcmp(gname,"d3d10core.dll") || !strcmp(gname,"d3d9.dll"))
+            fprintf( stderr, "macrunner-diag-dxmt-entry: name=%s search_machine=0x%x load_machine=0x%x "
+                     "pe_dir=%s prefer_native=%d dxmt_root=%s\n",
+                     gname, search_machine, load_machine, pe_dir, prefer_native,
+                     getenv("MACRUNNER_DXMT_ROOT") ? getenv("MACRUNNER_DXMT_ROOT") : "(null)" );
+    }
+#endif
+
     if (build_dir)
     {
         /* try as a dll */
@@ -2044,6 +2060,48 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
         status = open_builtin_so_file( ptr, &attr, module, image_info,
                                        search_machine, load_machine, prefer_native );
         if (status != STATUS_DLL_NOT_FOUND) goto done;
+    }
+
+    /* MacRunner HyperBridge: DXMT graphics frontends (d3d11/dxgi/d3d10core/d3d9) carry
+     * the "Wine builtin DLL" marker, so load_builtin() resolves them as builtins and
+     * find_builtin_dll otherwise picks wine's OWN d3d11/dxgi twins from dll_dir (searched
+     * before WINEDLLPATH) -> wined3d -> wined3d_create()==NULL on macOS ->
+     * DXGI_ERROR_UNSUPPORTED (0x887a0004). When MACRUNNER_DXMT_ROOT points at a dual-arch
+     * overlay (<arch>-windows/<dll>), search it FIRST but ONLY for these exact graphics
+     * names, so core DLLs (kernel32 etc.) and native-builtin dependency resolution are
+     * untouched. The overlay is also in WINEDLLPATH, so dll_path_maxlen already covers its
+     * length; the strlen guard keeps the file buffer safe if it ever is not. winemetal is
+     * deliberately excluded: wine has no winemetal twin (no shadowing) and its unixlib lives
+     * in <root>/aarch64-unix, which only the normal so_dir search resolves. */
+    {
+        const char *dxmt_root = getenv( "MACRUNNER_DXMT_ROOT" );
+        const char *name = file + pos + 1; /* lowercased basename, NUL-terminated */
+        if (dxmt_root && dxmt_root[0] && strlen( dxmt_root ) <= dll_path_maxlen &&
+            (!strcmp( name, "d3d11.dll" ) || !strcmp( name, "dxgi.dll" ) ||
+             !strcmp( name, "d3d10core.dll" ) || !strcmp( name, "d3d9.dll" )))
+        {
+            /* <root>/<arch>-windows/<name> */
+            ptr = prepend( prepend( file + pos, pe_dir, strlen(pe_dir) ), dxmt_root, strlen(dxmt_root) );
+            status = open_builtin_pe_file( ptr, &attr, module, size_ptr, image_info, limit_low,
+                                           limit_high, load_machine, prefer_native, offset );
+#if defined(__APPLE__)
+            if (getenv( "MACRUNNER_DIAG_DXMT" ))
+                fprintf( stderr, "macrunner-diag-dxmt: name=%s pe_dir=%s try1=%s status1=0x%x\n",
+                         name, pe_dir, ptr, (unsigned int)status );
+#endif
+            if (NT_SUCCESS(status)) goto done;
+            /* <root>/<name> (overlay set directly to a machine dir) */
+            ptr = prepend( file + pos, dxmt_root, strlen(dxmt_root) );
+            status = open_builtin_pe_file( ptr, &attr, module, size_ptr, image_info, limit_low,
+                                           limit_high, load_machine, prefer_native, offset );
+#if defined(__APPLE__)
+            if (getenv( "MACRUNNER_DIAG_DXMT" ))
+                fprintf( stderr, "macrunner-diag-dxmt: name=%s try2=%s status2=0x%x\n",
+                         name, ptr, (unsigned int)status );
+#endif
+            if (NT_SUCCESS(status)) goto done;
+            status = STATUS_DLL_NOT_FOUND; /* not in overlay -> fall through to normal search */
+        }
     }
 
     for (i = 0; dll_paths[i]; i++)
@@ -2121,6 +2179,18 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
 
     if (is_arm64ec() && image_info->is_hybrid && search_machine == IMAGE_FILE_MACHINE_AMD64)
         search_machine = current_machine;
+
+#if defined(__APPLE__)
+    {
+        static int lb_diag_n;
+        if (getenv( "MACRUNNER_DIAG_DXMT" ) && image_info->is_hybrid && lb_diag_n++ < 60)
+            fprintf( stderr, "macrunner-diag-loadbuiltin: nt=%s image_mach=0x%x search_mach=0x%x req_mach=0x%x "
+                     "is_hybrid=%d is_arm64ec=%d wine_builtin=%d loadorder=%d main_mach=0x%x\n",
+                     debugstr_us(nt_name),
+                     image_info->machine, search_machine, machine, image_info->is_hybrid, is_arm64ec(),
+                     image_info->wine_builtin, loadorder, main_image_info.Machine );
+    }
+#endif
 
 #if defined(__APPLE__) && defined(__aarch64__)
     if (macrunner_hb_x64_loader &&

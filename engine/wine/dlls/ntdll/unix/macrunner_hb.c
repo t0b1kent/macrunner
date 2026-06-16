@@ -1487,6 +1487,61 @@ NTSTATUS macrunner_hb_get_x64_thread_context( HANDLE handle, AMD64_CONTEXT *cont
     return status;
 }
 
+/* MacRunner diag (NULL-call site pin): on an execute-at-0 fault (the guest
+ * called a NULL function pointer) the guest RSP/RIP live in the registered x64
+ * thread context, not an ARM64 register.  Log the guest pc/rip/rsp, the on-stack
+ * return address (safe read via the guest memory map) and the integer registers
+ * so the UnityPlayer call site can be mapped from the run log.  Caller-gated. */
+void macrunner_hb_trace_nullcall_site( const char *source, uint64_t host_pc, uint64_t fault_addr )
+{
+    struct macrunner_hb_x64_thread_context_entry *entry;
+    hb_context_t *ctx = NULL;
+    DWORD tid = macrunner_hb_current_tid();
+    uint64_t pc = 0, rip = 0, rsp = 0, ret = 0, gsb = 0, fsb = 0, teb_self = 0;
+    uint64_t rax = 0, rcx = 0, rdx = 0, rbx = 0, rbp = 0, rsi = 0, rdi = 0, r8 = 0, r9 = 0;
+    BOOL have_ret = FALSE, have_teb = FALSE;
+
+    pthread_mutex_lock( &macrunner_hb_x64_thread_context_mutex );
+    entry = macrunner_hb_find_x64_thread_context_locked( tid, FALSE );
+    if (entry) ctx = entry->ctx;
+    if (ctx)
+    {
+        pc = ctx->pc; rip = ctx->regs.x64.rip; rsp = ctx->regs.x64.rsp;
+        gsb = ctx->gs_base; fsb = ctx->fs_base;
+        rax = ctx->regs.x64.rax; rcx = ctx->regs.x64.rcx; rdx = ctx->regs.x64.rdx;
+        rbx = ctx->regs.x64.rbx; rbp = ctx->regs.x64.rbp; rsi = ctx->regs.x64.rsi;
+        rdi = ctx->regs.x64.rdi; r8 = ctx->regs.x64.r8; r9 = ctx->regs.x64.r9;
+        if (ctx->memory && hb_memory_read_u64( ctx->memory, (hb_gva_t)rsp, &ret ) == HB_OK)
+            have_ret = TRUE;
+        /* gs:[0x30] is the x64 TEB self-pointer; if gs_base is the real TEB this
+         * reads back == gs_base, proving the guest TEB path is intact (x18-independent). */
+        if (ctx->memory && hb_memory_read_u64( ctx->memory, (hb_gva_t)(gsb + 0x30), &teb_self ) == HB_OK)
+            have_teb = TRUE;
+    }
+    pthread_mutex_unlock( &macrunner_hb_x64_thread_context_mutex );
+
+    if (!ctx)
+    {
+        fprintf( stderr, "macrunner-hb-nullcall-site: source=%s host_pc=%p fault=%p no registered x64 ctx tid=%lu\n",
+                 source ? source : "?", (void *)(uintptr_t)host_pc, (void *)(uintptr_t)fault_addr,
+                 (unsigned long)tid );
+        fflush( stderr );
+        return;
+    }
+    fprintf( stderr, "macrunner-hb-nullcall-site: source=%s host_pc=%p fault=%p guest pc=%p rip=%p rsp=%p "
+             "[rsp]=%p%s gs_base=%p fs_base=%p gs[0x30]=%p%s teb=%p rax=%p rcx=%p rdx=%p rbx=%p rbp=%p rsi=%p rdi=%p r8=%p r9=%p\n",
+             source ? source : "?", (void *)(uintptr_t)host_pc, (void *)(uintptr_t)fault_addr,
+             (void *)(uintptr_t)pc, (void *)(uintptr_t)rip,
+             (void *)(uintptr_t)rsp, (void *)(uintptr_t)ret, have_ret ? "" : "(unreadable)",
+             (void *)(uintptr_t)gsb, (void *)(uintptr_t)fsb,
+             (void *)(uintptr_t)teb_self, have_teb ? "" : "(unreadable)",
+             (void *)NtCurrentTeb(),
+             (void *)(uintptr_t)rax, (void *)(uintptr_t)rcx, (void *)(uintptr_t)rdx,
+             (void *)(uintptr_t)rbx, (void *)(uintptr_t)rbp, (void *)(uintptr_t)rsi,
+             (void *)(uintptr_t)rdi, (void *)(uintptr_t)r8, (void *)(uintptr_t)r9 );
+    fflush( stderr );
+}
+
 NTSTATUS macrunner_hb_set_x64_thread_context( HANDLE handle, const AMD64_CONTEXT *context )
 {
     struct macrunner_hb_x64_thread_context_entry *entry;
@@ -3728,7 +3783,21 @@ static hb_result_t macrunner_hb_special_read( void *user, hb_gva_t addr, void *o
         else if (off >= 0x60 && off < 0x68)
             dst[i] = ((unsigned char *)&special->peb)[off - 0x60];
         else
+        {
+#if defined(__APPLE__)
+            /* MacRunner fault-address diagnostic (env-gated): a clean JIT MEMORY_FAULT that misses
+             * both the signal handler and the mach high-path lands here — a low/NULL guest read.
+             * Print the exact faulting guest address to pin the real (non-image-commit) root. */
+            if (getenv( "MACRUNNER_DIAG_FAULTVM" ))
+            {
+                static int sr_fault_n;
+                if (sr_fault_n++ < 16)
+                    fprintf( stderr, "macrunner-diag-specialread-fault: base=0x%llx off=0x%llx size=%zu\n",
+                             (unsigned long long)addr, (unsigned long long)off, size );
+            }
+#endif
             return HB_ERR_MEMORY_FAULT;
+        }
     }
     return HB_OK;
 }
@@ -4060,6 +4129,30 @@ static hb_result_t macrunner_hb_try_x64_cfg_dispatch_fast_path( hb_context_t *ct
 
     if (!target)
     {
+        const char *nv = getenv( "MACRUNNER_HB_TRACE_NULLCALL" );
+        if (nv && nv[0] && nv[0] != '0')
+        {
+            static int nullbranch_n;
+            if (nullbranch_n++ < 8)
+            {
+                /* The NULL branch target: pc=guest call site, op0/op1=form
+                 * (ff15 call[rip], ff25 jmp[rip], ffe0 jmp rax), slot=mem location,
+                 * gs_base/fs_base=guest TEB (x18-independent → tests the x18 theory). */
+                fprintf( stderr, "macrunner-hb-nullbranch: pc=%p op=%02x%02x slot=%p target=0 "
+                         "rax=%p rcx=%p rdx=%p rbx=%p rbp=%p rsi=%p rdi=%p r8=%p r9=%p "
+                         "gs_base=%p fs_base=%p teb=%p\n",
+                         (void *)(uintptr_t)pc, op0, op1,
+                         (void *)(uintptr_t)((op1 == 0x15 || op1 == 0x25) ? slot : 0),
+                         (void *)(uintptr_t)ctx->regs.x64.rax, (void *)(uintptr_t)ctx->regs.x64.rcx,
+                         (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.rbx,
+                         (void *)(uintptr_t)ctx->regs.x64.rbp, (void *)(uintptr_t)ctx->regs.x64.rsi,
+                         (void *)(uintptr_t)ctx->regs.x64.rdi, (void *)(uintptr_t)ctx->regs.x64.r8,
+                         (void *)(uintptr_t)ctx->regs.x64.r9,
+                         (void *)(uintptr_t)ctx->gs_base, (void *)(uintptr_t)ctx->fs_base,
+                         (void *)NtCurrentTeb() );
+                fflush( stderr );
+            }
+        }
         ctx->last_result = HB_ERR_EXEC_FAULT;
         return HB_ERR_EXEC_FAULT;
     }
@@ -6334,6 +6427,21 @@ static uint64_t macrunner_hb_call_arm64_pe_import12( const struct macrunner_hb_i
            (char *)macrunner_hb_bridge_stack_base + macrunner_hb_bridge_stack_size,
            teb->Tib.StackLimit, teb->Tib.StackBase, ntdll_get_thread_data()->kernel_stack,
            (void *)macrunner_hb_native_call_guest_rsp, (void *)stack_top, teb->Tib.ExceptionList );
+    /* MacRunner diag: the guest is calling an import whose native target is NULL
+     * (unresolved) -> the pe_call12 dispatcher blr's 0 = the execute-at-0 crash.
+     * Name the NULL import. target==0 is rare (a real unresolved import). */
+    if (!target)
+    {
+        static int nullimp_n;
+        if (nullimp_n++ < 24)
+            fprintf( stderr, "macrunner-hb-nullimport-call: dll=%s import=%s target=0 "
+                     "args=%p,%p,%p,%p,%p,%p\n",
+                     thunk ? thunk->dll_name : "(none)", thunk ? thunk->import_name : "(none)",
+                     (void *)(uintptr_t)args[0], (void *)(uintptr_t)args[1],
+                     (void *)(uintptr_t)args[2], (void *)(uintptr_t)args[3],
+                     (void *)(uintptr_t)args[4], (void *)(uintptr_t)args[5] );
+        fflush( stderr );
+    }
     if (macrunner_hb_use_callback12_for_thunk( thunk ))
     {
         struct macrunner_hb_pe_callback12_frame *frame;
@@ -6853,6 +6961,15 @@ static BOOL macrunner_hb_try_synthetic_d3d_semantic( hb_context_t *ctx,
     (void)args;
     if (!thunk || !ret) return FALSE;
     if (!(api = macrunner_hb_synthetic_d3d_api_for_proc( thunk->dll_name, thunk->import_name )))
+        return FALSE;
+
+    /* MacRunner: the synthetic stub fakes S_OK WITHOUT calling the real API or
+     * writing out-params (e.g. D3D11CreateDevice's ppDevice) -- a legacy fallback
+     * from before DXMT was wired. DXMT is now bound (the import resolves to a real
+     * native target, not our synthetic stub function), so let the REAL DXMT call
+     * happen: faking here leaves Unity's m_Device NULL and it faults QI'ing it. */
+    if (thunk->target &&
+        thunk->target != macrunner_hb_synthetic_d3d_proc_target( thunk->dll_name, thunk->import_name ))
         return FALSE;
 
     macrunner_hb_write_synthetic_d3d_trace( api );
@@ -18088,16 +18205,26 @@ static BOOL macrunner_hb_pc_is_native_pe_builtin( uint64_t pc, void **module_bas
     return TRUE;
 }
 
-static BOOL macrunner_hb_pc_is_unix_call_dispatcher( uint64_t pc )
+static BOOL macrunner_hb_pc_has_dispatcher_symbol( uint64_t pc, const char *name )
 {
     Dl_info dli = {0};
 
-    if (!pc || !dladdr( (void *)(uintptr_t)pc, &dli )) return FALSE;
-    if (!dli.dli_sname ||
-        (strcmp( dli.dli_sname, "__wine_unix_call_dispatcher" ) &&
-         strcmp( dli.dli_sname, "__wine_syscall_dispatcher" ))) return FALSE;
+    if (!pc || !name || !dladdr( (void *)(uintptr_t)pc, &dli )) return FALSE;
+    if (!dli.dli_sname || strcmp( dli.dli_sname, name )) return FALSE;
     if (!dli.dli_fname || !strstr( dli.dli_fname, "/ntdll.so" )) return FALSE;
     return TRUE;
+}
+
+static BOOL macrunner_hb_pc_is_unix_call_dispatcher( uint64_t pc )
+{
+    return pc && (pc == (uint64_t)(uintptr_t)__wine_unix_call_dispatcher ||
+                  macrunner_hb_pc_has_dispatcher_symbol( pc, "__wine_unix_call_dispatcher" ));
+}
+
+static BOOL macrunner_hb_pc_is_nt_syscall_dispatcher( uint64_t pc )
+{
+    return pc && (pc == (uint64_t)(uintptr_t)__wine_syscall_dispatcher ||
+                  macrunner_hb_pc_has_dispatcher_symbol( pc, "__wine_syscall_dispatcher" ));
 }
 
 static BOOL macrunner_hb_label_allows_direct_native( const char *label )
@@ -18142,8 +18269,37 @@ static void macrunner_hb_trace_heartbeat_module( const char *label, uint64_t pc,
 
 static BOOL macrunner_hb_pc_is_syscall_dispatcher( uint64_t pc )
 {
-    return pc && (pc == (uint64_t)(uintptr_t)__wine_syscall_dispatcher ||
-                  macrunner_hb_pc_is_unix_call_dispatcher( pc ));
+    return macrunner_hb_pc_is_nt_syscall_dispatcher( pc );
+}
+
+static hb_result_t macrunner_hb_dispatch_x64_unix_call( hb_context_t *ctx, uint64_t target,
+                                                        uint64_t ret_addr )
+{
+    unixlib_handle_t handle;
+    typedef NTSTATUS (*macrunner_hb_unix_dispatcher_t)( unixlib_handle_t, unsigned int, void * );
+    macrunner_hb_unix_dispatcher_t dispatcher =
+        (macrunner_hb_unix_dispatcher_t)(void *)__wine_unix_call_dispatcher;
+    unsigned int code;
+    void *params;
+    NTSTATUS status;
+
+    (void)target;
+    if (!ctx || !ret_addr) return HB_ERR_INVALID_ARG;
+
+    handle = (unixlib_handle_t)ctx->regs.x64.rcx;
+    code = (unsigned int)ctx->regs.x64.rdx;
+    params = (void *)(uintptr_t)ctx->regs.x64.r8;
+    status = dispatcher( handle, code, params );
+
+    if (macrunner_hb_trace_direct_native_enabled() &&
+        macrunner_hb_trace_direct_native_budget_allows())
+        fprintf( stderr, "macrunner-hb-x64-unix-call: dispatcher=%p handle=%#llx "
+                 "code=%#x params=%p ret=%p status=%08x\n",
+                 (void *)(uintptr_t)target, (unsigned long long)handle, code,
+                 params, (void *)(uintptr_t)ret_addr, (unsigned int)status );
+
+    macrunner_hb_finish_import( ctx, ret_addr, status );
+    return HB_OK;
 }
 
 static void macrunner_hb_ensure_win32u_syscall_table(void)
@@ -18358,6 +18514,9 @@ static hb_result_t macrunner_hb_call_direct_native_target( hb_context_t *ctx, ui
 
     if (hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &ret_addr ) != HB_OK || !ret_addr)
         return HB_ERR_EXEC_FAULT;
+
+    if (macrunner_hb_pc_is_unix_call_dispatcher( target ))
+        return macrunner_hb_dispatch_x64_unix_call( ctx, target, ret_addr );
 
     if (macrunner_hb_pc_is_syscall_dispatcher( target ))
         return macrunner_hb_dispatch_x64_syscall( ctx, target, ret_addr );
@@ -19023,7 +19182,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
 
             if (macrunner_hb_label_allows_direct_native( label ) &&
                 (macrunner_hb_pc_is_native_pe_builtin( ctx->pc, &native_module ) ||
-                 macrunner_hb_pc_is_unix_call_dispatcher( ctx->pc )))
+                 macrunner_hb_pc_is_unix_call_dispatcher( ctx->pc ) ||
+                 macrunner_hb_pc_is_syscall_dispatcher( ctx->pc )))
             {
                 TRACE( "MacRunner HyperBridge dispatching direct native target %s pc=%p module=%p\n",
                        label ? label : "entry", (void *)(uintptr_t)ctx->pc, native_module );
@@ -19293,6 +19453,50 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         if (trace_npp_open_pack) macrunner_hb_trace_npp_open_pack( ctx, image_start, "before-block" );
         block_pc = ctx->pc;
         last_block_pc = block_pc;
+#if defined(__APPLE__)
+        /* MacRunner GfxDevice path trace: log when the guest enters key UnityPlayer
+         * functions (D3D11 device-create flow) to see exactly where the path diverges
+         * from reaching D3D11CreateDevice. base 0x87efc510000 is deterministic here
+         * (pc - rva from every fault); override via MACRUNNER_GFXPATH_BASE. */
+        {
+            static int gp_state; /* 0 unread 1 off 2 on */
+            static uint64_t gp_base;
+            static unsigned int gp_used;
+            if (!gp_state)
+            {
+                const char *e = getenv( "MACRUNNER_TRACE_GFXPATH" );
+                if (e && e[0] && e[0] != '0')
+                {
+                    const char *b = getenv( "MACRUNNER_GFXPATH_BASE" );
+                    gp_base = b && b[0] ? strtoull( b, NULL, 0 ) : 0x87efc510000ULL;
+                    gp_state = 2;
+                }
+                else gp_state = 1;
+            }
+            if (gp_state == 2 && gp_base && gp_used < 2000)
+            {
+                uint64_t rva = block_pc - gp_base;
+                if (rva == 0x8e3060 || rva == 0x8e2760 || rva == 0x8e2a80 ||
+                    rva == 0x8e2100 || rva == 0x8e23f0 || rva == 0x8e2480 ||
+                    rva == 0x8e3289 || rva == 0x8e2d50)
+                {
+                    static const char *nm = "?";
+                    nm = rva == 0x8e3060 ? "FuncFactory" : rva == 0x8e2760 ? "create-fn" :
+                         rva == 0x8e2a80 ? "QI-fn" : rva == 0x8e2100 ? "setup-8e2100" :
+                         rva == 0x8e23f0 ? "pre-create-8e23f0" : rva == 0x8e2480 ? "adapter-8e2480" :
+                         rva == 0x8e3289 ? "funcB-8e3289" : "ret-8e2d50";
+                    gp_used++;
+                    fprintf( stderr, "macrunner-gfxpath: rva=0x%llx %s rcx=0x%llx rdx=0x%llx r8=0x%llx "
+                             "rbx=0x%llx tid=%04x\n",
+                             (unsigned long long)rva, nm,
+                             (unsigned long long)ctx->regs.x64.rcx, (unsigned long long)ctx->regs.x64.rdx,
+                             (unsigned long long)ctx->regs.x64.r8, (unsigned long long)ctx->regs.x64.rbx,
+                             (unsigned)(uintptr_t)pthread_self() & 0xffff );
+                    fflush( stderr );
+                }
+            }
+        }
+#endif
         /* Windowed per-block rsp ledger: outer-loop view, works for BOTH backends
          * (JIT path included).  Env window is read once; budget bounds output. */
         {
@@ -19512,6 +19716,40 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                  label ? label : "x64", wine_dbgstr_longlong(blocks),
                  (void *)(uintptr_t)ctx->pc,
                  func && func->cfg && func->cfg->entry ? func->cfg->entry->instr_count : 0 );
+        /* MacRunner diag: the WM_PAINT handler (UnityPlayer rva 0x7d520a) calls
+         * vtable methods (+0x678/0x680/0x690/0x698/0x6b0) on a TLS object (rbx).
+         * Capture the CLEAN guest ctx at each WM_PAINT block boundary (before the
+         * native EC icall that faults) -> rbx, [rbx]=vtable, and the slots, so the
+         * NULL method is identified from guest memory (the EC fault state is messy). */
+        if (image_start && ctx->pc >= image_start + 0x7d5220 &&
+            ctx->pc < image_start + 0x7d52f0)
+        {
+            const char *nv = getenv( "MACRUNNER_HB_TRACE_NULLCALL" );
+            static int wp_n;
+            if (nv && nv[0] && nv[0] != '0' && wp_n++ < 24)
+            {
+                uint64_t rbx = ctx->regs.x64.rbx, rax = ctx->regs.x64.rax, vt = 0;
+                uint64_t s678 = 0, s680 = 0, s690 = 0, s698 = 0, s6b0 = 0;
+                hb_memory_read_u64( ctx->memory, (hb_gva_t)rbx, &vt );
+                if (vt)
+                {
+                    hb_memory_read_u64( ctx->memory, (hb_gva_t)(vt + 0x678), &s678 );
+                    hb_memory_read_u64( ctx->memory, (hb_gva_t)(vt + 0x680), &s680 );
+                    hb_memory_read_u64( ctx->memory, (hb_gva_t)(vt + 0x690), &s690 );
+                    hb_memory_read_u64( ctx->memory, (hb_gva_t)(vt + 0x698), &s698 );
+                    hb_memory_read_u64( ctx->memory, (hb_gva_t)(vt + 0x6b0), &s6b0 );
+                }
+                fprintf( stderr, "macrunner-hb-wmpaint: rva=0x%llx rbx=%p rax=%p vtable=%p vt_rva=0x%llx "
+                         "+678=%p +680=%p +690=%p +698=%p +6b0=%p\n",
+                         (unsigned long long)(ctx->pc - image_start), (void *)(uintptr_t)rbx,
+                         (void *)(uintptr_t)rax, (void *)(uintptr_t)vt,
+                         (unsigned long long)((vt > image_start && vt < image_start + 0x2200000) ?
+                                              vt - image_start : 0),
+                         (void *)(uintptr_t)s678, (void *)(uintptr_t)s680, (void *)(uintptr_t)s690,
+                         (void *)(uintptr_t)s698, (void *)(uintptr_t)s6b0 );
+                fflush( stderr );
+            }
+        }
         if (jit_rt)
         {
             ret = hb_jit_runtime_run( jit_rt, func, &out );
@@ -19583,6 +19821,36 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
             else hb_ir_func_destroy( func );
         }
         steps += out.steps_executed;
+        /* MacRunner diag: the JIT-generated indirect-branch guard returned EXEC_FAULT
+         * (guest called/jumped a NULL target).  ctx->pc is the exact faulting
+         * instruction; image_start is the module base -> rva of the call site.
+         * gs_base/fs_base are the guest TEB (x18-independent) -> tests the x18 theory. */
+        if (out.result == HB_ERR_EXEC_FAULT || ret == HB_ERR_EXEC_FAULT ||
+            ctx->last_result == HB_ERR_EXEC_FAULT)
+        {
+            const char *nv = getenv( "MACRUNNER_HB_TRACE_NULLCALL" );
+            static int nb2_n;
+            if (nv && nv[0] && nv[0] != '0' && nb2_n++ < 8)
+            {
+                uint64_t rva = image_start ? ctx->pc - image_start : 0;
+                uint64_t retq = 0;
+                if (ctx->memory)
+                    hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &retq );
+                fprintf( stderr, "macrunner-hb-nullbranch2: pc=%p rva=%p image=%p [rsp]=%p "
+                         "rax=%p rcx=%p rdx=%p rbx=%p rbp=%p rsi=%p rdi=%p r8=%p r9=%p "
+                         "rsp=%p gs_base=%p fs_base=%p teb=%p\n",
+                         (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)rva,
+                         (void *)(uintptr_t)image_start, (void *)(uintptr_t)retq,
+                         (void *)(uintptr_t)ctx->regs.x64.rax, (void *)(uintptr_t)ctx->regs.x64.rcx,
+                         (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.rbx,
+                         (void *)(uintptr_t)ctx->regs.x64.rbp, (void *)(uintptr_t)ctx->regs.x64.rsi,
+                         (void *)(uintptr_t)ctx->regs.x64.rdi, (void *)(uintptr_t)ctx->regs.x64.r8,
+                         (void *)(uintptr_t)ctx->regs.x64.r9, (void *)(uintptr_t)ctx->regs.x64.rsp,
+                         (void *)(uintptr_t)ctx->gs_base, (void *)(uintptr_t)ctx->fs_base,
+                         (void *)NtCurrentTeb() );
+                fflush( stderr );
+            }
+        }
         {
             static int transition_probe_enabled = -1;
             static unsigned int transition_probe_count;
@@ -19704,6 +19972,44 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                       (void *)(uintptr_t)ctx->regs.x64.r10,
                       (void *)(uintptr_t)ctx->regs.x64.r11,
                       fault_full[0] ? fault_full : "(unknown)" );
+#if defined(__APPLE__)
+            /* MacRunner global-init diagnostic (env-gated): the JIT faults deref'ing a NULL .data
+             * global (UnityPlayer rva 0x8e2acb: mov rbx,[rip->0x1f40460]; mov rax,[rbx] with rbx=0).
+             * Dump the .data window around that global to tell isolated-lazy-NULL from a whole
+             * init-block that never ran (all-zero swath). Page is committed-RW so the read is safe. */
+            if (getenv( "MACRUNNER_DIAG_GLOBALS" ) && fault_module && fault_rva == 0x8e2acb)
+            {
+                uintptr_t off;
+                for (off = 0x1f40400; off <= 0x1f40500; off += 8)
+                {
+                    uint64_t v = 0;
+                    memcpy( &v, (const void *)(fault_module + off), 8 );
+                    fprintf( stderr, "macrunner-diag-global: rva=0x%lx host=%p val=0x%llx\n",
+                             (unsigned long)off, (const void *)(fault_module + off),
+                             (unsigned long long)v );
+                }
+                /* The create-fn guard (UnityPlayer 0x8e276f `cmpq $0,[1a02070]`) bails E_FAIL
+                 * if the D3D11CreateDevice IAT slot is NULL -> device@1f40460 stays NULL.
+                 * Read the graphics IAT slots to confirm the slot is 0 vs the rebound thunk. */
+                fprintf( stderr, "macrunner-diag-iatsentinel: reached fault_module=%p\n",
+                         (const void *)fault_module );
+                fflush( stderr );
+                {
+                    static const uintptr_t iat[4] = { 0x1a02068, 0x1a02070, 0x1a02098, 0x1a020a0 };
+                    static const char *nm[4] = { "D3D11On12", "D3D11CreateDevice",
+                                                  "CreateDXGIFactory2", "CreateDXGIFactory" };
+                    unsigned int i;
+                    for (i = 0; i < 4; i++)
+                    {
+                        uint64_t v = 0;
+                        BOOL ok = macrunner_hb_read_local_memory( fault_module + iat[i], &v, 8 );
+                        fprintf( stderr, "macrunner-diag-iat: %s[%lx] read_ok=%d = 0x%llx\n",
+                                 nm[i], (unsigned long)iat[i], (int)ok, (unsigned long long)v );
+                        fflush( stderr );
+                    }
+                }
+            }
+#endif
             /* UCRT putc-validator forensics: dump the stream struct, the locale
              * ctype chain and the in-flight output buffer text at death. */
             {

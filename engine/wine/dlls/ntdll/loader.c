@@ -2566,12 +2566,16 @@ static void *macrunner_hb_find_native_target_for_thunk_import( WINE_MODREF *targ
                                                               ULONG_PTR thunk_target )
 {
     void *native_target;
+    void *r_disk = NULL, *r_exp = NULL, *r_redir = NULL;
+    int dbg = import_name && (strstr( import_name, "CreateDXGIFactory" ) ||
+                             strstr( import_name, "D3D11Create" ) ||
+                             strstr( import_name, "D3D11On12" ));
 
     if (!target_mod || !import_name || !thunk_target) return NULL;
 
-    native_target = macrunner_hb_find_disk_export_outside_section( target_mod, import_name, ".hexpthk" );
+    native_target = r_disk = macrunner_hb_find_disk_export_outside_section( target_mod, import_name, ".hexpthk" );
     if (!native_target)
-        native_target = macrunner_hb_find_export_outside_section( target_mod->ldr.DllBase, import_name, ".hexpthk" );
+        native_target = r_exp = macrunner_hb_find_export_outside_section( target_mod->ldr.DllBase, import_name, ".hexpthk" );
     if (!native_target)
     {
         void *redirected = macrunner_hb_redirect_arm64x_thunk_to_native( target_mod->ldr.DllBase,
@@ -2580,7 +2584,22 @@ static void *macrunner_hb_find_native_target_for_thunk_import( WINE_MODREF *targ
         if (redirected != (void *)thunk_target &&
             !macrunner_hb_address_in_section( target_mod->ldr.DllBase, ".hexpthk",
                                               (ULONG_PTR)redirected ))
-            native_target = redirected;
+            native_target = r_redir = redirected;
+    }
+
+    if (dbg)
+    {
+        ULONG_PTR b = (ULONG_PTR)target_mod->ldr.DllBase;
+        MESSAGE( "macrunner-hb-nativethunk: import=%s mod=%s base=%p thunk_target=%p(rva 0x%llx) "
+                 "disk=%p(rva 0x%llx) export=%p(rva 0x%llx) redir=%p(rva 0x%llx) final=%p(rva 0x%llx) exec=%d\n",
+                 import_name, debugstr_w(target_mod->ldr.BaseDllName.Buffer), (void *)b,
+                 (void *)thunk_target, (unsigned long long)(thunk_target - b),
+                 r_disk, (unsigned long long)(r_disk ? (ULONG_PTR)r_disk - b : 0),
+                 r_exp, (unsigned long long)(r_exp ? (ULONG_PTR)r_exp - b : 0),
+                 r_redir, (unsigned long long)(r_redir ? (ULONG_PTR)r_redir - b : 0),
+                 native_target, (unsigned long long)(native_target ? (ULONG_PTR)native_target - b : 0),
+                 native_target ? macrunner_hb_address_in_executable_section( target_mod->ldr.DllBase,
+                                                                             (ULONG_PTR)native_target ) : -1 );
     }
 
     if (native_target &&
@@ -2854,6 +2873,8 @@ static const WCHAR *macrunner_hb_builtin_machine_slash_dir( WORD machine )
     }
 }
 
+static BOOL macrunner_hb_is_dxmt_graphics_frontend( const WCHAR *name );
+
 static WCHAR *macrunner_hb_build_builtin_path_for_machine( const WCHAR *name, WORD machine )
 {
     WCHAR dllpath[32];
@@ -2867,6 +2888,36 @@ static WCHAR *macrunner_hb_build_builtin_path_for_machine( const WCHAR *name, WO
     if (!name) return NULL;
     if (!(machine_dir = macrunner_hb_builtin_machine_dir( machine ))) return NULL;
     if (!(machine_slash_dir = macrunner_hb_builtin_machine_slash_dir( machine ))) return NULL;
+
+    /* MacRunner Fix-A mirror (PE side): for the 4 DXMT/DXVK graphics frontends,
+     * resolve the builtin from the MACRUNNER_DXMT_ROOT overlay FIRST (before the
+     * system_dll_path scan), so a dependency load (e.g. DXMT d3d11 -> dxgi) commits
+     * DXMT's ARM64X twin from the overlay instead of wine's pure-ARM64 dxgi (which
+     * -> wined3d -> NULL on macOS). Strictly gated on the 4 graphics names +
+     * MACRUNNER_DXMT_ROOT set; the overlay deploys all 4 for both arches, so a
+     * missing-file early-return can't strand a non-graphics builtin. machine_dir
+     * already carries a leading '\\' (e.g. "\\aarch64-windows"). */
+    if (macrunner_hb_is_dxmt_graphics_frontend( name ))
+    {
+        WCHAR root[800];
+        if (get_env( L"MACRUNNER_DXMT_ROOT", root, sizeof(root) ) && root[0])
+        {
+            SIZE_T rl = wcslen( root ), ml = wcslen( machine_dir ), nl = wcslen( name );
+            WCHAR *ov = RtlAllocateHeap( GetProcessHeap(), 0, (rl + ml + nl + 8) * sizeof(WCHAR) );
+            if (ov)
+            {
+                SIZE_T j = 0; DWORD k;
+                ov[j++] = 'Z'; ov[j++] = ':';
+                for (k = 0; k < rl; k++) ov[j++] = (root[k] == '/') ? '\\' : root[k];
+                memcpy( ov + j, machine_dir, ml * sizeof(WCHAR) ); j += ml;
+                ov[j++] = '\\';
+                memcpy( ov + j, name, (nl + 1) * sizeof(WCHAR) );
+                TRACE( "MacRunner HyperBridge DXMT overlay builtin path %s => %s\n",
+                       debugstr_w(name), debugstr_w(ov) );
+                return ov;
+            }
+        }
+    }
 
     if (system_dll_path.Buffer)
     {
@@ -2962,6 +3013,26 @@ static NTSTATUS macrunner_hb_open_native_builtin_dependency( const WCHAR *libnam
     return status;
 }
 
+static BOOL macrunner_hb_is_dxmt_graphics_frontend( const WCHAR *name )
+{
+    return name && (!wcsicmp( name, L"d3d11.dll" ) || !wcsicmp( name, L"dxgi.dll" ) ||
+                    !wcsicmp( name, L"d3d10core.dll" ) || !wcsicmp( name, L"d3d9.dll" ));
+}
+
+/* MacRunner option-2 (operator-chosen): route the x64 guest's d3d11/dxgi/d3d10core/d3d9 import to DXMT's
+ * x86_64-windows frontend (JIT-executed) instead of swapping to a native ARM64 counterpart. DXMT ships only
+ * plain-ARM64 aarch64 twins (no .hexpthk/.a64xrm), so the ARM64EC loader prefers wine's ARM64X dxgi as the
+ * companion -> wined3d -> NULL device on macOS. Skipping the native-counterpart swap for these 4 names keeps
+ * the x64 DXMT dxgi (D3D11->Metal) bound; its heavy Metal work lives in winemetal.so (native, via unixcall),
+ * so only the dxgi frontend logic is JIT'd. Gated by MACRUNNER_HB_DXMT_X64_FRONTEND -> reversible. */
+static BOOL macrunner_hb_dxmt_x64_frontend_enabled(void)
+{
+    WCHAR value[8] = {0};
+
+    return get_env( L"MACRUNNER_HB_DXMT_X64_FRONTEND", value, sizeof(value) ) &&
+           value[0] && value[0] != '0';
+}
+
 static WINE_MODREF *macrunner_hb_load_native_counterpart_module( WINE_MODREF *target_mod )
 {
     static const WCHAR x64_dir[] = L"\\x86_64-windows\\";
@@ -2981,7 +3052,19 @@ static WINE_MODREF *macrunner_hb_load_native_counterpart_module( WINE_MODREF *ta
     full = target_mod->ldr.FullDllName.Buffer;
     if (!(match = wcsstr( full, x64_dir )))
     {
-        if ((native_mod = find_basename_module_machine( target_mod->ldr.BaseDllName.Buffer, current_machine )))
+        /* MacRunner option-2: skip the native-counterpart swap for DXMT graphics frontends so the x64
+         * guest keeps DXMT's x86_64 dxgi (JIT->Metal) instead of wine's ARM64X dxgi (->wined3d->NULL). */
+        if (macrunner_hb_dxmt_x64_frontend_enabled() &&
+            macrunner_hb_is_dxmt_graphics_frontend( target_mod->ldr.BaseDllName.Buffer ))
+            return NULL;
+
+        /* MacRunner EDIT 2: for DXMT graphics frontends, skip the already-loaded
+         * find_basename match (it is current-machine/ARM64-keyed -> misses DXMT's
+         * ARM64X twin whose FileHeader.Machine is flipped to AMD64 by the EC-view
+         * update_arm64x_mapping, and can wrongly match wine's pure-ARM64 dxgi).
+         * Go straight to the builtin path, which now routes to the DXMT overlay. */
+        if (!macrunner_hb_is_dxmt_graphics_frontend( target_mod->ldr.BaseDllName.Buffer ) &&
+            (native_mod = find_basename_module_machine( target_mod->ldr.BaseDllName.Buffer, current_machine )))
             return native_mod;
 
         if ((native_path = macrunner_hb_build_native_builtin_path( target_mod->ldr.BaseDllName.Buffer )))
@@ -3073,10 +3156,27 @@ static void *macrunner_hb_find_native_counterpart_export( WINE_MODREF *target_mo
     if (!target_mod || !target_mod->ldr.FullDllName.Buffer || !import_name) return NULL;
     if (current_machine != IMAGE_FILE_MACHINE_ARM64) return NULL;
 
+    /* MacRunner option-2: for DXMT graphics frontends, don't resolve a native ARM64 export -> the import
+     * binds to DXMT's x86_64 dxgi export (JIT->Metal) instead of wine's ARM64X dxgi (->wined3d->NULL). */
+    if (macrunner_hb_dxmt_x64_frontend_enabled() &&
+        macrunner_hb_is_dxmt_graphics_frontend( target_mod->ldr.BaseDllName.Buffer ))
+    {
+        static int o2n;
+        if (o2n++ < 30)
+            ERR( "MacRunner opt2-gate find_export GFX: target=%s import=%s\n",
+                 debugstr_w(target_mod->ldr.BaseDllName.Buffer), import_name );
+        return NULL;
+    }
+
     full = target_mod->ldr.FullDllName.Buffer;
     if (!(match = wcsstr( full, x64_dir )))
     {
-        if (!(native_mod = find_basename_module_machine( target_mod->ldr.BaseDllName.Buffer, current_machine )))
+        /* MacRunner EDIT 2 (mirror of load_native_counterpart_module): force the
+         * builtin-path route for DXMT graphics frontends (skip the ARM64-keyed /
+         * EC-view-blind find_basename match) so it resolves the DXMT overlay twin. */
+        native_mod = macrunner_hb_is_dxmt_graphics_frontend( target_mod->ldr.BaseDllName.Buffer )
+                     ? NULL : find_basename_module_machine( target_mod->ldr.BaseDllName.Buffer, current_machine );
+        if (!native_mod)
         {
             if (!(native_path = macrunner_hb_build_native_builtin_path( target_mod->ldr.BaseDllName.Buffer )))
                 return NULL;
@@ -3170,6 +3270,15 @@ static void *macrunner_hb_find_native_counterpart_export( WINE_MODREF *target_mo
         if (native_mod_out) *native_mod_out = native_mod;
     }
 
+    if (import_name && native_mod &&
+        (strstr( import_name, "CreateDXGIFactory" ) || strstr( import_name, "D3D11Create" ) ||
+         strstr( import_name, "D3D11On12" )))
+        MESSAGE( "macrunner-hb-counterpart: import=%s target_path=%s native_path=%s native_base=%p arm64x=%d proc=%p(rva 0x%llx)\n",
+                 import_name, debugstr_w(target_mod->ldr.FullDllName.Buffer),
+                 debugstr_w(native_mod->ldr.FullDllName.Buffer), native_mod->ldr.DllBase,
+                 macrunner_hb_get_arm64x_metadata( native_mod->ldr.DllBase ) ? 1 : 0, proc,
+                 (unsigned long long)(proc ? (ULONG_PTR)proc - (ULONG_PTR)native_mod->ldr.DllBase : 0) );
+
 done:
     RtlFreeHeap( GetProcessHeap(), 0, native_path );
     return proc;
@@ -3205,6 +3314,14 @@ static ULONG_PTR macrunner_hb_maybe_register_import_thunk( WINE_MODREF *importer
 
     importer_nt = RtlImageNtHeader( importer->ldr.DllBase );
     target_nt = RtlImageNtHeader( target_mod->ldr.DllBase );
+    if (import_name && (strstr( import_name, "CreateDXGIFactory" ) ||
+                        strstr( import_name, "D3D11Create" ) || strstr( import_name, "D3D11On12" )))
+        MESSAGE( "macrunner-hb-iatentry: %s!%s target=%p(rva 0x%llx) tmod=%s tbase=%p imach=%04x tmach=%04x flags=%lx\n",
+                 dll_name, import_name, (void *)target,
+                 (unsigned long long)(target - (ULONG_PTR)target_mod->ldr.DllBase),
+                 debugstr_w(target_mod->ldr.BaseDllName.Buffer), target_mod->ldr.DllBase,
+                 importer_nt ? importer_nt->FileHeader.Machine : 0,
+                 target_nt ? target_nt->FileHeader.Machine : 0, target_mod->ldr.Flags );
     if (trace_iat)
         TRACE( "MacRunner HyperBridge IAT candidate %s!%s importer=%s imach=%04x target=%s tmach=%04x flags=%lx target=%p\n",
                dll_name, import_name, debugstr_w(importer->ldr.BaseDllName.Buffer),
@@ -3229,6 +3346,11 @@ static ULONG_PTR macrunner_hb_maybe_register_import_thunk( WINE_MODREF *importer
                     target_nt->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64X ||
                     target_nt->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64EC) &&
                    macrunner_hb_target_is_native_thunk_or_mid( target_mod, target, &thunk_target );
+    if (import_name && (strstr( import_name, "D3D11Create" ) || strstr( import_name, "D3D11On12" ) ||
+                        strstr( import_name, "CreateDXGIFactory" )))
+        MESSAGE( "macrunner-hb-cpdecision: import=%s native_thunk=%d tmach=0x%x cur=0x%x tpath=%s\n",
+                 import_name, native_thunk, target_nt->FileHeader.Machine, current_machine,
+                 debugstr_w(target_mod->ldr.FullDllName.Buffer) );
     if (semantic_stub && trace_iat)
         TRACE( "MacRunner HyperBridge IAT semantic stub %s!%s target=%p\n",
                dll_name, import_name, (void *)target );
@@ -3253,6 +3375,11 @@ static ULONG_PTR macrunner_hb_maybe_register_import_thunk( WINE_MODREF *importer
         WINE_MODREF *native_mod = NULL;
         void *native_target = macrunner_hb_find_native_counterpart_export( target_mod, import_name, &native_mod );
 
+        if (import_name && (strstr( import_name, "D3D11Create" ) || strstr( import_name, "D3D11On12" ) ||
+                            strstr( import_name, "CreateDXGIFactory" )))
+            MESSAGE( "macrunner-hb-cpresult: import=%s native_target=%p native_mod=%s\n",
+                     import_name, native_target,
+                     native_mod ? debugstr_w(native_mod->ldr.FullDllName.Buffer) : "(null)" );
         if (native_target)
         {
             TRACE( "MacRunner HyperBridge native counterpart import %s!%s redirected %p -> %p (%s)\n",
@@ -3343,6 +3470,11 @@ static ULONG_PTR macrunner_hb_maybe_register_import_thunk( WINE_MODREF *importer
         return target;
     }
 
+    if (import_name && (strstr( import_name, "D3D11Create" ) || strstr( import_name, "D3D11On12" ) ||
+                        strstr( import_name, "CreateDXGIFactory" )))
+        MESSAGE( "macrunner-hb-iatfinal: importer=%s import=%s native_cp=%d guest_target=%p target=%p tmmach=0x%x\n",
+                 debugstr_w(importer->ldr.BaseDllName.Buffer), import_name, native_counterpart,
+                 (void *)(ULONG_PTR)params.guest_target, (void *)target, params.target_module_machine );
     TRACE( "MacRunner HyperBridge rewrote import %s!%s target=%p guest=%p\n",
            dll_name, import_name, (void *)target, (void *)(ULONG_PTR)params.guest_target );
     return (ULONG_PTR)params.guest_target;

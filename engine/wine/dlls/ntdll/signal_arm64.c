@@ -271,7 +271,12 @@ static inline BOOL macrunner_hb_unwind_made_no_progress( DWORD64 pc, DWORD64 pre
     if (!context) return TRUE;
     if (context->Pc == pc || context->Pc == pc + 4) return TRUE;
     if (context->Sp == prev_sp) return TRUE;
-    if (prev_fp && context->Fp <= prev_fp) return TRUE;
+    /* fp staying EQUAL is valid for a frameless function (it never establishes
+     * its own frame pointer, so unwinding it leaves the caller's fp untouched);
+     * only fp moving strictly BACKWARD (down-stack) signals a corrupt unwind.
+     * Using <= here false-rejected genuine native unwinds of frameless DXMT
+     * ARM64 frames (sp advanced, pc -> real caller, fp unchanged). */
+    if (prev_fp && context->Fp < prev_fp) return TRUE;
     return FALSE;
 }
 
@@ -479,6 +484,77 @@ static void macrunner_hb_trace_first_chance_exception( EXCEPTION_RECORD *rec, CO
              teb->Tib.StackLimit, teb->Tib.StackBase, rec->NumberParameters,
              rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0,
              rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0 );
+
+    /* MacRunner: any fault inside UnityPlayer -> dump its graphics IAT slots, to
+     * see whether D3D11CreateDevice[1a02070] is the rebound thunk (non-NULL) or 0
+     * (the create-fn guard at UnityPlayer 0x8e276f `cmpq $0,[1a02070]` bails E_FAIL
+     * if NULL -> device @1f40460 stays NULL -> QI fault at 0x8e2acb). */
+    if (module_base && rva && rva < 0x2200000)
+    {
+        char *u = (char *)module_base;
+        __TRY {
+            MESSAGE( "macrunner-hb-unityiat: faultrva=0x%llx D3D11On12[1a02068]=%p D3D11CreateDevice[1a02070]=%p "
+                     "CreateDXGIFactory2[1a02098]=%p CreateDXGIFactory[1a020a0]=%p device[1f40460]=%p factory[1f404a8]=%p\n",
+                     (unsigned long long)rva,
+                     (void *)*(ULONG64 *)(u + 0x1a02068), (void *)*(ULONG64 *)(u + 0x1a02070),
+                     (void *)*(ULONG64 *)(u + 0x1a02098), (void *)*(ULONG64 *)(u + 0x1a020a0),
+                     (void *)*(ULONG64 *)(u + 0x1f40460), (void *)*(ULONG64 *)(u + 0x1f404a8) );
+        } __EXCEPT(macrunner_hb_pe_scan_fault) { } __ENDTRY
+    }
+
+    /* NULL/low call (execute AV at addr ~0): the immediate caller is lost
+     * (lr=0 for a tail-br), so walk the saved fp-chain to recover the calling
+     * frame's module/rva — pins which DXMT/D3D11 function jumped through a NULL
+     * pointer. Also dump x8/x9 (likely-NULL call targets) + x19/x0 (object). */
+    if (pc < 0x10000)
+    {
+        ULONG_PTR fp = (ULONG_PTR)context->Fp;
+        int lvl;
+        for (lvl = 0; lvl < 5 && fp && !(fp & 7); lvl++)
+        {
+            ULONG_PTR caller_fp = 0, caller_lr = 0, crva = 0, cbase = 0;
+            LDR_DATA_TABLE_ENTRY *cmod = NULL;
+            char cname[96] = "-";
+            __TRY { caller_fp = ((const ULONG_PTR *)fp)[0]; caller_lr = ((const ULONG_PTR *)fp)[1]; }
+            __EXCEPT(macrunner_hb_pe_scan_fault) { break; }
+            __ENDTRY
+            if (LdrFindEntryForAddress( (void *)caller_lr, &cmod ) == STATUS_SUCCESS && cmod)
+            {
+                cbase = (ULONG_PTR)cmod->DllBase;
+                crva = caller_lr - cbase;
+                macrunner_hb_copy_unicode_ascii( cname, sizeof(cname), &cmod->BaseDllName );
+            }
+            MESSAGE( "macrunner-hb-nullcall-frame: lvl=%d fp=%p caller_lr=%p module=%s base=%p rva=0x%llx "
+                     "x8=%p x9=%p x19=%p x0=%p x1=%p\n",
+                     lvl, (void *)fp, (void *)caller_lr, cname, (void *)cbase, (unsigned long long)crva,
+                     (void *)(ULONG_PTR)context->X[8], (void *)(ULONG_PTR)context->X[9],
+                     (void *)(ULONG_PTR)context->X[19], (void *)(ULONG_PTR)context->X[0],
+                     (void *)(ULONG_PTR)context->X[1] );
+            if (caller_fp <= fp) break;
+            fp = caller_fp;
+        }
+        /* The execute-at-0 fault is in NATIVE ARM64EC code (a blr/br to a 0 target),
+         * so dump the registers NATIVELY (the earlier x64-EC decode was garbage).
+         * Map each to module/rva: r30=Lr (native caller after the blr), r16/r17 =
+         * branch-target/veneer regs (which is 0?), r29=Fp, r31=Sp, r32=Pc. */
+        {
+            ULONG_PTR regs[33];
+            int i;
+            for (i = 0; i < 29; i++) regs[i] = (ULONG_PTR)context->X[i];
+            regs[29] = (ULONG_PTR)context->Fp;
+            regs[30] = (ULONG_PTR)context->Lr;
+            regs[31] = (ULONG_PTR)context->Sp;
+            regs[32] = (ULONG_PTR)context->Pc;
+            for (i = 0; i < 33; i++)
+            {
+                ULONG_PTR v = regs[i], rva = 0; LDR_DATA_TABLE_ENTRY *m = NULL; char mn[64] = "-";
+                if (v && LdrFindEntryForAddress( (void *)v, &m ) == STATUS_SUCCESS && m)
+                { rva = v - (ULONG_PTR)m->DllBase; macrunner_hb_copy_unicode_ascii( mn, sizeof(mn), &m->BaseDllName ); }
+                MESSAGE( "macrunner-hb-nullcall-natreg: r%d=%p %s+0x%llx\n",
+                         i, (void *)v, mn, (unsigned long long)rva );
+            }
+        }
+    }
 }
 
 static BOOL macrunner_hb_fix_tagged_arm64ec_misalignment( EXCEPTION_RECORD *rec, CONTEXT *context )
@@ -1446,6 +1522,7 @@ static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEX
     DWORD64 lookup_pc;
     DWORD64 unwind_lr, unwind_sp, unwind_fp;
     CONTEXT unwind_context;
+    void *unwind_entry;
     NTSTATUS status;
     int i;
 
@@ -1504,11 +1581,16 @@ restart:
                      (void *)pc, (void *)context->Lr, context->Sp );
             MESSAGE( "macrunner-hb-seh-host-boundary-detail: side=arm64 tid=%04lx pc=%p lr=%p "
                      "sp=%016I64x exception=%08lx flags=%08lx ldr_status=%08lx module=%p "
+                     "exc_addr=%p info0=%Ix info1=%p "
                      "resume=stop-unwind frame=%p frame_pc=%p frame_lr=%p frame_sp=%p "
                      "frame_prev=%p frame_cfa=%p frame_flags=%08lx\n",
                      tid, (void *)pc, (void *)context->Lr, context->Sp,
                      rec ? rec->ExceptionCode : 0, rec ? rec->ExceptionFlags : 0,
-                     ldr_status, module ? module->DllBase : NULL, frame,
+                     ldr_status, module ? module->DllBase : NULL,
+                     rec ? rec->ExceptionAddress : NULL,
+                     (ULONG_PTR)(rec && rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0),
+                     (void *)(ULONG_PTR)(rec && rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0),
+                     frame,
                      frame ? (void *)(ULONG_PTR)frame->pc : NULL,
                      frame ? (void *)(ULONG_PTR)frame->lr : NULL,
                      frame ? (void *)(ULONG_PTR)frame->sp : NULL,
@@ -1538,10 +1620,184 @@ restart:
                      (void *)pc, (void *)context->Lr, context->Sp );
             MESSAGE( "macrunner-hb-seh-host-boundary-detail: side=arm64 tid=%04lx pc=%p lr=%p "
                      "sp=%016I64x exception=%08lx flags=%08lx ldr_status=%08lx module=%p "
-                     "resume=stop-unwind\n",
+                     "exc_addr=%p info0=%Ix info1=%p resume=stop-unwind\n",
                      tid, (void *)pc, (void *)context->Lr, context->Sp,
                      rec ? rec->ExceptionCode : 0, rec ? rec->ExceptionFlags : 0,
-                     ldr_status, module ? module->DllBase : NULL );
+                     ldr_status, module ? module->DllBase : NULL,
+                     rec ? rec->ExceptionAddress : NULL,
+                     (ULONG_PTR)(rec && rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0),
+                     (void *)(ULONG_PTR)(rec && rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0) );
+            /* MacRunner diag: a NULL-call boundary (exc_addr=0, EXECUTE) carries the
+             * original fault registers here (first unwind step).  Dump them + a stack
+             * window so the guest return address (a guest-range value, the call site)
+             * can be recovered from the run log. */
+            if (rec && rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+                !rec->ExceptionAddress)
+            {
+                const ULONG64 *stk = (const ULONG64 *)(ULONG_PTR)context->Sp;
+                unsigned i;
+                MESSAGE( "macrunner-hb-seh-host-boundary-regs: x0=%p x1=%p x2=%p x3=%p x4=%p x5=%p "
+                         "x6=%p x7=%p x8=%p x9=%p x16=%p x17=%p x18=%p x19=%p x20=%p\n",
+                         (void *)context->X[0], (void *)context->X[1], (void *)context->X[2],
+                         (void *)context->X[3], (void *)context->X[4], (void *)context->X[5],
+                         (void *)context->X[6], (void *)context->X[7], (void *)context->X[8],
+                         (void *)context->X[9], (void *)context->X[16], (void *)context->X[17],
+                         (void *)context->X[18], (void *)context->X[19], (void *)context->X[20] );
+                MESSAGE( "macrunner-hb-seh-host-boundary-regs2: x21=%p x22=%p x23=%p x24=%p x25=%p "
+                         "x26=%p x27=%p x28=%p fp=%p lr=%p sp=%p\n",
+                         (void *)context->X[21], (void *)context->X[22], (void *)context->X[23],
+                         (void *)context->X[24], (void *)context->X[25], (void *)context->X[26],
+                         (void *)context->X[27], (void *)context->X[28], (void *)context->Fp,
+                         (void *)context->Lr, (void *)context->Sp );
+                for (i = 0; i < 32; i += 4)
+                    MESSAGE( "macrunner-hb-seh-host-boundary-stk: +%02x %p %p %p %p\n",
+                             i * 8, (void *)stk[i], (void *)stk[i+1],
+                             (void *)stk[i+2], (void *)stk[i+3] );
+            }
+            /* The NULL call is in UnityPlayer's WndProc (rva 0x7d5170), which calls
+             * USER32 imports through its IAT.  Resolve the UnityPlayer module from a
+             * guest pointer (x1/x5/x19 hold guest addresses) and dump the suspect
+             * IAT slots so a NULL (unresolved) import is identified directly. */
+            if (rec && rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && !rec->ExceptionAddress)
+            {
+                ULONG64 probes[3] = { context->X[5], context->X[1], context->X[19] };
+                PEB_LDR_DATA *pldr = NtCurrentTeb()->Peb->LdrData;
+                void *upbase = NULL;
+                unsigned pi;
+                for (pi = 0; pi < 3 && !upbase && pldr; pi++)
+                {
+                    LIST_ENTRY *le;
+                    for (le = pldr->InLoadOrderModuleList.Flink;
+                         le != &pldr->InLoadOrderModuleList; le = le->Flink)
+                    {
+                        LDR_DATA_TABLE_ENTRY *m =
+                            CONTAINING_RECORD( le, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks );
+                        ULONG_PTR b = (ULONG_PTR)m->DllBase;
+                        if (probes[pi] >= b && probes[pi] < b + m->SizeOfImage)
+                        { upbase = m->DllBase; break; }
+                    }
+                }
+                if (upbase)
+                {
+                    char *u = (char *)upbase;
+                    ULONG64 base64 = (ULONG64)(ULONG_PTR)upbase;
+                    unsigned ri;
+                    static const int rix[5] = { 4, 3, 28, 25, 6 };
+                    MESSAGE( "macrunner-hb-nullcall-iat: module_base=%p "
+                             "GetParent[1a01c18]=%p ValidateRect[1a01c20]=%p "
+                             "GetWindowRect[1a01cc8]=%p IsIconic[1a01ce8]=%p\n",
+                             upbase,
+                             (void *)*(ULONG64 *)(u + 0x1a01c18),
+                             (void *)*(ULONG64 *)(u + 0x1a01c20),
+                             (void *)*(ULONG64 *)(u + 0x1a01cc8),
+                             (void *)*(ULONG64 *)(u + 0x1a01ce8) );
+                    /* The fault is call [dxgi!CreateDXGIFactory2 IAT slot 0x1a02098].
+                     * Dump the runtime values of the critical dxgi/d3d11 import slots
+                     * to confirm which graphics import is NULL (unresolved). */
+                    MESSAGE( "macrunner-hb-nullcall-gfximports: D3D11On12CreateDevice[1a02068]=%p "
+                             "D3D11CreateDevice[1a02070]=%p CreateDXGIFactory2[1a02098]=%p "
+                             "CreateDXGIFactory[1a020a0]=%p\n",
+                             (void *)*(ULONG64 *)(u + 0x1a02068),
+                             (void *)*(ULONG64 *)(u + 0x1a02070),
+                             (void *)*(ULONG64 *)(u + 0x1a02098),
+                             (void *)*(ULONG64 *)(u + 0x1a020a0) );
+                    /* The IAT slots are x64->EC thunks; read each thunk's code words +
+                     * its embedded EC target (typ. thunk+8) — a 0 target = unbound EC
+                     * export => the execute-at-0 in the EC dispatch. */
+                    {
+                        ULONG64 ts[4];
+                        unsigned ti;
+                        ts[0] = *(ULONG64 *)(u + 0x1a02068); ts[1] = *(ULONG64 *)(u + 0x1a02070);
+                        ts[2] = *(ULONG64 *)(u + 0x1a02098); ts[3] = *(ULONG64 *)(u + 0x1a020a0);
+                        for (ti = 0; ti < 4; ti++)
+                        {
+                            const ULONG64 *t = (const ULONG64 *)(ULONG_PTR)ts[ti];
+                            static const char *nm[4] = { "D3D11On12", "D3D11Create",
+                                                          "CreateDXGIFactory2", "CreateDXGIFactory" };
+                            if (ts[ti] < 0x10000) { MESSAGE( "macrunner-hb-gfxthunk: %s thunk=%p (low)\n", nm[ti], (void *)(ULONG_PTR)ts[ti] ); continue; }
+                            MESSAGE( "macrunner-hb-gfxthunk: %s thunk=%p w0=%016llx w1=%016llx w2=%016llx w3=%016llx\n",
+                                     nm[ti], (void *)(ULONG_PTR)ts[ti],
+                                     (unsigned long long)t[0], (unsigned long long)t[1],
+                                     (unsigned long long)t[2], (unsigned long long)t[3] );
+                            /* Follow this thunk's EC target (w1 = thunk+8 literal):
+                             * identify its module+rva and disasm the first insns.
+                             * If the EC entry itself br's 0 (or is a bad address),
+                             * this names the broken x64->EC forward target. */
+                            {
+                                ULONG64 tgt = t[1];
+                                LDR_DATA_TABLE_ENTRY *tm = NULL; ULONG_PTR trva = 0; char tn[64] = "-";
+                                unsigned int ins[8] = {0};
+                                if (tgt && LdrFindEntryForAddress( (void *)(ULONG_PTR)tgt, &tm ) == STATUS_SUCCESS && tm)
+                                { trva = (ULONG_PTR)tgt - (ULONG_PTR)tm->DllBase;
+                                  macrunner_hb_copy_unicode_ascii( tn, sizeof(tn), &tm->BaseDllName ); }
+                                __TRY { const unsigned int *c = (const unsigned int *)(ULONG_PTR)tgt;
+                                        ins[0]=c[0];ins[1]=c[1];ins[2]=c[2];ins[3]=c[3];
+                                        ins[4]=c[4];ins[5]=c[5];ins[6]=c[6];ins[7]=c[7]; }
+                                __EXCEPT(macrunner_hb_pe_scan_fault) { ins[0]=0xdeadbeef; }
+                                __ENDTRY
+                                MESSAGE( "macrunner-hb-gfxtarget: %s ec_target=%p module=%s rva=0x%llx "
+                                         "insns=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+                                         nm[ti], (void *)(ULONG_PTR)tgt, tn, (unsigned long long)trva,
+                                         ins[0],ins[1],ins[2],ins[3],ins[4],ins[5],ins[6],ins[7] );
+                            }
+                        }
+                    }
+                    /* Scan candidate guest stack pointers (x3/x4/x28/...) for the
+                     * return address into UnityPlayer's WndProc -> the exact call
+                     * site.  A guest-range qword (module_base..+0x2200000) with the
+                     * WndProc rva is the return after the faulting indirect call. */
+                    for (ri = 0; ri < 5; ri++)
+                    {
+                        ULONG64 p = context->X[rix[ri]];
+                        const ULONG64 *w;
+                        unsigned k;
+                        if (p < 0x10000 || p >= 0x900000000000ULL || (p & 7)) continue;
+                        w = (const ULONG64 *)(ULONG_PTR)p;
+                        for (k = 0; k < 48; k++)
+                        {
+                            ULONG64 v = w[k];
+                            if (v > base64 && v < base64 + 0x2200000)
+                                MESSAGE( "macrunner-hb-nullcall-ret: x%d=%p +0x%x val=%p rva=0x%llx\n",
+                                         rix[ri], (void *)(ULONG_PTR)p, k * 8,
+                                         (void *)(ULONG_PTR)v,
+                                         (unsigned long long)(v - base64) );
+                        }
+                    }
+                    /* The WM_PAINT handler (rva 0x7d520a) calls vtable methods on a
+                     * thread-local object (rbx = x27 in the ARM64EC map; from 0x6c7860
+                     * TlsGetValue).  Read [obj]=vtable and the called slots to find the
+                     * NULL method + the non-null methods' rva (identifies the class). */
+                    {
+                        static const int orx[6] = { 27, 0, 25, 26, 3, 19 };
+                        static const unsigned voff[5] = { 0x678, 0x680, 0x690, 0x698, 0x6b0 };
+                        unsigned oi, vi;
+                        for (oi = 0; oi < 6; oi++)
+                        {
+                            ULONG64 obj = context->X[orx[oi]], vt;
+                            if (obj < 0x10000 || obj >= 0x900000000000ULL || (obj & 7)) continue;
+                            vt = *(ULONG64 *)(ULONG_PTR)obj;
+                            if (vt < 0x10000 || vt >= 0x900000000000ULL || (vt & 7)) continue;
+                            for (vi = 0; vi < 5; vi++)
+                            {
+                                ULONG64 mp = *(ULONG64 *)(ULONG_PTR)(vt + voff[vi]);
+                                MESSAGE( "macrunner-hb-nullcall-vtable: obj=x%d=%p vtable=%p rva=0x%llx "
+                                         "+0x%x=%p%s%s\n",
+                                         orx[oi], (void *)(ULONG_PTR)obj, (void *)(ULONG_PTR)vt,
+                                         (vt > base64 && vt < base64 + 0x2200000) ?
+                                             (unsigned long long)(vt - base64) : 0ULL,
+                                         voff[vi], (void *)(ULONG_PTR)mp,
+                                         mp ? "" : " <<NULL",
+                                         (mp > base64 && mp < base64 + 0x2200000) ?
+                                             " UP" : "" );
+                            }
+                        }
+                    }
+                }
+                else
+                    MESSAGE( "macrunner-hb-nullcall-iat: UnityPlayer module not found "
+                             "(probes %p %p %p)\n",
+                             (void *)probes[0], (void *)probes[1], (void *)probes[2] );
+            }
         }
         macrunner_hb_stop_unwind_at_boundary( dispatch, context );
         return STATUS_SUCCESS;
@@ -1638,10 +1894,20 @@ unwind_with_function_entry:
     unwind_sp = context->Sp;
     unwind_fp = context->Fp;
     unwind_context = *context;
+    unwind_entry = dispatch->FunctionEntry;
     status = RtlVirtualUnwind2( type, dispatch->ImageBase, pc, dispatch->FunctionEntry, context,
                                 NULL, &dispatch->HandlerData, &dispatch->EstablisherFrame,
                                 NULL, NULL, NULL, &dispatch->LanguageHandler, 0 );
-    if (macrunner_hb_pc_unsafe_for_arm64_unwind( dispatch, &unwind_context, pc ))
+    /* Native .pdata is ground truth: a successful RtlVirtualUnwind2 driven by a
+     * genuine native FunctionEntry must NOT be discarded merely because the
+     * ARM64X CodeMap misclassifies pc as EC (kind=0) — a known runtime defect of
+     * lld-built ARM64X hybrids (e.g. DXMT dxgi: a native rva reads kind=0 at
+     * runtime even though it sits in the ARM64/native CodeMap range with valid
+     * .pdata). Only fall to the heuristic EC fallbacks when there was no native
+     * entry or the unwind did not succeed; the no-progress check just below
+     * stays as the safety net for a genuinely bogus result. */
+    if (macrunner_hb_pc_unsafe_for_arm64_unwind( dispatch, &unwind_context, pc ) &&
+        !(unwind_entry && status == STATUS_SUCCESS))
     {
         *context = unwind_context;
         macrunner_hb_try_arm64_unwind_methods( dispatch, context, pc );

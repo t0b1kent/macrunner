@@ -43,7 +43,14 @@ typedef struct {
     bool valid;
 } hb_block_cache_entry_t;
 
-#define HB_BLOCK_CACHE_SIZE 65536
+/* MacRunner (2026-06-17 — FIX#2a, HK rank-7 livelock): the block-cache hash table was
+ * the JIT limiter (filled 65536/65536 during Mono ReloadAssembly while the 128MB JIT
+ * exec buffer was only ~18% used), tripping the sticky code_cache_full latch -> JIT
+ * permanently disabled -> everything fell to the slow cache-full re-dispatch fallback.
+ * Sized so the 128MB exec buffer (~347K blocks @ ~377B) is the real limiter, not this
+ * table. calloc'd per-thread (~56B/entry => ~29MB virtual/thread, lazy zero-fill so
+ * physical is pay-as-touched; idle worker threads touch almost none). */
+#define HB_BLOCK_CACHE_SIZE 524288
 
 /* In-memory block cache */
 typedef struct {

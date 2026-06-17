@@ -2258,7 +2258,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                 try_promote_hot_block_families(rt, ctx, stable_block);
                 cached = block_cache_find(rt->block_cache, ctx->pc);
                 if (!cached) {
-                    rt->code_cache_full = true;
+                    /* MacRunner FIX#2a: non-latching (live block_cache_is_full gates). */
                     trace_jit_code_cache_full_once(rt, "block-cache-promote-lost-entry", 0);
                     return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
                                                           steps, blocks_executed,
@@ -2273,7 +2273,11 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             steps += cached->steps;
         } else {
             if (rt->code_cache_full || block_cache_is_full(rt->block_cache)) {
-                rt->code_cache_full = true;
+                /* MacRunner FIX#2a: do NOT latch code_cache_full here — the block-cache
+                 * full state is already re-checked live via block_cache_is_full() in
+                 * every JIT guard, so a transient hash-table fill no longer permanently
+                 * disables JIT (which it did while the exec buffer was 82% free). The
+                 * genuine hard limit (exec buffer full) still latches at jit_commit_blob. */
                 trace_jit_code_cache_full_once(rt, "block-cache-full", 0);
                 return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
                                                       steps, blocks_executed,
@@ -2395,7 +2399,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                                          false, true);
                 if (!cached) {
                     hb_ir_block_destroy(compile_block);
-                    rt->code_cache_full = true;
+                    /* MacRunner FIX#2a: non-latching (live block_cache_is_full gates). */
                     trace_jit_code_cache_full_once(rt, "block-cache-put-failed", emitted_size);
                 }
                 trace_jit_block(ctx->pc, dest, emitted_size, block);

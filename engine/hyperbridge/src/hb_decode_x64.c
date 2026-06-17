@@ -858,6 +858,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     bool address32 = false;
     bool prefix_f2 = false;
     bool prefix_f3 = false;
+    bool lock_prefix = false;
     uint8_t opcode = 0;
 
     /* Prefix order is not guaranteed in fuzzed/probed byte streams.  Treat
@@ -876,6 +877,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             else if (b == 0x67) address32 = true;
             else if (b == 0xf2) prefix_f2 = true;
             else if (b == 0xf3) prefix_f3 = true;
+            else if (b == 0xf0) lock_prefix = true;
             else if (b == 0x64 || b == 0x65) out->segment_prefix = b;
             d->pos++;
         }
@@ -896,6 +898,7 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     out->rex_x = rex_x ? 1 : 0;
     out->rex_b = rex_b ? 1 : 0;
     out->address32_prefix = address32;
+    out->lock_prefix = lock_prefix;
 
     if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
     opcode = read_u8(d);

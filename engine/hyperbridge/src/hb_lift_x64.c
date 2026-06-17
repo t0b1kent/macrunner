@@ -2164,11 +2164,20 @@ hb_result_t hb_lift_func_x64(hb_decoder_t* dec, hb_ir_func_t** out) {
     size_t count = 0;
     const size_t instr_limit = 10000;
     while (hb_decode_next(dec, &d) == HB_OK || d.opcode == HB_INS_UNSUPPORTED) {
+        size_t pre_instr = block->instr_count;
         hb_result_t r = hb_lift_x64(&d, b);
         if (r != HB_OK && r != HB_ERR_UNSUPPORTED_FEATURE) {
             hb_ir_builder_destroy(b);
             hb_ir_func_destroy(func);
             return r;
+        }
+        /* MacRunner Lane A (2026-06-17): propagate the x86 LOCK prefix (0xF0) to every IR
+         * instr lifted from this op, so codegen brackets it with a DMB barrier.  Mono's
+         * hazard-pointer loops use `lock or [rsp],r` purely as a store->load fence; without
+         * the barrier the re-read is reordered/stale on ARM64 and the loop livelocks. */
+        if (d.lock_prefix) {
+            for (size_t k = pre_instr; k < block->instr_count; k++)
+                block->instrs[k].is_locked = true;
         }
         count++;
         if (d.is_branch || d.is_ret || d.is_call) {

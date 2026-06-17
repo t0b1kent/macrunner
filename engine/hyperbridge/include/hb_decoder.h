@@ -229,6 +229,7 @@ typedef struct {
     uint8_t rex_b;
     uint8_t segment_prefix; /* 0 none, 0x64 FS, 0x65 GS */
     bool address32_prefix;  /* 0x67 address-size override */
+    bool lock_prefix;       /* 0xF0 LOCK: memory-RMW is a full barrier (Mono hazard-ptr fence) */
 
     /* ModRM/SIB info */
     bool has_modrm;

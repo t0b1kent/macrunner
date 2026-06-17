@@ -565,6 +565,9 @@ typedef struct hb_ir_instr {
     uint8_t guest_len;    /* original instruction length */
     bool zero_upper;      /* XMM partial load zeroes bytes above the loaded scalar */
     bool zero_ymm_upper;  /* 128-bit VEX destination zeroes upper YMM half */
+    bool is_locked;       /* x86 LOCK prefix (0xF0) on a memory-RMW: full barrier semantics.
+                           * Mono hazard-pointer loops use `lock or [rsp],r` purely as a fence;
+                           * codegen must bracket the op with DMB ISH or it livelocks on ARM64. */
     uint64_t target;      /* branch target guest address */
     const char* comment;
 } hb_ir_instr_t;

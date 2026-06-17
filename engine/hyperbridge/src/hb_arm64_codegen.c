@@ -3030,6 +3030,11 @@ static hb_result_t emit_atomic_ir_helper(hb_codegen_buffer_t* buf, const hb_ir_i
 static bool block_has_atomic_ir(const hb_ir_block_t* block) {
     if (!block) return false;
     for (size_t i = 0; i < block->instr_count; i++) {
+        /* MacRunner Lane A (2026-06-17): a LOCK-prefixed RMW (lock or/and/add/...) is a full
+         * barrier too — treat it as atomic so the loop-optimizers (emit_two_block_loop_helper
+         * etc., gated on this) don't bypass the per-instr DMB wrap and reintroduce the Mono
+         * hazard-pointer livelock. */
+        if (block->instrs[i].is_locked) return true;
         switch (block->instrs[i].op) {
             case HB_IR_CMPXCHG:
             case HB_IR_CMPXCHG8B:
@@ -8049,7 +8054,10 @@ void hb_arm64_codegen_destroy(hb_arm64_codegen_t* cg) {
 hb_result_t hb_arm64_codegen_instr(hb_arm64_codegen_t* cg, const hb_ir_instr_t* instr, hb_codegen_buffer_t* out) {
     if (!instr || !out) return HB_ERR_INVALID_ARG;
     if (cg && cg->ctx) out->arch = cg->ctx->arch;
-    return codegen_instr(out, instr);
+    if (instr->is_locked) emit_dmb_ish(out);   /* LOCK-prefixed RMW = full barrier (see block loop) */
+    hb_result_t r = codegen_instr(out, instr);
+    if (r == HB_OK && instr->is_locked) emit_dmb_ish(out);
+    return r;
 }
 
 hb_result_t hb_arm64_codegen_copy_scan_counted_loop(hb_arm64_codegen_t* cg,
@@ -8341,8 +8349,15 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
             i++;
             continue;
         }
-        hb_result_t r = codegen_instr(out, &block->instrs[i]);
+        /* MacRunner Lane A (2026-06-17): x86 LOCK-prefixed RMW (lock or/and/add/...) acts as a
+         * full memory barrier.  block_has_atomic_ir only routes CMPXCHG/XCHG/XADD through the
+         * DMB-bracketed atomic helper, so bracket every other lock-flagged op with DMB ISH here
+         * — Mono hazard-pointer loops (`lock or [rsp],r`) livelock on ARM64 without it. */
+        const hb_ir_instr_t* lk_instr = &block->instrs[i];
+        if (lk_instr->is_locked) emit_dmb_ish(out);
+        hb_result_t r = codegen_instr(out, lk_instr);
         if (r != HB_OK) return r;
+        if (lk_instr->is_locked) emit_dmb_ish(out);
     }
     emit_epilogue(out);
     return HB_OK;

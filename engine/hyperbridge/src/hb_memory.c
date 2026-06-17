@@ -226,7 +226,10 @@ static void bump_generation(hb_memory_t* mem, hb_region_t* r) {
 static void insert_region_head(hb_memory_t* mem, hb_region_t* r) {
     r->next = mem->regions;
     mem->regions = r;
-    rebuild_region_tree(mem);
+    r->tree_left = NULL;
+    r->tree_right = NULL;
+    r->tree_prio = region_prio(r->base);
+    tree_insert(&mem->region_tree, r);
 }
 
 static bool range_overlaps(hb_gva_t a_base, size_t a_size, hb_gva_t b_base, size_t b_size) {
@@ -1066,15 +1069,27 @@ static hb_region_t* find_region_normalized(hb_memory_t* mem, hb_gva_t addr) {
         }
     }
 
-    /* Slow path: linear scan */
-    for (hb_region_t* r = mem->regions; r; r = r->next) {
-        if (addr >= r->base && addr < r->base + r->size) {
+    /* MacRunner (2026-06-17, HK first-frame perf): O(log n) treap walk instead of an O(n)
+     * linear scan of mem->regions.  mem->region_tree is the SAME treap the guest32 path
+     * walks above: keyed by base, maintained on every add (insert_region_head -> tree_insert)
+     * and rebuilt on remove (rebuild_region_tree).  Regions are non-overlapping (every add is
+     * guarded by any_overlap), so the containing region is UNIQUE and this walk returns
+     * exactly the region the old linear scan would (identical result, just O(log n)).  Once the
+     * module_from_pc mach-scan was fixed, find_region_normalized became the #1 main-thread
+     * hotspot (~33% during Mono ReloadAssembly) — the guest's region list grows large under
+     * Mono so the per-memory-access linear scan dominated. */
+    for (hb_region_t* n = mem->region_tree; n; ) {
+        if (addr < n->base) {
+            n = n->tree_left;
+        } else if (addr >= n->base + n->size) {
+            n = n->tree_right;
+        } else {
             /* Insert at front, evict slot 3 */
             mem->hot[3] = mem->hot[2];
             mem->hot[2] = mem->hot[1];
             mem->hot[1] = mem->hot[0];
-            mem->hot[0] = r;
-            return r;
+            mem->hot[0] = n;
+            return n;
         }
     }
     return NULL;

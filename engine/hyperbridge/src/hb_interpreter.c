@@ -37,10 +37,60 @@ static bool trace_env_enabled(const char* name) {
     return val && val[0] && val[0] != '0';
 }
 
-static void trace_refresh_runtime_flags(void) {
-    static uint32_t call_count = 0;
-    if (call_count++ % 16384 != 0) return;
+/* MacRunner (2026-06-17 — getenv-per-instruction storm fix, Lane A HK profiled run):
+ * the per-instruction interpreter trace gates below used to call getenv() on EVERY
+ * interpreted instruction even with tracing OFF (e.g. trace_bitops_selected read
+ * BITOPS_START/END before checking its enable flag). getenv() takes the libc environ
+ * lock (__findenv_locked); under the multi-thread interpreter fallback that kicks in
+ * when the JIT code cache fills, that became an _os_unfair_lock_lock_slow/__ulock_wait2
+ * contention storm burning ~66% of CPU (HK livelocked at D3D11-device-created, never
+ * reaching swapchain). Fix: snapshot every trace env var ONCE into trace_cfg and read
+ * the cache thereafter. Values reflect startup env (these are debug knobs set before
+ * launch; runtime env changes are intentionally not re-read). */
+typedef struct {
+    unsigned int flags;                                  /* TRACE_FLAG_* bitset */
+    bool mw_range_set;        uint64_t mw_start, mw_end;
+    bool mw_pc_set;           uint64_t mw_pc_start, mw_pc_end;
+    unsigned int mw_budget;
+    bool bitops_range_set;    uint64_t bitops_start, bitops_end;
+    unsigned int bitops_budget;
+    bool branch_range_set;    uint64_t branch_start, branch_end;
+    unsigned int branch_budget;
+    bool pc_list_set;         char pc_list[256];
+    unsigned int pc_limit;
+    unsigned int strcpy_limit;
+    unsigned int simd_budget;
+    bool simd_data_range_set; uint64_t simd_data_start, simd_data_end;
+    unsigned int simd_data_budget;
+} hb_trace_cfg_t;
 
+static hb_trace_cfg_t trace_cfg;   /* zero-init => tracing OFF / no range = the safe default */
+
+static void hb_trace_parse_range(const char* sname, const char* ename,
+                                 bool* set, uint64_t* lo, uint64_t* hi) {
+    const char* s = getenv(sname);
+    const char* e = getenv(ename);
+    if (s && s[0]) {
+        *set = true;
+        *lo = strtoull(s, NULL, 0);
+        *hi = (e && e[0]) ? strtoull(e, NULL, 0) : *lo;
+        if (*hi < *lo) *hi = *lo;
+    }
+}
+
+/* clamp=true keeps the original "0<p<100000 else default" rule (mem-watch/simd budgets);
+ * clamp=false keeps the original "p ? p : default" rule (bitops/branch budgets). */
+static unsigned int hb_trace_parse_budget(const char* name, unsigned int dflt, bool clamp) {
+    const char* v = getenv(name);
+    if (v && v[0]) {
+        unsigned long p = strtoul(v, NULL, 0);
+        if (clamp) { if (p > 0 && p < 100000) return (unsigned int)p; }
+        else       { if (p) return (unsigned int)p; }
+    }
+    return dflt;
+}
+
+static void trace_cfg_load(hb_trace_cfg_t* c) {
     unsigned int flags = 0;
     if (trace_env_enabled("MACRUNNER_HB_TRACE_MEM_WATCH")) flags |= TRACE_FLAG_MEM_WATCH;
     if (trace_env_enabled("MACRUNNER_HB_TRACE_NATIVE_WRITES")) flags |= TRACE_FLAG_NATIVE_WRITES;
@@ -53,7 +103,59 @@ static void trace_refresh_runtime_flags(void) {
     if (trace_env_enabled("MACRUNNER_HB_TRACE_SIMD")) flags |= TRACE_FLAG_SIMD;
     if (trace_env_enabled("MACRUNNER_HB_TRACE_SIMD_DATA")) flags |= TRACE_FLAG_SIMD_DATA;
     if (trace_env_enabled("MACRUNNER_HB_TRACE_BITOPS")) flags |= TRACE_FLAG_BITOPS;
-    trace_runtime_flags = flags;
+    c->flags = flags;
+
+    hb_trace_parse_range("MACRUNNER_HB_TRACE_MEM_WATCH_START", "MACRUNNER_HB_TRACE_MEM_WATCH_END",
+                         &c->mw_range_set, &c->mw_start, &c->mw_end);
+    hb_trace_parse_range("MACRUNNER_HB_TRACE_MEM_WATCH_PC_START", "MACRUNNER_HB_TRACE_MEM_WATCH_PC_END",
+                         &c->mw_pc_set, &c->mw_pc_start, &c->mw_pc_end);
+    c->mw_budget = hb_trace_parse_budget("MACRUNNER_HB_TRACE_MEM_WATCH_BUDGET", 160, true);
+
+    hb_trace_parse_range("MACRUNNER_HB_TRACE_BITOPS_START", "MACRUNNER_HB_TRACE_BITOPS_END",
+                         &c->bitops_range_set, &c->bitops_start, &c->bitops_end);
+    c->bitops_budget = hb_trace_parse_budget("MACRUNNER_HB_TRACE_BITOPS_BUDGET", 400, false);
+
+    hb_trace_parse_range("MACRUNNER_HB_TRACE_BRANCH_START", "MACRUNNER_HB_TRACE_BRANCH_END",
+                         &c->branch_range_set, &c->branch_start, &c->branch_end);
+    c->branch_budget = hb_trace_parse_budget("MACRUNNER_HB_TRACE_BRANCH_BUDGET", 300, false);
+
+    {
+        const char* v = getenv("MACRUNNER_HB_TRACE_PC");
+        if (v && v[0]) {
+            c->pc_list_set = true;
+            strncpy(c->pc_list, v, sizeof(c->pc_list) - 1);
+            c->pc_list[sizeof(c->pc_list) - 1] = 0;
+        }
+        const char* l = getenv("MACRUNNER_HB_TRACE_PC_LIMIT");
+        c->pc_limit = (l && l[0]) ? (unsigned int)strtoul(l, NULL, 0) : 80;
+    }
+    {
+        const char* l = getenv("MACRUNNER_HB_TRACE_STRCPY_PROBE_LIMIT");
+        c->strcpy_limit = (l && l[0]) ? (unsigned int)strtoul(l, NULL, 0) : 200;
+    }
+    c->simd_budget = hb_trace_parse_budget("MACRUNNER_HB_TRACE_SIMD_BUDGET", 400, true);
+    hb_trace_parse_range("MACRUNNER_HB_TRACE_SIMD_DATA_GUEST_START", "MACRUNNER_HB_TRACE_SIMD_DATA_GUEST_END",
+                         &c->simd_data_range_set, &c->simd_data_start, &c->simd_data_end);
+    c->simd_data_budget = hb_trace_parse_budget("MACRUNNER_HB_TRACE_SIMD_DATA_BUDGET", 256, true);
+}
+
+static int trace_cfg_ready;   /* 0=uninit, 1=loading, 2=ready */
+
+static void trace_cfg_ensure(void) {
+    int expected = 0;
+    if (__atomic_load_n(&trace_cfg_ready, __ATOMIC_ACQUIRE) == 2) return;
+    if (__atomic_compare_exchange_n(&trace_cfg_ready, &expected, 1, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        trace_cfg_load(&trace_cfg);
+        __atomic_store_n(&trace_cfg_ready, 2, __ATOMIC_RELEASE);
+    }
+    /* CAS loser: another thread is loading; trace_cfg stays zeroed (tracing OFF) for
+     * this thread until it is published — harmless, the hot path only reads trace_cfg.flags. */
+}
+
+static void trace_refresh_runtime_flags(void) {
+    trace_cfg_ensure();
+    trace_runtime_flags = trace_cfg.flags;
 }
 
 static bool trace_mem_watch_enabled(void) {
@@ -61,14 +163,11 @@ static bool trace_mem_watch_enabled(void) {
 }
 
 static bool trace_mem_watch_range(uint64_t addr, size_t size, uint64_t* start, uint64_t* end) {
-    const char* start_env = getenv("MACRUNNER_HB_TRACE_MEM_WATCH_START");
-    const char* end_env = getenv("MACRUNNER_HB_TRACE_MEM_WATCH_END");
     uint64_t last;
 
-    if (!trace_mem_watch_enabled() || !start_env || !start_env[0]) return false;
-    *start = strtoull(start_env, NULL, 0);
-    *end = (end_env && end_env[0]) ? strtoull(end_env, NULL, 0) : *start;
-    if (*end < *start) *end = *start;
+    if (!trace_mem_watch_enabled() || !trace_cfg.mw_range_set) return false;
+    *start = trace_cfg.mw_start;
+    *end = trace_cfg.mw_end;
     last = size ? addr + size - 1 : addr;
     if (last < addr) return true;
     return addr <= *end && last >= *start;
@@ -76,13 +175,8 @@ static bool trace_mem_watch_range(uint64_t addr, size_t size, uint64_t* start, u
 
 static bool trace_mem_watch_take_budget(void) {
     static unsigned int count;
-    unsigned int limit = 160;
-    const char* limit_env = getenv("MACRUNNER_HB_TRACE_MEM_WATCH_BUDGET");
+    unsigned int limit = trace_cfg.mw_budget;
 
-    if (limit_env && limit_env[0]) {
-        unsigned long parsed = strtoul(limit_env, NULL, 0);
-        if (parsed > 0 && parsed < 100000) limit = (unsigned int)parsed;
-    }
     if (++count > limit) {
         if (count == limit + 1)
             fprintf(stderr, "macrunner-hb-mem-watch: budget exhausted, silencing\n");
@@ -92,15 +186,8 @@ static bool trace_mem_watch_take_budget(void) {
 }
 
 static bool trace_mem_watch_pc_allowed(uint64_t pc) {
-    const char* start_env = getenv("MACRUNNER_HB_TRACE_MEM_WATCH_PC_START");
-    const char* end_env = getenv("MACRUNNER_HB_TRACE_MEM_WATCH_PC_END");
-    uint64_t start, end;
-
-    if (!start_env || !start_env[0]) return true;
-    start = strtoull(start_env, NULL, 0);
-    end = (end_env && end_env[0]) ? strtoull(end_env, NULL, 0) : start;
-    if (end < start) end = start;
-    return pc >= start && pc <= end;
+    if (!trace_cfg.mw_pc_set) return true;
+    return pc >= trace_cfg.mw_pc_start && pc <= trace_cfg.mw_pc_end;
 }
 
 static void trace_hex_bytes(const uint8_t* bytes, size_t count) {
@@ -2245,26 +2332,15 @@ static bool trace_atomics_enabled(void) {
 }
 
 static int trace_bitops_selected(const hb_ir_instr_t* instr) {
-    const char* start_env = getenv("MACRUNNER_HB_TRACE_BITOPS_START");
-    const char* end_env = getenv("MACRUNNER_HB_TRACE_BITOPS_END");
-    uint64_t start, end;
-
     if (!(trace_runtime_flags & TRACE_FLAG_BITOPS)) return 0;
-    if (!start_env || !start_env[0]) return 1;
+    if (!trace_cfg.bitops_range_set) return 1;
     if (!instr) return 0;
-    start = strtoull(start_env, NULL, 0);
-    end = (end_env && end_env[0]) ? strtoull(end_env, NULL, 0) : start;
-    if (end < start) end = start;
-    return instr->guest_addr >= start && instr->guest_addr <= end;
+    return instr->guest_addr >= trace_cfg.bitops_start &&
+           instr->guest_addr <= trace_cfg.bitops_end;
 }
 
 static unsigned int trace_bitops_budget(void) {
-    const char* budget_env = getenv("MACRUNNER_HB_TRACE_BITOPS_BUDGET");
-    unsigned long parsed;
-
-    if (!budget_env || !budget_env[0]) return 400;
-    parsed = strtoul(budget_env, NULL, 0);
-    return parsed ? (unsigned int)parsed : 400;
+    return trace_cfg.bitops_budget;
 }
 
 static const char* ir_op_name(hb_ir_op_t op) {
@@ -2651,12 +2727,10 @@ static bool trace_pc_matches(const char* val, uint64_t guest_addr) {
 static void trace_pc_probe(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     static unsigned int count;
     const char* val;
-    const char* limit_env;
-    unsigned int limit = 80;
+    unsigned int limit;
     if (!(trace_runtime_flags & TRACE_FLAG_PC)) return;
-    val = getenv("MACRUNNER_HB_TRACE_PC");
-    limit_env = getenv("MACRUNNER_HB_TRACE_PC_LIMIT");
-    limit = limit_env && limit_env[0] ? (unsigned int)strtoul(limit_env, NULL, 0) : 80;
+    val = trace_cfg.pc_list_set ? trace_cfg.pc_list : NULL;
+    limit = trace_cfg.pc_limit;
     if (!val || !val[0] || !ctx || ctx->mode != HB_MODE_64BIT) return;
 
     if (!trace_pc_matches(val, instr->guest_addr)) return;
@@ -2764,8 +2838,7 @@ static void trace_ascii_bytes(hb_context_t* ctx, uint64_t addr, size_t limit) {
 
 static void trace_strcpy_probe(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     static unsigned int count;
-    const char* limit_env;
-    unsigned int limit = 200;
+    unsigned int limit;
     const char* label = NULL;
     uint64_t src = 0;
     bool have_src = false;
@@ -2774,8 +2847,7 @@ static void trace_strcpy_probe(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     uint64_t object_src = 0;
 
     if (!trace_strcpy_probe_enabled() || !ctx || ctx->mode != HB_MODE_64BIT || !instr) return;
-    limit_env = getenv("MACRUNNER_HB_TRACE_STRCPY_PROBE_LIMIT");
-    limit = limit_env && limit_env[0] ? (unsigned int)strtoul(limit_env, NULL, 0) : 200;
+    limit = trace_cfg.strcpy_limit;
 
     switch (instr->guest_addr) {
         case 0x1403e72e0ULL: label = "before-strlen-call"; src = ctx->regs.x64.rcx; have_src = true; break;
@@ -2832,25 +2904,14 @@ static int trace_branches_enabled(void) {
 }
 
 static int trace_branch_selected(const hb_ir_instr_t* instr) {
-    const char* start_env = getenv("MACRUNNER_HB_TRACE_BRANCH_START");
-    const char* end_env = getenv("MACRUNNER_HB_TRACE_BRANCH_END");
-    uint64_t start, end;
-
-    if (!start_env || !start_env[0]) return 1;
+    if (!trace_cfg.branch_range_set) return 1;
     if (!instr) return 0;
-    start = strtoull(start_env, NULL, 0);
-    end = (end_env && end_env[0]) ? strtoull(end_env, NULL, 0) : start;
-    if (end < start) end = start;
-    return instr->guest_addr >= start && instr->guest_addr <= end;
+    return instr->guest_addr >= trace_cfg.branch_start &&
+           instr->guest_addr <= trace_cfg.branch_end;
 }
 
 static unsigned int trace_branch_budget(void) {
-    const char* budget_env = getenv("MACRUNNER_HB_TRACE_BRANCH_BUDGET");
-    unsigned long parsed;
-
-    if (!budget_env || !budget_env[0]) return 300;
-    parsed = strtoul(budget_env, NULL, 0);
-    return parsed ? (unsigned int)parsed : 300;
+    return trace_cfg.branch_budget;
 }
 
 static void trace_branch_event(hb_context_t* ctx, const hb_ir_instr_t* instr,
@@ -2996,12 +3057,7 @@ static void trace_simd_exec(hb_context_t* ctx, const hb_ir_instr_t* instr,
     if (!(trace_runtime_flags & TRACE_FLAG_SIMD)) return;
     if (!trace_simd_op_selected(instr)) return;
 
-    unsigned int limit = 400;
-    const char* limit_env = getenv("MACRUNNER_HB_TRACE_SIMD_BUDGET");
-    if (limit_env && limit_env[0]) {
-        unsigned long parsed = strtoul(limit_env, NULL, 0);
-        if (parsed > 0 && parsed < 100000) limit = (unsigned int)parsed;
-    }
+    unsigned int limit = trace_cfg.simd_budget;
     if (++simd_count > limit) {
         if (simd_count == limit + 1)
             fprintf(stderr, "macrunner-hb-simd: budget exhausted, silencing\n");
@@ -3033,24 +3089,13 @@ static bool trace_simd_data_enabled(void) {
 }
 
 static bool trace_simd_data_in_range(uint64_t guest) {
-    const char* start_env = getenv("MACRUNNER_HB_TRACE_SIMD_DATA_GUEST_START");
-    const char* end_env = getenv("MACRUNNER_HB_TRACE_SIMD_DATA_GUEST_END");
-    if (!start_env || !start_env[0]) return true;
-
-    uint64_t start = strtoull(start_env, NULL, 0);
-    uint64_t end = end_env && end_env[0] ? strtoull(end_env, NULL, 0) : start;
-    if (end < start) end = start;
-    return guest >= start && guest <= end;
+    if (!trace_cfg.simd_data_range_set) return true;
+    return guest >= trace_cfg.simd_data_start && guest <= trace_cfg.simd_data_end;
 }
 
 static bool trace_simd_data_take_budget(void) {
     static unsigned int count;
-    unsigned int limit = 256;
-    const char* limit_env = getenv("MACRUNNER_HB_TRACE_SIMD_DATA_BUDGET");
-    if (limit_env && limit_env[0]) {
-        unsigned long parsed = strtoul(limit_env, NULL, 0);
-        if (parsed > 0 && parsed < 100000) limit = (unsigned int)parsed;
-    }
+    unsigned int limit = trace_cfg.simd_data_budget;
     if (++count > limit) {
         if (count == limit + 1)
             fprintf(stderr, "macrunner-hb-simd-data: budget exhausted, silencing\n");
@@ -4511,7 +4556,13 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
                 r = hb_memory_write_u64(ctx->memory, new_rsp, ret_addr);
                 if (r == HB_OK) ctx->regs.x64.rsp = new_rsp;
             }
-            if (r != HB_OK) return r;
+            if (r != HB_OK) {
+                static int traced;
+                if (traced++ < 8)
+                    fprintf(stderr, "macrunner-hb-interpcall-fail: rsp=0x%llx r=%d target=0x%llx\n",
+                            (unsigned long long)rsp_before, (int)r, (unsigned long long)target);
+                return r;
+            }
             ctx->pc = target;
             sync_arch_pc(ctx);
             trace_branch_event(ctx, instr, "call", rsp_before, ret_addr, target);

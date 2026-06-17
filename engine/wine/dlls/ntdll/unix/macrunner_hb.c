@@ -19373,11 +19373,21 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                      (void *)(uintptr_t)(image_start + image_size) );
             fflush( stderr );
         }
-        if (macrunner_hb_module_machine( (void *)(uintptr_t)image_base ) != IMAGE_FILE_MACHINE_AMD64 ||
-            macrunner_hb_get_arm64x_metadata( (void *)(uintptr_t)image_base ))
+        if ((macrunner_hb_module_machine( (void *)(uintptr_t)image_base ) != IMAGE_FILE_MACHINE_AMD64 ||
+             macrunner_hb_get_arm64x_metadata( (void *)(uintptr_t)image_base )) &&
+            !macrunner_hb_x64_dynamic_exec_contains_no_lock( (void *)(uintptr_t)ctx->pc ))
         {
             void *native_module = NULL;
 
+            /* MacRunner Lane A (2026-06-17): the CHPE-refusal must key off the CURRENT pc, not the
+             * possibly-stale image_base.  When Mono-JIT'd x64 code (a registered dynamic-exec region,
+             * module_from_pc==NULL) returns from a call into an ARM64X native module (e.g. kernelbase),
+             * the dynamic-exec fast-path (above) reaches in_guest_image WITHOUT updating image_base, so
+             * image_base still names the ARM64X module (arm64x metadata != NULL) and this branch wrongly
+             * refused the Mono-JIT return address with c000007b/native-chpe-image — killing the worker
+             * thread and hanging the Unity boot (HK rank-7).  A genuine native/CHPE image is never a
+             * dynamic-exec region, so guarding on x64_dynamic_exec_contains leaves real refusals intact
+             * and lets Mono-JIT code fall through to the normal x64 JIT path that already runs it. */
             if (macrunner_hb_label_allows_direct_native( label ) &&
                 macrunner_hb_pc_is_native_pe_builtin( ctx->pc, &native_module ))
             {
@@ -19394,6 +19404,151 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                     break;
                 }
                 continue;
+            }
+            {
+                static int chpe_refuse_probe = -1;
+
+                if (chpe_refuse_probe < 0)
+                    chpe_refuse_probe = macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_CHPE_REFUSE" );
+                if (chpe_refuse_probe)
+                {
+                    void *probe_mod = macrunner_hb_module_from_pc( (void *)(uintptr_t)ctx->pc );
+                    LDR_DATA_TABLE_ENTRY *probe_ldr =
+                        macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)ctx->pc );
+                    void *probe_ldr_base = probe_ldr ? probe_ldr->DllBase : NULL;
+                    IMAGE_NT_HEADERS *probe_nt =
+                        probe_mod ? macrunner_hb_image_nt_header( probe_mod ) : NULL;
+                    uint64_t probe_mod_rva =
+                        probe_mod ? ctx->pc - (uint64_t)(uintptr_t)probe_mod : 0;
+                    Dl_info probe_dli;
+                    char probe_ldr_name[128], probe_sec[9];
+                    DWORD probe_sec_chars = 0;
+
+                    probe_ldr_name[0] = 0;
+                    probe_sec[0] = 0;
+                    memset( &probe_dli, 0, sizeof(probe_dli) );
+                    if (probe_ldr)
+                        macrunner_hb_copy_unicode_ascii( probe_ldr_name, sizeof(probe_ldr_name),
+                                                         &probe_ldr->BaseDllName );
+                    if (probe_nt)
+                    {
+                        IMAGE_SECTION_HEADER *probe_sh = IMAGE_FIRST_SECTION( probe_nt );
+                        unsigned int psi;
+
+                        for (psi = 0; psi < probe_nt->FileHeader.NumberOfSections; psi++, probe_sh++)
+                        {
+                            DWORD pstart = probe_sh->VirtualAddress;
+                            DWORD psize = probe_sh->Misc.VirtualSize ? probe_sh->Misc.VirtualSize :
+                                          probe_sh->SizeOfRawData;
+
+                            if (probe_mod_rva < pstart || probe_mod_rva >= pstart + psize) continue;
+                            memcpy( probe_sec, probe_sh->Name, 8 );
+                            probe_sec[8] = 0;
+                            probe_sec_chars = probe_sh->Characteristics;
+                            break;
+                        }
+                    }
+                    dladdr( (void *)(uintptr_t)ctx->pc, &probe_dli );
+                    fprintf( stderr, "macrunner-hb-chpe-refuse-probe: label=%s pc=%p image_base=%p "
+                             "image=%p-%p image_machine=%04x image_arm64x=%d image_exec=%d "
+                             "mod=%p mod_rva=%p mod_machine=%04x mod_arm64x=%d mod_exec=%d "
+                             "ldr=%p ldr_base=%p ldr_name=%s sec=%s sec_chars=%#x "
+                             "is_native_pe_builtin=%d label_allows=%d "
+                             "dl_fname=%s dl_sname=%s dl_fbase=%p\n",
+                             label ? label : "entry", (void *)(uintptr_t)ctx->pc,
+                             (void *)(uintptr_t)image_base,
+                             (void *)(uintptr_t)image_start,
+                             (void *)(uintptr_t)(image_start + image_size),
+                             macrunner_hb_module_machine( (void *)(uintptr_t)image_base ),
+                             macrunner_hb_get_arm64x_metadata( (void *)(uintptr_t)image_base ) ? 1 : 0,
+                             macrunner_hb_pc_in_executable_section( (void *)(uintptr_t)image_base, ctx->pc ),
+                             probe_mod, (void *)(uintptr_t)probe_mod_rva,
+                             probe_mod ? macrunner_hb_module_machine( probe_mod ) : 0,
+                             (probe_mod && macrunner_hb_get_arm64x_metadata( probe_mod )) ? 1 : 0,
+                             probe_mod ? macrunner_hb_pc_in_executable_section( probe_mod, ctx->pc ) : -1,
+                             probe_ldr, probe_ldr_base,
+                             probe_ldr_name[0] ? probe_ldr_name : "(none)",
+                             probe_sec[0] ? probe_sec : "(none)", (unsigned int)probe_sec_chars,
+                             macrunner_hb_pc_is_native_pe_builtin( ctx->pc, NULL ),
+                             macrunner_hb_label_allows_direct_native( label ),
+                             probe_dli.dli_fname ? probe_dli.dli_fname : "(none)",
+                             probe_dli.dli_sname ? probe_dli.dli_sname : "(none)",
+                             probe_dli.dli_fbase );
+                    fflush( stderr );
+
+                    if (last_block_pc)
+                    {
+                        unsigned char lbb[48];
+                        mach_vm_size_t lb_copied = 0;
+                        kern_return_t lb_kr = mach_vm_read_overwrite( mach_task_self(),
+                                                  (mach_vm_address_t)last_block_pc, sizeof(lbb),
+                                                  (mach_vm_address_t)lbb, &lb_copied );
+                        void *lb_mod = macrunner_hb_module_from_pc( (void *)(uintptr_t)last_block_pc );
+                        LDR_DATA_TABLE_ENTRY *lb_ldr =
+                            macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)last_block_pc );
+                        char lb_name[128];
+                        uint64_t jmp_at = 0, slot = 0, stored = 0;
+                        int found_jmp = 0, slot_read = 0;
+                        unsigned int bi;
+
+                        lb_name[0] = 0;
+                        if (lb_ldr)
+                            macrunner_hb_copy_unicode_ascii( lb_name, sizeof(lb_name),
+                                                             &lb_ldr->BaseDllName );
+                        if (lb_kr == KERN_SUCCESS)
+                        {
+                            for (bi = 0; bi + 6 <= lb_copied && bi + 6 <= sizeof(lbb); bi++)
+                            {
+                                if (lbb[bi] == 0xff && lbb[bi + 1] == 0x25)
+                                {
+                                    int32_t disp = (int32_t)((uint32_t)lbb[bi + 2] |
+                                                   ((uint32_t)lbb[bi + 3] << 8) |
+                                                   ((uint32_t)lbb[bi + 4] << 16) |
+                                                   ((uint32_t)lbb[bi + 5] << 24));
+                                    jmp_at = last_block_pc + bi;
+                                    slot = jmp_at + 6 + (int64_t)disp;
+                                    found_jmp = 1;
+                                    break;
+                                }
+                            }
+                        }
+                        if (found_jmp)
+                        {
+                            mach_vm_size_t sc = 0;
+
+                            if (mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)slot,
+                                    sizeof(stored), (mach_vm_address_t)&stored, &sc ) == KERN_SUCCESS &&
+                                sc == sizeof(stored))
+                                slot_read = 1;
+                        }
+                        {
+                            void *slot_mod = (found_jmp && slot_read) ?
+                                macrunner_hb_module_from_pc( (void *)(uintptr_t)slot ) : NULL;
+                            LDR_DATA_TABLE_ENTRY *slot_ldr = found_jmp ?
+                                macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)slot ) : NULL;
+                            char slot_name[128];
+
+                            slot_name[0] = 0;
+                            if (slot_ldr)
+                                macrunner_hb_copy_unicode_ascii( slot_name, sizeof(slot_name),
+                                                                 &slot_ldr->BaseDllName );
+                            fprintf( stderr, "macrunner-hb-chpe-refuse-probe2: last_block=%p lb_kr=%d "
+                                     "lb_mod=%p lb_name=%s lb_arm64x=%d found_jmp=%d jmp_at=%p "
+                                     "slot=%p slot_mod=%p slot_name=%s slot_arm64x=%d "
+                                     "slot_read=%d stored=%p stored_eq_pc=%d\n",
+                                     (void *)(uintptr_t)last_block_pc, (int)lb_kr,
+                                     lb_mod, lb_name[0] ? lb_name : "(none)",
+                                     (lb_mod && macrunner_hb_get_arm64x_metadata( lb_mod )) ? 1 : 0,
+                                     found_jmp, (void *)(uintptr_t)jmp_at,
+                                     (void *)(uintptr_t)slot, slot_mod,
+                                     slot_name[0] ? slot_name : "(none)",
+                                     (slot_mod && macrunner_hb_get_arm64x_metadata( slot_mod )) ? 1 : 0,
+                                     slot_read, (void *)(uintptr_t)stored,
+                                     (slot_read && stored == ctx->pc) ? 1 : 0 );
+                            fflush( stderr );
+                        }
+                    }
+                }
             }
             ERR( "MacRunner HyperBridge refused native/CHPE image execution %s pc=%p image=%p-%p machine=%04x\n",
                  label ? label : "entry", (void *)(uintptr_t)ctx->pc,

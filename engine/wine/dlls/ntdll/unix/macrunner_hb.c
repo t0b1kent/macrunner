@@ -620,8 +620,15 @@ static BOOL macrunner_hb_read_local_memory( uintptr_t addr, void *buf, size_t si
 #endif
 }
 
-#define MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE 64
-#define MACRUNNER_HB_MODULE_FROM_PC_NEG_CACHE_SIZE 128
+#define MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE 256
+#define MACRUNNER_HB_MODULE_FROM_PC_NEG_CACHE_SIZE 512
+/* MacRunner (2026-06-17, HK first-frame perf): cap the downward PE-header scan. All
+ * properly-loaded PEs are in the PEB LDR (found at macrunner_hb_ldr_entry_from_pc), so
+ * this memory scan only runs for non-LDR PCs (manually-mapped PEs — rare — or Mono JIT
+ * code, which has NO PE header). read_local_memory = mach_vm_read_overwrite per page, so
+ * the old 0x100000 (4GB) cap meant a Mono-JIT PC could do ~1M Mach syscalls. 0x10000
+ * (256MB) is generous for any real non-LDR image while bounding the non-PE (Mono) case. */
+#define MACRUNNER_HB_MODULE_FROM_PC_SCAN_MAX 0x10000
 
 struct macrunner_hb_module_from_pc_cache_entry
 {
@@ -699,7 +706,7 @@ static void *macrunner_hb_module_from_pc( void *pc )
     if (macrunner_hb_module_from_pc_neg_cache_has( page ))
         return NULL;
 
-    for (i = 0; i < 0x100000 && p >= 0x1000; i++, p -= 0x1000)
+    for (i = 0; i < MACRUNNER_HB_MODULE_FROM_PC_SCAN_MAX && p >= 0x1000; i++, p -= 0x1000)
     {
         IMAGE_DOS_HEADER dos;
         IMAGE_NT_HEADERS nt;
@@ -713,8 +720,23 @@ static void *macrunner_hb_module_from_pc( void *pc )
         if (!macrunner_hb_read_local_memory( nt_addr, &nt, sizeof(nt) )) continue;
         if (nt.Signature != IMAGE_NT_SIGNATURE) continue;
         image_size = nt.OptionalHeader.SizeOfImage;
-        if (image_size && addr >= p && addr < p + image_size)
-            macrunner_hb_module_from_pc_cache_put( p, image_size, (void *)p );
+        /* MacRunner (2026-06-17, HK first-frame perf): cache the WHOLE span
+         * [p, max(p+image_size, page+0x1000)) -> p, not just the in-image part.  The scan
+         * stops at the FIRST DOS+NT header found going DOWN from the query page, so there
+         * is provably no other PE base in (p, page]; therefore EVERY address in [p, page]
+         * resolves to p exactly as this scan would return it (in-image for [p,p+image_size),
+         * best-effort nearest-PE-below for the gap above).  The old code cached ONLY the
+         * in-image case, so a Mono-JIT PC sitting in the gap ABOVE the nearest PE
+         * (addr >= p+image_size) re-ran the mach_vm_read-per-page scan on every call
+         * (~47% of the boot main thread).  Caching the span resolves a whole Mono region
+         * after ONE scan.  Identical results to the old scan, just memoized. */
+        {
+            uintptr_t span_end = page + 0x1000;
+            if (image_size && p <= UINTPTR_MAX - image_size && p + image_size > span_end)
+                span_end = p + image_size;
+            if (span_end > p)
+                macrunner_hb_module_from_pc_cache_put( p, span_end - p, (void *)p );
+        }
         return (void *)p;
     }
     macrunner_hb_module_from_pc_neg_cache_put( page );
@@ -12610,6 +12632,36 @@ static BOOL macrunner_hb_compare_wait_addr( const void *addr, const void *cmp, S
     }
 }
 
+/* MacRunner (2026-06-17 — RtlWaitOnAddress hang diagnosis at Mono ReloadAssembly):
+ * focused, value-level dump of the wait/wake path, gated by MACRUNNER_HB_TRACE_WAITADDR.
+ * Distinct from the budgeted wait-semantic trace: this logs the DEREFERENCED current value
+ * at addr vs the comparand value (answering "should WaitOnAddress have returned?") and, on
+ * the wake side, whether a wake found a matching waiter (answering "is the wake lost?").
+ * Rate-limited (first 64 events, then every 8192nd) so a busy spin cannot blow up the log. */
+static int macrunner_hb_trace_waitaddr_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_WAITADDR" );
+}
+
+static uint64_t macrunner_hb_waitaddr_read_val( const void *p, SIZE_T size )
+{
+    if (!p) return 0;
+    switch (size)
+    {
+    case 1: return *(const UCHAR *)p;
+    case 2: return *(const USHORT *)p;
+    case 4: return *(const ULONG *)p;
+    case 8: return *(const ULONG64 *)p;
+    default: return 0;
+    }
+}
+
+static int macrunner_hb_waitaddr_should_log( unsigned int n )
+{
+    return n < 64 || (n % 8192) == 0;
+}
+
 static NTSTATUS macrunner_hb_rtl_wait_on_address( const void *addr, const void *cmp, SIZE_T size,
                                                   const LARGE_INTEGER *timeout )
 {
@@ -12624,6 +12676,25 @@ static NTSTATUS macrunner_hb_rtl_wait_on_address( const void *addr, const void *
     entry.addr = addr;
     entry.tid = GetCurrentThreadId();
 
+    if (macrunner_hb_trace_waitaddr_enabled())
+    {
+        static unsigned int spin_n;
+        unsigned int n = __atomic_fetch_add( &spin_n, 1, __ATOMIC_RELAXED );
+        if (macrunner_hb_waitaddr_should_log( n ))
+        {
+            uint64_t cur = macrunner_hb_waitaddr_read_val( addr, size );
+            uint64_t exp = macrunner_hb_waitaddr_read_val( cmp, size );
+            fprintf( stderr, "macrunner-hb-waitaddr-wait: n=%u tid=%04lx addr=%p size=%zu "
+                     "cur=0x%llx cmp=0x%llx equal=%d timeout=%s(%lld) -> %s\n",
+                     n, (unsigned long)entry.tid, addr, (size_t)size,
+                     (unsigned long long)cur, (unsigned long long)exp, (cur == exp),
+                     timeout ? "finite" : "INFINITE",
+                     (long long)(timeout ? timeout->QuadPart : 0),
+                     (cur == exp) ? "will-block" : "immediate-SUCCESS" );
+            fflush( stderr );
+        }
+    }
+
     macrunner_hb_wait_addr_spin_lock( &queue->lock );
     if (!macrunner_hb_compare_wait_addr( addr, cmp, size ))
     {
@@ -12637,6 +12708,22 @@ static NTSTATUS macrunner_hb_rtl_wait_on_address( const void *addr, const void *
     macrunner_hb_wait_addr_spin_unlock( &queue->lock );
 
     status = NtWaitForAlertByThreadId( NULL, timeout );
+
+    if (macrunner_hb_trace_waitaddr_enabled())
+    {
+        static unsigned int ret_n;
+        unsigned int n = __atomic_fetch_add( &ret_n, 1, __ATOMIC_RELAXED );
+        if (macrunner_hb_waitaddr_should_log( n ))
+        {
+            uint64_t cur = macrunner_hb_waitaddr_read_val( addr, size );
+            fprintf( stderr, "macrunner-hb-waitaddr-return: n=%u tid=%04lx addr=%p status=%08lx "
+                     "cur=0x%llx (%s)\n", n, (unsigned long)GetCurrentThreadId(), addr,
+                     (unsigned long)status, (unsigned long long)cur,
+                     status == STATUS_ALERTED ? "alerted" :
+                     status == STATUS_TIMEOUT ? "timeout" : "other" );
+            fflush( stderr );
+        }
+    }
 
     if (entry.addr)
     {
@@ -12653,7 +12740,7 @@ static void macrunner_hb_rtl_wake_address_all( const void *addr )
 {
     struct macrunner_hb_wait_addr_queue *queue;
     struct macrunner_hb_wait_addr_entry *entry, *next;
-    unsigned int count = 0;
+    unsigned int count = 0, total = 0;
     HANDLE tids[256];
 
     if (!addr) return;
@@ -12675,10 +12762,22 @@ static void macrunner_hb_rtl_wake_address_all( const void *addr )
                 count = 0;
             }
             tids[count++] = ULongToHandle( entry->tid );
+            total++;
         }
     }
 
     macrunner_hb_wait_addr_spin_unlock( &queue->lock );
+    if (macrunner_hb_trace_waitaddr_enabled())
+    {
+        static unsigned int wk_n;
+        unsigned int n = __atomic_fetch_add( &wk_n, 1, __ATOMIC_RELAXED );
+        if (macrunner_hb_waitaddr_should_log( n ))
+        {
+            fprintf( stderr, "macrunner-hb-waitaddr-wake: n=%u mode=all addr=%p found=%u\n",
+                     n, addr, total );
+            fflush( stderr );
+        }
+    }
     if (count)
         NtAlertMultipleThreadByThreadId( tids, count, NULL, NULL );
 }
@@ -12708,6 +12807,17 @@ static void macrunner_hb_rtl_wake_address_single( const void *addr )
     }
 
     macrunner_hb_wait_addr_spin_unlock( &queue->lock );
+    if (macrunner_hb_trace_waitaddr_enabled())
+    {
+        static unsigned int wk_n;
+        unsigned int n = __atomic_fetch_add( &wk_n, 1, __ATOMIC_RELAXED );
+        if (macrunner_hb_waitaddr_should_log( n ))
+        {
+            fprintf( stderr, "macrunner-hb-waitaddr-wake: n=%u mode=single addr=%p found_tid=%04lx\n",
+                     n, addr, (unsigned long)tid );
+            fflush( stderr );
+        }
+    }
     if (tid)
         NtAlertThreadByThreadId( ULongToHandle( tid ) );
 }

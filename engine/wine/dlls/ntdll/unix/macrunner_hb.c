@@ -96,7 +96,14 @@ struct macrunner_hb_special
 #define MACRUNNER_HB_PSEUDO_HICON_BASE 0x00006f5000020000ULL
 #define MACRUNNER_HB_PSEUDO_HWND_BASE 0x00006f5000030000ULL
 #define MACRUNNER_HB_SEH_STACK_SLACK 0x10000ULL
-#define MACRUNNER_HB_IR_CACHE_SIZE 8192
+/* MacRunner (2026-06-17, HK first-frame): grown 8192 -> 262144. The IR cache is eviction-
+ * free open-addressing; once full, uncached blocks re-lift every execution (thrash). 8192
+ * was far too small for Mono ReloadAssembly's working set (cf. the 524288 JIT block cache one
+ * layer down). 262144 entries * 16B = 4MB per cache, calloc'd per guest thread (lazy zero-fill
+ * on macOS so idle threads touch ~none; the busy Mono thread fills to its working set). The
+ * macrunner-hb-ircache-FULL counter in ir_cache_put reports if even this fills (-> need more
+ * or eviction). */
+#define MACRUNNER_HB_IR_CACHE_SIZE 262144
 #define MACRUNNER_HB_IMPORT_TARGET_MAP_SIZE 8192
 #define MACRUNNER_HB_D3D11_MODULE ((uint64_t)0x00006f2000001100ULL)
 #define MACRUNNER_HB_D3D12_MODULE ((uint64_t)0x00006f2000001200ULL)
@@ -4081,6 +4088,25 @@ static BOOL macrunner_hb_ir_cache_put( struct macrunner_hb_ir_cache *cache, uint
             return TRUE;
         }
         if (entry->pc == pc) return TRUE;
+    }
+    /* MacRunner (2026-06-17, HK first-frame): the IR cache has NO eviction — once full, put
+     * fails here and the block is NOT cached, so macrunner_hb_run_x64 re-lifts it on EVERY
+     * execution (find is also an O(size) miss when full) = a translation thrash that burns
+     * the main thread with no semantic progress (the FIX#2a class one layer up). Count the
+     * full-fails so a too-small cache (THRASH: working set > size, fails climb) is
+     * distinguishable from a cache that never fills (GENUINE one-time translation volume:
+     * fails stay ~0). Rate-limited (first 16 + every ~1M) so it can't spam. */
+    {
+        static uint64_t g_ir_cache_put_full_fails;
+        uint64_t n = __atomic_fetch_add( &g_ir_cache_put_full_fails, 1, __ATOMIC_RELAXED );
+        if (n < 16 || (n & 0xfffff) == 0)
+        {
+            fprintf( stderr, "macrunner-hb-ircache-FULL: put-fails=%llu cache_size=%u pc=%p"
+                     " (cache full, block re-lifted = THRASH)\n",
+                     (unsigned long long)(n + 1), (unsigned)MACRUNNER_HB_IR_CACHE_SIZE,
+                     (void *)(uintptr_t)pc );
+            fflush( stderr );
+        }
     }
     return FALSE;
 }

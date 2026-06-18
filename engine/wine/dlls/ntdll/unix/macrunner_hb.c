@@ -5818,6 +5818,58 @@ static int macrunner_hb_pc_in_image( uint64_t pc, uint64_t image_base, uint64_t 
     return pc >= image_base && pc < image_base + image_size;
 }
 
+/* MacRunner 2026-06-18: TRUE if pc lies in an x64/CHPE (non-native) code range
+ * of an ARM64X module. Mirrors the PE-side macrunner_hb_arm64x_code_range_kind
+ * (signal_arm64.c). Signal-safe: reads committed PE image metadata, no locks. */
+static BOOL macrunner_hb_pc_in_arm64x_x64_range( void *module, uint64_t pc )
+{
+    IMAGE_ARM64EC_METADATA *metadata = macrunner_hb_get_arm64x_metadata( module );
+    IMAGE_NT_HEADERS *nt;
+    const IMAGE_CHPE_RANGE_ENTRY *map;
+    uint64_t base = (uint64_t)(uintptr_t)module, rva;
+    ULONG i;
+
+    if (!metadata || !metadata->CodeMap || !metadata->CodeMapCount || pc < base) return FALSE;
+    if (!(nt = macrunner_hb_image_nt_header( module )) || !nt->OptionalHeader.SizeOfImage) return FALSE;
+    if (pc >= base + nt->OptionalHeader.SizeOfImage) return FALSE;
+    if (metadata->CodeMap >= nt->OptionalHeader.SizeOfImage) return FALSE;
+    rva = pc - base;
+    map = (const IMAGE_CHPE_RANGE_ENTRY *)(uintptr_t)(base + metadata->CodeMap);
+    for (i = 0; i < metadata->CodeMapCount; i++)
+    {
+        ULONG start = map[i].StartOffset & ~1u;
+        ULONG end;
+        if (map[i].Length > ~start) continue;
+        end = start + map[i].Length;
+        if (rva >= start && rva < end) return !map[i].NativeCode; /* TRUE = x64/CHPE */
+    }
+    return FALSE;
+}
+
+/* MacRunner 2026-06-18: TRUE if pc is in the x64/CHPE range of a GUEST GRAPHICS
+ * ARM64X module (DXMT/DXVK dxgi/d3d11/d3d10core/d3d9 — the stack the x64 app
+ * calls into as x64).  NAME-ALLOWLISTED so host ARM64X modules (ntdll/kernelbase,
+ * which carry their own x64-EC entry thunks) are NEVER matched: routing host
+ * faults into the x64-guest path recurses (regression seen 2026-06-18).  Without
+ * this, a fault in dxgi x64-CHPE falls to the ARM64 unwinder -> unsafe boundary
+ * -> exit(5) shortly after Unity input-init. */
+static BOOL macrunner_hb_pc_in_graphics_arm64x_x64_range( void *pc )
+{
+    LDR_DATA_TABLE_ENTRY *ldr = macrunner_hb_ldr_entry_from_pc( pc );
+    void *module;
+    char name[64];
+
+    if (!ldr || !(module = ldr->DllBase)) return FALSE;
+    macrunner_hb_copy_unicode_ascii( name, sizeof(name), &ldr->BaseDllName );
+    if (!(macrunner_hb_strieq( name, "dxgi.dll" ) ||
+          macrunner_hb_strieq( name, "d3d11.dll" ) ||
+          macrunner_hb_strieq( name, "d3d10core.dll" ) ||
+          macrunner_hb_strieq( name, "d3d9.dll" )))
+        return FALSE;
+    return macrunner_hb_pc_in_arm64x_x64_range( module, (uint64_t)(uintptr_t)pc ) &&
+           macrunner_hb_pc_in_executable_section( module, (uint64_t)(uintptr_t)pc );
+}
+
 int macrunner_hb_pc_is_x64_guest_code( void *pc )
 {
     TEB *teb = NtCurrentTeb();
@@ -5836,6 +5888,10 @@ int macrunner_hb_pc_is_x64_guest_code( void *pc )
         macrunner_hb_module_machine( module ) == IMAGE_FILE_MACHINE_AMD64)
         return macrunner_hb_pc_in_executable_section( module, (uint64_t)(uintptr_t)pc );
 
+    /* x64-CHPE code in a GUEST GRAPHICS ARM64X module (DXMT dxgi/d3d11) — name
+     * allowlisted so host modules (ntdll/kernelbase) are never matched. */
+    if (macrunner_hb_pc_in_graphics_arm64x_x64_range( pc )) return TRUE;
+
     if (!pc || !teb || !teb->Peb) return FALSE;
     image_base = teb->Peb->ImageBaseAddress;
     if (macrunner_hb_module_machine( image_base ) != IMAGE_FILE_MACHINE_AMD64) return FALSE;
@@ -5851,6 +5907,7 @@ int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc )
     void *module;
 
     if (!pc) return FALSE;
+    if (macrunner_hb_pc_in_graphics_arm64x_x64_range( pc )) return TRUE;
     if ((ldr = macrunner_hb_ldr_entry_from_pc( pc )))
     {
         module = ldr->DllBase;
@@ -5884,6 +5941,9 @@ int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc )
 {
     if (!pc) return FALSE;
     if (macrunner_hb_x64_dynamic_exec_contains_no_lock( pc )) return TRUE;
+    /* GUEST GRAPHICS ARM64X x64-CHPE (dxgi/d3d11) — not in the registered-x64
+     * set; name-allowlisted so host modules are never matched (regression). */
+    if (macrunner_hb_pc_in_graphics_arm64x_x64_range( pc )) return TRUE;
     if (!macrunner_hb_is_registered_x64_guest_address( pc )) return FALSE;
     return macrunner_hb_pc_is_x64_guest_code_module_no_lock( pc );
 }

@@ -3955,19 +3955,31 @@ static hb_result_t macrunner_hb_special_write( void *user, hb_gva_t addr, const 
 #endif
 }
 
-static hb_result_t macrunner_hb_map_live_address_space( hb_memory_t *mem )
+/* Enumerate the real VM map within [lo, hi) and record each live region into the
+ * HB memory model. hb_memory_map(base != 0) records an existing live range without
+ * mmap(); mapping the entire user range made holes look readable and let direct
+ * memcpy fault on macOS high-address stack probes, so we enumerate real regions and
+ * unmapped holes return HB_ERR_MEMORY_FAULT cleanly.
+ *
+ * MacRunner 2026-06-18: parameterized by [lo,hi). Enumerating the WHOLE user range
+ * (0..max) is one mach_vm_region syscall PER region — thousands with Unity+Mono+
+ * DXMT+heaps. The run_x64 per-fault remap at :19344 did a full re-enumeration on
+ * EVERY new-code-region access during scene-load (93% of the Unity main thread in
+ * mach_vm_region). The per-fault path now maps only the FAULTING MODULE's range
+ * (a few regions); full-range stays for one-time thread/context init. Data accesses
+ * to unmapped regions are served on-demand by the special read/write handlers, so
+ * narrowing the per-fault scan does not lose data coverage. */
+static hb_result_t macrunner_hb_map_live_address_space_range( hb_memory_t *mem,
+                                                              uint64_t lo, uint64_t hi )
 {
 #ifdef __APPLE__
-    mach_vm_address_t addr = 0;
     const mach_vm_address_t max_addr = 0x00007fffffff0000ULL;
+    mach_vm_address_t addr = lo;
     mach_port_t task = mach_task_self();
     unsigned int mapped = 0;
 
-    /* hb_memory_map(base != 0) records an existing live range without mmap().
-     * Mapping the entire user range made holes look readable and let direct
-     * memcpy fault on macOS high-address stack probes. Enumerate the real VM
-     * map instead, so unmapped holes return HB_ERR_MEMORY_FAULT cleanly. */
-    while (addr < max_addr)
+    if (hi > max_addr) hi = max_addr;
+    while (addr < hi)
     {
         mach_vm_address_t region = addr;
         mach_vm_size_t size = 0;
@@ -3982,7 +3994,9 @@ static hb_result_t macrunner_hb_map_live_address_space( hb_memory_t *mem )
         if (object != MACH_PORT_NULL) mach_port_deallocate( task, object );
         if (kr != KERN_SUCCESS) break;
 
-        if (region >= max_addr) break;
+        /* mach_vm_region rounds UP to the next region when addr is in a hole;
+         * stop once the returned region starts at/after the scan ceiling. */
+        if (region >= hi) break;
         if (region + size < region) break;
         if (region + size > max_addr) size = max_addr - region;
 
@@ -3996,14 +4010,38 @@ static hb_result_t macrunner_hb_map_live_address_space( hb_memory_t *mem )
         if (addr <= region) break;
     }
     if (macrunner_hb_debug_enabled())
-        ERR( "MacRunner HyperBridge mapped %u live VM regions\n", mapped );
+        ERR( "MacRunner HyperBridge mapped %u live VM regions [%llx,%llx)\n",
+             mapped, (unsigned long long)lo, (unsigned long long)hi );
     else
-        TRACE( "MacRunner HyperBridge mapped %u live VM regions\n", mapped );
+        TRACE( "MacRunner HyperBridge mapped %u live VM regions [%llx,%llx)\n",
+               mapped, (unsigned long long)lo, (unsigned long long)hi );
     return mapped ? HB_OK : HB_ERR_MEMORY_FAULT;
 #else
-    return hb_memory_map( mem, 0x10000, 0x7fffffff0000ULL - 0x10000,
+    return hb_memory_map( mem, lo ? lo : 0x10000, hi - (lo ? lo : 0x10000),
                           HB_PERM_READ | HB_PERM_WRITE | HB_PERM_EXEC );
 #endif
+}
+
+static hb_result_t macrunner_hb_map_live_address_space( hb_memory_t *mem )
+{
+    return macrunner_hb_map_live_address_space_range( mem, 0, 0x00007fffffff0000ULL );
+}
+
+/* Map only the VM regions of the module containing pc (its [base, base+SizeOfImage)
+ * range). Used on the run_x64 per-fault remap path instead of a full-address-space
+ * re-enumeration: the only downstream dependency there is marking the faulting
+ * module's exec sections, which needs just that module's regions mapped. */
+static hb_result_t macrunner_hb_map_live_module_range( hb_memory_t *mem, void *module )
+{
+    IMAGE_NT_HEADERS *nt;
+    uint64_t base, size;
+
+    if (!module) return HB_ERR_MEMORY_FAULT;
+    nt = macrunner_hb_image_nt_header( module );
+    if (!nt || !nt->OptionalHeader.SizeOfImage) return HB_ERR_MEMORY_FAULT;
+    base = (uint64_t)(uintptr_t)module;
+    size = nt->OptionalHeader.SizeOfImage;
+    return macrunner_hb_map_live_address_space_range( mem, base, base + size );
 }
 
 static hb_result_t macrunner_hb_mark_x64_image_exec_sections( hb_memory_t *mem, void *image_base )
@@ -19063,7 +19101,20 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                                     macrunner_hb_special_write, &special );
     hb_memory_set_grow_handler( ctx->memory, macrunner_hb_special_grow );
 
-    ret = macrunner_hb_map_live_address_space( ctx->memory );
+    /* MacRunner 2026-06-18: run_x64 creates a FRESH ctx+memory per x64-callback
+     * dispatch; full-scanning the whole VM map here (thousands of mach_vm_region
+     * syscalls) on EVERY callback was the 93% main-thread throughput sink during
+     * scene-load. Map only the ENTRY MODULE's range — that is exactly what the
+     * mark_x64_image_exec_sections(image_base) below needs. Everything the
+     * callback touches beyond it is lazy-filled: other code regions fault and are
+     * mapped incrementally by the per-fault remap (:19xxx, map_live_module_range);
+     * data is served on-demand by the special read/write handlers set above.
+     * Fall back to the full scan only if the entry module can't be range-mapped
+     * (e.g. JIT/dynamic entry with no NT header), so failure semantics are kept. */
+    ret = image_base ? macrunner_hb_map_live_module_range( ctx->memory, image_base )
+                     : macrunner_hb_map_live_address_space( ctx->memory );
+    if (ret != HB_OK && image_base)
+        ret = macrunner_hb_map_live_address_space( ctx->memory );
     if (debug_enabled)
         ERR( "MacRunner HyperBridge after live-map %s entry=%p result=%s\n",
              label ? label : "x64", entry, hb_result_string(ret) );
@@ -19341,7 +19392,14 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                 ret = macrunner_hb_mark_x64_image_exec_sections( ctx->memory, guest_module );
                 if (ret == HB_ERR_NOT_FOUND || ret == HB_ERR_MEMORY_FAULT)
                 {
-                    hb_result_t remap = macrunner_hb_map_live_address_space( ctx->memory );
+                    /* MacRunner 2026-06-18: map ONLY the faulting module's range
+                     * (a few regions), not the whole user address space. The full
+                     * re-enumeration here was the 93% main-thread throughput sink
+                     * (mach_vm_region per region x thousands, on every new-code-
+                     * region access during scene-load). The only dependency below
+                     * is marking THIS module's exec sections; data accesses are
+                     * served by the special read/write handlers. */
+                    hb_result_t remap = macrunner_hb_map_live_module_range( ctx->memory, guest_module );
                     if (trace_thread_run)
                     {
                         fprintf( stderr, "macrunner-ui-input: stage=hb_run_x64_guest_module_remap "

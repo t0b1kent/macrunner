@@ -29,8 +29,17 @@ ensure_dxmt_homebrew_patch() {
   fi
 }
 
+ensure_dxmt_no_builtin_d3d11_patch() {
+  local patch="$GRAPHICS_ROOT/vendor-patches/dxmt/0002-macr-d3d11-no-builtin-postproc.patch"
+  require_file "$patch"
+  if ! grep -q "d3d11 must remain a normal PE" "$DXMT_SRC/src/d3d11/meson.build"; then
+    git -C "$DXMT_SRC" apply "$patch"
+  fi
+}
+
 git -C "$DXMT_SRC" submodule update --init --recursive
 ensure_dxmt_homebrew_patch
+ensure_dxmt_no_builtin_d3d11_patch
 
 build_arm64_full() {
   local arch="aarch64"
@@ -66,11 +75,13 @@ build_x86_64_pe_only() {
     -Dnative_llvm_path="$LLVM15" \
     -Dwine_install_path="$WINE_DIST" \
     --prefix "$GRAPHICS_BUILD/dxmt-install-$arch" --bindir . --libdir .
+  # Build PE DLLs and run Wine builtin postprocess (modifies files in place).
+  # d3d11 is intentionally left as a normal PE via src/d3d11/meson.build patch.
   ninja -C "$build" -j"$JOBS" \
-    src/d3d10/d3d10core.dll \
     src/d3d11/d3d11.dll \
-    src/dxgi/dxgi.dll \
-    src/winemetal/winemetal.dll
+    src/dxgi/dxgi.dll src/dxgi/dxgi.dll.postproc \
+    src/d3d10/d3d10core.dll src/d3d10/d3d10core.dll.postproc \
+    src/winemetal/winemetal.dll src/winemetal/winemetal.dll.postproc
   mkdir -p "$GRAPHICS_DIST/dxmt/x86_64-windows"
   cp -f "$build/src/d3d10/d3d10core.dll" "$GRAPHICS_DIST/dxmt/x86_64-windows/d3d10core.dll"
   cp -f "$build/src/d3d11/d3d11.dll" "$GRAPHICS_DIST/dxmt/x86_64-windows/d3d11.dll"

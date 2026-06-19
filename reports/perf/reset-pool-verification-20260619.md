@@ -377,3 +377,52 @@ The agent sandbox used for earlier sessions **cannot** run `wineserver` (`bind: 
    `input-init`.
 3. If reset then shows up as >15 % of a hot thread, file the generation/O(1)
    follow-up; otherwise (A) is verified-forward.
+
+
+## 2026-06-19 evening: DXMT binary≠source regression — partial fix
+
+### Root cause found
+
+The working DXMT overlay (`reports/phase4-hollow-knight/laneA-A-fix-live2-try1-131139/dxmt-builtin-overlay/`) has a **mixed Wine builtin/native layout**:
+
+- `d3d11.dll` — normal PE, no `Wine builtin DLL` marker.
+- `dxgi.dll`, `winemetal.dll`, `d3d10core.dll` — `Wine builtin DLL` marker.
+
+Fresh `scripts/build-dxmt.sh` builds were producing either:
+- all-builtin (`wine_builtin_dll=true`), causing HK to hang before module load, or
+- all-native (`wine_builtin_dll=false`), causing HK to hang before `D3D11CreateDevice`.
+
+### Fix applied
+
+- Added `engine/graphics/vendor-patches/dxmt/0002-macr-d3d11-no-builtin-postproc.patch`.
+- Updated `scripts/build-dxmt.sh` to apply the patch and to run `winebuild --builtin` postprocessing only for `dxgi`, `winemetal`, `d3d10core`; `d3d11` stays a normal PE.
+- Verified build artifacts now match the overlay's mixed layout.
+
+### Result
+
+A fresh source build of DXMT at `af237cc` (with the `ID3D11Fence` degrade fix) now:
+- passes the build,
+- deploys mixed builtin/native DLLs,
+- boots HK past module load and reaches `Mono path` / `Begin MonoManager ReloadAssembly`.
+
+The previous `HK never appeared within 300s` and the pre-`D3D11CreateDevice` hang are gone.
+
+### New blocker: Mono reload loop
+
+After `Begin MonoManager ReloadAssembly`, HK enters a repeating HyperBridge callback-exception loop at `ntdll.dll!RtlUnwind` / `kernelbase.dll` (frame_pc=0x87fff944f34). The process stays alive and consumes CPU but never reaches `Loaded All Assemblies` within 300 s. A 5-second `sample(1)` shows the main thread and many `AssetGarbageCollectorHelper` threads active, so it is not a simple deadlock; it appears to be a fault/retry loop in the Mono runtime initialization path.
+
+This loop **only appears with the freshly-built 5 MB d3d11.dll**. The overlay's 33 MB d3d11.dll (which statically links `airconv` / LLVM bitcode) passes Mono reload in ~146 s. The fresh build relies on `winemetal.dll` for `SM50*` shader translation and is ~28 MB smaller in `d3d11.dll`. The size/layout difference is the prime suspect for the Mono reload regression.
+
+### Implication for Gate A
+
+- The (A) reset-pool answers are unchanged: the previous overlay-based 300 s sample already showed `__munmap` 0.004 % and reset 0.003 %.
+- A coherent **current-source** DXMT that reaches `D3D11CreateDevice` and exercises the `af237cc` fence fix is still missing.
+- The next requirement is either:
+  1. reproduce the overlay's `airconv`-linked `d3d11.dll` from current source (needs a Windows-target LLVM static library / toolchain, historically under `engine/dxmt/toolchains/llvm`), or
+  2. debug why the `airconv`-externalized build (`SM50*` in `winemetal.dll`) trips the Mono reload loop.
+
+### Committed changes
+
+- `scripts/build-dxmt.sh`: mixed builtin/native build.
+- `engine/graphics/vendor-patches/dxmt/0002-macr-d3d11-no-builtin-postproc.patch`: keep `d3d11` as normal PE.
+- This report updated.

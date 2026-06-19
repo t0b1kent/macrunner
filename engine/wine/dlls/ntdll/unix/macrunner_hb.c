@@ -4278,6 +4278,34 @@ static void macrunner_hb_ir_cache_destroy( struct macrunner_hb_ir_cache *cache )
     free( cache );
 }
 
+/* MacRunner 2026-06-19: eager reset for per-thread reuse (reset-not-recreate).
+ * Free every owned IR func and clear the table so the next callback re-lifts from
+ * current guest code (SMC-safe; eager free = zero UAF risk). */
+static void macrunner_hb_ir_cache_reset( struct macrunner_hb_ir_cache *cache )
+{
+    size_t i;
+
+    if (!cache) return;
+    for (i = 0; i < MACRUNNER_HB_IR_CACHE_SIZE; i++)
+        if (cache->entries[i].func)
+        {
+            hb_ir_func_destroy( cache->entries[i].func );
+            cache->entries[i].func = NULL;
+        }
+    memset( cache->entries, 0, sizeof(cache->entries) );
+}
+
+/* MacRunner 2026-06-19 (B-interim): per-thread pool of the JIT runtime + IR cache.
+ * run_x64 is invoked per x64-callback dispatch; create+destroy of the 128MB MAP_JIT
+ * arena + 25MB block_cache + 4MB ir_cache PER CALLBACK was ~71% of the Unity main
+ * thread during scene-load. Reuse them per thread (reset-not-recreate). The busy
+ * guard falls back to create/destroy for a NESTED (re-entrant) run_x64 on the same
+ * thread, so the pooled objects are never used by two frames at once. Reset clears
+ * everything → translations regenerate from current code (SMC-safe). */
+static __thread hb_jit_runtime_t *macrunner_hb_tls_jit_rt = NULL;
+static __thread struct macrunner_hb_ir_cache *macrunner_hb_tls_ir_cache = NULL;
+static __thread int macrunner_hb_tls_pool_busy = 0;
+
 static USHORT macrunner_hb_module_machine( void *module )
 {
     const IMAGE_DOS_HEADER *dos = module;
@@ -4764,7 +4792,11 @@ static BOOL macrunner_hb_memory_protect_writable( ULONG protect )
 
 static BOOL macrunner_hb_trace_virtual_region_enabled(void)
 {
-    return macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_VIRTUAL_REGION" );
+    /* MacRunner 2026-06-19 (B-interim edit 2): memoize — this is called PER
+     * virtual region in replay_virtual_regions on every callback; the unmemoized
+     * getenv/__findenv_locked was ~8% of the Unity main thread during scene-load. */
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_VIRTUAL_REGION" );
 }
 
 static BOOL macrunner_hb_trace_exec_virtual_enabled(void)
@@ -18991,6 +19023,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     hb_context_t *ctx = NULL;
     hb_jit_runtime_t *jit_rt = NULL;
     struct macrunner_hb_ir_cache *ir_cache = NULL;
+    BOOL macrunner_hb_pool_used = FALSE;  /* this run_x64 frame owns the per-thread pool */
     struct macrunner_hb_owned_ir_func *jit_owned_ir = NULL;
     hb_exec_result_t out;
     ULONG64 blocks = 0, steps = 0, jit_fallbacks = 0;
@@ -19272,9 +19305,30 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         fflush( stderr );
     }
 
-    ir_cache = calloc( 1, sizeof(*ir_cache) );
+    /* B-interim per-thread pool: reuse the IR cache (and below, the JIT runtime)
+     * across callbacks via reset, unless this is a nested run_x64 (pool busy). */
+    if (!macrunner_hb_tls_pool_busy)
+    {
+        macrunner_hb_tls_pool_busy = 1;
+        macrunner_hb_pool_used = TRUE;
+        if (macrunner_hb_tls_ir_cache)
+        {
+            macrunner_hb_ir_cache_reset( macrunner_hb_tls_ir_cache );
+            ir_cache = macrunner_hb_tls_ir_cache;
+        }
+        else
+        {
+            ir_cache = calloc( 1, sizeof(*ir_cache) );
+            macrunner_hb_tls_ir_cache = ir_cache;
+        }
+    }
+    else
+    {
+        ir_cache = calloc( 1, sizeof(*ir_cache) );  /* nested frame: own, non-pooled */
+    }
     if (!ir_cache)
     {
+        if (macrunner_hb_pool_used) { macrunner_hb_tls_ir_cache = NULL; macrunner_hb_tls_pool_busy = 0; macrunner_hb_pool_used = FALSE; }
         status = STATUS_NO_MEMORY;
         status_reason = "ir-cache";
         goto done;
@@ -19287,7 +19341,20 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     }
     if (backend == HB_BACKEND_JIT)
     {
-        jit_rt = hb_jit_runtime_create( ctx );
+        if (macrunner_hb_pool_used && macrunner_hb_tls_jit_rt)
+        {
+            hb_jit_runtime_reset( macrunner_hb_tls_jit_rt, ctx );  /* reuse: regenerate (SMC-safe) */
+            jit_rt = macrunner_hb_tls_jit_rt;
+        }
+        else if (macrunner_hb_pool_used)
+        {
+            jit_rt = hb_jit_runtime_create( ctx );
+            macrunner_hb_tls_jit_rt = jit_rt;
+        }
+        else
+        {
+            jit_rt = hb_jit_runtime_create( ctx );  /* nested frame: own, non-pooled */
+        }
         if (trace_thread_run)
         {
             fprintf( stderr, "macrunner-ui-input: stage=hb_run_x64_jit_runtime label=%s jit=%p\n",
@@ -20637,7 +20704,9 @@ done:
     }
     if (blocks_out) *blocks_out = blocks;
     if (steps_out) *steps_out = steps;
-    if (jit_rt) hb_jit_runtime_destroy( jit_rt );
+    /* B-interim: pooled jit_rt/ir_cache stay in the per-thread pool (reset on next
+     * reuse); only a nested (non-pooled) frame's own objects are destroyed here. */
+    if (jit_rt && !macrunner_hb_pool_used) hb_jit_runtime_destroy( jit_rt );
     while (jit_owned_ir)
     {
         struct macrunner_hb_owned_ir_func *next = jit_owned_ir->next;
@@ -20645,7 +20714,8 @@ done:
         free( jit_owned_ir );
         jit_owned_ir = next;
     }
-    macrunner_hb_ir_cache_destroy( ir_cache );
+    if (!macrunner_hb_pool_used) macrunner_hb_ir_cache_destroy( ir_cache );
+    if (macrunner_hb_pool_used) macrunner_hb_tls_pool_busy = 0;
     macrunner_hb_bridge_stack_limit = old_bridge_stack_limit;
     macrunner_hb_bridge_stack_base = old_bridge_stack_base;
     macrunner_hb_bridge_stack_size = old_bridge_stack_size;

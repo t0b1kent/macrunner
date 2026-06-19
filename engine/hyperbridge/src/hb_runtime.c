@@ -168,6 +168,17 @@ static void block_cache_destroy(hb_block_cache_t* cache) {
     free(cache);
 }
 
+/* MacRunner: eager reset for per-thread runtime reuse. Free every owned cloned
+ * block (zero UAF risk — no cross-generation lazy free) and clear all entries so
+ * the next callback regenerates translations from current guest code. */
+static void block_cache_reset(hb_block_cache_t* cache) {
+    if (!cache) return;
+    for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++)
+        block_cache_release_owned_block(&cache->entries[i], NULL);
+    memset(cache->entries, 0, sizeof(cache->entries));
+    cache->count = 0;
+}
+
 static hb_block_cache_entry_t* block_cache_find(hb_block_cache_t* cache, uint64_t addr) {
     if (!cache) return NULL;
     size_t idx = block_cache_hash(addr);
@@ -1057,6 +1068,23 @@ void hb_jit_runtime_destroy(hb_jit_runtime_t* rt) {
     hb_jit_buffer_destroy(rt->jit_mem);
     block_cache_destroy(rt->block_cache);
     free(rt);
+}
+
+/* MacRunner: reset for per-thread reuse instead of destroy+recreate per callback.
+ * Reuses the 128MB MAP_JIT arena (no munmap/mmap) + the block_cache allocation;
+ * eagerly frees owned blocks and rewinds the arena so translations regenerate
+ * from current guest code (SMC-safe). Re-points ctx to the new per-callback ctx
+ * (generated code embeds ctx state, so a full regenerate against the live ctx is
+ * required — which the cleared caches + rewound arena guarantee). */
+void hb_jit_runtime_reset(hb_jit_runtime_t* rt, hb_context_t* ctx) {
+    if (!rt) return;
+    rt->ctx = ctx;
+    if (rt->jit_mem) hb_jit_buffer_reset(rt->jit_mem);
+    if (rt->block_cache) block_cache_reset(rt->block_cache);
+    rt->hot_trace_blocks = 0;
+    rt->hot_trace_next = 0;
+    rt->code_cache_full = false;
+    rt->code_cache_full_reports = 0;
 }
 
 /* Find block by guest address */

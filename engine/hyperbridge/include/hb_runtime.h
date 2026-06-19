@@ -72,6 +72,11 @@ typedef struct {
 
 hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx);
 void hb_jit_runtime_destroy(hb_jit_runtime_t* rt);
+/* MacRunner: reset a runtime for reuse by another callback on the same thread
+ * (per-thread pool) instead of destroy+recreate per callback. Eagerly frees the
+ * block_cache's owned blocks + clears it, rewinds the jit arena bump pointer, and
+ * re-points ctx — translations are fully regenerated (SMC-safe, no stale code). */
+void hb_jit_runtime_reset(hb_jit_runtime_t* rt, hb_context_t* ctx);
 hb_result_t hb_jit_runtime_compile(hb_jit_runtime_t* rt, const hb_ir_func_t* func);
 hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out);
 int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int signal);

@@ -111,6 +111,25 @@ void hb_jit_buffer_destroy(hb_jit_buffer_t* buf) {
     free(buf);
 }
 
+/* MacRunner: reuse the mapping for a fresh codegen round (no munmap/mmap).
+ * Only the bump pointer is rewound; the next codegen overwrites from offset 0.
+ * Make the arena writable so the next emit can write (mirrors make_writable). */
+hb_result_t hb_jit_buffer_reset(hb_jit_buffer_t* buf) {
+    if (!hb_jit_buffer_is_valid(buf)) return hb_jit_buffer_invalid("reset", buf);
+    buf->used = 0;
+    buf->dirty_start = 0;
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (buf->thread_jit_write_protect) {
+        pthread_jit_write_protect_np(0);
+        buf->is_executable = false;
+        return HB_OK;
+    }
+#endif
+    if (mprotect(buf->writable, buf->size, PROT_READ | PROT_WRITE) != 0) return HB_ERR_JIT_FAILED;
+    buf->is_executable = false;
+    return HB_OK;
+}
+
 hb_result_t hb_jit_buffer_commit(hb_jit_buffer_t* buf) {
     size_t dirty_start, dirty_end;
     if (!hb_jit_buffer_is_valid(buf)) return hb_jit_buffer_invalid("commit", buf);

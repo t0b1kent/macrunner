@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-06-19T01:18:48.707858Z",
+  "jit_buffer": {
+    "total_ms": 1.31,
+    "per_iter_ms": 0.013,
+    "ratio": 0.3107
+  },
+  "runtime_with_run": {
+    "total_ms": 106.441,
+    "per_iter_ms": 1.064,
+    "ratio": 0.7959
+  },
+  "conclusion": "reset is cheaper than create+destroy in micro-bench; generation/O(1) not warranted by this data"
+}

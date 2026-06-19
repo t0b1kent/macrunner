@@ -123,6 +123,84 @@ grep -E 'munmap|mmap|pthread_jit_write_protect_np' reports/lane-a/A-fix-live2/sa
 grep -E 'block_cache_reset|macrunner_hb_ir_cache_reset|hb_jit_buffer_reset|hb_jit_runtime_reset|memset' reports/lane-a/A-fix-live2/sample-hk-*-live.txt
 ```
 
+
+## Host gate re-run: A-fix-live2 with coherent dist and freshly-built (A)-ntdll (2026-06-19)
+
+The first host gate above (`laneA-A-fix-live2-try1-131139`) completed, but the
+background sampler reported `HK never appeared within 300s` and the `dist` set
+was suspected of being incoherent after overlay/rebuild churn. The user
+requested a clean, coherent runtime before any further (A) verification, so the
+following steps were performed:
+
+1. **Killed** all hanging `gate-A`, `laneA`, `mr-run`, `wineserver`,
+   `services.exe`, `rpcss.exe`, `Hollow Knight`, and `wine` processes.
+2. **Restored a coherent DXMT** from the last known-working overlay:
+   `reports/phase4-hollow-knight/laneA-A-fix-live2-try1-131139/dxmt-builtin-overlay/`.
+3. **Rebuilt `ntdll.so` from source** with the (A) reset-pool changes and
+copied it to both dist trees, then `codesign -s - -f`:
+   - `engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so`
+   - `engine/wine/dist/lib/wine/aarch64-unix/ntdll.so`
+4. **Reverted** the experimental `ID3D11Fence`/`VIDEO_SUPPORT` patch in
+   `engine/dxmt/src/d3d11/d3d11_device.cpp` per user instruction (that work is
+   out of scope for the (A) verdict).
+
+### Sanity smoke
+
+`laneA-run-hk.sh sanityA 120 1` passed: Hollow Knight started and reached
+`Begin MonoManager ReloadAssembly` and `PhysX init`. This confirms the harness
+and dist are functional independently of the gate.
+
+### (A)-ntdll build freshness
+
+- Source: `engine/wine/dlls/ntdll/unix/macrunner_hb.c` (with reset-pool logic).
+- Built binary SHA-256: `bc345554d97b07cbbbf0c60dc5e0861965a29c2e`
+  - This differs from the milestone / pre-(A) binary SHA
+    `6e63cb516f9e80630c831a04abd6c69825edc1df`, confirming the (A) code is
+    compiled in rather than a stale milestone artifact being reused.
+- Verified imported symbols present in the new binary:
+  - `hb_jit_buffer_reset`
+  - `hb_jit_runtime_reset`
+  - `macrunner_hb_ir_cache_reset`
+
+### Gate re-run result
+
+```bash
+./scripts/gate-A-reset-hk.sh A-fix-live2 300
+```
+
+- Exit code: `0`.
+- Valid run: `reports/phase4-hollow-knight/laneA-A-fix-live2-try1-154111`
+- Classification (`reports/lane-a/A-fix-live2/classify.log`):
+  - `VERDICT: BLOCKED`
+  - `OWNER: Lane C`
+  - `CLASS: PRESENT_MISSING` (confidence 0.70)
+  - `LADDER_RUNG: 9 (dxgi-factory)` — same stable frontier as before.
+- Faults: none. No `c0000005` / `c0000017` observed.
+- The run log shows the second `D3D11CreateDevice(Flags=0x820)` and then
+  `GpuFence::Create(): Failed to create ID3D11Fence, error 0x80004005`, after
+  which no `Present`/`SwapChain` markers follow. This is the same
+  `dxgi-factory` / `ID3D11Fence` blocker documented in
+  `reports/phase4-hollow-knight/PRESENT_MISSING-root-cause-20260619.md`.
+
+### Profiling sample (still absent)
+
+The new gate run also produced **no live CPU sample**:
+
+```
+[gate-A] background sampler: HK never appeared within 300s
+```
+
+Because HK never reached a sampler-attachable steady state, the files
+`reports/lane-a/A-fix-live2/sample-hk-*-live.txt` do not exist. Therefore the
+two profiling questions below **cannot be answered directly from this run**:
+
+- (a) Whether the `munmap`/`mmap` dominant has disappeared.
+- (b) Whether `reset`/`memset` has become a new top stack.
+
+A historical sample analysis (earlier in this report) still shows the two
+cost centers that the reset-pool change targets: `__munmap`/`mmap` from JIT
+runtime create/destroy and `__findenv_locked` from virtual-region tracing.
+
 ## Fresh micro-benchmarks (run after rebuild)
 
 JSON: `reports/perf/reset-pool-bench-20260619-132837.json`
@@ -164,4 +242,16 @@ The agent sandbox used for earlier sessions **cannot** run `wineserver` (`bind: 
 - Historical samples confirm the two targeted cost centers (`__munmap`/`mmap` from JIT runtime create/destroy and `__findenv_locked` from virtual-region tracing).
 - Real 1800 s HK gate is blocked by the sandbox; the `gate-A-reset-hk.sh` script is ready to run on the host to collect the final profile.
 
-**Next step:** run `scripts/gate-A-reset-hk.sh` on the host and inspect the resulting sample. If reset (memset/release loop) shows up as >15 % of a hot thread, file a follow-up for generation/O(1); otherwise this item is verified-forward.
+**Verdict for part (A):** the reset-pool code is built, committed, sanity-tested,
+and symbols are present in a freshly-built `ntdll.so` that is distinct from the
+milestone binary. The gate does not crash and does not fault, but Hollow Knight
+is blocked at the unrelated `dxgi-factory` / `ID3D11Fence` frontier before it
+reaches a present or sampler-attachable state. Consequently, the live profiling
+questions (munmap/mmap dominance and reset/memset as a new top hotspot) cannot
+be answered from the current gate data.
+
+**Next step:** unblock Lane C (`PRESENT_MISSING` / `ID3D11Fence`) so HK reaches a
+steady state; then re-run `scripts/gate-A-reset-hk.sh` and inspect
+`sample-hk-*-live.txt`. If reset (memset/release loop) then shows up as >15 % of
+a hot thread, file a follow-up for generation/O(1); otherwise this item is
+verified-forward.

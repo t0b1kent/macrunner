@@ -1,7 +1,7 @@
 # MacRunner (A) reset-pool verification report
 
 Date: 2026-06-19
-Commit: cc728b2 (includes A-reset-pool-snapshot tag ed782f7)
+Commit: 7434c4a (tags A-reset-pool-snapshot ed782f7, A-reset-pool-verified-forward)
 
 ## What was implemented
 
@@ -71,36 +71,90 @@ Two Hollow Knight samples with visible per-callback JIT runtime create/destroy w
 
 A Notepad++ sample (`reports/performance/npp-post-import-target-map-20260524-040821/npp-import-target-map.sample.txt`) shows `__findenv_locked` at 6 592 top-of-stack hits and `__munmap` 12 hits, confirming the two cost centers addressed by this change.
 
-## Sandbox limitation
+## Host gate run: A-fix-live2 (2026-06-19)
 
-The agent sandbox used for this session **cannot** run `wineserver` (`bind: Operation not permitted`) or `ps`, so a live 1800 s Hollow Knight gate cannot be executed here. All Wine-dependent verification must run on the host.
-
-## Host gate script
-
-Run on the real host (not in this sandbox):
+Executed outside the sandbox with a freshly rebuilt `ntdll.so`:
 
 ```bash
 cd /Users/timurtoby/Documents/MacRunner/Main/MacRunner
 . config/env.sh
-# Long run + 300 s sample + 8-boot stale-exec watch
-scripts/gate-A-reset-hk.sh A-fix-1800 1800
+export DXMT_HEADLESS=1
+export MACRUNNER_HB_TRANSLATION_CACHE=0
+scripts/gate-A-reset-hk.sh A-fix-live2 300
 ```
 
-Then measure:
+### Build freshness
+
+- `libhyperbridge.a`: already fresh (built 2026-06-19 11:37, after source change).
+- `ntdll.so`: rebuilt from `engine/wine/dlls/ntdll/unix/macrunner_hb.c` at 2026-06-19 13:11 and copied to:
+  - `engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so`
+  - `engine/wine/dist/lib/wine/aarch64-unix/ntdll.so`
+- Verified imported symbols still present:
+  - `hb_jit_buffer_reset`
+  - `hb_jit_runtime_reset`
+  - `macrunner_hb_ir_cache_reset`
+
+### Gate result
+
+- Exit code: `0`.
+- Run log: `reports/lane-a/A-fix-live2/laneA-run.log`
+- Valid run: `reports/phase4-hollow-knight/laneA-A-fix-live2-try1-131139`
+- Classification (`reports/lane-a/A-fix-live2/classify.log`):
+  - `VERDICT: BLOCKED`
+  - `OWNER: Lane C`
+  - `CLASS: PRESENT_MISSING` (confidence 0.70)
+  - `LADDER_RUNG: 9 (dxgi-factory)` — best so far `laneA-nullcall-pinH-try1-051300`
+- Faults: none. No `c0000005` / `c0000017` observed in run or boot logs.
+- All 8 boot attempts exited `rc=143` (timeout/killed), consistent with the dxgi-factory blockage.
+
+### Profiling sample
+
+No `sample-hk-*-live.txt` was produced. Background sampler reported:
+
+```
+[gate-A] background sampler: HK never appeared within 300s
+```
+
+This means the Hollow Knight process never reached a state where the sampler could attach, so the two profiling questions below **cannot be answered directly from this run**.
 
 ```bash
-# (a) Did munmap/mmap dominance go away?
-grep -E 'munmap|mmap|pthread_jit_write_protect_np' \
-  reports/lane-a/A-fix-1800/sample-hk-300s.txt
-
-# (b) Did reset become a top hotspot?
-grep -E 'block_cache_reset|macrunner_hb_ir_cache_reset|hb_jit_buffer_reset|hb_jit_runtime_reset|memset' \
-  reports/lane-a/A-fix-1800/sample-hk-300s.txt
-
-# Ladder and fault summary
-cat reports/lane-a/A-fix-1800/classify.log
-cat reports/lane-a/A-fix-1800/faults.log
+# Commands that would be used if the sample existed:
+grep -E 'munmap|mmap|pthread_jit_write_protect_np' reports/lane-a/A-fix-live2/sample-hk-*-live.txt
+grep -E 'block_cache_reset|macrunner_hb_ir_cache_reset|hb_jit_buffer_reset|hb_jit_runtime_reset|memset' reports/lane-a/A-fix-live2/sample-hk-*-live.txt
 ```
+
+## Fresh micro-benchmarks (run after rebuild)
+
+JSON: `reports/perf/reset-pool-bench-20260619-132837.json`
+
+### JIT buffer reset vs create/destroy
+
+| metric | value |
+|--------|-------|
+| N | 100 |
+| arena size | 128 MB |
+| create+destroy total | 0.726 ms |
+| create+destroy per iter | 0.007 ms |
+| reset total | 0.362 ms |
+| reset per iter | 0.004 ms |
+| reset / create+destroy ratio | 0.50 |
+
+### Runtime reset+run vs create/destroy+run
+
+| metric | value |
+|--------|-------|
+| N | 100 |
+| create+destroy+run total | 89.206 ms |
+| create+destroy+run per iter | 0.892 ms |
+| reset+run total | 70.683 ms |
+| reset+run per iter | 0.707 ms |
+| reset+run / create+destroy+run ratio | 0.79 |
+
+**Interpretation:** reset remains measurably cheaper than create/destroy after the rebuild, and does **not** become a new top hotspot in controlled measurements.
+
+## Sandbox limitation
+
+The agent sandbox used for earlier sessions **cannot** run `wineserver` (`bind: Operation not permitted`) or `ps`. The live gate above was run on the host/macOS environment in this session.
 
 ## Conclusion
 

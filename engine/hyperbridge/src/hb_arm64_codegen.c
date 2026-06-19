@@ -4508,10 +4508,24 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
 
         case HB_IR_UNSUPPORTED:
         case HB_IR_FAULT:
+            /* Genuine LIFT gaps (the lifter couldn't decode the x86 op): the
+             * interpreter can't help either, so fail the block. */
             return HB_ERR_UNSUPPORTED_OPCODE;
 
         default:
-            return HB_ERR_UNSUPPORTED_OPCODE;
+            /* MacRunner 2026-06-19 (fallback-loop fix): a real IR op that the
+             * lifter produced and the interpreter implements (all 163 IR ops),
+             * but ARM64 codegen has no emitter for yet (e.g. RCR/RCL, the SSE
+             * compare family). Previously this returned UNSUPPORTED_OPCODE -> the
+             * whole block failed -> block-level interp fallback -> and when the
+             * op was first in the block (steps=0) PC never advanced -> infinite
+             * retry of the same op (the HK boot livelock). Route it to the
+             * per-op interpreter helper instead: the op is interpreted inline and
+             * the JIT block continues + advances PC normally. (Control-flow ops
+             * are explicitly cased above, so default only reaches data ops, which
+             * the per-op helper executes safely.) Closing the codegen emitters for
+             * the hot ops is a separate SPEED follow-up, not a correctness gate. */
+            return emit_interp_ir_helper(buf, instr);
     }
 }
 

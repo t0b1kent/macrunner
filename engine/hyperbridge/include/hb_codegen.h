@@ -69,6 +69,10 @@ typedef struct {
 
 hb_jit_buffer_t* hb_jit_buffer_create(size_t size);
 void hb_jit_buffer_destroy(hb_jit_buffer_t* buf);
+/* MacRunner: reset the bump pointer to reuse the (already-mmap'd) arena for a
+ * fresh round of codegen without munmap/mmap. Translations are regenerated, so
+ * callers MUST also clear any cache that points into this arena (block_cache). */
+hb_result_t hb_jit_buffer_reset(hb_jit_buffer_t* buf);
 hb_result_t hb_jit_buffer_commit(hb_jit_buffer_t* buf);
 hb_result_t hb_jit_buffer_make_writable(hb_jit_buffer_t* buf);
 hb_result_t hb_jit_buffer_make_executable(hb_jit_buffer_t* buf);

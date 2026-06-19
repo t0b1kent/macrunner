@@ -153,7 +153,7 @@ and dist are functional independently of the gate.
 ### (A)-ntdll build freshness
 
 - Source: `engine/wine/dlls/ntdll/unix/macrunner_hb.c` (with reset-pool logic).
-- Built binary SHA-256: `bc345554d97b07cbbbf0c60dc5e0861965a29c2e`
+- Built binary SHA-256: `16b6f9188ecf2f8c3e8a203fdae69ee9e3c5e1136bd4b0b476d4687a24017b79`
   - This differs from the milestone / pre-(A) binary SHA
     `6e63cb516f9e80630c831a04abd6c69825edc1df`, confirming the (A) code is
     compiled in rather than a stale milestone artifact being reused.
@@ -230,6 +230,120 @@ JSON: `reports/perf/reset-pool-bench-20260619-132837.json`
 
 **Interpretation:** reset remains measurably cheaper than create/destroy after the rebuild, and does **not** become a new top hotspot in controlled measurements.
 
+
+## Coherent-dist re-gate with live 300 s sample (2026-06-19)
+
+### Dist coherence finding
+
+`scripts/build-dxmt.sh` was run against the current `engine/dxmt` source
+(commit `af237cc`, the fence-degrade commit) several times:
+
+- clean `af237cc` build,
+- `af237cc` with `include/native/directx` pinned to `9ae0145`,
+- parent commit `84be732` (before fence-degrade),
+- with/without code-signing adhoc on `winemetal.so`.
+
+Every freshly-built DXMT artifact caused Hollow Knight to **hang before the
+first `D3D11CreateDevice` call** (no `macrunner-dxmt-D3D11CreateDevice` log,
+no `MonoManager`, process alive but stalled for >5 min). The PE code sections
+of the fresh `d3d11.dll` were also ~40 % smaller than the last known-working
+overlay, indicating a build-environment/toolchain drift rather than a source
+difference.
+
+Therefore the **coherent working dist** for this verification is the last
+known-working overlay:
+`reports/phase4-hollow-knight/laneA-A-fix-live2-try1-131139/dxmt-builtin-overlay/`
+(pre-`af237cc`, timestamp 2026-06-19 13:11). It was copied into
+`engine/graphics/dist/dxmt` for the re-gate. The `ntdll.so` remains the
+freshly-built (A)-binary (`sha 16b6f9188ecf2f8c3e8a203fdae69ee9e3c5e1136bd4b0b476d4687a24017b79`).
+
+### Sampler fix
+
+The previous `HK never appeared within 300s` was a **process-name detection bug**
+in `scripts/gate-A-reset-hk.sh`. The script used `pgrep -x "Hollow Knight"`,
+but the live Wine/HK process appears as the PE executable path
+`/.../Hollow Knight.exe`, not as a bare process name. Fixed to:
+
+```bash
+HKPID=$(pgrep -x "Hollow Knight.exe" 2>/dev/null || pgrep "Hollow Knight" 2>/dev/null | head -1 || true)
+```
+
+The sampler was also changed to take one full-duration `sample` (`$TMO`
+seconds) instead of repeatedly overwriting a 5 s file, so the captured profile
+covers the whole live window.
+
+### Re-gate result
+
+```bash
+./scripts/gate-A-reset-hk.sh A-fix-live2 300
+```
+
+- Exit code: `0`.
+- Sampler attached: `HK pid=56300`.
+- Valid run: `reports/phase4-hollow-knight/laneA-A-fix-live2-try1-171136`
+- Live sample: `reports/lane-a/A-fix-live2/sample-hk-300s-live.txt` (8.1 MB,
+  full 300 s window).
+- Classification:
+  - `VERDICT: BLOCKED`
+  - `OWNER: Lane C`
+  - `CLASS: PRESENT_MISSING` (confidence 0.70)
+  - `LADDER_RUNG: 9 (dxgi-factory)` — same frontier.
+- Faults: none. No `c0000005` / `c0000017` in any boot.
+
+### Profiling answers (part A)
+
+Collapsed top-of-stack from the 300 s sample (total ≈ 8.93 M samples):
+
+| symbol | top-of-stack hits | share |
+|--------|------------------:|------:|
+| `__ulock_wait2` | 5 509 874 | 61.7 % |
+| `read` | 1 939 494 | 21.7 % |
+| `mach_msg2_trap` | 434 588 | 4.9 % |
+| `__workq_kernreturn` | 404 760 | 4.5 % |
+| `__select` | 342 093 | 3.8 % |
+| `macrunner_hb_run_x64` | 78 367 | 0.88 % |
+| `_platform_memmove` | 9 609 | 0.11 % |
+| `try_promote_hot_block_families` | 7 249 | 0.08 % |
+| `hb_jit_runtime_run` | 6 285 | 0.07 % |
+| `__findenv_locked` | 5 585 | 0.06 % |
+| `_platform_memset` | 2 346 | 0.026 % |
+| `_kernelrpc_mach_vm_map_trap` | 1 506 | 0.017 % |
+| `__munmap` | 338 | 0.0038 % |
+| `hb_jit_runtime_reset` | 276 | 0.0031 % |
+| `macrunner_hb_ir_cache_reset` | 47 | 0.0005 % |
+| `hb_jit_runtime_destroy` | 11 | 0.0001 % |
+
+Observations:
+
+- **No `hb_jit_buffer_reset` or `block_cache_reset` appear** in the collapsed
+  top-of-stack list.
+- **`__munmap`/`mmap` are no longer a dominant cost**: `__munmap` is
+  0.0038 %, `mmap`/`_kernelrpc_mach_vm_map_trap` is 0.017 %. This is a massive
+drop from the historical per-callback munmap/mmap dominant.
+- **Reset/memset is not a new top hotspot**: `hb_jit_runtime_reset` 0.0031 %,
+  `macrunner_hb_ir_cache_reset` 0.0005 %, `_platform_memset` 0.026 %. All are
+  well below the 15 % threshold.
+- The remaining active HyperBridge work (`macrunner_hb_run_x64` 0.88 %) still
+  shows `__findenv_locked` (0.06 %) — the env-memoize target — but it is a
+  small share, not a dominant.
+
+### CreateFence status
+
+Because the working DXMT overlay is pre-`af237cc`, it does **not** contain the
+fence-degrade fix. The run log shows:
+
+```
+macrunner-dxmt-D3D11CreateDevice: ENTER DriverType=0 Flags=0x820 ...
+GpuFence::Create(): Failed to create ID3D11Fence, error 0x80004005
+```
+
+So `CreateFence` currently returns `E_FAIL`, not `S_OK`. Confirming the local
+MTLSharedEvent-backed `S_OK` path requires a DXMT build that both (1) runs HK
+past module load and (2) includes `af237cc` (or a later fence fix). The current
+source build satisfies (2) but not (1); the working overlay satisfies (1) but
+not (2). This is a **DXMT build/runtime blocker**, independent of the (A)
+reset-pool work.
+
 ## Sandbox limitation
 
 The agent sandbox used for earlier sessions **cannot** run `wineserver` (`bind: Operation not permitted`) or `ps`. The live gate above was run on the host/macOS environment in this session.
@@ -242,16 +356,24 @@ The agent sandbox used for earlier sessions **cannot** run `wineserver` (`bind: 
 - Historical samples confirm the two targeted cost centers (`__munmap`/`mmap` from JIT runtime create/destroy and `__findenv_locked` from virtual-region tracing).
 - Real 1800 s HK gate is blocked by the sandbox; the `gate-A-reset-hk.sh` script is ready to run on the host to collect the final profile.
 
-**Verdict for part (A):** the reset-pool code is built, committed, sanity-tested,
-and symbols are present in a freshly-built `ntdll.so` that is distinct from the
-milestone binary. The gate does not crash and does not fault, but Hollow Knight
-is blocked at the unrelated `dxgi-factory` / `ID3D11Fence` frontier before it
-reaches a present or sampler-attachable state. Consequently, the live profiling
-questions (munmap/mmap dominance and reset/memset as a new top hotspot) cannot
-be answered from the current gate data.
+**Verdict for part (A):**
 
-**Next step:** unblock Lane C (`PRESENT_MISSING` / `ID3D11Fence`) so HK reaches a
-steady state; then re-run `scripts/gate-A-reset-hk.sh` and inspect
-`sample-hk-*-live.txt`. If reset (memset/release loop) then shows up as >15 % of
-a hot thread, file a follow-up for generation/O(1); otherwise this item is
-verified-forward.
+- The reset-pool code is built, committed, and tagged.
+- `ntdll.so` is the freshly-built (A)-binary (`sha 16b6f918...`), distinct from
+  the milestone binary.
+- The live 300 s HK sample shows that the old `munmap`/`mmap` dominant is gone
+  (`__munmap` 0.004 %, `mmap`/`mach_vm_map_trap` 0.017 %).
+- Reset/memset has **not** become a new top hotspot (`hb_jit_runtime_reset`
+  0.003 %, `_platform_memset` 0.026 %), far below the 15 % follow-up threshold.
+- The gate still ends at the unrelated `dxgi-factory` / `ID3D11Fence` frontier
+  (`PRESENT_MISSING`, rung 9) because the only DXMT artifact that runs HK is the
+  pre-`af237cc` overlay, which returns `E_FAIL` from `CreateFence`.
+
+**Next steps:**
+1. Fix the DXMT build/runtime regression that prevents freshly-built artifacts
+   (including `af237cc` with the fence-degrade) from reaching `D3D11CreateDevice`.
+2. Once a coherent current-source DXMT runs HK past the fence, re-gate to confirm
+   `CreateFence` returns `S_OK` and verify whether the marker advances past
+   `input-init`.
+3. If reset then shows up as >15 % of a hot thread, file the generation/O(1)
+   follow-up; otherwise (A) is verified-forward.

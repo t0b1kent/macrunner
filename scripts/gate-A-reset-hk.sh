@@ -21,22 +21,19 @@ rm -f "$RUNDIR"/*.log "$RUNDIR"/*.txt "$RUNDIR/.sample-done" "$RUNDIR/.hk-found"
 echo "[gate-A] long run: $TAG, TMO=$TMO, HK=$HK"
 
 # Background sampler: wait for Hollow Knight process and sample it until it dies.
+# Capture one full-duration sample so the profile covers the whole live window,
+# not a single overwritten 5 s snapshot at the end.
 (
     n=0
     while [ "$n" -lt 300 ]; do
-        HKPID=$(pgrep -x "Hollow Knight" 2>/dev/null || true)
+        # MacRunner: the actual HK Wine process appears as the PE executable path
+        # (comm = "/.../Hollow Knight.exe"), not as a bare "Hollow Knight" name.
+        HKPID=$(pgrep -x "Hollow Knight.exe" 2>/dev/null || pgrep "Hollow Knight" 2>/dev/null | head -1 || true)
         if [ -n "$HKPID" ]; then
             echo "$HKPID" > "$RUNDIR/.hk-found"
             echo "[gate-A] background sampler: HK pid=$HKPID"
-            sample "$HKPID" 5 -f "$RUNDIR/sample-hk-5s-live.txt" 2> "$RUNDIR/sample.err" || true
-            # keep taking 5s snapshots until process disappears
-            while kill -0 "$HKPID" 2>/dev/null; do
-                sleep 2
-                sample "$HKPID" 5 -f "$RUNDIR/sample-hk-5s-live.txt" 2> "$RUNDIR/sample.err" || true
-                # stop after a reasonable number of snapshots
-                cnt=$(ls "$RUNDIR"/sample-hk-*-live.txt 2>/dev/null | wc -l | tr -d ' ')
-                [ "$cnt" -ge 60 ] && break
-            done
+            # Full run-length sample (stops automatically when HK exits).
+            sample "$HKPID" "$TMO" -f "$RUNDIR/sample-hk-${TMO}s-live.txt" 2> "$RUNDIR/sample.err" || true
             touch "$RUNDIR/.sample-done"
             exit 0
         fi

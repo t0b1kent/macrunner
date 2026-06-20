@@ -1444,7 +1444,15 @@ static void macrunner_hb_update_current_x64_context( hb_context_t *ctx, const ch
 
     if (!ctx || !macrunner_hb_should_register_x64_context_label( label )) return;
     tid = macrunner_hb_current_tid();
-    pthread_mutex_lock( &macrunner_hb_x64_thread_context_mutex );
+    /* MacRunner 2026-06-20 (throughput): this runs PER BLOCK on every guest thread
+     * (label=="thread"); the blocking global lock was ~15% of the scene-load main
+     * thread (psynch_mutexwait/drop contention). The snapshot it refreshes is only
+     * read cross-thread (NtGetContextThread/SEH, rare) AND those readers re-refresh
+     * the snapshot from entry->ctx on access (get/set_x64_thread_context) — so a
+     * missed per-block refresh is harmless. Use trylock-skip: never BLOCK on the
+     * contended lock here; the next uncontended block refreshes the snapshot. The
+     * critical per-callback seed (register_current_x64_context) keeps its hard lock. */
+    if (pthread_mutex_trylock( &macrunner_hb_x64_thread_context_mutex ) != 0) return;
     entry = macrunner_hb_find_x64_thread_context_locked( tid, TRUE );
     if (entry)
     {
@@ -6005,21 +6013,48 @@ int macrunner_hb_pc_is_x64_guest_code( void *pc )
 
 int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc )
 {
+    /* MacRunner 2026-06-20 (throughput): called PER BLOCK from the run_x64 hot path;
+     * was ~7% of the scene-load main thread doing an LDR module-list walk +
+     * machine check every block. Cache the per-MODULE classification (is this an
+     * AMD64-machine module?) per-thread: a cached AMD64 module keeps the precise
+     * exec-section check; a cached non-AMD64 module returns FALSE without the walk. */
+    enum { MR_MODCACHE_N = 6 };
+    static __thread struct { uint64_t base, end; signed char amd64; } cache[MR_MODCACHE_N];
+    static __thread unsigned cache_next;
+    uint64_t p = (uint64_t)(uintptr_t)pc;
     LDR_DATA_TABLE_ENTRY *ldr;
     void *module;
+    unsigned i;
 
     if (!pc) return FALSE;
     if (macrunner_hb_pc_in_graphics_arm64x_x64_range( pc )) return TRUE;
-    if ((ldr = macrunner_hb_ldr_entry_from_pc( pc )))
-    {
-        module = ldr->DllBase;
-        if (!module || macrunner_hb_module_machine( module ) != IMAGE_FILE_MACHINE_AMD64) return FALSE;
-        return macrunner_hb_pc_in_executable_section( module, (uint64_t)(uintptr_t)pc );
-    }
+    for (i = 0; i < MR_MODCACHE_N; i++)
+        if (cache[i].end && p >= cache[i].base && p < cache[i].end)
+        {
+            if (!cache[i].amd64) return FALSE;
+            return macrunner_hb_pc_in_executable_section( (void *)(uintptr_t)cache[i].base, p );
+        }
 
-    module = macrunner_hb_module_from_pc( pc );
-    if (!module || macrunner_hb_module_machine( module ) != IMAGE_FILE_MACHINE_AMD64) return FALSE;
-    return macrunner_hb_pc_in_executable_section( module, (uint64_t)(uintptr_t)pc );
+    if (!(ldr = macrunner_hb_ldr_entry_from_pc( pc )))
+    {
+        module = macrunner_hb_module_from_pc( pc );
+        if (!module || macrunner_hb_module_machine( module ) != IMAGE_FILE_MACHINE_AMD64) return FALSE;
+        return macrunner_hb_pc_in_executable_section( module, p );
+    }
+    module = ldr->DllBase;
+    if (!module) return FALSE;
+    {
+        BOOL amd64 = macrunner_hb_module_machine( module ) == IMAGE_FILE_MACHINE_AMD64;
+        if (ldr->SizeOfImage)
+        {
+            unsigned slot = cache_next++ % MR_MODCACHE_N;
+            cache[slot].base = (uint64_t)(uintptr_t)module;
+            cache[slot].end = (uint64_t)(uintptr_t)module + ldr->SizeOfImage;
+            cache[slot].amd64 = amd64 ? 1 : 0;
+        }
+        if (!amd64) return FALSE;
+    }
+    return macrunner_hb_pc_in_executable_section( module, p );
 }
 
 void *macrunner_hb_pe_module_from_pc_no_lock( void *pc )

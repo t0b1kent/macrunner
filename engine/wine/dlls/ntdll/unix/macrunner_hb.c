@@ -5925,19 +5925,51 @@ static BOOL macrunner_hb_pc_in_arm64x_x64_range( void *module, uint64_t pc )
  * -> exit(5) shortly after Unity input-init. */
 static BOOL macrunner_hb_pc_in_graphics_arm64x_x64_range( void *pc )
 {
-    LDR_DATA_TABLE_ENTRY *ldr = macrunner_hb_ldr_entry_from_pc( pc );
+    /* MacRunner 2026-06-20 (throughput): this is called PER BLOCK from the run_x64
+     * hot loop (pc_is_x64_guest_code_no_lock) and was ~9.7% of the scene-load main
+     * thread (profiled) — an LDR module-list walk + name copy + 4x strieq + CodeMap
+     * walk on every block, almost always in a NON-graphics module (UnityPlayer/Mono)
+     * that fails the name match. Cache the per-MODULE classification (is this a
+     * graphics x64-CHPE module?) per-thread: the common non-graphics module collapses
+     * to a range compare returning FALSE; graphics modules keep the precise check.
+     * Modules don't move during a run, so caching [base,end)->is_gfx is safe. */
+    enum { MR_GFXCACHE_N = 6 };
+    static __thread struct { uint64_t base, end; signed char gfx; } cache[MR_GFXCACHE_N];
+    static __thread unsigned cache_next;
+    uint64_t p = (uint64_t)(uintptr_t)pc;
+    LDR_DATA_TABLE_ENTRY *ldr;
     void *module;
     char name[64];
+    unsigned i;
 
+    for (i = 0; i < MR_GFXCACHE_N; i++)
+        if (cache[i].end && p >= cache[i].base && p < cache[i].end)
+        {
+            if (!cache[i].gfx) return FALSE;   /* non-graphics module — fast path */
+            module = (void *)(uintptr_t)cache[i].base;
+            return macrunner_hb_pc_in_arm64x_x64_range( module, p ) &&
+                   macrunner_hb_pc_in_executable_section( module, p );
+        }
+
+    ldr = macrunner_hb_ldr_entry_from_pc( pc );
     if (!ldr || !(module = ldr->DllBase)) return FALSE;
     macrunner_hb_copy_unicode_ascii( name, sizeof(name), &ldr->BaseDllName );
-    if (!(macrunner_hb_strieq( name, "dxgi.dll" ) ||
-          macrunner_hb_strieq( name, "d3d11.dll" ) ||
-          macrunner_hb_strieq( name, "d3d10core.dll" ) ||
-          macrunner_hb_strieq( name, "d3d9.dll" )))
-        return FALSE;
-    return macrunner_hb_pc_in_arm64x_x64_range( module, (uint64_t)(uintptr_t)pc ) &&
-           macrunner_hb_pc_in_executable_section( module, (uint64_t)(uintptr_t)pc );
+    {
+        BOOL gfx = macrunner_hb_strieq( name, "dxgi.dll" ) ||
+                   macrunner_hb_strieq( name, "d3d11.dll" ) ||
+                   macrunner_hb_strieq( name, "d3d10core.dll" ) ||
+                   macrunner_hb_strieq( name, "d3d9.dll" );
+        if (ldr->SizeOfImage)
+        {
+            unsigned slot = cache_next++ % MR_GFXCACHE_N;
+            cache[slot].base = (uint64_t)(uintptr_t)module;
+            cache[slot].end = (uint64_t)(uintptr_t)module + ldr->SizeOfImage;
+            cache[slot].gfx = gfx ? 1 : 0;
+        }
+        if (!gfx) return FALSE;
+    }
+    return macrunner_hb_pc_in_arm64x_x64_range( module, p ) &&
+           macrunner_hb_pc_in_executable_section( module, p );
 }
 
 int macrunner_hb_pc_is_x64_guest_code( void *pc )
@@ -19531,6 +19563,42 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                     native_symbol = dli.dli_sname ? dli.dli_sname : "?";
                     native_base = dli.dli_fbase;
                 }
+                /* MacRunner 2026-06-20: the recurring c000007b is a guest indirect
+                 * call through a garbage fn-ptr loaded from [r15+0x10] (disasm:
+                 * mov rax,[r15+0x10]; call rax). Dump r15's object + the vtable-ish
+                 * slots so the uninitialized slot / call site can be pinned. The
+                 * caller block_pc is also printed (symbolize vs heartbeat-module). */
+                {
+                    uint64_t r15 = ctx->regs.x64.r15;
+                    uint64_t v[6] = {0};
+                    int k;
+                    /* self-symbolize so no heartbeat-module run is needed (which
+                     * changes timing + which c000007b mode fires). */
+                    #define MR_BTSYM(addr, buf, rva) do { \
+                        void *_m = macrunner_hb_module_from_pc( (void *)(uintptr_t)(addr) ); \
+                        (rva) = 0; macrunner_hb_copy_cstr( (buf), sizeof(buf), "?" ); \
+                        if (_m) { macrunner_hb_get_export_module_name( _m, (buf), sizeof(buf) ); \
+                                  (rva) = (uint64_t)(addr) - (uint64_t)(uintptr_t)_m; } \
+                    } while (0)
+                    char pcm[64], r15m[64], slotm[64], vtm[64];
+                    uint64_t pcr, r15r, slotr, vtr;
+                    for (k = 0; k < 6; k++)
+                        hb_memory_read_u64( ctx->memory, (hb_gva_t)(r15 + (uint64_t)k * 8), &v[k] );
+                    MR_BTSYM( ctx->pc, pcm, pcr );
+                    MR_BTSYM( r15, r15m, r15r );
+                    MR_BTSYM( v[2], slotm, slotr );   /* [r15+0x10] = the called garbage fn-ptr */
+                    MR_BTSYM( v[0], vtm, vtr );        /* [r15+0] = vtable/first field */
+                    #undef MR_BTSYM
+                    fprintf( stderr, "macrunner-hb-badtarget: pc=%p(%s+0x%llx) r15=%p(%s+0x%llx) "
+                             "[r15+0]=%p(%s+0x%llx) [r15+8]=%p [r15+10]=%p(%s+0x%llx) "
+                             "[r15+18]=%p [r15+20]=%p [r15+28]=%p\n",
+                             (void *)(uintptr_t)ctx->pc, pcm, (unsigned long long)pcr,
+                             (void *)(uintptr_t)r15, r15m, (unsigned long long)r15r,
+                             (void *)(uintptr_t)v[0], vtm, (unsigned long long)vtr, (void *)(uintptr_t)v[1],
+                             (void *)(uintptr_t)v[2], slotm, (unsigned long long)slotr,
+                             (void *)(uintptr_t)v[3], (void *)(uintptr_t)v[4], (void *)(uintptr_t)v[5] );
+                    fflush( stderr );
+                }
                 ERR( "MacRunner HyperBridge refused non-application target %s pc=%p image=%p-%p "
                      "native_image=%s native_base=%p native_symbol=%s "
                      "rax=%p rcx=%p rdx=%p rsi=%p rdi=%p rsp=%p blocks=%s steps=%s\n",
@@ -19743,6 +19811,25 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
             status_reason = "native-chpe-image";
             break;
         }
+        /* MacRunner 2026-06-20 (throughput): try_ntdll_version_semantic was ~9% of
+         * the scene-load main thread — it does an LDR module-list walk PER BLOCK only
+         * to discover the semantic never applies unless image_base IS amd64-ntdll
+         * (constant per run_x64 call). The main thread's image_base is the EXE, so it
+         * always returned FALSE after the wasted walk. Gate on a cached per-thread
+         * "is image_base ntdll" so non-ntdll threads skip the per-block call entirely. */
+        {
+            static __thread void *vs_chk_base;
+            static __thread int vs_chk_res;
+            if (image_base != vs_chk_base)
+            {
+                LDR_DATA_TABLE_ENTRY *il = macrunner_hb_ldr_entry_from_pc( image_base );
+                vs_chk_base = image_base;
+                vs_chk_res = il && il->DllBase == image_base &&
+                             macrunner_hb_module_name_matches( "ntdll.dll", &il->BaseDllName ) &&
+                             macrunner_hb_module_machine( image_base ) == IMAGE_FILE_MACHINE_AMD64;
+            }
+            if (!vs_chk_res) goto skip_version_semantic;
+        }
         if (macrunner_hb_try_ntdll_version_semantic( ctx, image_base ))
         {
             if (trace_thread_run)
@@ -19753,6 +19840,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
             }
             continue;
         }
+skip_version_semantic:
         if (trace_thread_run)
         {
             fprintf( stderr, "macrunner-ui-input: stage=hb_run_x64_after_version_check "
@@ -19929,6 +20017,44 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         if (trace_npp_open_pack) macrunner_hb_trace_npp_open_pack( ctx, image_start, "before-block" );
         block_pc = ctx->pc;
         last_block_pc = block_pc;
+        /* MacRunner 2026-06-20: throttle the FMOD software-mixer busy-loop. FMOD
+         * fails to init audio -> "emulated software output" spins ~81% of a core
+         * in UnityPlayer rva 0x17b2bb0-0x17b2c80 (a confirmed red herring; audio is
+         * not needed for the first frame). Duty-cycle the spin so it stops stealing
+         * a core from scene-load. Env-gated (MACRUNNER_HB_FMOD_THROTTLE); the region
+         * is resolved+cached from the first UnityPlayer block so it survives ASLR. */
+        {
+            static int fmod_throttle = -1;
+            static uint64_t fmod_lo = 0, fmod_hi = 0;
+            if (fmod_throttle < 0)
+                fmod_throttle = macrunner_hb_env_flag( "MACRUNNER_HB_FMOD_THROTTLE" );
+            if (fmod_throttle)
+            {
+                uint64_t lo = __atomic_load_n( &fmod_lo, __ATOMIC_RELAXED );
+                if (!lo)
+                {
+                    void *upm = macrunner_hb_module_from_pc( (void *)(uintptr_t)block_pc );
+                    char nm[64]; nm[0] = 0;
+                    if (upm) macrunner_hb_get_export_module_name( upm, nm, sizeof(nm) );
+                    if (upm && macrunner_hb_strieq( nm, "UnityPlayer.dll" ))
+                    {
+                        uint64_t base = (uint64_t)(uintptr_t)upm;
+                        __atomic_store_n( &fmod_hi, base + 0x17b2c80, __ATOMIC_RELAXED );
+                        __atomic_store_n( &fmod_lo, base + 0x17b2bb0, __ATOMIC_RELAXED );
+                        lo = base + 0x17b2bb0;
+                    }
+                }
+                if (lo && block_pc >= lo && block_pc < __atomic_load_n( &fmod_hi, __ATOMIC_RELAXED ))
+                {
+                    static __thread unsigned fmod_spin;
+                    if ((++fmod_spin & 0x7f) == 0)
+                    {
+                        struct timespec ts = { 0, 200000 }; /* 200us -> ~10% duty */
+                        nanosleep( &ts, NULL );
+                    }
+                }
+            }
+        }
 #if defined(__APPLE__)
         /* MacRunner GfxDevice path trace: log when the guest enters key UnityPlayer
          * functions (D3D11 device-create flow) to see exactly where the path diverges

@@ -2173,6 +2173,8 @@ static NTSTATUS get_vprot_flags( DWORD protect, unsigned int *vprot, BOOL image 
 static BOOL macrunner_hb_trace_host_exec(void);
 static BOOL macrunner_hb_range_overlaps_x64_guest( const void *base, size_t size );
 static BOOL macrunner_hb_x64_guest_fault_handlers_are_ready;
+/* MacRunner 2026-06-21: invalidate the HB special_read/write region cache on guest VM changes. */
+extern void macrunner_hb_vm_changed( void );
 
 static inline int mprotect_exec( void *base, size_t size, int unix_prot )
 {
@@ -6619,7 +6621,11 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
     else
         limit = 0;
 
-    return allocate_virtual_memory( ret, size_ptr, type, protect, 0, limit, 0, 0 );
+    {
+        NTSTATUS macrunner_st = allocate_virtual_memory( ret, size_ptr, type, protect, 0, limit, 0, 0 );
+        if (!macrunner_st) macrunner_hb_vm_changed();
+        return macrunner_st;
+    }
 }
 
 
@@ -6762,8 +6768,12 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
         return result.virtual_alloc_ex.status;
     }
 
-    return allocate_virtual_memory( ret, size_ptr, type, protect,
-                                    limit_low, limit_high, align, attributes );
+    {
+        NTSTATUS macrunner_st = allocate_virtual_memory( ret, size_ptr, type, protect,
+                                                         limit_low, limit_high, align, attributes );
+        if (!macrunner_st) macrunner_hb_vm_changed();
+        return macrunner_st;
+    }
 }
 
 
@@ -6863,6 +6873,7 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
         *size_ptr = size;
     }
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+    if (!status) macrunner_hb_vm_changed();   /* MacRunner: invalidate HB region cache on free */
     return status;
 }
 
@@ -6956,6 +6967,7 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
         *old_prot = old;
     }
     else *old_prot = PAGE_NOACCESS;
+    if (!status) macrunner_hb_vm_changed();   /* MacRunner: invalidate HB region cache on protect */
     return status;
 }
 

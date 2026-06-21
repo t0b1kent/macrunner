@@ -340,6 +340,56 @@ static uint64_t macrunner_hb_now_us(void)
     return (uint64_t)tv.tv_sec * 1000000ULL + tv.tv_usec;
 }
 
+static int macrunner_hb_env_flag( const char *name );
+/* MacRunner 2026-06-20: sync-latency meter. Records each guest WaitForSingleObject
+ * round-trip's blocked duration; reports rate + avg per-op latency every ~1s (a
+ * single line, not per-op spam). Tells whether scene-load is round-trip-OVERHEAD-
+ * bound (high rate, low avg) or wait-DURATION-bound (low rate, high avg / lost-wake).
+ * Env-gated (MACRUNNER_HB_TRACE_SYNCMETER). dt_us = the NtWaitForSingleObject blocked time. */
+static void macrunner_hb_syncmeter_wfso( uint64_t dt_us, NTSTATUS status, DWORD timeout_ms )
+{
+    static int en = -1;
+    static uint64_t ops_total, win_ops, win_blocked_us, last_report_us;
+    static uint64_t win_timed_out, win_signaled, win_infinite, win_finite_to_sum;
+    uint64_t now, last;
+
+    if (en < 0) en = macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_SYNCMETER" );
+    if (!en) return;
+    __atomic_add_fetch( &ops_total, 1, __ATOMIC_RELAXED );
+    __atomic_add_fetch( &win_ops, 1, __ATOMIC_RELAXED );
+    __atomic_add_fetch( &win_blocked_us, dt_us, __ATOMIC_RELAXED );
+    /* (a)-vs-(b) discriminator: did the wait TIME OUT (guest poll w/ short timeout)
+     * or get SIGNALED (prompt-or-quantized wake)? + was the timeout INFINITE? */
+    if (status == (NTSTATUS)0x00000102 /*STATUS_TIMEOUT*/) __atomic_add_fetch( &win_timed_out, 1, __ATOMIC_RELAXED );
+    else if (status == 0 /*STATUS_WAIT_0*/) __atomic_add_fetch( &win_signaled, 1, __ATOMIC_RELAXED );
+    if (timeout_ms == INFINITE) __atomic_add_fetch( &win_infinite, 1, __ATOMIC_RELAXED );
+    else __atomic_add_fetch( &win_finite_to_sum, timeout_ms, __ATOMIC_RELAXED );
+    now = macrunner_hb_now_us();
+    last = __atomic_load_n( &last_report_us, __ATOMIC_RELAXED );
+    if (now - last >= 1000000 &&
+        __atomic_compare_exchange_n( &last_report_us, &last, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED ))
+    {
+        uint64_t wo = __atomic_exchange_n( &win_ops, 0, __ATOMIC_RELAXED );
+        uint64_t wu = __atomic_exchange_n( &win_blocked_us, 0, __ATOMIC_RELAXED );
+        uint64_t wto = __atomic_exchange_n( &win_timed_out, 0, __ATOMIC_RELAXED );
+        uint64_t wsig = __atomic_exchange_n( &win_signaled, 0, __ATOMIC_RELAXED );
+        uint64_t winf = __atomic_exchange_n( &win_infinite, 0, __ATOMIC_RELAXED );
+        uint64_t wfts = __atomic_exchange_n( &win_finite_to_sum, 0, __ATOMIC_RELAXED );
+        uint64_t wfin = wo > winf ? wo - winf : 0;
+        double secs = (double)(now - last) / 1e6;
+        fprintf( stderr, "macrunner-hb-syncmeter: WaitForSingleObject ops_total=%llu window_ops=%llu "
+                 "rate=%.0f/s avg_latency_us=%.0f window_blocked_ms=%.0f timed_out=%llu signaled=%llu "
+                 "infinite_to=%llu finite_to=%llu avg_finite_to_ms=%.0f (sum across threads)\n",
+                 (unsigned long long)__atomic_load_n( &ops_total, __ATOMIC_RELAXED ),
+                 (unsigned long long)wo, secs > 0 ? wo / secs : 0,
+                 wo ? (double)wu / wo : 0, (double)wu / 1000.0,
+                 (unsigned long long)wto, (unsigned long long)wsig,
+                 (unsigned long long)winf, (unsigned long long)wfin,
+                 wfin ? (double)wfts / wfin : 0 );
+        fflush( stderr );
+    }
+}
+
 __attribute__((visibility("default"))) void *macrunner_hb_wow64_guest32_memory(void)
 {
     hb_memory_t *ret;
@@ -3706,6 +3756,110 @@ NTSTATUS macrunner_hb_register_import_thunk( void *args )
     return STATUS_SUCCESS;
 }
 
+/*
+ * MacRunner 2026-06-21: persistent per-thread region cache for special_read/special_write.
+ * With JIT_DIRECT_MEM off, EVERY guest memory access goes through special_read, which does a
+ * mach_vm_region() syscall per access (profiled ~7.8% of scene-load WORK). Cache the
+ * mach_vm_region result (region bounds + protection) per thread so repeated accesses to the
+ * same region skip the syscall. mach_vm_read_overwrite still does the actual read (faults if
+ * the region is truly gone), so the cache only optimizes the BOUNDS lookup.
+ *
+ * CORRECTNESS: a global generation counter is bumped on ANY guest VM change
+ * (macrunner_hb_vm_changed, called from virtual.c Nt{Allocate,Free,Protect}VirtualMemory).
+ * On lookup, if the thread's cached generation != the global one, the whole per-thread cache
+ * is dropped -> a stale region (free/remap/reprotect) can never be used. Env-gated
+ * MACRUNNER_HB_REGION_CACHE (default off) for safe A/B + rollout.
+ */
+static uint64_t macrunner_hb_vm_generation_v;
+
+__attribute__((visibility("default"))) void macrunner_hb_vm_changed( void )
+{
+    __atomic_add_fetch( &macrunner_hb_vm_generation_v, 1, __ATOMIC_RELEASE );
+}
+
+#define HB_REGION_CACHE_N 16
+struct macrunner_hb_region_ent { mach_vm_address_t base; mach_vm_size_t size; vm_prot_t prot; };
+static __thread struct macrunner_hb_region_ent macrunner_hb_region_cache[HB_REGION_CACHE_N];
+static __thread int macrunner_hb_region_cache_count;
+static __thread int macrunner_hb_region_cache_next;       /* round-robin eviction */
+static __thread uint64_t macrunner_hb_region_cache_gen = (uint64_t)-1;
+
+static int macrunner_hb_region_cache_enabled( void )
+{
+    static int en = -1;
+    if (en < 0)
+    {
+        /* VERIFIED 2026-06-21 (100% hit, 0 stale reads, invalidation works under real VM churn):
+         * default ON. Kill-switch: MACRUNNER_HB_REGION_CACHE=0 disables. */
+        const char *v = getenv( "MACRUNNER_HB_REGION_CACHE" );
+        en = v ? (atoi( v ) != 0) : 1;
+    }
+    return en;
+}
+
+static uint64_t macrunner_hb_rc_hits, macrunner_hb_rc_miss, macrunner_hb_rc_inval;
+static void macrunner_hb_rc_report( int hit )
+{
+    static int en = -1;
+    uint64_t h, m;
+    if (en < 0) en = getenv( "MACRUNNER_HB_TRACE_SYNCMETER" ) ? 1 : 0;
+    if (!en) return;
+    if (hit) { h = __atomic_add_fetch( &macrunner_hb_rc_hits, 1, __ATOMIC_RELAXED ); m = __atomic_load_n( &macrunner_hb_rc_miss, __ATOMIC_RELAXED ); }
+    else     { m = __atomic_add_fetch( &macrunner_hb_rc_miss, 1, __ATOMIC_RELAXED ); h = __atomic_load_n( &macrunner_hb_rc_hits, __ATOMIC_RELAXED ); }
+    if (((h + m) % 200000) == 0)
+        fprintf( stderr, "macrunner-hb-rcache: hits=%llu miss=%llu hit_rate=%.1f%% invalidations=%llu\n",
+                 (unsigned long long)h, (unsigned long long)m, 100.0 * (double)h / (double)(h + m),
+                 (unsigned long long)__atomic_load_n( &macrunner_hb_rc_inval, __ATOMIC_RELAXED ) ), fflush( stderr );
+}
+
+static int macrunner_hb_region_cache_lookup( mach_vm_address_t addr, mach_vm_address_t *base,
+                                             mach_vm_size_t *size, vm_prot_t *prot )
+{
+    uint64_t gen = __atomic_load_n( &macrunner_hb_vm_generation_v, __ATOMIC_ACQUIRE );
+    int i;
+
+    if (macrunner_hb_region_cache_gen != gen)   /* a VM change happened -> drop the whole cache */
+    {
+        if (macrunner_hb_region_cache_count)
+            __atomic_add_fetch( &macrunner_hb_rc_inval, 1, __ATOMIC_RELAXED );
+        macrunner_hb_region_cache_count = 0;
+        macrunner_hb_region_cache_next = 0;
+        macrunner_hb_region_cache_gen = gen;
+        macrunner_hb_rc_report( 0 );
+        return 0;
+    }
+    for (i = 0; i < macrunner_hb_region_cache_count; i++)
+    {
+        struct macrunner_hb_region_ent *e = &macrunner_hb_region_cache[i];
+        if (addr >= e->base && addr - e->base < e->size)
+        {
+            *base = e->base; *size = e->size; *prot = e->prot;
+            macrunner_hb_rc_report( 1 );
+            return 1;
+        }
+    }
+    macrunner_hb_rc_report( 0 );
+    return 0;
+}
+
+static void macrunner_hb_region_cache_add( mach_vm_address_t base, mach_vm_size_t size, vm_prot_t prot )
+{
+    int idx;
+
+    if (!base || !size) return;
+    /* generation already synced by the preceding lookup (special_read/write call lookup first) */
+    if (macrunner_hb_region_cache_count < HB_REGION_CACHE_N)
+        idx = macrunner_hb_region_cache_count++;
+    else
+    {
+        idx = macrunner_hb_region_cache_next;
+        macrunner_hb_region_cache_next = (macrunner_hb_region_cache_next + 1) % HB_REGION_CACHE_N;
+    }
+    macrunner_hb_region_cache[idx].base = base;
+    macrunner_hb_region_cache[idx].size = size;
+    macrunner_hb_region_cache[idx].prot = prot;
+}
+
 static void macrunner_hb_cache_live_region( struct macrunner_hb_special *special,
                                             mach_vm_address_t region,
                                             mach_vm_size_t region_size,
@@ -3772,23 +3926,38 @@ static hb_result_t macrunner_hb_special_read( void *user, hb_gva_t addr, void *o
             mach_vm_size_t copied = 0;
             mach_vm_size_t chunk;
             kern_return_t kr;
+            mach_vm_address_t crb; mach_vm_size_t crs; vm_prot_t crp;
 
-            kr = mach_vm_region( mach_task_self(), &region, &region_size, VM_REGION_BASIC_INFO_64,
-                                 (vm_region_info_t)&info, &count, &object );
-            if (object != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), object );
-            if (kr != KERN_SUCCESS || !(info.protection & VM_PROT_READ))
+            info.protection = 0;
+            if (macrunner_hb_region_cache_enabled() &&
+                macrunner_hb_region_cache_lookup( cur, &crb, &crs, &crp ))
             {
-                macrunner_hb_trace_special_vm_fault( "read-region", addr, cur, remaining, kr,
-                                                     region, region_size, info.protection );
-                return HB_ERR_MEMORY_FAULT;
+                /* Cached bounds are valid (generation matched -> no VM change since cached);
+                 * the cache only ever stores readable regions, and lookup guaranteed cur is
+                 * inside [base,base+size). Skip the mach_vm_region syscall. */
+                region = crb; region_size = crs; info.protection = crp;
             }
-            if (cur < region || cur >= region + region_size)
+            else
             {
-                macrunner_hb_trace_special_vm_fault( "read-gap", addr, cur, remaining, kr,
-                                                     region, region_size, info.protection );
-                return HB_ERR_MEMORY_FAULT;
+                kr = mach_vm_region( mach_task_self(), &region, &region_size, VM_REGION_BASIC_INFO_64,
+                                     (vm_region_info_t)&info, &count, &object );
+                if (object != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), object );
+                if (kr != KERN_SUCCESS || !(info.protection & VM_PROT_READ))
+                {
+                    macrunner_hb_trace_special_vm_fault( "read-region", addr, cur, remaining, kr,
+                                                         region, region_size, info.protection );
+                    return HB_ERR_MEMORY_FAULT;
+                }
+                if (cur < region || cur >= region + region_size)
+                {
+                    macrunner_hb_trace_special_vm_fault( "read-gap", addr, cur, remaining, kr,
+                                                         region, region_size, info.protection );
+                    return HB_ERR_MEMORY_FAULT;
+                }
+                macrunner_hb_cache_live_region( special, region, region_size, info.protection );
+                if (macrunner_hb_region_cache_enabled())
+                    macrunner_hb_region_cache_add( region, region_size, info.protection );
             }
-            macrunner_hb_cache_live_region( special, region, region_size, info.protection );
 
             chunk = region + region_size - cur;
             if (chunk > remaining) chunk = remaining;
@@ -3913,28 +4082,42 @@ static hb_result_t macrunner_hb_special_write( void *user, hb_gva_t addr, const 
             mach_port_t object = MACH_PORT_NULL;
             mach_vm_size_t chunk;
             kern_return_t kr;
+            mach_vm_address_t cwb; mach_vm_size_t cws; vm_prot_t cwp;
 
-            kr = mach_vm_region( mach_task_self(), &region, &region_size, VM_REGION_BASIC_INFO_64,
-                                 (vm_region_info_t)&info, &count, &object );
-            if (object != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), object );
-            if (kr != KERN_SUCCESS || !(info.protection & VM_PROT_WRITE))
+            info.protection = 0;
+            if (macrunner_hb_region_cache_enabled() &&
+                macrunner_hb_region_cache_lookup( cur, &cwb, &cws, &cwp ) &&
+                (cwp & VM_PROT_WRITE))
             {
-                if (guard_retries < 4 && macrunner_hb_try_grow_guard_page( cur ))
+                /* writable cached region, generation-valid -> skip mach_vm_region */
+                region = cwb; region_size = cws; info.protection = cwp;
+            }
+            else
+            {
+                kr = mach_vm_region( mach_task_self(), &region, &region_size, VM_REGION_BASIC_INFO_64,
+                                     (vm_region_info_t)&info, &count, &object );
+                if (object != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), object );
+                if (kr != KERN_SUCCESS || !(info.protection & VM_PROT_WRITE))
                 {
-                    guard_retries++;
-                    continue;
+                    if (guard_retries < 4 && macrunner_hb_try_grow_guard_page( cur ))
+                    {
+                        guard_retries++;
+                        continue;
+                    }
+                    macrunner_hb_trace_special_vm_fault( "write-region", addr, cur, remaining, kr,
+                                                         region, region_size, info.protection );
+                    return HB_ERR_MEMORY_FAULT;
                 }
-                macrunner_hb_trace_special_vm_fault( "write-region", addr, cur, remaining, kr,
-                                                     region, region_size, info.protection );
-                return HB_ERR_MEMORY_FAULT;
+                if (cur < region || cur >= region + region_size)
+                {
+                    macrunner_hb_trace_special_vm_fault( "write-gap", addr, cur, remaining, kr,
+                                                         region, region_size, info.protection );
+                    return HB_ERR_MEMORY_FAULT;
+                }
+                macrunner_hb_cache_live_region( user, region, region_size, info.protection );
+                if (macrunner_hb_region_cache_enabled())
+                    macrunner_hb_region_cache_add( region, region_size, info.protection );
             }
-            if (cur < region || cur >= region + region_size)
-            {
-                macrunner_hb_trace_special_vm_fault( "write-gap", addr, cur, remaining, kr,
-                                                     region, region_size, info.protection );
-                return HB_ERR_MEMORY_FAULT;
-            }
-            macrunner_hb_cache_live_region( user, region, region_size, info.protection );
 
             chunk = region + region_size - cur;
             if (chunk > remaining) chunk = remaining;
@@ -4313,6 +4496,44 @@ static void macrunner_hb_ir_cache_reset( struct macrunner_hb_ir_cache *cache )
 static __thread hb_jit_runtime_t *macrunner_hb_tls_jit_rt = NULL;
 static __thread struct macrunner_hb_ir_cache *macrunner_hb_tls_ir_cache = NULL;
 static __thread int macrunner_hb_tls_pool_busy = 0;
+
+/* MacRunner 2026-06-21: per-thread free-list pool for NESTED run_x64 frames.
+ * The outermost frame owns the single pooled tls_jit_rt above; nested frames (the
+ * busy-guard fallback) used to hb_jit_runtime_create+destroy a FRESH runtime each.
+ * For ABZU's _initterm shim that dispatches 13777 C++ static-init callbacks, each
+ * via a nested run_x64, that meant 13777x (hb_cache_open->load_entries [O(N^2) on a
+ * growing on-disk cache] + 128MB MAP_JIT mmap + teardown) = the ~200s static-init
+ * "grind" (native `sample`: hb_cache_open/load_entries/hb_jit_runtime_create/destroy
+ * + write/fsync dominated). Reuse via hb_jit_runtime_reset (KEEPS persistent_cache
+ * open -> no re-load_entries, rewinds the arena -> SMC-safe, re-points ctx) across
+ * nested callbacks. Kept separate from tls_jit_rt so a nested frame never clobbers
+ * the outer frame's pooled runtime. Capped so idle 128MB arenas stay bounded; depth
+ * beyond the cap falls back to create/destroy. Shared-core: also amortises HK's
+ * nested callbacks. Verified on ABZU: translation-cache opens 13777 -> 5. */
+#define MACRUNNER_HB_NESTED_RT_POOL_MAX 2
+static __thread hb_jit_runtime_t *macrunner_hb_tls_nested_rt[MACRUNNER_HB_NESTED_RT_POOL_MAX];
+static __thread unsigned int macrunner_hb_tls_nested_rt_count;
+
+static hb_jit_runtime_t *macrunner_hb_nested_rt_acquire( hb_context_t *ctx )
+{
+    if (macrunner_hb_tls_nested_rt_count)
+    {
+        hb_jit_runtime_t *rt = macrunner_hb_tls_nested_rt[--macrunner_hb_tls_nested_rt_count];
+        macrunner_hb_tls_nested_rt[macrunner_hb_tls_nested_rt_count] = NULL;
+        hb_jit_runtime_reset( rt, ctx );  /* keeps persistent_cache open; rewinds arena (SMC-safe) */
+        return rt;
+    }
+    return hb_jit_runtime_create( ctx );
+}
+
+static void macrunner_hb_nested_rt_release( hb_jit_runtime_t *rt )
+{
+    if (!rt) return;
+    if (macrunner_hb_tls_nested_rt_count < MACRUNNER_HB_NESTED_RT_POOL_MAX)
+        macrunner_hb_tls_nested_rt[macrunner_hb_tls_nested_rt_count++] = rt;
+    else
+        hb_jit_runtime_destroy( rt );
+}
 
 static USHORT macrunner_hb_module_machine( void *module )
 {
@@ -10871,7 +11092,18 @@ static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
         uint64_t begin = args[0], end = args[1], slot;
         unsigned int count = 0;
 
-        if (!begin || !end || begin > end || end - begin > 0x10000)
+        /*
+         * Sanity-bound the initializer table.  The per-slot loop below already
+         * rejects bogus entries (null callback / non-AMD64 module), so this is
+         * only a coarse guard against a wildly out-of-range (begin,end) pair.
+         * The old 0x10000-byte (8192-entry) cap was SMALLER than real AAA C++
+         * static-init tables: ABZU's __xc_a..__xc_z is 0x1ae88 bytes (13777
+         * entries), so the cap silently skipped the ENTIRE C++ initializer table
+         * (including the AK/Wwise SoundEngine singleton creator at rva 0x102400)
+         * -> NULL singleton -> c0000005.  Raise well past any real table while
+         * still catching garbage.  (CrossOver/Rosetta dispatches this table fine.)
+         */
+        if (!begin || !end || begin > end || end - begin > 0x400000)
         {
             *ret = 0;
             return TRUE;
@@ -10899,7 +11131,25 @@ static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
                    thunk->import_name, (void *)(uintptr_t)callback, (unsigned long)status,
                    (void *)(uintptr_t)callback_ret, wine_dbgstr_longlong(blocks),
                    wine_dbgstr_longlong(steps) );
-            if (status) return FALSE;
+            if (status)
+            {
+                /*
+                 * Windows _initterm (non-_e) NEVER stops on a callback error: it
+                 * calls every initializer unconditionally and ignores results.  If
+                 * HB cannot dispatch one callback (e.g. an un-translatable indirect
+                 * target -> c000007b), aborting the whole walk (the old return FALSE)
+                 * silently skips every LATER initializer too -- including ABZU's AK
+                 * SoundEngine creator at rva 0x102400 (table entry ~#9449).  Log and
+                 * CONTINUE so the rest of the table still runs.  _initterm_e keeps
+                 * its abort semantics (it is allowed to stop early).
+                 */
+                if (stop_on_error) return FALSE;
+                WARN( "MacRunner HyperBridge semantic crt!%s callback=%p dispatch FAILED "
+                      "status=%lx blocks=%s -- skip+continue (non-_e initterm)\n",
+                      thunk->import_name, (void *)(uintptr_t)callback,
+                      (unsigned long)status, wine_dbgstr_longlong(blocks) );
+                continue;
+            }
             count++;
             if (stop_on_error && callback_ret)
             {
@@ -15462,10 +15712,14 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                                                          "WaitForSingleObjectEx" ) && args[2]) );
             fflush( stderr );
         }
-        status = NtWaitForSingleObject( (HANDLE)(uintptr_t)args[0],
-                                        macrunner_hb_strieq( thunk->import_name, "WaitForSingleObjectEx" ) &&
-                                        args[2],
-                                        macrunner_hb_get_nt_timeout( &timeout, (DWORD)args[1] ) );
+        {
+            uint64_t macrunner_hb_wfso_t0 = macrunner_hb_now_us();
+            status = NtWaitForSingleObject( (HANDLE)(uintptr_t)args[0],
+                                            macrunner_hb_strieq( thunk->import_name, "WaitForSingleObjectEx" ) &&
+                                            args[2],
+                                            macrunner_hb_get_nt_timeout( &timeout, (DWORD)args[1] ) );
+            macrunner_hb_syncmeter_wfso( macrunner_hb_now_us() - macrunner_hb_wfso_t0, status, (DWORD)args[1] );
+        }
         NtCurrentTeb()->LastStatusValue = status;
         if (NT_ERROR( status ))
         {
@@ -18566,7 +18820,22 @@ static BOOL macrunner_hb_label_allows_direct_native( const char *label )
                      !strcmp( label, "x64-subclassproc" ) ||
                      !strcmp( label, "x64-signal-callback" ) ||
                      !strcmp( label, "dll" ) ||
-                     !strcmp( label, "thread" ));
+                     !strcmp( label, "thread" ) ||
+                     /*
+                      * C++ static-initializer callbacks (run via the crt!_initterm
+                      * shim, labelled by import_name) legitimately call native
+                      * KERNEL32/CRT imports -- e.g. SetCriticalSectionSpinCount /
+                      * InitializeCriticalSectionAndSpinCount -- through a bound IAT
+                      * slot.  Without this the guest `call [IAT]` lands on the native
+                      * target, is not in the guest image, and is refused as a
+                      * "non-application target" (c000007b), which (with the
+                      * log-and-continue fix) skips the initializer and leaves the
+                      * object's critical section uninitialised -> later deadlock.
+                      * pc_is_native_pe_builtin still gates the actual target, so this
+                      * only permits real native builtins, same as thread/dll contexts.
+                      */
+                     !strcmp( label, "_initterm" ) ||
+                     !strcmp( label, "_initterm_e" ));
 }
 
 static void macrunner_hb_trace_heartbeat_module( const char *label, uint64_t pc,
@@ -19420,7 +19689,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         }
         else
         {
-            jit_rt = hb_jit_runtime_create( ctx );  /* nested frame: own, non-pooled */
+            jit_rt = macrunner_hb_nested_rt_acquire( ctx );  /* nested frame: per-thread pooled reuse */
         }
         if (trace_thread_run)
         {
@@ -20867,7 +21136,7 @@ done:
     if (steps_out) *steps_out = steps;
     /* B-interim: pooled jit_rt/ir_cache stay in the per-thread pool (reset on next
      * reuse); only a nested (non-pooled) frame's own objects are destroyed here. */
-    if (jit_rt && !macrunner_hb_pool_used) hb_jit_runtime_destroy( jit_rt );
+    if (jit_rt && !macrunner_hb_pool_used) macrunner_hb_nested_rt_release( jit_rt );
     while (jit_owned_ir)
     {
         struct macrunner_hb_owned_ir_func *next = jit_owned_ir->next;

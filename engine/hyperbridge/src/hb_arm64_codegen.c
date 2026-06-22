@@ -318,6 +318,23 @@ static void emit_sbfm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imms) {
     emit_u32(buf, 0x93400000 | ((imms & 0x3f) << 10) | (rn << 5) | rd);
 }
 
+/* MacRunner 2026-06-23 (ABZU native-twin probe): trace the .data global window. */
+#include <stdio.h>
+static int macrunner_hb_codegendv_enabled(void) {
+    static int cache = -1;
+    int v = __atomic_load_n(&cache, __ATOMIC_RELAXED);
+    if (v < 0) {
+        const char* e = getenv("MACRUNNER_HB_TRACE_DATADIVERGE");
+        v = e && e[0] && e[0] != '0';
+        __atomic_store_n(&cache, v, __ATOMIC_RELAXED);
+    }
+    return v;
+}
+static int macrunner_hb_codegendv_hit(uint64_t addr) {
+    if (!macrunner_hb_codegendv_enabled()) return 0;
+    return !(addr + 8 <= 0x142941000ULL || addr >= 0x142942000ULL);
+}
+
 static void emit_ubfm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imms) {
     emit_u32(buf, 0xd3400000 | ((imms & 0x3f) << 10) | (rn << 5) | rd);
 }
@@ -4851,6 +4868,7 @@ void hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr,
                                      uint64_t dst_reg_offset) {
     hb_ir_operand_t dst;
     hb_size_t size = dst_size ? (hb_size_t)dst_size : HB_SIZE_64;
+    if (macrunner_hb_codegendv_hit(addr)) fprintf(stderr, "macrunner-hb-dv-load_to_reg_sized: codegen-addr=0x%llx size=%u dst_reg=%llu\n", (unsigned long long)addr, (unsigned)size, (unsigned long long)dst_reg);
     uint64_t val = hb_jit_helper_load_sized_value(ctx, addr, size);
     if (!ctx || ctx->last_result != HB_OK) return;
 
@@ -4892,6 +4910,7 @@ void hb_jit_helper_store_u64(hb_context_t* ctx, uint64_t addr, uint64_t val) {
 }
 
 void hb_jit_helper_store_sized(hb_context_t* ctx, uint64_t addr, uint64_t val, uint64_t size) {
+    if (macrunner_hb_codegendv_hit(addr)) fprintf(stderr, "macrunner-hb-dv-store_sized: addr=0x%llx size=%llu val=0x%llx\n", (unsigned long long)addr, (unsigned long long)size, (unsigned long long)val);
     if (!ctx) return;
     if (!ctx->memory) {
         ctx->last_result = HB_ERR_MEMORY_FAULT;
@@ -5334,7 +5353,8 @@ static void* hb_jit_live_host_ptr(uint64_t addr, size_t bytes, hb_perm_t perms) 
     if (kr != KERN_SUCCESS) return NULL;
     if (region > addr || region + region_size < addr + bytes) return NULL;
     if ((info.protection & needed) != needed) return NULL;
-    if ((perms & HB_PERM_WRITE) && (info.protection & VM_PROT_EXECUTE)) return NULL;
+    if ((perms & HB_PERM_WRITE) && (info.protection & VM_PROT_EXECUTE)) { if (macrunner_hb_codegendv_hit(addr)) fprintf(stderr, "macrunner-hb-dv-live_host_ptr: addr=0x%llx perms=%d EXEC-write-guard -> NULL\n", (unsigned long long)addr, (int)perms); return NULL; }
+    if (macrunner_hb_codegendv_hit(addr)) fprintf(stderr, "macrunner-hb-dv-live_host_ptr: addr=0x%llx perms=%d mach_prot=0x%x -> IDENTITY host=%p\n", (unsigned long long)addr, (int)perms, (int)info.protection, (void*)(uintptr_t)addr);
     return (void*)(uintptr_t)addr;
 }
 
@@ -6810,15 +6830,19 @@ static const uint8_t* hb_jit_helper_host_read_span(hb_context_t* ctx, uint64_t a
     if (available) *available = 0;
     if (!ctx || !ctx->memory) return NULL;
     if (min_size && addr + min_size < addr) return NULL;
+    if (macrunner_hb_codegendv_hit(addr)) fprintf(stderr, "macrunner-hb-dv-host_read_span: addr=0x%llx min=%zu\n", (unsigned long long)addr, min_size);
     region = hb_memory_find_region(ctx->memory, addr);
     if (!region || !(region->perm & HB_PERM_READ)) return NULL;
     region_end = region->base + region->size;
     if (region_end < region->base || addr < region->base || addr >= region_end) return NULL;
     if (min_size > (size_t)(region_end - addr)) return NULL;
     if (region->host_base) {
+        const uint8_t* hp = (const uint8_t*)region->host_base + (addr - region->base);
+        if (macrunner_hb_codegendv_hit(addr)) fprintf(stderr, "macrunner-hb-dv-host_read_span: -> region host=%p (host_base=%p base=0x%llx)\n", (void*)hp, (void*)region->host_base, (unsigned long long)region->base);
         if (available) *available = (size_t)(region_end - addr);
-        return (const uint8_t*)region->host_base + (addr - region->base);
+        return hp;
     }
+    if (macrunner_hb_codegendv_hit(addr)) fprintf(stderr, "macrunner-hb-dv-host_read_span: -> identity host=%p\n", (void*)(uintptr_t)addr);
     if (available) *available = (size_t)(region_end - addr);
     return (const uint8_t*)(uintptr_t)addr;
 }
@@ -8065,12 +8089,46 @@ void hb_arm64_codegen_destroy(hb_arm64_codegen_t* cg) {
     free(cg);
 }
 
+/* MacRunner 2026-06-22: verify-first fix-test for the under-incremented-counter cascade root.
+ * Only CMPXCHG/CMPXCHG8B/XCHG/XADD route through the true-atomic helper; the other LOCK-prefixed
+ * RMWs (lock inc/dec/add/sub/and/or/xor/bts/btr/btc) currently execute as a DMB-wrapped NON-ATOMIC
+ * load-modify-store, so concurrent increments LOSE updates (ABZU's under-incremented CS counter).
+ * Env MACRUNNER_HB_LOCK_RMW_ATOMIC serializes those RMWs via the global split-lock — preserving the
+ * lazy-flags-correct codegen_instr lowering, just made mutually exclusive — to test whether the
+ * c000007b producer-death-deadlock vanishes. Env-gated/default-off (reversible). */
+static int hb_lock_rmw_serialize_enabled(void) {
+    static int en = -1;
+    if (en < 0) en = getenv("MACRUNNER_HB_LOCK_RMW_ATOMIC") ? 1 : 0;
+    return en;
+}
+static bool hb_lock_rmw_uses_atomic_helper(const hb_ir_instr_t* instr) {
+    switch (instr->op) {
+        case HB_IR_CMPXCHG:
+        case HB_IR_CMPXCHG8B:
+        case HB_IR_XCHG:
+        case HB_IR_XADD:
+            return true;
+        default:
+            return false;
+    }
+}
+
 hb_result_t hb_arm64_codegen_instr(hb_arm64_codegen_t* cg, const hb_ir_instr_t* instr, hb_codegen_buffer_t* out) {
+    bool lk_serialize;
+    hb_result_t r;
     if (!instr || !out) return HB_ERR_INVALID_ARG;
     if (cg && cg->ctx) out->arch = cg->ctx->arch;
-    if (instr->is_locked) emit_dmb_ish(out);   /* LOCK-prefixed RMW = full barrier (see block loop) */
-    hb_result_t r = codegen_instr(out, instr);
-    if (r == HB_OK && instr->is_locked) emit_dmb_ish(out);
+    lk_serialize = instr->is_locked && hb_lock_rmw_serialize_enabled() &&
+                   !hb_lock_rmw_uses_atomic_helper(instr);
+    if (instr->is_locked) {
+        if (lk_serialize) emit_call_helper(out, (void*)hb_jit_split_lock_acquire);
+        emit_dmb_ish(out);   /* LOCK-prefixed RMW = full barrier (see block loop) */
+    }
+    r = codegen_instr(out, instr);
+    if (instr->is_locked) {
+        if (r == HB_OK) emit_dmb_ish(out);
+        if (lk_serialize) emit_call_helper(out, (void*)hb_jit_split_lock_release);
+    }
     return r;
 }
 

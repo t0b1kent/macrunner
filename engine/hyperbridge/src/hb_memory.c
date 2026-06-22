@@ -13,6 +13,30 @@
 #define MAP_NORESERVE 0
 #endif
 
+/* MacRunner 2026-06-23 (ABZU native-twin probe): targeted trace for the .data
+ * global at guest VA 0x1429413d8 (RVA 0x29413d8). Logs, for each read/write that
+ * touches the window, the region HB resolves (base/host_base/perm) and the host
+ * pointer actually used — to confirm whether the RIP-relative STORE and LOAD of
+ * the SAME guest RVA resolve to DIFFERENT host addresses. Env-gated. */
+#define MACRUNNER_HB_DATADIVERGE_LO  0x142941000ULL
+#define MACRUNNER_HB_DATADIVERGE_HI  0x142942000ULL
+static int macrunner_hb_trace_datadiverge_enabled(void) {
+    static int cache = -1;
+    int v = __atomic_load_n(&cache, __ATOMIC_RELAXED);
+    if (v < 0) {
+        const char* e = getenv("MACRUNNER_HB_TRACE_DATADIVERGE");
+        v = e && e[0] && e[0] != '0';
+        __atomic_store_n(&cache, v, __ATOMIC_RELAXED);
+    }
+    return v;
+}
+static int macrunner_hb_datadiverge_hit(uint64_t addr, size_t size) {
+    if (!macrunner_hb_trace_datadiverge_enabled()) return 0;
+    if (addr + size < addr) return 0;
+    return !(addr + size <= MACRUNNER_HB_DATADIVERGE_LO || addr >= MACRUNNER_HB_DATADIVERGE_HI);
+}
+
+
 static size_t page_align(size_t sz) {
     return (sz + 4095) & ~4095;
 }
@@ -775,9 +799,11 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
 
 hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t size) {
     hb_region_t* region;
+    int dv_hit = macrunner_hb_datadiverge_hit((uint64_t)addr, size);
     if (!mem || !out) return HB_ERR_INVALID_ARG;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return HB_ERR_MEMORY_FAULT;
     region = find_region_normalized(mem, addr);
+    if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-mem: gva=0x%llx size=%zu region=%p base=0x%llx host_base=%p rperm=%d\n", (unsigned long long)addr, size, (void*)region, region?(unsigned long long)region->base:0, region?region->host_base:NULL, region?(int)region->perm:-1);
     if (!region || addr + size > region->base + region->size || !(region->perm & HB_PERM_READ)) {
         if (hb_memory_can_read_span(mem, addr, size)) {
             uint8_t* dst = out;
@@ -802,6 +828,7 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
 #ifdef __APPLE__
     if (region && !region->allocated && !region->host_base) {
         memcpy(out, (const void*)(uintptr_t)addr, size);
+        if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-mem: -> identity val=0x%llx\n", (unsigned long long)(size==8?*(const uint64_t*)out:0));
         return HB_OK;
     }
 #endif
@@ -826,8 +853,10 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
             return mach_copy_from_host(out, region_host_ptr(region, addr), size);
 #endif
         memcpy(out, region_host_ptr(region, addr), size);
+        if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-mem: -> region val=0x%llx\n", (unsigned long long)(size==8?*(const uint64_t*)out:0));
         return HB_OK;
     }
+    if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-mem: -> identity(fallback) val=0x%llx\n", (unsigned long long)(size==8?*(const uint64_t*)out:0));
     memcpy(out, (void*)(uintptr_t)addr, size);
     return HB_OK;
 }
@@ -841,6 +870,15 @@ hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, siz
     trace_guest_write("hb_memory_write", addr, in, size);
 grow_retry:
     region = find_region_normalized(mem, addr);
+    if (macrunner_hb_datadiverge_hit((uint64_t)addr, size)) {
+        fprintf(stderr, "macrunner-hb-dv-write: gva=0x%llx size=%zu region=%p base=0x%llx rsize=0x%llx host_base=%p rperm=%d val=0x%llx\n",
+                (unsigned long long)addr, size, (void*)region,
+                region ? (unsigned long long)region->base : 0,
+                region ? (unsigned long long)region->size : 0,
+                region ? region->host_base : NULL,
+                region ? (int)region->perm : -1,
+                (unsigned long long)(size==8?*(const uint64_t*)in:0));
+    }
 #ifdef __APPLE__
     if ((addr & 0xfff) >= 0xfe0 && getenv("MACRUNNER_HB_TRACE_JIT_HELPER_FAIL")) {
         static int t;
@@ -986,19 +1024,29 @@ grow_retry:
 
 void* hb_memory_host_ptr(hb_memory_t* mem, hb_gva_t addr, size_t size, hb_perm_t perm) {
     hb_region_t* region;
+    int dv_hit = macrunner_hb_datadiverge_hit((uint64_t)addr, size);
 
     if (!mem || !size) return NULL;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return NULL;
     region = find_region_normalized(mem, addr);
-    if (!region || addr + size > region->base + region->size) return NULL;
-    if ((region->perm & perm) != perm) return NULL;
+    if (dv_hit) {
+        fprintf(stderr, "macrunner-hb-dv-read-host_ptr: gva=0x%llx size=%zu want_perm=%d region=%p base=0x%llx rsize=0x%llx host_base=%p rperm=%d\n",
+                (unsigned long long)addr, size, (int)perm, (void*)region,
+                region ? (unsigned long long)region->base : 0,
+                region ? (unsigned long long)region->size : 0,
+                region ? region->host_base : NULL,
+                region ? (int)region->perm : -1);
+    }
+    if (!region || addr + size > region->base + region->size) { if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-host_ptr: NO-REGION -> NULL (live fallback)\n"); return NULL; }
+    if ((region->perm & perm) != perm) { if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-host_ptr: PERM-MISMATCH -> NULL (live fallback)\n"); return NULL; }
 #ifdef __APPLE__
     if (region->host_base && region->is_guest32 && (perm & HB_PERM_WRITE) &&
         guest32_copy_needs_mach(region, addr, size))
         return NULL;
 #endif
-    if (region->host_base) return region_host_ptr(region, addr);
-    if ((perm & HB_PERM_WRITE) && (region->perm & HB_PERM_EXEC)) return NULL;
+    if (region->host_base) { void* p = region_host_ptr(region, addr); if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-host_ptr: -> region host=%p\n", p); return p; }
+    if ((perm & HB_PERM_WRITE) && (region->perm & HB_PERM_EXEC)) { if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-host_ptr: EXEC-write-guard -> NULL\n"); return NULL; }
+    if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-host_ptr: -> identity host=%p\n", (void*)(uintptr_t)addr);
     return (void*)(uintptr_t)addr;
 }
 

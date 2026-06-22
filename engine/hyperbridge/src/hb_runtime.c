@@ -165,17 +165,34 @@ static void block_cache_destroy(hb_block_cache_t* cache) {
     if (!cache) return;
     for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++)
         block_cache_release_owned_block(&cache->entries[i], NULL);
+    free(cache->used_slots);
     free(cache);
 }
 
 /* MacRunner: eager reset for per-thread runtime reuse. Free every owned cloned
  * block (zero UAF risk — no cross-generation lazy free) and clear all entries so
- * the next callback regenerates translations from current guest code. */
+ * the next callback regenerates translations from current guest code.
+ *
+ * Lever #3: only the slots occupied this generation (tracked in used_slots) can have
+ * valid==true / owns_block, so clearing just those is equivalent to the old full-table
+ * memset but O(count) instead of O(524288). Post-condition is identical: every slot
+ * valid==false, no owned block leaked, count==0. used_overflow keeps the old full clear
+ * as a safety net when the tracking array could not grow. */
 static void block_cache_reset(hb_block_cache_t* cache) {
     if (!cache) return;
-    for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++)
-        block_cache_release_owned_block(&cache->entries[i], NULL);
-    memset(cache->entries, 0, sizeof(cache->entries));
+    if (cache->used_overflow) {
+        for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++)
+            block_cache_release_owned_block(&cache->entries[i], NULL);
+        memset(cache->entries, 0, sizeof(cache->entries));
+        cache->used_overflow = false;
+    } else {
+        for (size_t i = 0; i < cache->used_count; i++) {
+            hb_block_cache_entry_t* e = &cache->entries[cache->used_slots[i]];
+            block_cache_release_owned_block(e, NULL);
+            memset(e, 0, sizeof(*e));
+        }
+    }
+    cache->used_count = 0;
     cache->count = 0;
 }
 
@@ -213,6 +230,18 @@ static hb_block_cache_entry_t* block_cache_put(hb_block_cache_t* cache, uint64_t
             cache->entries[probe].fused = fused;
             cache->entries[probe].valid = true;
             cache->count++;
+            /* lever #3: remember this newly-occupied slot so block_cache_reset clears only
+             * used slots. Only this new-insert branch sets valid=true, so recording here
+             * captures every occupied slot exactly once per generation. */
+            if (cache->used_count >= cache->used_cap) {
+                size_t ncap = cache->used_cap ? cache->used_cap * 2 : 256;
+                uint32_t* n = realloc(cache->used_slots, ncap * sizeof(*n));
+                if (n) { cache->used_slots = n; cache->used_cap = ncap; }
+            }
+            if (cache->used_count < cache->used_cap)
+                cache->used_slots[cache->used_count++] = (uint32_t)probe;
+            else
+                cache->used_overflow = true;  /* tracking full -> reset does the safe full memset */
             return &cache->entries[probe];
         }
         if (cache->entries[probe].guest_addr == addr) {
@@ -2231,6 +2260,8 @@ hb_result_t hb_jit_runtime_compile(hb_jit_runtime_t* rt, const hb_ir_func_t* fun
     return HB_OK;
 }
 
+static int macrunner_hb_jcc57fd_watch_enabled(void);
+
 hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out) {
     if (!rt || !func || !func->cfg || !out) return HB_ERR_INVALID_ARG;
     memset(out, 0, sizeof(hb_exec_result_t));
@@ -2241,6 +2272,19 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
     ctx->last_result = HB_OK;
 
     while (1) {
+        /* MacRunner 2026-06-23 (ABZU jcc pin): watch the load/test/jne block at
+         * 0x14057fd10 and its jne targets 0x140580012 (taken, non-NULL path) and
+         * 0x14057fd3d (not-taken, NULL path). Dumps rax + the next PC so we can see
+         * whether the jne is taken despite a non-NULL global. Env-gated. */
+        if (macrunner_hb_jcc57fd_watch_enabled()) {
+            uint64_t pcw = ctx->pc;
+            if (pcw == 0x14057fd10ULL || pcw == 0x140580012ULL || pcw == 0x14057fd3dULL) {
+                uint64_t raxw = ctx->regs.x64.rax;
+                fprintf(stderr, "macrunner-hb-jcc57fd: enter_pc=0x%llx rax=0x%llx rsp=0x%llx\n",
+                        (unsigned long long)pcw, (unsigned long long)raxw,
+                        (unsigned long long)ctx->regs.x64.rsp);
+            }
+        }
         if (ctx->step_limit > 0 && steps >= ctx->step_limit) {
             out->result = HB_ERR_STEP_LIMIT;
             out->steps_executed = steps;
@@ -2551,6 +2595,17 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
     }
 }
 
+
+static int macrunner_hb_jcc57fd_watch_enabled(void) {
+    static int cache = -1;
+    int v = __atomic_load_n(&cache, __ATOMIC_RELAXED);
+    if (v < 0) {
+        const char* e = getenv("MACRUNNER_HB_TRACE_JCC57FD");
+        v = e && e[0] && e[0] != '0';
+        __atomic_store_n(&cache, v, __ATOMIC_RELAXED);
+    }
+    return v;
+}
 hb_result_t hb_runtime_run(hb_context_t* ctx, const hb_ir_func_t* func, hb_backend_t backend, hb_exec_result_t* out) {
     if (!ctx || !func || !out) return HB_ERR_INVALID_ARG;
     memset(out, 0, sizeof(hb_exec_result_t));

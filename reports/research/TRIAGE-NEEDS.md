@@ -1,5 +1,11 @@
 # TRIAGE-NEEDS.md — Harness gaps for Lane A (mr-run.sh)
 
+> ✅ RESOLVED 2026-06-07 (coordinator): `mr-run.sh` now routes `flight.jsonl` into the run dir when
+> the caller exports `MACRUNNER_RUN_DIR`, AND auto-runs `tools/triage/classify_run.py` on that dir at
+> the end of every run (opt-out `MACRUNNER_NO_AUTOTRIAGE=1`, never affects the run's exit code).
+> Use: `MACRUNNER_RUN_DIR="$RUNDIR" scripts/mr-run.sh <dist> <exe> <tmo> > "$RUNDIR/run.log" 2>&1`.
+> No further Lane A change needed for items below.
+
 ## 1. flight.jsonl path mismatch (HIGH — causes every analyzer to run at degraded confidence)
 
 ### Finding (2026-06-07, Lane X investigation)

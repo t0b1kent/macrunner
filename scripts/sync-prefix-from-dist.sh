@@ -154,9 +154,23 @@ if [[ -f "$WINE_LIB/aarch64-windows/xtajit64.dll" ]]; then
     copy_dll "$WINE_LIB/aarch64-windows/xtajit64.dll" "$SYSTEM32/xtajit64.dll"
 fi
 
-if [[ "$SYSTEM32_ARCH" == "aarch64-windows" ]]; then
+# WOW64 backend modules required by 32-bit bottles:
+#  - WOW64 CPU providers are shipped in different arches in this tree.
+#  - xtajit is an aarch64 module for ARM64 host paths.
+#  - wow64cpu remains x86_64-only (x64 thunk module) and is used as a helper.
+if [[ -f "$WINE_LIB/aarch64-windows/xtajit.dll" ]]; then
     copy_dll "$WINE_LIB/aarch64-windows/xtajit.dll" "$SYSTEM32/xtajit.dll"
-    copy_dll "$WINE_LIB/aarch64-windows/xtajit.dll" "$SYSTEM32/wow64cpu.dll"
+    copy_dll "$WINE_LIB/aarch64-windows/xtajit.dll" "$SYSWOW64/xtajit.dll"
+fi
+if [[ -f "$WINE_LIB/x86_64-windows/wow64cpu.dll" ]]; then
+    copy_dll "$WINE_LIB/x86_64-windows/wow64cpu.dll" "$SYSTEM32/wow64cpu.dll"
+    copy_dll "$WINE_LIB/x86_64-windows/wow64cpu.dll" "$SYSWOW64/wow64cpu.dll"
+fi
+if [[ -f "$WINE_LIB/$SYSTEM32_ARCH/wow64.dll" ]]; then
+    copy_dll "$WINE_LIB/$SYSTEM32_ARCH/wow64.dll" "$SYSWOW64/wow64.dll"
+fi
+if [[ -f "$WINE_LIB/$SYSTEM32_ARCH/wow64win.dll" ]]; then
+    copy_dll "$WINE_LIB/$SYSTEM32_ARCH/wow64win.dll" "$SYSWOW64/wow64win.dll"
 fi
 
 ensure_arm64_common_controls() {

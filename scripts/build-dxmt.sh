@@ -69,12 +69,34 @@ build_x86_64_pe_only() {
   local build="$GRAPHICS_BUILD/dxmt-$arch"
   write_windows_cross_file "$arch" "$cross" no
   rm -rf "$build"
-  "${MESON[@]}" setup "$build" "$DXMT_SRC" \
-    --cross-file "$cross" \
-    --buildtype release \
-    -Dnative_llvm_path="$LLVM15" \
-    -Dwine_install_path="$WINE_DIST" \
-    --prefix "$GRAPHICS_BUILD/dxmt-install-$arch" --bindir . --libdir .
+
+  # Optional: statically link airconv (and its LLVM deps) into d3d11.dll.
+  # This requires a Windows-target static LLVM toolchain at
+  # engine/dxmt/toolchains/llvm (see docs/LANE-A-NEEDS.md).
+  local airconv_opt=""
+  if [ -d "$DXMT_SRC/toolchains/llvm/lib" ] && [ -d "$DXMT_SRC/toolchains/llvm/include" ]; then
+    airconv_opt="-Dbuild_airconv_for_windows=true"
+    echo "[build-dxmt] x86_64: airconv will be statically linked into d3d11.dll"
+  else
+    echo "[build-dxmt] x86_64: engine/dxmt/toolchains/llvm missing; SM50* stay in winemetal.dll (cross-module)"
+  fi
+
+  if [ -n "$airconv_opt" ]; then
+    "${MESON[@]}" setup "$build" "$DXMT_SRC" \
+      --cross-file "$cross" \
+      --buildtype release \
+      -Dnative_llvm_path="$LLVM15" \
+      -Dwine_install_path="$WINE_DIST" \
+      "$airconv_opt" \
+      --prefix "$GRAPHICS_BUILD/dxmt-install-$arch" --bindir . --libdir .
+  else
+    "${MESON[@]}" setup "$build" "$DXMT_SRC" \
+      --cross-file "$cross" \
+      --buildtype release \
+      -Dnative_llvm_path="$LLVM15" \
+      -Dwine_install_path="$WINE_DIST" \
+      --prefix "$GRAPHICS_BUILD/dxmt-install-$arch" --bindir . --libdir .
+  fi
   # Build PE DLLs and run Wine builtin postprocess (modifies files in place).
   # d3d11 is intentionally left as a normal PE via src/d3d11/meson.build patch.
   ninja -C "$build" -j"$JOBS" \

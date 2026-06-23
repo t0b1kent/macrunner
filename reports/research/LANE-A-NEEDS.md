@@ -42,3 +42,36 @@ Pre-commit Lane A hardening bounded the local LDR list walks and rejects obvious
 invalid nodes. Full fix still needed: add an epoch/snapshot discipline for
 `macrunner_hb_ldr_entry_from_pc()` and related loader-list reads so signal-adjacent
 module lookup cannot observe a mutating LDR list mid-update.
+
+## 2026-06-13 - Lane A harness DXMT overlay path prep
+
+Lane A-shared harness now routes DXGI/D3D11 through an overlay `MACRUNNER_DXMT_ROOT`
+prefix for controlled runs:
+- `scripts/laneA-run-hk.sh` creates per-run `dxmt-builtin-overlay/<arch>` and sets
+  `MACRUNNER_DXMT_ROOT` to it.
+- `MACRUNNER_DXMT_ROOT` and explicit `WINEDLLPATH` include the overlay machine/Unix
+  paths, so `dxgi.dll` / `d3d11.dll` load from `dxmt-builtin-overlay`.
+
+This is an additive shared-wrapper change. It is a Lane A precondition for downstream DXGI
+CreateDXGIFactory tracing and should not be treated as a Lane A blocker regression.
+
+## 2026-06-13 - D3D9 overlay path prep for DXVK
+
+Lane A shared harness now treats `d3d9.dll` as part of the same overlay contract:
+- `scripts/laneA-run-hk.sh` keeps writing `x86_64-windows/d3d9.dll` into the run overlay.
+- `scripts/mr-run.sh` now checks `MACRUNNER_DXMT_ROOT/$SYSTEM32_ARCH/d3d9.dll` and
+  if present, overwrites `prefix/windows/system32/d3d9.dll` with that build before app launch.
+- This prevents the loader from taking stock Wine `system32/d3d9.dll` and keeps `d3d9` from
+  the DXVK overlay path in controlled laneA runs.
+
+## CLEAN-FOLLOWUP (deferred, post-first-frame) — per-thread hb_memory cache
+- 2026-06-18: `macrunner_hb_run_x64` (macrunner_hb.c:~19070-19104) creates a FRESH
+  `hb_context` + `hb_memory` + VM map on EVERY x64-callback dispatch
+  (`dispatch_x64_callback → run_x64`). The full-VM map_live scan there was the 93%
+  main-thread throughput sink during scene-load; mitigated by mapping only the
+  entry-module range + lazy-fill (commit pending). The CLEAN fix is to CACHE the
+  hb_memory map PER THREAD and reuse it across callbacks instead of rebuilding it
+  per call. REQUIRES staleness-invalidation: the guest VM map changes between
+  callbacks (alloc/free/protect), so the cache must be invalidated/refreshed on VM
+  changes (hook NtAllocate/Free/ProtectVirtualMemory, or version-stamp the map).
+  Defer until after the first frame; it's an architecture change, not a quick fix.

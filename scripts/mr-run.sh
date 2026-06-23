@@ -36,7 +36,7 @@ if [ "$(basename "$DIST")" = "dist-arm64ec-spike" ]; then
   export MACRUNNER_HB_BACKEND="${MACRUNNER_HB_BACKEND:-jit}"
   export MACRUNNER_HB_JIT_DIRECT_MEM="${MACRUNNER_HB_JIT_DIRECT_MEM:-0}"
   export MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN="${MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN:-1}"
-  export MACRUNNER_HB_JIT_DIRECT_STACK="${MACRUNNER_HB_JIT_DIRECT_STACK:-1}"
+  export MACRUNNER_HB_JIT_DIRECT_STACK="${MACRUNNER_HB_JIT_DIRECT_STACK:-0}"
   export MACRUNNER_HB_TRANSLATION_CACHE="${MACRUNNER_HB_TRANSLATION_CACHE:-1}"
   export MACRUNNER_HB_TRANSLATION_CACHE_ROOT="${MACRUNNER_HB_TRANSLATION_CACHE_ROOT:-$ROOT/engine/hyperbridge/build/hyperbridge-cache}"
   export MACRUNNER_HB_TRACE_TRANSLATION_CACHE="${MACRUNNER_HB_TRACE_TRANSLATION_CACHE:-1}"
@@ -64,9 +64,11 @@ if [ "${MACRUNNER_FLIGHT_RECORDER:-0}" != "0" ]; then
 fi
 
 services_bg_pid=""
+rpcss_bg_pid=""
 
 cleanup() {
   [ -n "$services_bg_pid" ] && kill "$services_bg_pid" 2>/dev/null || true
+  [ -n "$rpcss_bg_pid" ] && kill "$rpcss_bg_pid" 2>/dev/null || true
   WINEPREFIX="$PREFIX" DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
     DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
     "$WSRV" -k >/dev/null 2>&1 || true
@@ -118,7 +120,7 @@ PY
 }
 
 if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" = "dxmt" ]; then
-  DXMT_ROOT="$ROOT/engine/graphics/dist/dxmt"
+  DXMT_ROOT="${MACRUNNER_DXMT_ROOT:-$ROOT/engine/graphics/dist/dxmt}"
   SYSTEM32_ARCH="${MACRUNNER_PREFIX_SYSTEM32_ARCH:-x86_64-windows}"
   BOOT_TIMEOUT="${MACRUNNER_MR_RUN_BOOT_TIMEOUT:-45}"
   PREFIX_TEMPLATE="${MACRUNNER_MR_RUN_PREFIX_TEMPLATE:-}"
@@ -195,6 +197,11 @@ if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" = "dxmt" ]; then
     exit 2
   fi
 
+  if [ -f "$DXMT_ROOT/$SYSTEM32_ARCH/d3d9.dll" ]; then
+    cp -f "$DXMT_ROOT/$SYSTEM32_ARCH/d3d9.dll" "$PREFIX/drive_c/windows/system32/d3d9.dll"
+    echo "[mr-run] graphics=dxmt overlay-d3d9 <= $DXMT_ROOT/$SYSTEM32_ARCH/d3d9.dll" >&2
+  fi
+
   if [ -d "$DXMT_ROOT" ]; then
     export MACRUNNER_DXMT_ROOT="$DXMT_ROOT"
     if [ -n "${WINEDLLPATH:-}" ]; then
@@ -212,18 +219,97 @@ if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" = "dxmt" ]; then
 
 fi
 
+# Non-DXMT prefix seeding from a pre-warmed template (e.g. bottles/generic-x86).
+# Faster than wineboot -u; provides registry so rpcss/services.exe work → fixes 0x6ba.
+# Opt-in: MACRUNNER_MR_RUN_PREFIX_TEMPLATE=<path> (path to a valid WINEPREFIX dir).
+if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" != "dxmt" ] && \
+   [ -n "${MACRUNNER_MR_RUN_PREFIX_TEMPLATE:-}" ]; then
+  echo "[mr-run] seed-prefix template=$MACRUNNER_MR_RUN_PREFIX_TEMPLATE" >&2
+  if ! copy_prefix_template "$MACRUNNER_MR_RUN_PREFIX_TEMPLATE"; then
+    echo "[mr-run] prefix template copy failed: $MACRUNNER_MR_RUN_PREFIX_TEMPLATE" >&2
+    exit 2
+  fi
+  stamp_prefix_wine_inf || true
+  echo "[mr-run] seed-prefix done" >&2
+fi
+
+# Non-DXMT prefix seeding: run wineboot -u so the registry exists before
+# services.exe starts (needed for rpcss registration → fixes 0x6ba).
+# Opt-in via MACRUNNER_MR_RUN_WINEBOOT=1 (or auto-enabled when START_SERVICES=1
+# and no stamped template is pre-warmed with the CURRENT wine build).
+# Opt-out via MACRUNNER_MR_RUN_WINEBOOT=0 to keep the empty-prefix fast path.
+if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" != "dxmt" ] && \
+   [ "${MACRUNNER_MR_RUN_WINEBOOT:-0}" = "1" ]; then
+  _boot_tmo="${MACRUNNER_MR_RUN_BOOT_TIMEOUT:-45}"
+  echo "[mr-run] seed-prefix wineboot timeout=${_boot_tmo}s" >&2
+  if command -v timeout >/dev/null 2>&1; then
+    WINEPREFIX="$PREFIX" WINEDEBUG=-all \
+      DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+      DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+      timeout "$_boot_tmo" "$WINE" wineboot -u >&2 || true
+  elif command -v gtimeout >/dev/null 2>&1; then
+    WINEPREFIX="$PREFIX" WINEDEBUG=-all \
+      DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+      DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+      gtimeout "$_boot_tmo" "$WINE" wineboot -u >&2 || true
+  else
+    WINEPREFIX="$PREFIX" WINEDEBUG=-all \
+      DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+      DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+      "$WINE" wineboot -u >&2 &
+    _boot_child=$!
+    _boot_rc=0
+    _boot_elapsed=0
+    while kill -0 "$_boot_child" 2>/dev/null; do
+      if [ "$_boot_elapsed" -ge "$_boot_tmo" ]; then
+        kill "$_boot_child" 2>/dev/null || true
+        sleep 1
+        kill -9 "$_boot_child" 2>/dev/null || true
+        wait "$_boot_child" 2>/dev/null || true
+        break
+      fi
+      sleep 1
+      _boot_elapsed=$((_boot_elapsed + 1))
+    done
+    if ! kill -0 "$_boot_child" 2>/dev/null; then
+      wait "$_boot_child" 2>/dev/null || true
+    fi
+  fi
+  echo "[mr-run] seed-prefix wineboot done" >&2
+fi
+
 # Start services.exe (Wine SCM) → auto-starts rpcss.exe → creates \pipe\epmapper.
 # Required for COM/RPC calls (CoInitialize, RPC) for any game that hits 0x6ba.
 # Opt-in: set MACRUNNER_MR_RUN_START_SERVICES=1 (works for dxmt, PE32, HK — any dist).
 if [ "${MACRUNNER_MR_RUN_START_SERVICES:-0}" = "1" ]; then
-  echo "[mr-run] starting services.exe → rpcss → \\pipe\\epmapper" >&2
+  echo "[mr-run] starting services.exe + rpcss.exe (standalone) → epmapper + ncalrpc:[irpcss]" >&2
   WINEPREFIX="$PREFIX" WINEDEBUG=-all \
     DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
     DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
-    "$WINE" services.exe >/dev/null 2>&1 &
+    "$WINE" "C:\\windows\\system32\\services.exe" >/dev/null 2>&1 &
   services_bg_pid=$!
-  sleep 3
-  echo "[mr-run] services.exe pid=$services_bg_pid started" >&2
+  # Launch rpcss.exe directly.  On the dxmt / skip-wineboot fast path the SCM never
+  # demand-starts RpcSs (StartType=3) and `sc start` is not usable, so the OLE SCM endpoint
+  # ncalrpc:[irpcss] would never be created -> the guest's first CoInitialize bind hits
+  # \\.\pipe\lrpc\irpcss with error=2 -> unhandled 0x6ba RPC_S_SERVER_UNAVAILABLE that kills
+  # the OLE init threads.  rpcss.exe carries a MacRunner standalone fallback
+  # (programs/rpcss/rpcss_main.c): when raw-exec'd its StartServiceCtrlDispatcherW returns
+  # FAILED_SERVICE_CONTROLLER_CONNECT and it then runs RPCSS_Initialize() itself, serving
+  # the epmapper + irpcss endpoints for its lifetime.
+  # Launch by FULL Windows path, not the bare name: `wine rpcss.exe` resolves the bare
+  # name against the cwd (Z:\...) which has no rpcss.exe, so wine falls back to start.exe
+  # which PATH-searches (rpcss.exe.com/.exe/.bat/...) and fails on the unprovisioned
+  # fast-path prefix ("Environment variable not found / ShellExecuteEx failed"), never
+  # reaching the real builtin in system32.  The explicit C:\ path loads it directly.
+  WINEPREFIX="$PREFIX" WINEDEBUG="${MACRUNNER_MR_RUN_RPCSS_DEBUG:--all}" \
+    DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+    DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+    "$WINE" "C:\\windows\\system32\\rpcss.exe" >"${MACRUNNER_MR_RUN_RPCSS_LOG:-/dev/null}" 2>&1 &
+  rpcss_bg_pid=$!
+  # rpcss creates its ncalrpc endpoints within ~1-2s; the guest binds irpcss much later
+  # (deep into engine init).  Bounded wait so the endpoint is up before any early client.
+  sleep "${MACRUNNER_MR_RUN_SERVICES_WAIT:-6}"
+  echo "[mr-run] services.exe pid=$services_bg_pid rpcss.exe pid=$rpcss_bg_pid started" >&2
 fi
 
 echo "[mr-run] prefix=$PREFIX timeout=${TMO}s exe=$EXE" >&2

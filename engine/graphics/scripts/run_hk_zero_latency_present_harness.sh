@@ -5,6 +5,19 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && 
 source "$PROJECT_ROOT/config/env.sh"
 source "$PROJECT_ROOT/engine/graphics/build-support/common.sh"
 
+copy_file_if_needed() {
+  local src="$1"
+  local dst="$2"
+  if [[ ! -f "$src" ]]; then
+    echo "missing copy source: $src" >&2
+    return 1
+  fi
+  if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+    return 0
+  fi
+  cp -f "$src" "$dst"
+}
+
 ARCH="${1:-x86_64}"
 BUILD_DIR="$GRAPHICS_BUILD/dxmt-${ARCH}-hk-present"
 CROSS_FILE="$GRAPHICS_BUILD/cross/dxmt-${ARCH}-hk-present.ini"
@@ -101,25 +114,30 @@ find "$OVERLAY_MACHINE_DIR" -mindepth 1 -maxdepth 1 -exec rm -f {} +
 find "$OVERLAY_UNIX_DIR" -mindepth 1 -maxdepth 1 -exec rm -f {} +
 find "$WINE_MACHINE_DIR" -mindepth 1 -maxdepth 1 -exec sh -c 'ln -s "$1" "$2/$(basename "$1")"' sh {} "$OVERLAY_MACHINE_DIR" \;
 find "$WINE_UNIX_DIR" -mindepth 1 -maxdepth 1 -exec sh -c 'ln -s "$1" "$2/$(basename "$1")"' sh {} "$OVERLAY_UNIX_DIR" \;
-rm -f "$OVERLAY_MACHINE_DIR/d3d11.dll" "$OVERLAY_MACHINE_DIR/dxgi.dll" "$OVERLAY_MACHINE_DIR/winemetal.dll" "$OVERLAY_UNIX_DIR/winemetal.so"
+rm -f "$OVERLAY_MACHINE_DIR/d3d11.dll" "$OVERLAY_MACHINE_DIR/d3d11.dll.so" "$OVERLAY_MACHINE_DIR/dxgi.dll" "$OVERLAY_MACHINE_DIR/dxgi.dll.so" "$OVERLAY_MACHINE_DIR/winemetal.dll" "$OVERLAY_UNIX_DIR/winemetal.so"
+rm -f "$OVERLAY_MACHINE_DIR/winemetal.so" "$OVERLAY_MACHINE_DIR/winemetal.dll.so" \
+  "$APP_DIR/winemetal.so" "$APP_DIR/winemetal.dll.so" \
+  "$PREFIX_SYSTEM32/winemetal.so" "$PREFIX_SYSTEM32/winemetal.dll.so"
 
-cp -f "$EXE" "$APP_DIR/dx11_hk_present_probe.exe"
-cp -f "$D3D11_DLL" "$APP_DIR/d3d11.dll"
-cp -f "$DXGI_DLL" "$APP_DIR/dxgi.dll"
-cp -f "$WINEMETAL_DLL" "$APP_DIR/winemetal.dll"
-cp -f "$WINEMETAL_SO" "$APP_DIR/winemetal.so"
-cp -f "$WINEMETAL_SO" "$APP_DIR/winemetal.dll.so"
-cp -f "$D3D11_DLL" "$PREFIX_SYSTEM32/d3d11.dll"
-cp -f "$DXGI_DLL" "$PREFIX_SYSTEM32/dxgi.dll"
-cp -f "$WINEMETAL_DLL" "$PREFIX_SYSTEM32/winemetal.dll"
-cp -f "$WINEMETAL_SO" "$PREFIX_SYSTEM32/winemetal.so"
-cp -f "$WINEMETAL_SO" "$PREFIX_SYSTEM32/winemetal.dll.so"
-cp -f "$D3D11_DLL" "$OVERLAY_MACHINE_DIR/d3d11.dll"
-cp -f "$DXGI_DLL" "$OVERLAY_MACHINE_DIR/dxgi.dll"
-cp -f "$WINEMETAL_DLL" "$OVERLAY_MACHINE_DIR/winemetal.dll"
-cp -f "$WINEMETAL_SO" "$OVERLAY_UNIX_DIR/winemetal.so"
-cp -f "$WINEMETAL_SO" "$OVERLAY_MACHINE_DIR/winemetal.so"
-cp -f "$WINEMETAL_SO" "$OVERLAY_MACHINE_DIR/winemetal.dll.so"
+copy_file_if_needed "$EXE" "$APP_DIR/dx11_hk_present_probe.exe"
+copy_file_if_needed "$D3D11_DLL" "$APP_DIR/d3d11.dll"
+copy_file_if_needed "$DXGI_DLL" "$APP_DIR/dxgi.dll"
+copy_file_if_needed "$WINEMETAL_DLL" "$APP_DIR/winemetal.dll"
+copy_file_if_needed "$WINEMETAL_SO" "$APP_DIR/winemetal.so"
+copy_file_if_needed "$WINEMETAL_SO" "$APP_DIR/winemetal.dll.so"
+copy_file_if_needed "$D3D11_DLL" "$PREFIX_SYSTEM32/d3d11.dll"
+copy_file_if_needed "$DXGI_DLL" "$PREFIX_SYSTEM32/dxgi.dll"
+copy_file_if_needed "$WINEMETAL_DLL" "$PREFIX_SYSTEM32/winemetal.dll"
+copy_file_if_needed "$WINEMETAL_SO" "$PREFIX_SYSTEM32/winemetal.so"
+copy_file_if_needed "$WINEMETAL_SO" "$PREFIX_SYSTEM32/winemetal.dll.so"
+copy_file_if_needed "$D3D11_DLL" "$OVERLAY_MACHINE_DIR/d3d11.dll"
+copy_file_if_needed "$D3D11_DLL" "$OVERLAY_MACHINE_DIR/d3d11.dll.so"
+copy_file_if_needed "$DXGI_DLL" "$OVERLAY_MACHINE_DIR/dxgi.dll"
+copy_file_if_needed "$DXGI_DLL" "$OVERLAY_MACHINE_DIR/dxgi.dll.so"
+copy_file_if_needed "$WINEMETAL_DLL" "$OVERLAY_MACHINE_DIR/winemetal.dll"
+copy_file_if_needed "$WINEMETAL_SO" "$OVERLAY_MACHINE_DIR/winemetal.so"
+copy_file_if_needed "$WINEMETAL_SO" "$OVERLAY_MACHINE_DIR/winemetal.dll.so"
+copy_file_if_needed "$WINEMETAL_SO" "$OVERLAY_UNIX_DIR/winemetal.so"
 
 echo "probe=$EXE"
 echo "prefix=$PREFIX"
@@ -131,6 +149,7 @@ echo "overrides=$DXMT_DLL_OVERRIDES"
 
 set +e
 (
+  cd "$APP_DIR" || exit 1
   env -i \
     HOME="$HOME" \
     USER="${USER:-}" \

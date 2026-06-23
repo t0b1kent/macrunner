@@ -287,3 +287,12 @@ LOOP-STATUS: CONTINUE
 12:53 · D3D8 texture-stage increment · added RenderWare D3DTOP_BLENDTEXTUREALPHA trace plus translation/Metal-request/smoke wiring · next pytest + mock/Metal-request smokes
 12:55 · D3D8 texture-stage validation · pytest 73 passed; mock headless full matrix d3d9_trace_count=38 PASS; Metal request-only count=38 PASS · next stage named files and commit
 12:55 · commit · 8b9e32c Lane D: add D3D8 RenderWare texture-stage blend · next continue next owned headless graphics increment
+14:31 · phase6 · selected next owned backlog item = DXMT phase6 hardening long-run stability/residency/batch/multithread smoke; no local blocker found now from matrix evidence · next: run/track `run_dxmt_phase6_hardening_suite.sh` when GPU/runtime lane availability allows and keep Lane A dependency boundaries intact
+LOOP-STATUS: CONTINUE
+18:46 · DXVK D3D9 backend sync check: engine/dxvk + engine/graphics/dist/dxvk include aarch64 d3d9.dll; synced to frozen dist (d3d9+dxgi) and hash-match verified. On-screen D3D9 harness script missing in HEAD; no on-screen rerun executed. Next: restore/rerun D3D9 onscreen probe when harness restored.
+
+18:59 · D3D9 onscreen harness modernization · align to dxmt tests+HK meson pattern (run_d3d9_onscreen_present_harness + new dx9 test target) done in working tree; next validate HK D3D11 on-screen before D3D9 PASS run.
+2026-06-13 19:00 · D3D9 harness syntax fix · fixed missing find exec terminator in run_d3d9_onscreen_present_harness.sh and removed SetStreamSource in dx9 probe; next HK on-screen regression + D3D9 run
+21:13:10 · patched hk zero-latency & d3d9 harness for overlay copy/dxvk-path · copy_file_if_needed + dxgi overlay .dll.so support added · запуск hk- и d3d9-on-screen после правки
+21:16:15 · HK on-screen check: после правки скрипта и copy_if_needed PASS не закрыт (hk_rc=11, winemetal_init_unix_call=0xc0000135, missing_required_dll=dxgi) · blocker likely winemetal Unix-init, не чистый overlay-path · перейду на D3D9 on-screen/чек path
+03:33 · D3D12 track bootstrap · created worktree ../MacRunner-d3d12 with branch laneD-d3d12 for isolated D3D12 parallel lane; keep HK D4 priority above D3D12

@@ -1026,3 +1026,91 @@ path — read-only). DO NOT stop until real Notepad++ x86 window is on screen
 (CG-capture), not "process alive".
 
 **Discipline note:** verdict = window pixels, not log length. Confirmed twice now.
+
+## Update 2026-06-09 17:13 (Codex Lane A):
+
+**HK ARM64X callback route fix landed locally:**
+- File: `engine/wine/dlls/ntdll/unix/macrunner_hb.c`
+- Change: post-normalize callback targets are classified against the metadata-bearing
+  ARM64X module; executable ARM64X native targets are called directly instead of
+  falling into x64 PE fallback.
+- Build/deploy: `dlls/ntdll/ntdll.so` rebuilt from the absolute root and copied to
+  `/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so`;
+  deployed binary was ad-hoc codesigned.
+
+**One HK validation run (absolute paths, no rerun):**
+- Report: `reports/phase4-hollow-knight/laneA-postnormalize-arm64-direct-20260609-170857/`
+- Counts: `wine-process-primary=1`, `wine-process-primary-installed=1`,
+  `dispatch-fallback=0`, `normalize-trace=80`, `NtUserCreateWindowEx=0`.
+- Evidence: normalize maps `ntdll.dll` `0x87fffa170c0` -> `0x87fff9f2a60`, and
+  callback dispatch targets `0x87fff9f2a60` without PE fallback.
+
+**Current blocker:** route fallback is fixed, but HK still does not reach
+`NtUserCreateWindowEx`. The same run enters a post-direct signal loop:
+first signal after normalized callback is `pc=0x0 fault=0x0 x26=0x87fffa170c0`,
+then repeated bus signals continue with `x26=0x87fffa170c0`.
+
+- 2026-06-09 23:45 Lane A HK: latest blocker after dispatch loop fix is native ARM64EC `NtGetTickCount` during `update_load_config`; patched PE `user_shared_data` high-address init, pending rebuild/run.
+
+- 2026-06-09 23:56 Lane A HK: USD fault cleared; next visible blocker was `set_security_cookie` fault at `loader.c:5601` (`ldr w8,[x18,#0x40]`, fault `0x40`). Patched ARM64EC seed path; pending rebuild/run.
+2026-06-10 00:09 · Lane A HK: latest blocker is ARM64 LdrInitializeThunk NtContinue into low x64 PE entry; patched low-PE HB detector to route strict AMD64 executable entries.
+2026-06-10 00:18 · Lane A HK: low-PE route run proved macrunner_hb_amd64_main_on_arm64 stayed false; patched build_main_module to force HB for ARM64 process + AMD64 main.
+2026-06-10 00:24 · Lane A HK: after AMD64-main gate run, Ldr X0 stayed in non-executable main image data; added main-AEP fallback in signal_arm64.c.
+2026-06-10 00:30 · Lane A HK: primary still times out inside loader_init; added no-thread-entry probe to classify helper/primary Ldr handoff misses.
+ · Lane A HK · current blocker: primary installs signal handler but does not emit LdrInitializeThunk after-loader; loader_init phase-probe added to locate stall · next run must check macrunner-hb-loader-phase
+2026-06-10 00:52 · Lane A HK · current blocker: primary installs signal handler but does not emit LdrInitializeThunk after-loader; loader_init phase-probe added to locate stall · next run must check macrunner-hb-loader-phase
+2026-06-10 01:06 · Lane A HK · run /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-loader-phase-probe-20260610-005502: primary=1 fallback=0 pc0=0 NtUser=0; blocker shifted before LdrInitializeThunk/loader_init, last primary signal pc=0x87fff9cd86c fault=0x3004 · next map PC and patch root
+2026-06-10 01:12 · Lane A HK · applying fix for primary pre-Ldr stall: signal-entry trace suppressed while x18=0; previous run last PC mapped to ntdll!__wine_dbg_output ldr [x18,#0x3004] · next run should reach loader/Ldr/NtUser
+2026-06-10 01:24 · Lane A HK · run /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-x18-signal-log-guard-20260610-011343: signal-entry recursion fixed (count=0), but primary stops after init_syscall_frame normalized=0x87fff9c7418 before any LdrInitializeThunk/loader phase; next target dispatcher return/frame setup
+2026-06-10 01:31 · Lane A HK · next probe targets signal_arm64ec.c:LdrInitializeThunk because primary native target maps there, not signal_arm64.c · expect macrunner-hb-arm64ec-ldr markers
+2026-06-10 01:43 · Lane A HK · applying init-frame fallback fix: previous run stopped after init frame and never entered signal_arm64ec Ldr; next run should show macrunner-hb-segv-earlyinit-fallback and then Ldr/loader/HB thread entry
+2026-06-10 01:55 · Lane A HK · previous run: pending_x64 set but fallback skipped; x16 dispatcher route stole control. Broadened pending fallback to any depth=0 initial fault · next run should show macrunner-hb-segv-earlyinit-fallback/ldr-ctx-xlat
+2026-06-10 02:07 · Lane A HK · previous run: fallback fired but ctx-xlat had Rip/Rsp/Rcx=0 and x16 dispatcher stole route. Fixed by saving original arm ctx and forcing pending route · next run should route x64 Ldr thunk correctly
+
+## 2026-06-10 02:19 Lane A HK loader entry
+- Previous pending-context run reached good AMD64 context synthesis but still normalized forced x64 thunk to ARM64 native. Current fix keeps raw x64 thunk PC for HB dispatch; build and one HK run pending.
+
+## 2026-06-10 02:36 Lane A HK preserve raw dispatch
+- Current blocker: lower callback dispatch normalized forced raw x64 Ldr thunk `0x87fff9f0500` to ARM64 native `0x87fff9c7418` after signal route. Applied one-shot preserve-raw dispatch flag; build and one HK run pending.
+
+## 2026-06-10 03:01 Lane A HK ARM64EC entry context
+- Current fix: raw x64 Ldr entry path now keeps the saved ARM64 init context instead of synthetic AMD64 context, and aligns ARM64EC tagged native targets before direct native calls. Build and one HK run pending.
+
+## 2026-06-10 03:15 Lane A HK callback-run probe
+- Current state: raw dispatch and ARM context are preserved, but HK still times out before `macrunner-hb-ldr-after-loader-init`. Added bounded callback-run probe; build and one HK run pending.
+
+## 2026-06-10 03:30 Lane A HK native ARM64EC entry
+- Current fix: first x64 entry block only tail-jumped to native Ldr; dispatch now calls the native entry directly with saved ARM64 context/stack. Build and one HK run pending.
+
+## 2026-06-10 03:44 Lane A HK native entry stack
+- Current fix: native ARM64EC entry now gets saved ARM context plus allocated signal stack pointer instead of raw top-of-stack. Build and one HK run pending.
+
+## 2026-06-10 03:58 Lane A HK Ldr entry probe
+- Current state: native entry helper is called, but no PE Ldr marker appears. Added entry/xlat markers in `signal_arm64ec.c`; build and one HK run pending.
+
+## 2026-06-12 21:34 Lane D HK graphics reach check
+- Lane D verified the RPC/services fix in real HK x64 DXMT runs:
+  `RPC_S_SERVER_UNAVAILABLE=0`, no epmapper missing fault, services/rpcss start
+  under `mr-run`.
+- HK still does not reach graphics: `CreateDXGIFactory=0`,
+  `D3D11CreateDevice=0`, `UnityWndClass=0`, `GfxDevice=0`.
+- Evidence:
+  `reports/phase4-hollow-knight/laneA-laneD-rpcss-services-try1-212030/`,
+  `reports/phase4-hollow-knight/laneD-rpcss-sample2-212855/`,
+  `reports/phase4-hollow-knight/laneD-wait-trace-213215/`.
+- Current class: `WAIT_DEADLOCK` at rung `mono-init`; wine sample points through
+  `macrunner_hb_try_kernel32_handle_semantic -> NtWaitForSingleObject/server_wait`.
+  This is pre-DXGI/HyperBridge ownership, not a DXMT implementation gap.
+## 2026-06-12 22:55 Lane D HK x64 DXGI pre-entry root evidence
+
+Lane D verified the previous rpcss/epmapper fix: current HK x64 DXMT runs no longer show RPC_S_SERVER_UNAVAILABLE, but still do not reach CreateDXGIFactory/D3D11CreateDevice/Present.
+
+New evidence points at HyperBridge executing DXGI builtin data as code before public DXGI markers:
+- lift-probe hot loop in `DXGI.DLL` at runtime RVAs `0x15cc0`, `0x16040`, `0x16054`, `0x16066`, all disk `.rdata` ASCII strings (`%02x...`, `dxgi_device_GetGPUThreadPriority`, etc.).
+- runtime guard probe showed synthetic builtin section metadata reports those RVAs as `.text sec_size=0xbaef6 sec_chars=0x60000020`; disk `dxgi.dll` `.text` is only `0x13bd6`, `.rdata` starts at `0x15000`.
+- CFG fast path (`macrunner_hb_try_x64_cfg_dispatch_fast_path`) also trusts `RAX` targets with no executable-target validation, but existing predicates were poisoned by the synthetic `.text` size.
+
+Implemented but pending HK validation due active `x18waittrace2` runner:
+- `loader.c` now registers original AMD64 executable PE section ranges before Wine rewrites builtin module headers.
+- `macrunner_hb.c` keeps a side-table of original exec ranges and makes `macrunner_hb_pc_in_executable_section()` use that table as authoritative for registered modules.
+- Diagnostic probes remain gated by `MACRUNNER_HB_TRACE_EXEC_GUARD` / `MACRUNNER_HB_TRACE_LIFT_PROBE`.

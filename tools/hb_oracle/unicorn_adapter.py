@@ -179,9 +179,30 @@ def build_initial_state(seed: int, arch: str = "x64") -> InitialState:
     rflags = (splitmix64_next(rng) & RFLAGS_FUZZ_MASK) | 0x202
     xmm: list[bytes] = []
     ymm_hi: list[bytes] = []
-    for _ in range(16):
-        xmm.append(random_bytes(rng, 16))
-        ymm_hi.append(random_bytes(rng, 16))
+    if arch == "x86":
+        # hb_diff_case_runner.c init_context() for x86 fills:
+        #   tmp[16] -> xmm[i] for i<8
+        #   ymm_hi[i]
+        #   zmm_hi[i] (dummy for this adapter)
+        # so keep the same draw cadence to preserve RNG alignment.
+        for i in range(16):
+            tmp = random_bytes(rng, 16)
+            if i < 8:
+                xmm.append(tmp)
+            ymm_hi.append(random_bytes(rng, 16))
+            random_bytes(rng, 32)  # consume zmm_hi bytes to keep sequence aligned
+    else:
+        for _ in range(16):
+            # Mirror hb_diff_case_runner C init_context() RNG cadence exactly:
+            # x86-64 initializes extra SIMD extension state that is currently
+            # not modeled in this Python-side comparator, but consumes RNG draws
+            # and therefore shifts downstream state generation.
+            xmm.append(random_bytes(rng, 16))
+            random_bytes(rng, 16)  # xmm_ext
+            random_bytes(rng, 16)  # ymm_hi_ext
+            random_bytes(rng, 32)  # zmm_hi_ext
+            ymm_hi.append(random_bytes(rng, 16))
+            random_bytes(rng, 32)  # zmm_hi
     return InitialState(regs=regs, rflags=rflags, xmm=xmm, ymm_hi=ymm_hi, data=data, stack=stack)
 
 
@@ -214,6 +235,11 @@ def set_initial_state(uc: Uc, state: InitialState, code: bytes, arch: str = "x64
         for i in range(16):
             ymm = state.xmm[i] + state.ymm_hi[i]
             uc.reg_write(reg_const("YMM", i), int.from_bytes(ymm, "little"))
+    for i in range(8):
+        try:
+            uc.reg_write(reg_const("MM", i), int.from_bytes(state.xmm[i][:8], "little"))
+        except Exception:
+            break
 
 
 def snapshot(uc: Uc, arch: str = "x64") -> dict[str, Any]:
@@ -228,6 +254,7 @@ def snapshot(uc: Uc, arch: str = "x64") -> dict[str, Any]:
     eflags = uc.reg_read(UC_X86_REG_EFLAGS)
     xmm: list[str] = []
     ymm_hi: list[str] = []
+    mmx: list[str] = []
     if arch == "x86":
         for i in range(8):
             raw = int(uc.reg_read(reg_const("XMM", i))).to_bytes(16, "little")
@@ -238,6 +265,13 @@ def snapshot(uc: Uc, arch: str = "x64") -> dict[str, Any]:
             raw = int(uc.reg_read(reg_const("YMM", i))).to_bytes(32, "little")
             xmm.append(bytes_to_hex(raw[:16]))
             ymm_hi.append(bytes_to_hex(raw[16:]))
+    for i in range(8):
+        try:
+            raw = int(uc.reg_read(reg_const("MM", i))).to_bytes(8, "little")
+        except Exception:
+            mmx = []
+            break
+        mmx.append(bytes_to_hex(raw))
     data = bytes(uc.mem_read(DATA_BASE, DATA_SIZE))
     stack = bytes(uc.mem_read(STACK_BASE, STACK_SIZE))
     # FPU state (Unicorn exposes CW via UC_X86_REG_FPCW/SW/TW since 2.0).
@@ -266,6 +300,8 @@ def snapshot(uc: Uc, arch: str = "x64") -> dict[str, Any]:
         "data_hash": hex64(fnv1a64(data)),
         "stack_hash": hex64(fnv1a64(stack)),
     }
+    if mmx:
+        out["mmx"] = mmx
     if fpu:
         out["fpu"] = fpu
     return out
@@ -283,12 +319,15 @@ def run_case(seed: int, code_hex: str, arch: str = "x64") -> dict[str, Any]:
         out["ok"] = True
         return out
     except UcError as exc:
+        message = str(exc)
+        trap = "invalid_instruction" if "UC_ERR_INSN_INVALID" in message else "unicorn_error"
         return {
             "ok": False,
             "api": -1,
             "result": -1,
             "error": exc.__class__.__name__,
-            "message": str(exc),
+            "message": message,
+            "trap": trap,
         }
 
 

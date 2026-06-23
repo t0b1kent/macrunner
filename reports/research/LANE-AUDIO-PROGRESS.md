@@ -68,3 +68,10 @@ LOOP-STATUS: CONTINUE (x64-force pilot is diagnostic only; native ARM64 PASS gat
 LOOP-STATUS: CONTINUE (x64 DSound/XAudio2 fixtures prepared; waiting on Lane A for x64 runtime acceptance)
 13:04 · commit · checkpoint(Audio): prepare x64 audio acceptance fixtures (6477099) · x64 dsound/xaudio2 acceptance fixture GAP removed for next Lane-A-unblocked run · next: wait Lane A
 LOOP-STATUS: CONTINUE (waiting on Lane A x64 unblock; no further audio critical-path work queued)
+14:28 · Unity/FMOD prep · extracted local coverage format + FMOD/Unity context references from existing reports; ready to map API-path evidence · next: web+repo evidence for Unity/FMOD init path
+14:30 · Unity/FMOD audit prep · pulled official FMOD docs for init/output defaults + Unity integration behavior; proceeding to map calls against our audio coverage matrix · next: extract remaining MMDevice/XAudio/DSound API evidence
+
+16:00 · Unity/FMOD readiness prep · created reports/research/AUDIO-FMOD-READINESS-AUDIT.md (WASAPI default + MMDevice/IAudioClient/XAudio2/DSound coverage matrix + x64 unblock note) · next: keep waiting on Lane A unblock and x64 one-shot when unblocked
+LOOP-STATUS: CONTINUE (prep complete; evidence matrix ready, x64 currently blocked by Lane A)
+14:42 · HK x64 acceptance checklist · added acceptance criteria block to reports/research/AUDIO-FMOD-READINESS-AUDIT.md (--force-x64 one-shot, API-by-API PASS predicates, hr/format/latency/fallback checks, audio-signal markers) · next: WAIT_B1B2/x64 until Lane A unblock
+LOOP-STATUS: CONTINUE (prep complete; acceptance checklist now machine-checkable, awaiting x64 unblock)

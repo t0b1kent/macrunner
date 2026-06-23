@@ -244,7 +244,23 @@ fi
 mkdir -p "$PREFIX"
 export WINEPREFIX="$PREFIX"
 export MACRUNNER_WINE_DIST="$WINE_DIST"
-export MACRUNNER_HB_X64_LOADER=1
+EXE_MACHINE="$(python3 - "$ROOT" "$APP" <<'PY'
+import json
+import subprocess
+import sys
+
+try:
+    payload = json.loads(subprocess.check_output([f"{sys.argv[1]}/tools/pe_inspector.py", sys.argv[2], "--json"], text=True))
+    print(payload.get("machine", ""))
+except Exception:
+    print("")
+PY
+    )"
+if [[ "$EXE_MACHINE" == "x86" ]]; then
+    export MACRUNNER_HB_X64_LOADER=0
+elif [[ -z "${MACRUNNER_HB_X64_LOADER+x}" ]]; then
+    export MACRUNNER_HB_X64_LOADER=1
+fi
 # FreeType lives in Homebrew but our Wine is built without explicit rpath.
 export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/lib:/usr/local/lib:/usr/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
 export WINEDEBUG="${WINEDEBUG:--all}"

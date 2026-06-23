@@ -238,32 +238,38 @@ static NSString *d3d9_arg_expr(NSString *arg) {
     return expr;
 }
 
-static NSString *d3d9_op_expr(NSString *op, NSString *lhs, NSString *rhs) {
-    if ([op isEqualToString:@"D3DTOP_SELECTARG2"]) return rhs;
-    if ([op isEqualToString:@"D3DTOP_MODULATE"]) return [NSString stringWithFormat:@"((%@)*(%@))", lhs, rhs];
-    if ([op isEqualToString:@"D3DTOP_MODULATE2X"]) return [NSString stringWithFormat:@"saturate((%@)*(%@)*2.0)", lhs, rhs];
-    if ([op isEqualToString:@"D3DTOP_MODULATE4X"]) return [NSString stringWithFormat:@"saturate((%@)*(%@)*4.0)", lhs, rhs];
-    if ([op isEqualToString:@"D3DTOP_ADD"]) return [NSString stringWithFormat:@"saturate((%@)+(%@))", lhs, rhs];
-    if ([op isEqualToString:@"D3DTOP_ADDSIGNED"]) return [NSString stringWithFormat:@"saturate((%@)+(%@)-0.5)", lhs, rhs];
-    if ([op isEqualToString:@"D3DTOP_ADDSIGNED2X"]) return [NSString stringWithFormat:@"saturate(((%@)+(%@)-0.5)*2.0)", lhs, rhs];
-    if ([op isEqualToString:@"D3DTOP_ADDSMOOTH"]) return [NSString stringWithFormat:@"saturate((%@)+(%@)-((%@)*(%@)))", lhs, rhs, lhs, rhs];
+static NSString *d3d9_op_expr(NSString *op, NSString *arg0, NSString *arg1, NSString *arg2) {
+    if ([op isEqualToString:@"D3DTOP_SELECTARG2"]) return arg2;
+    if ([op isEqualToString:@"D3DTOP_MODULATE"]) return [NSString stringWithFormat:@"((%@)*(%@))", arg1, arg2];
+    if ([op isEqualToString:@"D3DTOP_MODULATE2X"]) return [NSString stringWithFormat:@"saturate((%@)*(%@)*2.0)", arg1, arg2];
+    if ([op isEqualToString:@"D3DTOP_MODULATE4X"]) return [NSString stringWithFormat:@"saturate((%@)*(%@)*4.0)", arg1, arg2];
+    if ([op isEqualToString:@"D3DTOP_ADD"]) return [NSString stringWithFormat:@"saturate((%@)+(%@))", arg1, arg2];
+    if ([op isEqualToString:@"D3DTOP_ADDSIGNED"]) return [NSString stringWithFormat:@"saturate((%@)+(%@)-0.5)", arg1, arg2];
+    if ([op isEqualToString:@"D3DTOP_ADDSIGNED2X"]) return [NSString stringWithFormat:@"saturate(((%@)+(%@)-0.5)*2.0)", arg1, arg2];
+    if ([op isEqualToString:@"D3DTOP_ADDSMOOTH"]) return [NSString stringWithFormat:@"saturate((%@)+(%@)-((%@)*(%@)))", arg1, arg2, arg1, arg2];
     if ([op isEqualToString:@"D3DTOP_DOTPRODUCT3"]) {
-        return [NSString stringWithFormat:@"float4(float3(saturate(dot((%@).rgb*2.0-1.0,(%@).rgb*2.0-1.0))),(%@).a)", lhs, rhs, lhs];
+        return [NSString stringWithFormat:@"float4(float3(saturate(dot((%@).rgb*2.0-1.0,(%@).rgb*2.0-1.0))),(%@).a)", arg1, arg2, arg1];
     }
-    if ([op isEqualToString:@"D3DTOP_SUBTRACT"]) return [NSString stringWithFormat:@"saturate((%@)-(%@))", lhs, rhs];
+    if ([op isEqualToString:@"D3DTOP_SUBTRACT"]) return [NSString stringWithFormat:@"saturate((%@)-(%@))", arg1, arg2];
     if ([op isEqualToString:@"D3DTOP_BLENDDIFFUSEALPHA"]) {
-        return [NSString stringWithFormat:@"((%@)*diffuse.a+(%@)*(1.0-diffuse.a))", lhs, rhs];
+        return [NSString stringWithFormat:@"((%@)*diffuse.a+(%@)*(1.0-diffuse.a))", arg1, arg2];
     }
     if ([op isEqualToString:@"D3DTOP_BLENDCURRENTALPHA"]) {
-        return [NSString stringWithFormat:@"((%@)*diffuse.a+(%@)*(1.0-diffuse.a))", lhs, rhs];
+        return [NSString stringWithFormat:@"((%@)*diffuse.a+(%@)*(1.0-diffuse.a))", arg1, arg2];
     }
     if ([op isEqualToString:@"D3DTOP_BLENDTEXTUREALPHA"]) {
-        return [NSString stringWithFormat:@"((%@)*texel.a+(%@)*(1.0-texel.a))", lhs, rhs];
+        return [NSString stringWithFormat:@"((%@)*texel.a+(%@)*(1.0-texel.a))", arg1, arg2];
     }
     if ([op isEqualToString:@"D3DTOP_BLENDFACTORALPHA"]) {
-        return [NSString stringWithFormat:@"((%@)*tfactor.a+(%@)*(1.0-tfactor.a))", lhs, rhs];
+        return [NSString stringWithFormat:@"((%@)*tfactor.a+(%@)*(1.0-tfactor.a))", arg1, arg2];
     }
-    return lhs;
+    if ([op isEqualToString:@"D3DTOP_MULTIPLYADD"]) {
+        return [NSString stringWithFormat:@"saturate(fma(%@,%@,%@))", arg1, arg2, arg0];
+    }
+    if ([op isEqualToString:@"D3DTOP_LERP"]) {
+        return [NSString stringWithFormat:@"mix(%@,%@,%@)", arg2, arg1, arg0];
+    }
+    return arg1;
 }
 
 static NSString *fragment_shader_source(BOOL textureMode, NSDictionary *req) {
@@ -273,8 +279,10 @@ static NSString *fragment_shader_source(BOOL textureMode, NSDictionary *req) {
     NSDictionary *ffp = [d3d9[@"ffp_shader"] isKindOfClass:[NSDictionary class]] ? d3d9[@"ffp_shader"] : @{};
     NSString *colorOp = ffp[@"color_op"] ?: @"";
     NSString *alphaOp = ffp[@"alpha_op"] ?: @"D3DTOP_SELECTARG1";
+    NSString *colorArg0 = ffp[@"color_arg0"] ?: @"D3DTA_CURRENT";
     NSString *colorArg1 = ffp[@"color_arg1"] ?: @"D3DTA_DIFFUSE";
     NSString *colorArg2 = ffp[@"color_arg2"] ?: @"D3DTA_TEXTURE";
+    NSString *alphaArg0 = ffp[@"alpha_arg0"] ?: colorArg0;
     NSString *alphaArg1 = ffp[@"alpha_arg1"] ?: colorArg1;
     NSString *alphaArg2 = ffp[@"alpha_arg2"] ?: colorArg2;
     NSArray *textureFactor = [ffp[@"texture_factor"] isKindOfClass:[NSArray class]] ? ffp[@"texture_factor"] : @[@255, @255, @255, @255];
@@ -288,12 +296,12 @@ static NSString *fragment_shader_source(BOOL textureMode, NSDictionary *req) {
         ? @"texel"
         : (!d3d9Mode ? @"diffuse" : (programmableTextureModulate
         ? @"(texel*diffuse)"
-        : d3d9_op_expr(colorOp, d3d9_arg_expr(colorArg1), d3d9_arg_expr(colorArg2))));
+        : d3d9_op_expr(colorOp, d3d9_arg_expr(colorArg0), d3d9_arg_expr(colorArg1), d3d9_arg_expr(colorArg2))));
     NSString *alphaExpr = (!d3d9Mode && textureMode)
         ? @"texel"
         : (!d3d9Mode ? @"diffuse" : (programmableTextureModulate
         ? @"(texel*diffuse)"
-        : d3d9_op_expr(alphaOp, d3d9_arg_expr(alphaArg1), d3d9_arg_expr(alphaArg2))));
+        : d3d9_op_expr(alphaOp, d3d9_arg_expr(alphaArg0), d3d9_arg_expr(alphaArg1), d3d9_arg_expr(alphaArg2))));
     NSString *alphaCode = @"";
     if (alphaTest) {
         NSString *condition = alpha_test_condition(alphaFunc, [NSString stringWithFormat:@"%0.9f", alphaRef]);

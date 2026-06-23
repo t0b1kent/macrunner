@@ -5,6 +5,69 @@ MacRunner runs x86_64 Windows apps/games on Apple Silicon **without Rosetta**: H
 agents work in parallel (Codex/Opus = engine, Kimi = graphics, Cline = bounded tasks, ChatGPT =
 research). Claude here = strategic coordinator / memory-keeper.
 
+## ★ CURRENT STATE & LANE MAP — 2026-06-07 (supersedes the stale lane line above)
+**MILESTONE:** SEH host-boundary `c0000026` (STATUS_INVALID_DISPOSITION) **PASSED** via bulk CFI/unwind
+metadata on HyperBridge host-call thunks. Triage class progression on live HK x64 runs:
+`SEH (pc 106A9F014→1095AF014) → GENERIC_ACCESS_VIOLATION → CREATE_DXGI_FACTORY_MISSING`. The HK window's
+remaining path is ALL graphics. See Obsidian note 123 + `reports/research/MILESTONE-20260607-SEH-passed-graphics-critical-path.md`.
+
+**ORDERING — GRAPHICS-FIRST (operator's call):** Lane A reached the CreateDXGIFactory wall → running it
+again is pointless until Lane D delivers `CreateDXGIFactory → D3D11CreateDevice → swapchain → present`.
+**Lane A stays PARKED until graphics is ready;** then ONE Lane A run reveals if graphics was the only wall.
+
+**MODELS — Codex quota EXHAUSTED until ~Jun 12** (Spark + general account). Engine lanes run on Claude + Gemini:
+- **Lane A** (x64 runtime→window; `macrunner_hb.c`/`signal_arm64.c`/`xtajit64`/hb_*): Claude **Opus** (operator terminal). PARKED pending graphics.
+- **Lane D** (graphics/DXMT; `engine/dxmt|graphics|vkd3d`): Claude **Sonnet** — ACTIVE, **critical path #1**.
+- **PE32** (32-bit; `xtajit`/`wow64`/`wow64cpu`/`wow64win`/deploy): Claude **Sonnet #2** — parallel (SEH unblocked it; i386 Diablo/Terraria already reach BTCpu).
+- **Gemini (agy)** — proven CODE agent (native unarc macOS ARM64 / `___chkstk_darwin` fix). Repack CRC harness done (`tools/repack`); ISA-coverage tool done (`tools/hb_isa_coverage` + matrices). **NOW: Audio+Input lane** (`GEMINI-MEGA-PROGRAM-audio-input-lane.md`) — DSound/XAudio2/DInput/XInput → CoreAudio/GameController, arm64; owns those audio/input DLLs (disjoint, Lane C parked). NB: ISA coverage is ALREADY done (x64 matrix from Lane B Jun-1 + x86-32 + atlases) — remaining ISA = engine-lane *implementation* (PE32/Lane A), not re-coverage.
+- **Lane C** (ntdll loader/server) — PARKED (real blocker was the SEH, not the loader machine-reject).
+- **Triage analyzer** = `tools/triage/classify_run.py` (Lane X, Sonnet — hardened, generic-fallback).
+
+**AUTOLOOP — ROOT CAUSE of every recurring "agent stopped again":** single-turn agent runtimes
+(`codex exec`, `agy --print`, `claude -p`) RETURN at end-of-turn no matter what the prompt says — the
+"don't stop / chain for months" instruction is advisory and CANNOT override the runtime. Any autonomous
+lane MUST be wrapped in an autoloop from the start (and verify the loop is alive — ps the driver+agent).
+Drivers (each reruns the agent in fresh turns that resume from the lane PROGRESS file, until it writes
+`^LOOP-STATUS: GOAL|BLOCKED` at col 0):
+- `scripts/lane-autoloop2.sh <lane> <progress> <max> <prompt> <model>` — **codex** (needs explicit
+  `-m`; v2 = anchored `^LOOP-STATUS` grep so template text can't false-match).
+- `scripts/lane-autoloop-agy.sh <lane> <progress> <max> <prompt> [model]` — **agy/Gemini** (`agy
+  --print`, verified headless 2026-06-07; NB macOS bash 3.2 — no `${arr[@]}` under set -u).
+- **Claude** lanes: Agent tool (background) + re-spawn on completion; `claude -p` is not authed headless.
+
+**AUTO-TRIAGE:** `mr-run.sh` auto-runs classify_run + writes flight.jsonl INTO the run dir when the
+caller sets `MACRUNNER_RUN_DIR=$RUNDIR` (opt-out `MACRUNNER_NO_AUTOTRIAGE=1`). Use it on every run.
+
+**ctx caveat:** `ctx_batch_execute` shell mode dies here (spawn `/bin/zsh` ENOENT) → use `ctx_execute`
+language=javascript instead.
+
+**★ COORDINATOR RULE #1 (standing operator order, flagged 5×): ALWAYS read the lane ACTIVITY BEFORE
+answering ANY status question.** Sources of truth, in order: (1) the agent's terminal output the
+operator shows — that IS ground truth, trust it; (2) the lane's `LANE-*-PROGRESS.md` heartbeat; (3) the
+relevant run's `triage-summary`. **NEVER assert "idle/stopped/done/almost-window" from absence of
+commits / run-dirs / low CPU — those LAG badly** (agents churn 50+ min in GUI/worktree sessions,
+uncommitted, run-in-progress). Do NOT contradict a live terminal with grep-derived state. If unsure,
+ASK "what does your terminal show?" When killing a background agent I spawned, hunt its orphaned
+ctx/bun/wine children (the "tails").
+
+## ★ ULTRACODE POLICY — effort tier + workflow bursts (decided 2026-06-07)
+"Ultracode" = two things; use each surgically, NOT blanket (cost-conscious):
+- **Effort tier (max Opus):** ideal for the gnarly engine root-causing — **Lane A** (SEH/CFI/signal/
+  tagged-PC/ARM64EC). BUT ultracode/Opus is gated behind the 1M-context credit requirement (operator
+  avoids it) → **Lane A runs on Sonnet.** COMPENSATE the lost depth: the coordinator runs **Workflow
+  bursts (model-independent — they don't hit the terminal's credit gate)** to do the deep diagnosis and
+  hand Lane A precise, line-level fixes, then verify Lane A's work. **Workflow = the brains; the Sonnet
+  terminal = the hands.** Everything else (PE32 mechanical, Audio plumbing, Gemini tooling, configurator)
+  = high/standard regardless.
+- **Workflow / multi-agent bursts (the Workflow tool):** fire at DECISION POINTS, not as the lane driver.
+  Good triggers: (a) adversarially VERIFY a tricky engine fix BEFORE relying on it (the 2026-06-07 run
+  found a CRITICAL per-thread concurrency bug + an unguarded unwind-twin that solo Lane A missed); (b)
+  BULK SWEEP/audit a finite class against a reference (find all sibling bugs); (c) judge-panel of N
+  approaches at a design fork. NOT for the months-long stateful lane loops (those stay autoloops/agents).
+- **Cadence:** the continuous grind = the lanes (autoloops/terminals). Coordinator fires ~1 workflow per
+  significant fix/milestone (verify-before-commit / sweep / pre-window audit). Each ≈5 agents / ~250k
+  tokens / ~6 min — fire when stakes justify (window-blocking fix, bug class), skip for routine.
+
 ## TOOLING — USE context-mode, NOT raw Bash+grep+Read (operator's explicit standing order)
 For ANY heavy read/search/index work, route through the **context-mode MCP** (`ctx_search`,
 `ctx_index`, `ctx_execute`, `ctx_stats`, etc.) — it exists for token economy. Do NOT default to
@@ -14,6 +77,8 @@ For ANY heavy read/search/index work, route through the **context-mode MCP** (`c
 - Run `ctx_doctor`/`ctx_stats` if unsure context-mode is healthy; fall back to Bash ONLY if
   context-mode is genuinely unavailable, and say so explicitly.
 This is a recurring miss — the operator has flagged it repeatedly. Honor it.
+
+**★ ENFORCED BY HOOK (2026-06-08):** a `PreToolUse(Bash)` hook (`.claude/settings.json` → `scripts/ctx-guard-hook.py`) **physically blocks** raw heavy reads/searches and tells you to use `ctx_search`/`ctx_execute` instead. BLOCKED: `cat|grep|tail|head|less|sed|awk` on `*.log`/`run.log`/`stderr.log`/`reports/*/run`; recursive `grep -r`/`-R`; `rg` as a command. NOT blocked: pipes (`ps|grep`, `git|grep`), single-file `grep file.c`, `make`/`mr-run.sh`/`ls`/`wc`/`stat`/redirects (`> run.log`), `Read` of small sources. If you get the deny, do NOT fight it — `ctx_index` then `ctx_search`. (Activates on session start; if not firing, open `/hooks` once or restart.)
 
 ## ★ BULK-OVER-REACTIVE — default reflex (operator's standing order 2026-05-31)
 Whenever a failure class is driven by a **finite, externally-specified set** AND a **reference
@@ -86,6 +151,16 @@ Exit 2 = меньше 30 GB после чистки → STOP, сказать ю�
 - **Запрещённые авто-имена:** `*-backup-*`, `*-snapshots*`, `*-offload-*`, `*codex-session-backup*`.
 - **`reports/phase-h/` старше 7 дней — удалять перед новым прогоном:**
   `find reports/phase-h -maxdepth 1 -mindepth 1 -type d -mtime +7 -exec rm -rf {} +`
+- **★ Осиротевшие `artifacts/_mr-run.*` префиксы (это укусило 2026-06-08).** mr-run.sh удаляет свой
+  throwaway-префикс на выходе, НО убитый/упавший прогон оставляет его (накопилось 18 шт = 2.4 ГБ).
+  Когда НЕТ живого прогона — снести: `rm -rf artifacts/_mr-run.*`.
+- **★ `reports/` пухнет от run.log** (30+ МБ каждый × сотни прогонов; накопилось 1883 phase-h дир = 34 ГБ).
+  Гонять с `MACRUNNER_RUN_DIR=reports/<phase>/latest` (ПЕРЕЗАПИСЬ, не новый timestamp-дир каждый раз),
+  либо регулярно прунить: `find reports/phase-h reports/pe32 -maxdepth 1 -mindepth 1 -type d -mtime +1 -exec rm -rf {} +`.
+- **★ ПАРИТЕТ С AGENTS.md (для ВСЕХ лайнов — Codex И Claude):** disk-hygiene правила в AGENTS.md
+  («Disk hygiene (обязательно)») и здесь — ОДИНАКОВЫЕ. Перед длинным циклом — `disk-guard.sh`; после
+  прогонов — чистить хвосты (orphan-префиксы + лишние run-диры); `cp -r $WINEPREFIX` запрещён; snapshots
+  rolling max 3. Лайн, который копит на десятки ГБ — нарушает правило.
 
 ## VERDICT DISCIPLINE
 Evidence (pasted log line / exported symbol / pixels), NOT agent status. "blocked at X" with the

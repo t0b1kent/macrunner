@@ -425,9 +425,20 @@ def main():
                 for p in ["server_error=", "status="]:
                     if p in line:
                         try:
-                            part = line.split(p)[1].split()[0].strip(",").strip(";")
-                            val = int(part, 16 if "0x" in part else 10)
-                            if val != 0:
+                            part = line.split(p)[1].split()[0].strip(",").strip(";").lower()
+                            # NT status codes are HEX; logs often omit the 0x. Parse 6-8 hex digits as
+                            # hex (NOT decimal — "40000003" is 0x40000003, not forty million).
+                            if part.startswith("0x"):
+                                val = int(part, 16)
+                            elif 6 <= len(part) <= 8 and all(ch in "0123456789abcdef" for ch in part):
+                                val = int(part, 16)
+                            else:
+                                val = int(part, 10)
+                            # Only severity 11 (0xC...) is a real error. Informational (0x4...,
+                            # e.g. 0x40000003 STATUS_IMAGE_NOT_AT_BASE = benign DLL relocation),
+                            # warning (0x8...), and success (0x0...) are NOT window-server errors.
+                            # Keyword-matching 0x40000003 sent the PE32 lane into a rabbit-hole.
+                            if val != 0 and (val >> 30) == 3:
                                 window_server_error = True
                                 if "status_invalid_handle" in line or "error_invalid_handle" in line or "0xc0000008" in part.lower():
                                     window_server_error_confidence = 0.95

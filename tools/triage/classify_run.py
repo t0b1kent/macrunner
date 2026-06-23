@@ -100,6 +100,73 @@ ANALYZERS = [
     "analyze_generic_fallback.py",
 ]
 
+# --- Boot-ladder progression tracking (added 2026-06-10) -------------------
+# Fixed HK-x64 boot ladder. Each run is scored by the FURTHEST rung whose
+# marker appears in its logs; the best-ever rung is persisted next to the run
+# dirs (<parent>/.triage-ladder-best.json). A run landing BELOW the best rung
+# is flagged REGRESSION loudly — the "rabbit-hole detector" (the 6h 06-10
+# thrash would have been flagged on the FIRST run: stuck before Ldr while
+# best was GfxDevice).
+LADDER_RUNGS = [
+    ("after-loader",   ["phase=after-loader"]),
+    ("xtajit64-init",  ["macrunner-xtajit64: ProcessInit status=00000000",
+                        "loader ProcessInit/ThreadInit completed"]),
+    ("ldr-entry",      ["ldr-entry"]),
+    ("after-xlat",     ["after-xlat"]),
+    ("loader-init",    ["after-loader-init", "loader_init phase"]),
+    ("thread-start",   ["RtlUserThreadStart"]),
+    ("mono-init",      ["Mono path[0]", "mono-2.0-bdwgc.dll"]),
+    ("create-window",  ["NtUserCreateWindowEx", "create-window-handle",
+                        "CreateWindowEx"]),
+    ("gfxdevice",      ["GfxDevice: creating device", "GfxDevice client"]),
+    ("dxgi-factory",   ["CreateDXGIFactory"]),
+    ("d3d11-device",   ["D3D11CreateDevice hr=0", "D3D11CreateDevice succeeded"]),
+    ("swapchain",      ["CreateSwapChain"]),
+    ("present",        ["present_reached=YES", "Present hr=0", "present_count="]),
+    ("window-visible", ["window-visible", "CG-capture", "non_background_pixels"]),
+]
+
+def _marker_hit(text, marker):
+    """Substring hit, but reject counter lines like 'D3D11CreateDevice=0' /
+    'GfxDevice_count=...' (char right after the marker must not be = or _)."""
+    start = 0
+    while True:
+        i = text.find(marker, start)
+        if i < 0:
+            return False
+        j = i + len(marker)
+        if text[j:j + 1] not in ("=", "_"):
+            return True
+        start = j
+
+def ladder_rung(text):
+    """(idx, name) of the FURTHEST rung whose marker appears; (-1, None) if none."""
+    best = (-1, None)
+    for idx, (name, markers) in enumerate(LADDER_RUNGS):
+        if any(_marker_hit(text, m) for m in markers):
+            best = (idx, name)
+    return best
+
+def _read_head_tail(path, head=1024 * 1024, tail=4 * 1024 * 1024):
+    """First `head` + last `tail` bytes — late milestones (GfxDevice/D3D11)
+    live at the END of 30MB run.logs; head-only reads miss them."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            if size <= head + tail:
+                return f.read()
+            data = f.read(head)
+            f.seek(max(0, size - tail))
+            return data + "\n" + f.read()
+    except Exception:
+        return ""
+
+FAULT_PATTERNS = ["MEMORY_FAULT", "err:seh", "c0000005", "Unhandled exception",
+                  "runtime-fail", "callback-route-reject", "SIGBUS", "SIGSEGV"]
+LANE_A_OWNER_HINTS = ["arm64ec", "macrunner-hb-", "xtajit64", "ldr-init",
+                      "callback-route", "dispatcher", "signal_arm64",
+                      "init-frame", "entry thunk", "__os_arm64x"]
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python3 classify_run.py <run-directory>")
@@ -132,10 +199,7 @@ def main():
     for log_type in ["run", "stderr", "stdout"]:
         fpath = logs.get(log_type)
         if fpath and os.path.exists(fpath):
-            try:
-                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-                    combined_log_text += f.read(1024 * 1024)
-            except: pass
+            combined_log_text += _read_head_tail(fpath) + "\n"
     prefix_path = os.path.join(run_dir_abs, "prefix_check.txt")
     if os.path.exists(prefix_path):
         try:
@@ -229,6 +293,34 @@ def main():
             r["next_action"] = "Capture a flight recorder log with D3D and graphics gate logging enabled."
             r["evidence"].append("[classify_run] Demoted from BLOCKED because no D3D/graphics activity was detected in the logs.")
 
+    # --- Boot-ladder: furthest rung this run + regression vs persisted best ---
+    rung_idx, rung_name = ladder_rung(combined_log_text)
+    state_path = os.path.join(os.path.dirname(run_dir_abs), ".triage-ladder-best.json")
+    ladder_best = {}
+    try:
+        if os.path.exists(state_path):
+            with open(state_path, "r", encoding="utf-8") as f:
+                ladder_best = json.load(f)
+    except Exception:
+        ladder_best = {}
+    best_idx = int(ladder_best.get("rung_idx", -1))
+    best_name = ladder_best.get("rung_name")
+    best_run = ladder_best.get("run", "?")
+    ladder_regression = (rung_idx >= 0 and best_idx >= 0 and rung_idx < best_idx)
+    if rung_idx > best_idx:
+        try:
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump({"rung_idx": rung_idx, "rung_name": rung_name,
+                           "run": os.path.basename(run_dir_abs),
+                           "ladder": [n for n, _ in LADDER_RUNGS]}, f, indent=2)
+        except Exception:
+            pass
+        best_idx, best_name, best_run = rung_idx, rung_name, os.path.basename(run_dir_abs)
+        print(f"** NEW LADDER MILESTONE: '{rung_name}' (rung {rung_idx}). ARCHIVE the working "
+              f"deployed binaries NOW — git holds source, not the deployed combination (the 06-07 "
+              f"GfxDevice dist was lost to an overnight redeploy): "
+              f"scripts/milestone-dist-snapshot.sh {rung_name}")
+
     def get_priority_score(r):
         verdict = r["verdict"].upper()
         klass = r["class"]
@@ -258,6 +350,8 @@ def main():
                 return 70
             elif klass.startswith("ARM64EC_"):
                 return 65
+            elif klass == "SILENT_SPIN_NO_MARKERS":
+                return 62
             elif klass.startswith("WAIT_"):
                 return 60
             elif klass in ("WINDOW_HANDLE_CREATE_FAILED", "WINDOW_MESSAGES_MISSING"):
@@ -291,7 +385,16 @@ def main():
     if non_pass_results:
         non_pass_sorted = sorted(non_pass_results, key=lambda x: (get_priority_score(x[1]), x[1]["confidence"]), reverse=True)
         _, selected_result = non_pass_sorted[0]
-        
+
+        # A confident PASS (definite forward progress, e.g. PE32_I386_EXECUTING) should headline over a
+        # mere UNKNOWN / *_TRACE_INSUFFICIENT ("found nothing specific") — but NEVER over a real BLOCKED.
+        if selected_result["verdict"].upper() == "UNKNOWN":
+            confident_pass = [r for _, r in results.items()
+                              if r["verdict"].upper() == "PASS" and float(r.get("confidence", 0) or 0) >= 0.85]
+            if confident_pass:
+                confident_pass.sort(key=lambda r: float(r.get("confidence", 0) or 0), reverse=True)
+                selected_result = confident_pass[0]
+
         # Calculate primary won details
         if len(non_pass_sorted) > 1:
             other_classes = [r["class"] for _, r in non_pass_sorted[1:]]
@@ -319,6 +422,39 @@ def main():
             }
             why_primary_won = "No analyzer returned results."
 
+    # --- SILENT_SPIN_NO_MARKERS: watchdog kill + ZERO faults + no forward markers ---
+    watchdog_kill = "[mr-run] exit=143" in combined_log_text
+    any_fault = any(p in combined_log_text for p in FAULT_PATTERNS)
+    if (watchdog_kill and not any_fault
+            and float(selected_result.get("confidence", 0) or 0) <= 0.55
+            and (selected_result["class"].startswith("GENERIC_")
+                 or selected_result["class"].endswith("_TRACE_INSUFFICIENT")
+                 or selected_result["verdict"].upper() == "UNKNOWN")):
+        selected_result = dict(selected_result)
+        selected_result["verdict"] = "BLOCKED"
+        selected_result["class"] = "SILENT_SPIN_NO_MARKERS"
+        selected_result["confidence"] = 0.70
+        selected_result["evidence"] = (selected_result.get("evidence") or [])[:5] + [
+            "[classify_run] watchdog kill (exit=143) with ZERO fault markers and no boot-ladder "
+            "progress past rung '%s' — silent host-side spin/self-loop." % (rung_name,)]
+        selected_result["next_action"] = (
+            "Silent spin: no fault, no forward markers, watchdog kill. Rerun and SAMPLE the wine "
+            "process mid-run (~50% of timeout): `ps ax -o pid,command | grep -i 'Hollow Knight.exe'` "
+            "then `sample <pid> 5 -file $RUNDIR/sample.txt`; the pc-histogram top self-loop rva names "
+            "the spin (e.g. 2026-06-10: __wine_unix_call_arm64ec dispatcher-slot self-loop rva "
+            "0xe72e0-e72e8, root = unix loader.c GET_FUNC gated on is_arm64ec()).")
+        why_primary_won = "Overridden by classify_run: watchdog-kill with zero faults/zero markers = silent spin."
+
+    # --- Owner correction: GENERIC_*/silent-spin with dispatch/EC-boundary markers = Lane A ---
+    if (selected_result["class"].startswith("GENERIC_")
+            or selected_result["class"] == "SILENT_SPIN_NO_MARKERS"):
+        low_all = (combined_log_text + " " + " ".join(selected_result.get("evidence") or [])).lower()
+        if any(h in low_all for h in LANE_A_OWNER_HINTS) and selected_result.get("owner") != "Lane A":
+            selected_result = dict(selected_result)
+            selected_result["owner"] = "Lane A"
+            selected_result["evidence"] = list(selected_result.get("evidence") or []) + [
+                "[classify_run] Owner corrected to Lane A: ARM64EC/dispatch/ldr-init boundary markers present."]
+
     # Print summary report
     print("\n" + "="*40)
     print("FINAL TRIAGE SUMMARY")
@@ -327,6 +463,13 @@ def main():
     print(f"OWNER:   {selected_result['owner']}")
     print(f"CLASS:   {selected_result['class']}")
     print(f"CONFIDENCE: {selected_result['confidence']:.2f}")
+    if rung_idx >= 0:
+        print(f"LADDER_RUNG: {rung_idx} ({rung_name})  BEST: {best_idx} ({best_name}) run={best_run}")
+        if ladder_regression:
+            print(f"!! LADDER_REGRESSION: this run stopped at '{rung_name}' but best-ever reached "
+                  f"'{best_name}' ({best_run}). Suspect the change under test regressed an earlier "
+                  f"stage (or tracing was reduced) — restore/verify the last verified-forward "
+                  f"baseline BEFORE iterating further.")
     print(f"PRIMARY_CLASS={selected_result['class']}")
     print(f"SECONDARY_CLASSES={', '.join(secondary_classes)}")
     print(f"WHY_PRIMARY_WON={why_primary_won}")
@@ -348,6 +491,10 @@ def main():
                 f.write(f"OWNER: {selected_result['owner']}\n")
                 f.write(f"CLASS: {selected_result['class']}\n")
                 f.write(f"CONFIDENCE: {selected_result['confidence']:.2f}\n")
+                if rung_idx >= 0:
+                    f.write(f"LADDER_RUNG: {rung_idx} ({rung_name})\n")
+                    f.write(f"LADDER_BEST: {best_idx} ({best_name}) run={best_run}\n")
+                    f.write(f"LADDER_REGRESSION: {'YES — restore last verified-forward baseline' if ladder_regression else 'no'}\n")
                 f.write(f"WHY_PRIMARY_WON: {why_primary_won}\n")
                 f.write("EVIDENCE:\n")
                 for line in selected_result["evidence"][:10]:
@@ -390,6 +537,9 @@ def main():
                 "final_confidence": selected_result["confidence"],
                 "final_next_action": selected_result["next_action"],
                 "why_primary_won": why_primary_won,
+                "ladder_rung": {"idx": rung_idx, "name": rung_name},
+                "ladder_best": {"idx": best_idx, "name": best_name, "run": best_run},
+                "ladder_regression": ladder_regression,
                 "secondary_classes": secondary_classes,
                 "missing_markers": selected_result.get("missing_markers", {}),
                 "next_run_env": selected_result.get("next_run_env", {}),
@@ -430,7 +580,7 @@ def main():
             # Check if evidence has real log lines
             has_real_log = False
             for ev_item in evidence_check:
-                if "macrunner-" in ev_item or "wndproc_" in ev_item or "register_class" in ev_item or "create_window" in ev_item or "create-window-handle" in ev_item:
+                if "macrunner-" in ev_item or "wndproc_" in ev_item or "register_class" in ev_item or "create_window" in ev_item or "create-window-handle" in ev_item or "[classify_run]" in ev_item:
                     has_real_log = True
                     break
             if not has_real_log:

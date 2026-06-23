@@ -27,6 +27,14 @@ Status: applied | reverted | superseded-by-<entry>
 
 ## Entries
 
+## 2026-06-07 03:48 — PE32 deploy: copy wow64/xtajit DLLs into syswow64
+File(s): scripts/sync-prefix-from-dist.sh
+Type: DIAGNOSTIC
+What: Fixed prefix-sync deployment to explicitly mirror WOW64 CPU-provider modules into `syswow64` (`wow64cpu.dll`, `wow64.dll`, `wow64win.dll`, `xtajit.dll`), not only in `system32`.
+Why: PE32/i386 handoff probes showed all `system32` backend DLLs present but `syswow64` missing, preventing 32-bit WOW64 path selection and producing `PE32_HANDOFF_TRACE` starvation with no `BTCpu` markers.
+Verify: `bash scripts/sync-prefix-from-dist.sh --prefix "$PWD/bottles/generic-x86"` then checked with `ls`/`rg` confirms all four DLLs now exist in prefix `bottles/generic-x86/drive_c/windows/syswow64`; phase0 handoff traces still classify as `WAIT_TRACE_INSUFFICIENT` until wow64 handoff markers appear.
+Status: applied
+
 ## 2026-05-24 18:31 — Add private guest low-VA backing primitive
 File(s): engine/hyperbridge/include/hb_memory.h, engine/hyperbridge/src/hb_memory.c, engine/hyperbridge/tests/hb_test_runner.c
 Type: ROOT-FIX
@@ -432,3 +440,87 @@ What: Reclassified `marlett_center` as SKIP when the captured region is the nati
 Why: On-screen captures show stock-Wine toolbar icons are real black/gray square artifacts (`toolbar_render_cg black_ratio=0.5911 colorful_pixels=0`), not disabled-state gray. Folder-icon proof is blocked earlier by command/menu dispatch: Notepad++ reports `cmd_open=41002`, but `NPPM_MENUCOMMAND`, `WM_COMMAND`, sync sends, focus attach, and `Ctrl+O` all fail to create the Open/Save dialog.
 Verify: Rebuilt and installed `win32u.so` and `ntdll.so` into `dist-pure-arm64`, signed both ad-hoc, and `./scripts/verify-build-freshness.sh` passed. Post-P0 UI smoke kept editor/menu inventory alive but still failed the visual/menu blockers: `menu_alt_file_input FAIL`, `menu_mouse_file_input FAIL`, `toolbar_render_cg FAIL`, `client_black_bands FAIL`; clean exit passed.
 Status: p0-carrier-guard-applied-visual-command-dispatch-still-blocked
+## 2026-06-08 13:28 — Loader native-entry allowlist for winmm/ucrtbase
+File(s): engine/wine/dlls/ntdll/loader.c
+Type: ROOT-FIX
+What: Completed the ARM64 host / x64 main native-entry allowlist by adding `winmm.dll` to the existing `win32u.dll`/`kernelbase.dll`/`ucrtbase.dll` path so Wine internal ARM64X builtins that require native initialization run their native entry instead of being skipped or sent through the x64 runner.
+Why: Audio lane evidence named `winmm/ucrtbase` as the remaining native-entry blocker; `ucrtbase.dll` was already in the in-progress loader fix, while `winmm.dll` was missing from the narrow allowlist.
+Verify: `clang -fsyntax-only` passed for `aarch64-windows`, `x86_64-windows`, and `i386-windows` loader targets. Direct `make -C engine/wine .../loader.o` was blocked before code compilation by local toolchain state (`aarch64-w64-mingw32-clang` missing and `x86_64-w64-mingw32-gcc` rejecting clang-style flags).
+Status: syntax-validated-ready-for-coordinator-merge-loader-not-touched-after-fix
+
+## 2026-06-09 17:13 — ARM64X normalized callback native dispatch
+File(s): engine/wine/dlls/ntdll/unix/macrunner_hb.c
+Type: ROOT-FIX
+What: In `macrunner_hb_dispatch_x64_callback`, classify the post-normalize target against the metadata-bearing ARM64X module and call executable ARM64X native targets directly instead of routing them into the x64 PE fallback.
+Why: Hollow Knight normalized `ntdll.dll` callback `0x87fffa170c0` to ARM64 native entry `0x87fff9f2a60`, but the residual already-normalized target could still miss the old `target != original_target` guard and re-enter fallback.
+Verify: Built `make -C /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine -j$(sysctl -n hw.ncpu) dlls/ntdll/ntdll.so`, copied to `/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so`, and ad-hoc codesigned. One HK run with absolute `DIST` and `HK`, `WINEDEBUG=+virtual,+seh`, `MACRUNNER_HB_TRACE_CALLBACK_ROUTE=1` produced `wine-process-primary=1`, `dispatch-fallback=0`, `normalize-trace=80`, `NtUserCreateWindowEx=0`; remaining blocker is post-direct signal loop on target `0x87fff9f2a60`.
+Status: fallback-fixed-new-post-direct-signal-blocker
+
+- 2026-06-09 23:45 Lane A HK: fixed ARM64EC PE `user_shared_data` initializer in `dlls/ntdll/thread.c`; native `NtGetTickCount` was reading unmapped low `0x7ffe0320` while Wine mapped USD at high `0x7ffe0000000`.
+
+- 2026-06-09 23:56 Lane A HK: fixed ARM64EC `set_security_cookie` early-loader seed to avoid `GetCurrentProcessId()` x18/TEB deref while loader is still bootstrapping.
+2026-06-10 00:09 · Lane A HK: low-PE x64 Ldr entry now routes by AMD64 executable-section match instead of fragile PE env reread in ntdll/signal_arm64.c.
+2026-06-10 00:18 · Lane A HK: ARM64 loader now treats an already-loaded AMD64 main image as HyperBridge-required by machine evidence, avoiding env-only false gate.
+2026-06-10 00:24 · Lane A HK: LdrInitializeThunk now falls back to AMD64 main image AddressOfEntryPoint when X0/PC are non-executable, preserving strict executable-section validation.
+2026-06-10 00:30 · Lane A HK: added bounded Ldr no-thread-entry marker for image machine/AEP diagnostics before NtContinue.
+ · Lane A HK · added bounded loader_init phase-probe to classify primary pre-Ldr stall · next: one ntdll build/deploy + one HK run
+2026-06-10 00:52 · Lane A HK · added bounded loader_init phase-probe to classify primary pre-Ldr stall · next: one ntdll build/deploy + one HK run
+2026-06-10 00:54 · Lane A HK · loader phase-probe compile-fix: guard CONTEXT register logging by __arm64ec__/native arm64 · rebuild ntdll
+2026-06-10 01:12 · Lane A HK · root-cause fix: segv_handler no longer logs macrunner-hb-signal-entry through Wine ERR while x18=0; this avoids recursive __wine_dbg_output x18 fault before loader_init · rebuild/run next
+2026-06-10 01:31 · Lane A HK · diagnostic: primary normalized Ldr maps to signal_arm64ec.c, so added bounded ARM64EC LdrInitializeThunk markers around context_arm_to_x64/loader_init · rebuild/run next
+2026-06-10 01:43 · Lane A HK · root-cause fix: init_syscall_frame no longer raw-returns x64 guest to normalized ARM64EC Ldr; it records pending_x64 entry and returns to x64 thunk so earlyinit HB fallback owns ARM64EC setup · rebuild/run next
+2026-06-10 01:55 · Lane A HK · fix update: earlyinit pending_x64 fallback no longer requires !raw_is_guest/!sigill; first depth=0 x64 Ldr thunk fault uses recorded entry before x16 dispatcher can steal routing · rebuild/run next
+2026-06-10 02:07 · Lane A HK · fix update: pending fallback now stores original ARM64 CONTEXT from init_syscall_frame, synthesizes AMD64_CONTEXT from it, clears pending context after use, and forces route PC to pending entry before x16 can override · rebuild/run next
+
+## 2026-06-10 02:19 Lane A pending raw-x64-entry
+- signal_arm64.c forced pending x64 entry now keeps raw x64 thunk PC instead of post-normalizing to ARM64 native, preserving HB-owned ARM64EC entry sequencing.
+
+## 2026-06-10 02:36 Lane A preserve raw x64 callback dispatch
+- Evidence: `reports/phase4-hollow-knight/laneA-pending-raw-x64-entry-20260610-022020/run.log` showed `MacRunner Phase F using pending ... hb_pc=0x87fff9f0500`, then `macrunner-hb-callback-dispatch target=0x87fff9c7418 original=0x87fff9f0500`; lower dispatch re-normalized the forced raw x64 entry to ARM64 native.
+- Fix: add one-shot preserve-raw flag from `signal_arm64.c` pending route into `macrunner_hb_dispatch_x64_callback`, plus ARM64X metadata-based x64 guest classification for raw ARM64X x64 code.
+
+## 2026-06-10 03:01 Lane A ARM64EC entry context/tag alignment
+- Evidence: preserve-raw run kept `target=0x87fff9f0500` and `dispatch-pe-fallback=0`, but never reached `macrunner-hb-ldr-after-loader-init`. Static bytes at the x64 entry thunk are `... e9 0a 6f fd ff`, a tail jump to ARM64EC native `LdrInitializeThunk+1`; PE source expects the original ARM64 context and calls `context_arm_to_x64()`.
+- Fix: pending route now preserves the saved ARM64 init context in x0/RCX for the ARM64EC entry thunk, and direct-native dispatch clears ARM64EC bit0 before branching to native ARM64 code.
+
+## 2026-06-10 03:15 Lane A callback-run probe
+- Evidence: armctx/tag-align run preserved the saved ARM64 context and raw x64 target, with `dispatch-pe-fallback=0` and no pc0, but stopped after stack allocation/translation-cache-open without `LdrInitializeThunk` marker.
+- Probe: add bounded `macrunner-hb-callback-run` stages for `x64-signal-callback` under `MACRUNNER_HB_TRACE_CALLBACK_ROUTE` to identify whether hang occurs before ABI, before first block run, inside runtime, or after native transition.
+
+## 2026-06-10 03:30 Lane A native ARM64EC entry call
+- Evidence: callback-run probe showed `stage=after-run block=1 ... next_pc=0x87fff9c7418` after 5 x64 thunk instructions, then timeout before another block or loader marker. The raw x64 entry thunk only tail-jumps to native ARM64EC `LdrInitializeThunk`.
+- Fix: pending raw callback dispatch now detects this ARM64X native entry and calls it via `macrunner_hb_call_arm64_pe_import12_on_stack` with the saved ARM64 init context and `arm_ctx->Sp`, instead of JIT/interpreting the x64 thunk and falling into native bytes.
+
+## 2026-06-10 03:44 Lane A native entry stack pointer
+- Evidence: native-entry run reached `macrunner-hb-callback-native-entry` with `stack_top=arm_ctx->Sp`, then timed out before any `LdrInitializeThunk`/loader marker. `macrunner_hb_arm64_pe_call12` stores outgoing stack args at SP, so top-of-stack is the wrong scratch pointer.
+- Fix: pending native entry call now uses the allocated signal/caller stack pointer (`arm64_stack_args` / saved x1) as explicit stack, while keeping `arm_ctx->Sp` only as diagnostic fallback.
+
+## 2026-06-10 03:58 Lane A PE Ldr entry probe
+- Evidence: native-stack run reached `macrunner-hb-callback-native-entry` with signal stack, but still timed out before `macrunner-hb-ldr-after-loader-init`.
+- Probe: add PE-side `macrunner-hb-ldr-entry` and `macrunner-hb-ldr-after-xlat` markers in ARM64EC `LdrInitializeThunk` to distinguish call-entry failure from pre-loader context conversion/loader hang.
+## 2026-06-12 22:55 — Preserve original AMD64 exec ranges for builtin x64 DLLs
+
+Lane D added an original-PE executable section side-table for HyperBridge:
+- `engine/wine/dlls/ntdll/unix/loader.c` registers original AMD64 executable sections from `nt_descr` before Wine rewrites builtin module headers into synthetic `.text/.data`.
+- `engine/wine/dlls/ntdll/unix/macrunner_hb.c` stores those ranges and makes `macrunner_hb_pc_in_executable_section()` prefer them for registered modules.
+- `engine/wine/dlls/ntdll/unix/unix_private.h` declares the registration hook.
+
+Reason: HK x64 DXMT was spinning before DXGI markers because DXGI builtin runtime headers reported `.text sec_size=0xbaef6`, making disk `.rdata` strings at RVAs like `0x15cc0/0x16040` look executable to HyperBridge. Disk PE `.text` is only `0x13bd6`; original exec ranges should prevent data-as-code in builtin x64 DLLs.
+
+Validation: `ntdll.so` builds and is ad-hoc signed in `dist-arm64ec-spike`; final HK run is pending because `x18waittrace2` currently owns HK/mr-run.
+
+## 2026-06-13 07:10 — Lane D D3D9 fixed-function fog headless path
+File(s): engine/graphics/d3d9_to_d3d11.py, engine/graphics/runtime_backend/mock_executor.py, engine/graphics/runtime_backend/metal_executor.py, engine/graphics/traces/runtime_samples/d3d9_fixed_function_fog_runtime.jsonl, engine/graphics/tests/test_d3d9_translation.py, engine/graphics/tests/test_d3d9_metal_request.py, engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh, engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh
+Type: GRAPHICS-COVERAGE
+What: Added D3D9 fixed-function fog metadata and headless validation. `D3DRS_FOG*` now records `d3d9_fog_state`; the mock backend applies linear/exp/exp2 fog RGB before output-merger blending; Metal request payloads expose `d3d9.fog_state`.
+Why: D3D9 headless coverage had alpha/depth/cull/scissor/sampler/combiner paths but no fog coverage, while fog is part of the RenderWare-era fixed-function slice.
+Verify: `python3 -m pytest engine/graphics/tests/test_d3d9_translation.py engine/graphics/tests/test_d3d9_metal_request.py -q` -> `61 passed`; `bash engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh` -> `d3d9_trace_count=32`, PASS; `D3D9_METAL_REQUEST_ONLY=1 bash engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh` -> `d3d9_metal_request_count=32`, PASS.
+Status: headless-validated
+
+## 2026-06-13 08:10 — Lane D Unity#2 DXBC corpus and D3D8 RenderWare fog matrix
+File(s): engine/graphics/scripts/run_unity_dxbc_airconv_corpus_smoke.sh, engine/graphics/traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl, engine/graphics/tests/test_d3d9_translation.py, engine/graphics/tests/test_d3d9_metal_request.py, engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh, engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh
+Type: GRAPHICS-COVERAGE
+What: Added a generic Unity DXBC corpus smoke and validated AI War 2 as the second Unity target after unpacking its GOG/Inno installer into `artifacts/ai-war2-unity-corpus/extracted/AIWar2_Data`. Added a D3D8 RenderWare fog trace so the fixed-function fog path is pinned through the D3D8 facade and Metal request contract.
+Why: Lane D needed non-HK Unity shader corpus coverage plus the next RenderWare/GTA VC matrix increment in owned headless scope.
+Verify: `run_unity_dxbc_airconv_corpus_smoke.sh aarch64` -> AI War 2 `blobs=2 translate=2/2 render=2/2`; `python3 -m pytest engine/graphics/tests/test_d3d9_translation.py engine/graphics/tests/test_d3d9_metal_request.py -q` -> `63 passed`; `bash engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh` -> `d3d9_trace_count=33`, PASS; `D3D9_METAL_REQUEST_ONLY=1 bash engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh` -> `d3d9_metal_request_count=33`, PASS.
+Status: headless-validated

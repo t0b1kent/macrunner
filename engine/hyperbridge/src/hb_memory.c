@@ -7,6 +7,37 @@
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include <setjmp.h>
+#include <signal.h>
+
+static __thread sigjmp_buf* g_safe_copy_jmp = NULL;
+static struct sigaction g_prev_segv;
+static struct sigaction g_prev_bus;
+static int g_sig_handlers_installed = 0;
+
+static void safe_copy_signal_handler(int sig, siginfo_t* info, void* context) {
+    if (g_safe_copy_jmp) {
+        siglongjmp(*g_safe_copy_jmp, 1);
+    }
+    if (sig == SIGSEGV && g_prev_segv.sa_sigaction) {
+        g_prev_segv.sa_sigaction(sig, info, context);
+    } else if (sig == SIGBUS && g_prev_bus.sa_sigaction) {
+        g_prev_bus.sa_sigaction(sig, info, context);
+    } else {
+        signal(sig, SIG_DFL);
+        raise(sig);
+    }
+}
+
+static void install_sig_handlers(void) {
+    if (__atomic_test_and_set(&g_sig_handlers_installed, __ATOMIC_RELAXED)) return;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = safe_copy_signal_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, &g_prev_segv);
+    sigaction(SIGBUS, &sa, &g_prev_bus);
+}
 #endif
 
 #ifndef MAP_NORESERVE
@@ -337,17 +368,7 @@ static bool trace_bad_native_write_enabled(void) {
     return value;
 }
 
-static bool direct_live_memory_enabled(void) {
-    static int cache = -1;
-    int value = __atomic_load_n(&cache, __ATOMIC_RELAXED);
 
-    if (value < 0) {
-        const char* val = getenv("MACRUNNER_HB_ENABLE_DIRECT_LIVE_MEM");
-        value = val && val[0] && val[0] != '0';
-        __atomic_store_n(&cache, value, __ATOMIC_RELAXED);
-    }
-    return value;
-}
 
 #ifdef __APPLE__
 static bool trace_live_vm_access_fail_enabled(void) {
@@ -798,11 +819,25 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
 }
 
 hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t size) {
-    hb_region_t* region;
+    hb_region_t* region = NULL;
+    bool is_hit = false;
     int dv_hit = macrunner_hb_datadiverge_hit((uint64_t)addr, size);
     if (!mem || !out) return HB_ERR_INVALID_ARG;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return HB_ERR_MEMORY_FAULT;
-    region = find_region_normalized(mem, addr);
+    if (mem->hot_gen == mem->generation) {
+        for (int i = 0; i < 4; i++) {
+            hb_region_t* c = mem->hot[i];
+            if (c && addr >= c->base && addr < c->base + c->size) {
+                region = c;
+                is_hit = true;
+                if (i != 0) { mem->hot[i] = mem->hot[0]; mem->hot[0] = c; }
+                break;
+            }
+        }
+    }
+    if (!region) {
+        region = find_region_normalized(mem, addr);
+    }
     if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-mem: gva=0x%llx size=%zu region=%p base=0x%llx host_base=%p rperm=%d\n", (unsigned long long)addr, size, (void*)region, region?(unsigned long long)region->base:0, region?region->host_base:NULL, region?(int)region->perm:-1);
     if (!region || addr + size > region->base + region->size || !(region->perm & HB_PERM_READ)) {
         if (hb_memory_can_read_span(mem, addr, size)) {
@@ -842,10 +877,22 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
              * read path so a PROT_NONE host page returns HB_ERR_MEMORY_FAULT
              * instead of crashing inside memcpy (PC in libc = outside JIT slab =
              * signal guard misses it = recursive c0000005 fault loop). */
-            if (direct_live_memory_enabled() && guest32_direct_copy_safe(region, addr, size))
+            if (is_hit && guest32_direct_copy_safe(region, addr, size))
             {
-                memcpy(out, host, size);
-                return HB_OK;
+                sigjmp_buf jmp;
+                install_sig_handlers();
+                g_safe_copy_jmp = &jmp;
+                if (sigsetjmp(jmp, 1) == 0)
+                {
+                    memcpy(out, host, size);
+                    g_safe_copy_jmp = NULL;
+                    return HB_OK;
+                }
+                else
+                {
+                    g_safe_copy_jmp = NULL;
+                    return mach_copy_from_host(out, host, size);
+                }
             }
             return mach_copy_from_host(out, host, size);
         }
@@ -862,14 +909,28 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
 }
 
 hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, size_t size) {
-    hb_region_t* region;
+    hb_region_t* region = NULL;
+    bool is_hit = false;
     int grow_retried = 0;
     if (!mem || !in) return HB_ERR_INVALID_ARG;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return HB_ERR_MEMORY_FAULT;
     trace_bad_native_write("hb_memory_write", addr, in, size);
     trace_guest_write("hb_memory_write", addr, in, size);
 grow_retry:
-    region = find_region_normalized(mem, addr);
+    if (mem->hot_gen == mem->generation) {
+        for (int i = 0; i < 4; i++) {
+            hb_region_t* c = mem->hot[i];
+            if (c && addr >= c->base && addr < c->base + c->size) {
+                region = c;
+                is_hit = true;
+                if (i != 0) { mem->hot[i] = mem->hot[0]; mem->hot[0] = c; }
+                break;
+            }
+        }
+    }
+    if (!region) {
+        region = find_region_normalized(mem, addr);
+    }
     if (macrunner_hb_datadiverge_hit((uint64_t)addr, size)) {
         fprintf(stderr, "macrunner-hb-dv-write: gva=0x%llx size=%zu region=%p base=0x%llx rsize=0x%llx host_base=%p rperm=%d val=0x%llx\n",
                 (unsigned long long)addr, size, (void*)region,
@@ -966,9 +1027,85 @@ grow_retry:
         if (region->is_guest32)
         {
             void* host = region_host_ptr(region, addr);
-            if (direct_live_memory_enabled())
+            if (region->perm & HB_PERM_EXEC)
             {
-                memcpy(host, in, size);
+                // executable/translated -> NOT bare memcpy, call special_write (SMC invalidation)
+                if (mem->special_write && mem->special_write(mem->special_user, addr, in, size) == HB_OK) return HB_OK;
+                hb_result_t result = mach_copy_to_host(host, in, size);
+                if (result != HB_OK) {
+                    hb_result_t sync_r = HB_ERR_MEMORY_FAULT;
+                    if (region->perm & HB_PERM_WRITE) {
+                        sync_r = guest32_sync_host_protection(region, addr, size);
+                        if (sync_r == HB_OK) result = mach_copy_to_host(host, in, size);
+                    }
+#ifdef __APPLE__
+                    /* MacRunner sentinel trace: log mach_copy_to_host failure on sentinel page. */
+                    if (addr >= 0x7BD8E000u && addr < 0x7BD8F000u) {
+                        mach_vm_address_t dbg_addr = (mach_vm_address_t)(uintptr_t)host;
+                        mach_vm_size_t dbg_sz = 0;
+                        vm_region_basic_info_data_64_t dbg_ri;
+                        mach_msg_type_number_t dbg_cnt = VM_REGION_BASIC_INFO_COUNT_64;
+                        mach_port_t dbg_obj = MACH_PORT_NULL;
+                        memset(&dbg_ri, 0, sizeof(dbg_ri));
+                        mach_vm_region(mach_task_self(), &dbg_addr, &dbg_sz, VM_REGION_BASIC_INFO_64,
+                                       (vm_region_info_t)&dbg_ri, &dbg_cnt, &dbg_obj);
+                        if (dbg_obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), dbg_obj);
+                        fprintf(stderr,
+                                "macrunner-hb-sentinel-write-fail: addr=%08llx perm=%d "
+                                "mach_prot=0x%x max_prot=0x%x sync_r=%d retry_r=%d\n",
+                                (unsigned long long)addr, (int)region->perm,
+                                (int)dbg_ri.protection, (int)dbg_ri.max_protection,
+                                (int)sync_r, (int)result);
+                        fflush(stderr);
+                    }
+#endif
+                }
+                if (result != HB_OK) return result;
+            }
+            else if (is_hit && guest32_direct_copy_safe(region, addr, size))
+            {
+                sigjmp_buf jmp;
+                install_sig_handlers();
+                g_safe_copy_jmp = &jmp;
+                if (sigsetjmp(jmp, 1) == 0)
+                {
+                    memcpy(host, in, size);
+                    g_safe_copy_jmp = NULL;
+                }
+                else
+                {
+                    g_safe_copy_jmp = NULL;
+                    hb_result_t result = mach_copy_to_host(host, in, size);
+                    if (result != HB_OK) {
+                        hb_result_t sync_r = HB_ERR_MEMORY_FAULT;
+                        if (region->perm & HB_PERM_WRITE) {
+                            sync_r = guest32_sync_host_protection(region, addr, size);
+                            if (sync_r == HB_OK) result = mach_copy_to_host(host, in, size);
+                        }
+#ifdef __APPLE__
+                        /* MacRunner sentinel trace: log mach_copy_to_host failure on sentinel page. */
+                        if (addr >= 0x7BD8E000u && addr < 0x7BD8F000u) {
+                            mach_vm_address_t dbg_addr = (mach_vm_address_t)(uintptr_t)host;
+                            mach_vm_size_t dbg_sz = 0;
+                            vm_region_basic_info_data_64_t dbg_ri;
+                            mach_msg_type_number_t dbg_cnt = VM_REGION_BASIC_INFO_COUNT_64;
+                            mach_port_t dbg_obj = MACH_PORT_NULL;
+                            memset(&dbg_ri, 0, sizeof(dbg_ri));
+                            mach_vm_region(mach_task_self(), &dbg_addr, &dbg_sz, VM_REGION_BASIC_INFO_64,
+                                           (vm_region_info_t)&dbg_ri, &dbg_cnt, &dbg_obj);
+                            if (dbg_obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), dbg_obj);
+                            fprintf(stderr,
+                                    "macrunner-hb-sentinel-write-fail: addr=%08llx perm=%d "
+                                    "mach_prot=0x%x max_prot=0x%x sync_r=%d retry_r=%d\n",
+                                    (unsigned long long)addr, (int)region->perm,
+                                    (int)dbg_ri.protection, (int)dbg_ri.max_protection,
+                                    (int)sync_r, (int)result);
+                            fflush(stderr);
+                        }
+#endif
+                    }
+                    if (result != HB_OK) return result;
+                }
             }
             else
             {

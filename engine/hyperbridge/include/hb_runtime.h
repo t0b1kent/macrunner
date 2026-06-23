@@ -56,6 +56,17 @@ typedef struct {
 typedef struct {
     hb_block_cache_entry_t entries[HB_BLOCK_CACHE_SIZE];
     size_t count;
+    /* MacRunner 2026-06-22 (lever #3, ABZU first-frame): hb_jit_runtime_reset runs once per
+     * nested run_x64 frame (13777x in ABZU's _initterm grind). The old block_cache_reset
+     * memset the whole entries[] array (~29MB) and looped all 524288 slots every frame,
+     * faulting in + writing every page and defeating the lazy zero-fill (~11.3% self-time).
+     * Track the slots actually occupied this generation so reset clears ONLY those (== count).
+     * used_overflow falls back to the full memset if the tracking array can't grow (OOM-safe);
+     * correctness invariant preserved: after reset every slot has valid==false. */
+    uint32_t* used_slots;
+    size_t used_count;
+    size_t used_cap;
+    bool used_overflow;
 } hb_block_cache_t;
 
 /* JIT executor */

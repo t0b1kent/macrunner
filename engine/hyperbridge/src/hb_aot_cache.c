@@ -49,7 +49,21 @@ struct hb_cache {
     size_t count;
     size_t cap;
     bool dirty;
+    /* MacRunner 2026-06-22 (lever #1, ABZU first-frame): open-addressing hash index over
+     * `entries` so hb_cache_get/put are O(1) avg instead of an O(N) backward linear scan
+     * (was 50.9% of ABZU's _initterm grind: 13777 nested run_x64 callbacks re-look-up the
+     * warm cache). Maps hash(key) -> entry position; the full-key memcmp on the matched
+     * position stays the authority, so a hash collision only costs an extra compare and can
+     * NEVER return a wrong entry. Positions are stable across appends/in-place replaces;
+     * invalidate/invalidate_module/clear compact or empty `entries`, so they drop index_valid
+     * to force a rebuild. If allocation fails the code falls back to the original linear scan
+     * (correct, just slow). Single-thread-per-cache (same posture as the unlocked stats). */
+    size_t* hash_index;   /* slot -> entry position, or HB_CACHE_INDEX_EMPTY */
+    size_t  hash_cap;     /* power-of-two slot count (0 = none) */
+    bool    index_valid;  /* false -> rebuild on next lookup */
 };
+
+#define HB_CACHE_INDEX_EMPTY ((size_t)-1)
 
 static void free_entries(hb_disk_entry_t* entries, size_t count) {
     if (!entries) return;
@@ -259,6 +273,7 @@ hb_cache_t* hb_cache_create(const char* path) {
 void hb_cache_destroy(hb_cache_t* cache) {
     if (!cache) return;
     free_entries(cache->entries, cache->count);
+    free(cache->hash_index);
     free(cache);
 }
 void hb_cache_close(hb_cache_t* cache) {
@@ -267,29 +282,104 @@ void hb_cache_close(hb_cache_t* cache) {
     hb_cache_destroy(cache);
 }
 
+static uint64_t hb_cache_key_hash(const hb_cache_key_t* k) {
+    const uint8_t* p = (const uint8_t*)k;
+    uint64_t h = 1469598103934665603ULL;  /* FNV-1a 64 over the 48-byte key (no padding) */
+    for (size_t i = 0; i < sizeof(*k); i++) { h ^= p[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+/* Insert entry position `pos` into the hash index, overwriting any existing slot for the same
+ * key. Rebuild iterates positions forward, so the highest (most-recent) position wins for a
+ * duplicate key -- matching the old backward linear scan when the append-log holds duplicates. */
+static void hb_cache_index_insert_pos(hb_cache_t* c, size_t pos) {
+    const hb_cache_key_t* key;
+    size_t mask, start, i;
+    if (!c->hash_index || c->hash_cap == 0 || pos >= c->count) return;
+    key = &c->entries[pos].key;
+    mask = c->hash_cap - 1;
+    start = (size_t)(hb_cache_key_hash(key) & mask);
+    for (i = 0; i < c->hash_cap; i++) {
+        size_t slot = (start + i) & mask;
+        size_t cur = c->hash_index[slot];
+        if (cur == HB_CACHE_INDEX_EMPTY) { c->hash_index[slot] = pos; return; }
+        if (cur < c->count && memcmp(&c->entries[cur].key, key, sizeof(*key)) == 0) {
+            c->hash_index[slot] = pos;  /* same key: keep most-recent position */
+            return;
+        }
+    }
+    /* table full (cannot happen at load factor <= 0.5) -> leave unindexed; lookup still falls
+     * back to the linear scan, so correctness is preserved. */
+}
+
+static void hb_cache_index_rebuild(hb_cache_t* c) {
+    size_t need = c->count * 2 + 1, cap = 32, i, pos;
+    size_t* idx;
+    while (cap < need) cap <<= 1;
+    idx = realloc(c->hash_index, cap * sizeof(*idx));
+    if (!idx) {  /* OOM: drop the index; lookups degrade to the linear scan (correct, slow) */
+        free(c->hash_index);
+        c->hash_index = NULL;
+        c->hash_cap = 0;
+        c->index_valid = false;
+        return;
+    }
+    c->hash_index = idx;
+    c->hash_cap = cap;
+    for (i = 0; i < cap; i++) c->hash_index[i] = HB_CACHE_INDEX_EMPTY;
+    for (pos = 0; pos < c->count; pos++) hb_cache_index_insert_pos(c, pos);
+    c->index_valid = true;
+}
+
+static void hb_cache_index_ensure(hb_cache_t* c) {
+    if (c->index_valid && c->hash_index && c->hash_cap >= c->count * 2) return;
+    hb_cache_index_rebuild(c);
+}
+
+/* Position of `key` in `entries`, or HB_CACHE_INDEX_EMPTY. O(1) via the hash index when present;
+ * else the original backward linear scan. Full-key memcmp is always the authority. */
+static size_t hb_cache_find_pos(hb_cache_t* c, const hb_cache_key_t* key) {
+    hb_cache_index_ensure(c);
+    if (c->hash_index && c->index_valid && c->hash_cap) {
+        size_t mask = c->hash_cap - 1;
+        size_t start = (size_t)(hb_cache_key_hash(key) & mask);
+        for (size_t i = 0; i < c->hash_cap; i++) {
+            size_t slot = (start + i) & mask;
+            size_t pos = c->hash_index[slot];
+            if (pos == HB_CACHE_INDEX_EMPTY) return HB_CACHE_INDEX_EMPTY;
+            if (pos < c->count && memcmp(&c->entries[pos].key, key, sizeof(*key)) == 0) return pos;
+        }
+        return HB_CACHE_INDEX_EMPTY;
+    }
+    for (size_t i = c->count; i > 0; i--) {
+        size_t pos = i - 1;
+        if (memcmp(&c->entries[pos].key, key, sizeof(*key)) == 0) return pos;
+    }
+    return HB_CACHE_INDEX_EMPTY;
+}
+
 hb_result_t hb_cache_get(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t** out) {
+    size_t pos;
     if (!cache || !key || !out) return HB_ERR_INVALID_ARG;
     *out = NULL;
     cache->stats.lookups++;
-    for (size_t i = cache->count; i > 0; i--) {
-        size_t pos = i - 1;
-        if (memcmp(&cache->entries[pos].key, key, sizeof(*key)) == 0) {
-            hb_cache_entry_t* e = calloc(1, sizeof(*e));
-            if (!e) return HB_ERR_OUT_OF_MEMORY;
-            e->key = cache->entries[pos].key;
-            e->valid = cache->entries[pos].valid != 0;
-            e->unsupported = cache->entries[pos].unsupported != 0;
-            e->steps = cache->entries[pos].steps;
-            e->native_size = cache->entries[pos].native_size;
-            if (e->native_size) {
-                e->native_code = malloc(e->native_size);
-                if (!e->native_code) { free(e); return HB_ERR_OUT_OF_MEMORY; }
-                memcpy(e->native_code, cache->entries[pos].native_code, e->native_size);
-            }
-            *out = e;
-            cache->stats.hits++;
-            return HB_OK;
+    pos = hb_cache_find_pos(cache, key);
+    if (pos != HB_CACHE_INDEX_EMPTY) {
+        hb_cache_entry_t* e = calloc(1, sizeof(*e));
+        if (!e) return HB_ERR_OUT_OF_MEMORY;
+        e->key = cache->entries[pos].key;
+        e->valid = cache->entries[pos].valid != 0;
+        e->unsupported = cache->entries[pos].unsupported != 0;
+        e->steps = cache->entries[pos].steps;
+        e->native_size = cache->entries[pos].native_size;
+        if (e->native_size) {
+            e->native_code = malloc(e->native_size);
+            if (!e->native_code) { free(e); return HB_ERR_OUT_OF_MEMORY; }
+            memcpy(e->native_code, cache->entries[pos].native_code, e->native_size);
         }
+        *out = e;
+        cache->stats.hits++;
+        return HB_OK;
     }
     cache->stats.misses++;
     return HB_ERR_NOT_FOUND;
@@ -303,14 +393,8 @@ hb_result_t hb_cache_put(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_
     size_t pos;
     bool replacing;
     if (!cache || !key || !entry) return HB_ERR_INVALID_ARG;
-    pos = cache->count;
-    for (size_t i = cache->count; i > 0; i--) {
-        size_t candidate = i - 1;
-        if (memcmp(&cache->entries[candidate].key, key, sizeof(*key)) == 0) {
-            pos = candidate;
-            break;
-        }
-    }
+    pos = hb_cache_find_pos(cache, key);
+    if (pos == HB_CACHE_INDEX_EMPTY) pos = cache->count;
     replacing = pos != cache->count;
     if (pos == cache->count) {
         if (cache->count >= cache->cap) {
@@ -338,7 +422,13 @@ hb_result_t hb_cache_put(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_
         cache->stats.bytes_stored += entry->native_size;
     }
     cache->stats.entries_stored++;
-    (void)replacing;
+    if (!replacing) {
+        /* new entry appended at `pos`: keep the hash index in sync (idempotent if ensure
+         * already rebuilt to include it). */
+        hb_cache_index_ensure(cache);
+        if (cache->hash_index && cache->index_valid)
+            hb_cache_index_insert_pos(cache, pos);
+    }
     return append_entry(cache, &cache->entries[pos]);
 }
 
@@ -369,6 +459,7 @@ hb_result_t hb_cache_invalidate(hb_cache_t* cache, uint32_t version) {
         }
     }
     cache->count = keep;
+    cache->index_valid = false;  /* entries compacted -> positions changed; rebuild index lazily */
     r = write_entries_atomic(cache, cache->entries, cache->count);
     return r;
 }
@@ -388,6 +479,7 @@ hb_result_t hb_cache_invalidate_module(hb_cache_t* cache, uint64_t module_id) {
         }
     }
     cache->count = keep;
+    cache->index_valid = false;  /* entries compacted -> positions changed; rebuild index lazily */
     r = write_entries_atomic(cache, cache->entries, cache->count);
     return r;
 }
@@ -406,6 +498,7 @@ hb_result_t hb_cache_clear(hb_cache_t* cache) {
     cache->entries = NULL;
     cache->count = 0;
     cache->cap = 0;
+    cache->index_valid = false;  /* all entries gone -> drop the index (rebuilt empty on next use) */
     cache->stats.invalidations++;
     return write_entries_atomic(cache, NULL, 0);
 }

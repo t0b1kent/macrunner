@@ -113,6 +113,35 @@ struct macrunner_hb_special
 #define MACRUNNER_HB_LIST_MODULES_ALL     0x03
 #define MACRUNNER_HB_LIST_MODULES_DEFAULT 0x00
 
+/*
+ * MacRunner 2026-06-22 (task#26, HB import-dispatch throughput / ABZU first-frame lever):
+ * cache each import's semantic class ONCE at thunk-registration time so the two profiled hot
+ * sinks in macrunner_hb_call_import_thunk (macrunner_hb_try_msvcrt_exit_semantic and
+ * macrunner_hb_try_kernel32_handle_semantic) can short-circuit their per-call strieq storm.
+ *
+ * SAFETY MODEL (drift-proof):
+ *  - HB_SC_UNCLASSIFIED == 0 is the memset/stack-thunk default and means "NOT classified ->
+ *    run the full semantic logic". Any thunk built ad-hoc (export_thunk, stack copies, etc.)
+ *    and dispatched without going through a register_*_import_thunk path therefore stays
+ *    100% correct (just unoptimized). Only registered thunks get a definite class.
+ *  - macrunner_hb_classify_semantic_import() returns NONE / MSVCRT_EXIT / KERNEL32_HANDLE
+ *    (never UNCLASSIFIED) and MUST be a complete superset of the (dll,name) pairs for which
+ *    the two hot functions can return TRUE. Over-classification is harmless (the function still
+ *    runs its own checks and returns FALSE); UNDER-classification silently drops handling.
+ *    >>> If you add/remove a handled import in either hot function, update the name tables in
+ *    >>> macrunner_hb_classify_semantic_import to match. <<<
+ */
+enum macrunner_hb_semantic_class
+{
+    HB_SC_UNCLASSIFIED = 0,   /* default: run full semantic logic (safe) */
+    HB_SC_NONE,               /* classified: handled by neither hot fn -> short-circuit both */
+    HB_SC_MSVCRT_EXIT,        /* classified: candidate for macrunner_hb_try_msvcrt_exit_semantic */
+    HB_SC_KERNEL32_HANDLE     /* classified: candidate for macrunner_hb_try_kernel32_handle_semantic */
+};
+
+static enum macrunner_hb_semantic_class macrunner_hb_classify_semantic_import( const char *dll_name,
+                                                                              const char *import_name );
+
 struct macrunner_hb_import_thunk
 {
     uint64_t guest_target;
@@ -121,6 +150,7 @@ struct macrunner_hb_import_thunk
     void *pe_callback12;
     uint64_t module_id;
     USHORT target_machine;
+    enum macrunner_hb_semantic_class semantic_class;
     char dll_name[96];
     char import_name[96];
 };
@@ -341,6 +371,84 @@ static uint64_t macrunner_hb_now_us(void)
 }
 
 static int macrunner_hb_env_flag( const char *name );
+
+/* MacRunner 2026-06-21: wait registry to pin the scene-load BLOCK (a never-returning wait that the
+ * syncmeter, which logs only AFTER return, can't see). Each thread records its current
+ * WaitForSingleObject (handle+caller+start) before the wait and clears it after. On any OTHER
+ * thread's frequent 10ms-paced wait-return, scan for slots pending > 3s (the block) and log the
+ * target tid/handle/caller. Env-gated MACRUNNER_HB_TRACE_BLOCK. */
+#define HB_WAIT_REG_N 256
+struct macrunner_hb_wait_reg_ent { uint64_t start_us; uint64_t handle; uint64_t caller; uint32_t tid; int active; };
+static struct macrunner_hb_wait_reg_ent macrunner_hb_wait_reg[HB_WAIT_REG_N];
+static int macrunner_hb_wait_reg_next_v;
+static __thread int macrunner_hb_wait_reg_slot = -1;
+
+static int macrunner_hb_block_trace_enabled( void )
+{
+    static int en = -1;
+    if (en < 0) en = getenv( "MACRUNNER_HB_TRACE_BLOCK" ) ? 1 : 0;
+    return en;
+}
+
+static void macrunner_hb_wait_reg_enter( uint64_t handle, uint64_t caller )
+{
+    struct macrunner_hb_wait_reg_ent *e;
+    if (macrunner_hb_wait_reg_slot < 0)
+        macrunner_hb_wait_reg_slot = __atomic_fetch_add( &macrunner_hb_wait_reg_next_v, 1, __ATOMIC_RELAXED ) % HB_WAIT_REG_N;
+    e = &macrunner_hb_wait_reg[macrunner_hb_wait_reg_slot];
+    e->handle = handle; e->caller = caller; e->tid = (uint32_t)(uintptr_t)pthread_self();
+    __atomic_store_n( &e->start_us, macrunner_hb_now_us(), __ATOMIC_RELEASE );
+    __atomic_store_n( &e->active, 1, __ATOMIC_RELEASE );
+}
+
+static void macrunner_hb_wait_reg_leave_scan( void )
+{
+    static __thread uint64_t last_scan_us;
+    uint64_t now;
+    int i;
+    if (macrunner_hb_wait_reg_slot >= 0)
+        __atomic_store_n( &macrunner_hb_wait_reg[macrunner_hb_wait_reg_slot].active, 0, __ATOMIC_RELEASE );
+    now = macrunner_hb_now_us();
+    if (now - last_scan_us < 1000000) return;   /* ~1 scan/sec/thread */
+    last_scan_us = now;
+    for (i = 0; i < HB_WAIT_REG_N; i++)
+    {
+        struct macrunner_hb_wait_reg_ent *e = &macrunner_hb_wait_reg[i];
+        if (__atomic_load_n( &e->active, __ATOMIC_ACQUIRE ))
+        {
+            uint64_t st = __atomic_load_n( &e->start_us, __ATOMIC_ACQUIRE );
+            if (st && now - st > 3000000)   /* pending > 3s = the BLOCK */
+                fprintf( stderr, "macrunner-hb-BLOCK: tid=%u handle=0x%llx caller=0x%llx pending_ms=%llu\n",
+                         e->tid, (unsigned long long)e->handle, (unsigned long long)e->caller,
+                         (unsigned long long)((now - st) / 1000) ), fflush( stderr );
+        }
+    }
+}
+
+/* MacRunner 2026-06-22: r15 history ring — localize where r15 first goes garbage (the c000007b
+ * corruption origin). Updated each block in run_x64; dumped at the badtarget. Env MACRUNNER_HB_TRACE_BLOCK. */
+static __thread uint64_t macrunner_hb_r15_ring_pc[16];
+static __thread uint64_t macrunner_hb_r15_ring_val[16];
+static __thread int macrunner_hb_r15_ring_idx;
+/* MacRunner 2026-06-22: use-before-init detector state — the FIRST distinct objects (per thread)
+ * whose vtable [r15+0] is null while other fields are set (allocated-but-not-constructed) = the
+ * producer-gap, caught earlier than the downstream c000007b. */
+static __thread uint64_t macrunner_hb_ubi_prev;
+static __thread uint64_t macrunner_hb_ubi_seen[24];
+static __thread int macrunner_hb_ubi_count;
+static void macrunner_hb_r15_ring_dump( void )
+{
+    int i, idx = macrunner_hb_r15_ring_idx;
+    for (i = 0; i < 16; i++)
+    {
+        int k = (idx - 16 + i) & 15;
+        if (macrunner_hb_r15_ring_pc[k])
+            fprintf( stderr, "macrunner-hb-r15ring[%2d]: block_pc=0x%llx r15=0x%llx\n",
+                     i - 16, (unsigned long long)macrunner_hb_r15_ring_pc[k],
+                     (unsigned long long)macrunner_hb_r15_ring_val[k] ), fflush( stderr );
+    }
+}
+
 /* MacRunner 2026-06-20: sync-latency meter. Records each guest WaitForSingleObject
  * round-trip's blocked duration; reports rate + avg per-op latency every ~1s (a
  * single line, not per-op spam). Tells whether scene-load is round-trip-OVERHEAD-
@@ -2883,21 +2991,34 @@ static BOOL macrunner_hb_trace_callback12_enabled(void)
 
 static BOOL macrunner_hb_trace_pe_call12_edge_budget_allows(void)
 {
+    /* MacRunner 2026-06-22 (lever #2, ABZU first-frame): this gate runs on EVERY PE-call12
+     * edge (the import-dispatch hot path).  The old code ran getenv(...EDGE_BUDGET) +
+     * macrunner_hb_env_enabled(...EDGE) (another uncached getenv) per edge, even with tracing
+     * OFF (~12.7% of ABZU startup self-time).  Resolve both env reads ONCE into statics, then
+     * the steady-state cost is a couple of plain loads.  Behavior is unchanged (same EDGE gate,
+     * same 2000 default budget, same exhaustion message).  Env vars are read at process start,
+     * not changed mid-run, so the one-time snapshot is the intended semantics. */
+    static int enabled = -1;   /* -1 = not yet resolved */
+    static int limit_cached;
     static int count;
-    const char *val = getenv( "MACRUNNER_HB_TRACE_PE_CALL12_EDGE_BUDGET" );
-    int limit = val && val[0] ? atoi( val ) : 2000;
 
-    if (!macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_PE_CALL12_EDGE" )) return FALSE;
-    if (limit <= 0) return TRUE;
-    if (count < limit)
+    if (enabled < 0)
+    {
+        const char *val = getenv( "MACRUNNER_HB_TRACE_PE_CALL12_EDGE_BUDGET" );
+        limit_cached = val && val[0] ? atoi( val ) : 2000;
+        enabled = macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_PE_CALL12_EDGE" ) ? 1 : 0;
+    }
+    if (!enabled) return FALSE;
+    if (limit_cached <= 0) return TRUE;
+    if (count < limit_cached)
     {
         count++;
         return TRUE;
     }
-    if (count == limit)
+    if (count == limit_cached)
     {
         count++;
-        fprintf( stderr, "macrunner-hb-pe-call12-edge: budget exhausted at %d entries\n", limit );
+        fprintf( stderr, "macrunner-hb-pe-call12-edge: budget exhausted at %d entries\n", limit_cached );
     }
     return FALSE;
 }
@@ -3200,6 +3321,7 @@ static uint64_t macrunner_hb_register_dynamic_import_thunk( const struct macrunn
     slot->target_machine = current_machine;
     macrunner_hb_copy_cstr( slot->dll_name, sizeof(slot->dll_name), dll_name );
     macrunner_hb_copy_cstr( slot->import_name, sizeof(slot->import_name), import_name );
+    slot->semantic_class = macrunner_hb_classify_semantic_import( slot->dll_name, slot->import_name );
     macrunner_hb_import_target_map_put( slot );
     macrunner_hb_emit_native_import_code_thunk( slot );
     TRACE( "MacRunner HyperBridge registered dynamic proc thunk %s!%s native=%p guest=%p\n",
@@ -3698,6 +3820,7 @@ static uint64_t macrunner_hb_register_synthetic_import_thunk( const struct macru
     slot->target_machine = current_machine;
     macrunner_hb_copy_cstr( slot->dll_name, sizeof(slot->dll_name), dll_name );
     macrunner_hb_copy_cstr( slot->import_name, sizeof(slot->import_name), import_name );
+    slot->semantic_class = macrunner_hb_classify_semantic_import( slot->dll_name, slot->import_name );
     macrunner_hb_import_target_map_put( slot );
     macrunner_hb_emit_native_import_code_thunk( slot );
     TRACE( "MacRunner HyperBridge registered synthetic proc thunk %s!%s guest=%p\n",
@@ -3744,6 +3867,7 @@ NTSTATUS macrunner_hb_register_import_thunk( void *args )
     slot->target_machine = params->target_machine;
     memcpy( slot->dll_name, params->dll_name, sizeof(slot->dll_name) - 1 );
     memcpy( slot->import_name, params->import_name, sizeof(slot->import_name) - 1 );
+    slot->semantic_class = macrunner_hb_classify_semantic_import( slot->dll_name, slot->import_name );
     macrunner_hb_remember_apiset_module_locked( params->dll_name, params->target_module_id,
                                                 params->target_module_machine );
     macrunner_hb_import_target_map_put( slot );
@@ -10339,6 +10463,7 @@ static BOOL macrunner_hb_try_local_file_semantic( hb_context_t *ctx,
         DWORD request = (DWORD)args[2], done32 = 0;
         char *buffer;
         ssize_t done;
+        uint32_t ov_lo = 0, ov_hi = 0;
 
         if (fd < 0) return FALSE;
         if (!(buffer = malloc( request ? request : 1 )))
@@ -10348,7 +10473,42 @@ static BOOL macrunner_hb_try_local_file_semantic( hb_context_t *ctx,
             *ret = FALSE;
             return TRUE;
         }
-        done = read( fd, buffer, request );
+        /* MacRunner 2026-06-22 (shared-core fix, cf. ABZU FArchive): if lpOverlapped (args[4]) is
+         * present, ReadFile must read at the OVERLAPPED offset (Offset@+16 / OffsetHigh@+20 in the
+         * x64 OVERLAPPED struct), NOT the fd's current position. The old read(fd) ignored lpOverlapped,
+         * serving offset-mismatched overlapped reads from the wrong position -> corrupt bytes. */
+        if (args[4])
+        {
+            hb_memory_read_u32( ctx->memory, (hb_gva_t)(args[4] + 16), &ov_lo );
+            hb_memory_read_u32( ctx->memory, (hb_gva_t)(args[4] + 20), &ov_hi );
+            done = pread( fd, buffer, request, (off_t)(((uint64_t)ov_hi << 32) | ov_lo) );
+        }
+        else
+            done = read( fd, buffer, request );
+        /* MacRunner 2026-06-22 test-2 (right layer): the guest's ReadFile is served HERE (raw read/pread),
+         * BYPASSING NtReadFile. Log non-DLL (data/asset) reads — file/overlapped/offset/bytes — to see
+         * what the deserialize reads + whether it's overlapped. Env MACRUNNER_TRACE_FILEINFO. */
+        if (macrunner_hb_block_trace_enabled() && done >= 0)
+        {
+            static int gr_count;
+            char gr_p[1024];
+            if (gr_count < 400 && fcntl( fd, F_GETPATH, gr_p ) == 0 &&
+                !strstr( gr_p, ".dll" ) && !strstr( gr_p, "/lib/wine/" ))
+            {
+                const char *gr_bn = strrchr( gr_p, '/' );
+                const unsigned char *gr_b = (const unsigned char *)buffer;
+                char gr_hex[40];
+                int gr_hi = 0, gr_k;
+                gr_bn = gr_bn ? gr_bn + 1 : gr_p;
+                for (gr_k = 0; gr_k < 16 && gr_k < (int)done; gr_k++)
+                    gr_hi += snprintf( gr_hex + gr_hi, sizeof(gr_hex) - gr_hi, "%02x", gr_b[gr_k] );
+                MESSAGE( "macrunner-guestread: %s ovl=%d off=%lld req=%u got=%zd b=%s\n",
+                         gr_bn, args[4] ? 1 : 0,
+                         args[4] ? (long long)(((uint64_t)ov_hi << 32) | ov_lo) : -1,
+                         request, done, gr_hex );
+                gr_count++;
+            }
+        }
         if (done < 0)
         {
             free( buffer );
@@ -11072,6 +11232,85 @@ static void macrunner_hb_trace_process_exit_semantic( hb_context_t *ctx,
     fflush( stderr );
 }
 
+/*
+ * Classify an import's semantic class ONCE at thunk registration (task#26). The name tables
+ * below MUST mirror the complete set of imports for which the two hot dispatch functions can
+ * return TRUE -- see the "SAFETY MODEL" comment on struct macrunner_hb_import_thunk.
+ *
+ *  - msvcrt_exit_names  == every import_name handled by macrunner_hb_try_msvcrt_exit_semantic
+ *                          (under its dll gate {msvcrt,ucrtbase,vcruntime140,api-ms-win-crt-runtime}).
+ *  - kernel32_handle_names == every import_name handled by macrunner_hb_try_kernel32_handle_semantic
+ *                          (under its dll gate {kernel32,kernelbase}).
+ *
+ * This runs at registration only (NOT per call), so a plain linear scan is fine.
+ */
+static enum macrunner_hb_semantic_class macrunner_hb_classify_semantic_import( const char *dll_name,
+                                                                              const char *import_name )
+{
+    static const char * const msvcrt_exit_names[] = {
+        "_initterm", "_initterm_e",
+        "_initialize_onexit_table", "_o__initialize_onexit_table",
+        "_register_onexit_function", "_o__register_onexit_function",
+        "_execute_onexit_table", "_o__execute_onexit_table",
+        "_onexit",
+        "atexit", "_crt_atexit",
+        "_cexit", "_c_exit",
+        "exit", "_exit", "_Exit", "quick_exit",
+    };
+    static const char * const kernel32_handle_names[] = {
+        "GetLastError", "SetLastError", "DisableThreadLibraryCalls",
+        "SetErrorMode", "GetErrorMode", "SetThreadErrorMode",
+        "OutputDebugStringA", "OutputDebugStringW",
+        "CreateEventA", "CreateEventW", "CreateEventExA", "CreateEventExW",
+        "OpenEventA", "OpenEventW",
+        "CreateSemaphoreA", "CreateSemaphoreW", "CreateSemaphoreExA", "CreateSemaphoreExW",
+        "OpenSemaphoreA", "OpenSemaphoreW", "ReleaseSemaphore",
+        "CreateMutexA", "CreateMutexW", "CreateMutexExA", "CreateMutexExW",
+        "OpenMutexA", "OpenMutexW", "ReleaseMutex",
+        "CreatePipe",
+        "SetEvent", "ResetEvent", "PulseEvent",
+        "VirtualAlloc", "VirtualAllocEx", "VirtualFree", "VirtualFreeEx",
+        "VirtualProtect", "VirtualProtectEx", "VirtualQuery", "VirtualQueryEx",
+        "GetProcessHeap", "HeapAlloc", "HeapReAlloc", "HeapFree", "HeapSize",
+        "GetCurrentProcess", "GetCurrentThread", "GetCurrentProcessId", "GetCurrentThreadId",
+        "GetTickCount", "GetTickCount64",
+        "InitializeCriticalSection", "InitializeCriticalSectionAndSpinCount",
+        "InitializeCriticalSectionEx", "DeleteCriticalSection",
+        "EnterCriticalSection", "LeaveCriticalSection", "TryEnterCriticalSection",
+        "SetCriticalSectionSpinCount",
+        "InitializeSListHead", "InterlockedFlushSList", "InterlockedPopEntrySList",
+        "InterlockedPushEntrySList", "InterlockedPushListSList", "InterlockedPushListSListEx",
+        "QueryDepthSList",
+        "TlsAlloc", "FlsAlloc", "TlsSetValue", "FlsSetValue",
+        "TlsGetValue", "FlsGetValue", "TlsFree", "FlsFree",
+        "LocalAlloc", "LocalReAlloc", "LocalFree", "LocalSize",
+        "WaitForSingleObject", "WaitForSingleObjectEx",
+        "WaitForMultipleObjects", "WaitForMultipleObjectsEx",
+        "DuplicateHandle", "CloseHandle",
+    };
+    size_t i;
+
+    if (!dll_name || !import_name) return HB_SC_NONE;
+
+    if (macrunner_hb_strieq( dll_name, "msvcrt.dll" ) ||
+        macrunner_hb_strieq( dll_name, "ucrtbase.dll" ) ||
+        macrunner_hb_strieq( dll_name, "vcruntime140.dll" ) ||
+        macrunner_hb_strieq( dll_name, "api-ms-win-crt-runtime-l1-1-0.dll" ))
+    {
+        for (i = 0; i < ARRAY_SIZE(msvcrt_exit_names); i++)
+            if (macrunner_hb_strieq( import_name, msvcrt_exit_names[i] ))
+                return HB_SC_MSVCRT_EXIT;
+    }
+    else if (macrunner_hb_strieq( dll_name, "kernel32.dll" ) ||
+             macrunner_hb_strieq( dll_name, "kernelbase.dll" ))
+    {
+        for (i = 0; i < ARRAY_SIZE(kernel32_handle_names); i++)
+            if (macrunner_hb_strieq( import_name, kernel32_handle_names[i] ))
+                return HB_SC_KERNEL32_HANDLE;
+    }
+    return HB_SC_NONE;
+}
+
 static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
                                                    const struct macrunner_hb_import_thunk *thunk,
                                                    const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
@@ -11080,8 +11319,43 @@ static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
     BOOL is_crt_runtime;
 
     if (!ctx || !thunk || !args || !ret) return FALSE;
+
+    /* MacRunner 2026-06-22: magic-static (function-local static / singleton) guard trace. The MSVC
+     * _Init_thread_header/_Init_thread_footer live in VCRUNTIME140.dll, NOT ucrtbase — so this runs
+     * BEFORE the is_crt_runtime gate (which excludes vcruntime). INSTRUMENT ONLY: log guard ptr +
+     * *guard + caller + dll, then FALL THROUGH so the real guard runs unaltered (epoch compare +
+     * thread-wait preserved). A guard with header(s) but NO matching footer = a construction that
+     * never completed = the producer-gap (the skipped [r15+0x10] ctor); the caller names the static. */
+    if (macrunner_hb_block_trace_enabled() &&
+        (macrunner_hb_strieq( thunk->import_name, "_Init_thread_header" ) ||
+         macrunner_hb_strieq( thunk->import_name, "_Init_thread_footer" )))
+    {
+        static int ms_trace_count;
+        if (ms_trace_count < 60000)
+        {
+            uint64_t guard = args[0], gval = 0;
+            uint64_t caller = macrunner_hb_trace_return_address( ctx );
+            hb_memory_read_u64( ctx->memory, (hb_gva_t)guard, &gval );
+            fprintf( stderr, "macrunner-hb-magicstatic: %s dll=%s guard=0x%llx star_guard=%d caller=0x%llx\n",
+                     thunk->import_name, thunk->dll_name ? thunk->dll_name : "?",
+                     (unsigned long long)guard, (int)(uint32_t)gval, (unsigned long long)caller );
+            fflush( stderr );
+            ms_trace_count++;
+        }
+        /* fall through to the gate below -> real dispatch (no alteration) */
+    }
+
+    /* task#26 short-circuit: a thunk classified at registration as anything other than
+     * MSVCRT_EXIT cannot be handled here -> skip the strieq storm below. UNCLASSIFIED (ad-hoc
+     * / stack thunks) falls through and runs the full logic. Placed AFTER the magic-static
+     * trace above so that instrumentation is preserved byte-for-byte. */
+    if (thunk->semantic_class != HB_SC_UNCLASSIFIED &&
+        thunk->semantic_class != HB_SC_MSVCRT_EXIT)
+        return FALSE;
+
     is_crt_runtime = macrunner_hb_strieq( thunk->dll_name, "msvcrt.dll" ) ||
                      macrunner_hb_strieq( thunk->dll_name, "ucrtbase.dll" ) ||
+                     macrunner_hb_strieq( thunk->dll_name, "vcruntime140.dll" ) ||
                      macrunner_hb_strieq( thunk->dll_name, "api-ms-win-crt-runtime-l1-1-0.dll" );
     if (!is_crt_runtime) return FALSE;
 
@@ -11090,7 +11364,7 @@ static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
     {
         BOOL stop_on_error = macrunner_hb_strieq( thunk->import_name, "_initterm_e" );
         uint64_t begin = args[0], end = args[1], slot;
-        unsigned int count = 0;
+        unsigned int count = 0, skip_notmod = 0, skip_disp = 0;   /* MacRunner: cascade-root trace */
 
         /*
          * Sanity-bound the initializer table.  The per-slot loop below already
@@ -11121,7 +11395,14 @@ static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
             if (!callback) continue;
             module = macrunner_hb_module_from_pc( (void *)(uintptr_t)callback );
             if (!module || macrunner_hb_module_machine( module ) != IMAGE_FILE_MACHINE_AMD64)
+            {
+                if (macrunner_hb_block_trace_enabled() && skip_notmod < 40)
+                    fprintf( stderr, "macrunner-hb-initterm-skip: %s slot#%llu callback=0x%llx reason=%s\n",
+                             thunk->import_name, (unsigned long long)((slot - begin) / sizeof(uint64_t)),
+                             (unsigned long long)callback, module ? "not-amd64" : "no-module" ), fflush( stderr );
+                skip_notmod++;
                 continue;
+            }
 
             memset( &call, 0, sizeof(call) );
             status = macrunner_hb_run_x64( (void *)(uintptr_t)callback, &call, &callback_ret,
@@ -11144,6 +11425,11 @@ static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
                  * its abort semantics (it is allowed to stop early).
                  */
                 if (stop_on_error) return FALSE;
+                if (macrunner_hb_block_trace_enabled() && skip_disp < 40)
+                    fprintf( stderr, "macrunner-hb-initterm-skip: %s slot#%llu callback=0x%llx reason=dispatch-fail status=0x%lx\n",
+                             thunk->import_name, (unsigned long long)((slot - begin) / sizeof(uint64_t)),
+                             (unsigned long long)callback, (unsigned long)status ), fflush( stderr );
+                skip_disp++;
                 WARN( "MacRunner HyperBridge semantic crt!%s callback=%p dispatch FAILED "
                       "status=%lx blocks=%s -- skip+continue (non-_e initterm)\n",
                       thunk->import_name, (void *)(uintptr_t)callback,
@@ -11158,6 +11444,10 @@ static BOOL macrunner_hb_try_msvcrt_exit_semantic( hb_context_t *ctx,
             }
         }
         *ret = 0;
+        if (macrunner_hb_block_trace_enabled() && (skip_notmod || skip_disp))
+            fprintf( stderr, "macrunner-hb-initterm-summary: %s slots=%llu run=%u skip_notmod=%u skip_disp=%u\n",
+                     thunk->import_name, (unsigned long long)((end - begin) / sizeof(uint64_t)),
+                     count, skip_notmod, skip_disp ), fflush( stderr );
         TRACE( "MacRunner HyperBridge semantic crt!%s range=%p-%p callbacks=%u ret=%p\n",
                thunk->import_name, (void *)(uintptr_t)begin, (void *)(uintptr_t)end,
                count, (void *)(uintptr_t)*ret );
@@ -12265,7 +12555,17 @@ static BOOL macrunner_hb_try_kernel32_stdio_semantic( hb_context_t *ctx,
             *ret = FALSE;
             return TRUE;
         }
-        done = write( fd, buffer, request );
+        /* MacRunner 2026-06-22 (shared-core fix, cf. ABZU): honour lpOverlapped (args[4]) -> pwrite at
+         * the OVERLAPPED offset, not the fd's current position. */
+        if (args[4])
+        {
+            uint32_t ov_lo = 0, ov_hi = 0;
+            hb_memory_read_u32( ctx->memory, (hb_gva_t)(args[4] + 16), &ov_lo );
+            hb_memory_read_u32( ctx->memory, (hb_gva_t)(args[4] + 20), &ov_hi );
+            done = pwrite( fd, buffer, request, (off_t)(((uint64_t)ov_hi << 32) | ov_lo) );
+        }
+        else
+            done = write( fd, buffer, request );
         free( buffer );
         if (done < 0)
         {
@@ -14345,6 +14645,12 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
     NTSTATUS status;
 
     if (!ctx || !thunk || !args || !ret) return FALSE;
+    /* task#26 short-circuit: a thunk classified at registration as anything other than
+     * KERNEL32_HANDLE cannot be handled here -> skip the ~84-name strieq storm below.
+     * UNCLASSIFIED (ad-hoc / stack thunks) falls through and runs the full logic. */
+    if (thunk->semantic_class != HB_SC_UNCLASSIFIED &&
+        thunk->semantic_class != HB_SC_KERNEL32_HANDLE)
+        return FALSE;
     if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
         !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
         return FALSE;
@@ -15714,11 +16020,15 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
         }
         {
             uint64_t macrunner_hb_wfso_t0 = macrunner_hb_now_us();
+            if (macrunner_hb_block_trace_enabled())
+                macrunner_hb_wait_reg_enter( (uint64_t)args[0], macrunner_hb_trace_return_address( ctx ) );
             status = NtWaitForSingleObject( (HANDLE)(uintptr_t)args[0],
                                             macrunner_hb_strieq( thunk->import_name, "WaitForSingleObjectEx" ) &&
                                             args[2],
                                             macrunner_hb_get_nt_timeout( &timeout, (DWORD)args[1] ) );
             macrunner_hb_syncmeter_wfso( macrunner_hb_now_us() - macrunner_hb_wfso_t0, status, (DWORD)args[1] );
+            if (macrunner_hb_block_trace_enabled())
+                macrunner_hb_wait_reg_leave_scan();
         }
         NtCurrentTeb()->LastStatusValue = status;
         if (NT_ERROR( status ))
@@ -18874,6 +19184,56 @@ static BOOL macrunner_hb_pc_is_syscall_dispatcher( uint64_t pc )
     return macrunner_hb_pc_is_nt_syscall_dispatcher( pc );
 }
 
+/* MacRunner HyperBridge: the x86_64 winemetal.dll's unixlib never initializes under the HB loader
+ * (its DllMain __wine_init_unix_call MemoryWineUnixFuncs query is never serviced, so the PE-side
+ * __wine_unixlib_handle stays 0).  Every WINE_UNIX_CALL would then dispatch through a null handle
+ * (dispatcher(0,code,args) -> ldr from a null funcs table -> c0000005), and the winemetal thunk,
+ * ignoring the status, returns its pre-zeroed out-param: WMTCopyAllDevices()==0 -> no Metal adapter
+ * -> D3D11CreateDevice == DXGI_ERROR_NOT_FOUND (0x887A0002).  Resolve DXMT's winemetal.so
+ * __wine_unix_call_funcs once (same .so the NtQueryVirtualMemory(MemoryWineUnixFuncs) bridge uses)
+ * and substitute it whenever an x64-guest unix call arrives with a null handle.  Among the x64 DXMT
+ * frontends only winemetal carries a unixlib, so handle==0 on this path is unambiguously that case;
+ * if the .so cannot be resolved we leave handle==0 and behave exactly as before (no regression). */
+static int macrunner_hb_winemetal_unix_fallback_enabled( void )
+{
+    static int cache = -1;
+    /* default OFF: wiring the unixlib here is correct and makes the first WMTCopyAllDevices unix
+     * call succeed (status 0), but it exposes a downstream HB exception/re-execution loop on the
+     * success-then-fault path (the same call re-dispatches and faults c0000005), so it currently
+     * hangs end-to-end.  Opt-in while that loop is being fixed. */
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_WINEMETAL_UNIX_FALLBACK" );
+}
+
+static unixlib_handle_t macrunner_hb_winemetal_unix_fallback_handle( void )
+{
+    static unixlib_handle_t cached = (unixlib_handle_t)-1;
+    void *so;
+    const void *funcs;
+    const char *dxmt_root;
+    const char *project_root;
+    char path[4096];
+
+    if (cached != (unixlib_handle_t)-1) return cached;
+    cached = 0;
+    dxmt_root = getenv( "MACRUNNER_DXMT_ROOT" );
+    project_root = getenv( "MACRUNNER_ROOT" );
+    if (dxmt_root && *dxmt_root)
+        snprintf( path, sizeof(path), "%s/aarch64-unix/winemetal.so", dxmt_root );
+    else if (project_root && *project_root)
+        snprintf( path, sizeof(path), "%s/engine/graphics/dist/dxmt/aarch64-unix/winemetal.so",
+                  project_root );
+    else
+        return cached;
+    so = dlopen( path, RTLD_NOW );
+    if (!so) return cached;
+    funcs = dlsym( so, "__wine_unix_call_funcs" );
+    if (funcs) cached = (unixlib_handle_t)(UINT_PTR)funcs;
+    if (macrunner_hb_trace_thread_lifecycle_enabled())
+        fprintf( stderr, "macrunner-hb-winemetal-unix-fallback: path=%s funcs=%p handle=%#llx\n",
+                 path, funcs, (unsigned long long)cached );
+    return cached;
+}
+
 static hb_result_t macrunner_hb_dispatch_x64_unix_call( hb_context_t *ctx, uint64_t target,
                                                         uint64_t ret_addr )
 {
@@ -18891,6 +19251,8 @@ static hb_result_t macrunner_hb_dispatch_x64_unix_call( hb_context_t *ctx, uint6
     handle = (unixlib_handle_t)ctx->regs.x64.rcx;
     code = (unsigned int)ctx->regs.x64.rdx;
     params = (void *)(uintptr_t)ctx->regs.x64.r8;
+    if (!handle && macrunner_hb_winemetal_unix_fallback_enabled())
+        handle = macrunner_hb_winemetal_unix_fallback_handle();
     status = dispatcher( handle, code, params );
 
     if (macrunner_hb_trace_direct_native_enabled() &&
@@ -19902,6 +20264,58 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                              (void *)(uintptr_t)v[2], slotm, (unsigned long long)slotr,
                              (void *)(uintptr_t)v[3], (void *)(uintptr_t)v[4], (void *)(uintptr_t)v[5] );
                     fflush( stderr );
+                    if (macrunner_hb_block_trace_enabled())
+                        macrunner_hb_r15_ring_dump();   /* localize where r15 went garbage */
+                    if (macrunner_hb_block_trace_enabled())
+                    {
+                        /* MacRunner 2026-06-22: is the rejected target EXECUTABLE? x => a valid
+                         * Mono-JIT'd method on the heap that the dispatch over-rejects (HK-specific
+                         * dispatch fix); non-exec/garbage => an uninitialized slot (constructor not
+                         * run = ABZU's class). Decides whether HK shares ABZU's cascade root. */
+                        mach_vm_address_t treg = (mach_vm_address_t)ctx->pc;
+                        mach_vm_size_t tsz = 0;
+                        vm_region_basic_info_data_64_t tinfo;
+                        mach_msg_type_number_t tcnt = VM_REGION_BASIC_INFO_COUNT_64;
+                        mach_port_t tobj = MACH_PORT_NULL;
+                        kern_return_t tkr = mach_vm_region( mach_task_self(), &treg, &tsz,
+                                                            VM_REGION_BASIC_INFO_64,
+                                                            (vm_region_info_t)&tinfo, &tcnt, &tobj );
+                        if (tobj != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), tobj );
+                        fprintf( stderr, "macrunner-hb-badtarget-prot: target=0x%llx kr=%d "
+                                 "region=0x%llx-0x%llx prot=%c%c%c\n",
+                                 (unsigned long long)ctx->pc, (int)tkr,
+                                 (unsigned long long)treg, (unsigned long long)(treg + tsz),
+                                 (tkr == KERN_SUCCESS && (tinfo.protection & VM_PROT_READ))    ? 'r' : '-',
+                                 (tkr == KERN_SUCCESS && (tinfo.protection & VM_PROT_WRITE))   ? 'w' : '-',
+                                 (tkr == KERN_SUCCESS && (tinfo.protection & VM_PROT_EXECUTE)) ? 'x' : '-' );
+                        fflush( stderr );
+                    }
+                    if (macrunner_hb_block_trace_enabled())
+                    {
+                        /* MacRunner 2026-06-22: guest CALL CHAIN — scan the stack for UnityPlayer-range
+                         * return addresses (RVAs) so the divergence can be bisected upstream on CrossOver
+                         * (the c000007b path is MacRunner-only; the diverging gate is a caller). */
+                        char chain[1024];
+                        char *cp = chain;
+                        uint64_t sp = ctx->regs.x64.rsp;
+                        int si, found = 0;
+                        chain[0] = 0;
+                        for (si = 0; si < 220 && found < 28; si++)
+                        {
+                            uint64_t slot = 0;
+                            if (hb_memory_read_u64( ctx->memory, (hb_gva_t)(sp + (uint64_t)si * 8), &slot ) != HB_OK)
+                                continue;
+                            if (slot >= image_start && slot < image_start + image_size)
+                            {
+                                cp += snprintf( cp, sizeof(chain) - (size_t)(cp - chain),
+                                                " +0x%llx", (unsigned long long)(slot - image_start) );
+                                found++;
+                            }
+                        }
+                        fprintf( stderr, "macrunner-hb-callchain: image_base=0x%llx UnityPlayer-RVAs-on-stack:%s\n",
+                                 (unsigned long long)image_start, chain );
+                        fflush( stderr );
+                    }
                 }
                 ERR( "MacRunner HyperBridge refused non-application target %s pc=%p image=%p-%p "
                      "native_image=%s native_base=%p native_symbol=%s "
@@ -20321,6 +20735,42 @@ skip_version_semantic:
         if (trace_npp_open_pack) macrunner_hb_trace_npp_open_pack( ctx, image_start, "before-block" );
         block_pc = ctx->pc;
         last_block_pc = block_pc;
+        if (macrunner_hb_block_trace_enabled())
+        {
+            uint64_t r15v = ctx->regs.x64.r15;
+            macrunner_hb_r15_ring_pc[macrunner_hb_r15_ring_idx & 15] = block_pc;
+            macrunner_hb_r15_ring_val[macrunner_hb_r15_ring_idx & 15] = r15v;
+            macrunner_hb_r15_ring_idx++;
+            /* use-before-init detector: check only on r15-change (r15 is callee-saved -> changes only
+             * when code loads a NEW object -> cheap). Flag the first distinct objects whose vtable
+             * [r15+0]==0 while another field is set (allocated, ctor never ran = producer-gap). */
+            if (r15v != macrunner_hb_ubi_prev && r15v > 0x10000 && macrunner_hb_ubi_count < 24)
+            {
+                uint64_t f0 = 1, f8 = 0, f10 = 0;
+                macrunner_hb_ubi_prev = r15v;
+                if (hb_memory_read_u64( ctx->memory, (hb_gva_t)r15v, &f0 ) == HB_OK && f0 == 0)
+                {
+                    hb_memory_read_u64( ctx->memory, (hb_gva_t)(r15v + 8), &f8 );
+                    hb_memory_read_u64( ctx->memory, (hb_gva_t)(r15v + 0x10), &f10 );
+                    if (f8 || f10)   /* a partially-filled object, not a pure-zero buffer */
+                    {
+                        int i, seen = 0;
+                        for (i = 0; i < macrunner_hb_ubi_count; i++)
+                            if (macrunner_hb_ubi_seen[i] == r15v) { seen = 1; break; }
+                        if (!seen)
+                        {
+                            fprintf( stderr, "macrunner-hb-ubi: #%d r15=0x%llx [r15+0]=0 [r15+8]=0x%llx "
+                                     "[r15+0x10]=0x%llx block_pc=0x%llx\n",
+                                     macrunner_hb_ubi_count, (unsigned long long)r15v,
+                                     (unsigned long long)f8, (unsigned long long)f10,
+                                     (unsigned long long)block_pc );
+                            fflush( stderr );
+                            macrunner_hb_ubi_seen[macrunner_hb_ubi_count++] = r15v;
+                        }
+                    }
+                }
+            }
+        }
         /* MacRunner 2026-06-20: throttle the FMOD software-mixer busy-loop. FMOD
          * fails to init audio -> "emulated software output" spins ~81% of a core
          * in UnityPlayer rva 0x17b2bb0-0x17b2c80 (a confirmed red herring; audio is
@@ -21131,6 +21581,13 @@ done:
                  ctx ? (void *)(uintptr_t)ctx->regs.x64.rbp : NULL,
                  (void *)(uintptr_t)rbp_18, hb_result_string(rbp_18_r),
                  (void *)(uintptr_t)rbp_20, hb_result_string(rbp_20_r) );
+        fflush( stderr );
+        if (macrunner_hb_block_trace_enabled())
+            macrunner_hb_r15_ring_dump();   /* corruption origin: r15 history over the last 16 blocks */
+        {
+            extern void macrunner_dump_read_ring( void );
+            macrunner_dump_read_ring();   /* gate thread's recent file reads = wrong-data source (MACRUNNER_TRACE_FILEINFO) */
+        }
     }
     if (blocks_out) *blocks_out = blocks;
     if (steps_out) *steps_out = steps;

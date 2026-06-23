@@ -2278,10 +2278,21 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
          * whether the jne is taken despite a non-NULL global. Env-gated. */
         if (macrunner_hb_jcc57fd_watch_enabled()) {
             uint64_t pcw = ctx->pc;
-            if (pcw == 0x14057fd10ULL || pcw == 0x140580012ULL || pcw == 0x14057fd3dULL) {
-                uint64_t raxw = ctx->regs.x64.rax;
-                fprintf(stderr, "macrunner-hb-jcc57fd: enter_pc=0x%llx rax=0x%llx rsp=0x%llx\n",
-                        (unsigned long long)pcw, (unsigned long long)raxw,
+            /* ABZU 0x142a00 module-init control-flow diff: log block entries across
+             * 0x142a00, 0x50b0b0, 0x586630, 0x57fd10, and the golden return 0x145ec8. */
+            int hit = (pcw == 0x14057fd10ULL || pcw == 0x140580012ULL || pcw == 0x14057fd3dULL ||
+                       pcw == 0x140142a00ULL || pcw == 0x140142a42ULL || pcw == 0x140142a45ULL ||
+                       pcw == 0x140142a48ULL || pcw == 0x140142a85ULL || pcw == 0x140145ec8ULL ||
+                       pcw == 0x14050b0b0ULL || pcw == 0x14050b140ULL || pcw == 0x14050b145ULL ||
+                       pcw == 0x14050b14bULL || pcw == 0x14050b150ULL || pcw == 0x14050b152ULL ||
+                       pcw == 0x14050b1b3ULL || pcw == 0x14050b183ULL || pcw == 0x140586630ULL ||
+                       (pcw >= 0x140142a00ULL && pcw < 0x140142b00ULL) ||
+                       (pcw >= 0x14050b0b0ULL && pcw < 0x14050b200ULL));
+            if (hit) {
+                fprintf(stderr, "macrunner-hb-cfdiff: pc=0x%llx rax=0x%llx rcx=0x%llx rdx=0x%llx rdi=0x%llx rsp=0x%llx\n",
+                        (unsigned long long)pcw,
+                        (unsigned long long)ctx->regs.x64.rax, (unsigned long long)ctx->regs.x64.rcx,
+                        (unsigned long long)ctx->regs.x64.rdx, (unsigned long long)ctx->regs.x64.rdi,
                         (unsigned long long)ctx->regs.x64.rsp);
             }
         }

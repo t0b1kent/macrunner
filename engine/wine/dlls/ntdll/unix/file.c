@@ -157,6 +157,32 @@ static BOOL macrunner_trace_file_name_interesting( const UNICODE_STRING *name )
     return FALSE;
 }
 
+/* MacRunner 2026-06-22: per-thread recent-read ring. Each FD_TYPE_FILE read records (name, offset,
+ * length, first 16 bytes). At the c000007b the HB run-exit calls macrunner_dump_read_ring() to dump
+ * the crashing thread's last reads = what the gate READ just before crashing (the wrong-data source).
+ * Bypasses disasm/ASLR/winedbg friction. Env MACRUNNER_TRACE_FILEINFO. */
+#define MACRUNNER_READ_RING_N 32
+struct macrunner_read_ring_ent { char name[200]; long long off; unsigned int len, got; unsigned char b[16]; int blen; };
+static __thread struct macrunner_read_ring_ent macrunner_read_ring[MACRUNNER_READ_RING_N];
+static __thread unsigned int macrunner_read_ring_idx;
+
+void macrunner_dump_read_ring( void )
+{
+    unsigned int i;
+    if (!macrunner_trace_fileinfo_enabled()) return;
+    for (i = 0; i < MACRUNNER_READ_RING_N; i++)
+    {
+        unsigned int slot = (macrunner_read_ring_idx + i) % MACRUNNER_READ_RING_N;
+        struct macrunner_read_ring_ent *e = &macrunner_read_ring[slot];
+        char hex[40];
+        int hi = 0, k;
+        if (!e->name[0]) continue;
+        for (k = 0; k < e->blen && k < 16; k++) hi += snprintf( hex + hi, sizeof(hex) - hi, "%02x", e->b[k] );
+        MESSAGE( "macrunner-readring[%02u]: %s off=%lld len=%u got=%u b=%s\n",
+                 i, e->name, e->off, e->len, e->got, hex );
+    }
+}
+
 #define MAX_DOS_DRIVES 26
 
 /* just in case... */
@@ -6318,6 +6344,36 @@ NTSTATUS WINAPI NtReadFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, vo
 
 done:
     send_completion = cvalue != 0;
+    /* MacRunner 2026-06-22: source-capture for the scene-load deserialize (vs CrossOver). Log Unity
+     * asset reads (file, offset, length, first 16 bytes) on ANY read path (sequential or positioned)
+     * here at done: where unix_handle is still open. Diff MacRunner-vs-CrossOver -> the wrong-data
+     * cause. Env MACRUNNER_TRACE_FILEINFO, capped. */
+    if (macrunner_trace_fileinfo_enabled() && total > 0 && type == FD_TYPE_FILE)
+    {
+        char rr_path[1024];
+        /* skip DLL/system-lib reads (Wine re-reads user32/ucrtbase/kernel32 etc. many times, which
+         * would evict the relevant data read from the ring) -> keep only non-DLL (data/asset/config) */
+        if (fcntl( unix_handle, F_GETPATH, rr_path ) == 0 &&
+            !strstr( rr_path, ".dll" ) && !strstr( rr_path, "/lib/wine/" ))
+        {
+            struct macrunner_read_ring_ent *rr_e = &macrunner_read_ring[macrunner_read_ring_idx % MACRUNNER_READ_RING_N];
+            const char *rr_bn = strrchr( rr_path, '/' );
+            const unsigned char *rr_b = buffer;
+            int rr_k;
+            size_t rr_nl;
+            rr_bn = rr_bn ? rr_bn + 1 : rr_path;
+            rr_nl = strlen( rr_bn );
+            if (rr_nl >= sizeof(rr_e->name)) rr_nl = sizeof(rr_e->name) - 1;
+            memcpy( rr_e->name, rr_bn, rr_nl );
+            rr_e->name[rr_nl] = 0;
+            rr_e->off = offset ? offset->QuadPart : -1;
+            rr_e->len = length;
+            rr_e->got = total;
+            rr_e->blen = total < 16 ? (int)total : 16;
+            for (rr_k = 0; rr_k < rr_e->blen; rr_k++) rr_e->b[rr_k] = rr_b[rr_k];
+            macrunner_read_ring_idx++;
+        }
+    }
 
 err:
     if (needs_close) close( unix_handle );

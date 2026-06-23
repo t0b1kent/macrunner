@@ -1144,6 +1144,17 @@ static void start_thread( TEB *teb )
     struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
     BOOL suspend;
 
+#ifdef __APPLE__
+    /* MacRunner 2026-06-21 experiment: the 10ms scene-load gate is wake-to-SCHEDULE latency
+     * (__ulock_wake is prompt but the woken thread isn't run for ~10ms = default-QoS timer
+     * coalescing). Raise to USER_INTERACTIVE so woken threads schedule promptly. Env-gated. */
+    {
+        extern int pthread_set_qos_class_self_np( unsigned int, int );
+        static int mr_hiqos = -1;
+        if (mr_hiqos < 0) mr_hiqos = getenv("MACRUNNER_HB_HIQOS") ? 1 : 0;
+        if (mr_hiqos) pthread_set_qos_class_self_np( 0x21 /*QOS_CLASS_USER_INTERACTIVE*/, 0 );
+    }
+#endif
     thread_data->syscall_table = KeServiceDescriptorTable;
     thread_data->syscall_trace = TRACE_ON(syscall);
     thread_data->pthread_id = pthread_self();

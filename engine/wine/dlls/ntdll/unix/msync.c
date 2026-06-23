@@ -321,6 +321,13 @@ static inline NTSTATUS msync_wait_single( int obj, void *obj_shm,
             ns_timeleft = update_timeout( *end ) * 100;
             if (!ns_timeleft) return STATUS_TIMEOUT;
         }
+        /* MacRunner 2026-06-21: count BLOCKING waits by msync_type (1=SEM 2=AUTO_EV 3=MAN_EV 4=MUTEX 5=AUTO_SRV 6=MAN_SRV). */
+        {
+            static int mr_en = -1; static uint64_t mr_blk[8];
+            if (mr_en < 0) mr_en = getenv("MACRUNNER_HB_TRACE_SYNCMETER") ? 1 : 0;
+            if (mr_en) { unsigned mt = ((struct mutex *)obj_shm)->msync_type; uint64_t b = __atomic_add_fetch(&mr_blk[mt & 7],1,__ATOMIC_RELAXED);
+                if ((b % 4000)==0) fprintf(stderr,"macrunner-msync-diag: BLOCK msync_type=%u count=%llu\n", mt, (unsigned long long)b), fflush(stderr); }
+        }
         ret = ulock_wait( UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, obj_shm, val, ns_timeleft );
     } while (ret == -EINTR || ret == -EFAULT);
 
@@ -400,6 +407,13 @@ static NTSTATUS msync_wait_multiple( const int *objs, void **objs_shm, int alert
                 server_remove_wait( msgh_id, objs, objs_shm, alert_obj, alert_obj_shm, count );
                 return STATUS_TIMEOUT;
             }
+        }
+        /* MacRunner 2026-06-21: confirm the MULTIPLE (server-registered) block path is the 10ms gate. */
+        {
+            static int mr_en = -1; static uint64_t mr_mblk;
+            if (mr_en < 0) mr_en = getenv("MACRUNNER_HB_TRACE_SYNCMETER") ? 1 : 0;
+            if (mr_en) { uint64_t b = __atomic_add_fetch(&mr_mblk,1,__ATOMIC_RELAXED);
+                if ((b % 4000)==0) fprintf(stderr,"macrunner-msync-diag: MULTIPLE-BLOCK (server-registered wait) count=%llu\n",(unsigned long long)b), fflush(stderr); }
         }
         ret = ulock_wait( UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, addr, 1, ns_timeleft );
         val = __atomic_load_n( addr, __ATOMIC_ACQUIRE );

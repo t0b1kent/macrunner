@@ -983,6 +983,21 @@ static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, WAIT_TYPE type,
     struct inproc_sync *syncs[64], stack[ARRAY_SIZE(syncs)];
     int objs[ARRAY_SIZE(syncs)], alert_fd = 0;
     NTSTATUS ret;
+    /* MacRunner 2026-06-21: counting diagnostic — split inproc_wait outcomes to learn why
+     * most waits stay on the 10ms server path despite msync being active. Reports every ~4000 calls. */
+    static int mr_diag_en = -1;
+    static uint64_t mr_calls, mr_fd_bail, mr_gis_fail, mr_msync_ok;
+    if (mr_diag_en < 0) mr_diag_en = getenv("MACRUNNER_HB_TRACE_SYNCMETER") ? 1 : 0;
+    if (mr_diag_en)
+    {
+        uint64_t c = __atomic_add_fetch( &mr_calls, 1, __ATOMIC_RELAXED );
+        if (inproc_device_fd < 0) __atomic_add_fetch( &mr_fd_bail, 1, __ATOMIC_RELAXED );
+        if ((c % 4000) == 0)
+            fprintf( stderr, "macrunner-msync-diag: inproc_wait calls=%llu fd_bail=%llu gis_fail=%llu msync_ok=%llu (fd=%d)\n",
+                     (unsigned long long)c, (unsigned long long)__atomic_load_n(&mr_fd_bail,__ATOMIC_RELAXED),
+                     (unsigned long long)__atomic_load_n(&mr_gis_fail,__ATOMIC_RELAXED),
+                     (unsigned long long)__atomic_load_n(&mr_msync_ok,__ATOMIC_RELAXED), inproc_device_fd ), fflush(stderr);
+    }
 
     if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
 
@@ -992,11 +1007,13 @@ static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, WAIT_TYPE type,
     {
         if ((ret = get_inproc_sync( handles[i], INPROC_SYNC_UNKNOWN, SYNCHRONIZE, &stack[i], &syncs[i] )))
         {
+            if (mr_diag_en) __atomic_add_fetch( &mr_gis_fail, 1, __ATOMIC_RELAXED );
             while (i--) release_inproc_sync( syncs[i] );
             return ret;
         }
         objs[i] = syncs[i]->fd;
     }
+    if (mr_diag_en) __atomic_add_fetch( &mr_msync_ok, 1, __ATOMIC_RELAXED );
 
     if (alertable) alert_fd = get_inproc_alert_fd();
     ret = linux_wait_objs( inproc_device_fd, count, objs, type, alert_fd, timeout );
@@ -1162,8 +1179,20 @@ NTSTATUS WINAPI GPT_IMPORT(NtReleaseSemaphore)( HANDLE handle, ULONG count, ULON
     TRACE( "handle %p, count %u, prev_count %p\n", handle, count, previous );
 
     if ((ret = inproc_release_semaphore( handle, count, previous )) != STATUS_NOT_IMPLEMENTED)
+    {
+        static int en = -1; static uint64_t fast;
+        if (en < 0) en = getenv("MACRUNNER_HB_TRACE_SYNCMETER") ? 1 : 0;
+        if (en) { uint64_t f = __atomic_add_fetch(&fast,1,__ATOMIC_RELAXED);
+            if ((f % 4000)==0) fprintf(stderr,"macrunner-msync-diag: NtReleaseSemaphore fast(msync)=%llu\n",(unsigned long long)f), fflush(stderr); }
         return ret;
+    }
 
+    {
+        static int en = -1; static uint64_t slow;
+        if (en < 0) en = getenv("MACRUNNER_HB_TRACE_SYNCMETER") ? 1 : 0;
+        if (en) { uint64_t s = __atomic_add_fetch(&slow,1,__ATOMIC_RELAXED);
+            if ((s % 4000)==0) fprintf(stderr,"macrunner-msync-diag: NtReleaseSemaphore SERVER-fallback=%llu\n",(unsigned long long)s), fflush(stderr); }
+    }
     SERVER_START_REQ( release_semaphore )
     {
         req->handle = wine_server_obj_handle( handle );
@@ -1272,8 +1301,22 @@ NTSTATUS WINAPI GPT_IMPORT(NtSetEvent)( HANDLE handle, LONG *prev_state )
     TRACE( "handle %p, prev_state %p\n", handle, prev_state );
 
     if ((ret = inproc_set_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
+    {
+        /* MacRunner 2026-06-21: count SetEvent fast-path (msync) vs server fallback. */
+        static int en = -1; static uint64_t fast, slow;
+        if (en < 0) en = getenv("MACRUNNER_HB_TRACE_SYNCMETER") ? 1 : 0;
+        if (en) { uint64_t f = __atomic_add_fetch(&fast,1,__ATOMIC_RELAXED);
+            if ((f % 4000)==0) fprintf(stderr,"macrunner-msync-diag: NtSetEvent fast(msync)=%llu server=%llu\n",
+                (unsigned long long)f,(unsigned long long)__atomic_load_n(&slow,__ATOMIC_RELAXED)), fflush(stderr); }
         return ret;
+    }
 
+    {
+        static int en = -1; static uint64_t slow;
+        if (en < 0) en = getenv("MACRUNNER_HB_TRACE_SYNCMETER") ? 1 : 0;
+        if (en) { uint64_t s = __atomic_add_fetch(&slow,1,__ATOMIC_RELAXED);
+            if ((s % 4000)==0) fprintf(stderr,"macrunner-msync-diag: NtSetEvent SERVER-fallback=%llu\n",(unsigned long long)s), fflush(stderr); }
+    }
     SERVER_START_REQ( event_op )
     {
         req->handle = wine_server_obj_handle( handle );

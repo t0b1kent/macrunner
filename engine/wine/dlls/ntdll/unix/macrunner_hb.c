@@ -14,6 +14,7 @@
 
 #include <pthread.h>
 #include <signal.h>
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <dlfcn.h>
@@ -4003,6 +4004,82 @@ static void macrunner_hb_cache_live_region( struct macrunner_hb_special *special
     (void)hb_memory_map( special->mem, (hb_gva_t)region, (size_t)region_size, perm );
 }
 
+#ifdef __APPLE__
+/*
+ * MacRunner 2026-06-24 (HB-throughput, HK slow-boot ROOT): direct-memory fast path for
+ * special_read/special_write. The mach_vm_read_overwrite/mach_vm_write calls below are a KERNEL
+ * SYSCALL per guest load/store (native `sample` showed ~95% of the Unity main thread there during
+ * the Mono assembly-load/script-init phase). The region cache already made the BOUNDS lookup
+ * syscall-free; this replaces the per-access DATA-TRANSFER syscall with a direct in-process memcpy
+ * on a region-cache HIT (region proven present + correctly-protected + generation-valid).
+ *
+ * Why special_read/write used mach_vm in the first place (the gating below preserves both reasons,
+ * so we are NOT lifting JIT_DIRECT_MEM blanket-on):
+ *   (a) FAULT-SAFETY: mach_vm_* returns a clean error on an unmapped/protected hole; a bare memcpy
+ *       SIGSEGVs (see macrunner_hb_map_live_address_space_range). Handled by a thread-local
+ *       sigsetjmp guard + macrunner_hb_dmem_fault_recover(), called at the TOP of segv_handler/
+ *       bus_handler: a fault inside the guarded copy AND inside the guest range longjmps back, and
+ *       the caller falls through to the original mach_vm path (which re-detects and returns the
+ *       clean fault). Partial copies are harmless (the fallback redoes the whole chunk; a partial
+ *       guest write before a #PF is correct x86 semantics).
+ *   (b) SMC: a write to executable/translated guest code must not silently desync the JIT. The
+ *       WRITE fast path is gated to NON-executable regions, so RWX/code writes stay on mach_vm_write
+ *       byte-for-byte as before (SMC behavior unchanged). Reads never affect code semantics.
+ *
+ * Only the region-cache-HIT branch uses this (the hot path that already skipped the region syscall
+ * but still paid the copy syscall). The cold mach_vm_region branch is left untouched. Env-gated
+ * MACRUNNER_HB_DIRECT_MEM, default OFF (safe baseline; flip on for the A/B).
+ */
+static __thread sigjmp_buf macrunner_hb_dmem_jmp;
+static __thread volatile sig_atomic_t macrunner_hb_dmem_active;
+static __thread volatile uint64_t macrunner_hb_dmem_lo, macrunner_hb_dmem_hi;
+
+static int macrunner_hb_direct_mem_enabled( void )
+{
+    static int cached = -1;
+    if (cached < 0) cached = macrunner_hb_env_flag( "MACRUNNER_HB_DIRECT_MEM" );
+    return cached;
+}
+
+/* Called from segv_handler/bus_handler (TOP, before any lock). If a SIGSEGV/SIGBUS lands inside a
+ * gated direct guest-mem copy (fault addr within the guest range), recover via siglongjmp so the
+ * caller falls back to mach_vm. No-op otherwise. Async-signal-safe (only a flag test + siglongjmp). */
+__attribute__((visibility("default")))
+void macrunner_hb_dmem_fault_recover( unsigned long long fault_addr )
+{
+    if (macrunner_hb_dmem_active &&
+        (uint64_t)fault_addr >= macrunner_hb_dmem_lo && (uint64_t)fault_addr < macrunner_hb_dmem_hi)
+    {
+        macrunner_hb_dmem_active = 0;
+        siglongjmp( macrunner_hb_dmem_jmp, 1 );  /* does not return */
+    }
+}
+
+/* Direct in-process copy of one guest-memory chunk, guarded against an unmap TOCTOU. guest_lo/hi
+ * bound the GUEST side (the page that can disappear). Returns 1 on success, 0 on fault (the caller
+ * must fall back to mach_vm). */
+static int macrunner_hb_direct_guest_copy( void *dst, const void *src, size_t n,
+                                           uint64_t guest_lo, uint64_t guest_hi )
+{
+    macrunner_hb_dmem_lo = guest_lo;
+    macrunner_hb_dmem_hi = guest_hi;
+    if (sigsetjmp( macrunner_hb_dmem_jmp, 0 ))
+    {
+        sigset_t sigs;
+        macrunner_hb_dmem_active = 0;
+        sigemptyset( &sigs );
+        sigaddset( &sigs, SIGSEGV );
+        sigaddset( &sigs, SIGBUS );
+        pthread_sigmask( SIG_UNBLOCK, &sigs, NULL );
+        return 0;
+    }
+    macrunner_hb_dmem_active = 1;
+    memcpy( dst, src, n );
+    macrunner_hb_dmem_active = 0;
+    return 1;
+}
+#endif /* __APPLE__ */
+
 static hb_result_t macrunner_hb_special_read( void *user, hb_gva_t addr, void *out, size_t size )
 {
     struct macrunner_hb_special *special = user;
@@ -4051,6 +4128,7 @@ static hb_result_t macrunner_hb_special_read( void *user, hb_gva_t addr, void *o
             mach_vm_size_t chunk;
             kern_return_t kr;
             mach_vm_address_t crb; mach_vm_size_t crs; vm_prot_t crp;
+            int from_cache = 0;
 
             info.protection = 0;
             if (macrunner_hb_region_cache_enabled() &&
@@ -4060,6 +4138,7 @@ static hb_result_t macrunner_hb_special_read( void *user, hb_gva_t addr, void *o
                  * the cache only ever stores readable regions, and lookup guaranteed cur is
                  * inside [base,base+size). Skip the mach_vm_region syscall. */
                 region = crb; region_size = crs; info.protection = crp;
+                from_cache = 1;
             }
             else
             {
@@ -4086,13 +4165,22 @@ static hb_result_t macrunner_hb_special_read( void *user, hb_gva_t addr, void *o
             chunk = region + region_size - cur;
             if (chunk > remaining) chunk = remaining;
             if (!chunk) return HB_ERR_MEMORY_FAULT;
-            kr = mach_vm_read_overwrite( mach_task_self(), cur, chunk,
-                                         (mach_vm_address_t)(uintptr_t)dst, &copied );
-            if (kr != KERN_SUCCESS || copied != chunk)
+            if (from_cache && macrunner_hb_direct_mem_enabled() &&
+                macrunner_hb_direct_guest_copy( dst, (const void *)(uintptr_t)cur, (size_t)chunk,
+                                                cur, cur + chunk ))
             {
-                macrunner_hb_trace_special_vm_fault( "read-copy", addr, cur, remaining, kr,
-                                                     region, region_size, info.protection );
-                return HB_ERR_MEMORY_FAULT;
+                /* fast path: direct memcpy from a generation-valid, present+readable cached region */
+            }
+            else
+            {
+                kr = mach_vm_read_overwrite( mach_task_self(), cur, chunk,
+                                             (mach_vm_address_t)(uintptr_t)dst, &copied );
+                if (kr != KERN_SUCCESS || copied != chunk)
+                {
+                    macrunner_hb_trace_special_vm_fault( "read-copy", addr, cur, remaining, kr,
+                                                         region, region_size, info.protection );
+                    return HB_ERR_MEMORY_FAULT;
+                }
             }
             cur += chunk;
             dst += chunk;
@@ -4207,6 +4295,7 @@ static hb_result_t macrunner_hb_special_write( void *user, hb_gva_t addr, const 
             mach_vm_size_t chunk;
             kern_return_t kr;
             mach_vm_address_t cwb; mach_vm_size_t cws; vm_prot_t cwp;
+            int from_cache = 0;
 
             info.protection = 0;
             if (macrunner_hb_region_cache_enabled() &&
@@ -4215,6 +4304,7 @@ static hb_result_t macrunner_hb_special_write( void *user, hb_gva_t addr, const 
             {
                 /* writable cached region, generation-valid -> skip mach_vm_region */
                 region = cwb; region_size = cws; info.protection = cwp;
+                from_cache = 1;
             }
             else
             {
@@ -4246,18 +4336,30 @@ static hb_result_t macrunner_hb_special_write( void *user, hb_gva_t addr, const 
             chunk = region + region_size - cur;
             if (chunk > remaining) chunk = remaining;
             if (!chunk || (mach_msg_type_number_t)chunk != chunk) return HB_ERR_MEMORY_FAULT;
-            kr = mach_vm_write( mach_task_self(), cur, (vm_offset_t)(uintptr_t)src,
-                                (mach_msg_type_number_t)chunk );
-            if (kr != KERN_SUCCESS)
+            if (from_cache && macrunner_hb_direct_mem_enabled() &&
+                !(info.protection & VM_PROT_EXECUTE) &&
+                macrunner_hb_direct_guest_copy( (void *)(uintptr_t)cur, src, (size_t)chunk,
+                                                cur, cur + chunk ))
             {
-                if (guard_retries < 4 && macrunner_hb_try_grow_guard_page( cur ))
+                /* fast path: direct memcpy into a generation-valid, writable, NON-executable cached
+                 * region. Executable/RWX (code) writes deliberately fall to mach_vm_write below so
+                 * SMC behavior is byte-for-byte unchanged. */
+            }
+            else
+            {
+                kr = mach_vm_write( mach_task_self(), cur, (vm_offset_t)(uintptr_t)src,
+                                    (mach_msg_type_number_t)chunk );
+                if (kr != KERN_SUCCESS)
                 {
-                    guard_retries++;
-                    continue;
+                    if (guard_retries < 4 && macrunner_hb_try_grow_guard_page( cur ))
+                    {
+                        guard_retries++;
+                        continue;
+                    }
+                    macrunner_hb_trace_special_vm_fault( "write-copy", addr, cur, remaining, kr,
+                                                         region, region_size, info.protection );
+                    return HB_ERR_MEMORY_FAULT;
                 }
-                macrunner_hb_trace_special_vm_fault( "write-copy", addr, cur, remaining, kr,
-                                                     region, region_size, info.protection );
-                return HB_ERR_MEMORY_FAULT;
             }
             cur += chunk;
             src += chunk;

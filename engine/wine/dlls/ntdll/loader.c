@@ -572,6 +572,19 @@ static BOOL macrunner_hb_trace_pe32_loader(void)
            value[0] && value[0] != '0';
 }
 
+/* Run winemetal.dll's x64 DllMain (instead of the builtin skip) so __wine_init_unix_call publishes
+ * __wine_unixlib_handle.  Proven to wire the handle (first WMTCopyAllDevices unix call returns
+ * STATUS_SUCCESS), but a separate HB exception/re-execution loop on the success-then-fault path still
+ * blocks end-to-end (the same unix call re-dispatches and faults c0000005).  Default OFF until that
+ * loop is fixed, so default behaviour stays at the clean DXGI_ERROR_NOT_FOUND (no hang). */
+static BOOL macrunner_hb_winemetal_x64_dllmain_enabled(void)
+{
+    WCHAR value[8] = {0};
+
+    return get_env( L"MACRUNNER_HB_WINEMETAL_X64_DLLMAIN", value, sizeof(value) ) &&
+           value[0] && value[0] != '0';
+}
+
 static BOOL macrunner_hb_trace_thread_lifecycle(void)
 {
     WCHAR value[8] = {0};
@@ -5390,6 +5403,15 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
                 BOOL needs_native_entry = !wcsicmp( wm->ldr.BaseDllName.Buffer, L"win32u.dll" ) ||
                                           !wcsicmp( wm->ldr.BaseDllName.Buffer, L"kernelbase.dll" ) ||
                                           !wcsicmp( wm->ldr.BaseDllName.Buffer, L"user32.dll" );
+                /* winemetal.dll is a builtin that carries a Wine unixlib (DXMT's Metal bridge):
+                 * unlike the other graphics frontends its x64 DllMain MUST run, because it calls
+                 * __wine_init_unix_call to publish __wine_unixlib_handle.  If skipped, the handle
+                 * stays 0 and every WINE_UNIX_CALL dispatches through a null funcs table
+                 * (WMTCopyAllDevices()==0 -> no Metal adapter -> D3D11CreateDevice==0x887A0002).
+                 * It has no native ARM64 entry (pure x86_64 PE), so route it through the x64 entry
+                 * path below instead of the skip. */
+                BOOL needs_x64_entry = macrunner_hb_winemetal_x64_dllmain_enabled() &&
+                                       !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemetal.dll" );
                 DLLENTRYPROC native_entry = NULL;
 
                 /* Fill the ARM64X dispatch slots for EVERY hybrid builtin at
@@ -5450,12 +5472,19 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
                     goto done_call;
                 }
 
+                if (!needs_x64_entry)
+                {
+                    if (macrunner_hb_trace_bootstrap())
+                        MESSAGE( "macrunner-hb-bootstrap-dll-entry-skip: module=%s reason=%s\n",
+                                 debugstr_w(wm->ldr.BaseDllName.Buffer), reason_names[reason] );
+                    retv = TRUE;
+                    status = STATUS_SUCCESS;
+                    goto done_call;
+                }
                 if (macrunner_hb_trace_bootstrap())
-                    MESSAGE( "macrunner-hb-bootstrap-dll-entry-skip: module=%s reason=%s\n",
-                             debugstr_w(wm->ldr.BaseDllName.Buffer), reason_names[reason] );
-                retv = TRUE;
-                status = STATUS_SUCCESS;
-                goto done_call;
+                    MESSAGE( "macrunner-hb-bootstrap-dll-entry-x64-unixlib: module=%s reason=%s entry=%p\n",
+                             debugstr_w(wm->ldr.BaseDllName.Buffer), reason_names[reason], entry );
+                /* fall through to the x64 entry path so winemetal's DllMain runs */
             }
 
             memset( &params, 0, sizeof(params) );

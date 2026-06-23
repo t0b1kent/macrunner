@@ -780,6 +780,11 @@ extern ULONG64 macrunner_hb_normalize_x64_tls_callback_pc( ULONG64 pc, ULONG64 i
                                                            ULONG64 reason );
 extern ULONG64 macrunner_hb_dispatch_x64_callback( ULONG64 target, const ULONG64 args[8] );
 extern void macrunner_hb_note_x64_guest_fault_handlers_ready(void);
+/* MacRunner 2026-06-24 (HB-throughput direct-mem fast path): recover from a SIGSEGV/SIGBUS that
+ * lands inside a gated direct guest-memory copy in special_read/write. siglongjmps back (does not
+ * return) when the fault addr is inside the active copy's guest range; no-op otherwise. Must be
+ * called at the TOP of the segv/bus handlers, before any lock. Async-signal-safe. */
+extern void macrunner_hb_dmem_fault_recover( unsigned long long fault_addr );
 extern void macrunner_hb_x64_callback_trampoline(void);
 static BOOL macrunner_hb_x64_loader_enabled(void);
 static BOOL macrunner_hb_trace_callback_route_enabled(void)
@@ -2558,6 +2563,8 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     else rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
 #if defined(__APPLE__)
+    /* recover a gated direct guest-mem copy fault BEFORE any other handling/locking */
+    macrunner_hb_dmem_fault_recover( (unsigned long long)(ULONG_PTR)siginfo->si_addr );
     low_stack_fault = macrunner_hb_is_low_stack_access_fault( context, &rec );
     virtual_stack = macrunner_hb_virtual_fault_stack( context, &rec );
 #endif
@@ -2883,6 +2890,8 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
 #if defined(__APPLE__)
+    /* recover a gated direct guest-mem copy fault BEFORE any other handling/locking */
+    macrunner_hb_dmem_fault_recover( (unsigned long long)(ULONG_PTR)siginfo->si_addr );
     stack_overflow_fault = macrunner_hb_is_low_stack_access_fault( context, &rec );
     virtual_stack = macrunner_hb_virtual_fault_stack( context, &rec );
 #endif

@@ -5269,6 +5269,8 @@ static BOOL macrunner_hb_range_end_u64( void *base, SIZE_T size, uint64_t *start
     return *end > *start;
 }
 
+static void macrunner_hb_note_x64_dynamic_exec_region( void *base, SIZE_T size, ULONG protect );
+
 static BOOL macrunner_hb_x64_dynamic_exec_contains_no_lock( void *pc )
 {
     uint64_t addr = (uint64_t)(uintptr_t)pc;
@@ -5285,6 +5287,44 @@ static BOOL macrunner_hb_x64_dynamic_exec_contains_no_lock( void *pc )
 
         if (addr >= base && addr < end) return TRUE;
     }
+
+    /* Fallback check for anonymous executable memory (JIT heap).
+     * MacRunner 2026-06-24 (HK c000007b): ARM64 PE modules are native-executable
+     * but NOT in dladdr (they are Wine PE images, not Mach-O dylibs).  The old
+     * code classified them as x64 JIT regions → 1.5M Phase F rejections per boot.
+     * Guard: if the address is in a KNOWN PE MODULE that is NOT AMD64, it is
+     * native ARM64 code — skip the VM-protection heuristic entirely. */
+    {
+        void *pe_module = macrunner_hb_module_from_pc( pc );
+        if (pe_module)
+        {
+            USHORT machine = macrunner_hb_module_machine( pe_module );
+            if (machine != IMAGE_FILE_MACHINE_AMD64)
+                return FALSE;
+        }
+    }
+    {
+        mach_vm_address_t treg = (mach_vm_address_t)pc;
+        mach_vm_size_t tsz = 0;
+        vm_region_basic_info_data_64_t tinfo;
+        mach_msg_type_number_t tcnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t tobj = MACH_PORT_NULL;
+        kern_return_t tkr = mach_vm_region( mach_task_self(), &treg, &tsz,
+                                            VM_REGION_BASIC_INFO_64,
+                                            (vm_region_info_t)&tinfo, &tcnt, &tobj );
+        if (tobj != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), tobj );
+        if (tkr == KERN_SUCCESS && (tinfo.protection & VM_PROT_EXECUTE))
+        {
+            Dl_info dli = {0};
+            if (!dladdr( pc, &dli ) || !dli.dli_fname)
+            {
+                /* Dynamically register this region so we don't have to mach_vm_region next time! */
+                macrunner_hb_note_x64_dynamic_exec_region( (void *)(uintptr_t)treg, (SIZE_T)tsz, PAGE_EXECUTE_READWRITE );
+                return TRUE;
+            }
+        }
+    }
+
     return FALSE;
 }
 

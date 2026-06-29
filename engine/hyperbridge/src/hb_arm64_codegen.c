@@ -1247,8 +1247,10 @@ static bool emit_native_scalar_mov(hb_codegen_buffer_t* buf, const hb_ir_instr_t
         } else {
             emit_mov_imm_compact(buf, 20, (uint64_t)instr->src1.imm);
         }
-        uint32_t off = emit_direct_mem_addr_with_offset(buf, &instr->dst);
-        emit_direct_mem_store_from_x20_off(buf, instr->dst.size, off);
+        /* Use the alignment-checked TSO store: STLR (and LDAR) require natural alignment, but x86
+         * permits unaligned 8-byte stores; the raw-STLR offset path SIGBUSes on an unaligned dest.
+         * The _tso path runtime-checks alignment and falls back to the lazy helper when unaligned. */
+        if (!emit_direct_mem_store_from_x20_tso(buf, &instr->dst)) return false;
         return true;
     }
 
@@ -1272,7 +1274,17 @@ static bool emit_native_xmm_mov(hb_codegen_buffer_t* buf, const hb_ir_instr_t* i
     if (jit_direct_mem_codegen_enabled(buf) && direct_user_xmm_mem_allowed(buf, &instr->dst) &&
         is_xmm_reg_operand(&instr->src1)) {
         emit_load_xmm_to_x20_x22(buf, instr->src1.reg);
-        emit_direct_mem_addr(buf, &instr->dst);
+        /* emit_direct_mem_addr clobbers x22 for indexed / large-disp addresses (it loads the
+         * index into x22); x22 holds the HIGH 64 bits of the XMM value to be stored.  Preserve
+         * it across the address computation (mirrors emit_xmm_load_store_pair).  Without this,
+         * a non-paired SSE store with an indexed dest corrupts the high qword. */
+        if (direct_mem_addr_preserves_x22(&instr->dst)) {
+            emit_direct_mem_addr(buf, &instr->dst);
+        } else {
+            emit_mov_reg(buf, 23, 22);
+            emit_direct_mem_addr(buf, &instr->dst);
+            emit_mov_reg(buf, 22, 23);
+        }
         emit_direct_mem128_store_from_x20_x22(buf);
         return true;
     }
@@ -2117,8 +2129,8 @@ static bool emit_scalar_load_store_pair(hb_codegen_buffer_t* buf, const hb_ir_in
     uint32_t load_off = emit_direct_mem_addr_with_offset(buf, &load->src1);
     emit_direct_mem_load_to_x20_off(buf, load->src1.size, load_off);
     emit_store_x20_to_gpr_sized(buf, &load->dst);
-    uint32_t store_off = emit_direct_mem_addr_with_offset(buf, &store->src1);
-    emit_direct_mem_store_from_x20_off(buf, store->src1.size, store_off);
+    /* Alignment-checked TSO store (raw STLR SIGBUSes on an unaligned dest, which x86 allows). */
+    if (!emit_direct_mem_store_from_x20_tso(buf, &store->src1)) return false;
     return true;
 }
 
@@ -4166,7 +4178,16 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
                 direct_user_xmm_mem_allowed(buf, &instr->src1) &&
                 is_xmm_reg_operand(&instr->src2)) {
                 emit_load_xmm_to_x20_x22(buf, instr->src2.reg);
-                emit_direct_mem_addr(buf, &instr->src1);
+                /* emit_direct_mem_addr clobbers x22 (index/large-disp) which holds the HIGH 64
+                 * bits of the XMM value; preserve it across the address computation, else an
+                 * indexed SSE store corrupts the high qword (the HK realloc-copy corruption). */
+                if (direct_mem_addr_preserves_x22(&instr->src1)) {
+                    emit_direct_mem_addr(buf, &instr->src1);
+                } else {
+                    emit_mov_reg(buf, 23, 22);
+                    emit_direct_mem_addr(buf, &instr->src1);
+                    emit_mov_reg(buf, 22, 23);
+                }
                 emit_direct_mem128_store_from_x20_x22(buf);
                 return HB_OK;
             }

@@ -1230,8 +1230,11 @@ static bool emit_native_scalar_mov(hb_codegen_buffer_t* buf, const hb_ir_instr_t
                 emit_mask_x_reg_to_size(buf, 20, 23, instr->dst.size);
         } else if (jit_direct_mem_codegen_enabled(buf) &&
                    direct_user_mem_allowed(buf, &instr->src1)) {
-            uint32_t off = emit_direct_mem_addr_with_offset(buf, &instr->src1);
-            emit_direct_mem_load_to_x20_off(buf, instr->src1.size, off);
+            /* Alignment-checked TSO load: raw LDAR SIGBUSes on an unaligned src (which x86
+             * permits) -> a JIT fault-recovery loop.  _tso runtime-checks and falls back to the
+             * lazy helper when unaligned; it also stores the value into the dst reg, so return. */
+            if (!emit_direct_mem_load_to_gpr_tso(buf, &instr->src1, &instr->dst)) return false;
+            return true;
         } else {
             return false;
         }
@@ -2126,9 +2129,10 @@ static bool emit_scalar_load_store_pair(hb_codegen_buffer_t* buf, const hb_ir_in
     if (load->src1.size != load->dst.size || store->src1.size != store->src2.size)
         return false;
 
-    uint32_t load_off = emit_direct_mem_addr_with_offset(buf, &load->src1);
-    emit_direct_mem_load_to_x20_off(buf, load->src1.size, load_off);
-    emit_store_x20_to_gpr_sized(buf, &load->dst);
+    /* Alignment-checked TSO load (raw LDAR SIGBUSes on an unaligned src, which x86 permits) ->
+     * the value lands in load->dst; reload x20 from it for the (also alignment-checked) store. */
+    if (!emit_direct_mem_load_to_gpr_tso(buf, &load->src1, &load->dst)) return false;
+    if (!emit_load_gpr_sized_to_x20(buf, &load->dst)) return false;
     /* Alignment-checked TSO store (raw STLR SIGBUSes on an unaligned dest, which x86 allows). */
     if (!emit_direct_mem_store_from_x20_tso(buf, &store->src1)) return false;
     return true;

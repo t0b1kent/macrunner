@@ -6158,6 +6158,69 @@ static hb_result_t macrunner_hb_special_read( void *user, hb_gva_t addr, void *o
     return HB_OK;
 }
 
+#ifdef __APPLE__
+/* MacRunner (2026-07-02): shared commit-on-fault core, factored out of
+ * macrunner_hb_try_grow_guard_page (below) so it is also callable directly from
+ * bus_handler's raw native-fault path (signal_arm64.c), which already ran its own
+ * virtual_handle_fault and doesn't need it invoked a second time.
+ *
+ * Originally PROT_NONE-only (a RESERVED-but-committable guest page -- the reserved
+ * tail of a Unity allocator slab; host page PROT_NONE, max_prot allows WRITE).
+ * EXTENDED (2026-07-02) to also cover PROT_READ: a permission fault (page mapped
+ * read-only, write denied) surfaces identically on Apple Silicon -- same "the OS
+ * would allow this page to become writable" signal (max_prot & VM_PROT_WRITE), just
+ * a different starting vm_prot_t. Confirmed via raw ESR (macrunner-hb-bus-fault:
+ * esr=0x9200004f, DFSC=0xf permission-fault-L3, insn=0xf9000280 `str x0,[x20]`) that
+ * this was the known 2026-06-30 "commit-on-fault only handles PROT_NONE" gap, hit
+ * again by native ntdll memcpy writing into a read-only-mapped page.
+ *   STRICT SCOPE (do NOT mask real AV/OOB): commit ONLY when mach_vm_region shows the
+ *   page host-NONE-or-READ AND max_prot & WRITE AND the region covers the faulting
+ *   addr. A genuinely-unmapped page (region starts above addr) or a page without
+ *   write in max_prot still returns FALSE -> the access faults as before. Commit to
+ *   RW only (never EXEC -- guest x64 must stay non-native-executable). Every fire is
+ *   logged so this can be audited (and the proper VirtualAlloc/commit-time fix filed
+ *   as follow-up). */
+__attribute__((visibility("default")))
+BOOL macrunner_hb_try_commit_or_upgrade_page( unsigned long long addr )
+{
+    mach_vm_address_t a = (mach_vm_address_t)addr;
+    mach_vm_size_t sz = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t obj = MACH_PORT_NULL;
+    kern_return_t kr = mach_vm_region( mach_task_self(), &a, &sz, VM_REGION_BASIC_INFO_64,
+                                       (vm_region_info_t)&info, &cnt, &obj );
+    if (obj != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), obj );
+    if (kr == KERN_SUCCESS &&
+        (mach_vm_address_t)addr >= a && (mach_vm_address_t)addr < a + sz &&
+        (info.protection == VM_PROT_NONE || info.protection == VM_PROT_READ) &&
+        (info.max_protection & VM_PROT_WRITE))
+    {
+        long pgsz = sysconf( _SC_PAGESIZE );
+        size_t plen = pgsz > 0 ? (size_t)pgsz : 0x4000;
+        uintptr_t page = (uintptr_t)addr & ~(uintptr_t)(plen - 1);
+        if (mprotect( (void *)page, plen, PROT_READ | PROT_WRITE ) == 0)
+        {
+            static unsigned long commit_n;
+            unsigned long n = __atomic_add_fetch( &commit_n, 1, __ATOMIC_RELAXED );
+            /* Heavy logging for the Unity slab 0x320f/0x3f frontier */
+            int heavy = (addr >= 0x320f00000ULL && addr < 0x321100000ULL) ||
+                        (addr >= 0x3f0000000ULL && addr < 0x401000000ULL);
+            if (heavy || n <= 256 || (n & (n - 1)) == 0)  /* all of first 256, then powers of two, then heavy */
+                fprintf( stderr,
+                         "macrunner-hb-reserved-commit: addr=0x%llx page=0x%llx region=[0x%llx,0x%llx) "
+                         "was_prot=0x%x max_prot=0x%x committed=RW n=%lu\n",
+                         (unsigned long long)addr, (unsigned long long)page,
+                         (unsigned long long)a, (unsigned long long)(a + sz),
+                         (unsigned)info.protection, (unsigned)info.max_protection, n );
+            fflush( stderr );
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+#endif
+
 /* Windows guard-page semantics for guest writes: a CALL pushing one qword
  * below a page-aligned RSP must clear the guard and retry (mono grows its
  * VirtualAlloc'd thread stacks this way; HB helpers otherwise surface it as
@@ -6188,54 +6251,8 @@ static BOOL macrunner_hb_try_grow_guard_page( hb_gva_t addr )
     if (status == STATUS_SUCCESS || status == STATUS_GUARD_PAGE_VIOLATION)
         return TRUE;
 #ifdef __APPLE__
-    /* Commit-on-fault for a RESERVED-but-committable guest page — the reserved tail of a
-     * Unity allocator slab the producer writes into (committed head → reserved tail of the
-     * SAME reservation; host page PROT_NONE, max_prot allows WRITE).  virtual_handle_fault
-     * above only handles guard/stack-grow, so without this the direct-mem JIT write (and the
-     * interpreter recovery it falls back to) SIGBUS on the PROT_NONE page.
-     *   STRICT SCOPE (do NOT mask real AV/OOB): commit ONLY when mach_vm_region shows the
-     *   page host-RESERVED (prot == VM_PROT_NONE) AND max_prot & WRITE AND the region covers
-     *   the faulting addr.  A genuinely-unmapped page (region starts above addr) or a reserved
-     *   page without write in max_prot still returns FALSE → the access faults as before.
-     *   Commit to RW only (never EXEC — guest x64 must stay non-native-executable).  Every
-     *   fire is logged so this can be audited as the slab-commit case (and the proper
-     *   VirtualAlloc-commit-time fix filed as follow-up). */
-    {
-        mach_vm_address_t a = (mach_vm_address_t)addr;
-        mach_vm_size_t sz = 0;
-        vm_region_basic_info_data_64_t info;
-        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t obj = MACH_PORT_NULL;
-        kern_return_t kr = mach_vm_region( mach_task_self(), &a, &sz, VM_REGION_BASIC_INFO_64,
-                                           (vm_region_info_t)&info, &cnt, &obj );
-        if (obj != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), obj );
-        if (kr == KERN_SUCCESS &&
-            (mach_vm_address_t)addr >= a && (mach_vm_address_t)addr < a + sz &&
-            info.protection == VM_PROT_NONE &&
-            (info.max_protection & VM_PROT_WRITE))
-        {
-            long pgsz = sysconf( _SC_PAGESIZE );
-            size_t plen = pgsz > 0 ? (size_t)pgsz : 0x4000;
-            uintptr_t page = (uintptr_t)addr & ~(uintptr_t)(plen - 1);
-            if (mprotect( (void *)page, plen, PROT_READ | PROT_WRITE ) == 0)
-            {
-                static unsigned long commit_n;
-                unsigned long n = __atomic_add_fetch( &commit_n, 1, __ATOMIC_RELAXED );
-                /* Heavy logging for the Unity slab 0x320f/0x3f frontier */
-                int heavy = (addr >= 0x320f00000ULL && addr < 0x321100000ULL) ||
-                            (addr >= 0x3f0000000ULL && addr < 0x401000000ULL);
-                if (heavy || n <= 256 || (n & (n - 1)) == 0)  /* all of first 256, then powers of two, then heavy */
-                    fprintf( stderr,
-                             "macrunner-hb-reserved-commit: addr=0x%llx page=0x%llx region=[0x%llx,0x%llx) "
-                             "max_prot=0x%x committed=RW n=%lu\n",
-                             (unsigned long long)addr, (unsigned long long)page,
-                             (unsigned long long)a, (unsigned long long)(a + sz),
-                             (unsigned)info.max_protection, n );
-                fflush( stderr );
-                return TRUE;
-            }
-        }
-    }
+    if (macrunner_hb_try_commit_or_upgrade_page( (unsigned long long)addr ))
+        return TRUE;
     if (getenv("MACRUNNER_HB_TRACE_INTERP_FAIL")) {
         mach_vm_address_t fa = (mach_vm_address_t)addr; mach_vm_size_t fsz = 0;
         vm_region_basic_info_data_64_t fi; mach_msg_type_number_t fc = VM_REGION_BASIC_INFO_COUNT_64;

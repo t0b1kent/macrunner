@@ -786,6 +786,11 @@ extern void macrunner_hb_note_x64_guest_fault_handlers_ready(void);
  * return) when the fault addr is inside the active copy's guest range; no-op otherwise. Must be
  * called at the TOP of the segv/bus handlers, before any lock. Async-signal-safe. */
 extern void macrunner_hb_dmem_fault_recover( unsigned long long fault_addr );
+/* MacRunner 2026-07-02: mprotect a PROT_NONE/PROT_READ page to RW when max_prot allows WRITE
+ * (commit-on-fault for a reserved-but-committable or read-only-mapped guest page). Returns TRUE
+ * if the page was upgraded and the faulting access should simply be retried by returning from
+ * the signal handler. See macrunner_hb.c for the strict scope (never masks a genuine AV/OOB). */
+extern BOOL macrunner_hb_try_commit_or_upgrade_page( unsigned long long addr );
 extern void macrunner_hb_x64_callback_trampoline(void);
 static BOOL macrunner_hb_x64_loader_enabled(void);
 static BOOL macrunner_hb_trace_callback_route_enabled(void)
@@ -2912,7 +2917,17 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     TEB *teb = NtCurrentTeb();
 
 #if defined(BUS_ADRALN)
-    alignment_fault = (siginfo->si_code == BUS_ADRALN);
+    /* MacRunner (2026-07-02): si_code==BUS_ADRALN alone is NOT reliable on this kernel --
+     * observed firing for a genuine ARM64 permission fault (ESR DFSC=0xf, write to a
+     * mapped-but-read-only page) with insn=`str x0,[x20]`/`strb w11,[x9]`, neither of which
+     * can fault from misalignment on ARM64. Cross-check against the ESR's own DFSC field
+     * (bits [5:0] of the ISS): 0x21 is the dedicated "Alignment fault" code, distinct from
+     * the permission-fault range 0x0d-0x0f and the translation-fault range 0x04-0x07. Only
+     * classify as a real alignment fault when BOTH agree, so a permission fault is no longer
+     * mislabeled STATUS_DATATYPE_MISALIGNMENT further down (macrunner-hb-bus-fault trace
+     * confirmed this exact esr=0x9200004f / insn=0xf9000280 signature). */
+    alignment_fault = (siginfo->si_code == BUS_ADRALN) &&
+                       ((get_fault_esr( context ) & 0x3f) == 0x21);
 #endif
 
     rec.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
@@ -3049,7 +3064,8 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.ExceptionCode = STATUS_STACK_OVERFLOW;
         rec.NumberParameters = 0;
     }
-    else
+    else if (macrunner_hb_try_commit_or_upgrade_page( (unsigned long long)rec.ExceptionInformation[1] ))
+        return;
 #endif
     if (handle_syscall_fault( context, &rec )) return;
     macrunner_hb_trace_native_fault( "bus", context, &rec, get_fault_esr( context ) );

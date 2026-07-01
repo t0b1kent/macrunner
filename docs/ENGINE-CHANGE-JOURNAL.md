@@ -517,6 +517,14 @@ Why: D3D9 headless coverage had alpha/depth/cull/scissor/sampler/combiner paths 
 Verify: `python3 -m pytest engine/graphics/tests/test_d3d9_translation.py engine/graphics/tests/test_d3d9_metal_request.py -q` -> `61 passed`; `bash engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh` -> `d3d9_trace_count=32`, PASS; `D3D9_METAL_REQUEST_ONLY=1 bash engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh` -> `d3d9_metal_request_count=32`, PASS.
 Status: headless-validated
 
+## 2026-07-02 04:21 — Lane A loader-init exit=5 locale EC mirror/frontier
+File(s): engine/wine/dlls/ntdll/signal_arm64.c, engine/wine/dlls/kernelbase/locale.c
+Type: ROOT-FIX + DIAGNOSTIC-SAFETY
+What: Scoped PE first-chance Unity IAT dump to real `UnityPlayer.dll` modules with sufficient `SizeOfImage`, so tracing no longer dereferences fixed Unity offsets in small DLLs. Corrected kernelbase locale EC mirror delta from stale `0x2820` to current twin-block delta `0x27d8` and added sort pointer verification logging.
+Why: The quiet loader-init `exit=5` after `kernelbase` DllMain was a native `c0000005` read at `kernelbase.dll!GetStringTypeW+0xa0` (`rva=0x366b4`, `ldrh w11,[x12,x11,lsl#1]`, `fault=0`). `nm` showed native/EC `sort` blocks at `0x1522b0` and `0x14fad8`; the old mirror copied 0x48 bytes before the EC `sort`, leaving `sort.ctype_idx` NULL.
+Verify: Built/deployed `ntdll.so`, PE `aarch64-windows/ntdll.dll`, and `aarch64-windows/kernelbase.dll` into `dist-arm64ec-spike`. Filtered classify run `reports/phase4-hollow-knight/laneA-exit5-locale-delta-verify-20260702-041609` reached `LADDER_RUNG: 6 (mono-init)` with self-check PASS; old `GetStringTypeW` native fault and loader-init exit=5 are gone. New blocker is `mono-2.0-bdwgc.dll rva=0x385e73` memory fault / `WINDOW_SERVER_ERROR c000007b`.
+Status: loader-init-cleared-next-mono-runtime-fault
+
 ## 2026-06-13 08:10 — Lane D Unity#2 DXBC corpus and D3D8 RenderWare fog matrix
 File(s): engine/graphics/scripts/run_unity_dxbc_airconv_corpus_smoke.sh, engine/graphics/traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl, engine/graphics/tests/test_d3d9_translation.py, engine/graphics/tests/test_d3d9_metal_request.py, engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh, engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh
 Type: GRAPHICS-COVERAGE

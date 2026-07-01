@@ -538,19 +538,20 @@ static void load_sortdefault_nls(void)
 /* MacRunner stopgap (Lane D 2026-06-15): the ARM64X kernelbase twin carries TWO copies of the
  * init-populated locale globals in .data.  Native init code (load_locale_nls/load_sortdefault_nls/
  * init_locale) writes the native-view copy, but the export-reachable native NLS functions
- * (GetStringTypeW/LCMapString/CompareString/get_language_sort/...) read the EC-view copy 0x2820
+ * (GetStringTypeW/LCMapString/CompareString/get_language_sort/...) read the EC-view copy 0x27d8
  * bytes below it, which no code ever writes (image DVRT has no .data entries to coalesce the two
  * views; the x64 side is .hexpthk thunks into ARM64, so there is no x64 init that writes the EC
  * copy).  Mirror each initialised global into its EC-view copy so native importers (e.g. DXMT) read
  * valid locale tables instead of NULL.  Guarded to the ARM64X image (CHPE metadata) so pure
  * x86_64/i386 kernelbase builds are untouched.  TODO: replace once general ARM64X .data
  * view-coherence lands (see reports/research/arm64x-sync-stopgaps.md). */
-/* Mirror one native-view global into its EC-view copy 0x2820 below.  noinline + opaque pointer
+/* Mirror one native-view global into its EC-view copy below.  noinline + opaque pointer
  * parameter so _FORTIFY_SOURCE cannot infer a sub-object (size 0) destination and insert a
  * __memcpy_chk that would abort at runtime. */
+#define MACRUNNER_HB_LOCALE_EC_DELTA 0x27d8
 static void __attribute__((noinline)) macrunner_hb_mirror_ec_copy( const void *native_addr, SIZE_T size )
 {
-    memcpy( (void *)((uintptr_t)native_addr - 0x2820), native_addr, size );
+    memcpy( (void *)((uintptr_t)native_addr - MACRUNNER_HB_LOCALE_EC_DELTA), native_addr, size );
 }
 
 static void macrunner_hb_sync_locale_ec_copies(void)
@@ -580,7 +581,8 @@ static void macrunner_hb_sync_locale_ec_copies(void)
         MESSAGE( "macrunner-hb-sync-locale-ec: skip reason=not-arm64x handle=%p\n", kernelbase_handle );
         return; /* not ARM64X: single .data copy, nothing to mirror */
     }
-    MESSAGE( "macrunner-hb-sync-locale-ec: mirroring handle=%p\n", kernelbase_handle );
+    MESSAGE( "macrunner-hb-sync-locale-ec: mirroring handle=%p delta=0x%x\n",
+             kernelbase_handle, MACRUNNER_HB_LOCALE_EC_DELTA );
 
     /* MacRunner (2026-07-01): confirmed via live probe that GetStringTypeW (called from
      * ucrtbase's CRT startup) reads a fixed image RVA landing in ansi_cpinfo/oem_cpinfo
@@ -616,6 +618,13 @@ static void macrunner_hb_sync_locale_ec_copies(void)
     MR_SYNC_EC( geo_ids_count );
     MR_SYNC_EC( geo_index_count );
 #undef MR_SYNC_EC
+
+    MESSAGE( "macrunner-hb-sync-locale-ec: verify native_sort=%p ec_sort=%p "
+             "native_ctypes=%p native_ctype_idx=%p ec_ctypes=%p ec_ctype_idx=%p\n",
+             &sort, (void *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA),
+             sort.ctypes, sort.ctype_idx,
+             ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA))->ctypes,
+             ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA))->ctype_idx );
 }
 
 

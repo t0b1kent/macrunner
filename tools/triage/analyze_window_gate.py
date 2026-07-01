@@ -420,7 +420,21 @@ def main():
                     except Exception: pass
 
             # 7. Server error
-            if "server_error=" in line or "status=" in line or "grab_class" in line:
+            window_status_line = (
+                "server_error=" in line or
+                "grab_class" in line or
+                (
+                    "status=" in line and
+                    (
+                        "create-window" in line or
+                        "createwindow" in line or
+                        "macrunner-server-create-window" in line or
+                        "ntusercreatewindow" in line or
+                        "window-server" in line
+                    )
+                )
+            )
+            if window_status_line:
                 has_server_error = True
                 for p in ["server_error=", "status="]:
                     if p in line:

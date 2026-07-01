@@ -126,9 +126,19 @@ LADDER_RUNGS = [
     ("window-visible", ["window-visible", "CG-capture", "non_background_pixels"]),
 ]
 
+# IAT-binding diagnostic lines (dlls/ntdll/loader.c ~3332-3488: iatentry/cpdecision/
+# cpresult/iatfinal all fire from the SAME import-table-patching routine and name
+# imports at LOAD time — they are NOT real graphics calls. A bare-substring marker
+# like "CreateDXGIFactory" would false-match any of them and report a graphics rung
+# (dxgi-factory) the run never actually reached. Reject any hit on such a line.
+_IATENTRY_TAGS = ("iatentry", "cpdecision", "cpresult", "iatfinal")
+
 def _marker_hit(text, marker):
-    """Substring hit, but reject counter lines like 'D3D11CreateDevice=0' /
-    'GfxDevice_count=...' (char right after the marker must not be = or _)."""
+    """Substring hit, but reject (a) counter lines like 'D3D11CreateDevice=0' /
+    'GfxDevice_count=...' (char right after the marker must not be = or _), and
+    (b) IAT-binding diagnostic lines ('macrunner-hb-iatentry: ...!CreateDXGIFactory1',
+    and its cpdecision/cpresult/iatfinal siblings) which name imports at load time,
+    not real calls."""
     start = 0
     while True:
         i = text.find(marker, start)
@@ -136,7 +146,11 @@ def _marker_hit(text, marker):
             return False
         j = i + len(marker)
         if text[j:j + 1] not in ("=", "_"):
-            return True
+            line_start = text.rfind("\n", 0, i) + 1
+            line_end = text.find("\n", j)
+            line = text[line_start:line_end if line_end >= 0 else len(text)]
+            if not any(tag in line for tag in _IATENTRY_TAGS):
+                return True
         start = j
 
 def ladder_rung(text):

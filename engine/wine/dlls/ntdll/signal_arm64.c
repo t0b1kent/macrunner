@@ -376,7 +376,19 @@ static BOOL macrunner_hb_recover_native_dispatch_boundary( DISPATCHER_CONTEXT *d
                      "pc=%p frame=%p frame_pc=%p frame_lr=%p prev=%p source=%s reason=%s\n",
                      tid, (void *)(ULONG_PTR)pc, frame, (void *)(ULONG_PTR)frame->pc,
                      (void *)(ULONG_PTR)frame->lr, frame->prev_frame, source,
-                     !resume->pc ? "resume-pc-null" : "resume-sp-null" );
+                      !resume->pc ? "resume-pc-null" : "resume-sp-null" );
+        return FALSE;
+    }
+    if (resume == frame && !frame->prev_frame &&
+        LdrFindEntryForAddress( (void *)(ULONG_PTR)resume->pc, &module ) == STATUS_SUCCESS &&
+        module && macrunner_hb_arm64x_code_range_kind( (ULONG_PTR)module->DllBase, resume->pc ) == 0)
+    {
+        if (reject_count++ < 16)
+            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
+                     "pc=%p frame=%p frame_pc=%p frame_lr=%p prev=%p source=%s "
+                     "reason=current-x64-frame-no-prev\n",
+                     tid, (void *)(ULONG_PTR)pc, frame, (void *)(ULONG_PTR)frame->pc,
+                     (void *)(ULONG_PTR)frame->lr, frame->prev_frame, source );
         return FALSE;
     }
     if (resume != frame && macrunner_hb_pc_inside_syscall_frame( resume->pc, frame ))
@@ -470,6 +482,31 @@ static BOOL macrunner_hb_fix_syscall_data_boundary_exception( EXCEPTION_RECORD *
 
     macrunner_hb_restore_syscall_prev_frame_context( context, prev );
     rec->ExceptionAddress = (void *)(ULONG_PTR)context->Pc;
+    return TRUE;
+}
+
+static BOOL macrunner_hb_is_arm64ec_unwind_scaffold_overshoot( ULONG64 establisher_frame,
+                                                               void *end_frame )
+{
+    struct macrunner_hb_syscall_frame *frame;
+    TEB *teb = NtCurrentTeb();
+    ULONG_PTR stack_lo = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
+    ULONG_PTR stack_hi = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
+    ULONG_PTR end = (ULONG_PTR)end_frame;
+    ULONG64 delta;
+
+    if (!macrunner_hb_is_x64_main_process()) return FALSE;
+    if (!end_frame || !stack_lo || !stack_hi) return FALSE;
+    if (end < stack_lo || end > stack_hi) return FALSE;
+    if (establisher_frame < stack_lo || establisher_frame > stack_hi) return FALSE;
+    if (establisher_frame <= end) return FALSE;
+
+    delta = establisher_frame - end;
+    if (delta > 0x800) return FALSE;
+
+    if (!(frame = macrunner_hb_current_syscall_frame())) return FALSE;
+    if (!frame->pc || !frame->sp) return FALSE;
+    if (frame->sp < stack_lo || frame->sp > stack_hi) return FALSE;
     return TRUE;
 }
 
@@ -2572,6 +2609,7 @@ void WINAPI RtlUnwindEx( PVOID end_frame, PVOID target_ip, EXCEPTION_RECORD *rec
     DISPATCHER_CONTEXT dispatch;
     CONTEXT new_context;
     NTSTATUS status;
+    static unsigned int scaffold_skip_count;
     ULONG_PTR frame;
     DWORD i, res;
 
@@ -2622,6 +2660,20 @@ void WINAPI RtlUnwindEx( PVOID end_frame, PVOID target_ip, EXCEPTION_RECORD *rec
         {
             if (end_frame && (dispatch.EstablisherFrame > (ULONG64)end_frame))
             {
+                if (macrunner_hb_is_arm64ec_unwind_scaffold_overshoot( dispatch.EstablisherFrame, end_frame ))
+                {
+                    if (scaffold_skip_count++ < 64)
+                        MESSAGE( "macrunner-hb-rtlunwind-scaffold-skip: establisher=%p "
+                                 "end_frame=%p control_pc=%p handler=%p target=%p\n",
+                                 (void *)(ULONG_PTR)dispatch.EstablisherFrame, end_frame,
+                                 (void *)(ULONG_PTR)dispatch.ControlPc,
+                                 dispatch.LanguageHandler, target_ip );
+                    new_context.Pc = (ULONG64)target_ip;
+                    new_context.Sp = (ULONG64)end_frame;
+                    *context = new_context;
+                    rec->ExceptionFlags |= EXCEPTION_TARGET_UNWIND;
+                    break;
+                }
                 ERR( "invalid end frame %I64x/%p\n", dispatch.EstablisherFrame, end_frame );
                 raise_status( STATUS_INVALID_UNWIND_TARGET, rec );
             }

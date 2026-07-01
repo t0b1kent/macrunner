@@ -74,7 +74,11 @@ cleanup() {
     "$WSRV" -k >/dev/null 2>&1 || true
   pkill -f "$PREFIX" 2>/dev/null || true
   sleep 1
-  rm -rf "$PREFIX" 2>/dev/null || true
+  if [ "${MACRUNNER_MR_RUN_KEEP_PREFIX:-0}" = "1" ]; then
+    echo "[mr-run] keep-prefix=$PREFIX" >&2
+  else
+    rm -rf "$PREFIX" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -196,6 +200,13 @@ if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" = "dxmt" ]; then
     echo "[mr-run] dxmt prefix sync failed" >&2
     exit 2
   fi
+  # Empty DXMT throwaway prefixes skip wineboot by default.  wine.inf points TEMP/TMP
+  # at %SystemRoot%\\temp, and Unity aborts cursor setup before creating a window if
+  # C:\\windows\\temp is absent.
+  mkdir -p "$PREFIX/drive_c/windows/temp" "$PREFIX/drive_c/windows/Temp"
+  mkdir -p "$PREFIX/dosdevices"
+  ln -sfn ../drive_c "$PREFIX/dosdevices/c:"
+  ln -sfn / "$PREFIX/dosdevices/z:"
 
   if [ -f "$DXMT_ROOT/$SYSTEM32_ARCH/d3d9.dll" ]; then
     cp -f "$DXMT_ROOT/$SYSTEM32_ARCH/d3d9.dll" "$PREFIX/drive_c/windows/system32/d3d9.dll"

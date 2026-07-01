@@ -545,6 +545,29 @@ static void macrunner_hb_copy_unicode_ascii( char *dst, size_t dst_len, const UN
     dst[len] = 0;
 }
 
+static BOOL macrunner_hb_is_unityplayer_module( const LDR_DATA_TABLE_ENTRY *module )
+{
+    static const WCHAR nameW[] =
+        {'U','n','i','t','y','P','l','a','y','e','r','.','d','l','l'};
+    unsigned int i, len;
+
+    if (!module || !module->BaseDllName.Buffer) return FALSE;
+    if (module->SizeOfImage < 0x1f404a8 + sizeof(ULONG64)) return FALSE;
+    len = module->BaseDllName.Length / sizeof(WCHAR);
+    if (len != ARRAY_SIZE(nameW)) return FALSE;
+
+    for (i = 0; i < len; i++)
+    {
+        WCHAR a = module->BaseDllName.Buffer[i];
+        WCHAR b = nameW[i];
+
+        if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+        if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+        if (a != b) return FALSE;
+    }
+    return TRUE;
+}
+
 static BOOL macrunner_hb_query_env_uint( const WCHAR *nameW, unsigned int *value )
 {
     WCHAR buffer[32];
@@ -644,7 +667,7 @@ static void macrunner_hb_trace_first_chance_exception( EXCEPTION_RECORD *rec, CO
      * see whether D3D11CreateDevice[1a02070] is the rebound thunk (non-NULL) or 0
      * (the create-fn guard at UnityPlayer 0x8e276f `cmpq $0,[1a02070]` bails E_FAIL
      * if NULL -> device @1f40460 stays NULL -> QI fault at 0x8e2acb). */
-    if (module_base && rva && rva < 0x2200000)
+    if (module_base && rva && macrunner_hb_is_unityplayer_module( module ) && rva < module->SizeOfImage)
     {
         char *u = (char *)module_base;
         __TRY {

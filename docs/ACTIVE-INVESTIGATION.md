@@ -1,11 +1,27 @@
 # ACTIVE INVESTIGATION — живое состояние
 
-Last update: 2026-07-02 08:40 VLAT, Codex.
+Last update: 2026-07-02 09:35 VLAT, Codex.
 
 Читайте этот файл первым после compaction. Не перепроверять DISPROVED без нового
 контр-факта. Не возвращать Wine-render патчи.
 
 ## Current Task
+
+Update 2026-07-02 09:35 VLAT: Hollow Knight/DXMT frontier is now honest
+filtered rung 9 (`dxgi-factory`). Critical build regression after `3cc5f4a`
+was fixed by tracking `ntdll/unix/unix_private.h` in `0f79be8`; clean rebuild of
+the ntdll pair passes. Fast DX11 smoke exposed a kernelbase locale registry
+static issue (`RegSetKeyValueW+0x8c`, `ldrh w8,[x23]`, bad `entry_sintlsymbol`
+subkey), fixed by `3babcf8` and verified by direct DXMT smoke `rc=0` with
+`CreateDXGIFactory1`, `D3D11CreateDevice`, `Present`, and `pixel_readback=PASS`.
+HK run `reports/phase4-hollow-knight/laneA-dxgi-after-kernelbase-try1-092308`
+uses drift-verified graphics-prep DXMT hashes and reaches real
+`CreateDXGIFactory2` (`macrunner-hb-d3d-boundary ... rc=0`, factory object
+`0x10c4ce730`). There is no signal/fault wall. It times out at `rc=143` after a
+DXMT device-side `CreateFence` marker; filtered classify self-check now PASSes
+with raw counts `dxgi_iat=7 real_factory=2 d3d11_iat=1 d3d11_device_markers=1
+swapchain=0 present=0`. Next blocker is real `PRESENT_MISSING`: no
+`CreateSwapChain*`, no `macrunner-hb-dxgi-swapchain`, no `Present`.
 
 Update 2026-07-02 08:40 VLAT: Hollow Knight loader/frontier moved past Mono
 with HB exec-registration restored in `ntdll/unix/virtual.c`. The suspicious

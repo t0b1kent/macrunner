@@ -592,8 +592,10 @@ static void macrunner_hb_sync_locale_ec_copies(void)
      * the rest of this file's runtime-populated NLS/codepage/geo statics (init_locale's
      * load_locale_nls/load_sortdefault_nls/init_default_codepage_tables family) rather than
      * adding just the one confirmed offender, to avoid re-discovering siblings one crash at
-     * a time (registry-handle statics HKEY intl_key/nls_key/tz_key and the entry_* localized
-     * string caches are NOT included -- not reached via computed native table lookups). */
+     * a time.  The registry-handle statics and entry_* localized registry cache structs are
+     * included too: wineboot/DXMT-prefix init reaches update_locale_registry through the EC
+     * view before DXMT code, and RegSetKeyValueW faulted on an unmirrored entry_sintlsymbol
+     * subkey pointer (kernelbase+0x59930, ldrh w8,[x23]). */
 #define MR_SYNC_EC( g ) macrunner_hb_mirror_ec_copy( &(g), sizeof(g) )
     MR_SYNC_EC( sort );
     MR_SYNC_EC( locale_table );
@@ -617,14 +619,55 @@ static void macrunner_hb_sync_locale_ec_copies(void)
     MR_SYNC_EC( geo_index );
     MR_SYNC_EC( geo_ids_count );
     MR_SYNC_EC( geo_index_count );
+    MR_SYNC_EC( intl_key );
+    MR_SYNC_EC( nls_key );
+    MR_SYNC_EC( tz_key );
+    MR_SYNC_EC( entry_icalendartype );
+    MR_SYNC_EC( entry_icountry );
+    MR_SYNC_EC( entry_icurrdigits );
+    MR_SYNC_EC( entry_icurrency );
+    MR_SYNC_EC( entry_idigits );
+    MR_SYNC_EC( entry_idigitsubstitution );
+    MR_SYNC_EC( entry_ifirstdayofweek );
+    MR_SYNC_EC( entry_ifirstweekofyear );
+    MR_SYNC_EC( entry_ilzero );
+    MR_SYNC_EC( entry_imeasure );
+    MR_SYNC_EC( entry_inegcurr );
+    MR_SYNC_EC( entry_inegnumber );
+    MR_SYNC_EC( entry_ipapersize );
+    MR_SYNC_EC( entry_s1159 );
+    MR_SYNC_EC( entry_s2359 );
+    MR_SYNC_EC( entry_scurrency );
+    MR_SYNC_EC( entry_sdecimal );
+    MR_SYNC_EC( entry_sgrouping );
+    MR_SYNC_EC( entry_sintlsymbol );
+    MR_SYNC_EC( entry_slist );
+    MR_SYNC_EC( entry_slongdate );
+    MR_SYNC_EC( entry_smondecimalsep );
+    MR_SYNC_EC( entry_smongrouping );
+    MR_SYNC_EC( entry_smonthousandsep );
+    MR_SYNC_EC( entry_snativedigits );
+    MR_SYNC_EC( entry_snegativesign );
+    MR_SYNC_EC( entry_spositivesign );
+    MR_SYNC_EC( entry_sshortdate );
+    MR_SYNC_EC( entry_sshorttime );
+    MR_SYNC_EC( entry_sthousand );
+    MR_SYNC_EC( entry_stimeformat );
+    MR_SYNC_EC( entry_syearmonth );
 #undef MR_SYNC_EC
 
     MESSAGE( "macrunner-hb-sync-locale-ec: verify native_sort=%p ec_sort=%p "
              "native_ctypes=%p native_ctype_idx=%p ec_ctypes=%p ec_ctype_idx=%p\n",
              &sort, (void *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA),
-             sort.ctypes, sort.ctype_idx,
-             ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA))->ctypes,
-             ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA))->ctype_idx );
+              sort.ctypes, sort.ctype_idx,
+              ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA))->ctypes,
+              ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA))->ctype_idx );
+    MESSAGE( "macrunner-hb-sync-locale-ec: verify registry native_intl=%p ec_intl=%p "
+             "native_sintl_value=%p native_sintl_subkey=%p ec_sintl_value=%p ec_sintl_subkey=%p\n",
+             intl_key, *(HKEY *)((uintptr_t)&intl_key - MACRUNNER_HB_LOCALE_EC_DELTA),
+             entry_sintlsymbol.value, entry_sintlsymbol.subkey,
+             ((typeof(entry_sintlsymbol) *)((uintptr_t)&entry_sintlsymbol - MACRUNNER_HB_LOCALE_EC_DELTA))->value,
+             ((typeof(entry_sintlsymbol) *)((uintptr_t)&entry_sintlsymbol - MACRUNNER_HB_LOCALE_EC_DELTA))->subkey );
 }
 
 

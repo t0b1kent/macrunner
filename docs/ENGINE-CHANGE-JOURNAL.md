@@ -533,6 +533,14 @@ Why: After the locale fix, HK reached Mono and failed before window creation. Ra
 Verify: Built/deployed/codesigned `ntdll.so`. Filtered HK classify `reports/phase4-hollow-knight/laneA-mono-standard-env-try1-082507` reaches `LADDER_RUNG: 8 (gfxdevice)` with two `macrunner-hb-exec-memory-register event=alloc` lines and no Mono runtime fault. Forced diagnostic `MACRUNNER_HB_JIT_DIRECT_MEM=1` still reproduces a separate direct-mem JIT fault at `mono-2.0-bdwgc.dll+0x385e73` (`cmpw %r8w,(%rbx)`, `rbx=0xffffffff01000166`), so direct-mem remains disabled for the mainline gate.
 Status: mono-init-cleared-next-gfxdevice
 
+## 2026-07-02 09:24 — Lane A DXMT smoke kernelbase locale registry mirror
+File(s): engine/wine/dlls/kernelbase/locale.c
+Type: ROOT-FIX + RUNTIME-DEPLOY
+What: Extended the ARM64X locale EC mirror to include registry handle statics and the full `entry_*` localized registry cache family, including `entry_sintlsymbol`.
+Why: Fast DX11 smoke with real dxmt prefix sync failed before DXMT code. Raw signal was `kernelbase.dll+0x59930` BUS read fault `fault=0x3e000002da`, `esr=0x92000005`, `insn=0x794002e8`; `pefile+capstone` disassembled this as `RegSetKeyValueW+0x8c: ldrh w8, [x23]`, reading an invalid `subkey` pointer. The previous locale mirror explicitly excluded `entry_*` registry caches; this is the reached sibling class.
+Verify: Rebuilt/deployed `aarch64-windows/kernelbase.dll` to `engine/wine/dist` and `dist-arm64ec-spike`. Direct dxmt `mr-run` smoke `reports/research/laneA-dx11-mrrun-direct-after-kernelbase-20260702-092009.log` exits `0` with real `CreateDXGIFactory1`, `D3D11CreateDevice`, `Present`, `Present1`, and `pixel_readback=PASS`; old `kernelbase+0x59930` fault is gone.
+Status: fast-dx11-smoke-cleared-next-hk-rung9
+
 ## 2026-06-13 08:10 — Lane D Unity#2 DXBC corpus and D3D8 RenderWare fog matrix
 File(s): engine/graphics/scripts/run_unity_dxbc_airconv_corpus_smoke.sh, engine/graphics/traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl, engine/graphics/tests/test_d3d9_translation.py, engine/graphics/tests/test_d3d9_metal_request.py, engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh, engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh
 Type: GRAPHICS-COVERAGE

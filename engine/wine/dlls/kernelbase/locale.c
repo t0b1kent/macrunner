@@ -560,15 +560,38 @@ static void macrunner_hb_sync_locale_ec_copies(void)
     const IMAGE_DATA_DIRECTORY *dir;
     const IMAGE_LOAD_CONFIG_DIRECTORY *cfg;
 
-    if (!kernelbase_handle) return;
+    if (!kernelbase_handle)
+    {
+        MESSAGE( "macrunner-hb-sync-locale-ec: skip reason=no-handle\n" );
+        return;
+    }
     dos = (const IMAGE_DOS_HEADER *)kernelbase_handle;
     nt = (const IMAGE_NT_HEADERS *)((const char *)dos + dos->e_lfanew);
     dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
     if (!dir->VirtualAddress || dir->Size <= offsetof( IMAGE_LOAD_CONFIG_DIRECTORY, CHPEMetadataPointer ))
+    {
+        MESSAGE( "macrunner-hb-sync-locale-ec: skip reason=no-loadconfig handle=%p va=%lx size=%lx\n",
+                 kernelbase_handle, (unsigned long)dir->VirtualAddress, (unsigned long)dir->Size );
         return;
+    }
     cfg = (const IMAGE_LOAD_CONFIG_DIRECTORY *)((const char *)kernelbase_handle + dir->VirtualAddress);
-    if (!cfg->CHPEMetadataPointer) return; /* not ARM64X: single .data copy, nothing to mirror */
+    if (!cfg->CHPEMetadataPointer)
+    {
+        MESSAGE( "macrunner-hb-sync-locale-ec: skip reason=not-arm64x handle=%p\n", kernelbase_handle );
+        return; /* not ARM64X: single .data copy, nothing to mirror */
+    }
+    MESSAGE( "macrunner-hb-sync-locale-ec: mirroring handle=%p\n", kernelbase_handle );
 
+    /* MacRunner (2026-07-01): confirmed via live probe that GetStringTypeW (called from
+     * ucrtbase's CRT startup) reads a fixed image RVA landing in ansi_cpinfo/oem_cpinfo
+     * (DefaultChar 0x3f003f observed populated in the native view, zero in the EC view) —
+     * NOT inside `sort`, and NOT in the original 11-global list below. That list was an
+     * incomplete enumeration, not an exhaustive one (see the class-level TODO above); swept
+     * the rest of this file's runtime-populated NLS/codepage/geo statics (init_locale's
+     * load_locale_nls/load_sortdefault_nls/init_default_codepage_tables family) rather than
+     * adding just the one confirmed offender, to avoid re-discovering siblings one crash at
+     * a time (registry-handle statics HKEY intl_key/nls_key/tz_key and the entry_* localized
+     * string caches are NOT included -- not reached via computed native table lookups). */
 #define MR_SYNC_EC( g ) macrunner_hb_mirror_ec_copy( &(g), sizeof(g) )
     MR_SYNC_EC( sort );
     MR_SYNC_EC( locale_table );
@@ -581,6 +604,17 @@ static void macrunner_hb_sync_locale_ec_copies(void)
     MR_SYNC_EC( current_locale_sort );
     MR_SYNC_EC( system_lcid );
     MR_SYNC_EC( user_lcid );
+    MR_SYNC_EC( ansi_cpinfo );
+    MR_SYNC_EC( oem_cpinfo );
+    MR_SYNC_EC( unix_cp );
+    MR_SYNC_EC( codepages );
+    MR_SYNC_EC( nb_codepages );
+    MR_SYNC_EC( norm_info );
+    MR_SYNC_EC( charmaps );
+    MR_SYNC_EC( geo_ids );
+    MR_SYNC_EC( geo_index );
+    MR_SYNC_EC( geo_ids_count );
+    MR_SYNC_EC( geo_index_count );
 #undef MR_SYNC_EC
 }
 

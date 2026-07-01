@@ -77,6 +77,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(seh);
 extern NTSTATUS macrunner_hb_get_x64_thread_context( HANDLE handle, AMD64_CONTEXT *context );
 extern NTSTATUS macrunner_hb_set_x64_thread_context( HANDLE handle, const AMD64_CONTEXT *context );
 extern void macrunner_hb_trace_nullcall_site( const char *source, uint64_t host_pc, uint64_t fault_addr );
+extern void macrunner_hb_trace_hk_memcpy_fault( const char *source, uint64_t host_pc, uint64_t fault_addr );
 extern int hb_jit_runtime_handle_signal_fault( ULONG_PTR pc, ULONG_PTR fault_addr, int signal );
 
 /***********************************************************************
@@ -1362,17 +1363,40 @@ static BOOL macrunner_hb_get_callback_exception_stack( ucontext_t *context, void
     if (report_count++ < 16)
     {
         struct macrunner_hb_signal_module_info pc_info, lr_info;
+        Dl_info sig_info;
         BOOL have_pc = macrunner_hb_signal_find_loader_module( (ULONG_PTR)frame->pc, &pc_info );
         BOOL have_lr = macrunner_hb_signal_find_loader_module( (ULONG_PTR)frame->lr, &lr_info );
+        BOOL have_sig = dladdr( (void *)(ULONG_PTR)PC_sig( context ), &sig_info );
 
         macrunner_signal_writef( "macrunner-hb-callback-exception-stack: pid=%d "
                                  "pc=%p sp=%p delivery_sp=%p frame=%p frame_sp=%p "
+                                 "sig_x10=%p sig_x16=%p sig_x18=%p frame_prev=%p "
                                  "frame_pc=%p frame_lr=%p kernel_stack=%p teb_stack=%p-%p\n",
                                  getpid(), (void *)(ULONG_PTR)PC_sig( context ), sp,
                                  saved_sp, frame, (void *)(ULONG_PTR)frame->sp,
+                                 (void *)(ULONG_PTR)REGn_sig( 10, context ),
+                                 (void *)(ULONG_PTR)REGn_sig( 16, context ),
+                                 (void *)(ULONG_PTR)REGn_sig( 18, context ),
+                                 frame->prev_frame,
                                  (void *)(ULONG_PTR)frame->pc,
                                  (void *)(ULONG_PTR)frame->lr,
                                  ntdll_get_thread_data()->kernel_stack, limit, base );
+        macrunner_signal_writef( "macrunner-hb-callback-exception-sig-map: pid=%d "
+                                 "sig_pc=%p sig_image=%s sig_base=%p sig_rva=0x%llx "
+                                 "sig_symbol=%s sig_symbol_addr=%p sig_symbol_off=0x%llx "
+                                 "sig_x10=%p sig_x16=%p sig_x18=%p\n",
+                                 getpid(), (void *)(ULONG_PTR)PC_sig( context ),
+                                 have_sig && sig_info.dli_fname ? sig_info.dli_fname : "(none)",
+                                 have_sig ? sig_info.dli_fbase : NULL,
+                                 have_sig && sig_info.dli_fbase ?
+                                     (unsigned long long)(PC_sig( context ) - (ULONG_PTR)sig_info.dli_fbase) : 0,
+                                 have_sig && sig_info.dli_sname ? sig_info.dli_sname : "(none)",
+                                 have_sig ? sig_info.dli_saddr : NULL,
+                                 have_sig && sig_info.dli_saddr ?
+                                     (unsigned long long)(PC_sig( context ) - (ULONG_PTR)sig_info.dli_saddr) : 0,
+                                 (void *)(ULONG_PTR)REGn_sig( 10, context ),
+                                 (void *)(ULONG_PTR)REGn_sig( 16, context ),
+                                 (void *)(ULONG_PTR)REGn_sig( 18, context ) );
         macrunner_signal_writef( "macrunner-hb-callback-exception-frame-map: pid=%d "
                                  "frame_pc=%p pc_module=%s pc_native=%p pc_rva=0x%llx "
                                  "frame_lr=%p lr_module=%s lr_native=%p lr_rva=0x%llx "
@@ -2608,6 +2632,17 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
             }
         }
     }
+    /* MacRunner HK memcpy fault: reconcile + guest stack walk for the Unity/Mono
+     * CRT stream-buffer range 0x320fxxxxx. */
+    {
+        ULONG_PTR fa = rec.ExceptionInformation[1];
+        if (fa >= 0x320f00000ULL && fa < 0x321100000ULL)
+        {
+            static int hk_memcpy_n;
+            if (hk_memcpy_n++ < 32)
+                macrunner_hb_trace_hk_memcpy_fault( "segv", PC_sig(context), fa );
+        }
+    }
 #endif
     /* MacRunner diag: a NULL-target execute fault (guest called a NULL function
      * pointer) is handled by hb_jit_runtime_handle_signal_fault below (it raises
@@ -2889,6 +2924,21 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     else
         rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
+    if (getenv("MACRUNNER_HB_TRACE_BUS_FAULT"))
+    {
+        static int bfc = 0;
+        if (bfc < 24)
+        {
+            unsigned int insn = 0;
+            memcpy( &insn, (void *)(ULONG_PTR)PC_sig(context), 4 );
+            fprintf( stderr, "macrunner-hb-bus-fault: #%d pc=%p fault=%p esr=0x%llx align=%u kind=%lu insn=0x%08x\n",
+                     bfc, (void *)(ULONG_PTR)PC_sig(context), (void *)(ULONG_PTR)siginfo->si_addr,
+                     (unsigned long long)get_fault_esr( context ), (unsigned)alignment_fault,
+                     (unsigned long)rec.ExceptionInformation[0], insn );
+            fflush( stderr );
+            bfc++;
+        }
+    }
 #if defined(__APPLE__)
     /* recover a gated direct guest-mem copy fault BEFORE any other handling/locking */
     macrunner_hb_dmem_fault_recover( (unsigned long long)(ULONG_PTR)siginfo->si_addr );
@@ -3875,6 +3925,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    __ASM_CFI(".cfi_offset 28, -0x68\n\t")
                    "and x20, x8, #0xfff\n\t"    /* syscall number */
                    "ubfx x21, x8, #12, #2\n\t"  /* syscall table number */
+                   "mov x18, x17\n\t"            /* x18 is Apple-volatile; x17 holds TEB */
                    "ldr x16, [x18, #0x370]\n\t" /* thread_data->syscall_table */
                    "add x21, x16, x21, lsl #5\n\t"
                    "ldr x16, [x21, #16]\n\t"    /* table->ServiceLimit */
@@ -3893,6 +3944,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "cbnz x9, 1b\n"
                    "2:\tldr x16, [x21]\n\t"     /* table->ServiceTable */
                    "ldr x23, [x16, x20, lsl 3]\n\t"
+                   "mov x18, x17\n\t"            /* x18 is Apple-volatile; x17 holds TEB */
                    "ldr w11, [x18, #0x380]\n\t" /* thread_data->syscall_trace */
                    "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall") "\n\t"
                    "blr x23\n\t"

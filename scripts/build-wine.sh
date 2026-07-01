@@ -6,10 +6,11 @@
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export MACRUNNER_ROOT="$PROJECT_ROOT"
 . "$PROJECT_ROOT/config/env.sh"
 WINE_SRC="$PROJECT_ROOT/engine/wine"
-WINE_BUILD="$PROJECT_ROOT/engine/wine/build"
-WINE_INSTALL="$PROJECT_ROOT/engine/wine/dist"
+: "${WINE_BUILD:=$PROJECT_ROOT/engine/wine/build}"
+: "${WINE_INSTALL:=$PROJECT_ROOT/engine/wine/dist}"
 
 if [ ! -d "$WINE_SRC" ]; then
     echo "❌ Wine source не найден. Запусти ./scripts/clone-sources.sh"
@@ -26,39 +27,11 @@ echo "🌉 Сборка HyperBridge runtime для Wine Unix-side entrypoint dis
 make -C "$PROJECT_ROOT/engine/hyperbridge" all
 echo ""
 
-# Toolchain layout:
-# - host arm64 build: Apple clang (/usr/bin/clang)
-# - all PE targets: bundled llvm-mingw *-w64-mingw32-clang
-#
-# ARM64EC builds compile some x64 companion objects with $(x86_64_CC). Homebrew
-# mingw-gcc cannot consume Wine's clang-style ARM64EC flags/assembler output, so
-# target-prefixed compilers must resolve to llvm-mingw first. Host CC is still
-# pinned to Apple clang below, so prepending llvm-mingw does not hijack host code.
-LLVM_MINGW="$PROJECT_ROOT/engine/toolchain/llvm-mingw-20260505-ucrt-macos-universal/bin"
-export PATH="$LLVM_MINGW:/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/usr/local/bin:$PATH"
-
-# Apple clang явно — иначе configure возьмёт Windows-target clang и не сможет
-# собрать host loader.
-if command -v ccache >/dev/null 2>&1 && [ "${MACRUNNER_USE_CCACHE:-1}" != "0" ]; then
+# Toolchain is pinned by config/env.sh.  This also covers targeted relinks run
+# outside this script, avoiding Apple /usr/bin/bison and non-pinned mingw tools.
+if [ -n "${MACRUNNER_WINE_CCACHE_PREFIX:-}" ]; then
     echo "⚡ ccache enabled: $CCACHE_DIR"
-    CCACHE_PREFIX="ccache "
-else
-    CCACHE_PREFIX=""
 fi
-
-export CC="${CCACHE_PREFIX}/usr/bin/clang"
-export CXX="${CCACHE_PREFIX}/usr/bin/clang++"
-
-# Keep target compiler selection deterministic even if Homebrew mingw-w64 is
-# installed earlier in a user's shell PATH.
-export aarch64_CC="${CCACHE_PREFIX}$LLVM_MINGW/aarch64-w64-mingw32-clang"
-export aarch64_CXX="${CCACHE_PREFIX}$LLVM_MINGW/aarch64-w64-mingw32-clang++"
-export arm64ec_CC="${CCACHE_PREFIX}$LLVM_MINGW/arm64ec-w64-mingw32-clang"
-export arm64ec_CXX="${CCACHE_PREFIX}$LLVM_MINGW/arm64ec-w64-mingw32-clang++"
-export x86_64_CC="${CCACHE_PREFIX}$LLVM_MINGW/x86_64-w64-mingw32-clang"
-export x86_64_CXX="${CCACHE_PREFIX}$LLVM_MINGW/x86_64-w64-mingw32-clang++"
-export i386_CC="${CCACHE_PREFIX}$LLVM_MINGW/i686-w64-mingw32-clang"
-export i386_CXX="${CCACHE_PREFIX}$LLVM_MINGW/i686-w64-mingw32-clang++"
 
 # Флаги
 export CFLAGS="-O2 -arch arm64 -mmacosx-version-min=14.0 -I/opt/homebrew/include"

@@ -67,6 +67,75 @@ static int macrunner_hb_datadiverge_hit(uint64_t addr, size_t size) {
     return !(addr + size <= MACRUNNER_HB_DATADIVERGE_LO || addr >= MACRUNNER_HB_DATADIVERGE_HI);
 }
 
+static int macrunner_hb_disable_hot_cache_enabled(void) {
+    static int cache = -1;
+    int v = __atomic_load_n(&cache, __ATOMIC_RELAXED);
+    if (v < 0) {
+        const char* e = getenv("MACRUNNER_HB_DISABLE_HOT_CACHE");
+        v = e && e[0] && e[0] != '0';
+        __atomic_store_n(&cache, v, __ATOMIC_RELAXED);
+    }
+    return v;
+}
+
+typedef struct hb_hot_cache_tls {
+    hb_memory_t* mem;
+    uint64_t epoch;
+    hb_region_t* slot[HB_MEMORY_HOT_CACHE_SLOTS];
+} hb_hot_cache_tls_t;
+
+static __thread hb_hot_cache_tls_t g_hot_cache_tls;
+
+static uint64_t hot_cache_epoch(hb_memory_t* mem) {
+    return __atomic_load_n(&mem->hot_gen, __ATOMIC_ACQUIRE);
+}
+
+static void hot_cache_reset_tls(hb_memory_t* mem, uint64_t epoch) {
+    g_hot_cache_tls.mem = mem;
+    g_hot_cache_tls.epoch = epoch;
+    memset(g_hot_cache_tls.slot, 0, sizeof(g_hot_cache_tls.slot));
+}
+
+static hb_region_t* hot_cache_lookup(hb_memory_t* mem, hb_gva_t addr) {
+    if (macrunner_hb_disable_hot_cache_enabled()) return NULL;
+    uint64_t epoch = hot_cache_epoch(mem);
+    if (g_hot_cache_tls.mem != mem || g_hot_cache_tls.epoch != epoch)
+        hot_cache_reset_tls(mem, epoch);
+
+    for (int i = 0; i < HB_MEMORY_HOT_CACHE_SLOTS; i++) {
+        hb_region_t* c = g_hot_cache_tls.slot[i];
+        if (c && addr >= c->base && addr < c->base + c->size) {
+            if (i != 0) {
+                g_hot_cache_tls.slot[i] = g_hot_cache_tls.slot[0];
+                g_hot_cache_tls.slot[0] = c;
+            }
+            return c;
+        }
+    }
+    return NULL;
+}
+
+static void hot_cache_insert(hb_memory_t* mem, hb_region_t* region) {
+    if (!region || macrunner_hb_disable_hot_cache_enabled()) return;
+    uint64_t epoch = hot_cache_epoch(mem);
+    if (g_hot_cache_tls.mem != mem || g_hot_cache_tls.epoch != epoch)
+        hot_cache_reset_tls(mem, epoch);
+
+    for (int i = 0; i < HB_MEMORY_HOT_CACHE_SLOTS; i++) {
+        if (g_hot_cache_tls.slot[i] == region) {
+            if (i != 0) {
+                g_hot_cache_tls.slot[i] = g_hot_cache_tls.slot[0];
+                g_hot_cache_tls.slot[0] = region;
+            }
+            return;
+        }
+    }
+
+    for (int i = HB_MEMORY_HOT_CACHE_SLOTS - 1; i > 0; i--)
+        g_hot_cache_tls.slot[i] = g_hot_cache_tls.slot[i - 1];
+    g_hot_cache_tls.slot[0] = region;
+}
+
 
 static size_t page_align(size_t sz) {
     return (sz + 4095) & ~4095;
@@ -261,6 +330,12 @@ static void tree_insert(hb_region_t** root, hb_region_t* r) {
     }
 }
 
+static void clear_hot_cache(hb_memory_t* mem) {
+    if (!mem) return;
+    memset(mem->hot, 0, sizeof(mem->hot));
+    __atomic_add_fetch(&mem->hot_gen, 1, __ATOMIC_RELEASE);
+}
+
 static void rebuild_region_tree(hb_memory_t* mem) {
     if (!mem) return;
     mem->region_tree = NULL;
@@ -270,6 +345,7 @@ static void rebuild_region_tree(hb_memory_t* mem) {
         r->tree_prio = region_prio(r->base);
         tree_insert(&mem->region_tree, r);
     }
+    clear_hot_cache(mem);
 }
 
 static void bump_generation(hb_memory_t* mem, hb_region_t* r) {
@@ -327,6 +403,33 @@ static hb_result_t split_region_at(hb_memory_t* mem, hb_gva_t addr) {
     return HB_OK;
 }
 
+static hb_result_t split_all_regions_at(hb_memory_t* mem, hb_gva_t addr) {
+    hb_region_t* r;
+
+    if (!mem) return HB_ERR_INVALID_ARG;
+    for (r = mem->regions; r; r = r->next) {
+        hb_gva_t top = r->base + r->size;
+        hb_region_t* n;
+
+        if (addr <= r->base || addr >= top) continue;
+        n = calloc(1, sizeof(*n));
+        if (!n) return HB_ERR_OUT_OF_MEMORY;
+
+        *n = *r;
+        n->base = addr;
+        n->size = (size_t)(top - addr);
+        if (r->host_base) n->host_base = region_host_ptr(r, addr);
+        n->tree_left = NULL;
+        n->tree_right = NULL;
+        n->next = r->next;
+
+        r->size = (size_t)(addr - r->base);
+        r->next = n;
+        r = n;
+    }
+    return HB_OK;
+}
+
 static hb_result_t remove_region_node(hb_memory_t* mem, hb_region_t* target) {
     hb_region_t** p;
 
@@ -336,6 +439,7 @@ static hb_result_t remove_region_node(hb_memory_t* mem, hb_region_t* target) {
         if (*p == target) {
             *p = target->next;
             mem->total_size -= target->size;
+            clear_hot_cache(mem);
             free(target);
             rebuild_region_tree(mem);
             return HB_OK;
@@ -469,6 +573,16 @@ static hb_result_t write_live_vm_region(hb_memory_t* mem, hb_gva_t addr, const v
 }
 #endif
 
+static bool live_vm_write_mach_enabled(void) {
+    static int cached = -1;
+    const char* spec;
+
+    if (cached >= 0) return cached != 0;
+    spec = getenv("MACRUNNER_HB_LIVE_VM_WRITE_MACH");
+    cached = (spec && *spec && atoi(spec) != 0) ? 1 : 0;
+    return cached != 0;
+}
+
 static void trace_bad_native_write(const char* path, hb_gva_t addr, const void* in, size_t size) {
     uint64_t sample = 0;
     size_t copy = size < sizeof(sample) ? size : sizeof(sample);
@@ -596,6 +710,88 @@ hb_result_t hb_memory_map_private(hb_memory_t* mem, hb_gva_t base, size_t size, 
     r->gen = mem->generation;
     insert_region_head(mem, r);
     mem->total_size += alloc_size;
+    return HB_OK;
+}
+
+hb_result_t hb_memory_sync_live_range(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm) {
+    hb_region_t* replacement;
+    hb_region_t** link;
+    hb_gva_t top;
+    hb_result_t res;
+
+    if (!mem || !size || range_overflows(base, size)) return HB_ERR_INVALID_ARG;
+    top = base + (hb_gva_t)size;
+
+    /* Replay is frequent.  Once the authoritative live region has replaced
+     * the old VM-map fragments, avoid another O(N) split/remove/tree rebuild. */
+    for (hb_region_t* exact = mem->regions; exact; exact = exact->next) {
+        bool other_overlap = false;
+
+        if (exact->allocated || exact->is_guest32 || exact->base != base ||
+            exact->size != size || exact->perm != perm)
+            continue;
+        for (hb_region_t* other = mem->regions; other; other = other->next) {
+            if (other != exact && range_overlaps(base, size, other->base, other->size)) {
+                other_overlap = true;
+                break;
+            }
+        }
+        if (!other_overlap) return HB_OK;
+    }
+
+    /* This API is deliberately limited to Wine/macOS-owned live mappings.
+     * Guest32 and private HB allocations have real backing/protection semantics
+     * and must continue through their dedicated map/protect paths. */
+    for (hb_region_t* r = mem->regions; r; r = r->next) {
+        if (range_overlaps(base, size, r->base, r->size) &&
+            (r->allocated || r->is_guest32))
+            return HB_ERR_INVALID_ARG;
+    }
+
+    replacement = calloc(1, sizeof(*replacement));
+    if (!replacement) return HB_ERR_OUT_OF_MEMORY;
+
+    res = split_all_regions_at(mem, base);
+    if (res != HB_OK) {
+        free(replacement);
+        rebuild_region_tree(mem);
+        return res;
+    }
+    res = split_all_regions_at(mem, top);
+    if (res != HB_OK) {
+        free(replacement);
+        rebuild_region_tree(mem);
+        return res;
+    }
+
+    /* Drop every old live fragment inside the authoritative range.  This also
+     * removes holes/fragmentation from VM-map snapshots: the replacement below
+     * guarantees that every byte of the guest allocation resolves to one HB
+     * region with the requested permission. */
+    link = &mem->regions;
+    while (*link) {
+        hb_region_t* r = *link;
+        if (!r->allocated && !r->is_guest32 &&
+            r->base >= base && r->base < top) {
+            *link = r->next;
+            mem->total_size -= r->size;
+            clear_hot_cache(mem);
+            free(r);
+            continue;
+        }
+        link = &r->next;
+    }
+
+    replacement->base = base;
+    replacement->size = size;
+    replacement->perm = perm;
+    replacement->allocated = false;
+    replacement->host_base = NULL;
+    replacement->next = mem->regions;
+    mem->regions = replacement;
+    mem->total_size += size;
+    bump_generation(mem, replacement);
+    rebuild_region_tree(mem);
     return HB_OK;
 }
 
@@ -769,6 +965,7 @@ hb_result_t hb_memory_unmap(hb_memory_t* mem, hb_gva_t base) {
             mem->total_size -= d->size;
             if (d->allocated) munmap(d->host_base, d->size);
             if (d->is_guest32 && (d->perm & HB_PERM_EXEC)) bump_generation(mem, NULL);
+            clear_hot_cache(mem);
             free(d);
             rebuild_region_tree(mem);
             return HB_OK;
@@ -779,42 +976,147 @@ hb_result_t hb_memory_unmap(hb_memory_t* mem, hb_gva_t base) {
 }
 
 hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm) {
-    if (!mem) return HB_ERR_INVALID_ARG;
-    hb_region_t* r = hb_memory_find_region(mem, base);
-    if (!r) return HB_ERR_NOT_FOUND;
+    hb_gva_t start;
+    hb_gva_t top;
+    hb_region_t* exact;
+    hb_result_t res;
+    bool found = false;
+    bool touched_exec = false;
 
-    /*
-     * Non-allocated regions describe the live process address space.  Their
-     * host VM protection is owned by Wine/macOS; HyperBridge permissions are
-     * metadata used by the x64 interpreter.  Applying HB_PERM_EXEC back to the
-     * host with mprotect() would make guest x64 code executable by the ARM64
-     * CPU again, bypassing the signal bridge.
-     */
-    if (!r->allocated && !r->is_guest32) {
-        if ((r->perm | perm) & HB_PERM_EXEC) bump_generation(mem, r);
-        r->perm = perm;
-        (void)size;
-        return HB_OK;
-    }
+    if (!mem || !size) return HB_ERR_INVALID_ARG;
+    if (range_overflows(base, (hb_gva_t)size)) return HB_ERR_INVALID_ARG;
 
-    if (r->is_guest32) {
-        if ((r->perm | perm) & HB_PERM_EXEC) bump_generation(mem, r);
-        r->perm = perm;
+    start = page_floor_gva(base);
+    top = page_ceil_gva(base + (hb_gva_t)size);
+    if (top <= start) return HB_ERR_INVALID_ARG;
+
+    exact = hb_memory_find_region(mem, start);
+    if (exact && start >= exact->base && top <= exact->base + exact->size &&
+        exact->perm == perm) {
+        if (!exact->allocated && !exact->is_guest32) return HB_OK;
+        if (exact->is_guest32) {
 #ifdef __APPLE__
-        /* Sync host mprotect so perm metadata and actual page protection stay
-         * consistent — skipping this can leave pages PROT_NONE while perm says
-         * READ, which feeds the memcpy-on-PROT_NONE crash. */
-        if (r->host_base) guest32_sync_host_protection(r, r->base, r->size);
+            if (exact->host_base &&
+                guest32_sync_host_protection(exact, exact->base, exact->size) != HB_OK)
+                return HB_ERR_MEMORY_FAULT;
 #endif
-        (void)size;
+            return HB_OK;
+        }
+        if (exact->host_base) {
+            int prot = prot_from_perm(perm, false);
+            if (mprotect(exact->host_base, exact->size, prot) != 0) return HB_ERR_MEMORY_FAULT;
+        }
         return HB_OK;
     }
 
-    int prot = prot_from_perm(perm, r->is_guest32);
-    if (mprotect(r->host_base, r->size, prot) != 0) return HB_ERR_MEMORY_FAULT;
-    if ((r->perm | perm) & HB_PERM_EXEC) bump_generation(mem, r);
-    r->perm = perm;
-    (void)size;
+    if (exact && exact->base == start && exact->size == (size_t)(top - start)) {
+        hb_perm_t old_perm = exact->perm;
+
+        if (!exact->allocated && !exact->is_guest32) {
+            if ((old_perm | perm) & HB_PERM_EXEC) bump_generation(mem, exact);
+            exact->perm = perm;
+            return HB_OK;
+        }
+
+        exact->perm = perm;
+        if (exact->is_guest32) {
+#ifdef __APPLE__
+            if (exact->host_base) {
+                hb_result_t sync_r = guest32_sync_host_protection(exact, exact->base, exact->size);
+                if ((perm & HB_PERM_WRITE) && !(old_perm & HB_PERM_WRITE)) {
+                    fprintf(stderr,
+                            "macrunner-hb-protect-rw-gated: class=guest32 base=0x%llx "
+                            "size=%zu old_perm=0x%x new_perm=0x%x sync=%d\n",
+                            (unsigned long long)exact->base, exact->size,
+                            (unsigned)old_perm, (unsigned)perm, (int)sync_r);
+                    fflush(stderr);
+                }
+                if (sync_r != HB_OK) return HB_ERR_MEMORY_FAULT;
+            }
+#endif
+            if ((old_perm | perm) & HB_PERM_EXEC) bump_generation(mem, exact);
+            return HB_OK;
+        }
+
+        if (exact->host_base) {
+            int prot = prot_from_perm(perm, false);
+            if (mprotect(exact->host_base, exact->size, prot) != 0) return HB_ERR_MEMORY_FAULT;
+            if ((perm & HB_PERM_WRITE) && !(old_perm & HB_PERM_WRITE)) {
+                fprintf(stderr,
+                        "macrunner-hb-protect-rw-gated: class=allocated base=0x%llx "
+                        "size=%zu old_perm=0x%x new_perm=0x%x prot=0x%x\n",
+                        (unsigned long long)exact->base, exact->size,
+                        (unsigned)old_perm, (unsigned)perm, prot);
+                fflush(stderr);
+            }
+        }
+        if ((old_perm | perm) & HB_PERM_EXEC) bump_generation(mem, exact);
+        return HB_OK;
+    }
+
+    res = split_all_regions_at(mem, start);
+    if (res != HB_OK) return res;
+    res = split_all_regions_at(mem, top);
+    if (res != HB_OK) return res;
+
+    for (hb_region_t* r = mem->regions; r; r = r->next) {
+        hb_gva_t rtop = r->base + r->size;
+        hb_perm_t old_perm;
+
+        if (r->base < start || r->base >= top) continue;
+        if (rtop > top) continue;
+
+        found = true;
+        old_perm = r->perm;
+        if ((old_perm | perm) & HB_PERM_EXEC) touched_exec = true;
+
+        /*
+         * Non-allocated, non-guest32 regions describe Wine-owned live process
+         * views.  Their host VM protection is owned by Wine/macOS.  Keep this
+         * path metadata-only: applying HB_PERM_* with mprotect() would break
+         * Wine's view manager and can make guest x64 code host-executable.
+         */
+        if (!r->allocated && !r->is_guest32) {
+            r->perm = perm;
+            continue;
+        }
+
+        r->perm = perm;
+        if (r->is_guest32) {
+#ifdef __APPLE__
+            if (r->host_base) {
+                hb_result_t sync_r = guest32_sync_host_protection(r, r->base, r->size);
+                if ((perm & HB_PERM_WRITE) && !(old_perm & HB_PERM_WRITE)) {
+                    fprintf(stderr,
+                            "macrunner-hb-protect-rw-gated: class=guest32 base=0x%llx "
+                            "size=%zu old_perm=0x%x new_perm=0x%x sync=%d\n",
+                            (unsigned long long)r->base, r->size,
+                            (unsigned)old_perm, (unsigned)perm, (int)sync_r);
+                    fflush(stderr);
+                }
+                if (sync_r != HB_OK) return HB_ERR_MEMORY_FAULT;
+            }
+#endif
+            continue;
+        }
+
+        if (r->host_base) {
+            int prot = prot_from_perm(perm, false);
+            if (mprotect(r->host_base, r->size, prot) != 0) return HB_ERR_MEMORY_FAULT;
+            if ((perm & HB_PERM_WRITE) && !(old_perm & HB_PERM_WRITE)) {
+                fprintf(stderr,
+                        "macrunner-hb-protect-rw-gated: class=allocated base=0x%llx "
+                        "size=%zu old_perm=0x%x new_perm=0x%x prot=0x%x\n",
+                        (unsigned long long)r->base, r->size,
+                        (unsigned)old_perm, (unsigned)perm, prot);
+                fflush(stderr);
+            }
+        }
+    }
+
+    if (!found) return HB_ERR_NOT_FOUND;
+    if (touched_exec) bump_generation(mem, NULL);
+    rebuild_region_tree(mem);
     return HB_OK;
 }
 
@@ -824,17 +1126,8 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
     int dv_hit = macrunner_hb_datadiverge_hit((uint64_t)addr, size);
     if (!mem || !out) return HB_ERR_INVALID_ARG;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return HB_ERR_MEMORY_FAULT;
-    if (mem->hot_gen == mem->generation) {
-        for (int i = 0; i < 4; i++) {
-            hb_region_t* c = mem->hot[i];
-            if (c && addr >= c->base && addr < c->base + c->size) {
-                region = c;
-                is_hit = true;
-                if (i != 0) { mem->hot[i] = mem->hot[0]; mem->hot[0] = c; }
-                break;
-            }
-        }
-    }
+    region = hot_cache_lookup(mem, addr);
+    is_hit = region != NULL;
     if (!region) {
         region = find_region_normalized(mem, addr);
     }
@@ -916,18 +1209,58 @@ hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, siz
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return HB_ERR_MEMORY_FAULT;
     trace_bad_native_write("hb_memory_write", addr, in, size);
     trace_guest_write("hb_memory_write", addr, in, size);
-grow_retry:
-    if (mem->hot_gen == mem->generation) {
-        for (int i = 0; i < 4; i++) {
-            hb_region_t* c = mem->hot[i];
-            if (c && addr >= c->base && addr < c->base + c->size) {
-                region = c;
-                is_hit = true;
-                if (i != 0) { mem->hot[i] = mem->hot[0]; mem->hot[0] = c; }
-                break;
+    /* HK lockstep: log the realloc-copy store that writes 0x80 into the 0x3xx offset array during
+     * the r13=0x11 insert window (g_hk_tg), with the guest instruction rva — catches GPR AND SSE. */
+    {
+        extern int g_hk_tg; extern uint64_t g_hk_cur_ga;
+        if (g_hk_tg && size >= 8 && getenv("MACRUNNER_HB_TRACE_STORE80")) {
+            const uint8_t* b8 = (const uint8_t*)in;
+            for (size_t o = 0; o + 8 <= size; o += 8) {
+                uint64_t v; memcpy(&v, b8 + o, 8);
+                if ((v & 0xffffffffull) == 0x80ull) {
+                    static int n80 = 0;
+                    if (n80 < 24) {
+                        fprintf(stderr, "store80mem: addr=%llx off=%zu size=%zu val=%llx guest_rva=%llx\n",
+                            (unsigned long long)(addr + o), o, size, (unsigned long long)v,
+                            (unsigned long long)(g_hk_cur_ga - 0x87efc510000ull));
+                        fflush(stderr); n80++;
+                    }
+                }
             }
         }
     }
+    /* Memcpy length/extent audit (env MACRUNNER_HB_TRACE_MEMCPY_LEN set): the over-write goes
+     * through hb_memory_write (interpreted SSE stores).  Track the LONGEST monotonic +0x10 run
+     * of 16-byte writes in the high guest-heap slab range: max_run*0x10 = largest contiguous
+     * memcpy.  ~16 MB => bounded per-slab (legit); ~3.5 GB => one unbounded copy (runaway). */
+    {
+        static int wparsed; static int wen;
+        if (!wparsed) { const char* e = getenv("MACRUNNER_HB_TRACE_MEMCPY_LEN"); wen = (e && e[0]) ? 1 : 0; wparsed = 1; }
+        if (wen && size && size <= 64 && addr >= 0x300000000ull && addr < 0x400000000ull) {
+            /* longest CONTIGUOUS forward byte-run (any stride <=0x40): a "run" continues while
+             * each write starts within 0x40 of the previous. max_bytes = largest single memcpy. */
+            static unsigned long long n, max_bytes, max_at;
+            static hb_gva_t prev, run_start, alo = ~0ull, ahi;
+            unsigned long long cur;
+            n++;
+            if (addr < alo) alo = addr;
+            if (addr + size > ahi) ahi = addr + size;
+            if (n == 1 || !(addr >= prev && addr - prev <= 0x40)) run_start = addr;
+            cur = (unsigned long long)(addr + size - run_start);
+            if (cur > max_bytes) { max_bytes = cur; max_at = addr; }
+            prev = addr;
+            if (n <= 4 || (n % 4000000ull) == 0) {
+                fprintf(stderr, "macrunner-hb-memcpy-w: n=%llu addr=%llx sz=%zu span=%llx "
+                        "cur_run=0x%llx max_bytes=0x%llx max_at=%llx\n",
+                        n, (unsigned long long)addr, size, (unsigned long long)(ahi - alo),
+                        cur, max_bytes, (unsigned long long)max_at);
+                fflush(stderr);
+            }
+        }
+    }
+grow_retry:
+    region = hot_cache_lookup(mem, addr);
+    is_hit = region != NULL;
     if (!region) {
         region = find_region_normalized(mem, addr);
     }
@@ -999,7 +1332,8 @@ grow_retry:
         }
         {
             static int traced;
-            if (traced++ < 8)
+            int heavy = (addr >= 0x3f0000000ULL && addr < 0x401000000ULL);
+            if (heavy || traced++ < 8)
                 fprintf(stderr, "macrunner-hb-write-deny: addr=0x%llx size=%zu region=%p base=0x%llx "
                         "rsize=0x%llx perm=%d alloc=%d host=%p\n",
                         (unsigned long long)addr, size, (void*)region,
@@ -1013,12 +1347,12 @@ grow_retry:
     }
 #ifdef __APPLE__
     if (region && !region->allocated && !region->host_base) {
-        if (!(region->perm & HB_PERM_EXEC)) {
+        if (!(region->perm & HB_PERM_EXEC) && !live_vm_write_mach_enabled()) {
             memcpy((void*)(uintptr_t)addr, in, size);
             return HB_OK;
         }
         hb_result_t result = write_live_vm_region(mem, addr, in, size, region);
-        if (result == HB_OK) bump_generation(mem, region);
+        if (result == HB_OK && (region->perm & HB_PERM_EXEC)) bump_generation(mem, region);
         return result;
     }
 #endif
@@ -1240,19 +1574,8 @@ static hb_region_t* find_region_normalized(hb_memory_t* mem, hb_gva_t addr) {
         }
     }
 
-    /* Check MRU cache first: invalidate on generation change */
-    if (mem->hot_gen != mem->generation) {
-        mem->hot[0] = mem->hot[1] = mem->hot[2] = mem->hot[3] = NULL;
-        mem->hot_gen = mem->generation;
-    }
-    for (int i = 0; i < 4; i++) {
-        hb_region_t* c = mem->hot[i];
-        if (c && addr >= c->base && addr < c->base + c->size) {
-            /* Promote to front */
-            if (i != 0) { mem->hot[i] = mem->hot[0]; mem->hot[0] = c; }
-            return c;
-        }
-    }
+    hb_region_t* hot = hot_cache_lookup(mem, addr);
+    if (hot) return hot;
 
     /* MacRunner (2026-06-17, HK first-frame perf): O(log n) treap walk instead of an O(n)
      * linear scan of mem->regions.  mem->region_tree is the SAME treap the guest32 path
@@ -1269,11 +1592,7 @@ static hb_region_t* find_region_normalized(hb_memory_t* mem, hb_gva_t addr) {
         } else if (addr >= n->base + n->size) {
             n = n->tree_right;
         } else {
-            /* Insert at front, evict slot 3 */
-            mem->hot[3] = mem->hot[2];
-            mem->hot[2] = mem->hot[1];
-            mem->hot[1] = mem->hot[0];
-            mem->hot[0] = n;
+            hot_cache_insert(mem, n);
             return n;
         }
     }

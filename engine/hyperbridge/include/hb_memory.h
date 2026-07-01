@@ -8,6 +8,7 @@
 #include <stddef.h>
 
 #define HB_GUEST32_SIZE 0x100000000ULL
+#define HB_MEMORY_HOT_CACHE_SLOTS 16
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,10 +65,10 @@ typedef struct hb_memory {
      * the access can be retried.  Returns true if the page may now be valid. */
     bool (*special_grow)(void* user, hb_gva_t addr);
 
-    /* MRU region cache: hot[0] is the most recently used region.
-     * hot_gen tracks the memory generation at which the cache was filled;
-     * if generation changes (map/unmap/protect), the cache is cleared. */
-    hb_region_t* hot[4];
+    /* MRU region cache epoch. Slots are thread-local in hb_memory.c; hot_gen is
+     * bumped on structural map changes so per-thread slots cannot outlive a
+     * split/remove/rebuild. hot[] is kept zeroed for diagnostics/back-compat. */
+    hb_region_t* hot[HB_MEMORY_HOT_CACHE_SLOTS];
     uint64_t     hot_gen;
 } hb_memory_t;
 
@@ -76,6 +77,9 @@ void hb_memory_destroy(hb_memory_t* mem);
 
 hb_result_t hb_memory_map(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
 hb_result_t hb_memory_map_private(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
+/* Replace the metadata for an existing host-owned live range with one
+ * authoritative, fully covered region.  This never changes host VM protection. */
+hb_result_t hb_memory_sync_live_range(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
 hb_result_t hb_memory_unmap(hb_memory_t* mem, hb_gva_t base);
 hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
 

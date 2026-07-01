@@ -1,8 +1,9 @@
 # MacRunner — единая конфигурация путей для всех скриптов
 # Source-ить в начале каждого скрипта: . "$PROJECT_ROOT/config/env.sh"
 
-# Корень проекта (внутренний SSD, canonical workspace с 2026-05-25)
-: "${MACRUNNER_ROOT:=/Users/timurtoby/Documents/MacRunner/Main/MacRunner}"
+# Корень проекта.  Default to the current worktree when sourced from its root;
+# build scripts set MACRUNNER_ROOT explicitly before sourcing this file.
+: "${MACRUNNER_ROOT:=$([ -f "$PWD/config/env.sh" ] && pwd || printf '%s' /Users/timurtoby/Documents/MacRunner/Main/MacRunner)}"
 export MACRUNNER_ROOT
 
 # Все Wine bottles живут рядом с активным движком.
@@ -28,6 +29,64 @@ if command -v ccache >/dev/null 2>&1; then
     export CCACHE_DIR CCACHE_BASEDIR
     mkdir -p "$CCACHE_DIR" 2>/dev/null || true
 fi
+
+# Pinned Wine build toolchain.
+#
+# Keep this in shared env, not only in build scripts: targeted Wine relinks are
+# often run directly from the source/build directory.  Those relinks must not
+# fall back to Apple /usr/bin/bison (2.3) or non-pinned mingw tools.  Use
+# LLVM-mingw's gcc-compatible target drivers for PE builds; the i386 wrapper
+# path avoids comctl32/treeview.o EH-label assembler failures seen with direct
+# *-clang clean-build invocations.
+: "${MACRUNNER_LLVM_MINGW_BIN:=$MACRUNNER_ROOT/engine/toolchain/llvm-mingw-20260505-ucrt-macos-universal/bin}"
+: "${MACRUNNER_HOMEBREW_PREFIX:=/opt/homebrew}"
+
+macrunner_prepend_path()
+{
+    [ -n "$1" ] || return 0
+    [ -d "$1" ] || return 0
+    case ":$PATH:" in
+        *":$1:"*) ;;
+        *) PATH="$1:$PATH" ;;
+    esac
+}
+
+macrunner_prepend_path "$MACRUNNER_LLVM_MINGW_BIN"
+macrunner_prepend_path "$MACRUNNER_HOMEBREW_PREFIX/opt/bison/bin"
+macrunner_prepend_path "$MACRUNNER_HOMEBREW_PREFIX/opt/flex/bin"
+macrunner_prepend_path "$MACRUNNER_HOMEBREW_PREFIX/bin"
+macrunner_prepend_path "$MACRUNNER_HOMEBREW_PREFIX/sbin"
+export PATH MACRUNNER_LLVM_MINGW_BIN MACRUNNER_HOMEBREW_PREFIX
+
+if [ -x "$MACRUNNER_HOMEBREW_PREFIX/opt/bison/bin/bison" ]; then
+    : "${BISON:=$MACRUNNER_HOMEBREW_PREFIX/opt/bison/bin/bison}"
+    : "${YACC:=$BISON -y}"
+    export BISON YACC
+fi
+if [ -x "$MACRUNNER_HOMEBREW_PREFIX/opt/flex/bin/flex" ]; then
+    : "${FLEX:=$MACRUNNER_HOMEBREW_PREFIX/opt/flex/bin/flex}"
+    : "${LEX:=$FLEX}"
+    export FLEX LEX
+fi
+
+if command -v ccache >/dev/null 2>&1 && [ "${MACRUNNER_USE_CCACHE:-1}" != "0" ]; then
+    MACRUNNER_WINE_CCACHE_PREFIX="ccache "
+else
+    MACRUNNER_WINE_CCACHE_PREFIX=""
+fi
+export MACRUNNER_WINE_CCACHE_PREFIX
+
+: "${CC:=${MACRUNNER_WINE_CCACHE_PREFIX}/usr/bin/clang}"
+: "${CXX:=${MACRUNNER_WINE_CCACHE_PREFIX}/usr/bin/clang++}"
+: "${aarch64_CC:=${MACRUNNER_WINE_CCACHE_PREFIX}${MACRUNNER_LLVM_MINGW_BIN}/aarch64-w64-mingw32-gcc}"
+: "${aarch64_CXX:=${MACRUNNER_WINE_CCACHE_PREFIX}${MACRUNNER_LLVM_MINGW_BIN}/aarch64-w64-mingw32-g++}"
+: "${arm64ec_CC:=${MACRUNNER_WINE_CCACHE_PREFIX}${MACRUNNER_LLVM_MINGW_BIN}/arm64ec-w64-mingw32-gcc}"
+: "${arm64ec_CXX:=${MACRUNNER_WINE_CCACHE_PREFIX}${MACRUNNER_LLVM_MINGW_BIN}/arm64ec-w64-mingw32-g++}"
+: "${x86_64_CC:=${MACRUNNER_WINE_CCACHE_PREFIX}${MACRUNNER_LLVM_MINGW_BIN}/x86_64-w64-mingw32-gcc}"
+: "${x86_64_CXX:=${MACRUNNER_WINE_CCACHE_PREFIX}${MACRUNNER_LLVM_MINGW_BIN}/x86_64-w64-mingw32-g++}"
+: "${i386_CC:=${MACRUNNER_WINE_CCACHE_PREFIX}${MACRUNNER_LLVM_MINGW_BIN}/i686-w64-mingw32-gcc}"
+: "${i386_CXX:=${MACRUNNER_WINE_CCACHE_PREFIX}${MACRUNNER_LLVM_MINGW_BIN}/i686-w64-mingw32-g++}"
+export CC CXX aarch64_CC aarch64_CXX arm64ec_CC arm64ec_CXX x86_64_CC x86_64_CXX i386_CC i386_CXX
 
 # Wine dist
 : "${MACRUNNER_WINE_DIST:=$MACRUNNER_ROOT/engine/wine/dist}"

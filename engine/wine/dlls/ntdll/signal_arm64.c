@@ -237,6 +237,7 @@ static BOOL macrunner_hb_find_pc_section( DWORD64 pc, char section_name[9],
         }
     }
     __EXCEPT(macrunner_hb_pe_scan_fault) {}
+    __ENDTRY
     return FALSE;
 }
 
@@ -326,6 +327,120 @@ static BOOL macrunner_hb_unwind_syscall_data_boundary( DISPATCHER_CONTEXT *dispa
 
     macrunner_hb_restore_syscall_prev_frame_context( context, prev );
     macrunner_hb_stop_unwind_at_boundary( dispatch, context );
+    return TRUE;
+}
+
+static BOOL macrunner_hb_recover_native_dispatch_boundary( DISPATCHER_CONTEXT *dispatch,
+                                                           CONTEXT *context, DWORD64 pc )
+{
+    struct macrunner_hb_syscall_frame *frame, *resume;
+    TEB *teb = NtCurrentTeb();
+    ULONG_PTR stack_lo = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
+    ULONG_PTR stack_hi = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
+    const char *bad_pc = NULL, *source = "current-frame";
+    static unsigned int report_count, reject_count;
+    DWORD tid = teb ? HandleToULong( teb->ClientId.UniqueThread ) : 0;
+    LDR_DATA_TABLE_ENTRY *module = NULL;
+    IMAGE_NT_HEADERS *nt;
+    char section_name[9];
+    DWORD section_characteristics = 0;
+
+    if (!context || !macrunner_hb_is_x64_main_process())
+    {
+        if (reject_count++ < 16)
+            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
+                     "pc=%p frame=%p reason=%s\n",
+                     tid, (void *)(ULONG_PTR)pc, NULL,
+                     context ? "not-x64-main-process" : "no-context" );
+        return FALSE;
+    }
+    if (!(frame = macrunner_hb_current_syscall_frame()))
+    {
+        if (reject_count++ < 16)
+            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
+                     "pc=%p frame=%p reason=no-current-syscall-frame\n",
+                     tid, (void *)(ULONG_PTR)pc, NULL );
+        return FALSE;
+    }
+
+    resume = frame->prev_frame;
+    if (resume && resume != frame && resume->pc && resume->sp)
+        source = "prev-frame";
+    else
+        resume = frame;
+
+    if (!resume->pc || !resume->sp)
+    {
+        if (reject_count++ < 16)
+            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
+                     "pc=%p frame=%p frame_pc=%p frame_lr=%p prev=%p source=%s reason=%s\n",
+                     tid, (void *)(ULONG_PTR)pc, frame, (void *)(ULONG_PTR)frame->pc,
+                     (void *)(ULONG_PTR)frame->lr, frame->prev_frame, source,
+                     !resume->pc ? "resume-pc-null" : "resume-sp-null" );
+        return FALSE;
+    }
+    if (resume != frame && macrunner_hb_pc_inside_syscall_frame( resume->pc, frame ))
+        return FALSE;
+
+    if (!macrunner_hb_is_plausible_recovered_pc( resume->pc, &bad_pc ))
+    {
+        if (!macrunner_hb_find_pc_section( resume->pc, section_name, &section_characteristics ))
+            bad_pc = "pc-not-code";
+        else if (!(section_characteristics & IMAGE_SCN_MEM_EXECUTE))
+            bad_pc = "pc-nonexec-section";
+        else if (LdrFindEntryForAddress( (void *)(ULONG_PTR)resume->pc, &module ) != STATUS_SUCCESS ||
+                 !module || !(nt = RtlImageNtHeader( module->DllBase )))
+            bad_pc = "pc-module-missing";
+        else if (nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 ||
+                 nt->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64EC)
+            bad_pc = NULL;
+        else if (bad_pc && !strcmp( bad_pc, "pc-x64-code-range" ))
+            bad_pc = NULL;
+        else if (bad_pc && strcmp( bad_pc, "pc-x64-code-range" ))
+            bad_pc = "pc-not-recoverable-code";
+    }
+
+    if (bad_pc)
+    {
+        if (reject_count++ < 16)
+            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
+                     "pc=%p frame=%p frame_pc=%p frame_lr=%p prev=%p prev_pc=%p "
+                     "prev_lr=%p prev_sp=%p source=%s reason=%s\n",
+                     tid, (void *)(ULONG_PTR)pc, frame, (void *)(ULONG_PTR)frame->pc,
+                     (void *)(ULONG_PTR)frame->lr, frame->prev_frame,
+                     (void *)(ULONG_PTR)resume->pc, (void *)(ULONG_PTR)resume->lr,
+                     (void *)(ULONG_PTR)resume->sp, source,
+                     bad_pc ? bad_pc : "bad-prev-pc" );
+        return FALSE;
+    }
+    if (stack_lo && stack_hi && (resume->sp < stack_lo || resume->sp + 0x10 < resume->sp ||
+                                 resume->sp + 0x10 > stack_hi))
+    {
+        if (reject_count++ < 16)
+            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
+                     "pc=%p frame=%p frame_pc=%p prev=%p prev_pc=%p prev_sp=%p "
+                     "stack=%p-%p source=%s reason=bad-prev-sp\n",
+                     tid, (void *)(ULONG_PTR)pc, frame, (void *)(ULONG_PTR)frame->pc,
+                     frame->prev_frame, (void *)(ULONG_PTR)resume->pc,
+                     (void *)(ULONG_PTR)resume->sp, (void *)stack_lo, (void *)stack_hi,
+                     source );
+        return FALSE;
+    }
+
+    if (report_count++ < 32)
+        MESSAGE( "macrunner-hb-native-dispatch-boundary-recovered: tid=%04lx "
+                 "pc=%p image=%p frame=%p frame_pc=%p frame_lr=%p prev=%p "
+                 "guest_pc=%p guest_lr=%p guest_sp=%p source=%s stack=%p-%p\n",
+                 tid, (void *)(ULONG_PTR)pc, dispatch ? (void *)(ULONG_PTR)dispatch->ImageBase : NULL,
+                 frame, (void *)(ULONG_PTR)frame->pc, (void *)(ULONG_PTR)frame->lr,
+                 frame->prev_frame, (void *)(ULONG_PTR)resume->pc, (void *)(ULONG_PTR)resume->lr,
+                 (void *)(ULONG_PTR)resume->sp, source, (void *)stack_lo, (void *)stack_hi );
+
+    macrunner_hb_restore_syscall_prev_frame_context( context, resume );
+    context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+    dispatch->EstablisherFrame = context->Sp;
+    dispatch->LanguageHandler = NULL;
+    dispatch->HandlerData = NULL;
     return TRUE;
 }
 
@@ -1025,6 +1140,9 @@ static BOOL macrunner_hb_try_arm64_unwind_methods( DISPATCHER_CONTEXT *dispatch,
         int kind = dispatch && dispatch->ImageBase ?
             macrunner_hb_arm64x_code_range_kind( dispatch->ImageBase, pc ) : -1;
 
+        if (macrunner_hb_recover_native_dispatch_boundary( dispatch, context, pc ))
+            return TRUE;
+
         if (unsafe_count++ < 32)
             MESSAGE( "macrunner-hb-arm64-unwind-unsafe-boundary: pc=%p image=%p "
                      "kind=%d sp=%016I64x stack=%p-%p action=stop-unwind\n",
@@ -1597,6 +1715,26 @@ restart:
                       frame ? frame->prev_frame : NULL,
                       frame ? frame->syscall_cfa : NULL,
                       frame ? frame->restore_flags : 0 );
+            /* MacRunner diag: this boundary is a native libsystem_platform call (e.g.
+             * _platform_memmove) faulting on a guest pointer.  Dump x0..x8 (memmove
+             * dst=x0 src=x1 len=x2) + lr + a stack window so the bad buffer/length and
+             * the Wine caller can be recovered from the run log. */
+            {
+                const ULONG64 *stk = (const ULONG64 *)(ULONG_PTR)context->Sp;
+                unsigned si;
+                MESSAGE( "macrunner-hb-seh-nonmod-regs: x0=%p x1=%p x2=%p x3=%p x4=%p x5=%p "
+                         "x6=%p x7=%p x8=%p x9=%p x16=%p x17=%p x18=%p lr=%p fp=%p sp=%p\n",
+                         (void *)context->X[0], (void *)context->X[1], (void *)context->X[2],
+                         (void *)context->X[3], (void *)context->X[4], (void *)context->X[5],
+                         (void *)context->X[6], (void *)context->X[7], (void *)context->X[8],
+                         (void *)context->X[9], (void *)context->X[16], (void *)context->X[17],
+                         (void *)context->X[18], (void *)context->Lr, (void *)context->Fp,
+                         (void *)context->Sp );
+                for (si = 0; si < 24; si += 4)
+                    MESSAGE( "macrunner-hb-seh-nonmod-stk: +%02x %p %p %p %p\n",
+                             si * 8, (void *)stk[si], (void *)stk[si+1],
+                             (void *)stk[si+2], (void *)stk[si+3] );
+            }
         }
         if (macrunner_hb_unwind_syscall_data_boundary( dispatch, context, frame ))
             return STATUS_SUCCESS;

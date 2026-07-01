@@ -525,6 +525,14 @@ Why: The quiet loader-init `exit=5` after `kernelbase` DllMain was a native `c00
 Verify: Built/deployed `ntdll.so`, PE `aarch64-windows/ntdll.dll`, and `aarch64-windows/kernelbase.dll` into `dist-arm64ec-spike`. Filtered classify run `reports/phase4-hollow-knight/laneA-exit5-locale-delta-verify-20260702-041609` reached `LADDER_RUNG: 6 (mono-init)` with self-check PASS; old `GetStringTypeW` native fault and loader-init exit=5 are gone. New blocker is `mono-2.0-bdwgc.dll rva=0x385e73` memory fault / `WINDOW_SERVER_ERROR c000007b`.
 Status: loader-init-cleared-next-mono-runtime-fault
 
+## 2026-07-02 08:40 — Lane A Mono init HB exec registration
+File(s): engine/wine/dlls/ntdll/unix/virtual.c, engine/wine/dlls/ntdll/unix/unix_private.h
+Type: ROOT-FIX
+What: Reconnected HyperBridge executable-memory registration to current-process `NtAllocateVirtualMemory`, `NtAllocateVirtualMemoryEx`, and `NtProtectVirtualMemory` success paths. Born-exec `PAGE_EXECUTE_*` allocations now register immediately; protect-to-exec transitions register against the containing valloc allocation.
+Why: After the locale fix, HK reached Mono and failed before window creation. Raw logs showed the derived `WINDOW_SERVER_ERROR c000007b` label was wrong: the status came from HB runtime failure, not NtUser/window server. The June WIP-era Mono/JIT exec-registration fix had not survived in `virtual.c`; without these calls, anonymous Mono exec pages rely on later dynamic-exec side effects instead of the strict guest exec gate.
+Verify: Built/deployed/codesigned `ntdll.so`. Filtered HK classify `reports/phase4-hollow-knight/laneA-mono-standard-env-try1-082507` reaches `LADDER_RUNG: 8 (gfxdevice)` with two `macrunner-hb-exec-memory-register event=alloc` lines and no Mono runtime fault. Forced diagnostic `MACRUNNER_HB_JIT_DIRECT_MEM=1` still reproduces a separate direct-mem JIT fault at `mono-2.0-bdwgc.dll+0x385e73` (`cmpw %r8w,(%rbx)`, `rbx=0xffffffff01000166`), so direct-mem remains disabled for the mainline gate.
+Status: mono-init-cleared-next-gfxdevice
+
 ## 2026-06-13 08:10 — Lane D Unity#2 DXBC corpus and D3D8 RenderWare fog matrix
 File(s): engine/graphics/scripts/run_unity_dxbc_airconv_corpus_smoke.sh, engine/graphics/traces/runtime_samples/d3d8_renderware_fog_runtime.jsonl, engine/graphics/tests/test_d3d9_translation.py, engine/graphics/tests/test_d3d9_metal_request.py, engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh, engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh
 Type: GRAPHICS-COVERAGE

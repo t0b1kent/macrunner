@@ -6623,7 +6623,11 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
 
     {
         NTSTATUS macrunner_st = allocate_virtual_memory( ret, size_ptr, type, protect, 0, limit, 0, 0 );
-        if (!macrunner_st) macrunner_hb_vm_changed();
+        if (!macrunner_st)
+        {
+            macrunner_hb_vm_changed();
+            macrunner_hb_register_x64_exec_alloc( *ret, *size_ptr, type, protect, *ret, *size_ptr );
+        }
         return macrunner_st;
     }
 }
@@ -6771,7 +6775,11 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
     {
         NTSTATUS macrunner_st = allocate_virtual_memory( ret, size_ptr, type, protect,
                                                          limit_low, limit_high, align, attributes );
-        if (!macrunner_st) macrunner_hb_vm_changed();
+        if (!macrunner_st)
+        {
+            macrunner_hb_vm_changed();
+            macrunner_hb_register_x64_exec_alloc( *ret, *size_ptr, type, protect, *ret, *size_ptr );
+        }
         return macrunner_st;
     }
 }
@@ -6891,7 +6899,9 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
     char *base;
     BYTE vprot;
     SIZE_T size;
+    SIZE_T allocation_size = 0;
     LPVOID addr;
+    void *allocation_base = NULL;
     DWORD old;
 
     if (!addr_ptr || !size_ptr || !old_prot)
@@ -6936,6 +6946,14 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
 
     if ((view = find_view( base, size )))
     {
+        char *view_end;
+
+        if (is_view_valloc( view ) && get_view_limit( view, &view_end ))
+        {
+            allocation_base = view->base;
+            allocation_size = view_end - (char *)view->base;
+        }
+
         /* Make sure all the pages are committed */
         if (get_committed_size( view, base, size, &vprot, VPROT_COMMITTED ) >= size && (vprot & VPROT_COMMITTED))
         {
@@ -6965,6 +6983,9 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
         *addr_ptr = base;
         *size_ptr = size;
         *old_prot = old;
+        if (allocation_base)
+            macrunner_hb_register_x64_exec_protect( base, size, new_prot,
+                                                    allocation_base, allocation_size );
     }
     else *old_prot = PAGE_NOACCESS;
     if (!status) macrunner_hb_vm_changed();   /* MacRunner: invalidate HB region cache on protect */

@@ -1,11 +1,23 @@
 # ACTIVE INVESTIGATION — живое состояние
 
-Last update: 2026-05-28 18:59 VLAT, Codex.
+Last update: 2026-07-02 08:40 VLAT, Codex.
 
 Читайте этот файл первым после compaction. Не перепроверять DISPROVED без нового
 контр-факта. Не возвращать Wine-render патчи.
 
 ## Current Task
+
+Update 2026-07-02 08:40 VLAT: Hollow Knight loader/frontier moved past Mono
+with HB exec-registration restored in `ntdll/unix/virtual.c`. The suspicious
+`WINDOW_SERVER_ERROR c000007b` at `mono-2.0-bdwgc.dll+0x385e73` was a derived
+classifier false positive: raw was HB `STATUS_INVALID_IMAGE_FORMAT` used for a
+runtime `MEMORY_FAULT`, not a window-server status. Mainline run
+`reports/phase4-hollow-knight/laneA-mono-standard-env-try1-082507` reaches
+filtered rung 8 (`gfxdevice`) and records two born-exec allocation registrations.
+Forced diagnostic `MACRUNNER_HB_JIT_DIRECT_MEM=1` still reproduces a separate
+direct-mem JIT fault at Mono `cmpw %r8w,(%rbx)` with
+`rbx=0xffffffff01000166`; keep direct-mem disabled for the HK gate until that
+class is audited separately. Next blocker is Lane C graphics/PRESENT_MISSING.
 
 Update 2026-05-28 09:46 VLAT: evidence-first PC=0/null-PC classification
 completed. The old status-fix follow-up was not a real `PC=0`: fresh child lldb

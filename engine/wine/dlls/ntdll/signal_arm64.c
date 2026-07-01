@@ -276,8 +276,11 @@ static inline BOOL macrunner_hb_unwind_made_no_progress( DWORD64 pc, DWORD64 pre
      * its own frame pointer, so unwinding it leaves the caller's fp untouched);
      * only fp moving strictly BACKWARD (down-stack) signals a corrupt unwind.
      * Using <= here false-rejected genuine native unwinds of frameless DXMT
-     * ARM64 frames (sp advanced, pc -> real caller, fp unchanged). */
-    if (prev_fp && context->Fp < prev_fp) return TRUE;
+     * ARM64 frames (sp advanced, pc -> real caller, fp unchanged).
+     * fp landing on exactly 0 is the ABI frame-chain terminator (outermost/
+     * frameless-leaf frame with no caller fp to report), not a backward jump
+     * into bogus memory -- do not flag it as corrupt. */
+    if (prev_fp && context->Fp && context->Fp < prev_fp) return TRUE;
     return FALSE;
 }
 

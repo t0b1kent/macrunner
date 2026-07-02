@@ -1142,3 +1142,35 @@ Implemented but pending HK validation due active `x18waittrace2` runner:
 - `loader.c` now registers original AMD64 executable PE section ranges before Wine rewrites builtin module headers.
 - `macrunner_hb.c` keeps a side-table of original exec ranges and makes `macrunner_hb_pc_in_executable_section()` use that table as authoritative for registered modules.
 - Diagnostic probes remain gated by `MACRUNNER_HB_TRACE_EXEC_GUARD` / `MACRUNNER_HB_TRACE_LIFT_PROBE`.
+
+## 2026-07-02 10:22 Lane A HK GLM-DXMT deploy check
+
+- Restorable rung-9 snapshot created before GLM deploy:
+  `artifacts/milestone-dist/hk-rung9-dxgi-factory-20260702-100320`.
+- Deployed GLM/graphics-prep DXMT dist from
+  `/Users/timurtoby/Documents/MacRunner/Main/MacRunner-graphics-prep/engine/graphics/dist/dxmt`
+  into the current overlay. Hash report:
+  `reports/research/dxmt-glm-options4-deploy-20260702-100554.sha256.txt`
+  (`source_head=8400e1e`, `main_head=fbb6b25`).
+- HK GLM 300s run:
+  `reports/phase4-hollow-knight/laneA-dxgi-glm-options4-try1-100619`.
+  Raw reached real `CreateDXGIFactory2` boundary but no `macrunner-dxmt-fence`,
+  no `CreateSwapChain`, no `Present`, no `CheckFeatureSupport` / `OPTIONS4` /
+  `EnumOutputs` / `GetDesc`, no fault. Timeout `exit=143`. Sample showed
+  CPU-bound HyperBridge memory-protect sync:
+  `macrunner_hb_try_kernel32_handle_semantic -> macrunner_hb_sync_virtual_region
+  -> hb_memory_protect -> rebuild_region_tree -> tree_insert`.
+- HK GLM 420s confirmation run:
+  `reports/phase4-hollow-knight/laneA-dxgi-glm-options4-420-try1-101357`.
+  Raw `real_factory=0`, no Mono reload, no device fence, no swapchain/present,
+  no fault. Filtered classify reports rung 6 with self-check FAIL because there
+  are no real DXGI evidence lines. Sample shows a pre-DXMT busy hang in display
+  callback transport:
+  `win32u!get_system_metrics -> get_virtual_screen_rect -> lock_display_devices
+  -> load_display_driver -> KeUserModeCallback -> macrunner_hb_route_x64_callback_fault
+  -> macrunner_hb_pc_in_executable_section`.
+
+Current identity: GLM OPTIONS4 DLLs did not advance HK to `CreateSwapChain`.
+The observed silence is not caps-query / `OPTIONS4` / DXGI output enumeration;
+it is a CPU-bound pre-DXMT HyperBridge user-callback/display-driver transport
+or memory-protection sync path, depending on run timing.

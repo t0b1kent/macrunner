@@ -548,3 +548,11 @@ What: Added a generic Unity DXBC corpus smoke and validated AI War 2 as the seco
 Why: Lane D needed non-HK Unity shader corpus coverage plus the next RenderWare/GTA VC matrix increment in owned headless scope.
 Verify: `run_unity_dxbc_airconv_corpus_smoke.sh aarch64` -> AI War 2 `blobs=2 translate=2/2 render=2/2`; `python3 -m pytest engine/graphics/tests/test_d3d9_translation.py engine/graphics/tests/test_d3d9_metal_request.py -q` -> `63 passed`; `bash engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh` -> `d3d9_trace_count=33`, PASS; `D3D9_METAL_REQUEST_ONLY=1 bash engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh` -> `d3d9_metal_request_count=33`, PASS.
 Status: headless-validated
+
+## 2026-07-02 10:22 — Lane A rung-9 snapshot and GLM DXMT deploy probe
+File(s): engine/graphics/dist/dxmt/* runtime payload, artifacts/milestone-dist/hk-rung9-dxgi-factory-20260702-100320
+Type: RUNTIME-DEPLOY + DIAGNOSTIC
+What: Created the first restorable verified HK rung-9 DXGI-factory snapshot, then copied GLM/graphics-prep DXMT runtime DLLs into the current DXMT dist overlay. Only runtime payloads were copied; the graphics-prep worktree was not edited.
+Why: GLM's staged DXMT build contains the OPTIONS4 / CheckFeatureSupport `E_INVALIDARG` class fix, and HK's post-device-fence silence could have been a caps-query bailout before `CreateSwapChain`.
+Verify: Hash report `reports/research/dxmt-glm-options4-deploy-20260702-100554.sha256.txt` records source/dest hashes (`source_head=8400e1e`, `main_head=fbb6b25`). HK GLM runs did not reach `CreateSwapChain`: the 300s run reached real `CreateDXGIFactory2` but no device fence/swapchain/present; the 420s confirmation run timed out earlier with no real DXGI boundary. Samples point to CPU-bound HyperBridge memory-protect sync and display-driver `KeUserModeCallback` transport, not DXMT caps queries.
+Status: GLM-DXMT-did-not-advance-HK-next-HB-display-callback-transport

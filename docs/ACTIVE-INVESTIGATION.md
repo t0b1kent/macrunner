@@ -1263,3 +1263,28 @@ or memory-protection sync path, depending on run timing.
   `macrunner_hb_sync_virtual_region -> hb_memory_protect`, with helper threads
   waiting in `NtWaitForSingleObject/server_wait`.
 - Report: `reports/research/laneA-glm-latest-postswap-20260702-1348.md`.
+
+## 2026-07-02 15:14 Lane A post-swapchain Unity+0x2b5605 / HB bookkeeping
+
+- Snapshot floor before this round:
+  `artifacts/milestone-dist/hk-rung11-latest-glm-postswap-20260702-141251-20260702-141251`.
+- Old raw fault run:
+  `reports/phase4-hollow-knight/laneA-hk-glm-latest-postswap-long-132919-try1-132920`.
+  `UnityPlayer.dll+0x2b5605` fired once, not as a repeated recoverable storm, then the thread took runtime exit status `c000007b`; wrapper later timed out with rc 143.
+- Fault instruction remains
+  `mov rax, qword ptr [r8 + rsi*8 + 0x488]`, with `r8=0x4c1302cb0`,
+  `rsi=0x107a0a4a0`, EA `0xcfe355638`, and `hb_memory_read_u64(EA)` returning
+  `MEMORY_FAULT`. The regfile makes an unmapped/producer-corruption class plausible
+  because `rsi` is pointer-sized, not a sane small array index, but the address-class
+  verdict is not closed: instrumented reruns did not replay the fault.
+- Added `macrunner-hb-unity-addrclass` trace for the fault site. No lines emitted yet
+  because no rerun hit `UnityPlayer+0x2b5605`.
+- Fixed HB bookkeeping hotspots exposed while trying to replay the fault:
+  `rebuild_region_tree/tree_insert` removed from `hb_memory_protect` split path, and
+  `split_all_regions_at` changed to tree lookup under the non-overlap invariant.
+- Verified deployed `ntdll.so` hash:
+  `a12a7823b7071c248d3bac578255a18ad90bc0d85abcdd29233d8ab90e0ea70a`.
+  Filtered classify on
+  `reports/phase4-hollow-knight/laneA-laneA-hk-addrclass-splitfast-20260702-150106-try1-150106`
+  preserves rung 11: real `CreateSwapChainForHwnd rc=0`, followed by
+  `MakeWindowAssociation`, no `GetBuffer`, no real Present.

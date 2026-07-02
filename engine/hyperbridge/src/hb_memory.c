@@ -395,50 +395,26 @@ static hb_result_t split_region_at(hb_memory_t* mem, hb_gva_t addr) {
     if (r->host_base) n->host_base = region_host_ptr(r, addr);
     n->tree_left = NULL;
     n->tree_right = NULL;
+    n->tree_prio = region_prio(n->base);
     n->next = r->next;
 
     r->size = (size_t)(addr - r->base);
     r->next = n;
-    rebuild_region_tree(mem);
+    tree_insert(&mem->region_tree, n);
+    clear_hot_cache(mem);
     return HB_OK;
 }
 
 static hb_result_t split_all_regions_at(hb_memory_t* mem, hb_gva_t addr) {
     hb_region_t* r;
+    hb_gva_t top;
 
     if (!mem) return HB_ERR_INVALID_ARG;
-    for (r = mem->regions; r; r = r->next) {
-        hb_gva_t top = r->base + r->size;
-        hb_region_t* n;
-
-        if (addr <= r->base || addr >= top) continue;
-        n = calloc(1, sizeof(*n));
-        if (!n) return HB_ERR_OUT_OF_MEMORY;
-
-        *n = *r;
-        n->base = addr;
-        n->size = (size_t)(top - addr);
-        if (r->host_base) n->host_base = region_host_ptr(r, addr);
-        n->tree_left = NULL;
-        n->tree_right = NULL;
-        n->next = r->next;
-
-        r->size = (size_t)(addr - r->base);
-        r->next = n;
-        r = n;
-    }
-    return HB_OK;
-}
-
-static bool region_tree_would_split_at(hb_memory_t* mem, hb_gva_t addr) {
-    hb_region_t* r;
-
-    if (!mem) return false;
-    for (r = mem->regions; r; r = r->next) {
-        hb_gva_t top = r->base + r->size;
-        if (addr > r->base && addr < top) return true;
-    }
-    return false;
+    r = hb_memory_find_region(mem, addr);
+    if (!r) return HB_OK;
+    top = r->base + r->size;
+    if (addr <= r->base || addr >= top) return HB_OK;
+    return split_region_at(mem, addr);
 }
 
 static hb_result_t remove_region_node(hb_memory_t* mem, hb_region_t* target) {
@@ -921,7 +897,6 @@ hb_result_t hb_memory_guest32_protect(hb_memory_t* mem, uint32_t base, size_t si
 #endif
     }
     if (touched_exec) bump_generation(mem, NULL);
-    rebuild_region_tree(mem);
     return HB_OK;
 }
 
@@ -991,7 +966,6 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
     hb_gva_t top;
     hb_region_t* exact;
     hb_result_t res;
-    bool topology_changed;
     bool found = false;
     bool touched_exec = false;
 
@@ -1066,18 +1040,10 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
         return HB_OK;
     }
 
-    topology_changed = region_tree_would_split_at(mem, start) ||
-                       region_tree_would_split_at(mem, top);
     res = split_all_regions_at(mem, start);
-    if (res != HB_OK) {
-        if (topology_changed) rebuild_region_tree(mem);
-        return res;
-    }
+    if (res != HB_OK) return res;
     res = split_all_regions_at(mem, top);
-    if (res != HB_OK) {
-        if (topology_changed) rebuild_region_tree(mem);
-        return res;
-    }
+    if (res != HB_OK) return res;
 
     for (hb_region_t* r = mem->regions; r; r = r->next) {
         hb_gva_t rtop = r->base + r->size;
@@ -1134,12 +1100,8 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
         }
     }
 
-    if (!found) {
-        if (topology_changed) rebuild_region_tree(mem);
-        return HB_ERR_NOT_FOUND;
-    }
+    if (!found) return HB_ERR_NOT_FOUND;
     if (touched_exec) bump_generation(mem, NULL);
-    if (topology_changed) rebuild_region_tree(mem);
     return HB_OK;
 }
 

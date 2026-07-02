@@ -580,3 +580,11 @@ What: Excluded `macrunner-hb-dxgi-swapchain: candidate method=Present` lines fro
 Why: Factory slot 8 is `MakeWindowAssociation`, and the generic unknown-object candidate trace was inflating `present_count` even though no real swapchain Present occurred.
 Verify: Reclassified `reports/phase4-hollow-knight/laneA-hk-glm-latest-postswap-long-132919-try1-132920`; filtered D3D counts are now `swapchain=2 present=0`, with `LADDER_RUNG: 11 (swapchain)` and `PRIMARY_CLASS=PRESENT_MISSING`.
 Status: present-marker-false-positive-removed
+
+## 2026-07-02 15:14 — Lane A HK post-swapchain HB memory bookkeeping
+File(s): engine/hyperbridge/src/hb_memory.c, engine/wine/dlls/ntdll/unix/macrunner_hb.c
+Type: PERF-FIX + DIAGNOSTIC
+What: Added a narrow `UnityPlayer.dll+0x2b5605` address-class dump for HB/virtual/Mach mappings, then removed the hot full-region-tree rebuild from split/protect bookkeeping. Split-created right fragments are inserted into the existing region treap immediately; `hb_memory_protect` no longer rebuilds the full tree after metadata-only permission changes. The second sampled hotspot, `split_all_regions_at`, now uses the region tree lookup for the normal non-overlap invariant instead of scanning every region.
+Why: The raw post-swapchain fault was one-shot in the prior GLM run, but samples during the post-device/post-swapchain window showed HB infrastructure burning CPU in `macrunner_hb_sync_virtual_region -> hb_memory_protect`, first under `rebuild_region_tree -> tree_insert`, then under `split_all_regions_at`.
+Verify: Built/deployed/codesigned `ntdll.so` (`a12a7823b7071c248d3bac578255a18ad90bc0d85abcdd29233d8ab90e0ea70a`). Filtered classifier on `reports/phase4-hollow-knight/laneA-laneA-hk-addrclass-splitfast-20260702-150106-try1-150106` still reports real `CreateSwapChainForHwnd` (`rc=0`, `hwnd=0x20054`), with no `GetBuffer` or real Present. Samples after the first fix show `rebuild_region_tree/tree_insert` gone; splitfast sample no longer contains `split_all_regions_at`/tree rebuild terms. The old `UnityPlayer+0x2b5605` fault did not replay in the instrumented reruns, so no HB/Mach address-class dump was captured yet.
+Status: hb-bookkeeping-hotspots-reduced-rung11-preserved-next-getbuffer-or-replay-unity-fault

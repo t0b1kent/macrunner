@@ -5715,6 +5715,120 @@ static void macrunner_hb_trace_unity_desc_watch( const char *phase, hb_context_t
     }
 }
 
+static BOOL macrunner_hb_virtual_region_lookup_address(
+    void *address, struct macrunner_hb_virtual_region *record, unsigned int *record_count );
+
+static void macrunner_hb_trace_unity_addrclass( hb_context_t *ctx, const char *reg,
+                                                const char *kind, uint64_t addr )
+{
+    hb_region_t *hb_region;
+    struct macrunner_hb_virtual_region virtual_region;
+    unsigned int virtual_count = 0;
+    BOOL virtual_found;
+    uint64_t host_addr = addr;
+    const char *class_name = "unmapped";
+#ifdef __APPLE__
+    mach_vm_address_t raw_region = (mach_vm_address_t)addr;
+    mach_vm_address_t host_region = (mach_vm_address_t)addr;
+    mach_vm_size_t raw_size = 0, host_size = 0;
+    vm_region_basic_info_data_64_t raw_info, host_info;
+    mach_msg_type_number_t raw_count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_msg_type_number_t host_count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t raw_object = MACH_PORT_NULL, host_object = MACH_PORT_NULL;
+    kern_return_t raw_kr, host_kr;
+    int raw_covers, host_covers;
+#endif
+
+    if (!ctx || !ctx->memory || !reg || !kind || addr < 0x10000) return;
+
+    memset( &virtual_region, 0, sizeof(virtual_region) );
+    hb_region = hb_memory_find_region( ctx->memory, (hb_gva_t)addr );
+    virtual_found = macrunner_hb_virtual_region_lookup_address(
+        (void *)(uintptr_t)addr, &virtual_region, &virtual_count );
+    if (hb_region && hb_region->host_base && addr >= hb_region->base &&
+        addr - hb_region->base < hb_region->size)
+        host_addr = (uint64_t)(uintptr_t)hb_region->host_base + (addr - hb_region->base);
+
+#ifdef __APPLE__
+    memset( &raw_info, 0, sizeof(raw_info) );
+    memset( &host_info, 0, sizeof(host_info) );
+    raw_kr = mach_vm_region( mach_task_self(), &raw_region, &raw_size,
+                             VM_REGION_BASIC_INFO_64, (vm_region_info_t)&raw_info,
+                             &raw_count, &raw_object );
+    if (raw_object != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), raw_object );
+    raw_covers = raw_kr == KERN_SUCCESS && addr >= (uint64_t)raw_region &&
+                 addr < (uint64_t)raw_region + (uint64_t)raw_size;
+
+    host_region = (mach_vm_address_t)host_addr;
+    host_kr = mach_vm_region( mach_task_self(), &host_region, &host_size,
+                              VM_REGION_BASIC_INFO_64, (vm_region_info_t)&host_info,
+                              &host_count, &host_object );
+    if (host_object != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), host_object );
+    host_covers = host_kr == KERN_SUCCESS && host_addr >= (uint64_t)host_region &&
+                  host_addr < (uint64_t)host_region + (uint64_t)host_size;
+
+    if (hb_region && (hb_region->perm & HB_PERM_READ) && (!host_covers ||
+        !(host_info.protection & VM_PROT_READ)))
+        class_name = "guest-valid-host-fault";
+    else if (hb_region && (hb_region->perm & HB_PERM_READ))
+        class_name = "mapped-readable";
+    else if (hb_region)
+        class_name = "mapped-no-read";
+    else if (virtual_found)
+        class_name = "virtual-record-only";
+
+    fprintf( stderr,
+             "macrunner-hb-unity-addrclass: reg=%s kind=%s addr=%p class=%s "
+             "hb_found=%d hb_base=%p hb_size=%#zx hb_perm=%#x hb_host=%p "
+             "hb_host_addr=%p hb_allocated=%d hb_guest32=%d hb_gen=%llu "
+             "virt_found=%d virt_count=%u virt_base=%p virt_size=%#zx virt_protect=%#lx "
+             "raw_kr=%d raw_covers=%d raw_region=%p-%p raw_prot=%#x raw_max=%#x "
+             "host_kr=%d host_covers=%d host_region=%p-%p host_prot=%#x host_max=%#x\n",
+             reg, kind, (void *)(uintptr_t)addr, class_name, hb_region != NULL,
+             hb_region ? (void *)(uintptr_t)hb_region->base : NULL,
+             hb_region ? hb_region->size : 0, hb_region ? (unsigned)hb_region->perm : 0,
+             hb_region ? hb_region->host_base : NULL, (void *)(uintptr_t)host_addr,
+             hb_region ? hb_region->allocated : 0, hb_region ? hb_region->is_guest32 : 0,
+             hb_region ? (unsigned long long)hb_region->gen : 0,
+             virtual_found, virtual_count,
+             virtual_found ? (void *)(uintptr_t)virtual_region.base : NULL,
+             virtual_found ? (size_t)virtual_region.size : 0,
+             virtual_found ? (unsigned long)virtual_region.protect : 0,
+             (int)raw_kr, raw_covers, (void *)(uintptr_t)raw_region,
+             (void *)(uintptr_t)((uint64_t)raw_region + (uint64_t)raw_size),
+             raw_kr == KERN_SUCCESS ? (unsigned)raw_info.protection : 0,
+             raw_kr == KERN_SUCCESS ? (unsigned)raw_info.max_protection : 0,
+             (int)host_kr, host_covers, (void *)(uintptr_t)host_region,
+             (void *)(uintptr_t)((uint64_t)host_region + (uint64_t)host_size),
+             host_kr == KERN_SUCCESS ? (unsigned)host_info.protection : 0,
+             host_kr == KERN_SUCCESS ? (unsigned)host_info.max_protection : 0 );
+#else
+    if (hb_region && (hb_region->perm & HB_PERM_READ))
+        class_name = "mapped-readable";
+    else if (hb_region)
+        class_name = "mapped-no-read";
+    else if (virtual_found)
+        class_name = "virtual-record-only";
+
+    fprintf( stderr,
+             "macrunner-hb-unity-addrclass: reg=%s kind=%s addr=%p class=%s "
+             "hb_found=%d hb_base=%p hb_size=%#zx hb_perm=%#x hb_host=%p "
+             "hb_host_addr=%p hb_allocated=%d hb_guest32=%d hb_gen=%llu "
+             "virt_found=%d virt_count=%u virt_base=%p virt_size=%#zx virt_protect=%#lx\n",
+             reg, kind, (void *)(uintptr_t)addr, class_name, hb_region != NULL,
+             hb_region ? (void *)(uintptr_t)hb_region->base : NULL,
+             hb_region ? hb_region->size : 0, hb_region ? (unsigned)hb_region->perm : 0,
+             hb_region ? hb_region->host_base : NULL, (void *)(uintptr_t)host_addr,
+             hb_region ? hb_region->allocated : 0, hb_region ? hb_region->is_guest32 : 0,
+             hb_region ? (unsigned long long)hb_region->gen : 0,
+             virtual_found, virtual_count,
+             virtual_found ? (void *)(uintptr_t)virtual_region.base : NULL,
+             virtual_found ? (size_t)virtual_region.size : 0,
+             virtual_found ? (unsigned long)virtual_region.protect : 0 );
+#endif
+    fflush( stderr );
+}
+
 static void macrunner_hb_trace_unity_alloc_fault_candidate( hb_context_t *ctx, size_t fault_rva )
 {
     static unsigned int reports;
@@ -5775,6 +5889,12 @@ static void macrunner_hb_trace_unity_alloc_fault_candidate( hb_context_t *ctx, s
                  (void *)(uintptr_t)c620, (void *)(uintptr_t)c628, hb_result_string( c628r ),
                  (void *)(uintptr_t)c630, c640, hb_result_string( c640r ),
                  c641, hb_result_string( c641r ) );
+        if (fault_rva == 0x2b5605)
+        {
+            macrunner_hb_trace_unity_addrclass( ctx, names[i], "base", ptr );
+            macrunner_hb_trace_unity_addrclass( ctx, names[i], "eff", eff );
+            if (!i) macrunner_hb_trace_unity_addrclass( ctx, "rsi", "idx", idx );
+        }
     }
     fflush( stderr );
     reports++;

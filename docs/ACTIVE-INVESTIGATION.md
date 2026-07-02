@@ -1213,3 +1213,30 @@ or memory-protection sync path, depending on run timing.
   storm (`route_x64_callback_fault=0`, `pc_in_executable_section` low). Remaining
   warm profile is HB JIT/interp execution during Mono reload/post-Physics, with
   many `mach_msg2_trap` samples, not the old tree rebuild/getenv/callback scan.
+
+## 2026-07-02 13:06 Lane A HK HWND binding cleared
+
+- Binding failure identity: `IDXGIFactory2::CreateSwapChainForHwnd(hwnd=0x20054)`
+  was failing below DXMT because winemac had not realized `win_data` for Unity's
+  top-level window when swapchain creation arrived. The old run only had the
+  fail-loud summary; the fixed run's full field trace shows the original NULL
+  step was the `win_data`/realization stage, not macdrv symbol resolution.
+- `hwnd=0x20054` facts from raw log: owner thread 36 equals current thread 36,
+  `root=0x20054`, `is_root=1`, `parent=0x10020`, desktop-parented, style
+  `0x94000000`, full client/window rect `(0,0)-(1512,982)`.
+- Fix: `macdrv_ensure_win_data()` creates real macdrv data/Cocoa window on demand
+  using current USER rects, and `d3dmetal.c` re-runs client-surface update/present
+  after realization so the CAMetalLayer is attached to the real HWND path.
+- Verification run:
+  `reports/phase4-hollow-knight/laneA-hk-hwnd-bind-fix-125609-try1-125711`.
+  Raw fields: `client_cocoa_view=0x72aa20f00`, `ret_view=0x72aa31b80`,
+  `ret_layer=0x764179770`, `attached_to_hwnd=1`.
+- Progression: `CreateSwapChainForHwnd` returned `rc=0x0` with
+  `swapchain=0xedcb05c90`. No real `GetBuffer`/backbuffer marker and no real
+  swapchain `Present` yet; the apparent `candidate method=Present slot=8` is
+  actually factory `MakeWindowAssociation(hwnd=0x20054, flags=3)`, confirmed by
+  DXMT warning `MakeWindowAssociation: Ignoring flags 3`.
+- Filtered classifier: `LADDER_RUNG: 11 (swapchain)`, primary
+  `SILENT_SPIN_NO_MARKERS` due watchdog timeout after the swapchain advance.
+- Snapshot floor:
+  `artifacts/milestone-dist/hk-rung11-swapchain-hwnd-bind-20260702-130629-20260702-130629`.

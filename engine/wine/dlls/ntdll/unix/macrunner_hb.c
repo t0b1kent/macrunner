@@ -1150,6 +1150,18 @@ static int macrunner_hb_trace_abi_stack_enabled(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_ABI_STACK" );
 }
 
+static int macrunner_hb_trace_user32_message_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_USER32_MESSAGE" );
+}
+
+static int macrunner_hb_trace_user32_message_post_swapchain_only(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_USER32_MESSAGE_POST_SWAPCHAIN_ONLY" );
+}
+
 static int macrunner_hb_trace_pe_stack_enabled(void)
 {
     static int cache = -1;
@@ -2008,6 +2020,19 @@ static uint64_t macrunner_hb_trace_stack_address( hb_context_t *ctx, unsigned in
     return value;
 }
 
+static uint64_t macrunner_hb_current_tid64(void)
+{
+    return (uint64_t)(uintptr_t)NtCurrentTeb()->ClientId.UniqueThread;
+}
+
+static uint64_t macrunner_hb_current_native_tid64(void)
+{
+    uint64_t tid = 0;
+
+    pthread_threadid_np( NULL, &tid );
+    return tid;
+}
+
 enum macrunner_hb_wait_handle_kind
 {
     MACRUNNER_HB_WAIT_HANDLE_UNKNOWN = 0,
@@ -2220,7 +2245,7 @@ static void macrunner_hb_wait_handle_log( hb_context_t *ctx,
     caller = macrunner_hb_trace_return_address( ctx );
     outer = macrunner_hb_trace_stack_address( ctx, 6 );
 
-    fprintf( stderr, "macrunner-hb-wait-handle: phase=%s import=%s!%s pc=%p caller=%p "
+    fprintf( stderr, "macrunner-hb-wait-handle: phase=%s import=%s!%s tid=0x%llx native_tid=0x%llx pc=%p caller=%p "
              "outer=%p rsp=%p handle=%p timeout_ms=%lu alertable=%u tracked=%u kind=%s "
              "creator=%s creator_pc=%p creator_caller=%p creator_outer=%p creator_tid=0x%llx "
              "initial=%ld max=%ld tracked_state=%ld manual=%u sem_status=%08lx sem_count=%lu "
@@ -2228,6 +2253,8 @@ static void macrunner_hb_wait_handle_log( hb_context_t *ctx,
              "ret=%p last_error=%lu\n",
              phase, thunk && thunk->dll_name ? thunk->dll_name : "?",
              thunk && thunk->import_name ? thunk->import_name : "?",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
              (void *)(uintptr_t)(ctx ? ctx->pc : 0), (void *)(uintptr_t)caller,
              (void *)(uintptr_t)outer, (void *)(uintptr_t)(ctx ? ctx->regs.x64.rsp : 0),
              (void *)(uintptr_t)handle, (unsigned long)timeout_ms, alertable, tracked,
@@ -2608,6 +2635,17 @@ static int macrunner_hb_trace_abi_budget_allows(void)
         count++;
         ERR( "macrunner-hb-abi: trace budget exhausted at %d entries, silencing\n", limit );
     }
+    return 0;
+}
+
+static int macrunner_hb_trace_user32_message_budget_allows(void)
+{
+    static int count;
+    const char *val = getenv( "MACRUNNER_HB_TRACE_USER32_MESSAGE_BUDGET" );
+    int limit = val && val[0] ? atoi(val) : 2000;
+
+    if (limit <= 0) return 1;
+    if (__atomic_fetch_add( &count, 1, __ATOMIC_RELAXED ) < limit) return 1;
     return 0;
 }
 
@@ -4499,6 +4537,19 @@ static BOOL macrunner_hb_dxmt_com_import_slot( const char *import_name, unsigned
 static pthread_mutex_t macrunner_hb_dxgi_swapchain_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t macrunner_hb_dxgi_swapchains[MACRUNNER_HB_DXGI_SWAPCHAIN_MAX];
 static int macrunner_hb_dxgi_swapchain_create_seen;
+static uint64_t macrunner_hb_dxgi_swapchain_creator_tid;
+static uint64_t macrunner_hb_dxgi_swapchain_creator_native_tid;
+static uint64_t macrunner_hb_dxgi_swapchain_creator_pc;
+static uint64_t macrunner_hb_dxgi_swapchain_creator_ret;
+static uint64_t macrunner_hb_dxgi_swapchain_creator_hwnd;
+static uint64_t macrunner_hb_dxgi_swapchain_creator_object;
+
+static BOOL macrunner_hb_current_thread_is_swapchain_creator(void)
+{
+    uint64_t tid = __atomic_load_n( &macrunner_hb_dxgi_swapchain_creator_tid, __ATOMIC_ACQUIRE );
+
+    return tid && tid == macrunner_hb_current_tid64();
+}
 
 static const char *macrunner_hb_dxgi_factory_slot_name( unsigned int slot, unsigned int *pp_index )
 {
@@ -4579,11 +4630,25 @@ static void macrunner_hb_trace_dxgi_swapchain(
         pthread_mutex_lock( &macrunner_hb_dxgi_swapchain_mutex );
         macrunner_hb_dxgi_swapchain_remember_locked( swapchain );
         pthread_mutex_unlock( &macrunner_hb_dxgi_swapchain_mutex );
+        __atomic_store_n( &macrunner_hb_dxgi_swapchain_creator_tid,
+                          macrunner_hb_current_tid64(), __ATOMIC_RELEASE );
+        __atomic_store_n( &macrunner_hb_dxgi_swapchain_creator_native_tid,
+                          macrunner_hb_current_native_tid64(), __ATOMIC_RELEASE );
+        __atomic_store_n( &macrunner_hb_dxgi_swapchain_creator_pc,
+                          ctx ? ctx->pc : 0, __ATOMIC_RELEASE );
+        __atomic_store_n( &macrunner_hb_dxgi_swapchain_creator_ret,
+                          ret_addr, __ATOMIC_RELEASE );
+        __atomic_store_n( &macrunner_hb_dxgi_swapchain_creator_hwnd,
+                          arg_count > 2 ? args[2] : 0, __ATOMIC_RELEASE );
+        __atomic_store_n( &macrunner_hb_dxgi_swapchain_creator_object,
+                          swapchain, __ATOMIC_RELEASE );
         __atomic_store_n( &macrunner_hb_dxgi_swapchain_create_seen, 1, __ATOMIC_RELEASE );
         fprintf( stderr,
-                 "macrunner-hb-dxgi-swapchain: create method=%s slot=%u factory=%p swapchain=%p "
+                 "macrunner-hb-dxgi-swapchain: create method=%s slot=%u tid=0x%llx native_tid=0x%llx factory=%p swapchain=%p "
                  "pp=%p hwnd=%p desc=%p rc=%p ret_addr=%p pc=%p\n",
-                 factory_method, slot, (void *)(uintptr_t)args[0],
+                 factory_method, slot, (unsigned long long)macrunner_hb_current_tid64(),
+                 (unsigned long long)macrunner_hb_current_native_tid64(),
+                 (void *)(uintptr_t)args[0],
                  (void *)(uintptr_t)swapchain, (void *)(uintptr_t)args[pp_index],
                  (void *)(uintptr_t)(arg_count > 2 ? args[2] : 0),
                  (void *)(uintptr_t)(arg_count > 3 ? args[3] : 0),
@@ -10074,6 +10139,10 @@ static void macrunner_hb_trace_abi_return( hb_context_t *ctx,
                                            const struct macrunner_hb_import_thunk *thunk,
                                            uint64_t ret_addr, uint64_t value,
                                            const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] );
+static void macrunner_hb_trace_user32_message_import( hb_context_t *ctx,
+                                                      const struct macrunner_hb_import_thunk *thunk,
+                                                      const char *phase, uint64_t value,
+                                                      const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] );
 static void macrunner_hb_normalize_import_args( const struct macrunner_hb_import_thunk *thunk,
                                                 uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] );
 
@@ -19263,10 +19332,13 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
         macrunner_hb_strieq( thunk->import_name, "WaitForSingleObjectEx" ))
     {
         BOOL alertable = macrunner_hb_strieq( thunk->import_name, "WaitForSingleObjectEx" ) && args[2];
+        BOOL swapchain_creator_thread = macrunner_hb_current_thread_is_swapchain_creator();
         BOOL trace_wait_before = macrunner_hb_trace_wait_semantic_budget_allows();
         BOOL trace_post_swapchain_before = !trace_wait_before &&
             __atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE ) &&
             macrunner_hb_post_swapchain_wait_trace_budget_allows();
+        BOOL trace_swapchain_creator_before = !trace_wait_before && !trace_post_swapchain_before &&
+            swapchain_creator_thread && macrunner_hb_post_swapchain_wait_trace_budget_allows();
 
         if (trace_wait_before)
         {
@@ -19282,9 +19354,10 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                      (unsigned int)alertable );
             fflush( stderr );
         }
-        if (trace_wait_before || trace_post_swapchain_before)
+        if (trace_wait_before || trace_post_swapchain_before || trace_swapchain_creator_before)
             macrunner_hb_wait_handle_log( ctx, thunk,
-                                          trace_post_swapchain_before ? "before-post-swapchain" : "before",
+                                          swapchain_creator_thread ? "before-swapchain-creator" :
+                                          (trace_post_swapchain_before ? "before-post-swapchain" : "before"),
                                           args[0], (DWORD)args[1], (unsigned int)alertable,
                                           STATUS_PENDING, 0 );
         {
@@ -19308,10 +19381,13 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
         }
         else *ret = status;
         {
+            BOOL swapchain_creator_thread = macrunner_hb_current_thread_is_swapchain_creator();
             BOOL trace_wait_after = macrunner_hb_trace_wait_semantic_budget_allows();
             BOOL trace_post_swapchain_after = !trace_wait_after &&
                 __atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE ) &&
                 macrunner_hb_post_swapchain_wait_trace_budget_allows();
+            BOOL trace_swapchain_creator_after = !trace_wait_after && !trace_post_swapchain_after &&
+                swapchain_creator_thread && macrunner_hb_post_swapchain_wait_trace_budget_allows();
 
         if (trace_wait_after)
         {
@@ -19327,9 +19403,10 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                      (void *)(uintptr_t)*ret, (unsigned long)NtCurrentTeb()->LastErrorValue );
             fflush( stderr );
         }
-        if (trace_wait_after || trace_post_swapchain_after)
+        if (trace_wait_after || trace_post_swapchain_after || trace_swapchain_creator_after)
             macrunner_hb_wait_handle_log( ctx, thunk,
-                                          trace_post_swapchain_after ? "after-post-swapchain" : "after",
+                                          swapchain_creator_thread ? "after-swapchain-creator" :
+                                          (trace_post_swapchain_after ? "after-post-swapchain" : "after"),
                                           args[0], (DWORD)args[1], (unsigned int)alertable,
                                           status, *ret );
         }
@@ -21206,6 +21283,7 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     macrunner_hb_trace_geometry_api( "before", thunk, ret_addr, 0, args );
     macrunner_hb_trace_d3d_boundary( "before", ctx, thunk, ret_addr, 0, args, arg_count, FALSE );
     macrunner_hb_trace_abi_stack( ctx, "before-native", thunk, ret_addr, args );
+    macrunner_hb_trace_user32_message_import( ctx, thunk, "before-native", 0, args );
     if (macrunner_hb_try_dxmt_com_get_mtl_device_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_synthetic_d3d_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_get_module_handle_semantic( ctx, thunk, args, &rc ) ||
@@ -21258,6 +21336,7 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     macrunner_hb_trace_dxgi_swapchain( ctx, thunk, ret_addr, rc, args, arg_count );
     macrunner_hb_trace_d3d_boundary( "after", ctx, thunk, ret_addr, rc, args, arg_count,
                                      handled_semantic );
+    macrunner_hb_trace_user32_message_import( ctx, thunk, "after-native", rc, args );
     if (trace_tls)
     {
         TEB *teb = NtCurrentTeb();
@@ -21590,13 +21669,36 @@ static BOOL macrunner_hb_trace_import_interesting( const struct macrunner_hb_imp
     if (macrunner_hb_strieq( thunk->dll_name, "native-direct" )) return TRUE;
     if (macrunner_hb_strieq( thunk->dll_name, "user32.dll" ) &&
         (macrunner_hb_strieq( thunk->import_name, "SendMessageW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SendMessageA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "PostMessageW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "PostMessageA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetMessageW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetMessageA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "PeekMessageW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "PeekMessageA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "DispatchMessageW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "DispatchMessageA" ) ||
+         macrunner_hb_strieq( thunk->import_name, "TranslateMessage" ) ||
+         macrunner_hb_strieq( thunk->import_name, "WaitMessage" ) ||
+         macrunner_hb_strieq( thunk->import_name, "MsgWaitForMultipleObjects" ) ||
+         macrunner_hb_strieq( thunk->import_name, "MsgWaitForMultipleObjectsEx" ) ||
          macrunner_hb_strieq( thunk->import_name, "CreateWindowExW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "CreateWindowExA" ) ||
          macrunner_hb_strieq( thunk->import_name, "CreateDialogParamW" ) ||
          macrunner_hb_strieq( thunk->import_name, "DefWindowProcW" ) ||
+         macrunner_hb_strieq( thunk->import_name, "DefWindowProcA" ) ||
          macrunner_hb_strieq( thunk->import_name, "MoveWindow" ) ||
          macrunner_hb_strieq( thunk->import_name, "SetWindowPos" ) ||
          macrunner_hb_strieq( thunk->import_name, "DestroyWindow" ) ||
          macrunner_hb_strieq( thunk->import_name, "ShowWindow" ) ||
+         macrunner_hb_strieq( thunk->import_name, "UpdateWindow" ) ||
+         macrunner_hb_strieq( thunk->import_name, "IsWindowVisible" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetActiveWindow" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetActiveWindow" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetForegroundWindow" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetForegroundWindow" ) ||
+         macrunner_hb_strieq( thunk->import_name, "GetFocus" ) ||
+         macrunner_hb_strieq( thunk->import_name, "SetFocus" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetWindowLongPtrW" ) ||
          macrunner_hb_strieq( thunk->import_name, "SetWindowLongPtrW" ) ||
          macrunner_hb_strieq( thunk->import_name, "GetWindowLongW" ) ||
@@ -22203,6 +22305,142 @@ static void macrunner_hb_trace_windowplacement( hb_context_t *ctx,
          left, top, right, bottom );
 }
 
+static const char *macrunner_hb_window_message_name( UINT msg )
+{
+    switch (msg)
+    {
+    case WM_NULL: return "WM_NULL";
+    case WM_CREATE: return "WM_CREATE";
+    case WM_DESTROY: return "WM_DESTROY";
+    case WM_MOVE: return "WM_MOVE";
+    case WM_SIZE: return "WM_SIZE";
+    case WM_ACTIVATE: return "WM_ACTIVATE";
+    case WM_SETFOCUS: return "WM_SETFOCUS";
+    case WM_KILLFOCUS: return "WM_KILLFOCUS";
+    case WM_ENABLE: return "WM_ENABLE";
+    case WM_SETREDRAW: return "WM_SETREDRAW";
+    case WM_SETTEXT: return "WM_SETTEXT";
+    case WM_GETTEXT: return "WM_GETTEXT";
+    case WM_PAINT: return "WM_PAINT";
+    case WM_CLOSE: return "WM_CLOSE";
+    case WM_SHOWWINDOW: return "WM_SHOWWINDOW";
+    case WM_ACTIVATEAPP: return "WM_ACTIVATEAPP";
+    case WM_NCACTIVATE: return "WM_NCACTIVATE";
+    case WM_WINDOWPOSCHANGING: return "WM_WINDOWPOSCHANGING";
+    case WM_WINDOWPOSCHANGED: return "WM_WINDOWPOSCHANGED";
+    case WM_DISPLAYCHANGE: return "WM_DISPLAYCHANGE";
+    case WM_ERASEBKGND: return "WM_ERASEBKGND";
+    case WM_SYSCOMMAND: return "WM_SYSCOMMAND";
+    default: return "unknown";
+    }
+}
+
+static BOOL macrunner_hb_user32_msg_buffer_import( const struct macrunner_hb_import_thunk *thunk )
+{
+    return thunk && macrunner_hb_strieq( thunk->dll_name, "user32.dll" ) &&
+           (macrunner_hb_strieq( thunk->import_name, "GetMessageW" ) ||
+            macrunner_hb_strieq( thunk->import_name, "GetMessageA" ) ||
+            macrunner_hb_strieq( thunk->import_name, "PeekMessageW" ) ||
+            macrunner_hb_strieq( thunk->import_name, "PeekMessageA" ) ||
+            macrunner_hb_strieq( thunk->import_name, "DispatchMessageW" ) ||
+            macrunner_hb_strieq( thunk->import_name, "DispatchMessageA" ) ||
+            macrunner_hb_strieq( thunk->import_name, "TranslateMessage" ));
+}
+
+static BOOL macrunner_hb_user32_direct_message_import( const struct macrunner_hb_import_thunk *thunk )
+{
+    return thunk && macrunner_hb_strieq( thunk->dll_name, "user32.dll" ) &&
+           (macrunner_hb_strieq( thunk->import_name, "SendMessageW" ) ||
+            macrunner_hb_strieq( thunk->import_name, "SendMessageA" ) ||
+            macrunner_hb_strieq( thunk->import_name, "PostMessageW" ) ||
+            macrunner_hb_strieq( thunk->import_name, "PostMessageA" ) ||
+            macrunner_hb_strieq( thunk->import_name, "DefWindowProcW" ) ||
+            macrunner_hb_strieq( thunk->import_name, "DefWindowProcA" ));
+}
+
+static void macrunner_hb_trace_user32_message_import( hb_context_t *ctx,
+                                                      const struct macrunner_hb_import_thunk *thunk,
+                                                      const char *phase,
+                                                      uint64_t value,
+                                                      const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
+{
+    uint64_t hwnd = 0, wparam = 0, lparam = 0, msg_buf = 0;
+    uint32_t msg = 0, time = 0;
+    int32_t x = 0, y = 0;
+    BOOL from_buffer;
+
+    if (!ctx || !ctx->memory || !thunk || !args) return;
+    if (!macrunner_hb_trace_user32_message_enabled()) return;
+    if (macrunner_hb_trace_user32_message_post_swapchain_only() &&
+        !__atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE ))
+        return;
+    from_buffer = macrunner_hb_user32_msg_buffer_import( thunk );
+    if (!from_buffer && !macrunner_hb_user32_direct_message_import( thunk ) &&
+        !(macrunner_hb_strieq( thunk->dll_name, "user32.dll" ) &&
+          (macrunner_hb_strieq( thunk->import_name, "ShowWindow" ) ||
+           macrunner_hb_strieq( thunk->import_name, "UpdateWindow" ) ||
+           macrunner_hb_strieq( thunk->import_name, "IsWindowVisible" ) ||
+           macrunner_hb_strieq( thunk->import_name, "SetFocus" ) ||
+           macrunner_hb_strieq( thunk->import_name, "GetFocus" ) ||
+           macrunner_hb_strieq( thunk->import_name, "SetActiveWindow" ) ||
+           macrunner_hb_strieq( thunk->import_name, "GetActiveWindow" ) ||
+           macrunner_hb_strieq( thunk->import_name, "SetForegroundWindow" ) ||
+           macrunner_hb_strieq( thunk->import_name, "GetForegroundWindow" ) ||
+           macrunner_hb_strieq( thunk->import_name, "WaitMessage" ) ||
+           macrunner_hb_strieq( thunk->import_name, "MsgWaitForMultipleObjects" ) ||
+           macrunner_hb_strieq( thunk->import_name, "MsgWaitForMultipleObjectsEx" ))))
+        return;
+    if (!macrunner_hb_trace_user32_message_budget_allows()) return;
+
+    if (from_buffer)
+    {
+        msg_buf = args[0];
+        if (msg_buf >= 0x10000)
+        {
+            hb_memory_read_u64( ctx->memory, (hb_gva_t)msg_buf + 0, &hwnd );
+            hb_memory_read_u32( ctx->memory, (hb_gva_t)msg_buf + 8, &msg );
+            hb_memory_read_u64( ctx->memory, (hb_gva_t)msg_buf + 16, &wparam );
+            hb_memory_read_u64( ctx->memory, (hb_gva_t)msg_buf + 24, &lparam );
+            hb_memory_read_u32( ctx->memory, (hb_gva_t)msg_buf + 32, &time );
+            hb_memory_read_u32( ctx->memory, (hb_gva_t)msg_buf + 36, (uint32_t *)&x );
+            hb_memory_read_u32( ctx->memory, (hb_gva_t)msg_buf + 40, (uint32_t *)&y );
+        }
+    }
+    else if (macrunner_hb_user32_direct_message_import( thunk ))
+    {
+        hwnd = args[0];
+        msg = (UINT)args[1];
+        wparam = args[2];
+        lparam = args[3];
+    }
+    else
+    {
+        hwnd = args[0];
+        wparam = args[1];
+    }
+
+    ERR( "macrunner-hb-user32-message: phase=%s import=%s!%s tid=0x%llx native_tid=0x%llx "
+         "swapchain_creator=%u swapchain_tid=0x%llx swapchain_native_tid=0x%llx "
+         "swapchain_hwnd=%p swapchain_object=%p msgbuf=%p hwnd=%p "
+         "msg=0x%04x(%s) wparam=%p lparam=%p time=%u pt=(%d,%d) "
+         "a0=%p a1=%p a2=%p a3=%p value=%p ret=%p pc=%p\n",
+         phase ? phase : "?", thunk->dll_name, thunk->import_name,
+         (unsigned long long)macrunner_hb_current_tid64(),
+         (unsigned long long)macrunner_hb_current_native_tid64(),
+         macrunner_hb_current_thread_is_swapchain_creator(),
+         (unsigned long long)__atomic_load_n( &macrunner_hb_dxgi_swapchain_creator_tid, __ATOMIC_ACQUIRE ),
+         (unsigned long long)__atomic_load_n( &macrunner_hb_dxgi_swapchain_creator_native_tid, __ATOMIC_ACQUIRE ),
+         (void *)(uintptr_t)__atomic_load_n( &macrunner_hb_dxgi_swapchain_creator_hwnd, __ATOMIC_ACQUIRE ),
+         (void *)(uintptr_t)__atomic_load_n( &macrunner_hb_dxgi_swapchain_creator_object, __ATOMIC_ACQUIRE ),
+         (void *)(uintptr_t)msg_buf, (void *)(uintptr_t)hwnd, msg,
+         macrunner_hb_window_message_name( msg ), (void *)(uintptr_t)wparam,
+         (void *)(uintptr_t)lparam, time, x, y, (void *)(uintptr_t)args[0],
+         (void *)(uintptr_t)args[1], (void *)(uintptr_t)args[2],
+         (void *)(uintptr_t)args[3], (void *)(uintptr_t)value,
+         (void *)(uintptr_t)macrunner_hb_trace_return_address( ctx ),
+         (void *)(uintptr_t)ctx->pc );
+}
+
 static void macrunner_hb_trace_abi_stack( hb_context_t *ctx, const char *phase,
                                           const struct macrunner_hb_import_thunk *thunk,
                                           uint64_t ret_addr, const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
@@ -22232,7 +22470,6 @@ static void macrunner_hb_trace_abi_stack( hb_context_t *ctx, const char *phase,
          (void *)(uintptr_t)args[7], (void *)(uintptr_t)args[8],
          (void *)(uintptr_t)args[9], (void *)(uintptr_t)args[10],
          (void *)(uintptr_t)args[11] );
-
     if (macrunner_hb_strieq( thunk->dll_name, "user32.dll" ) &&
         macrunner_hb_strieq( thunk->import_name, "CreateWindowExW" ))
     {

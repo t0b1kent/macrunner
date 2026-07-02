@@ -1,11 +1,45 @@
 # ACTIVE INVESTIGATION — живое состояние
 
-Last update: 2026-07-02 18:55 VLAT, Codex.
+Last update: 2026-07-02 22:47 VLAT, Codex.
 
 Читайте этот файл первым после compaction. Не перепроверять DISPROVED без нового
 контр-факта. Не возвращать Wine-render патчи.
 
 ## Current Task
+
+Update 2026-07-02 22:47 VLAT: Swapchain-creator thread named. Diagnostic
+`ntdll.so` is `122ec18648af98e6e5826dc6ee8f38b96991d205542178647cc573e4cf6c7279`
+(trace-only rebuild; reused populated cache root
+`artifacts/hb-translation-cache/ntdll-b8b7d4978dd1bf70-jitstorefence1-waithandle`).
+Run `reports/phase4-hollow-knight/laneA-swapchain-creator-wait-v2-20260702-222503-try1-222503`
+filtered as `PRESENT_MISSING` with `SELF_CHECK=PASS`; raw D3D evidence includes
+`CreateSwapChainForHwnd rc=0`, `swapchain=2`, `present=0` even though the ladder
+line still prints rung 9, so treat that rung line as a classifier ladder bug for
+this run, not a raw regression. Live sample run
+`reports/phase4-hollow-knight/laneA-swapchain-creator-wait-v3-20260702-223734-try1-223734`
+captures swapchain creator guest `tid=0x64`, native `0x2bfe358`
+(`Thread_46130008`). Its one post-swapchain wait on semaphore `0x1a4`
+(`CreateSemaphoreExW initial=0 max=2147483647`) returns `wait_status=0`;
+the creator is not parked there. Pinned sample
+`sample-postswap-creator-pinned-224340.txt` shows creator CPU-active in
+`macrunner_hb_call_import_thunk -> macrunner_hb_try_kernel32_handle_semantic ->
+macrunner_hb_sync_virtual_region -> hb_memory_protect` with no
+`NtWaitForSingleObject`, no `GetMessage`, and no `WaitMessage` on that thread.
+Post-swapchain user32 message/visibility trace count is 0; on-demand realization
+still logs visible Win32 rects for `hwnd=0x20058`. Current wall is HB
+protect/sync churn on the producer thread, not DXMT frame latency, not worker
+semaphores, and not a message-pump activation wait.
+
+Update 2026-07-02 22:09 VLAT: HK rung-11 post-swapchain wait is no longer
+explained by the parked worker semaphores. Next diagnostic target is the exact
+thread that called `CreateSwapChainForHwnd`: record its thread id at swapchain
+creation, then trace whether that same thread parks in `WaitForSingleObject*`,
+enters the message pump (`GetMessage`/`PeekMessage`/`WaitMessage`), or receives
+window activation/visibility messages after `MakeWindowAssociation`. Diagnostic
+cache rule: trace-only `ntdll` rebuilds that do not touch HyperBridge codegen or
+guest translation semantics may reuse the previous populated
+`MACRUNNER_HB_TRANSLATION_CACHE_ROOT`; any codegen/translation-semantics change
+must use a fresh root keyed by engine/codegen flags.
 
 Update 2026-07-02 18:55 VLAT: Hollow Knight remains filtered rung 11 after
 ABZU FP+COM import fixes on `main` (`18499f3`) and deployed `ntdll.so`

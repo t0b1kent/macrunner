@@ -1424,3 +1424,42 @@ or memory-protection sync path, depending on run timing.
   creator thread shifts into guest/JIT special read/write work. Next lever is HB
   special-memory / virtual-region sync/protect behavior, not WakeByAddress
   delivery.
+
+## 2026-07-02 23:55 Lane A in-flight import naming
+
+- Added `MACRUNNER_HB_TRACE_INFLIGHT_IMPORT` to log native import entry/return
+  pairs with seq id, guest/native tid, dispatch path, `module!function`, target,
+  guest PC/return address, last error/status, and args0-11. Default trace is now
+  swapchain-creator-thread only; `MACRUNNER_HB_TRACE_INFLIGHT_IMPORT_ALL=1`
+  enables the full flood. Final deployed diagnostic `ntdll.so` hash:
+  `5b637d73740031b4a2e88f9ddf0e530203da787b3b4609488cf8fc2a3da18f1f`.
+- Evidence run before the creator-only hygiene tweak:
+  `reports/phase4-hollow-knight/laneA-inflight-import-20260702-233300-try1-233300`
+  used deployed hash
+  `c2c3297b4ac9bab1062dd78501e93362c347f43ddadf909f05ed1988708f9b3c`
+  and explicit warm root
+  `artifacts/hb-translation-cache/ntdll-b8b7d4978dd1bf70-jitstorefence1-waithandle`.
+  Sanitized classifier copy strips only `macrunner-hb-inflight-import` lines and
+  classifies rung 11 `PRESENT_MISSING`, self-check PASS: real
+  `CreateSwapChainForHwnd rc=0`, no `GetBuffer`, no real Present.
+- The swapchain creator is `tid=0x24`, native `Thread_46229431`
+  (`native_tid=0x2c167b7`). No in-flight import remains unmatched at timeout,
+  including the creator thread: the "API X never completes" framing is not
+  supported by this run.
+- Creator post-swapchain import profile is a tight SRW loop, all returning:
+  `ReleaseSRWLockExclusive=3834`, `AcquireSRWLockExclusive=2070`,
+  `TryAcquireSRWLockExclusive=1764`, `AcquireSRWLockShared=890`,
+  `ReleaseSRWLockShared=890`, plus condition-variable and registry calls. The
+  direct `pe_call12` path executes the callee on the same native thread via
+  `blr target`; there is no separate executor thread for these imports.
+- All-thread sample
+  `sample-pre-swapchain-allthreads-233938.txt` maps the creator to
+  `Thread_46229431`, CPU-active rather than parked. Dominant creator stack is
+  `macrunner_hb_run_x64 -> hb_jit_runtime_run`; recursive counts show
+  `hb_memory_read=441`, `macrunner_hb_special_read=310`,
+  `mach_vm_read_overwrite=300`, `hb_memory_write=183`,
+  `macrunner_hb_special_write=66`, with no creator `NtWaitForSingleObject`,
+  `NtWaitForAlertByThreadId`, `NtDelayExecution`, or `server_wait`. Other worker
+  threads are parked separately. Verdict: slow/starvation, not deadlock or a
+  non-returning import. Next lever is the special_read/special_write fast path and
+  SRW/import-call overhead in the post-swapchain creator loop.

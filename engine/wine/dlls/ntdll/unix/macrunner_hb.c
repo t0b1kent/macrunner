@@ -1180,6 +1180,18 @@ static int macrunner_hb_disable_kernel32_handle_sync_semantic(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_DISABLE_KERNEL32_HANDLE_SYNC_SEMANTIC" );
 }
 
+static int macrunner_hb_trace_inflight_import_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_INFLIGHT_IMPORT" );
+}
+
+static int macrunner_hb_trace_inflight_import_all(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_INFLIGHT_IMPORT_ALL" );
+}
+
 static int macrunner_hb_trace_pe_stack_enabled(void)
 {
     static int cache = -1;
@@ -10164,6 +10176,59 @@ static void macrunner_hb_trace_user32_message_import( hb_context_t *ctx,
 static void macrunner_hb_normalize_import_args( const struct macrunner_hb_import_thunk *thunk,
                                                 uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] );
 
+static uint64_t macrunner_hb_trace_inflight_import_seq;
+
+static BOOL macrunner_hb_trace_inflight_import_should_log( hb_context_t *ctx )
+{
+    if (!macrunner_hb_trace_inflight_import_enabled()) return FALSE;
+    if (ctx && macrunner_hb_current_thread_is_swapchain_creator()) return TRUE;
+    return macrunner_hb_trace_inflight_import_all();
+}
+
+static void macrunner_hb_trace_inflight_import( const char *phase, uint64_t seq, hb_context_t *ctx,
+                                                const struct macrunner_hb_import_thunk *thunk,
+                                                const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                uint64_t ret )
+{
+    TEB *teb = NtCurrentTeb();
+    uint64_t ret_addr = 0;
+    const char *dispatch = "direct-pe-call12";
+
+    if (ctx && ctx->memory)
+        hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &ret_addr );
+    if (macrunner_hb_use_callback12_for_thunk( thunk )) dispatch = "callback12";
+    fprintf( stderr,
+             "macrunner-hb-inflight-import: phase=%s seq=%llu tid=0x%llx native_tid=0x%llx "
+             "swapchain_seen=%u creator=%u dispatch=%s import=%s!%s target=%p guest=%p "
+             "pe_call12=%p pe_callback12=%p pc=%p rsp=%p ret_addr=%p rc=%p "
+             "last_error=%lu last_status=%08lx args=%p,%p,%p,%p,%p,%p,%p,%p,%p,%p,%p,%p\n",
+             phase, (unsigned long long)seq, (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             __atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE ),
+             ctx && macrunner_hb_current_thread_is_swapchain_creator(), dispatch,
+             thunk ? thunk->dll_name : "(none)", thunk ? thunk->import_name : "(none)",
+             thunk ? thunk->target : NULL, thunk ? (void *)(uintptr_t)thunk->guest_target : NULL,
+             thunk ? thunk->pe_call12 : NULL, thunk ? thunk->pe_callback12 : NULL,
+             ctx ? (void *)(uintptr_t)ctx->pc : NULL,
+             ctx ? (void *)(uintptr_t)ctx->regs.x64.rsp : NULL,
+             (void *)(uintptr_t)ret_addr, (void *)(uintptr_t)ret,
+             teb ? (unsigned long)teb->LastErrorValue : 0,
+             teb ? (unsigned long)teb->LastStatusValue : 0,
+             args ? (void *)(uintptr_t)args[0] : NULL,
+             args ? (void *)(uintptr_t)args[1] : NULL,
+             args ? (void *)(uintptr_t)args[2] : NULL,
+             args ? (void *)(uintptr_t)args[3] : NULL,
+             args ? (void *)(uintptr_t)args[4] : NULL,
+             args ? (void *)(uintptr_t)args[5] : NULL,
+             args ? (void *)(uintptr_t)args[6] : NULL,
+             args ? (void *)(uintptr_t)args[7] : NULL,
+             args ? (void *)(uintptr_t)args[8] : NULL,
+             args ? (void *)(uintptr_t)args[9] : NULL,
+             args ? (void *)(uintptr_t)args[10] : NULL,
+             args ? (void *)(uintptr_t)args[11] : NULL );
+    fflush( stderr );
+}
+
 static uint64_t macrunner_hb_call_arm64_pe_import12_for_ctx( hb_context_t *ctx,
                                                              const struct macrunner_hb_import_thunk *thunk,
                                                              const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
@@ -10172,8 +10237,16 @@ static uint64_t macrunner_hb_call_arm64_pe_import12_for_ctx( hb_context_t *ctx,
     uint64_t fp_args[MACRUNNER_HB_IMPORT_FP_ARG_MAX][2] = {{0}};
     uint64_t fp_ret[2] = {0, 0};
     uint64_t ret;
+    uint64_t trace_seq = 0;
+    BOOL trace_inflight;
     unsigned int i;
 
+    trace_inflight = macrunner_hb_trace_inflight_import_should_log( ctx );
+    if (trace_inflight)
+    {
+        trace_seq = __atomic_add_fetch( &macrunner_hb_trace_inflight_import_seq, 1, __ATOMIC_RELAXED );
+        macrunner_hb_trace_inflight_import( "enter", trace_seq, ctx, thunk, args, 0 );
+    }
     if (ctx)
     {
         macrunner_hb_native_call_guest_rsp = ctx->regs.x64.rsp;
@@ -10184,6 +10257,8 @@ static uint64_t macrunner_hb_call_arm64_pe_import12_for_ctx( hb_context_t *ctx,
         }
     }
     ret = macrunner_hb_call_arm64_pe_import12( thunk, args, ctx ? fp_args : NULL, fp_ret );
+    if (trace_inflight)
+        macrunner_hb_trace_inflight_import( "return", trace_seq, ctx, thunk, args, ret );
     if (ctx)
     {
         ctx->regs.x64.xmm[0][0] = fp_ret[0];

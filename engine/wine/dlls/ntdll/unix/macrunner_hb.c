@@ -75,6 +75,7 @@ struct macrunner_hb_special
 #define MACRUNNER_HB_IMPORT_STRIDE 0x10ULL
 #define MACRUNNER_HB_IMPORT_CODE_SIZE (MACRUNNER_HB_IMPORT_MAX * MACRUNNER_HB_IMPORT_STRIDE)
 #define MACRUNNER_HB_IMPORT_ARG_MAX 20
+#define MACRUNNER_HB_IMPORT_FP_ARG_MAX 8
 #define MACRUNNER_HB_IMPORT_ARG_COUNT_CACHE_SIZE 1024
 #define MACRUNNER_HB_APISET_MODULE_MAX 512
 #define MACRUNNER_HB_TLS_SLOT_MAX 128
@@ -313,8 +314,6 @@ static struct macrunner_hb_x64_thread_context_entry macrunner_hb_x64_thread_cont
 static pthread_mutex_t macrunner_hb_error_mode_mutex = PTHREAD_MUTEX_INITIALIZER;
 static DWORD macrunner_hb_error_mode;
 static __thread DWORD macrunner_hb_thread_error_mode;
-static __thread DWORD macrunner_hb_com_model;
-static __thread unsigned int macrunner_hb_com_init_count;
 static pthread_mutex_t macrunner_hb_initial_env_mutex = PTHREAD_MUTEX_INITIALIZER;
 static char **macrunner_hb_initial_narrow_env;
 static WCHAR **macrunner_hb_initial_wide_env;
@@ -9400,7 +9399,12 @@ static void macrunner_hb_prepare_arm64_pe_call(void)
 
 #ifdef __aarch64__
 extern uint64_t macrunner_hb_arm64_pe_call12( void *target, const uint64_t *args,
-                                              void *stack_top, TEB *teb );
+                                              void *stack_top, TEB *teb,
+                                              uint64_t fp_ret[2],
+                                              const uint64_t fp_args[MACRUNNER_HB_IMPORT_FP_ARG_MAX][2] );
+extern uint64_t macrunner_hb_arm64_pe_call20_direct( void *target, const uint64_t *args,
+                                                     uint64_t fp_ret[2],
+                                                     const uint64_t fp_args[MACRUNNER_HB_IMPORT_FP_ARG_MAX][2] );
 extern NTSTATUS call_user_mode_callback( ULONG64 user_sp, void **ret_ptr, ULONG *ret_len,
                                          void *func, TEB *teb );
 
@@ -9471,6 +9475,8 @@ __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call12,
                    "mov x21, x1\n\t"         /* args[MACRUNNER_HB_IMPORT_ARG_MAX] */
                    "mov x22, x2\n\t"         /* PE-compatible scratch stack */
                    "mov x19, x3\n\t"         /* TEB */
+                   "mov x25, x4\n\t"         /* optional q0 return store */
+                   "mov x26, x5\n\t"         /* optional guest XMM0-XMM7 source */
                    "mov x24, x30\n\t"        /* inherited LR, for diagnostics only */
                    "mov x18, x19\n\t"        /* Windows ARM64 TEB */
                    "ldr x7, [x19, #0x378]\n\t"   /* previous thread_data->syscall_frame */
@@ -9519,9 +9525,18 @@ __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call12,
                    "ldr x5, [x21, #40]\n\t"
                    "ldr x6, [x21, #48]\n\t"
                    "ldr x7, [x21, #56]\n\t"
+                   "cbz x26, 98f\n\t"
+                   "ldp q0, q1, [x26, #0]\n\t"
+                   "ldp q2, q3, [x26, #32]\n\t"
+                   "ldp q4, q5, [x26, #64]\n\t"
+                   "ldp q6, q7, [x26, #96]\n\t"
+                   "98:\n\t"
 	                   "blr x20\n\t"
                    "99:\n\t"
                    "mov x23, x0\n\t"
+                   "cbz x25, 97f\n\t"
+                   "str q0, [x25]\n\t"
+                   "97:\n\t"
                    "mov sp, x29\n\t"
                    "ldr x7, [x29, #0xa0]\n\t"
                    "str x7, [x19, #0x378]\n\t"   /* restore previous syscall_frame */
@@ -9552,10 +9567,74 @@ __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call12,
                    __ASM_CFI(".cfi_same_value 20\n\t")
                    "ldp x29, x30, [sp], #0xd0\n\t"
                    "ret" )
+
+__ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call20_direct,
+                   "stp x29, x30, [sp, #-0x50]!\n\t"
+                   __ASM_CFI(".cfi_def_cfa_offset 0x50\n\t")
+                   __ASM_CFI(".cfi_offset 29,-0x50\n\t")
+                   __ASM_CFI(".cfi_offset 30,-0x48\n\t")
+                   "mov x29, sp\n\t"
+                   __ASM_CFI(".cfi_def_cfa_register 29\n\t")
+                   "stp x19, x20, [x29, #0x10]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 19,0x10\n\t")
+                   __ASM_CFI(".cfi_rel_offset 20,0x18\n\t")
+                   "stp x21, x22, [x29, #0x20]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 21,0x20\n\t")
+                   __ASM_CFI(".cfi_rel_offset 22,0x28\n\t")
+                   "stp x23, x24, [x29, #0x30]\n\t"
+                   __ASM_CFI(".cfi_rel_offset 23,0x30\n\t")
+                   __ASM_CFI(".cfi_rel_offset 24,0x38\n\t")
+                   "mov x20, x0\n\t"         /* target */
+                   "mov x21, x1\n\t"         /* args[MACRUNNER_HB_IMPORT_ARG_MAX] */
+                   "mov x22, x2\n\t"         /* optional q0 return store */
+                   "mov x23, x3\n\t"         /* optional guest XMM0-XMM7 source */
+                   "sub sp, sp, #0x60\n\t"   /* AArch64 stack args 8..19 */
+                   "ldp x12, x13, [x21, #64]\n\t"
+                   "stp x12, x13, [sp, #0]\n\t"
+                   "ldp x12, x13, [x21, #80]\n\t"
+                   "stp x12, x13, [sp, #16]\n\t"
+                   "ldp x12, x13, [x21, #96]\n\t"
+                   "stp x12, x13, [sp, #32]\n\t"
+                   "ldp x12, x13, [x21, #112]\n\t"
+                   "stp x12, x13, [sp, #48]\n\t"
+                   "ldp x12, x13, [x21, #128]\n\t"
+                   "stp x12, x13, [sp, #64]\n\t"
+                   "ldp x12, x13, [x21, #144]\n\t"
+                   "stp x12, x13, [sp, #80]\n\t"
+                   "ldp x0, x1, [x21, #0]\n\t"
+                   "ldp x2, x3, [x21, #16]\n\t"
+                   "ldp x4, x5, [x21, #32]\n\t"
+                   "ldp x6, x7, [x21, #48]\n\t"
+                   "cbz x23, 98f\n\t"
+                   "ldp q0, q1, [x23, #0]\n\t"
+                   "ldp q2, q3, [x23, #32]\n\t"
+                   "ldp q4, q5, [x23, #64]\n\t"
+                   "ldp q6, q7, [x23, #96]\n"
+                   "98:\n\t"
+                   "blr x20\n\t"
+                   "mov x24, x0\n\t"
+                   "cbz x22, 97f\n\t"
+                   "str q0, [x22]\n"
+                   "97:\n\t"
+                   "mov x0, x24\n\t"
+                   "add sp, sp, #0x60\n\t"
+                   "ldp x23, x24, [x29, #0x30]\n\t"
+                   __ASM_CFI(".cfi_same_value 23\n\t")
+                   __ASM_CFI(".cfi_same_value 24\n\t")
+                   "ldp x21, x22, [x29, #0x20]\n\t"
+                   __ASM_CFI(".cfi_same_value 21\n\t")
+                   __ASM_CFI(".cfi_same_value 22\n\t")
+                   "ldp x19, x20, [x29, #0x10]\n\t"
+                   __ASM_CFI(".cfi_same_value 19\n\t")
+                   __ASM_CFI(".cfi_same_value 20\n\t")
+                   "ldp x29, x30, [sp], #0x50\n\t"
+                   "ret" )
 #endif
 
 static uint64_t macrunner_hb_call_arm64_pe_import12( const struct macrunner_hb_import_thunk *thunk,
-                                                     const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
+                                                     const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+                                                     const uint64_t fp_args[MACRUNNER_HB_IMPORT_FP_ARG_MAX][2],
+                                                     uint64_t fp_ret[2] )
 {
 #ifdef __aarch64__
     TEB *teb = NtCurrentTeb();
@@ -9597,18 +9676,8 @@ static uint64_t macrunner_hb_call_arm64_pe_import12( const struct macrunner_hb_i
     if (!teb || !macrunner_hb_bridge_stack_base || !macrunner_hb_bridge_stack_limit ||
         macrunner_hb_bridge_stack_size < 0x2000)
     {
-        typedef uint64_t (*macrunner_hb_native_fn20)( uint64_t, uint64_t, uint64_t, uint64_t,
-                                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                                      uint64_t, uint64_t, uint64_t, uint64_t );
-
         macrunner_hb_prepare_arm64_pe_call();
-        return ((macrunner_hb_native_fn20)target)( args[0], args[1], args[2], args[3],
-                                                   args[4], args[5], args[6], args[7],
-                                                   args[8], args[9], args[10], args[11],
-                                                   args[12], args[13], args[14], args[15],
-                                                   args[16], args[17], args[18], args[19] );
+        return macrunner_hb_arm64_pe_call20_direct( target, args, fp_ret, fp_args );
     }
 
     restore_base = teb->Tib.StackBase;
@@ -9713,14 +9782,14 @@ static uint64_t macrunner_hb_call_arm64_pe_import12( const struct macrunner_hb_i
     {
         macrunner_hb_prepare_arm64_pe_call();
         macrunner_hb_trace_pe_call12_edge( "enter", thunk, target, args, stack_top, 0 );
-        ret = macrunner_hb_arm64_pe_call12( target, args, (void *)stack_top, teb );
+        ret = macrunner_hb_arm64_pe_call12( target, args, (void *)stack_top, teb, fp_ret, fp_args );
         macrunner_hb_trace_pe_call12_edge( "return", thunk, target, args, stack_top, ret );
     }
     else
     {
         macrunner_hb_prepare_arm64_pe_call();
         macrunner_hb_trace_pe_call12_edge( "enter", thunk, target, args, stack_top, 0 );
-        ret = macrunner_hb_arm64_pe_call12( target, args, (void *)stack_top, teb );
+        ret = macrunner_hb_arm64_pe_call12( target, args, (void *)stack_top, teb, fp_ret, fp_args );
         macrunner_hb_trace_pe_call12_edge( "return", thunk, target, args, stack_top, ret );
     }
     macrunner_hb_prepare_arm64_pe_call();
@@ -9751,10 +9820,26 @@ static uint64_t macrunner_hb_call_arm64_pe_import12_for_ctx( hb_context_t *ctx,
                                                              const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX] )
 {
     uintptr_t old_guest_rsp = macrunner_hb_native_call_guest_rsp;
+    uint64_t fp_args[MACRUNNER_HB_IMPORT_FP_ARG_MAX][2] = {{0}};
+    uint64_t fp_ret[2] = {0, 0};
     uint64_t ret;
+    unsigned int i;
 
-    if (ctx) macrunner_hb_native_call_guest_rsp = ctx->regs.x64.rsp;
-    ret = macrunner_hb_call_arm64_pe_import12( thunk, args );
+    if (ctx)
+    {
+        macrunner_hb_native_call_guest_rsp = ctx->regs.x64.rsp;
+        for (i = 0; i < MACRUNNER_HB_IMPORT_FP_ARG_MAX; i++)
+        {
+            fp_args[i][0] = ctx->regs.x64.xmm[i][0];
+            fp_args[i][1] = ctx->regs.x64.xmm[i][1];
+        }
+    }
+    ret = macrunner_hb_call_arm64_pe_import12( thunk, args, ctx ? fp_args : NULL, fp_ret );
+    if (ctx)
+    {
+        ctx->regs.x64.xmm[0][0] = fp_ret[0];
+        ctx->regs.x64.xmm[0][1] = fp_ret[1];
+    }
     macrunner_hb_native_call_guest_rsp = old_guest_rsp;
     return ret;
 }
@@ -16794,7 +16879,6 @@ static BOOL macrunner_hb_ascii_to_wchar_buffer( const char *src, WCHAR *dst, siz
 
 #define MACRUNNER_HB_DIRECTORY_TRAVERSE 0x0002
 #define MACRUNNER_HB_DIRECTORY_CREATE_OBJECT 0x0004
-#define MACRUNNER_HB_COINIT_APARTMENTTHREADED 0x2
 #define MACRUNNER_HB_BCRYPT_USE_SYSTEM_PREFERRED_RNG 0x00000002U
 #define MACRUNNER_HB_BCRYPT_RNG_ALG_HANDLE 0x81ULL
 
@@ -16880,52 +16964,6 @@ static BOOL macrunner_hb_try_winrt_semantic( hb_context_t *ctx,
     }
 
     return FALSE;
-}
-
-static BOOL macrunner_hb_try_com_apartment_semantic( hb_context_t *ctx,
-                                                     const struct macrunner_hb_import_thunk *thunk,
-                                                     const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
-                                                     uint64_t *ret )
-{
-    DWORD model;
-    DWORD threading_model;
-    DWORD current_threading_model;
-    HRESULT hr;
-
-    if (!ctx || !thunk || !args || !ret) return FALSE;
-    if (!macrunner_hb_strieq( thunk->dll_name, "ole32.dll" ) &&
-        !macrunner_hb_strieq( thunk->dll_name, "combase.dll" ))
-        return FALSE;
-
-    if (macrunner_hb_strieq( thunk->import_name, "CoUninitialize" ))
-    {
-        if (macrunner_hb_com_init_count) macrunner_hb_com_init_count--;
-        NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
-        *ret = 0;
-        return TRUE;
-    }
-
-    if (macrunner_hb_strieq( thunk->import_name, "CoInitialize" ))
-        model = MACRUNNER_HB_COINIT_APARTMENTTHREADED;
-    else if (macrunner_hb_strieq( thunk->import_name, "CoInitializeEx" ))
-        model = (DWORD)args[1];
-    else
-        return FALSE;
-
-    threading_model = model & MACRUNNER_HB_COINIT_APARTMENTTHREADED;
-    current_threading_model = macrunner_hb_com_model & MACRUNNER_HB_COINIT_APARTMENTTHREADED;
-    if (macrunner_hb_com_init_count && threading_model != current_threading_model)
-    {
-        *ret = RPC_E_CHANGED_MODE;
-        return TRUE;
-    }
-
-    hr = macrunner_hb_com_init_count ? S_FALSE : S_OK;
-    macrunner_hb_com_model = model;
-    macrunner_hb_com_init_count++;
-    NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
-    *ret = hr;
-    return TRUE;
 }
 
 static BOOL macrunner_hb_copy_registered_message_name( const struct macrunner_hb_import_thunk *thunk,
@@ -20906,7 +20944,6 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
         macrunner_hb_try_crt_vfprintf_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_thread_creation_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_cotaskmem_semantic( ctx, thunk, args, &rc ) ||
-        macrunner_hb_try_com_apartment_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_user32_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_winrt_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_kernel32_handle_semantic( ctx, thunk, args, &rc ) ||

@@ -596,3 +596,11 @@ What: Added a narrow `UnityPlayer.dll+0x2b5605` address-class dump for HB/virtua
 Why: The raw post-swapchain fault was one-shot in the prior GLM run, but samples during the post-device/post-swapchain window showed HB infrastructure burning CPU in `macrunner_hb_sync_virtual_region -> hb_memory_protect`, first under `rebuild_region_tree -> tree_insert`, then under `split_all_regions_at`.
 Verify: Built/deployed/codesigned `ntdll.so` (`a12a7823b7071c248d3bac578255a18ad90bc0d85abcdd29233d8ab90e0ea70a`). Filtered classifier on `reports/phase4-hollow-knight/laneA-laneA-hk-addrclass-splitfast-20260702-150106-try1-150106` still reports real `CreateSwapChainForHwnd` (`rc=0`, `hwnd=0x20054`), with no `GetBuffer` or real Present. Samples after the first fix show `rebuild_region_tree/tree_insert` gone; splitfast sample no longer contains `split_all_regions_at`/tree rebuild terms. The old `UnityPlayer+0x2b5605` fault did not replay in the instrumented reruns, so no HB/Mach address-class dump was captured yet.
 Status: hb-bookkeeping-hotspots-reduced-rung11-preserved-next-getbuffer-or-replay-unity-fault
+
+## 2026-07-02 18:18 — Lane A ABZU import bridge fixes
+File(s): engine/wine/dlls/ntdll/unix/macrunner_hb.c
+Type: ROOT-FIX
+What: Imported ABZU's ARM64 PE import FP marshalling fix so guest XMM0-XMM7 are mirrored into native q0-q7 on PE import calls and native q0 is written back to guest XMM0. Removed the synthetic COM apartment semantic handler so `CoInitialize*` and `CoUninitialize` execute Wine's real COM implementation instead of returning fake success.
+Why: ABZU proved double-returning CRT imports such as `wcstod` returned `0.0` because the bridge only copied integer `RAX`, and proved fake `CoInitialize=S_OK` left `NtCurrentTeb()->ReservedForOle` empty so real `CoCreateInstance` failed `CO_E_NOTINITIALIZED`.
+Verify: Forced Unix `ntdll.so` rebuild/deploy/codesign succeeded from this source closure (`2cc696d858cbb25c4441aff7c7d599a83cd911a600fc278e70ca9f5ea6cc5b73`). ABZU handoffs: `reports/abzu/rebaseline-20260702-rsi-producer/FP-RETURN-CLOSURE.md`, `COM-APARTMENT-CLOSURE.md`.
+Status: applied-next-HK-post-swapchain-resample

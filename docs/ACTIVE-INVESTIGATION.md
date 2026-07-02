@@ -1198,13 +1198,16 @@ or memory-protection sync path, depending on run timing.
   `hb_jit_helper_exec_ir_block_once` no longer call `getenv()` per IR block. The
   latest warm sample dropped `getenv` textual hits from ~590 to ~17-22.
 - Evidence marker fix: `laneA-run-hk.sh` now enables real D3D boundary and DXGI
-  swapchain markers by default. Latest filtered evidence run:
+  swapchain markers by default. Filtered evidence run
   `reports/phase4-hollow-knight/laneA-postjit-warm-evidence-glm-try1-120655`
   classifies as rung 9 (`D3D11_CREATE_DEVICE_MISSING`, self-check PASS,
   `real_factory=2`).
-- Current measured frontier: raw populate run on the same GLM closure and
-  `ntdll-e8e0...` cache root reached `macrunner-dxmt-fence` but no
-  `CreateSwapChain`/`Present`:
+- Current measured frontier: true cold-no-cache baseline
+  `reports/phase4-hollow-knight/laneA-cold-nocache-glm-try1-121112` classifies
+  as rung 9 `PRESENT_MISSING` with self-check PASS (`real_factory=2`,
+  `d3d11_device_markers=1`, `swapchain=0`, `present=0`). Raw populate run on the
+  same GLM closure and `ntdll-e8e0...` cache root also reached
+  `macrunner-dxmt-fence` but no `CreateSwapChain`/`Present`:
   `reports/phase4-hollow-knight/laneA-laneA-postjit-populate-glm-try1-115428`.
   True warm runs still vary after real DXGI factory; sample shows no callback
   storm (`route_x64_callback_fault=0`, `pc_in_executable_section` low). Remaining

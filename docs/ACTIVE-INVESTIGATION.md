@@ -1174,3 +1174,39 @@ Current identity: GLM OPTIONS4 DLLs did not advance HK to `CreateSwapChain`.
 The observed silence is not caps-query / `OPTIONS4` / DXGI output enumeration;
 it is a CPU-bound pre-DXMT HyperBridge user-callback/display-driver transport
 or memory-protection sync path, depending on run timing.
+
+## 2026-07-02 12:08 Lane A HK warm-cache and HB hotspot cleanup
+
+- `scripts/laneA-run-hk.sh` now defaults `MACRUNNER_HB_TRANSLATION_CACHE=1`.
+  `MACRUNNER_HK_COLD_RUN=1` is the explicit cold-translation override. If the
+  caller does not provide `MACRUNNER_HB_TRANSLATION_CACHE_ROOT`, the wrapper uses
+  `artifacts/hb-translation-cache/ntdll-<sha16>` from the deployed
+  `aarch64-unix/ntdll.so`.
+- Cache hygiene verdict: the persistent block key in HyperBridge does not include
+  the engine binary/codegen hash, so build-scoped roots are required. Current
+  deployed `ntdll.so` after HB perf fixes is
+  `e8e0fabee9b97498bcf15c4accdacf410c513853fead276b7d759841b0123c2f`; cache root
+  `artifacts/hb-translation-cache/ntdll-e8e0fabee9b97498`.
+- Clean warm A/B verdict: pre-GLM and GLM DXMT behave the same when measured with
+  warm cache. Both reach real DXGI factory territory and still do not reach
+  `CreateSwapChain`/`Present`; GLM DLLs are not the regression.
+- Fixed HB hotspot 1: `hb_memory_protect` no longer rebuilds the full region tree
+  for permission-only protects. The rebuild is limited to topology-changing
+  splits. Sample terms dropped from `tree_insert=540/787` before the fix to
+  `tree_insert=130/205` after the fix.
+- Fixed HB hotspot 2: disabled HK diagnostic env gates inside
+  `hb_jit_helper_exec_ir_block_once` no longer call `getenv()` per IR block. The
+  latest warm sample dropped `getenv` textual hits from ~590 to ~17-22.
+- Evidence marker fix: `laneA-run-hk.sh` now enables real D3D boundary and DXGI
+  swapchain markers by default. Latest filtered evidence run:
+  `reports/phase4-hollow-knight/laneA-postjit-warm-evidence-glm-try1-120655`
+  classifies as rung 9 (`D3D11_CREATE_DEVICE_MISSING`, self-check PASS,
+  `real_factory=2`).
+- Current measured frontier: raw populate run on the same GLM closure and
+  `ntdll-e8e0...` cache root reached `macrunner-dxmt-fence` but no
+  `CreateSwapChain`/`Present`:
+  `reports/phase4-hollow-knight/laneA-laneA-postjit-populate-glm-try1-115428`.
+  True warm runs still vary after real DXGI factory; sample shows no callback
+  storm (`route_x64_callback_fault=0`, `pc_in_executable_section` low). Remaining
+  warm profile is HB JIT/interp execution during Mono reload/post-Physics, with
+  many `mach_msg2_trap` samples, not the old tree rebuild/getenv/callback scan.

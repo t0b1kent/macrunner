@@ -7714,7 +7714,19 @@ hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
         else if (bga0 == 0x87efcac9865ull && g_hk_tg) { g_hk_tg = 0; }
     }
     int g_tg = g_hk_tg;
-    if (getenv("MACRUNNER_HB_TRACE_IR_DUMP") && block->instr_count) {
+    static int trace_ir_dump_cached = -1;
+    static int trace_rbp_cached = -1;
+    static int trace_grow_in_cached = -1;
+    static int trace_store16_cached = -1;
+    static int trace_store80_cached = -1;
+    static int trace_interp_fail_cached = -1;
+    int trace_ir_dump = hb_jit_env_flag_cached(&trace_ir_dump_cached, "MACRUNNER_HB_TRACE_IR_DUMP", 0);
+    int trace_rbp = hb_jit_env_flag_cached(&trace_rbp_cached, "MACRUNNER_HB_TRACE_RBP", 0);
+    int trace_grow_in = hb_jit_env_flag_cached(&trace_grow_in_cached, "MACRUNNER_HB_TRACE_GROW_IN", 0);
+    int trace_store16 = hb_jit_env_flag_cached(&trace_store16_cached, "MACRUNNER_HB_TRACE_STORE16", 0);
+    int trace_store80 = hb_jit_env_flag_cached(&trace_store80_cached, "MACRUNNER_HB_TRACE_STORE80", 0);
+    int trace_interp_fail = hb_jit_env_flag_cached(&trace_interp_fail_cached, "MACRUNNER_HB_TRACE_INTERP_FAIL", 0);
+    if (trace_ir_dump && block->instr_count) {
         uint64_t ga0 = block->instrs[0].guest_addr;
         if (ga0 >= 0x87efcac98a0ull && ga0 < 0x87efcac9920ull) {
             static uint64_t seen[16]; static int nseen = 0;
@@ -7744,7 +7756,7 @@ hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
      * [rax+rsi*8] to compare vs CrossOver (rax=0x3023c0b0 rsi=0x10 value=0x1000006c -> 0x6c).
      * If MacRunner's value masks to 0xa4 with matching rsi -> the ARRAY MEMORY is wrong (recede to
      * writer); if rsi/addr differ -> the index/address computation diverged. */
-    if (getenv("MACRUNNER_HB_TRACE_RBP") && block->instr_count &&
+    if (trace_rbp && block->instr_count &&
         block->instrs[0].guest_addr == 0x87efcac973cull) {
         static int pc2 = 0;
         if (pc2 < 40) {
@@ -7760,7 +7772,7 @@ hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
             pc2++;
         }
     }
-    if (getenv("MACRUNNER_HB_TRACE_RBP") && block->instr_count) {
+    if (trace_rbp && block->instr_count) {
         uint64_t ga0 = block->instrs[0].guest_addr;
         if (ga0 >= 0x87efcac8000ull && ga0 < 0x87efcacb000ull) {
             static int rc = 0;
@@ -7776,7 +7788,7 @@ hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
     /* HK runaway-memcpy: dump the count block's INPUT registers (r14=index, rbp/ebp, r15) +
      * container size + the indexed array element, to find which input is corrupt (count block
      * IR + movsxd are CONFIRMED correct, so the garbage arrives from upstream). */
-    if (getenv("MACRUNNER_HB_TRACE_GROW_IN") && block->instr_count &&
+    if (trace_grow_in && block->instr_count &&
         block->instrs[0].guest_addr == 0x87efcac98c0ull) {
         static int gc = 0;
         if (gc < 64) {
@@ -7801,7 +7813,7 @@ hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
     /* bracket the corruption window: dump the offset array at several block boundaries in the
      * r13=0x11 grow call (after array-A realloc 0x5b97c7, after array-A shift 0x5b97f9, after
      * offset-array realloc 0x5b983b) to isolate the single op that turns index15 0x10000048->0x80. */
-    if (getenv("MACRUNNER_HB_TRACE_STORE16") && block->instr_count &&
+    if (trace_store16 && block->instr_count &&
         (block->instrs[0].guest_addr == 0x87efcac983bull ||
          block->instrs[0].guest_addr == 0x87efcac97c7ull ||
          block->instrs[0].guest_addr == 0x87efcac97f9ull) &&
@@ -7821,7 +7833,7 @@ hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
     }
     /* array state at the path-A entry (0x5b973c, BEFORE this call's shift) — to pin whether
      * index15 is already 0x80 at call entry (corrupted by a PRIOR call) or only after the shift. */
-    if (getenv("MACRUNNER_HB_TRACE_STORE16") && block->instr_count &&
+    if (trace_store16 && block->instr_count &&
         block->instrs[0].guest_addr == 0x87efcac973cull &&
         (ctx->regs.x64.rdi & 0xffffffull) == 0x213740ull) {
         static int ec = 0;
@@ -7835,7 +7847,7 @@ hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
             fflush(stderr); ec++;
         }
     }
-    if (getenv("MACRUNNER_HB_TRACE_STORE16") && block->instr_count &&
+    if (trace_store16 && block->instr_count &&
         block->instrs[0].guest_addr == 0x87efcac9865ull) {
         static int sc = 0;
         if (sc < 40 && (ctx->regs.x64.rdi & 0xffffffull) == 0x213740ull) {
@@ -7891,7 +7903,7 @@ hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
         const hb_ir_instr_t* instr = &block->instrs[i];
         hb_jit_helper_ir_hist_record(instr->op);
         if (g_tg) g_hk_cur_ga = instr->guest_addr;
-        if (g_tg && instr->op == 44 /*HB_IR_STORE*/ && getenv("MACRUNNER_HB_TRACE_STORE80")) {
+        if (g_tg && instr->op == 44 /*HB_IR_STORE*/ && trace_store80) {
             uint64_t v = 0;
             if (hb_flags_read_operand_value(ctx, &instr->src2, &v) == HB_OK && v == 0x80ull) {
                 static int sl = 0;
@@ -7916,7 +7928,7 @@ hb_result_t hb_jit_helper_exec_ir_block_once(hb_context_t* ctx,
         }
         hb_result_t r = hb_jit_helper_exec_block_instr_for_jit(ctx, instr);
         if (r != HB_OK) {
-            if (getenv("MACRUNNER_HB_TRACE_INTERP_FAIL")) {
+            if (trace_interp_fail) {
                 static int fc;
                 if (fc++ < 32) {
                     uint64_t rdi = ctx->regs.x64.rdi;

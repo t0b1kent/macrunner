@@ -107,7 +107,8 @@ def main():
                 swapchain_count += 1
                 has_d3d_events = True
                 add_evidence(f"DXGI swapchain marker: {raw_line}")
-            if "present" in line and ("d3d" in line or "dxgi" in line or "swapchain" in line or "frame" in line):
+            if ("present" in line and "macrunner-hb-dxgi-swapchain: candidate" not in line
+                    and ("d3d" in line or "dxgi" in line or "swapchain" in line or "frame" in line)):
                 present_seen = True
                 has_d3d_events = True
                 present_count += 1

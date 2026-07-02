@@ -1,0 +1,22 @@
+source=/Users/timurtoby/Documents/MacRunner/Main/MacRunner-graphics-prep/engine/graphics/dist/dxmt
+dest=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt
+prep_head=333c038
+main_head_before=66329e7
+-- before
+6e6a9efb8b97afce8a208e5e2313f15885ab724f76131c39489078c8e53f06f4  dest_before:aarch64-windows/d3d11.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/d3d11.dll
+33dae3e75af31677e7184c0a9b05e58c9ee62c198631a3be9e5372f7041cfd38  dest_before:aarch64-windows/dxgi.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/dxgi.dll
+6acfa5e7f166f32e80c40d51cd5d311f25047cd18f6f1d8f0b09c759320f7274  dest_before:aarch64-windows/d3d10core.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/d3d10core.dll
+8a0c3b539da1e59c8fd5c3e27f050fe14bad524a541dab438175d2fc2e04685e  dest_before:aarch64-windows/winemetal.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/winemetal.dll
+ff02feed8ac54e17d2278a42d9abf5c8125583bf30aad632261b62100e280c6e  dest_before:aarch64-unix/winemetal.so /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt/aarch64-unix/winemetal.so
+-- source
+6560e9f9f8f2075fe400e972172cbda25948d82fe1fffa36f8050a5f00564579  source:aarch64-windows/d3d11.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner-graphics-prep/engine/graphics/dist/dxmt/aarch64-windows/d3d11.dll
+08143054d704ec2b4003995b3c9e34a283811868e960a354ee7b4b05850598a2  source:aarch64-windows/dxgi.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner-graphics-prep/engine/graphics/dist/dxmt/aarch64-windows/dxgi.dll
+6acfa5e7f166f32e80c40d51cd5d311f25047cd18f6f1d8f0b09c759320f7274  source:aarch64-windows/d3d10core.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner-graphics-prep/engine/graphics/dist/dxmt/aarch64-windows/d3d10core.dll
+8a0c3b539da1e59c8fd5c3e27f050fe14bad524a541dab438175d2fc2e04685e  source:aarch64-windows/winemetal.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner-graphics-prep/engine/graphics/dist/dxmt/aarch64-windows/winemetal.dll
+c5c1417e98aa3a4edc258d6c7e847160498d743bfc9a118013f403fa1a353e67  source:aarch64-unix/winemetal.so /Users/timurtoby/Documents/MacRunner/Main/MacRunner-graphics-prep/engine/graphics/dist/dxmt/aarch64-unix/winemetal.so
+-- after
+6560e9f9f8f2075fe400e972172cbda25948d82fe1fffa36f8050a5f00564579  dest_after:aarch64-windows/d3d11.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/d3d11.dll
+08143054d704ec2b4003995b3c9e34a283811868e960a354ee7b4b05850598a2  dest_after:aarch64-windows/dxgi.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/dxgi.dll
+6acfa5e7f166f32e80c40d51cd5d311f25047cd18f6f1d8f0b09c759320f7274  dest_after:aarch64-windows/d3d10core.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/d3d10core.dll
+8a0c3b539da1e59c8fd5c3e27f050fe14bad524a541dab438175d2fc2e04685e  dest_after:aarch64-windows/winemetal.dll /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt/aarch64-windows/winemetal.dll
+c5c1417e98aa3a4edc258d6c7e847160498d743bfc9a118013f403fa1a353e67  dest_after:aarch64-unix/winemetal.so /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/graphics/dist/dxmt/aarch64-unix/winemetal.so

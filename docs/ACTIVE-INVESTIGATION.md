@@ -1240,3 +1240,26 @@ or memory-protection sync path, depending on run timing.
   `SILENT_SPIN_NO_MARKERS` due watchdog timeout after the swapchain advance.
 - Snapshot floor:
   `artifacts/milestone-dist/hk-rung11-swapchain-hwnd-bind-20260702-130629-20260702-130629`.
+
+## 2026-07-02 13:48 Lane A GLM latest post-swapchain frontier
+
+- Redeployed latest GLM/graphics-prep DXMT runtime from source head `333c038`;
+  hash report:
+  `reports/research/dxmt-glm-latest-redeploy-20260702-132040.sha256.txt`.
+- Verified rung 11 still holds with latest DXMT:
+  `CreateSwapChainForHwnd(hwnd=0x20054)` returns `rc=0x0`,
+  `swapchain=0xed8b06380`, and HWND binding remains attached
+  (`ret_layer=0xa607e4f00`, `attached_to_hwnd=yes`).
+- Last confirmed call after swapchain is factory `MakeWindowAssociation(hwnd=0x20054, flags=3)`,
+  returning `rc=0x0`. Unity does not call `GetBuffer(0)`, does not create an RTV,
+  and does not make a real swapchain `Present` before timeout.
+- Patched `tools/triage/analyze_d3d_gate.py` to ignore
+  `macrunner-hb-dxgi-swapchain: candidate method=Present` lines; they are
+  unknown-object probes and can be factory slot-8 `MakeWindowAssociation`, not
+  real swapchain `Present`.
+- Post-swapchain raw fault diagnostic:
+  `UnityPlayer.dll+0x2b5605`, `mov rax, qword ptr [r8 + rsi*8 + 0x488]`,
+  effective address `0xcfe355638` -> `MEMORY_FAULT`. Sample shows active HB
+  `macrunner_hb_sync_virtual_region -> hb_memory_protect`, with helper threads
+  waiting in `NtWaitForSingleObject/server_wait`.
+- Report: `reports/research/laneA-glm-latest-postswap-20260702-1348.md`.

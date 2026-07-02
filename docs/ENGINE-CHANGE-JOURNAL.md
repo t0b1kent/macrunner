@@ -572,3 +572,11 @@ What: Added a winemac on-demand `win_data` realization helper for D3D swapchain 
 Why: HK reached real `IDXGIFactory2::CreateSwapChainForHwnd(hwnd=0x20054)` but failed because the macdrv HWND binding path had no realized `win_data`/Cocoa window at swapchain time. `hwnd=0x20054` is same-thread, root/top-level, desktop-parented Unity window; returning a fake orphan layer would have hidden all frames.
 Verify: Built/deployed `winemac.so` (`11956cf41ee60909`) and `winemetal.so` (`ff02feed8ac54e17`). Warm HK run `reports/phase4-hollow-knight/laneA-hk-hwnd-bind-fix-125609-try1-125711` logs `d3d_on_demand result=0x72aa417a0 cocoa=0x73cd88000`, `client_cocoa_view=0x72aa20f00 ret_view=0x72aa31b80 ret_layer=0x764179770 attached_to_hwnd=1`, and `CreateSwapChainForHwnd rc=0x0 swapchain=0xedcb05c90`. Filtered classify reports `LADDER_RUNG: 11 (swapchain)`.
 Status: hwnd-binding-cleared-next-post-swapchain-timeout
+
+## 2026-07-02 13:48 — Lane A DXGI Present classifier de-noise
+File(s): tools/triage/analyze_d3d_gate.py
+Type: DIAGNOSTIC-FIX
+What: Excluded `macrunner-hb-dxgi-swapchain: candidate method=Present` lines from real Present detection.
+Why: Factory slot 8 is `MakeWindowAssociation`, and the generic unknown-object candidate trace was inflating `present_count` even though no real swapchain Present occurred.
+Verify: Reclassified `reports/phase4-hollow-knight/laneA-hk-glm-latest-postswap-long-132919-try1-132920`; filtered D3D counts are now `swapchain=2 present=0`, with `LADDER_RUNG: 11 (swapchain)` and `PRIMARY_CLASS=PRESENT_MISSING`.
+Status: present-marker-false-positive-removed

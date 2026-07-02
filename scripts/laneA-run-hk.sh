@@ -2,6 +2,17 @@
 # Lane A HK run wrapper: mr-run + auto-retry on the xtajit64-c0000135 boot flake
 # (exit=53, ~150-line log, no forward markers — load_dll race in fresh prefix).
 # Usage: laneA-run-hk.sh <tag> <timeout> [max_tries]   (extra env via environment)
+#
+# Translation cache policy:
+# - Warm by default: MACRUNNER_HB_TRANSLATION_CACHE defaults to 1.
+# - Set MACRUNNER_HK_COLD_RUN=1 only when cold translation timing is the experiment.
+# - If MACRUNNER_HB_TRANSLATION_CACHE_ROOT is not supplied, this wrapper uses a
+#   per-ntdll.so root under artifacts/hb-translation-cache/ntdll-<sha16>.  The
+#   persistent block key does not include the engine binary hash, so the root is
+#   deliberately build-scoped to avoid stale wrong-code after ntdll/codegen rebuilds.
+# Evidence policy:
+# - Real D3D boundary and DXGI swapchain markers are enabled by default so
+#   filtered triage can distinguish real DXGI/D3D calls from IAT binding noise.
 set -u
 TAG="${1:?need tag}"; TMO="${2:-420}"; MAX="${3:-3}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -81,7 +92,32 @@ for try in $(seq 1 "$MAX"); do
   cp -f "$DXMT_DIST/$ARM_UNIX_DIR/winemetal.so" "$OVERLAY_ARM_UNIX_DIR/winemetal.so"
   [ -f "$DXVK_DIST/$ARM_MACHINE_DIR/d3d9.dll" ] && \
     cp -f "$DXVK_DIST/$ARM_MACHINE_DIR/d3d9.dll" "$OVERLAY_ARM_MACHINE_DIR/d3d9.dll"
-  MACRUNNER_RUN_DIR="$RUNDIR" MACRUNNER_HB_TRANSLATION_CACHE="${MACRUNNER_HB_TRANSLATION_CACHE:-0}" \
+
+  CACHE_ENABLED="${MACRUNNER_HB_TRANSLATION_CACHE:-1}"
+  if [ "${MACRUNNER_HK_COLD_RUN:-0}" = "1" ]; then
+    CACHE_ENABLED=0
+  fi
+  CACHE_ROOT="${MACRUNNER_HB_TRANSLATION_CACHE_ROOT:-}"
+  if [ "$CACHE_ENABLED" != "0" ] && [ -z "$CACHE_ROOT" ]; then
+    NTDLL_SO="$WINE_DIST/lib/wine/aarch64-unix/ntdll.so"
+    if [ -f "$NTDLL_SO" ]; then
+      NTDLL_HASH="$(shasum -a 256 "$NTDLL_SO" | awk '{print substr($1,1,16)}')"
+      CACHE_ROOT="$ROOT/artifacts/hb-translation-cache/ntdll-$NTDLL_HASH"
+      mkdir -p "$CACHE_ROOT"
+    else
+      echo "[laneA] warning: missing ntdll.so for cache-root hash: $NTDLL_SO" >&2
+    fi
+  fi
+  {
+    echo "[laneA] translation_cache=$CACHE_ENABLED"
+    [ -n "$CACHE_ROOT" ] && echo "[laneA] translation_cache_root=$CACHE_ROOT"
+    [ "${MACRUNNER_HK_COLD_RUN:-0}" = "1" ] && echo "[laneA] cold_run=1"
+  } >> "$RUNDIR/run.log"
+
+    MACRUNNER_RUN_DIR="$RUNDIR" MACRUNNER_HB_TRANSLATION_CACHE="$CACHE_ENABLED" \
+    MACRUNNER_HB_TRANSLATION_CACHE_ROOT="$CACHE_ROOT" \
+    MACRUNNER_HB_TRACE_D3D_BOUNDARY="${MACRUNNER_HB_TRACE_D3D_BOUNDARY:-1}" \
+    MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN="${MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN:-1}" \
     MACRUNNER_GRAPHICS_BACKEND="${MACRUNNER_GRAPHICS_BACKEND:-dxmt}" \
     MACRUNNER_DXMT_ROOT="$OVERLAY_DIR" \
     MACRUNNER_PREFIX_SYSTEM32_ARCH="$MACHINE_DIR" \
@@ -90,7 +126,7 @@ for try in $(seq 1 "$MAX"); do
     WINEDLLPATH="$OVERLAY_MACHINE_DIR:$OVERLAY_UNIX_DIR:$WINE_DIST/lib/wine/$MACHINE_DIR:$WINE_DIST/lib/wine/$UNIX_DIR" \
     WINESYSTEMDLLPATH="$OVERLAY_MACHINE_DIR" \
     WINEDEBUG="${WINEDEBUG:--all}" "$ROOT/scripts/mr-run.sh" \
-    "$WINE_DIST" "$HK" "$TMO" ${HK_EXTRA_ARGS:-} > "$RUNDIR/run.log" 2>&1
+    "$WINE_DIST" "$HK" "$TMO" ${HK_EXTRA_ARGS:-} >> "$RUNDIR/run.log" 2>&1
   rc=$?
   lines=$(wc -l < "$RUNDIR/run.log")
   echo "try$try rc=$rc lines=$lines $RUNDIR"

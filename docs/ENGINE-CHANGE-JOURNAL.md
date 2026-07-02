@@ -581,6 +581,14 @@ Why: Factory slot 8 is `MakeWindowAssociation`, and the generic unknown-object c
 Verify: Reclassified `reports/phase4-hollow-knight/laneA-hk-glm-latest-postswap-long-132919-try1-132920`; filtered D3D counts are now `swapchain=2 present=0`, with `LADDER_RUNG: 11 (swapchain)` and `PRIMARY_CLASS=PRESENT_MISSING`.
 Status: present-marker-false-positive-removed
 
+## 2026-07-02 18:02 — Lane A Unity+0x2b5605 race/init-order discriminator
+File(s): engine/hyperbridge/src/hb_arm64_codegen.c
+Type: DIAGNOSTIC-FIX + ROOT-CAUSE-NARROWING
+What: Diagnosed the one-shot `UnityPlayer.dll+0x2b5605` post-swapchain fault as descriptor corruption upstream of the consumer load (`mov rsi,[rdx]` at `+0x2b5587`), not a mapping/protect fault. Fixed the HB diagnostic store-drain knob so `MACRUNNER_HB_JIT_DIRECT_STORE_FENCE=1` covers offset/fused direct stores as well as the generic direct-store path.
+Why: The fence A/B shifted pre-swapchain odds, but the codegen knob was incomplete: offset stores such as Unity's `[rsi+0x40]` and event-container `[r8+0x628]` did not get the requested post-store `DMB ISH`. The producer walk showed the bad `rsi` came from descriptor field `[rdx]`; the normal targeted trace consumed `{0,0,1}` and passed `+0x2b5605`.
+Verify: HyperBridge rebuilt; forced Unix `ntdll.so` relink/deploy/codesign (`48566904f9b703831d90bd6d5903e79694a1156fdd3f52b8cba6449057fbaa4a`). Broad `hb_test_runner` remains not clean in this workspace (`446-449 passed`, `20-23 failed`, mostly code-size/host-perm cases). Patched fence coverage runs `laneA-laneA-fencecov-populate-20260702-172446-try1-172501` and `laneA-laneA-fencecov-warm-20260702-173252-try1-173337` both classify rung 11 `PRESENT_MISSING`: real `CreateSwapChainForHwnd rc=0`, no GetBuffer/RTV, no runtime-fail, no `+0x2b5605`.
+Status: rung11-preserved-post-swapchain-wall-not-solved-by-direct-store-fence
+
 ## 2026-07-02 15:14 — Lane A HK post-swapchain HB memory bookkeeping
 File(s): engine/hyperbridge/src/hb_memory.c, engine/wine/dlls/ntdll/unix/macrunner_hb.c
 Type: PERF-FIX + DIAGNOSTIC

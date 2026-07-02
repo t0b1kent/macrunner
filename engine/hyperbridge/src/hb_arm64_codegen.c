@@ -1012,6 +1012,8 @@ static void emit_direct_mem_load_to_x20(hb_codegen_buffer_t* buf, hb_size_t size
 
 static void emit_direct_mem_store_from_x20_base(hb_codegen_buffer_t* buf, hb_size_t size, int rn) {
     emit_stlr_from_reg(buf, 20, rn, size);
+    if (jit_direct_store_fence_enabled())
+        emit_dmb_ish(buf);
 }
 
 static void emit_direct_mem_store_from_x20(hb_codegen_buffer_t* buf, hb_size_t size) {
@@ -1041,6 +1043,8 @@ static void emit_direct_mem_store_from_x20_off(hb_codegen_buffer_t* buf, hb_size
 
 static void emit_direct_mem_store_zero_off(hb_codegen_buffer_t* buf, hb_size_t size, uint32_t off) {
     emit_stlr_from_reg(buf, 31, emit_direct_mem_base_for_offset(buf, off), size);
+    if (jit_direct_store_fence_enabled())
+        emit_dmb_ish(buf);
 }
 
 static uint64_t direct_mem_alignment_mask(hb_size_t size) {
@@ -1150,8 +1154,6 @@ static bool emit_direct_mem_store_from_x20_tso(hb_codegen_buffer_t* buf,
     }
 
     emit_direct_mem_store_from_x20(buf, dst->size);
-    if (jit_direct_store_fence_enabled())
-        emit_dmb_ish(buf);
     if (done_branch)
         patch_b(buf, done_branch, buf->size);
     return true;

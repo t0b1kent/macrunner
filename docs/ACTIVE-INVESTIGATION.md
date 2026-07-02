@@ -1288,3 +1288,26 @@ or memory-protection sync path, depending on run timing.
   `reports/phase4-hollow-knight/laneA-laneA-hk-addrclass-splitfast-20260702-150106-try1-150106`
   preserves rung 11: real `CreateSwapChainForHwnd rc=0`, followed by
   `MakeWindowAssociation`, no `GetBuffer`, no real Present.
+
+## 2026-07-02 18:02 Lane A Unity+0x2b5605 race/init-order discriminator
+
+- Outcome distribution on warm uninstrumented runs did not replay the one-shot
+  `UnityPlayer.dll+0x2b5605` fault: default N=8 split between pre-swapchain
+  timeout (3/8) and swapchain timeout (5/8); `JIT_DIRECT_STORE_FENCE=1` N=8
+  reached swapchain timeout 8/8. No run reached GetBuffer/RTV/real Present.
+- Producer walk: the faulting consumer gets `rsi` from
+  `UnityPlayer.dll+0x2b5587: mov rsi,[rdx]`; the backtrace callsite
+  `0x6bbe80` passes `rdx = container + index*24`. Descriptor slots are seeded
+  from `container+0x628/0x630`, and normal targeted trace consumed `{0,0,1}`.
+  No local `_Init_thread_header/_Init_thread_footer` guard was found around the
+  consumer.
+- Fixed diagnostic fence coverage in `hb_arm64_codegen.c`: env-gated
+  `MACRUNNER_HB_JIT_DIRECT_STORE_FENCE=1` now covers offset/fused direct stores,
+  not just the generic direct-store path. Deployed signed `ntdll.so` hash:
+  `48566904f9b703831d90bd6d5903e79694a1156fdd3f52b8cba6449057fbaa4a`.
+- Patched fence coverage did not advance the frontier. Populate and warm runs
+  both classify as rung 11 `PRESENT_MISSING`: real `CreateSwapChainForHwnd rc=0`,
+  no GetBuffer/RTV, no runtime-fail, no `+0x2b5605`.
+- Cache hygiene: `hb_cache_key_t` does not include codegen env flags. Future
+  fence/no-fence A/B must use separate `MACRUNNER_HB_TRANSLATION_CACHE_ROOT`s.
+- Report: `reports/research/laneA-unity-2b5605-race-init-order-20260702-1802.md`.

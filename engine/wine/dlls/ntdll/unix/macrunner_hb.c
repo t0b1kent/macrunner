@@ -1162,6 +1162,24 @@ static int macrunner_hb_trace_user32_message_post_swapchain_only(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_USER32_MESSAGE_POST_SWAPCHAIN_ONLY" );
 }
 
+static int macrunner_hb_disable_wait_address_semantic(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_DISABLE_WAIT_ADDRESS_SEMANTIC" );
+}
+
+static int macrunner_hb_disable_kernel32_handle_semantic(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_DISABLE_KERNEL32_HANDLE_SEMANTIC" );
+}
+
+static int macrunner_hb_disable_kernel32_handle_sync_semantic(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_DISABLE_KERNEL32_HANDLE_SYNC_SEMANTIC" );
+}
+
 static int macrunner_hb_trace_pe_stack_enabled(void)
 {
     static int cache = -1;
@@ -16661,6 +16679,8 @@ static BOOL macrunner_hb_waitaddr_stack_slot( hb_context_t *ctx, unsigned int sl
                                value ) == HB_OK;
 }
 
+static BOOL macrunner_hb_wait_address_import( const char *name );
+
 static NTSTATUS macrunner_hb_rtl_wait_on_address( const void *addr, const void *cmp, SIZE_T size,
                                                   const LARGE_INTEGER *timeout,
                                                   const char *dll_name, const char *import_name,
@@ -16869,6 +16889,20 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
     NTSTATUS status;
 
     if (!ctx || !thunk || !args || !ret) return FALSE;
+    if (!macrunner_hb_wait_address_import( thunk->import_name )) return FALSE;
+    if (macrunner_hb_disable_wait_address_semantic())
+    {
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            fprintf( stderr, "macrunner-hb-semantic-bypass: helper=wait-address import=%s!%s "
+                     "pc=%p caller=%p rsp=%p reason=env-disable\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)macrunner_hb_trace_return_address( ctx ),
+                     (void *)(uintptr_t)ctx->regs.x64.rsp );
+            fflush( stderr );
+        }
+        return FALSE;
+    }
 
     if (macrunner_hb_strieq( thunk->import_name, "WakeByAddressAll" ) ||
         macrunner_hb_strieq( thunk->import_name, "RtlWakeAddressAll" ))
@@ -17908,6 +17942,47 @@ static BOOL macrunner_hb_teb_tls_get_value( DWORD index, uint64_t *value )
     return TRUE;
 }
 
+static BOOL macrunner_hb_kernel32_handle_sync_import( const char *name )
+{
+    return macrunner_hb_strieq( name, "CreateEventA" ) ||
+           macrunner_hb_strieq( name, "CreateEventW" ) ||
+           macrunner_hb_strieq( name, "CreateEventExA" ) ||
+           macrunner_hb_strieq( name, "CreateEventExW" ) ||
+           macrunner_hb_strieq( name, "OpenEventA" ) ||
+           macrunner_hb_strieq( name, "OpenEventW" ) ||
+           macrunner_hb_strieq( name, "SetEvent" ) ||
+           macrunner_hb_strieq( name, "ResetEvent" ) ||
+           macrunner_hb_strieq( name, "PulseEvent" ) ||
+           macrunner_hb_strieq( name, "CreateSemaphoreA" ) ||
+           macrunner_hb_strieq( name, "CreateSemaphoreW" ) ||
+           macrunner_hb_strieq( name, "CreateSemaphoreExA" ) ||
+           macrunner_hb_strieq( name, "CreateSemaphoreExW" ) ||
+           macrunner_hb_strieq( name, "OpenSemaphoreA" ) ||
+           macrunner_hb_strieq( name, "OpenSemaphoreW" ) ||
+           macrunner_hb_strieq( name, "ReleaseSemaphore" ) ||
+           macrunner_hb_strieq( name, "CreateMutexA" ) ||
+           macrunner_hb_strieq( name, "CreateMutexW" ) ||
+           macrunner_hb_strieq( name, "CreateMutexExA" ) ||
+           macrunner_hb_strieq( name, "CreateMutexExW" ) ||
+           macrunner_hb_strieq( name, "OpenMutexA" ) ||
+           macrunner_hb_strieq( name, "OpenMutexW" ) ||
+           macrunner_hb_strieq( name, "ReleaseMutex" ) ||
+           macrunner_hb_strieq( name, "WaitForSingleObject" ) ||
+           macrunner_hb_strieq( name, "WaitForSingleObjectEx" ) ||
+           macrunner_hb_strieq( name, "WaitForMultipleObjects" ) ||
+           macrunner_hb_strieq( name, "WaitForMultipleObjectsEx" );
+}
+
+static BOOL macrunner_hb_wait_address_import( const char *name )
+{
+    return macrunner_hb_strieq( name, "WakeByAddressAll" ) ||
+           macrunner_hb_strieq( name, "WakeByAddressSingle" ) ||
+           macrunner_hb_strieq( name, "RtlWakeAddressAll" ) ||
+           macrunner_hb_strieq( name, "RtlWakeAddressSingle" ) ||
+           macrunner_hb_strieq( name, "WaitOnAddress" ) ||
+           macrunner_hb_strieq( name, "RtlWaitOnAddress" );
+}
+
 static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                                                        const struct macrunner_hb_import_thunk *thunk,
                                                        const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
@@ -17926,6 +18001,23 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
     if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
         !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
         return FALSE;
+    if (macrunner_hb_disable_kernel32_handle_semantic() ||
+        (macrunner_hb_disable_kernel32_handle_sync_semantic() &&
+         macrunner_hb_kernel32_handle_sync_import( thunk->import_name )))
+    {
+        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            fprintf( stderr, "macrunner-hb-semantic-bypass: helper=kernel32-handle import=%s!%s "
+                     "pc=%p caller=%p rsp=%p reason=%s\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)macrunner_hb_trace_return_address( ctx ),
+                     (void *)(uintptr_t)ctx->regs.x64.rsp,
+                     macrunner_hb_disable_kernel32_handle_semantic() ? "env-disable-all" :
+                     "env-disable-sync" );
+            fflush( stderr );
+        }
+        return FALSE;
+    }
 
     if (macrunner_hb_strieq( thunk->import_name, "GetLastError" ))
     {

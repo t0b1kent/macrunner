@@ -1388,3 +1388,39 @@ or memory-protection sync path, depending on run timing.
   sample that names the main/render-thread wait specifically; post-swapchain
   targeted trace is now in source but the fresh-hash cache runs had not reached
   swapchain before stopping.
+
+## 2026-07-02 23:20 Lane A sync-shortcut kill-switch and WaitOnAddress pairing
+
+- Added diagnostic env gates for the suspected HB semantic shortcuts:
+  `MACRUNNER_HB_DISABLE_WAIT_ADDRESS_SEMANTIC`,
+  `MACRUNNER_HB_DISABLE_KERNEL32_HANDLE_SEMANTIC`, and
+  `MACRUNNER_HB_DISABLE_KERNEL32_HANDLE_SYNC_SEMANTIC`. Built/deployed signed
+  diagnostic `ntdll.so` hash
+  `6fb3483b0e660fb2f2c0eb3c3435c7f428edecbf674dc4011a7fa45827a959e9`.
+- Static audit: `macrunner_hb_try_kernel32_handle_semantic` intercepts event,
+  semaphore, mutex, wait, handle/heap/virtual-memory families. The sync branches
+  route to Wine NT primitives (`NtCreate*`, `NtSetEvent`, `NtReleaseSemaphore`,
+  `NtWaitForSingleObject`, `NtWaitForMultipleObjects`), not synthetic release or
+  wake success. `WaitOnAddress`/`WakeByAddress*` are handled by the separate
+  wait-address helper, using `NtWaitForAlertByThreadId` and
+  `NtAlertThreadByThreadId`.
+- Kill-switch run
+  `reports/phase4-hollow-knight/laneA-sync-killswitch-20260702-225918-try1-225918`
+  bypassed the suspected paths (`kernel32-handle=39843`, `wait-address=53`;
+  top bypasses include `WaitForSingleObjectEx`, `WaitOnAddress`,
+  `WakeByAddressSingle`, `ReleaseSemaphore`, `SetEvent`) but still classified as
+  rung 11 `PRESENT_MISSING`: real `CreateSwapChainForHwnd rc=0`, no `GetBuffer`,
+  no real Present.
+- Baseline wait-address run
+  `reports/phase4-hollow-knight/laneA-waitaddr-baseline-20260702-231255-try1-231255`
+  also reaches rung 11. It shows paired delivery, not a swallowed wake:
+  `tid=00f4` waits on `addr=0x3a0414cb0` from caller `0x87efce9ee71`,
+  `WakeByAddressSingle` from caller `0x87efce9eebb` finds `tid=00f4`, and the
+  waiter returns `status=00000101 (alerted)` before the semantic wrapper reports
+  success. Worker wait `addr=0x3002e7200` similarly receives a wake and re-waits.
+- Verdict: the COM-like fake-success shortcut hypothesis is refuted for the
+  observed HK wall. Disabling sync semantics removes the hot
+  `macrunner_hb_try_kernel32_handle_semantic` stack but the wall remains; the
+  creator thread shifts into guest/JIT special read/write work. Next lever is HB
+  special-memory / virtual-region sync/protect behavior, not WakeByAddress
+  delivery.

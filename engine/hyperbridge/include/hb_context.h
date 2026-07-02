@@ -40,6 +40,8 @@ typedef struct {
     bool fallback_enabled;
 } hb_config_t;
 
+#define HB_CONTEXT_CODEGEN_MONO_MODULE 0x00000001u
+
 /* Guest register file x64 */
 typedef struct {
     uint64_t rax, rbx, rcx, rdx;
@@ -208,6 +210,9 @@ struct hb_context {
      * Set once at thread init from hb_memory_guest32_base(). Used by the
      * ARM64 JIT to convert 32-bit guest EAs to host pointers. Zero for x64. */
     uint64_t guest32_base;
+
+    /* Per-current-block codegen policy. Appended so existing JIT offsets stay stable. */
+    uint32_t codegen_flags;
 };
 
 hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend);

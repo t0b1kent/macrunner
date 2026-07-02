@@ -1,11 +1,28 @@
 # ACTIVE INVESTIGATION — живое состояние
 
-Last update: 2026-07-02 09:35 VLAT, Codex.
+Last update: 2026-07-02 18:55 VLAT, Codex.
 
 Читайте этот файл первым после compaction. Не перепроверять DISPROVED без нового
 контр-факта. Не возвращать Wine-render патчи.
 
 ## Current Task
+
+Update 2026-07-02 18:55 VLAT: Hollow Knight remains filtered rung 11 after
+ABZU FP+COM import fixes on `main` (`18499f3`) and deployed `ntdll.so`
+`2cc696d858cbb25c4441aff7c7d599a83cd911a600fc278e70ca9f5ea6cc5b73`.
+Snapshot:
+`artifacts/milestone-dist/hk-rung11-abzu-fp-com-merge-20260702-182214`
+(forced `--dist engine/wine/dist-arm64ec-spike`). Post-merge populate run
+`reports/phase4-hollow-knight/laneA-postmerge-fp-com-populate-20260702-182357-try1-182459`
+reaches real `CreateSwapChainForHwnd rc=0`, then `MakeWindowAssociation`
+returns `rc=0`; no `GetBuffer`, RTV, or real Present before timeout. Follow-up
+warm runs showed variance below the frontier: one timed out at rung 9 and a
+long monitored run was CPU-active in
+`load_display_driver -> KeUserModeCallback -> macrunner_hb_route_x64_callback_fault
+-> macrunner_hb_pc_in_executable_section` while helper threads waited. Mono
+metadata/string fusions are now gated to actual Mono modules via
+`HB_CONTEXT_CODEGEN_MONO_MODULE`; deployed `ntdll.so` after the gate is
+`7638362cb8fc593269ca4f46eb7566cf47e1035703f94eae8d276bf9e12bedc7`.
 
 Update 2026-07-02 09:35 VLAT: Hollow Knight/DXMT frontier is now honest
 filtered rung 9 (`dxgi-factory`). Critical build regression after `3cc5f4a`

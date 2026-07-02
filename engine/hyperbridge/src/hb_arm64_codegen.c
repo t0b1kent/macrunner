@@ -14,6 +14,10 @@
 #include <mach/mach_vm.h>
 #endif
 
+struct hb_arm64_codegen {
+    hb_context_t* ctx;
+};
+
 _Static_assert(offsetof(hb_lazy_flags_t, kind) == offsetof(hb_lazy_flags_t, pending) + 4,
                "hb_lazy_flags_t pending/kind layout changed");
 _Static_assert(offsetof(hb_lazy_flags_t, width) == offsetof(hb_lazy_flags_t, pending) + 8,
@@ -3803,8 +3807,13 @@ static bool emit_unity_u32_ptr_compare(hb_codegen_buffer_t* buf,
     return true;
 }
 
+static bool mono_fusions_allowed(hb_arm64_codegen_t* cg, const hb_ir_block_t* block,
+                                 const char* kind);
+
 static bool emit_mono_string_hash(hb_codegen_buffer_t* buf,
+                                  hb_arm64_codegen_t* cg,
                                   const hb_ir_block_t* block) {
+    if (!mono_fusions_allowed(cg, block, "mono-string-hash")) return false;
     if (!mono_string_hash_candidate(block)) return false;
     if (macrunner_hb_trace_jit_blocks_enabled()) {
         fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-string-hash block=%p\n",
@@ -3819,7 +3828,9 @@ static bool emit_mono_string_hash(hb_codegen_buffer_t* buf,
 }
 
 static bool emit_mono_string_equal(hb_codegen_buffer_t* buf,
+                                   hb_arm64_codegen_t* cg,
                                    const hb_ir_block_t* block) {
+    if (!mono_fusions_allowed(cg, block, "mono-string-equal")) return false;
     if (!mono_string_equal_candidate(block)) return false;
     if (macrunner_hb_trace_jit_blocks_enabled()) {
         fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-string-equal block=%p\n",
@@ -3837,9 +3848,23 @@ static bool mono_metadata_fusions_disabled(void) {
     return macrunner_hb_jit_disable_mono_metadata_fusions();
 }
 
-static bool emit_mono_metadata_bsearch_loop(hb_codegen_buffer_t* buf,
-                                            const hb_ir_block_t* block) {
+static bool mono_fusions_allowed(hb_arm64_codegen_t* cg, const hb_ir_block_t* block,
+                                 const char* kind) {
     if (mono_metadata_fusions_disabled()) return false;
+    if (cg && cg->ctx && (cg->ctx->codegen_flags & HB_CONTEXT_CODEGEN_MONO_MODULE))
+        return true;
+    if (macrunner_hb_trace_jit_blocks_enabled() && block) {
+        fprintf(stderr, "macrunner-hb-jit-fusion-skip: kind=%s block=%p reason=non-mono-module\n",
+                kind ? kind : "mono", (void*)(uintptr_t)block->guest_addr);
+        fflush(stderr);
+    }
+    return false;
+}
+
+static bool emit_mono_metadata_bsearch_loop(hb_codegen_buffer_t* buf,
+                                            hb_arm64_codegen_t* cg,
+                                            const hb_ir_block_t* block) {
+    if (!mono_fusions_allowed(cg, block, "mono-metadata-bsearch")) return false;
     if (!mono_metadata_bsearch_loop_candidate(block)) return false;
     if (macrunner_hb_trace_jit_blocks_enabled()) {
         fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-bsearch block=%p\n",
@@ -3854,8 +3879,9 @@ static bool emit_mono_metadata_bsearch_loop(hb_codegen_buffer_t* buf,
 }
 
 static bool emit_mono_metadata_rowptr_entry(hb_codegen_buffer_t* buf,
+                                            hb_arm64_codegen_t* cg,
                                             const hb_ir_block_t* block) {
-    if (mono_metadata_fusions_disabled()) return false;
+    if (!mono_fusions_allowed(cg, block, "mono-metadata-rowptr-entry")) return false;
     if (!mono_metadata_rowptr_entry_candidate(block)) return false;
     if (macrunner_hb_trace_jit_blocks_enabled()) {
         fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-rowptr-entry block=%p\n",
@@ -3870,8 +3896,9 @@ static bool emit_mono_metadata_rowptr_entry(hb_codegen_buffer_t* buf,
 }
 
 static bool emit_mono_metadata_decode_row_loop(hb_codegen_buffer_t* buf,
+                                               hb_arm64_codegen_t* cg,
                                                const hb_ir_block_t* block) {
-    if (mono_metadata_fusions_disabled()) return false;
+    if (!mono_fusions_allowed(cg, block, "mono-metadata-decode-row")) return false;
     if (!mono_metadata_decode_row_loop_candidate(block)) return false;
     if (macrunner_hb_trace_jit_blocks_enabled()) {
         fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-decode-row block=%p\n",
@@ -3886,8 +3913,9 @@ static bool emit_mono_metadata_decode_row_loop(hb_codegen_buffer_t* buf,
 }
 
 static bool emit_mono_metadata_decode_row_entry(hb_codegen_buffer_t* buf,
+                                                hb_arm64_codegen_t* cg,
                                                 const hb_ir_block_t* block) {
-    if (mono_metadata_fusions_disabled()) return false;
+    if (!mono_fusions_allowed(cg, block, "mono-metadata-decode-row-entry")) return false;
     if (!mono_metadata_decode_row_entry_candidate(block)) return false;
     if (macrunner_hb_trace_jit_blocks_enabled()) {
         fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-decode-row-entry block=%p\n",
@@ -3902,8 +3930,9 @@ static bool emit_mono_metadata_decode_row_entry(hb_codegen_buffer_t* buf,
 }
 
 static bool emit_mono_metadata_decode_col(hb_codegen_buffer_t* buf,
+                                          hb_arm64_codegen_t* cg,
                                           const hb_ir_block_t* block) {
-    if (mono_metadata_fusions_disabled()) return false;
+    if (!mono_fusions_allowed(cg, block, "mono-metadata-decode-col")) return false;
     /*
      * Hollow Knight/Unity Mono mini_init trips System.RuntimeType vtable slot
      * validation when this helper fuses mono_metadata_decode_row_col
@@ -3925,8 +3954,9 @@ static bool emit_mono_metadata_decode_col(hb_codegen_buffer_t* buf,
 }
 
 static bool emit_mono_metadata_coded_index_search(hb_codegen_buffer_t* buf,
+                                                  hb_arm64_codegen_t* cg,
                                                   const hb_ir_block_t* block) {
-    if (mono_metadata_fusions_disabled()) return false;
+    if (!mono_fusions_allowed(cg, block, "mono-metadata-coded-index-search")) return false;
     if (!mono_metadata_coded_index_search_candidate(block)) return false;
     if (macrunner_hb_trace_jit_blocks_enabled()) {
         fprintf(stderr, "macrunner-hb-jit-fusion: kind=mono-metadata-coded-index-search block=%p\n",
@@ -9834,10 +9864,6 @@ uint64_t hb_jit_helper_exec_shift(hb_context_t* ctx, uint64_t op, uint64_t dst_r
 }
 
 /* --- Public API --- */
-struct hb_arm64_codegen {
-    hb_context_t* ctx;
-};
-
 hb_arm64_codegen_t* hb_arm64_codegen_create(hb_context_t* ctx) {
     hb_arm64_codegen_t* cg = calloc(1, sizeof(hb_arm64_codegen_t));
     if (!cg) return NULL;
@@ -10035,35 +10061,35 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
             emit_epilogue(out);
             return HB_OK;
         }
-        if (emit_mono_string_hash(out, block)) {
+        if (emit_mono_string_hash(out, cg, block)) {
             emit_epilogue(out);
             return HB_OK;
         }
-        if (emit_mono_string_equal(out, block)) {
+        if (emit_mono_string_equal(out, cg, block)) {
             emit_epilogue(out);
             return HB_OK;
         }
-        if (emit_mono_metadata_coded_index_search(out, block)) {
+        if (emit_mono_metadata_coded_index_search(out, cg, block)) {
             emit_epilogue(out);
             return HB_OK;
         }
-        if (emit_mono_metadata_rowptr_entry(out, block)) {
+        if (emit_mono_metadata_rowptr_entry(out, cg, block)) {
             emit_epilogue(out);
             return HB_OK;
         }
-        if (emit_mono_metadata_decode_row_entry(out, block)) {
+        if (emit_mono_metadata_decode_row_entry(out, cg, block)) {
             emit_epilogue(out);
             return HB_OK;
         }
-        if (emit_mono_metadata_decode_col(out, block)) {
+        if (emit_mono_metadata_decode_col(out, cg, block)) {
             emit_epilogue(out);
             return HB_OK;
         }
-        if (emit_mono_metadata_decode_row_loop(out, block)) {
+        if (emit_mono_metadata_decode_row_loop(out, cg, block)) {
             emit_epilogue(out);
             return HB_OK;
         }
-        if (emit_mono_metadata_bsearch_loop(out, block)) {
+        if (emit_mono_metadata_bsearch_loop(out, cg, block)) {
             emit_epilogue(out);
             return HB_OK;
         }

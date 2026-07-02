@@ -7122,6 +7122,15 @@ static BOOL macrunner_hb_module_name_matches( const char *requested,
     return FALSE;
 }
 
+static BOOL macrunner_hb_pc_in_mono_module( uint64_t pc )
+{
+    LDR_DATA_TABLE_ENTRY *ldr = macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)pc );
+
+    return ldr &&
+           (macrunner_hb_module_name_matches( "mono-2.0-bdwgc.dll", &ldr->BaseDllName ) ||
+            macrunner_hb_module_name_matches( "mono.dll", &ldr->BaseDllName ));
+}
+
 static BOOL macrunner_hb_ascii_module_names_match( const char *requested, const char *candidate )
 {
     char req[128], req_dll[132], cand[128];
@@ -25331,6 +25340,9 @@ skip_version_semantic:
         if (trace_calc_object) macrunner_hb_trace_calc_probe( ctx, image_start, "before-block" );
         if (trace_npp_open_pack) macrunner_hb_trace_npp_open_pack( ctx, image_start, "before-block" );
         block_pc = ctx->pc;
+        ctx->codegen_flags &= ~HB_CONTEXT_CODEGEN_MONO_MODULE;
+        if (macrunner_hb_pc_in_mono_module( block_pc ))
+            ctx->codegen_flags |= HB_CONTEXT_CODEGEN_MONO_MODULE;
         if (trace_direct_native) macrunner_hb_trace_winemetal_resume_point( "before-block", ctx );
         last_block_pc = block_pc;
         if (macrunner_hb_block_trace_enabled())

@@ -604,3 +604,11 @@ What: Imported ABZU's ARM64 PE import FP marshalling fix so guest XMM0-XMM7 are 
 Why: ABZU proved double-returning CRT imports such as `wcstod` returned `0.0` because the bridge only copied integer `RAX`, and proved fake `CoInitialize=S_OK` left `NtCurrentTeb()->ReservedForOle` empty so real `CoCreateInstance` failed `CO_E_NOTINITIALIZED`.
 Verify: Forced Unix `ntdll.so` rebuild/deploy/codesign succeeded from this source closure (`2cc696d858cbb25c4441aff7c7d599a83cd911a600fc278e70ca9f5ea6cc5b73`). ABZU handoffs: `reports/abzu/rebaseline-20260702-rsi-producer/FP-RETURN-CLOSURE.md`, `COM-APARTMENT-CLOSURE.md`.
 Status: applied-next-HK-post-swapchain-resample
+
+## 2026-07-02 18:51 — Lane A Mono fusion module gate
+File(s): engine/hyperbridge/include/hb_context.h, engine/hyperbridge/src/hb_arm64_codegen.c, engine/hyperbridge/src/hb_runtime.c, engine/wine/dlls/ntdll/unix/macrunner_hb.c
+Type: ROOT-FIX
+What: Added a per-block `HB_CONTEXT_CODEGEN_MONO_MODULE` flag set by the Wine bridge from the LDR owner of `block_pc`, and made Mono metadata/string JIT fusions require that flag. Bumped the persistent JIT cache version to 18 so pre-gate fused blobs cannot be reused.
+Why: ABZU proved the Mono metadata/string fusion patterns can match non-Mono code (`windowscodecs.dll+0xDED8` on a UE4 path), so pattern-only emission was unsafe outside `mono-2.0-bdwgc.dll`/`mono.dll`.
+Verify: HyperBridge rebuild plus forced Unix `ntdll.so` relink/deploy/codesign succeeded (`7638362cb8fc593269ca4f46eb7566cf47e1035703f94eae8d276bf9e12bedc7`).
+Status: applied-awaiting-ABZU-regression-recheck

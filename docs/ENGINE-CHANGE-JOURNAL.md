@@ -612,3 +612,12 @@ What: Added a per-block `HB_CONTEXT_CODEGEN_MONO_MODULE` flag set by the Wine br
 Why: ABZU proved the Mono metadata/string fusion patterns can match non-Mono code (`windowscodecs.dll+0xDED8` on a UE4 path), so pattern-only emission was unsafe outside `mono-2.0-bdwgc.dll`/`mono.dll`.
 Verify: HyperBridge rebuild plus forced Unix `ntdll.so` relink/deploy/codesign succeeded (`7638362cb8fc593269ca4f46eb7566cf47e1035703f94eae8d276bf9e12bedc7`).
 Status: applied-awaiting-ABZU-regression-recheck
+
+## 2026-07-02 21:55 — Lane A HK wait-handle identity trace
+File(s): engine/wine/dlls/ntdll/unix/macrunner_hb.c
+Type: DIAGNOSTIC
+What: Added env-gated wait-handle tracking for HB-routed `CreateEvent*`, `CreateSemaphore*`, `ReleaseSemaphore`, `Set/Reset/PulseEvent`, `WaitForSingleObject*`, and `CloseHandle`, plus a post-`CreateSwapChainForHwnd` wait trace bypass with its own budget.
+Why: HK's rung-11 wall is a wait after swapchain creation; the old wait trace named only raw handles and exhausted its budget before the post-swapchain window.
+Verify: Built/deployed/codesigned diagnostic `ntdll.so` twice: wait-handle baseline `b8b7d4978dd1bf707026a19e24c94786443e5a17945a7b248c1b836a0776c887`, then post-swapchain-budget build `519e95fb72156ff006f15eb7f2d35234365b4ef77d9f37edde4e103cd2a5c595`. Filtered classify on `reports/phase4-hollow-knight/laneA-wait-handle-20260702-211155-try1-211257` remains rung 11 with `PRESENT_MISSING` and secondary `WAIT_DEADLOCK`.
+Raw verdict: The durable waits in that run are not the DXGI frame-latency waitable and no `GetFrameLatencyWaitableObject` marker appears. The parked handles are Unity-created semaphores: `0x70..0xb8` from `CreateSemaphoreExW(initial=0,max=2147483647)` and `0x110` from `CreateSemaphoreW(initial=0,max=2147483647)`. No `ReleaseSemaphore` targets those handles in the captured run.
+Status: diagnostic-only-no-behavioral-fix-yet

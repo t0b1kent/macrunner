@@ -400,6 +400,7 @@ static uint64_t macrunner_hb_now_us(void)
 }
 
 static int macrunner_hb_env_flag( const char *name );
+static int macrunner_hb_trace_wait_handle_enabled(void);
 
 /* MacRunner 2026-06-21: wait registry to pin the scene-load BLOCK (a never-returning wait that the
  * syncmeter, which logs only AFTER return, can't see). Each thread records its current
@@ -2007,6 +2008,242 @@ static uint64_t macrunner_hb_trace_stack_address( hb_context_t *ctx, unsigned in
     return value;
 }
 
+enum macrunner_hb_wait_handle_kind
+{
+    MACRUNNER_HB_WAIT_HANDLE_UNKNOWN = 0,
+    MACRUNNER_HB_WAIT_HANDLE_EVENT,
+    MACRUNNER_HB_WAIT_HANDLE_SEMAPHORE,
+};
+
+#define MACRUNNER_HB_WAIT_HANDLE_REG_N 512
+
+struct macrunner_hb_wait_handle_ent
+{
+    uint64_t handle;
+    uint64_t creator_pc;
+    uint64_t creator_caller;
+    uint64_t creator_outer;
+    uint64_t creator_tid;
+    uint64_t serial;
+    int alive;
+    enum macrunner_hb_wait_handle_kind kind;
+    LONG initial;
+    LONG maximum;
+    LONG tracked_state;
+    unsigned int manual_reset;
+    char creator[80];
+};
+
+static pthread_mutex_t macrunner_hb_wait_handle_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct macrunner_hb_wait_handle_ent macrunner_hb_wait_handles[MACRUNNER_HB_WAIT_HANDLE_REG_N];
+static uint64_t macrunner_hb_wait_handle_serial;
+
+static int macrunner_hb_trace_wait_handle_enabled(void)
+{
+    static int cache = -1;
+    int value = __atomic_load_n( &cache, __ATOMIC_RELAXED );
+
+    if (value < 0)
+    {
+        value = macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_WAIT_HANDLE" ) ||
+                macrunner_hb_trace_wait_semantic_enabled();
+        __atomic_store_n( &cache, value, __ATOMIC_RELAXED );
+    }
+    return value;
+}
+
+static const char *macrunner_hb_wait_handle_kind_name( enum macrunner_hb_wait_handle_kind kind )
+{
+    switch (kind)
+    {
+    case MACRUNNER_HB_WAIT_HANDLE_EVENT: return "event";
+    case MACRUNNER_HB_WAIT_HANDLE_SEMAPHORE: return "semaphore";
+    default: return "unknown";
+    }
+}
+
+static int macrunner_hb_wait_handle_find_locked( uint64_t handle, int include_dead )
+{
+    int i;
+
+    for (i = 0; i < MACRUNNER_HB_WAIT_HANDLE_REG_N; i++)
+        if (macrunner_hb_wait_handles[i].handle == handle &&
+            (include_dead || macrunner_hb_wait_handles[i].alive))
+            return i;
+    return -1;
+}
+
+static int macrunner_hb_wait_handle_alloc_locked( uint64_t handle )
+{
+    uint64_t oldest_serial = ~(uint64_t)0;
+    int oldest = 0, i, existing;
+
+    existing = macrunner_hb_wait_handle_find_locked( handle, 1 );
+    if (existing >= 0) return existing;
+
+    for (i = 0; i < MACRUNNER_HB_WAIT_HANDLE_REG_N; i++)
+        if (!macrunner_hb_wait_handles[i].handle || !macrunner_hb_wait_handles[i].alive)
+            return i;
+
+    for (i = 0; i < MACRUNNER_HB_WAIT_HANDLE_REG_N; i++)
+    {
+        if (macrunner_hb_wait_handles[i].serial < oldest_serial)
+        {
+            oldest_serial = macrunner_hb_wait_handles[i].serial;
+            oldest = i;
+        }
+    }
+    return oldest;
+}
+
+static void macrunner_hb_wait_handle_note_create( hb_context_t *ctx,
+                                                  const struct macrunner_hb_import_thunk *thunk,
+                                                  enum macrunner_hb_wait_handle_kind kind,
+                                                  uint64_t handle, LONG initial, LONG maximum,
+                                                  unsigned int manual_reset, NTSTATUS status )
+{
+    struct macrunner_hb_wait_handle_ent *e;
+    int slot;
+
+    if (!macrunner_hb_trace_wait_handle_enabled()) return;
+    if (!handle || (status && status != STATUS_OBJECT_NAME_EXISTS)) return;
+
+    pthread_mutex_lock( &macrunner_hb_wait_handle_mutex );
+    slot = macrunner_hb_wait_handle_alloc_locked( handle );
+    e = &macrunner_hb_wait_handles[slot];
+    memset( e, 0, sizeof(*e) );
+    e->handle = handle;
+    e->kind = kind;
+    e->alive = 1;
+    e->initial = initial;
+    e->maximum = maximum;
+    e->tracked_state = initial;
+    e->manual_reset = manual_reset;
+    e->creator_pc = ctx ? ctx->pc : 0;
+    e->creator_caller = macrunner_hb_trace_return_address( ctx );
+    e->creator_outer = macrunner_hb_trace_stack_address( ctx, 6 );
+    e->creator_tid = (uint64_t)(uintptr_t)NtCurrentTeb()->ClientId.UniqueThread;
+    e->serial = ++macrunner_hb_wait_handle_serial;
+    snprintf( e->creator, sizeof(e->creator), "%s!%s",
+              thunk && thunk->dll_name ? thunk->dll_name : "?",
+              thunk && thunk->import_name ? thunk->import_name : "?" );
+    pthread_mutex_unlock( &macrunner_hb_wait_handle_mutex );
+}
+
+static void macrunner_hb_wait_handle_note_event_signal( uint64_t handle, const char *op,
+                                                        NTSTATUS status )
+{
+    int slot;
+
+    if (!macrunner_hb_trace_wait_handle_enabled()) return;
+    if (!handle || status) return;
+    pthread_mutex_lock( &macrunner_hb_wait_handle_mutex );
+    slot = macrunner_hb_wait_handle_find_locked( handle, 0 );
+    if (slot >= 0 && macrunner_hb_wait_handles[slot].kind == MACRUNNER_HB_WAIT_HANDLE_EVENT)
+    {
+        if (!strcmp( op, "SetEvent" )) macrunner_hb_wait_handles[slot].tracked_state = 1;
+        else if (!strcmp( op, "ResetEvent" )) macrunner_hb_wait_handles[slot].tracked_state = 0;
+        else macrunner_hb_wait_handles[slot].tracked_state = -1;
+    }
+    pthread_mutex_unlock( &macrunner_hb_wait_handle_mutex );
+}
+
+static void macrunner_hb_wait_handle_note_wait_result( uint64_t handle, NTSTATUS status )
+{
+    SEMAPHORE_BASIC_INFORMATION sem_info;
+    EVENT_BASIC_INFORMATION event_info;
+    struct macrunner_hb_wait_handle_ent *e;
+    int slot;
+
+    if (!macrunner_hb_trace_wait_handle_enabled()) return;
+    if (!handle || status != STATUS_WAIT_0) return;
+    pthread_mutex_lock( &macrunner_hb_wait_handle_mutex );
+    slot = macrunner_hb_wait_handle_find_locked( handle, 0 );
+    if (slot >= 0)
+    {
+        e = &macrunner_hb_wait_handles[slot];
+        if (e->kind == MACRUNNER_HB_WAIT_HANDLE_SEMAPHORE &&
+            !NtQuerySemaphore( (HANDLE)(uintptr_t)handle, SemaphoreBasicInformation,
+                               &sem_info, sizeof(sem_info), NULL ))
+            e->tracked_state = sem_info.CurrentCount;
+        else if (e->kind == MACRUNNER_HB_WAIT_HANDLE_EVENT &&
+                 !NtQueryEvent( (HANDLE)(uintptr_t)handle, EventBasicInformation,
+                                &event_info, sizeof(event_info), NULL ))
+            e->tracked_state = event_info.EventState;
+    }
+    pthread_mutex_unlock( &macrunner_hb_wait_handle_mutex );
+}
+
+static void macrunner_hb_wait_handle_note_close( uint64_t handle, NTSTATUS status )
+{
+    int slot;
+
+    if (!macrunner_hb_trace_wait_handle_enabled()) return;
+    if (!handle || status) return;
+    pthread_mutex_lock( &macrunner_hb_wait_handle_mutex );
+    slot = macrunner_hb_wait_handle_find_locked( handle, 1 );
+    if (slot >= 0) macrunner_hb_wait_handles[slot].alive = 0;
+    pthread_mutex_unlock( &macrunner_hb_wait_handle_mutex );
+}
+
+static void macrunner_hb_wait_handle_log( hb_context_t *ctx,
+                                          const struct macrunner_hb_import_thunk *thunk,
+                                          const char *phase, uint64_t handle,
+                                          DWORD timeout_ms, unsigned int alertable,
+                                          NTSTATUS wait_status, uint64_t ret )
+{
+    struct macrunner_hb_wait_handle_ent snapshot;
+    SEMAPHORE_BASIC_INFORMATION sem_info;
+    EVENT_BASIC_INFORMATION event_info;
+    NTSTATUS sem_status, event_status;
+    uint64_t caller, outer;
+    int tracked = 0, slot;
+
+    if (!macrunner_hb_trace_wait_handle_enabled()) return;
+
+    memset( &snapshot, 0, sizeof(snapshot) );
+    pthread_mutex_lock( &macrunner_hb_wait_handle_mutex );
+    slot = macrunner_hb_wait_handle_find_locked( handle, 0 );
+    if (slot >= 0)
+    {
+        snapshot = macrunner_hb_wait_handles[slot];
+        tracked = 1;
+    }
+    pthread_mutex_unlock( &macrunner_hb_wait_handle_mutex );
+
+    memset( &sem_info, 0, sizeof(sem_info) );
+    memset( &event_info, 0, sizeof(event_info) );
+    sem_status = NtQuerySemaphore( (HANDLE)(uintptr_t)handle, SemaphoreBasicInformation,
+                                   &sem_info, sizeof(sem_info), NULL );
+    event_status = NtQueryEvent( (HANDLE)(uintptr_t)handle, EventBasicInformation,
+                                 &event_info, sizeof(event_info), NULL );
+    caller = macrunner_hb_trace_return_address( ctx );
+    outer = macrunner_hb_trace_stack_address( ctx, 6 );
+
+    fprintf( stderr, "macrunner-hb-wait-handle: phase=%s import=%s!%s pc=%p caller=%p "
+             "outer=%p rsp=%p handle=%p timeout_ms=%lu alertable=%u tracked=%u kind=%s "
+             "creator=%s creator_pc=%p creator_caller=%p creator_outer=%p creator_tid=0x%llx "
+             "initial=%ld max=%ld tracked_state=%ld manual=%u sem_status=%08lx sem_count=%lu "
+             "sem_max=%lu event_status=%08lx event_type=%u event_state=%ld wait_status=%08lx "
+             "ret=%p last_error=%lu\n",
+             phase, thunk && thunk->dll_name ? thunk->dll_name : "?",
+             thunk && thunk->import_name ? thunk->import_name : "?",
+             (void *)(uintptr_t)(ctx ? ctx->pc : 0), (void *)(uintptr_t)caller,
+             (void *)(uintptr_t)outer, (void *)(uintptr_t)(ctx ? ctx->regs.x64.rsp : 0),
+             (void *)(uintptr_t)handle, (unsigned long)timeout_ms, alertable, tracked,
+             tracked ? macrunner_hb_wait_handle_kind_name( snapshot.kind ) : "unknown",
+             tracked ? snapshot.creator : "?", (void *)(uintptr_t)snapshot.creator_pc,
+             (void *)(uintptr_t)snapshot.creator_caller, (void *)(uintptr_t)snapshot.creator_outer,
+             (unsigned long long)snapshot.creator_tid, (long)snapshot.initial,
+             (long)snapshot.maximum, (long)snapshot.tracked_state, snapshot.manual_reset,
+             (unsigned long)sem_status, (unsigned long)sem_info.CurrentCount,
+             (unsigned long)sem_info.MaximumCount, (unsigned long)event_status,
+             (unsigned int)event_info.EventType, (long)event_info.EventState,
+             (unsigned long)wait_status, (void *)(uintptr_t)ret,
+             (unsigned long)NtCurrentTeb()->LastErrorValue );
+    fflush( stderr );
+}
+
 static void macrunner_hb_trace_special_vm_fault( const char *op, hb_gva_t original,
                                                  mach_vm_address_t cur, size_t remaining,
                                                  kern_return_t kr, mach_vm_address_t region,
@@ -3585,6 +3822,20 @@ static BOOL macrunner_hb_dxgi_swapchain_trace_enabled(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN" );
 }
 
+static int macrunner_hb_post_swapchain_wait_trace_budget_allows(void)
+{
+    static int count;
+    const char *val;
+    int limit;
+
+    if (!macrunner_hb_trace_wait_handle_enabled()) return 0;
+    val = getenv( "MACRUNNER_HB_TRACE_POST_SWAPCHAIN_WAIT_BUDGET" );
+    limit = val && val[0] ? atoi( val ) : 512;
+    if (limit <= 0) return 1;
+    if (__atomic_fetch_add( &count, 1, __ATOMIC_RELAXED ) < limit) return 1;
+    return 0;
+}
+
 static BOOL macrunner_hb_d3d_boundary_trace_interesting(
     const struct macrunner_hb_import_thunk *thunk )
 {
@@ -4247,6 +4498,7 @@ static BOOL macrunner_hb_dxmt_com_import_slot( const char *import_name, unsigned
 
 static pthread_mutex_t macrunner_hb_dxgi_swapchain_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t macrunner_hb_dxgi_swapchains[MACRUNNER_HB_DXGI_SWAPCHAIN_MAX];
+static int macrunner_hb_dxgi_swapchain_create_seen;
 
 static const char *macrunner_hb_dxgi_factory_slot_name( unsigned int slot, unsigned int *pp_index )
 {
@@ -4327,6 +4579,7 @@ static void macrunner_hb_trace_dxgi_swapchain(
         pthread_mutex_lock( &macrunner_hb_dxgi_swapchain_mutex );
         macrunner_hb_dxgi_swapchain_remember_locked( swapchain );
         pthread_mutex_unlock( &macrunner_hb_dxgi_swapchain_mutex );
+        __atomic_store_n( &macrunner_hb_dxgi_swapchain_create_seen, 1, __ATOMIC_RELEASE );
         fprintf( stderr,
                  "macrunner-hb-dxgi-swapchain: create method=%s slot=%u factory=%p swapchain=%p "
                  "pp=%p hwnd=%p desc=%p rc=%p ret_addr=%p pc=%p\n",
@@ -17755,6 +18008,10 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             RtlSetLastWin32Error( ERROR_SUCCESS );
             *ret = (uint64_t)(uintptr_t)handle;
         }
+        macrunner_hb_wait_handle_note_create( ctx, thunk, MACRUNNER_HB_WAIT_HANDLE_EVENT,
+                                              (uint64_t)(uintptr_t)handle,
+                                              (flags & CREATE_EVENT_INITIAL_SET) != 0, 1,
+                                              (flags & CREATE_EVENT_MANUAL_RESET) != 0, status );
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
             fprintf( stderr, "macrunner-hb-wait-semantic: event-create import=%s!%s pc=%p rsp=%p "
@@ -17895,6 +18152,8 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             RtlSetLastWin32Error( ERROR_SUCCESS );
             *ret = (uint64_t)(uintptr_t)handle;
         }
+        macrunner_hb_wait_handle_note_create( ctx, thunk, MACRUNNER_HB_WAIT_HANDLE_SEMAPHORE,
+                                              (uint64_t)(uintptr_t)handle, initial, max, 0, status );
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
             uint64_t caller = macrunner_hb_trace_return_address( ctx );
@@ -17981,6 +18240,7 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             RtlSetLastWin32Error( ERROR_SUCCESS );
             *ret = TRUE;
         }
+        if (!status) macrunner_hb_wait_handle_note_wait_result( args[0], STATUS_WAIT_0 );
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
             uint64_t caller = macrunner_hb_trace_return_address( ctx );
@@ -18253,6 +18513,7 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             RtlSetLastWin32Error( ERROR_SUCCESS );
             *ret = TRUE;
         }
+        macrunner_hb_wait_handle_note_event_signal( args[0], thunk->import_name, status );
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
             uint64_t caller = macrunner_hb_trace_return_address( ctx );
@@ -18998,10 +19259,16 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
         return TRUE;
     }
 
-    if (macrunner_hb_strieq( thunk->import_name, "WaitForSingleObject" ) ||
+        if (macrunner_hb_strieq( thunk->import_name, "WaitForSingleObject" ) ||
         macrunner_hb_strieq( thunk->import_name, "WaitForSingleObjectEx" ))
     {
-        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        BOOL alertable = macrunner_hb_strieq( thunk->import_name, "WaitForSingleObjectEx" ) && args[2];
+        BOOL trace_wait_before = macrunner_hb_trace_wait_semantic_budget_allows();
+        BOOL trace_post_swapchain_before = !trace_wait_before &&
+            __atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE ) &&
+            macrunner_hb_post_swapchain_wait_trace_budget_allows();
+
+        if (trace_wait_before)
         {
             uint64_t caller = macrunner_hb_trace_return_address( ctx );
             uint64_t outer = macrunner_hb_trace_stack_address( ctx, 6 );
@@ -19012,10 +19279,14 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                      (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)outer,
                      (void *)(uintptr_t)args[0],
                      (unsigned long)(DWORD)args[1],
-                     (unsigned int)(macrunner_hb_strieq( thunk->import_name,
-                                                         "WaitForSingleObjectEx" ) && args[2]) );
+                     (unsigned int)alertable );
             fflush( stderr );
         }
+        if (trace_wait_before || trace_post_swapchain_before)
+            macrunner_hb_wait_handle_log( ctx, thunk,
+                                          trace_post_swapchain_before ? "before-post-swapchain" : "before",
+                                          args[0], (DWORD)args[1], (unsigned int)alertable,
+                                          STATUS_PENDING, 0 );
         {
             uint64_t macrunner_hb_wfso_t0 = macrunner_hb_now_us();
             if (macrunner_hb_block_trace_enabled())
@@ -19028,6 +19299,7 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             if (macrunner_hb_block_trace_enabled())
                 macrunner_hb_wait_reg_leave_scan();
         }
+        macrunner_hb_wait_handle_note_wait_result( args[0], status );
         NtCurrentTeb()->LastStatusValue = status;
         if (NT_ERROR( status ))
         {
@@ -19035,7 +19307,13 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             *ret = WAIT_FAILED;
         }
         else *ret = status;
-        if (macrunner_hb_trace_wait_semantic_budget_allows())
+        {
+            BOOL trace_wait_after = macrunner_hb_trace_wait_semantic_budget_allows();
+            BOOL trace_post_swapchain_after = !trace_wait_after &&
+                __atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE ) &&
+                macrunner_hb_post_swapchain_wait_trace_budget_allows();
+
+        if (trace_wait_after)
         {
             uint64_t caller = macrunner_hb_trace_return_address( ctx );
             uint64_t outer = macrunner_hb_trace_stack_address( ctx, 6 );
@@ -19048,6 +19326,12 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                      (unsigned long)(DWORD)args[1], (unsigned long)status,
                      (void *)(uintptr_t)*ret, (unsigned long)NtCurrentTeb()->LastErrorValue );
             fflush( stderr );
+        }
+        if (trace_wait_after || trace_post_swapchain_after)
+            macrunner_hb_wait_handle_log( ctx, thunk,
+                                          trace_post_swapchain_after ? "after-post-swapchain" : "after",
+                                          args[0], (DWORD)args[1], (unsigned int)alertable,
+                                          status, *ret );
         }
         return TRUE;
     }
@@ -19229,6 +19513,7 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             *ret = FALSE;
         }
         else *ret = TRUE;
+        macrunner_hb_wait_handle_note_close( args[0], status );
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
             fprintf( stderr, "macrunner-hb-wait-semantic: close import=%s!%s pc=%p rsp=%p "

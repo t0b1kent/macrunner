@@ -1328,3 +1328,29 @@ or memory-protection sync path, depending on run timing.
 - Cache hygiene: `hb_cache_key_t` does not include codegen env flags. Future
   fence/no-fence A/B must use separate `MACRUNNER_HB_TRANSLATION_CACHE_ROOT`s.
 - Report: `reports/research/laneA-unity-2b5605-race-init-order-20260702-1802.md`.
+
+## 2026-07-02 21:55 Lane A HK rung-11 wait-handle naming
+
+- Added diagnostic wait-handle registry in `macrunner_hb.c` and deployed signed
+  diagnostic `ntdll.so` hash
+  `b8b7d4978dd1bf707026a19e24c94786443e5a17945a7b248c1b836a0776c887`.
+- Main raw evidence run:
+  `reports/phase4-hollow-knight/laneA-wait-handle-20260702-211155-try1-211257`.
+  Filtered classifier stays rung 11 `PRESENT_MISSING`, with secondary
+  `WAIT_DEADLOCK`; real `CreateSwapChainForHwnd rc=0` and no `GetBuffer`/real
+  `Present`.
+- Refuted the prime frame-latency waitable hypothesis for this run: there is no
+  `GetFrameLatencyWaitableObject` / `SetMaximumFrameLatency` marker, and the
+  durable blocked handles are not created by DXMT swapchain code.
+- Durable waits named:
+  `0x70,0x7c,0x88,0x94,0xa0,0xac,0xb8` are Unity-created semaphores from
+  `CreateSemaphoreExW(initial=0,max=2147483647)`, waited at caller
+  `0x87efd167c92`, pending up to ~592s. `0x110` is a separate semaphore from
+  `CreateSemaphoreW(initial=0,max=2147483647)`, waited at caller
+  `0x87ef2a5ccba`, pending up to ~587s. No `ReleaseSemaphore` targets those
+  handles in the captured run.
+- The early Unity semaphore waits look like worker/job semaphores rather than a
+  DXGI-side frame-latency object. Need a clean post-`MakeWindowAssociation`
+  sample that names the main/render-thread wait specifically; post-swapchain
+  targeted trace is now in source but the fresh-hash cache runs had not reached
+  swapchain before stopping.

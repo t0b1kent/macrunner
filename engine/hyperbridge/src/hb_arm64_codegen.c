@@ -483,13 +483,29 @@ static bool jit_helper_store_fence_enabled(void) {
 
 static bool jit_direct_scalar_scan_enabled(void) {
     static int cached = -1;
-    if (jit_direct_mem_enabled()) return true;
-    return hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN", 1) != 0;
+    const char* env;
+    if (cached >= 0) return cached != 0;
+    env = getenv("MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN");
+    if (env && *env) {
+        cached = env[0] != '0';
+        return cached != 0;
+    }
+    if (jit_direct_mem_enabled()) {
+        cached = 1;
+        return true;
+    }
+    cached = 1;
+    return true;
 }
 
 static bool jit_direct_xmm_mem_enabled(void) {
     static int cached = -1;
     return hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_JIT_DIRECT_XMM_MEM", 1) != 0;
+}
+
+static bool jit_direct_scalar_mem_enabled(void) {
+    static int cached = -1;
+    return hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_JIT_DIRECT_SCALAR_MEM", 1) != 0;
 }
 
 static bool jit_live_prot_widen_enabled(void) {
@@ -684,7 +700,8 @@ static bool is_direct_user_xmm_mem_operand(const hb_ir_operand_t* op) {
 
 static bool direct_user_mem_allowed(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
     if (mem_operand_is_kuser_absolute(op)) return false;
-    return direct_mem_codegen_arch_enabled(buf) && is_direct_user_mem_operand(op);
+    return direct_mem_codegen_arch_enabled(buf) && jit_direct_scalar_mem_enabled() &&
+           is_direct_user_mem_operand(op);
 }
 
 static bool direct_user_xmm_mem_allowed(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {

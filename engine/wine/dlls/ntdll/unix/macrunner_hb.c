@@ -1192,6 +1192,18 @@ static int macrunner_hb_trace_inflight_import_all(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_INFLIGHT_IMPORT_ALL" );
 }
 
+static int macrunner_hb_trace_special_access_sample_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_SPECIAL_ACCESS_SAMPLE" );
+}
+
+static int macrunner_hb_trace_special_access_sample_all(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_SPECIAL_ACCESS_SAMPLE_ALL" );
+}
+
 static int macrunner_hb_trace_pe_stack_enabled(void)
 {
     static int cache = -1;
@@ -5401,6 +5413,130 @@ struct macrunner_hb_special_io_stats
 
 static struct macrunner_hb_special_io_stats macrunner_hb_sio_stats;
 
+#define MACRUNNER_HB_SPECIAL_ACCESS_UNIQUE_N 64
+#define MACRUNNER_HB_SPECIAL_ACCESS_RECENT_N 8
+
+struct macrunner_hb_special_access_sample_state
+{
+    uint64_t start_us, last_report_us;
+    uint64_t total, reads, writes;
+    uint64_t first_pc, first_addr, first_size;
+    uint64_t last_pc, last_addr, last_size;
+    uint64_t min_addr, max_addr;
+    uint64_t pcs[MACRUNNER_HB_SPECIAL_ACCESS_UNIQUE_N];
+    uint64_t addrs[MACRUNNER_HB_SPECIAL_ACCESS_UNIQUE_N];
+    uint64_t pages[MACRUNNER_HB_SPECIAL_ACCESS_UNIQUE_N];
+    unsigned int pc_count, addr_count, page_count;
+    unsigned int pc_overflow, addr_overflow, page_overflow;
+    uint64_t recent_pc[MACRUNNER_HB_SPECIAL_ACCESS_RECENT_N];
+    uint64_t recent_addr[MACRUNNER_HB_SPECIAL_ACCESS_RECENT_N];
+    uint32_t recent_size[MACRUNNER_HB_SPECIAL_ACCESS_RECENT_N];
+    char recent_kind[MACRUNNER_HB_SPECIAL_ACCESS_RECENT_N];
+    unsigned int recent_next;
+};
+
+static __thread struct macrunner_hb_special_access_sample_state macrunner_hb_sas_state;
+
+static unsigned int macrunner_hb_special_access_unique_add( uint64_t *values,
+                                                           unsigned int *count,
+                                                           unsigned int *overflow,
+                                                           uint64_t value )
+{
+    unsigned int i;
+
+    for (i = 0; i < *count; i++)
+        if (values[i] == value) return *count;
+    if (*count < MACRUNNER_HB_SPECIAL_ACCESS_UNIQUE_N)
+    {
+        values[*count] = value;
+        (*count)++;
+    }
+    else *overflow = 1;
+    return *count;
+}
+
+static void macrunner_hb_trace_special_access_sample( struct macrunner_hb_special *special,
+                                                      char kind, hb_gva_t addr, size_t size )
+{
+    struct macrunner_hb_special_access_sample_state *st = &macrunner_hb_sas_state;
+    uint64_t now_us, pc = 0, page;
+    unsigned int slot, i, idx;
+
+    if (!macrunner_hb_trace_special_access_sample_enabled()) return;
+    if (!macrunner_hb_trace_special_access_sample_all() &&
+        (!special || !special->ctx || !macrunner_hb_current_thread_is_swapchain_creator()))
+        return;
+
+    now_us = macrunner_hb_now_us();
+    if (special && special->ctx) pc = special->ctx->pc;
+    page = (uint64_t)addr >> 12;
+    if (!st->start_us)
+    {
+        st->start_us = now_us ? now_us : 1;
+        st->last_report_us = st->start_us;
+        st->first_pc = pc;
+        st->first_addr = addr;
+        st->first_size = size;
+        st->min_addr = addr;
+        st->max_addr = addr + size;
+    }
+
+    st->total++;
+    if (kind == 'r') st->reads++;
+    else st->writes++;
+    st->last_pc = pc;
+    st->last_addr = addr;
+    st->last_size = size;
+    if ((uint64_t)addr < st->min_addr) st->min_addr = addr;
+    if ((uint64_t)addr + size > st->max_addr) st->max_addr = (uint64_t)addr + size;
+    macrunner_hb_special_access_unique_add( st->pcs, &st->pc_count, &st->pc_overflow, pc );
+    macrunner_hb_special_access_unique_add( st->addrs, &st->addr_count, &st->addr_overflow, addr );
+    macrunner_hb_special_access_unique_add( st->pages, &st->page_count, &st->page_overflow, page );
+
+    slot = st->recent_next++ % MACRUNNER_HB_SPECIAL_ACCESS_RECENT_N;
+    st->recent_pc[slot] = pc;
+    st->recent_addr[slot] = addr;
+    st->recent_size[slot] = (uint32_t)(size > UINT_MAX ? UINT_MAX : size);
+    st->recent_kind[slot] = kind;
+
+    if (st->total <= 16 || now_us - st->last_report_us >= 5000000)
+    {
+        fprintf( stderr,
+                 "macrunner-hb-special-access-sample: tid=0x%llx native_tid=0x%llx "
+                 "creator=%u elapsed_ms=%llu total=%llu reads=%llu writes=%llu "
+                 "pc_unique=%u%s addr_unique=%u%s page_unique=%u%s "
+                 "first={pc=%p addr=%p size=%llu} last={pc=%p addr=%p size=%llu} "
+                 "range=[%p,%p) recent=",
+                 (unsigned long long)macrunner_hb_current_tid64(),
+                 (unsigned long long)macrunner_hb_current_native_tid64(),
+                 special && special->ctx && macrunner_hb_current_thread_is_swapchain_creator(),
+                 (unsigned long long)((now_us - st->start_us) / 1000),
+                 (unsigned long long)st->total, (unsigned long long)st->reads,
+                 (unsigned long long)st->writes, st->pc_count,
+                 st->pc_overflow ? "+" : "", st->addr_count,
+                 st->addr_overflow ? "+" : "", st->page_count,
+                 st->page_overflow ? "+" : "", (void *)(uintptr_t)st->first_pc,
+                 (void *)(uintptr_t)st->first_addr, (unsigned long long)st->first_size,
+                 (void *)(uintptr_t)st->last_pc, (void *)(uintptr_t)st->last_addr,
+                 (unsigned long long)st->last_size, (void *)(uintptr_t)st->min_addr,
+                 (void *)(uintptr_t)st->max_addr );
+        for (i = 0; i < MACRUNNER_HB_SPECIAL_ACCESS_RECENT_N; i++)
+        {
+            idx = (st->recent_next + i) % MACRUNNER_HB_SPECIAL_ACCESS_RECENT_N;
+            if (!st->recent_kind[idx]) continue;
+            fprintf( stderr, "%c:%p@%p/%u%s",
+                     st->recent_kind[idx],
+                     (void *)(uintptr_t)st->recent_addr[idx],
+                     (void *)(uintptr_t)st->recent_pc[idx],
+                     st->recent_size[idx],
+                     i + 1 == MACRUNNER_HB_SPECIAL_ACCESS_RECENT_N ? "" : "," );
+        }
+        fprintf( stderr, "\n" );
+        fflush( stderr );
+        st->last_report_us = now_us;
+    }
+}
+
 #define MACRUNNER_HB_UNITY_EVENT_WATCH_N 32
 struct macrunner_hb_unity_event_watch
 {
@@ -6557,6 +6693,7 @@ static hb_result_t macrunner_hb_special_read( void *user, hb_gva_t addr, void *o
                 __atomic_add_fetch( &macrunner_hb_sio_stats.read_cache_hit, 1, __ATOMIC_RELAXED );
             else
                 __atomic_add_fetch( &macrunner_hb_sio_stats.read_cache_miss, 1, __ATOMIC_RELAXED );
+            macrunner_hb_trace_special_access_sample( special, 'r', (hb_gva_t)cur, (size_t)chunk );
             if (from_cache && macrunner_hb_direct_mem_read_enabled())
             {
                 __atomic_add_fetch( &macrunner_hb_sio_stats.read_direct_try, 1, __ATOMIC_RELAXED );
@@ -6839,6 +6976,7 @@ static hb_result_t macrunner_hb_special_write( void *user, hb_gva_t addr, const 
                 __atomic_add_fetch( &macrunner_hb_sio_stats.write_cache_hit, 1, __ATOMIC_RELAXED );
             else
                 __atomic_add_fetch( &macrunner_hb_sio_stats.write_cache_miss, 1, __ATOMIC_RELAXED );
+            macrunner_hb_trace_special_access_sample( special, 'w', (hb_gva_t)cur, (size_t)chunk );
             if (from_cache && macrunner_hb_direct_mem_write_enabled())
             {
                 if (info.protection & VM_PROT_EXECUTE)

@@ -1463,3 +1463,43 @@ or memory-protection sync path, depending on run timing.
   threads are parked separately. Verdict: slow/starvation, not deadlock or a
   non-returning import. Next lever is the special_read/special_write fast path and
   SRW/import-call overhead in the post-swapchain creator loop.
+
+## 2026-07-03 01:12 Lane A special-memory throughput split
+
+- Added `MACRUNNER_HB_TRACE_SPECIAL_ACCESS_SAMPLE` to sample the swapchain
+  creator's guest PC and special read/write addresses every five seconds. The
+  baseline run
+  `reports/phase4-hollow-knight/laneA-special-sample-baseline-20260703-000016-try1-000016`
+  reached `CreateSwapChainForHwnd rc=0` and then timed out with no `GetBuffer`,
+  no RTV, and no real Present. Sampler verdict: progress, not spin. At the end
+  it had `total=48,411,932`, `pc_unique=64+`, `addr_unique=64+`,
+  `page_unique=64+`, and an advancing address range; there is no single polled
+  flag/writer to chase.
+- `MACRUNNER_HB_DIRECT_MEM=1` in
+  `reports/phase4-hollow-knight/laneA-special-directmem-ab2-20260703-002219-try1-002219`
+  proved the lazy-path direct-copy code is effective but insufficient. Final
+  special-io counts were `read_direct_ok=85,646,969` vs `read_mach=7,246` and
+  `write_direct_ok=17,245,545` vs `write_mach=240`, but the run still timed out
+  before `GetBuffer`. The remaining wall is lazy helper/JIT memory coverage and
+  volume, not the mach copy syscall itself.
+- `MACRUNNER_HB_JIT_DIRECT_MEM=1` with `MACRUNNER_HB_JIT_NATIVE_MEM_IR=0`
+  is not a safe partial unblock in current HEAD. It reopens the known
+  `mono-2.0-bdwgc.dll+0x385e73` `c000007b` fault before swapchain. A no-cache
+  block trace showed the exact consumer block is `CMP word ptr [RBX], R8W; JNE`;
+  native fault instruction is the direct scalar halfword load (`ldrh`) with
+  `RBX=0xffffffff01000166`.
+- Added two codegen isolation gates and cache hygiene: explicit
+  `MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN=0` now wins over `JIT_DIRECT_MEM=1`;
+  new `MACRUNNER_HB_JIT_DIRECT_SCALAR_MEM=0` disables scalar GPR direct-memory
+  lowering. Persistent translation-cache version is now 19, with scalar-mem in
+  the key. Final deployed `ntdll.so` hash:
+  `6531b51a7439d85d60f6e3f22419f4fbeb124ca9143185146426eeed5f673e4c`.
+- Isolation run
+  `reports/phase4-hollow-knight/laneA-special-jitdirect-scalarmem0-20260703-005639-try1-005639`
+  used `JIT_DIRECT_MEM=1`, `NATIVE_MEM_IR=0`, `DIRECT_SCALAR_SCAN=0`,
+  `DIRECT_SCALAR_MEM=0`. Result: no `mono+0x385e73` fault and real DXGI/D3D11
+  COM calls reached, but no swapchain before timeout. Verdict: the directmem
+  bad-pointer class is scalar GPR direct-memory lowering, not qword native-mem
+  IR and not XMM/direct-stack. Next root-cause is the producer inside scalar
+  direct-memory lowering; until then, use `DIRECT_SCALAR_MEM=0` for honest
+  isolation and keep separate cache roots per codegen flag combo.

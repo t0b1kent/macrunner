@@ -6,10 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define HB_RUNTIME_PERSISTENT_CACHE_VERSION 18u
+#define HB_RUNTIME_PERSISTENT_CACHE_VERSION 19u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_MEM   0x01u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_STACK 0x02u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_SCAN 0x04u
+#define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_MEM  0x08u
 
 #define HB_RUNTIME_CACHE_BLOCK_SENTINEL  0x48425254424c4b31ull /* HBRTBLK1 */
 #define HB_RUNTIME_CACHE_HELPER_SENTINEL 0x48425254484c5000ull /* HBRTHLP + id */
@@ -271,15 +272,30 @@ static int runtime_env_enabled_default_on(const char* name) {
     return !val || !*val || *val != '0';
 }
 
+static int runtime_direct_scalar_scan_enabled_for_key(void) {
+    const char* val = getenv("MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN");
+    if (val && *val)
+        return *val != '0';
+    return runtime_env_enabled_default_on("MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN");
+}
+
+static int runtime_direct_scalar_mem_enabled_for_key(void) {
+    const char* val = getenv("MACRUNNER_HB_JIT_DIRECT_SCALAR_MEM");
+    if (val && *val)
+        return *val != '0';
+    return runtime_env_enabled("MACRUNNER_HB_JIT_DIRECT_MEM");
+}
+
 static uint8_t runtime_jit_flags(void) {
     uint8_t flags = 0;
     if (runtime_env_enabled("MACRUNNER_HB_JIT_DIRECT_MEM"))
         flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_MEM;
     if (runtime_env_enabled("MACRUNNER_HB_JIT_DIRECT_STACK"))
         flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_STACK;
-    if (runtime_env_enabled("MACRUNNER_HB_JIT_DIRECT_MEM") ||
-        runtime_env_enabled_default_on("MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN"))
+    if (runtime_direct_scalar_scan_enabled_for_key())
         flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_SCAN;
+    if (runtime_direct_scalar_mem_enabled_for_key())
+        flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_MEM;
     return flags;
 }
 

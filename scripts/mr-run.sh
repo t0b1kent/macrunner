@@ -22,6 +22,12 @@ WINE_UNIX_LIB="$DIST/lib/wine/aarch64-unix"
 RUN_DYLD_LIBRARY_PATH="${DYLD_LIBRARY_PATH:-}"
 RUN_DYLD_FALLBACK_LIBRARY_PATH="${DYLD_FALLBACK_LIBRARY_PATH:-}"
 
+if [ "$(uname -s)" = "Darwin" ]; then
+  # macOS msync is the in-process synchronization fast path.  Leaving it unset
+  # makes ntdll fall back to wineserver waits for every handle wait.
+  export WINEMSYNC="${WINEMSYNC:-1}"
+fi
+
 if [ -d "$WINE_UNIX_LIB" ]; then
   RUN_DYLD_LIBRARY_PATH="$WINE_UNIX_LIB${RUN_DYLD_LIBRARY_PATH:+:$RUN_DYLD_LIBRARY_PATH}"
   RUN_DYLD_FALLBACK_LIBRARY_PATH="$WINE_UNIX_LIB${RUN_DYLD_FALLBACK_LIBRARY_PATH:+:$RUN_DYLD_FALLBACK_LIBRARY_PATH}"

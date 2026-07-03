@@ -17,6 +17,10 @@
 # - MACRUNNER_HB_DIRECT_MEM defaults to 1. This is the safe special_read/write
 #   direct-copy path, not the gated JIT native-memory lowering flags.
 # - Set MACRUNNER_HB_DIRECT_MEM=0 to re-measure the old mach-per-access path.
+# Dispatch policy:
+# - MACRUNNER_HB_SINGLE_LOOKUP defaults to 1 after the dispatch-rate A/B showed
+#   rung-11-preserving speedup to the real swapchain frontier.
+# - Set MACRUNNER_HB_SINGLE_LOOKUP=0 to re-measure the old double-lookup path.
 set -u
 TAG="${1:?need tag}"; TMO="${2:-420}"; MAX="${3:-3}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -117,6 +121,7 @@ for try in $(seq 1 "$MAX"); do
     [ -n "$CACHE_ROOT" ] && echo "[laneA] translation_cache_root=$CACHE_ROOT"
     [ "${MACRUNNER_HK_COLD_RUN:-0}" = "1" ] && echo "[laneA] cold_run=1"
     echo "[laneA] direct_mem=${MACRUNNER_HB_DIRECT_MEM:-1}"
+    echo "[laneA] single_lookup=${MACRUNNER_HB_SINGLE_LOOKUP:-1}"
   } >> "$RUNDIR/run.log"
 
     MACRUNNER_RUN_DIR="$RUNDIR" MACRUNNER_HB_TRANSLATION_CACHE="$CACHE_ENABLED" \
@@ -124,6 +129,7 @@ for try in $(seq 1 "$MAX"); do
     MACRUNNER_HB_TRACE_D3D_BOUNDARY="${MACRUNNER_HB_TRACE_D3D_BOUNDARY:-1}" \
     MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN="${MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN:-1}" \
     MACRUNNER_HB_DIRECT_MEM="${MACRUNNER_HB_DIRECT_MEM:-1}" \
+    MACRUNNER_HB_SINGLE_LOOKUP="${MACRUNNER_HB_SINGLE_LOOKUP:-1}" \
     MACRUNNER_GRAPHICS_BACKEND="${MACRUNNER_GRAPHICS_BACKEND:-dxmt}" \
     MACRUNNER_DXMT_ROOT="$OVERLAY_DIR" \
     MACRUNNER_PREFIX_SYSTEM32_ARCH="$MACHINE_DIR" \

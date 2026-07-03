@@ -677,3 +677,11 @@ What: Extended `MACRUNNER_HB_TRACE_DISPATCH_STATS` with a real `dispatches` coun
 Why: HK A/B showed the existing heartbeat block/step counters are not comparable under `SINGLE_LOOKUP`; a separate dispatch-rate metric is needed before deciding whether the lookup fast path is a real throughput win. The first cut incorrectly made stats-only select the alternate fast-path loop, which regressed the baseline, so legacy emission is required for a clean A/B.
 Verify: Forced `hb_runtime.o`/HyperBridge rebuild, targeted `ntdll.so` relink/deploy/sign produced `5320dc26341442b93197aee2d43245788f0cf77ac5f9be2107c8740132db731f`. Smoke run `laneA-dispatch-rate-legacy-smoke-try1-220510` emitted `macrunner-hb-dispatch-stats` lines with `total_dispatches` and `dispatches_per_s` under `SINGLE_LOOKUP=0`.
 Status: dispatch-rate-counter-ready-for-singlelookup-ab
+
+## 2026-07-03 22:42 — Lane A HK single-lookup default
+File(s): scripts/laneA-run-hk.sh
+Type: PERFORMANCE / DEFAULT-FLIP
+What: Defaulted `MACRUNNER_HB_SINGLE_LOOKUP=1` in the HK lane wrapper and logged the effective value per run. `MACRUNNER_HB_SINGLE_LOOKUP=0` remains the explicit opt-out for double-lookup measurements.
+Why: Corrected dispatch-rate A/B on deployed `ntdll.so` `5320dc26341442b93197aee2d43245788f0cf77ac5f9be2107c8740132db731f` preserved rung 11 and improved the real swapchain frontier.
+Verify: `DIRECT_MEM=1,SINGLE_LOOKUP=0` run `laneA-dispatchrate2-dm1-900-try1-220803` reached `CreateSwapChainForHwnd rc=0` at 332.911s with pre-swap dispatch rate 0.924M/s. `DIRECT_MEM=1,SINGLE_LOOKUP=1` run `laneA-dispatchrate2-dm1-singlelookup-900-try1-222356` reached `CreateSwapChainForHwnd rc=0` at 150.172s with pre-swap dispatch rate 1.865M/s. Both stayed rung 11 with no GetBuffer/RTV/real Present.
+Status: single-lookup-default-on-for-hk-lane

@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 # MacRunner housekeeping — kill orphaned spike Wine trees + clear scratch temp.
 # Run after EVERY run/phase so nothing keeps hot-spinning CPU or leaking disk.
-# SAFE: scoped to the arm64ec spike dist + winetemp only. NEVER a global `pkill wine`
-# (would kill other Wine work). Idempotent.
+# SAFE: scoped to this worktree's arm64ec spike dist. NEVER a global `pkill wine`
+# or common TMPDIR `winetemp-*` kill (would kill other Wine work). Idempotent.
 #
 # Usage:
 #   scripts/mr-clean.sh            # kill orphan spike wine + winetemp temp
 #   scripts/mr-clean.sh --prune    # also delete throwaway run prefixes + giant logs
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SPIKE_TAG="dist-arm64ec-spike"
+SPIKE_TAG="$ROOT/engine/wine/dist-arm64ec-spike"
 
-echo "[mr-clean] killing orphaned spike Wine (scoped to $SPIKE_TAG + winetemp)…"
-# scoped: only processes whose command references the spike dist or a wine temp dir
+echo "[mr-clean] killing orphaned spike Wine (scoped to $SPIKE_TAG)…"
+# scoped: only processes whose command references this worktree's spike dist.
 pkill -f "$SPIKE_TAG" 2>/dev/null && echo "  killed spike-dist procs" || echo "  no spike-dist procs"
-pkill -f 'winetemp-' 2>/dev/null && echo "  killed winetemp procs" || echo "  no winetemp procs"
+echo "  skipped winetemp process kill: winetemp lives in common TMPDIR and is not worktree-scoped"
 sleep 1
-# remove winetemp scratch dirs the killed trees left behind
-find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'winetemp-*' -prune -exec rm -rf {} + 2>/dev/null
+# Do not remove common TMPDIR winetemp-* here; other worktrees may have live Wine helpers there.
 left="$(pgrep -fc "$SPIKE_TAG" 2>/dev/null || echo 0)"
 echo "[mr-clean] remaining spike procs: $left"
 

@@ -505,7 +505,15 @@ static bool jit_direct_xmm_mem_enabled(void) {
 
 static bool jit_direct_scalar_mem_enabled(void) {
     static int cached = -1;
-    return hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_JIT_DIRECT_SCALAR_MEM", 1) != 0;
+    const char* env;
+    if (cached >= 0) return cached != 0;
+    env = getenv("MACRUNNER_HB_JIT_DIRECT_SCALAR_MEM");
+    if (env && *env) {
+        cached = env[0] != '0';
+        return cached != 0;
+    }
+    cached = jit_direct_mem_enabled() ? 1 : 0;
+    return cached != 0;
 }
 
 static bool jit_live_prot_widen_enabled(void) {

@@ -1503,3 +1503,12 @@ or memory-protection sync path, depending on run timing.
   IR and not XMM/direct-stack. Next root-cause is the producer inside scalar
   direct-memory lowering; until then, use `DIRECT_SCALAR_MEM=0` for honest
   isolation and keep separate cache roots per codegen flag combo.
+- Reproducibility check on 2026-07-03 found the earlier `fc1a6924...` local
+  rebuild was a stale/hybrid build-dir artifact, not a valid clean-source floor.
+  A true clean HyperBridge + forced ntdll rebuild from HEAD produced signed
+  `ntdll.so` `6fbf685b6c4373744b043f4fd9b4cc839ed03310eb223a87196d914727b8a5fa`
+  and reached filtered rung 11 in
+  `reports/phase4-hollow-knight/laneA-reconcile-head-clean-safe-try1-120422`
+  when scalar/native JIT direct-memory paths were explicitly off. The runner now
+  exports `MACRUNNER_HB_JIT_DIRECT_SCALAR_MEM=0`, and the codegen default only
+  enables that path when `MACRUNNER_HB_JIT_DIRECT_MEM=1` is explicit.

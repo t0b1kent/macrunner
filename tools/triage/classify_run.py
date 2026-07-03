@@ -123,8 +123,35 @@ LADDER_RUNGS = [
     ("dxgi-factory",   ["CreateDXGIFactory"]),
     ("d3d11-device",   ["D3D11CreateDevice hr=0", "D3D11CreateDevice succeeded"]),
     ("swapchain",      ["CreateSwapChain"]),
-    ("present",        ["present_reached=YES", "Present hr=0", "present_count="]),
-    ("window-visible", ["window-visible", "CG-capture", "non_background_pixels"]),
+    # --- Pixel-gate rungs 12-14 (added 2026-07-04, lane pixelgate) ----------
+    # Operator rule: a frame on rungs 12-14 is gated ONLY through
+    # scripts/pixel-truth-gate.sh, never raw string-count markers. History:
+    # the old soft "present" rung ("present_reached=YES"/"Present hr=0"/
+    # "present_count=") and "window-visible" rung ("CG-capture"/
+    # "non_background_pixels") ложняк'd on slot-8/MakeWindowAssociation false
+    # Present and on "Present string count" heuristics. Replaced with the hard
+    # trio below; rung 14 (real-present) is a CALL-level marker and the actual
+    # PIXEL confirmation is the orthogonal PIXEL_MOMENT_REACHED flag
+    # (rung==14 AND a pixel-truth-gate result.json artifact with verdict
+    # NONBLACK/COLORFUL inside the run dir).
+    #
+    # DXMT source anchors (PRESENTPATH-ENGINE-HANDOFF.md):
+    #   GetBuffer(0)              d3d11_swapchain.cpp:283
+    #   CreateRenderTargetView    d3d11_texture_device.cpp:162
+    #   Present / Present1        d3d11_swapchain.cpp:278 / :784
+    # The HB swapchain vtable tracer (macrunner_hb.c:4623-4755) emits two
+    # shapes:
+    #   REAL  (known swapchain only, :4749):
+    #     macrunner-hb-dxgi-swapchain: method=<m> slot=<n> swapchain=<ptr> rc=<ptr> ...
+    #   CANDIDATE (unconfirmed, :4715, fires ONLY for slot 8/22):
+    #     macrunner-hb-dxgi-swapchain: candidate method=<m> slot=<n> object=<ptr> rc=<ptr> ...
+    # slot 8=Present, 9=GetBuffer, 13=ResizeBuffers, 22=Present1. The slot-8
+    # "candidate" line is the MakeWindowAssociation ложняк (factory slot 8
+    # misread as Present). Hard rule below: real-method line, no "candidate",
+    # rc=0. GetBuffer (slot 9) has no candidate path at all -> inherently safe.
+    ("getbuffer",      ["macrunner-hb-dxgi-swapchain: method=GetBuffer slot=9"]),
+    ("rtv",            ["macrunner-hb-d3d-rtv: CreateRenderTargetView rc=0x0"]),
+    ("real-present",   ["macrunner-hb-dxgi-swapchain: method=Present slot=8"]),
 ]
 
 # IAT-binding diagnostic lines (dlls/ntdll/loader.c ~3332-3488: iatentry/cpdecision/
@@ -154,13 +181,103 @@ def _marker_hit(text, marker):
                 return True
         start = j
 
+def _swapchain_real_call_hit(text, marker):
+    """Hard matcher for the macrunner-hb-dxgi-swapchain vtable tracer rungs
+    (getbuffer / real-present). A rung marker is the REAL-method trace line
+    emitted ONLY on a known/registered swapchain (macrunner_hb.c:4749):
+        macrunner-hb-dxgi-swapchain: method=<m> slot=<n> swapchain=<ptr> rc=<ptr> ...
+    Reject:
+      - 'candidate' lines (:4715) — the slot-8/MakeWindowAssociation ложняк,
+        emitted for unconfirmed objects as 'candidate method=<m> ... object='.
+        These are the historical false-Present source.
+      - IAT-binding diagnostic lines (iatentry/cpdecision/cpresult/iatfinal) —
+        load-time import patching, not runtime calls.
+      - non-zero rc — a real call that returned an error did not produce the
+        resource/frame and must not credit the rung.
+    """
+    start = 0
+    while True:
+        i = text.find(marker, start)
+        if i < 0:
+            return False
+        line_start = text.rfind("\n", 0, i) + 1
+        line_end = text.find("\n", i + len(marker))
+        line = text[line_start:line_end if line_end >= 0 else len(text)]
+        if ("candidate" not in line
+                and not any(tag in line for tag in _IATENTRY_TAGS)
+                and ("rc=0x0" in line or "rc=(nil)" in line or "rc=0x00000000" in line)):
+            return True
+        start = i + len(marker)
+
+# Rung markers that must go through the hard swapchain matcher (not the soft
+# _marker_hit substring matcher): the two dxgi-swapchain real-call rungs.
+_SWAPCHAIN_HARD_MARKERS = (
+    "macrunner-hb-dxgi-swapchain: method=GetBuffer slot=9",
+    "macrunner-hb-dxgi-swapchain: method=Present slot=8",
+)
+
+def _rung_marker_hit(text, marker):
+    if marker in _SWAPCHAIN_HARD_MARKERS:
+        return _swapchain_real_call_hit(text, marker)
+    return _marker_hit(text, marker)
+
 def ladder_rung(text):
-    """(idx, name) of the FURTHEST rung whose marker appears; (-1, None) if none."""
+    """(idx, name) of the FURTHEST rung whose marker appears; (-1, None) if none.
+    Rungs 12 (getbuffer) and 14 (real-present) use the hard swapchain matcher
+    that rejects candidate/IAT/non-zero-rc lines, so the slot-8
+    MakeWindowAssociation ложняк and 'Present string count' heuristics can no
+    longer credit a pixel-gate rung."""
     best = (-1, None)
     for idx, (name, markers) in enumerate(LADDER_RUNGS):
-        if any(_marker_hit(text, m) for m in markers):
+        if any(_rung_marker_hit(text, m) for m in markers):
             best = (idx, name)
     return best
+
+# --- Pixel-truth-gate artifact confirmation (orthogonal to the ladder) -----
+# The ladder marks CALL-level progress (GetBuffer/RTV/real-Present reached).
+# A real Present call does NOT prove a pixel was drawn — the first Present can
+# blit an uninitialized (black) backbuffer. The operator rule: a FRAME on
+# rungs 12-14 is confirmed ONLY through scripts/pixel-truth-gate.sh. Lanes
+# invoke the gate with --rundir <run-dir>/pixel-truth-gate so the JSON
+# artifact lands inside the run dir; this helper scans for it.
+_PIXEL_VERDICTS_CONFIRMED = ("NONBLACK", "COLORFUL")
+
+def pixel_truth_confirmed(run_dir):
+    """Return (confirmed: bool, artifact_path: str|None, verdict: str|None).
+    Scans <run_dir>/pixel-truth-gate/*/result.json for a NONBLACK/COLORFUL
+    verdict. Also accepts a legacy single result.json at
+    <run_dir>/pixel-truth-gate/result.json. Returns (False, None, None) when no
+    artifact is present — the rung-14 call marker still stands, but
+    PIXEL_MOMENT_REACHED stays False until a pixel-truth-gate artifact is
+    captured."""
+    import glob
+    if not run_dir or not os.path.isdir(run_dir):
+        return (False, None, None)
+    base = os.path.join(run_dir, "pixel-truth-gate")
+    candidates = sorted(glob.glob(os.path.join(base, "*", "result.json")))
+    candidates.append(os.path.join(base, "result.json"))
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            continue
+        verdict = str(payload.get("verdict", "")).upper()
+        if verdict in _PIXEL_VERDICTS_CONFIRMED:
+            return (True, path, verdict)
+    # Report the last seen artifact (if any) even when not confirmed, for
+    # diagnostic clarity in the summary.
+    for path in reversed(candidates):
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                return (False, path, str(payload.get("verdict", "")).upper() or None)
+            except Exception:
+                continue
+    return (False, None, None)
 
 def _read_head_tail(path, head=1024 * 1024, tail=4 * 1024 * 1024):
     """First `head` + last `tail` bytes — late milestones (GfxDevice/D3D11)
@@ -374,6 +491,14 @@ def main():
     best_name = ladder_best.get("rung_name")
     best_run = ladder_best.get("run", "?")
     ladder_regression = (rung_idx >= 0 and best_idx >= 0 and rung_idx < best_idx)
+
+    # Pixel-truth-gate artifact confirmation (orthogonal to the call-level
+    # ladder). PIXEL_MOMENT_REACHED requires BOTH rung 14 (real-present call
+    # marker on a known swapchain, rc=0) AND a pixel-truth-gate result.json
+    # artifact with verdict NONBLACK/COLORFUL inside the run dir. A real
+    # Present call with no pixel artifact = call reached, frame NOT confirmed.
+    px_confirmed, px_artifact, px_verdict = pixel_truth_confirmed(run_dir_abs)
+    pixel_moment_reached = (rung_idx == 14 and px_confirmed)
     if rung_idx > best_idx:
         try:
             with open(state_path, "w", encoding="utf-8") as f:
@@ -541,6 +666,17 @@ def main():
                   f"'{best_name}' ({best_run}). Suspect the change under test regressed an earlier "
                   f"stage (or tracing was reduced) — restore/verify the last verified-forward "
                   f"baseline BEFORE iterating further.")
+    # Pixel-truth reporting. PIXEL_MOMENT_REACHED is the only flag that credits
+    # an actual drawn frame on rungs 12-14; the call-level ladder alone never
+    # does (operator rule: frame gated ONLY via pixel-truth-gate.sh).
+    px_status = "CONFIRMED" if px_confirmed else ("NO_ARTIFACT" if not px_artifact else "NOT_CONFIRMED")
+    print(f"PIXEL_TRUTH: {px_status} verdict={px_verdict} artifact={px_artifact}")
+    print(f"PIXEL_MOMENT_REACHED: {'yes' if pixel_moment_reached else 'no'}")
+    if rung_idx == 14 and not px_confirmed:
+        print(f"!! PIXEL_PENDING: real-Present call marker reached (rung 14) but no "
+              f"pixel-truth-gate artifact confirms a drawn frame. Run: "
+              f"scripts/pixel-truth-gate.sh --pid <PID> --rundir <run-dir>/pixel-truth-gate "
+              f"(or --watch) BEFORE crediting a pixel.")
     print(f"PRIMARY_CLASS={selected_result['class']}")
     print(f"SECONDARY_CLASSES={', '.join(secondary_classes)}")
     print(f"WHY_PRIMARY_WON={why_primary_won}")
@@ -566,6 +702,8 @@ def main():
                     f.write(f"LADDER_RUNG: {rung_idx} ({rung_name})\n")
                     f.write(f"LADDER_BEST: {best_idx} ({best_name}) run={best_run}\n")
                     f.write(f"LADDER_REGRESSION: {'YES — restore last verified-forward baseline' if ladder_regression else 'no'}\n")
+                f.write(f"PIXEL_TRUTH: {'CONFIRMED' if px_confirmed else ('NO_ARTIFACT' if not px_artifact else 'NOT_CONFIRMED')} verdict={px_verdict} artifact={px_artifact}\n")
+                f.write(f"PIXEL_MOMENT_REACHED: {'yes' if pixel_moment_reached else 'no'}\n")
                 f.write(f"WHY_PRIMARY_WON: {why_primary_won}\n")
                 f.write("EVIDENCE:\n")
                 for line in selected_result["evidence"][:10]:
@@ -611,6 +749,8 @@ def main():
                 "ladder_rung": {"idx": rung_idx, "name": rung_name},
                 "ladder_best": {"idx": best_idx, "name": best_name, "run": best_run},
                 "ladder_regression": ladder_regression,
+                "pixel_truth": {"confirmed": px_confirmed, "artifact": px_artifact, "verdict": px_verdict},
+                "pixel_moment_reached": pixel_moment_reached,
                 "secondary_classes": secondary_classes,
                 "missing_markers": selected_result.get("missing_markers", {}),
                 "next_run_env": selected_result.get("next_run_env", {}),

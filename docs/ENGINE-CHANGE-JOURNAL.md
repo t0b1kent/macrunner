@@ -669,3 +669,11 @@ What: Added default-off dispatch fast-path gates for `MACRUNNER_HB_SINGLE_LOOKUP
 Why: Dispatch/chaining work needs a reproducible safe floor before the chain-entry/trampoline redesign. Uncached gate checks regressed HK below the rung-11 floor; cached gates restored the verified behavior. Direct-copy is the safe special-memory throughput path and does not enable the known JIT native-memory fault classes.
 Verify: Deployed `ntdll.so` `26e89535d2ace28b4ee552704ce263fd88135c82772c8ce97322aa013afd288b` reached rung 11 with flags off (`laneA-dispatch-noflags-d2f2-final-try1-173933`), with `MACRUNNER_HB_SINGLE_LOOKUP=1` (`laneA-dispatch-B-singlelookup-warm-try1-180223`), and with `MACRUNNER_HB_DIRECT_MEM=1` (`laneA-dispatch-directmem-noflags-try1-181344`). `MACRUNNER_HB_BLOCK_CHAIN=1` is not enabled: the current single-slot tail patch faults and needs the trampoline redesign.
 Status: safe-dispatch-gates-landed-directmem-defaulted-block-chain-off
+
+## 2026-07-03 21:48 — Lane A dispatch-rate counter
+File(s): engine/hyperbridge/src/hb_runtime.c
+Type: DIAGNOSTIC / PERFORMANCE-METRIC
+What: Extended `MACRUNNER_HB_TRACE_DISPATCH_STATS` with a real `dispatches` counter and `dispatches_per_s`. The counter increments once per actual dispatch-loop native-block execution, independent of legacy block/step accounting and independent of whether `MACRUNNER_HB_SINGLE_LOOKUP` is enabled. Stats-only runs now stay on the legacy dispatch loop; the counter is emitted from both legacy and fast-path loops.
+Why: HK A/B showed the existing heartbeat block/step counters are not comparable under `SINGLE_LOOKUP`; a separate dispatch-rate metric is needed before deciding whether the lookup fast path is a real throughput win. The first cut incorrectly made stats-only select the alternate fast-path loop, which regressed the baseline, so legacy emission is required for a clean A/B.
+Verify: Forced `hb_runtime.o`/HyperBridge rebuild, targeted `ntdll.so` relink/deploy/sign produced `5320dc26341442b93197aee2d43245788f0cf77ac5f9be2107c8740132db731f`. Smoke run `laneA-dispatch-rate-legacy-smoke-try1-220510` emitted `macrunner-hb-dispatch-stats` lines with `total_dispatches` and `dispatches_per_s` under `SINGLE_LOOKUP=0`.
+Status: dispatch-rate-counter-ready-for-singlelookup-ab

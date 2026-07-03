@@ -86,12 +86,15 @@ static uint64_t g_translation_cache_bytes_stored;
 static int g_translation_cache_atexit_registered;
 
 static uint64_t g_dispatch_stats_blocks;
+static uint64_t g_dispatch_stats_dispatches;
 static uint64_t g_dispatch_stats_steps;
 static uint64_t g_dispatch_stats_start_ns;
 static int g_dispatch_stats_atexit_registered;
 static __thread uint64_t t_dispatch_stats_blocks;
+static __thread uint64_t t_dispatch_stats_dispatches;
 static __thread uint64_t t_dispatch_stats_steps;
 static __thread uint64_t t_dispatch_stats_flushed_blocks;
+static __thread uint64_t t_dispatch_stats_flushed_dispatches;
 static __thread uint64_t t_dispatch_stats_flushed_steps;
 static __thread uint64_t t_dispatch_stats_next_report;
 
@@ -156,20 +159,23 @@ static int trace_dispatch_stats_enabled(void) {
 static void dispatch_stats_flush_thread(int force);
 
 static void dispatch_stats_summary(void) {
-    uint64_t blocks, steps, start, now, elapsed;
+    uint64_t blocks, dispatches, steps, start, now, elapsed;
     double seconds;
     if (!trace_dispatch_stats_enabled()) return;
     dispatch_stats_flush_thread(1);
     blocks = __atomic_load_n(&g_dispatch_stats_blocks, __ATOMIC_RELAXED);
+    dispatches = __atomic_load_n(&g_dispatch_stats_dispatches, __ATOMIC_RELAXED);
     steps = __atomic_load_n(&g_dispatch_stats_steps, __ATOMIC_RELAXED);
     start = __atomic_load_n(&g_dispatch_stats_start_ns, __ATOMIC_RELAXED);
     now = runtime_now_ns();
     elapsed = (start && now > start) ? now - start : 0;
     seconds = elapsed ? (double)elapsed / 1000000000.0 : 0.0;
     fprintf(stderr,
-            "macrunner-hb-dispatch-stats: wall_s=%.3f blocks=%llu steps=%llu "
-            "blocks_per_s=%.1f steps_per_s=%.1f\n",
-            seconds, (unsigned long long)blocks, (unsigned long long)steps,
+            "macrunner-hb-dispatch-stats: wall_s=%.3f dispatches=%llu blocks=%llu steps=%llu "
+            "dispatches_per_s=%.1f blocks_per_s=%.1f steps_per_s=%.1f\n",
+            seconds, (unsigned long long)dispatches, (unsigned long long)blocks,
+            (unsigned long long)steps,
+            seconds > 0.0 ? (double)dispatches / seconds : 0.0,
             seconds > 0.0 ? (double)blocks / seconds : 0.0,
             seconds > 0.0 ? (double)steps / seconds : 0.0);
     fflush(stderr);
@@ -204,27 +210,33 @@ static uint64_t dispatch_stats_report_interval(void) {
 }
 
 static void dispatch_stats_flush_thread(int force) {
-    uint64_t add_blocks, add_steps, total_blocks, total_steps, start, now, elapsed;
+    uint64_t add_blocks, add_dispatches, add_steps;
+    uint64_t total_blocks, total_dispatches, total_steps, start, now, elapsed;
     double seconds;
     if (!trace_dispatch_stats_enabled()) return;
-    if (!force && t_dispatch_stats_blocks < t_dispatch_stats_next_report) return;
+    if (!force && t_dispatch_stats_dispatches < t_dispatch_stats_next_report) return;
 
     add_blocks = t_dispatch_stats_blocks - t_dispatch_stats_flushed_blocks;
+    add_dispatches = t_dispatch_stats_dispatches - t_dispatch_stats_flushed_dispatches;
     add_steps = t_dispatch_stats_steps - t_dispatch_stats_flushed_steps;
-    if (!add_blocks && !add_steps && !force) return;
+    if (!add_blocks && !add_dispatches && !add_steps && !force) return;
 
     total_blocks = add_blocks
         ? __atomic_add_fetch(&g_dispatch_stats_blocks, add_blocks, __ATOMIC_RELAXED)
         : __atomic_load_n(&g_dispatch_stats_blocks, __ATOMIC_RELAXED);
+    total_dispatches = add_dispatches
+        ? __atomic_add_fetch(&g_dispatch_stats_dispatches, add_dispatches, __ATOMIC_RELAXED)
+        : __atomic_load_n(&g_dispatch_stats_dispatches, __ATOMIC_RELAXED);
     total_steps = add_steps
         ? __atomic_add_fetch(&g_dispatch_stats_steps, add_steps, __ATOMIC_RELAXED)
         : __atomic_load_n(&g_dispatch_stats_steps, __ATOMIC_RELAXED);
     t_dispatch_stats_flushed_blocks = t_dispatch_stats_blocks;
+    t_dispatch_stats_flushed_dispatches = t_dispatch_stats_dispatches;
     t_dispatch_stats_flushed_steps = t_dispatch_stats_steps;
 
     if (!t_dispatch_stats_next_report)
         t_dispatch_stats_next_report = dispatch_stats_report_interval();
-    while (t_dispatch_stats_next_report <= t_dispatch_stats_blocks)
+    while (t_dispatch_stats_next_report <= t_dispatch_stats_dispatches)
         t_dispatch_stats_next_report += dispatch_stats_report_interval();
 
     start = __atomic_load_n(&g_dispatch_stats_start_ns, __ATOMIC_RELAXED);
@@ -232,21 +244,26 @@ static void dispatch_stats_flush_thread(int force) {
     elapsed = (start && now > start) ? now - start : 0;
     seconds = elapsed ? (double)elapsed / 1000000000.0 : 0.0;
     fprintf(stderr,
-            "macrunner-hb-dispatch-stats: wall_s=%.3f total_blocks=%llu total_steps=%llu "
-            "blocks_per_s=%.1f steps_per_s=%.1f thread_blocks=%llu thread_steps=%llu\n",
-            seconds, (unsigned long long)total_blocks, (unsigned long long)total_steps,
+            "macrunner-hb-dispatch-stats: wall_s=%.3f total_dispatches=%llu total_blocks=%llu total_steps=%llu "
+            "dispatches_per_s=%.1f blocks_per_s=%.1f steps_per_s=%.1f "
+            "thread_dispatches=%llu thread_blocks=%llu thread_steps=%llu\n",
+            seconds, (unsigned long long)total_dispatches, (unsigned long long)total_blocks,
+            (unsigned long long)total_steps,
+            seconds > 0.0 ? (double)total_dispatches / seconds : 0.0,
             seconds > 0.0 ? (double)total_blocks / seconds : 0.0,
             seconds > 0.0 ? (double)total_steps / seconds : 0.0,
+            (unsigned long long)t_dispatch_stats_dispatches,
             (unsigned long long)t_dispatch_stats_blocks,
             (unsigned long long)t_dispatch_stats_steps);
     fflush(stderr);
 }
 
-static void dispatch_stats_add(uint64_t blocks, uint64_t steps) {
+static void dispatch_stats_add(uint64_t dispatches, uint64_t blocks, uint64_t steps) {
     if (!trace_dispatch_stats_enabled()) return;
     dispatch_stats_register();
     if (!t_dispatch_stats_next_report)
         t_dispatch_stats_next_report = dispatch_stats_report_interval();
+    t_dispatch_stats_dispatches += dispatches;
     t_dispatch_stats_blocks += blocks;
     t_dispatch_stats_steps += steps;
     dispatch_stats_flush_thread(0);
@@ -2669,7 +2686,10 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
     hb_context_t* ctx = rt->ctx;
     uint64_t steps = 0;
     uint64_t blocks_executed = 0;
+    bool dispatch_stats_enabled_run = trace_dispatch_stats_enabled() != 0;
     ctx->last_result = HB_OK;
+    if (dispatch_stats_enabled_run)
+        dispatch_stats_register();
 
     while (1) {
         /* MacRunner 2026-06-23 (ABZU jcc pin): watch the load/test/jne block at
@@ -2761,6 +2781,8 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
             if (run_result != HB_OK || out->faulted) return run_result;
             trace_jit_hot_block_tick(rt, cached);
             steps += cached->steps;
+            if (dispatch_stats_enabled_run)
+                dispatch_stats_add(1, 1, cached->steps);
         } else {
             if (rt->code_cache_full || block_cache_is_full(rt->block_cache)) {
                 /* MacRunner FIX#2a: do NOT latch code_cache_full here — the block-cache
@@ -2938,6 +2960,8 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
             if (run_result != HB_OK || out->faulted) return run_result;
             trace_jit_hot_block_tick(rt, cached);
             steps += cached->steps ? cached->steps : jit_block_step_count(block);
+            if (dispatch_stats_enabled_run)
+                dispatch_stats_add(1, 1, cached->steps ? cached->steps : jit_block_step_count(block));
         }
         sync_arch_pc_after_jit_block(ctx);
         trace_x86_low_pc_after_block(ctx, block, steps, blocks_executed);
@@ -3025,11 +3049,10 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                 "macrunner-hb-dispatch-gate: block_chain=%d single_lookup=%d "
                 "indirect_ic=%d dispatch_stats=%d legacy=%d\n",
                 block_chain, single_lookup_gate, indirect_ic_gate, dispatch_stats_gate,
-                (!block_chain && !single_lookup_gate && !indirect_ic_gate &&
-                 !dispatch_stats_gate));
+                (!block_chain && !single_lookup_gate && !indirect_ic_gate));
         fflush(stderr);
     }
-    if (!block_chain && !single_lookup_gate && !indirect_ic_gate && !dispatch_stats_gate)
+    if (!block_chain && !single_lookup_gate && !indirect_ic_gate)
         return hb_jit_runtime_run_legacy(rt, func, out);
 
     if (!rt || !func || !func->cfg || !out) return HB_ERR_INVALID_ARG;
@@ -3164,17 +3187,17 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                     run_block_delta = block_delta;
                     blocks_executed += block_delta;
                     steps += step_delta;
-                    if (dispatch_stats_enabled_run) dispatch_stats_add(block_delta, step_delta);
+                    if (dispatch_stats_enabled_run) dispatch_stats_add(1, block_delta, step_delta);
                 } else {
                     blocks_executed++;
                     steps += cached->steps;
-                    if (dispatch_stats_enabled_run) dispatch_stats_add(1, cached->steps);
+                    if (dispatch_stats_enabled_run) dispatch_stats_add(1, 1, cached->steps);
                     native_accounting = false;
                 }
             } else {
                 steps += cached->steps;
                 if (chain_accounting) blocks_executed++;
-                if (dispatch_stats_enabled_run) dispatch_stats_add(1, cached->steps);
+                if (dispatch_stats_enabled_run) dispatch_stats_add(1, 1, cached->steps);
             }
         } else {
             if (rt->code_cache_full || block_cache_is_full(rt->block_cache)) {
@@ -3364,18 +3387,18 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                     run_block_delta = block_delta;
                     blocks_executed += block_delta;
                     steps += step_delta;
-                    if (dispatch_stats_enabled_run) dispatch_stats_add(block_delta, step_delta);
+                    if (dispatch_stats_enabled_run) dispatch_stats_add(1, block_delta, step_delta);
                 } else {
                     blocks_executed++;
                     steps += cached->steps ? cached->steps : jit_block_step_count(block);
                     if (dispatch_stats_enabled_run)
-                        dispatch_stats_add(1, cached->steps ? cached->steps : jit_block_step_count(block));
+                        dispatch_stats_add(1, 1, cached->steps ? cached->steps : jit_block_step_count(block));
                 }
             } else {
                 steps += cached->steps ? cached->steps : jit_block_step_count(block);
                 if (chain_accounting) blocks_executed++;
                 if (dispatch_stats_enabled_run)
-                    dispatch_stats_add(1, cached->steps ? cached->steps : jit_block_step_count(block));
+                    dispatch_stats_add(1, 1, cached->steps ? cached->steps : jit_block_step_count(block));
             }
         }
         sync_arch_pc_after_jit_block(ctx);

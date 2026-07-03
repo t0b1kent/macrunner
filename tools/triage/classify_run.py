@@ -91,6 +91,7 @@ def parse_analyzer_output(text):
     return data
 
 ANALYZERS = [
+    "analyze_dll_load.py",
     "analyze_waits.py",
     "analyze_window_gate.py",
     "analyze_arm64ec_callbacks.py",
@@ -307,6 +308,58 @@ def main():
             r["next_action"] = "Capture a flight recorder log with D3D and graphics gate logging enabled."
             r["evidence"].append("[classify_run] Demoted from BLOCKED because no D3D/graphics activity was detected in the logs.")
 
+    # --- DLL-load / system-DLL-init supersedes downstream graphics+window FP ---
+    # When the boot dies at DLL load or system-DLL init (BEFORE the graphics pipeline
+    # can start), the d3d gate mis-reads a stray wined3d.dll import-prefix line as a
+    # WineD3D fallback and the window gate mis-reads a load_dll c0000135 line as a
+    # window-server error. Both are false positives: the run never reached that stage.
+    # Demote them so the coordinator sees the real earlier-stage blocker instead.
+    _EARLY_BLOCKER_CLASSES = ("DLL_LOAD_FAILURE", "SYSTEM_DLL_INIT_CASCADE")
+    _D3D_FP_CLASSES = [
+        "D3D11_DLL_NOT_LOADED", "DXGI_DLL_NOT_LOADED", "CREATE_DXGI_FACTORY_MISSING",
+        "D3D11_CREATE_DEVICE_MISSING", "PRESENT_MISSING", "WINED3D_FALLBACK",
+    ]
+    _LOAD_INIT_SIGS = (
+        "macrunner-ldr-load-dll-fail", "macrunner-ldr-ldrloaddll-fail",
+        "map_fixed_area", "loader_init", "c0000135", "c0000005",
+        "dispatch_exception", "macrunner-hb-first-chance",
+    )
+    early_blocker_present = any(
+        rr["verdict"].upper() == "BLOCKED" and rr["class"] in _EARLY_BLOCKER_CLASSES
+        for rr in results.values()
+    )
+    if early_blocker_present:
+        for rname, rr in list(results.items()):
+            klass2 = rr["class"]
+            verdict2 = rr["verdict"].upper()
+            if verdict2 != "BLOCKED" or klass2 in _EARLY_BLOCKER_CLASSES:
+                continue
+            suppress = False
+            reason = ""
+            if klass2 in _D3D_FP_CLASSES or klass2.startswith("D3D11_"):
+                # Graphics never ran if the boot died at DLL load/init — the d3d
+                # gate's "no real graphics markers" verdict is itself the proof.
+                suppress = True
+                reason = ("graphics pipeline never started: boot died at DLL load / "
+                          "system-DLL init, so the absence of real D3D markers is the "
+                          "expected consequence, not a backend-selection failure")
+            elif klass2 in ("WINDOW_SERVER_ERROR", "GENERIC_ACCESS_VIOLATION",
+                            "GENERIC_WOW64_FAULT", "WINDOW_NCCREATE_ABORTED"):
+                # Only suppress when this class's evidence is itself load/init noise
+                # (e.g. the window gate latched onto a load_dll c0000135 line).
+                ev_lines = " ".join(rr.get("evidence", []))
+                if ev_lines and any(sig in ev_lines.lower() for sig in _LOAD_INIT_SIGS):
+                    suppress = True
+                    reason = ("evidence is load/init noise (c0000135/c0000005 from "
+                              "LdrLoadDll/loader_init), not a genuine %s" % klass2)
+            if suppress:
+                rr["verdict"] = "UNKNOWN"
+                rr["class"] = klass2 + "_SUPERSEDED_BY_DLL_LOAD"
+                rr["confidence"] = 0.20
+                rr["evidence"].append(
+                    "[classify_run] Superseded by an earlier-stage DLL_LOAD_FAILURE / "
+                    "SYSTEM_DLL_INIT_CASCADE blocker: " + reason)
+
     # --- Boot-ladder: furthest rung this run + regression vs persisted best ---
     rung_idx, rung_name = ladder_rung(combined_log_text)
     state_path = os.path.join(os.path.dirname(run_dir_abs), ".triage-ladder-best.json")
@@ -360,6 +413,10 @@ def main():
                 return 80
             elif klass.startswith("PE32_"):
                 return 75
+            elif klass in ("DLL_LOAD_FAILURE",):
+                return 96
+            elif klass == "SYSTEM_DLL_INIT_CASCADE":
+                return 94
             elif klass in ("D3D11_CREATE_DEVICE_MISSING", "WINED3D_FALLBACK", "D3D11_DLL_NOT_LOADED", "DXGI_DLL_NOT_LOADED", "CREATE_DXGI_FACTORY_MISSING", "PRESENT_MISSING") or klass.startswith("D3D11_"):
                 return 70
             elif klass.startswith("ARM64EC_"):

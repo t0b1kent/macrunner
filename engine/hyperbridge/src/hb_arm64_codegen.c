@@ -530,6 +530,11 @@ static bool jit_direct_stack_enabled(void) {
     return hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_JIT_DIRECT_STACK", 0) != 0;
 }
 
+static bool jit_native_memmove_enabled(void) {
+    static int cached = -1;
+    return hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_NATIVE_MEMMOVE", 0) != 0;
+}
+
 static bool jit_block_chain_enabled(void) {
     static int cached = -1;
     /* UNSAFE: single-slot tail patch, needs chain-entry trampoline — see report.
@@ -683,6 +688,7 @@ extern void     hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr
                                                  uint64_t dst_reg_offset);
 extern void     hb_jit_helper_store_sized(hb_context_t* ctx, uint64_t addr,
                                           uint64_t val, uint64_t size);
+uint64_t hb_jit_helper_try_native_memmove(hb_context_t* ctx, const hb_ir_block_t* block);
 
 #ifdef __APPLE__
 static void* hb_jit_live_host_ptr(hb_memory_t* mem, uint64_t addr, size_t bytes, hb_perm_t perms);
@@ -7320,6 +7326,61 @@ static void hb_jit_helper_sync_pc(hb_context_t* ctx) {
     else ctx->regs.x64.rip = ctx->pc;
 }
 
+static void hb_jit_helper_native_memmove_trace(uint64_t hits, uint64_t bytes,
+                                               const hb_ir_block_t* block,
+                                               uint64_t dst, uint64_t src, uint64_t size) {
+    if (hits <= 16 || (hits & (hits - 1)) == 0 || (hits % 4096) == 0) {
+        fprintf(stderr,
+                "macrunner-hb-native-memmove: hits=%llu bytes=%llu guest=%p dst=%p src=%p size=%llu\n",
+                (unsigned long long)hits, (unsigned long long)bytes,
+                block ? (void*)(uintptr_t)block->guest_addr : NULL,
+                (void*)(uintptr_t)dst, (void*)(uintptr_t)src,
+                (unsigned long long)size);
+        fflush(stderr);
+    }
+}
+
+uint64_t hb_jit_helper_try_native_memmove(hb_context_t* ctx, const hb_ir_block_t* block) {
+    static uint64_t total_hits;
+    static uint64_t total_bytes;
+    uint64_t dst, src, size, ret_pc;
+    void* dst_host = NULL;
+    const void* src_host = NULL;
+    hb_result_t r;
+
+    if (!ctx || ctx->arch != HB_ARCH_X64 || ctx->mode != HB_MODE_64BIT || !ctx->memory)
+        return 0;
+
+    dst = ctx->regs.x64.rcx;
+    src = ctx->regs.x64.rdx;
+    size = ctx->regs.x64.r8;
+    if ((size && (dst + size < dst || src + size < src)) || size > (uint64_t)SIZE_MAX)
+        return 0;
+
+    if (size) {
+        dst_host = hb_memory_host_ptr(ctx->memory, dst, (size_t)size, HB_PERM_WRITE);
+        src_host = hb_memory_host_ptr(ctx->memory, src, (size_t)size, HB_PERM_READ);
+        if (!dst_host || !src_host) return 0;
+    }
+
+    r = hb_memory_read_u64(ctx->memory, ctx->regs.x64.rsp, &ret_pc);
+    if (r != HB_OK) return 0;
+
+    if (size)
+        memmove(dst_host, src_host, (size_t)size);
+
+    ctx->regs.x64.rax = dst;
+    ctx->regs.x64.rsp += 8;
+    ctx->pc = ret_pc;
+    hb_jit_helper_sync_pc(ctx);
+    ctx->last_result = HB_OK;
+
+    uint64_t hits = __atomic_add_fetch(&total_hits, 1, __ATOMIC_RELAXED);
+    uint64_t bytes = __atomic_add_fetch(&total_bytes, size, __ATOMIC_RELAXED);
+    hb_jit_helper_native_memmove_trace(hits, bytes, block, dst, src, size);
+    return 1;
+}
+
 /* Non-static: the JIT runtime calls this to recover a block whose native run hit a
  * recoverable signal fault (direct-mem fault) by re-running it fault-safe via the IR
  * interpreter. */
@@ -10086,6 +10147,56 @@ hb_result_t hb_arm64_codegen_unity_sort_inner_loop_helper(hb_arm64_codegen_t* cg
     return HB_OK;
 }
 
+static bool block_has_ucrt_sse2_memmove_entry_signature(hb_context_t* ctx,
+                                                        const hb_ir_block_t* block) {
+    static const uint8_t sig[] = {
+        0x56,                   /* push rsi */
+        0x57,                   /* push rdi */
+        0x48, 0x89, 0xcf,       /* mov rdi, rcx */
+        0x48, 0x89, 0xd6,       /* mov rsi, rdx */
+        0x49, 0x89, 0xf9,       /* mov r9, rdi */
+        0x49, 0x29, 0xf1,       /* sub r9, rsi */
+        0x4d, 0x39, 0xc1,       /* cmp r9, r8 */
+        0x0f, 0x82,             /* jb copy_bwd */
+        0x00, 0x00, 0x00, 0x00, /* rel32 wildcard */
+        0x49, 0x83, 0xf8, 0x04, /* cmp r8, 4 */
+        0x0f, 0x82              /* jb copy_fwd3 */
+    };
+    if (!ctx || !ctx->memory || !block || block->instr_count < 8) return false;
+    if (block->instrs[0].op != HB_IR_PUSH || block->instrs[1].op != HB_IR_PUSH ||
+        block->instrs[2].op != HB_IR_MOV || block->instrs[3].op != HB_IR_MOV ||
+        block->instrs[4].op != HB_IR_MOV || block->instrs[5].op != HB_IR_SUB ||
+        block->instrs[6].op != HB_IR_CMP || block->instrs[7].op != HB_IR_Jcc)
+        return false;
+    for (size_t i = 0; i < sizeof(sig); i++) {
+        uint8_t b = 0;
+        if (i >= 19 && i <= 22) continue;
+        if (hb_memory_read_u8(ctx->memory, block->guest_addr + i, &b) != HB_OK)
+            return false;
+        if (b != sig[i]) return false;
+    }
+    return true;
+}
+
+static bool emit_native_memmove_entry_guard(hb_codegen_buffer_t* out,
+                                            hb_context_t* ctx,
+                                            const hb_ir_block_t* block) {
+    size_t fallback_branch;
+    if (!out || out->arch == HB_ARCH_X86 || !jit_native_memmove_enabled())
+        return false;
+    if (!block_has_ucrt_sse2_memmove_entry_signature(ctx, block))
+        return false;
+
+    emit_mov_reg(out, 0, 19);
+    emit_mov_imm64(out, 1, (uint64_t)(uintptr_t)block);
+    emit_call_helper(out, (void*)hb_jit_helper_try_native_memmove);
+    emit_cmp_imm(out, 0, 0);
+    fallback_branch = emit_bcond_deferred(out, 0); /* EQ -> helper declined; run original block */
+    emit_epilogue(out);
+    patch_bcond(out, fallback_branch, 0, out->size);
+    return true;
+}
+
 static bool codegen_is_control_transfer_op(hb_ir_op_t op) {
     return op == HB_IR_CALL || op == HB_IR_RET || op == HB_IR_JMP ||
            op == HB_IR_Jcc || op == HB_IR_LOOP || op == HB_IR_JRCXZ;
@@ -10110,6 +10221,7 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
     mid_block_transfer = instr_limit < block->instr_count;
     emit_prologue(out);
     emit_block_counter_accounting(out, (uint32_t)instr_limit);
+    emit_native_memmove_entry_guard(out, cg ? cg->ctx : NULL, block);
     {
         uint64_t watch = macrunner_hb_jit_watch_guest_addr();
         if (macrunner_hb_trace_jit_blocks_enabled() && watch && block->guest_addr == watch) {

@@ -7,13 +7,14 @@
 #include <string.h>
 #include <time.h>
 
-#define HB_RUNTIME_PERSISTENT_CACHE_VERSION 19u
+#define HB_RUNTIME_PERSISTENT_CACHE_VERSION 20u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_MEM   0x01u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_STACK 0x02u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_SCAN 0x04u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_MEM  0x08u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_BLOCK_CHAIN 0x10u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_INDIRECT_IC 0x20u
+#define HB_RUNTIME_PERSISTENT_CACHE_FLAG_NATIVE_MEMMOVE 0x40u
 
 #define HB_RUNTIME_CACHE_BLOCK_SENTINEL  0x48425254424c4b31ull /* HBRTBLK1 */
 #define HB_RUNTIME_CACHE_HELPER_SENTINEL 0x48425254484c5000ull /* HBRTHLP + id */
@@ -51,6 +52,7 @@ extern void hb_jit_helper_exec_mono_metadata_decode_row_loop(hb_context_t* ctx, 
 extern void hb_jit_helper_exec_mono_metadata_decode_row_entry(hb_context_t* ctx, const hb_ir_block_t* block);
 extern void hb_jit_helper_exec_mono_metadata_decode_col(hb_context_t* ctx, const hb_ir_block_t* block);
 extern void hb_jit_helper_exec_mono_metadata_coded_index_search(hb_context_t* ctx, const hb_ir_block_t* block);
+extern uint64_t hb_jit_helper_try_native_memmove(hb_context_t* ctx, const hb_ir_block_t* block);
 
 typedef struct hb_cached_helper_stub {
     size_t arg1_mov_off;
@@ -596,6 +598,8 @@ static uint8_t runtime_jit_flags(void) {
         flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_BLOCK_CHAIN;
     if (runtime_indirect_ic_enabled())
         flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_INDIRECT_IC;
+    if (runtime_env_enabled("MACRUNNER_HB_NATIVE_MEMMOVE"))
+        flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_NATIVE_MEMMOVE;
     return flags;
 }
 
@@ -641,12 +645,13 @@ static void* helper_addr_for_cache_id(uint8_t id) {
         case 28: return (void*)hb_jit_helper_exec_neg_operand_lazy;
         case 29: return (void*)hb_jit_helper_exec_bit_scan;
         case 30: return (void*)hb_jit_helper_exec_loop_branch;
+        case 31: return (void*)hb_jit_helper_try_native_memmove;
         default: return NULL;
     }
 }
 
 static uint8_t helper_cache_id_for_addr(uint64_t addr) {
-    for (uint8_t id = 1; id <= 30; id++) {
+    for (uint8_t id = 1; id <= 31; id++) {
         if ((uintptr_t)helper_addr_for_cache_id(id) == (uintptr_t)addr) return id;
     }
     return 0;

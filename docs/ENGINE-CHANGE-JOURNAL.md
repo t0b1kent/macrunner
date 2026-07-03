@@ -685,3 +685,11 @@ What: Defaulted `MACRUNNER_HB_SINGLE_LOOKUP=1` in the HK lane wrapper and logged
 Why: Corrected dispatch-rate A/B on deployed `ntdll.so` `5320dc26341442b93197aee2d43245788f0cf77ac5f9be2107c8740132db731f` preserved rung 11 and improved the real swapchain frontier.
 Verify: `DIRECT_MEM=1,SINGLE_LOOKUP=0` run `laneA-dispatchrate2-dm1-900-try1-220803` reached `CreateSwapChainForHwnd rc=0` at 332.911s with pre-swap dispatch rate 0.924M/s. `DIRECT_MEM=1,SINGLE_LOOKUP=1` run `laneA-dispatchrate2-dm1-singlelookup-900-try1-222356` reached `CreateSwapChainForHwnd rc=0` at 150.172s with pre-swap dispatch rate 1.865M/s. Both stayed rung 11 with no GetBuffer/RTV/real Present.
 Status: single-lookup-default-on-for-hk-lane
+
+## 2026-07-03 23:08 — Lane A Fable NATIVE_MEMMOVE port
+File(s): engine/hyperbridge/src/hb_arm64_codegen.c, engine/hyperbridge/src/hb_runtime.c
+Type: PERFORMANCE / GATE
+What: Ported Fable's default-off `MACRUNNER_HB_NATIVE_MEMMOVE` uCRT SSE2 memmove entry fast path. The codegen guard matches the memmove entry signature, calls helper id 31, and falls back to the original block when the helper declines. Bumped the persistent cache version to 20 and added a native-memmove cache-key flag.
+Why: HK and ABZU are both JIT-throughput bound in string/memory-heavy startup work. The memmove fast path is isolated and default-off, so it can be A/B tested without changing the current rung-11 floor.
+Verify: Forced `hb_arm64_codegen.o`/`hb_runtime.o`/HyperBridge rebuild, targeted `ntdll.so` relink, and deployed `ntdll.so` `1cf6f31c3da49da458042b90c1d9b9c37592bb07d01f077f230715d762b1bc98` over backup `artifacts/deploy-backups/20260703-230114-native-memmove/ntdll.so.before` (`9a955f2a86f7552fbeba8b472ca69098f3b57852f1d5b6a2ef1033411d4db3fc`). Default-off smoke `laneA-fable-native-memmove-off-smoke-try1-230152` reached filtered rung 11 (`CreateSwapChainForHwnd rc=0`), with no `GetBuffer`/RTV/real Present and no native-memmove hits.
+Status: native-memmove-port-landed-default-off

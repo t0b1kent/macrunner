@@ -61,10 +61,10 @@ for try in $(seq 1 "$MAX"); do
   # then proceed. mr-clean is scoped to dist-arm64ec-spike, so a separate worktree
   # / non-spike wine is untouched.
   n=0
-  while ps ax -o command | grep -E '\.exe|mr-run\.sh' | grep -vE 'grep|winedevice|explorer.exe /desktop|svchost|plugplay' | grep -q .; do
+  while pgrep -f "$WINE_DIST" >/dev/null 2>&1; do
     sleep 5; n=$((n+1))
     if [ "$n" -ge 12 ]; then
-      echo "[laneA] live .exe/mr-run persisted ~60s — force-cleaning orphaned spike wine (scoped) and proceeding" >&2
+      echo "[laneA] live spike wine persisted ~60s — force-cleaning orphaned spike wine (scoped) and proceeding" >&2
       "$ROOT/scripts/mr-clean.sh" >/dev/null 2>&1 || true
       rm -rf "$ROOT"/artifacts/_mr-run.* 2>/dev/null || true
       break

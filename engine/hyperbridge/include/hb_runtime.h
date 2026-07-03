@@ -43,6 +43,12 @@ typedef struct {
     bool valid;
 } hb_block_cache_entry_t;
 
+typedef struct {
+    uint64_t guest_addr;
+    uint8_t* target_code;
+    size_t patch_offset;
+} hb_block_chain_meta_t;
+
 /* MacRunner (2026-06-17 — FIX#2a, HK rank-7 livelock): the block-cache hash table was
  * the JIT limiter (filled 65536/65536 during Mono ReloadAssembly while the 128MB JIT
  * exec buffer was only ~18% used), tripping the sticky code_cache_full latch -> JIT
@@ -67,6 +73,9 @@ typedef struct {
     size_t used_count;
     size_t used_cap;
     bool used_overflow;
+    /* Block chaining is experimental/env-gated. Keep the hot cache entry at
+     * baseline size when the flag is off; allocate side metadata only on use. */
+    hb_block_chain_meta_t* chain_meta;
 } hb_block_cache_t;
 
 /* JIT executor */

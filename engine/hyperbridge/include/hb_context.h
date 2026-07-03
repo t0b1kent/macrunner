@@ -213,6 +213,11 @@ struct hb_context {
 
     /* Per-current-block codegen policy. Appended so existing JIT offsets stay stable. */
     uint32_t codegen_flags;
+
+    /* Dispatch fast-path state. Appended-only: generated code reaches these through
+     * offsetof(), and default-off runs leave them unused. */
+    uint64_t indirect_ic_guest_addr;
+    uint64_t indirect_ic_native_code;
 };
 
 hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend);

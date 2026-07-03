@@ -5,12 +5,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define HB_RUNTIME_PERSISTENT_CACHE_VERSION 19u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_MEM   0x01u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_STACK 0x02u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_SCAN 0x04u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_MEM  0x08u
+#define HB_RUNTIME_PERSISTENT_CACHE_FLAG_BLOCK_CHAIN 0x10u
+#define HB_RUNTIME_PERSISTENT_CACHE_FLAG_INDIRECT_IC 0x20u
 
 #define HB_RUNTIME_CACHE_BLOCK_SENTINEL  0x48425254424c4b31ull /* HBRTBLK1 */
 #define HB_RUNTIME_CACHE_HELPER_SENTINEL 0x48425254484c5000ull /* HBRTHLP + id */
@@ -82,10 +85,23 @@ static uint64_t g_translation_cache_bytes_loaded;
 static uint64_t g_translation_cache_bytes_stored;
 static int g_translation_cache_atexit_registered;
 
+static uint64_t g_dispatch_stats_blocks;
+static uint64_t g_dispatch_stats_steps;
+static uint64_t g_dispatch_stats_start_ns;
+static int g_dispatch_stats_atexit_registered;
+static __thread uint64_t t_dispatch_stats_blocks;
+static __thread uint64_t t_dispatch_stats_steps;
+static __thread uint64_t t_dispatch_stats_flushed_blocks;
+static __thread uint64_t t_dispatch_stats_flushed_steps;
+static __thread uint64_t t_dispatch_stats_next_report;
+
 static uint32_t jit_block_step_count(const hb_ir_block_t* block);
 static void trace_jit_code_cache_full_once(hb_jit_runtime_t* rt,
                                            const char* reason,
                                            size_t needed);
+static int runtime_block_chain_enabled(void);
+static int runtime_single_lookup_enabled(void);
+static int runtime_indirect_ic_enabled(void);
 
 static int translation_cache_trace_enabled(void) {
     static int cached = -1;
@@ -122,6 +138,120 @@ static void translation_cache_register_atexit(void) {
     }
 }
 
+static uint64_t runtime_now_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static int trace_dispatch_stats_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_DISPATCH_STATS");
+        cached = env && *env && *env != '0';
+    }
+    return cached;
+}
+
+static void dispatch_stats_flush_thread(int force);
+
+static void dispatch_stats_summary(void) {
+    uint64_t blocks, steps, start, now, elapsed;
+    double seconds;
+    if (!trace_dispatch_stats_enabled()) return;
+    dispatch_stats_flush_thread(1);
+    blocks = __atomic_load_n(&g_dispatch_stats_blocks, __ATOMIC_RELAXED);
+    steps = __atomic_load_n(&g_dispatch_stats_steps, __ATOMIC_RELAXED);
+    start = __atomic_load_n(&g_dispatch_stats_start_ns, __ATOMIC_RELAXED);
+    now = runtime_now_ns();
+    elapsed = (start && now > start) ? now - start : 0;
+    seconds = elapsed ? (double)elapsed / 1000000000.0 : 0.0;
+    fprintf(stderr,
+            "macrunner-hb-dispatch-stats: wall_s=%.3f blocks=%llu steps=%llu "
+            "blocks_per_s=%.1f steps_per_s=%.1f\n",
+            seconds, (unsigned long long)blocks, (unsigned long long)steps,
+            seconds > 0.0 ? (double)blocks / seconds : 0.0,
+            seconds > 0.0 ? (double)steps / seconds : 0.0);
+    fflush(stderr);
+}
+
+static void dispatch_stats_register(void) {
+    uint64_t now;
+    int expected = 0;
+    if (!trace_dispatch_stats_enabled()) return;
+    now = runtime_now_ns();
+    if (now) {
+        uint64_t zero = 0;
+        (void)__atomic_compare_exchange_n(&g_dispatch_stats_start_ns, &zero, now, false,
+                                          __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    }
+    if (__atomic_compare_exchange_n(&g_dispatch_stats_atexit_registered, &expected, 1,
+                                    false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+        atexit(dispatch_stats_summary);
+    }
+}
+
+static uint64_t dispatch_stats_report_interval(void) {
+    static int parsed;
+    static uint64_t interval;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_DISPATCH_STATS_INTERVAL");
+        interval = env && *env ? strtoull(env, NULL, 0) : 1000000ull;
+        if (interval < 1000ull) interval = 1000ull;
+        parsed = 1;
+    }
+    return interval;
+}
+
+static void dispatch_stats_flush_thread(int force) {
+    uint64_t add_blocks, add_steps, total_blocks, total_steps, start, now, elapsed;
+    double seconds;
+    if (!trace_dispatch_stats_enabled()) return;
+    if (!force && t_dispatch_stats_blocks < t_dispatch_stats_next_report) return;
+
+    add_blocks = t_dispatch_stats_blocks - t_dispatch_stats_flushed_blocks;
+    add_steps = t_dispatch_stats_steps - t_dispatch_stats_flushed_steps;
+    if (!add_blocks && !add_steps && !force) return;
+
+    total_blocks = add_blocks
+        ? __atomic_add_fetch(&g_dispatch_stats_blocks, add_blocks, __ATOMIC_RELAXED)
+        : __atomic_load_n(&g_dispatch_stats_blocks, __ATOMIC_RELAXED);
+    total_steps = add_steps
+        ? __atomic_add_fetch(&g_dispatch_stats_steps, add_steps, __ATOMIC_RELAXED)
+        : __atomic_load_n(&g_dispatch_stats_steps, __ATOMIC_RELAXED);
+    t_dispatch_stats_flushed_blocks = t_dispatch_stats_blocks;
+    t_dispatch_stats_flushed_steps = t_dispatch_stats_steps;
+
+    if (!t_dispatch_stats_next_report)
+        t_dispatch_stats_next_report = dispatch_stats_report_interval();
+    while (t_dispatch_stats_next_report <= t_dispatch_stats_blocks)
+        t_dispatch_stats_next_report += dispatch_stats_report_interval();
+
+    start = __atomic_load_n(&g_dispatch_stats_start_ns, __ATOMIC_RELAXED);
+    now = runtime_now_ns();
+    elapsed = (start && now > start) ? now - start : 0;
+    seconds = elapsed ? (double)elapsed / 1000000000.0 : 0.0;
+    fprintf(stderr,
+            "macrunner-hb-dispatch-stats: wall_s=%.3f total_blocks=%llu total_steps=%llu "
+            "blocks_per_s=%.1f steps_per_s=%.1f thread_blocks=%llu thread_steps=%llu\n",
+            seconds, (unsigned long long)total_blocks, (unsigned long long)total_steps,
+            seconds > 0.0 ? (double)total_blocks / seconds : 0.0,
+            seconds > 0.0 ? (double)total_steps / seconds : 0.0,
+            (unsigned long long)t_dispatch_stats_blocks,
+            (unsigned long long)t_dispatch_stats_steps);
+    fflush(stderr);
+}
+
+static void dispatch_stats_add(uint64_t blocks, uint64_t steps) {
+    if (!trace_dispatch_stats_enabled()) return;
+    dispatch_stats_register();
+    if (!t_dispatch_stats_next_report)
+        t_dispatch_stats_next_report = dispatch_stats_report_interval();
+    t_dispatch_stats_blocks += blocks;
+    t_dispatch_stats_steps += steps;
+    dispatch_stats_flush_thread(0);
+}
+
 /* --- In-memory block cache helpers --- */
 static size_t block_cache_hash(uint64_t addr) {
     return (size_t)((addr ^ (addr >> 32)) & (HB_BLOCK_CACHE_SIZE - 1));
@@ -129,6 +259,35 @@ static size_t block_cache_hash(uint64_t addr) {
 
 static hb_block_cache_t* block_cache_create(void) {
     return calloc(1, sizeof(hb_block_cache_t));
+}
+
+static size_t block_cache_entry_index(const hb_block_cache_t* cache,
+                                      const hb_block_cache_entry_t* entry) {
+    if (!cache || !entry || entry < cache->entries ||
+        entry >= cache->entries + HB_BLOCK_CACHE_SIZE)
+        return SIZE_MAX;
+    return (size_t)(entry - cache->entries);
+}
+
+static hb_block_chain_meta_t* block_cache_chain_meta(hb_block_cache_t* cache,
+                                                     hb_block_cache_entry_t* entry,
+                                                     bool create) {
+    size_t idx;
+    if (!cache || !entry) return NULL;
+    idx = block_cache_entry_index(cache, entry);
+    if (idx == SIZE_MAX) return NULL;
+    if (!cache->chain_meta && create)
+        cache->chain_meta = calloc(HB_BLOCK_CACHE_SIZE, sizeof(*cache->chain_meta));
+    return cache->chain_meta ? &cache->chain_meta[idx] : NULL;
+}
+
+static const hb_block_chain_meta_t* block_cache_chain_meta_const(
+    const hb_block_cache_t* cache, const hb_block_cache_entry_t* entry) {
+    size_t idx;
+    if (!cache || !entry || !cache->chain_meta) return NULL;
+    idx = block_cache_entry_index(cache, entry);
+    if (idx == SIZE_MAX) return NULL;
+    return &cache->chain_meta[idx];
 }
 
 static hb_ir_block_t* block_clone_for_cache(const hb_ir_block_t* block) {
@@ -162,11 +321,81 @@ static void block_cache_release_owned_block(hb_block_cache_entry_t* entry,
     entry->owns_block = false;
 }
 
+static void arm64_store_u32(uint8_t* p, uint32_t insn) {
+    if (!p) return;
+    p[0] = (uint8_t)(insn & 0xffu);
+    p[1] = (uint8_t)((insn >> 8) & 0xffu);
+    p[2] = (uint8_t)((insn >> 16) & 0xffu);
+    p[3] = (uint8_t)((insn >> 24) & 0xffu);
+}
+
+static void block_cache_clear_icache(uint8_t* start, size_t len) {
+    if (!start || !len) return;
+    __builtin___clear_cache((char*)start, (char*)start + len);
+}
+
+static void block_cache_unchain_entry(hb_block_cache_t* cache,
+                                      hb_block_cache_entry_t* entry) {
+    static const uint32_t arm64_nop = 0xd503201fu;
+    hb_block_chain_meta_t* meta;
+    uint8_t* patch;
+
+    meta = block_cache_chain_meta(cache, entry, false);
+    if (!entry || !entry->native_code || !meta || !meta->target_code)
+        return;
+    if (meta->patch_offset + sizeof(uint32_t) > entry->native_size)
+        return;
+    patch = entry->native_code + meta->patch_offset;
+    arm64_store_u32(patch, arm64_nop);
+    if (meta->patch_offset + 2 * sizeof(uint32_t) <= entry->native_size)
+        arm64_store_u32(patch + sizeof(uint32_t), arm64_nop);
+    block_cache_clear_icache(patch, 2 * sizeof(uint32_t));
+    memset(meta, 0, sizeof(*meta));
+}
+
+static void block_cache_unchain_references(hb_block_cache_t* cache, const uint8_t* target_code) {
+    if (!cache || !target_code) return;
+    if (cache->used_overflow) {
+        for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++) {
+            hb_block_cache_entry_t* entry = &cache->entries[i];
+            const hb_block_chain_meta_t* meta = block_cache_chain_meta_const(cache, entry);
+            if (entry->valid && meta && meta->target_code == target_code)
+                block_cache_unchain_entry(cache, entry);
+        }
+        return;
+    }
+    for (size_t i = 0; i < cache->used_count; i++) {
+        hb_block_cache_entry_t* entry = &cache->entries[cache->used_slots[i]];
+        const hb_block_chain_meta_t* meta = block_cache_chain_meta_const(cache, entry);
+        if (entry->valid && meta && meta->target_code == target_code)
+            block_cache_unchain_entry(cache, entry);
+    }
+}
+
+static void block_cache_prepare_replace_entry(hb_jit_runtime_t* rt, hb_block_cache_t* cache,
+                                              hb_block_cache_entry_t* entry) {
+    int made_writable = 0;
+
+    if (!entry || !entry->valid) return;
+    if (runtime_block_chain_enabled() && rt && rt->jit_mem &&
+        hb_jit_buffer_make_writable(rt->jit_mem) == HB_OK) {
+        made_writable = 1;
+        block_cache_unchain_references(cache, entry->native_code);
+        block_cache_unchain_entry(cache, entry);
+        (void)hb_jit_buffer_make_executable(rt->jit_mem);
+    }
+    if (!made_writable) {
+        hb_block_chain_meta_t* meta = block_cache_chain_meta(cache, entry, false);
+        if (meta) memset(meta, 0, sizeof(*meta));
+    }
+}
+
 static void block_cache_destroy(hb_block_cache_t* cache) {
     if (!cache) return;
     for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++)
         block_cache_release_owned_block(&cache->entries[i], NULL);
     free(cache->used_slots);
+    free(cache->chain_meta);
     free(cache);
 }
 
@@ -180,17 +409,28 @@ static void block_cache_destroy(hb_block_cache_t* cache) {
  * valid==false, no owned block leaked, count==0. used_overflow keeps the old full clear
  * as a safety net when the tracking array could not grow. */
 static void block_cache_reset(hb_block_cache_t* cache) {
+    bool unchain;
     if (!cache) return;
+    unchain = runtime_block_chain_enabled();
     if (cache->used_overflow) {
-        for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++)
+        for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++) {
+            if (unchain) block_cache_unchain_entry(cache, &cache->entries[i]);
             block_cache_release_owned_block(&cache->entries[i], NULL);
+        }
         memset(cache->entries, 0, sizeof(cache->entries));
+        if (cache->chain_meta)
+            memset(cache->chain_meta, 0,
+                   HB_BLOCK_CACHE_SIZE * sizeof(*cache->chain_meta));
         cache->used_overflow = false;
     } else {
         for (size_t i = 0; i < cache->used_count; i++) {
-            hb_block_cache_entry_t* e = &cache->entries[cache->used_slots[i]];
+            size_t slot = cache->used_slots[i];
+            hb_block_cache_entry_t* e = &cache->entries[slot];
+            if (unchain) block_cache_unchain_entry(cache, e);
             block_cache_release_owned_block(e, NULL);
             memset(e, 0, sizeof(*e));
+            if (cache->chain_meta)
+                memset(&cache->chain_meta[slot], 0, sizeof(cache->chain_meta[slot]));
         }
     }
     cache->used_count = 0;
@@ -212,7 +452,8 @@ static bool block_cache_is_full(const hb_block_cache_t* cache) {
     return cache && cache->count >= HB_BLOCK_CACHE_SIZE;
 }
 
-static hb_block_cache_entry_t* block_cache_put(hb_block_cache_t* cache, uint64_t addr, uint8_t* code,
+static hb_block_cache_entry_t* block_cache_put(hb_jit_runtime_t* rt, hb_block_cache_t* cache,
+                                               uint64_t addr, uint8_t* code,
                                                size_t size, uint32_t steps,
                                                const hb_ir_block_t* block, bool fused,
                                                bool owns_block) {
@@ -226,6 +467,8 @@ static hb_block_cache_entry_t* block_cache_put(hb_block_cache_t* cache, uint64_t
             cache->entries[probe].native_size = size;
             cache->entries[probe].steps = steps;
             cache->entries[probe].hit_count = 0;
+            if (cache->chain_meta)
+                memset(&cache->chain_meta[probe], 0, sizeof(cache->chain_meta[probe]));
             cache->entries[probe].block = block;
             cache->entries[probe].owns_block = owns_block;
             cache->entries[probe].fused = fused;
@@ -249,10 +492,14 @@ static hb_block_cache_entry_t* block_cache_put(hb_block_cache_t* cache, uint64_t
             /* Update existing entry */
             bool keep_existing_owner = cache->entries[probe].owns_block &&
                                        cache->entries[probe].block == block;
+            if (runtime_block_chain_enabled())
+                block_cache_prepare_replace_entry(rt, cache, &cache->entries[probe]);
             block_cache_release_owned_block(&cache->entries[probe], block);
             cache->entries[probe].native_code = code;
             cache->entries[probe].native_size = size;
             cache->entries[probe].steps = steps;
+            if (cache->chain_meta)
+                memset(&cache->chain_meta[probe], 0, sizeof(cache->chain_meta[probe]));
             cache->entries[probe].block = block;
             cache->entries[probe].owns_block = owns_block || keep_existing_owner;
             cache->entries[probe].fused = fused;
@@ -267,9 +514,41 @@ static int runtime_env_enabled(const char* name) {
     return val && *val && *val != '0';
 }
 
+static int runtime_env_flag_cached(int* cache, const char* name, int default_value) {
+    int value = __atomic_load_n(cache, __ATOMIC_RELAXED);
+    if (value < 0) {
+        const char* env = getenv(name);
+        value = (env && *env) ? (*env != '0') : default_value;
+        __atomic_store_n(cache, value, __ATOMIC_RELAXED);
+    }
+    return value;
+}
+
 static int runtime_env_enabled_default_on(const char* name) {
     const char* val = getenv(name);
     return !val || !*val || *val != '0';
+}
+
+static int runtime_block_chain_enabled(void) {
+    static int cached = -1;
+    /* UNSAFE: single-slot tail patch, needs chain-entry trampoline — see report.
+     * Keep MACRUNNER_HB_BLOCK_CHAIN default-off until the redesign lands. */
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_BLOCK_CHAIN", 0);
+}
+
+static int runtime_single_lookup_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_SINGLE_LOOKUP", 0);
+}
+
+static int runtime_indirect_ic_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_INDIRECT_IC", 0);
+}
+
+static int trace_dispatch_gate_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_TRACE_DISPATCH_GATE", 0);
 }
 
 static int runtime_direct_scalar_scan_enabled_for_key(void) {
@@ -296,6 +575,10 @@ static uint8_t runtime_jit_flags(void) {
         flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_SCAN;
     if (runtime_direct_scalar_mem_enabled_for_key())
         flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_MEM;
+    if (runtime_block_chain_enabled())
+        flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_BLOCK_CHAIN;
+    if (runtime_indirect_ic_enabled())
+        flags |= HB_RUNTIME_PERSISTENT_CACHE_FLAG_INDIRECT_IC;
     return flags;
 }
 
@@ -1153,6 +1436,107 @@ static const hb_ir_instr_t* first_control_transfer_instr(const hb_ir_block_t* bl
     return NULL;
 }
 
+static bool block_terminal_is_chainable(const hb_ir_block_t* block) {
+    const hb_ir_instr_t* terminal;
+    if (!block || block->instr_count == 0) return false;
+    terminal = &block->instrs[block->instr_count - 1];
+    return terminal->op == HB_IR_JMP;
+}
+
+static bool entry_has_chain_slot(const hb_block_cache_entry_t* entry, size_t* offset) {
+    static const uint32_t arm64_nop = 0xd503201fu;
+    static const uint32_t epilogue[4] = {
+        0xa9427bf7u, /* LDP X23, LR,  [SP, #32] */
+        0xa9415bf5u, /* LDP X21, X22, [SP, #16] */
+        0xa8c353f3u, /* LDP X19, X20, [SP], #48 */
+        0xd65f03c0u  /* RET */
+    };
+    uint32_t insn;
+
+    if (!entry || !entry->native_code || entry->native_size < 32) return false;
+    size_t pos = entry->native_size - 32;
+    for (size_t i = 0; i < 4; i++) {
+        memcpy(&insn, entry->native_code + pos + i * 4, sizeof(insn));
+        if (insn != arm64_nop) return false;
+    }
+    for (size_t i = 0; i < 4; i++) {
+        memcpy(&insn, entry->native_code + pos + 16 + i * 4, sizeof(insn));
+        if (insn != epilogue[i]) return false;
+    }
+    if (offset) *offset = pos;
+    return true;
+}
+
+static bool arm64_branch_reaches(const uint8_t* from, const uint8_t* to) {
+    intptr_t off;
+    if (!from || !to) return false;
+    off = (intptr_t)(to - from);
+    return (off % 4) == 0 && off >= -(intptr_t)0x08000000 && off < (intptr_t)0x08000000;
+}
+
+static uint32_t arm64_b_to(const uint8_t* from, const uint8_t* to) {
+    intptr_t off = (intptr_t)(to - from);
+    return 0x14000000u | (uint32_t)(((off / 4) & 0x03ffffffu));
+}
+
+static uint32_t arm64_mov_reg_u32(int rd, int rn) {
+    return 0xaa0003e0u | ((uint32_t)rn << 16) | (uint32_t)rd;
+}
+
+static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
+                             hb_block_cache_entry_t* next) {
+    hb_block_chain_meta_t* meta;
+    uint8_t* target;
+    uint8_t* patch;
+    size_t patch_offset;
+    bool ok;
+
+    if (!runtime_block_chain_enabled() || !rt || !rt->jit_mem || !cur || !next)
+        return false;
+    if (!cur->valid || !next->valid || !cur->native_code || !next->native_code)
+        return false;
+    meta = block_cache_chain_meta(rt->block_cache, cur, true);
+    if (!meta) return false;
+    if (meta->target_code) return meta->target_code == next->native_code + 16;
+    if (!block_terminal_is_chainable(cur->block))
+        return false;
+    if (!entry_has_chain_slot(cur, &patch_offset) || !entry_has_chain_slot(next, NULL))
+        return false;
+
+    target = next->native_code + 12; /* Reuse current frame, then run callee MOV X19, X0. */
+    patch = cur->native_code + patch_offset;
+    if (!arm64_branch_reaches(patch + sizeof(uint32_t), target))
+        return false;
+
+    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK)
+        return false;
+    arm64_store_u32(patch, arm64_mov_reg_u32(0, 19)); /* MOV X0, X19 (ctx) */
+    arm64_store_u32(patch + sizeof(uint32_t),
+                    arm64_b_to(patch + sizeof(uint32_t), target));
+    block_cache_clear_icache(patch, 2 * sizeof(uint32_t));
+    ok = hb_jit_buffer_make_executable(rt->jit_mem) == HB_OK;
+    if (!ok) return false;
+
+    meta->guest_addr = next->guest_addr;
+    meta->target_code = target;
+    meta->patch_offset = patch_offset;
+    return true;
+}
+
+static void update_indirect_ic(hb_context_t* ctx, hb_block_cache_entry_t* target,
+                               bool enabled) {
+    if (!ctx || !enabled || !target || !target->valid || !target->native_code ||
+        !block_terminal_is_chainable(target->block) || !entry_has_chain_slot(target, NULL)) {
+        if (ctx) {
+            ctx->indirect_ic_guest_addr = 0;
+            ctx->indirect_ic_native_code = 0;
+        }
+        return;
+    }
+    ctx->indirect_ic_guest_addr = target->guest_addr;
+    ctx->indirect_ic_native_code = (uint64_t)(uintptr_t)(target->native_code + 16);
+}
+
 static uint32_t jit_block_step_count(const hb_ir_block_t* block) {
     const hb_ir_instr_t* transfer = first_control_transfer_instr(block);
     if (!block) return 0;
@@ -1389,7 +1773,7 @@ static void try_promote_copy_scan_counted_loop(hb_jit_runtime_t* rt, hb_context_
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
-    block_cache_put(rt->block_cache, body->guest_addr, dest, emitted_size,
+    block_cache_put(rt, rt->block_cache, body->guest_addr, dest, emitted_size,
                     (uint32_t)(body->instr_count + guard->instr_count), body, true, false);
     if (trace_jit_blocks_enabled()) {
         fprintf(stderr, "macrunner-hb-jit-fusion: kind=copy-scan-counted body=%p guard=%p "
@@ -1460,7 +1844,7 @@ static void try_promote_bounded_scan_loop(hb_jit_runtime_t* rt, hb_context_t* ct
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
-    block_cache_put(rt->block_cache, guard->guest_addr, dest, emitted_size,
+    block_cache_put(rt, rt->block_cache, guard->guest_addr, dest, emitted_size,
                     (uint32_t)(guard->instr_count + body->instr_count), guard, true, false);
     if (trace_jit_blocks_enabled()) {
         fprintf(stderr, "macrunner-hb-jit-fusion: kind=bounded-byte-scan guard=%p body=%p "
@@ -1616,7 +2000,7 @@ static void try_promote_byte_compare_loop(hb_jit_runtime_t* rt, hb_context_t* ct
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
-    block_cache_put(rt->block_cache, cmp_block->guest_addr, dest, emitted_size,
+    block_cache_put(rt, rt->block_cache, cmp_block->guest_addr, dest, emitted_size,
                     (uint32_t)(cmp_block->instr_count + backedge_block->instr_count),
                     cmp_block, true, false);
     if (trace_jit_blocks_enabled()) {
@@ -1766,7 +2150,7 @@ static void try_promote_null_qword_scan_loop(hb_jit_runtime_t* rt, hb_context_t*
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
-    block_cache_put(rt->block_cache, load_block->guest_addr, dest, emitted_size,
+    block_cache_put(rt, rt->block_cache, load_block->guest_addr, dest, emitted_size,
                     (uint32_t)(load_block->instr_count + dec_block->instr_count +
                                test_block->instr_count),
                     load_block, true, false);
@@ -1921,7 +2305,7 @@ static void try_promote_i32_less_tiebreaker_comparator(hb_jit_runtime_t* rt, hb_
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
-    block_cache_put(rt->block_cache, entry_block->guest_addr, dest, emitted_size,
+    block_cache_put(rt, rt->block_cache, entry_block->guest_addr, dest, emitted_size,
                     (uint32_t)(entry_block->instr_count + equal->block->instr_count +
                                (less && less->block ? less->block->instr_count : 0)),
                     entry_block, true, false);
@@ -2160,7 +2544,7 @@ static void try_promote_unity_sort_inner_loop(hb_jit_runtime_t* rt, hb_context_t
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
-    block_cache_put(rt->block_cache, sort->guest_addr, dest, emitted_size,
+    block_cache_put(rt, rt->block_cache, sort->guest_addr, dest, emitted_size,
                     (uint32_t)(sort->instr_count + cont->instr_count),
                     sort, true, false);
     if (trace_jit_blocks_enabled()) {
@@ -2243,7 +2627,7 @@ static void try_promote_self_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
-    block_cache_put(rt->block_cache, block->guest_addr, dest, emitted_size,
+    block_cache_put(rt, rt->block_cache, block->guest_addr, dest, emitted_size,
                     (uint32_t)block->instr_count, block, true, false);
     if (trace_jit_blocks_enabled()) {
         fprintf(stderr, "macrunner-hb-jit-fusion: kind=self-loop block=%p "
@@ -2278,7 +2662,7 @@ hb_result_t hb_jit_runtime_compile(hb_jit_runtime_t* rt, const hb_ir_func_t* fun
 
 static int macrunner_hb_jcc57fd_watch_enabled(void);
 
-hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out) {
+static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out) {
     if (!rt || !func || !func->cfg || !out) return HB_ERR_INVALID_ARG;
     memset(out, 0, sizeof(hb_exec_result_t));
 
@@ -2413,7 +2797,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                                                        load_block, &load_code,
                                                        &owned_load_code) &&
                         (r = jit_commit_blob(rt, load_code, emitted_size, &dest)) == HB_OK) {
-                        cached = block_cache_put(rt->block_cache, ctx->pc, dest, emitted_size,
+                        cached = block_cache_put(NULL, rt->block_cache, ctx->pc, dest, emitted_size,
                                                  disk_entry->steps ? disk_entry->steps
                                                                     : jit_block_step_count(load_block),
                                                  load_block, false, true);
@@ -2500,7 +2884,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                 hb_codegen_buffer_destroy(code_buf);
 
                 /* Store in block cache */
-                cached = block_cache_put(rt->block_cache, ctx->pc, dest, emitted_size,
+                cached = block_cache_put(NULL, rt->block_cache, ctx->pc, dest, emitted_size,
                                          jit_block_step_count(compile_block), compile_block,
                                          false, true);
                 if (!cached) {
@@ -2621,6 +3005,470 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
         if (ctx->arch == HB_ARCH_X64) ctx->regs.x64.rip = ctx->pc;
         else if (ctx->arch == HB_ARCH_X86) ctx->regs.x86.eip = (uint32_t)ctx->pc;
         next = find_block(func->cfg, ctx->pc);
+        if (next) continue;
+        out->result = HB_OK;
+        out->steps_executed = steps;
+        out->blocks_executed = blocks_executed;
+        return HB_OK;
+    }
+}
+
+hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out) {
+    int block_chain = runtime_block_chain_enabled();
+    int single_lookup_gate = runtime_single_lookup_enabled();
+    int indirect_ic_gate = runtime_indirect_ic_enabled();
+    int dispatch_stats_gate = trace_dispatch_stats_enabled();
+    static int dispatch_gate_trace_count;
+    if (dispatch_gate_trace_count < 16 && trace_dispatch_gate_enabled()) {
+        dispatch_gate_trace_count++;
+        fprintf(stderr,
+                "macrunner-hb-dispatch-gate: block_chain=%d single_lookup=%d "
+                "indirect_ic=%d dispatch_stats=%d legacy=%d\n",
+                block_chain, single_lookup_gate, indirect_ic_gate, dispatch_stats_gate,
+                (!block_chain && !single_lookup_gate && !indirect_ic_gate &&
+                 !dispatch_stats_gate));
+        fflush(stderr);
+    }
+    if (!block_chain && !single_lookup_gate && !indirect_ic_gate && !dispatch_stats_gate)
+        return hb_jit_runtime_run_legacy(rt, func, out);
+
+    if (!rt || !func || !func->cfg || !out) return HB_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(hb_exec_result_t));
+
+    hb_context_t* ctx = rt->ctx;
+    uint64_t steps = 0;
+    uint64_t blocks_executed = 0;
+    bool chain_accounting = block_chain != 0;
+    bool chain_patch_enabled = chain_accounting && ctx->step_limit == 0 && ctx->block_limit == 0;
+    bool single_lookup = single_lookup_gate != 0;
+    bool indirect_ic_enabled = indirect_ic_gate &&
+                               ctx->step_limit == 0 && ctx->block_limit == 0;
+    bool dispatch_fastpath = chain_accounting || single_lookup || indirect_ic_enabled;
+    bool dispatch_stats_enabled_run = dispatch_stats_gate != 0;
+    ctx->last_result = HB_OK;
+    if (dispatch_stats_enabled_run)
+        dispatch_stats_register();
+    if (!indirect_ic_enabled) {
+        ctx->indirect_ic_guest_addr = 0;
+        ctx->indirect_ic_native_code = 0;
+    }
+
+    while (1) {
+        /* MacRunner 2026-06-23 (ABZU jcc pin): watch the load/test/jne block at
+         * 0x14057fd10 and its jne targets 0x140580012 (taken, non-NULL path) and
+         * 0x14057fd3d (not-taken, NULL path). Dumps rax + the next PC so we can see
+         * whether the jne is taken despite a non-NULL global. Env-gated. */
+        if (macrunner_hb_jcc57fd_watch_enabled()) {
+            uint64_t pcw = ctx->pc;
+            /* ABZU 0x142a00 module-init control-flow diff: log block entries across
+             * 0x142a00, 0x50b0b0, 0x586630, 0x57fd10, and the golden return 0x145ec8. */
+            /* MINIMAL low-overhead watch: only the post-vtable-#2 points + golden return.
+             * 0x142a5e = block that issues vtable#2 (call [r9+0x20]); 0x142a6e = vtable#2 returned;
+             * 0x142a72 = vtable#2 al=1 path; 0x142a85 = skip/next-module; 0x145ec8 = golden return. */
+            /* 0x145bc0 post-0x145ec8 golden-path checks: find which branch diverges
+             * (sends UE4 to the 0x14607b skip/abort path -> clean exit rc=1). */
+            int hit = (pcw == 0x140145ec8ULL || pcw == 0x140145ecaULL || pcw == 0x140145edbULL ||
+                       pcw == 0x140145eddULL || pcw == 0x140145ee4ULL || pcw == 0x140145eeaULL ||
+                       pcw == 0x140145eefULL || pcw == 0x140145ef1ULL || pcw == 0x140145ef7ULL ||
+                       pcw == 0x140145f0cULL || pcw == 0x140145f0eULL || pcw == 0x140145f11ULL ||
+                       pcw == 0x140145f1aULL || pcw == 0x140145f4eULL || pcw == 0x14014607bULL ||
+                       pcw == 0x1401476ffULL || pcw == 0x140142a00ULL);
+            if (hit) {
+                uint8_t flagb = 0xff;
+                if (pcw == 0x140145eddULL) hb_memory_read_u8(ctx->memory, 0x142904c21ULL, &flagb);
+                fprintf(stderr, "macrunner-hb-cfdiff: pc=0x%llx rax=0x%llx rbx=0x%llx rcx=0x%llx rdx=0x%llx rsi=0x%llx sil=0x%02x flag[0x2904c21]=0x%02x r13=0x%llx r15=0x%llx rsp=0x%llx\n",
+                        (unsigned long long)pcw, (unsigned long long)ctx->regs.x64.rax,
+                        (unsigned long long)ctx->regs.x64.rbx, (unsigned long long)ctx->regs.x64.rcx,
+                        (unsigned long long)ctx->regs.x64.rdx, (unsigned long long)ctx->regs.x64.rsi,
+                        (unsigned)(ctx->regs.x64.rsi & 0xff), (unsigned)flagb,
+                        (unsigned long long)ctx->regs.x64.r13, (unsigned long long)ctx->regs.x64.r15,
+                        (unsigned long long)ctx->regs.x64.rsp);
+            }
+        }
+        if (ctx->step_limit > 0 && steps >= ctx->step_limit) {
+            out->result = HB_ERR_STEP_LIMIT;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK;
+        }
+        if (ctx->block_limit > 0 && blocks_executed >= ctx->block_limit) {
+            return set_runtime_fault_result(out, ctx, HB_ERR_BLOCK_LIMIT, steps,
+                                            blocks_executed, "block limit reached");
+        }
+
+        hb_block_cache_entry_t* cached = NULL;
+        hb_ir_block_t* block = NULL;
+        if (dispatch_fastpath) {
+            cached = block_cache_find(rt->block_cache, ctx->pc);
+            if (cached && cached->block)
+                block = (hb_ir_block_t*)cached->block;
+        }
+        if (!block)
+            block = find_block(func->cfg, ctx->pc);
+        if (!block) {
+            if (func->truncated) {
+                return set_runtime_fault_result(out, ctx, HB_ERR_TRANSLATION_TRUNCATED,
+                                                steps, blocks_executed,
+                                                "translated function truncated before current PC");
+            }
+            out->result = HB_OK;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK; /* No block for PC — function exit or external call */
+        }
+
+        if (!chain_accounting) blocks_executed++;
+
+        /* Check in-memory block cache */
+        if (!cached)
+            cached = block_cache_find(rt->block_cache, ctx->pc);
+        uint64_t run_block_delta = 1;
+        if (cached) {
+            if (trace_jit_block_contains_guest(block, trace_jit_guest_addr())) {
+                trace_unity_sort_promote("cache-hit-watch", block, NULL, NULL, NULL,
+                                         ctx->mode == HB_MODE_64BIT ? ctx->regs.x64.rbp : 0);
+            }
+            if (block && ((block->instr_count == 7 &&
+                           block->instrs[block->instr_count - 1].op == HB_IR_CALL) ||
+                          (block->instr_count == 2 &&
+                           block->instrs[block->instr_count - 1].op == HB_IR_Jcc))) {
+                trace_unity_sort_promote("cache-hit-gate", block, NULL, NULL, NULL,
+                                         ctx->mode == HB_MODE_64BIT ? ctx->regs.x64.rbp : 0);
+            }
+            if (should_retry_cached_promotion(cached)) {
+                const hb_ir_block_t* stable_block = cached->block ? cached->block : block;
+                try_promote_hot_block_families(rt, ctx, stable_block);
+                cached = block_cache_find(rt->block_cache, ctx->pc);
+                if (!cached) {
+                    /* MacRunner FIX#2a: non-latching (live block_cache_is_full gates). */
+                    trace_jit_code_cache_full_once(rt, "block-cache-promote-lost-entry", 0);
+                    return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
+                                                          steps, blocks_executed,
+                                                          "JIT block cache lost promoted entry; interpreter fallback");
+                }
+            }
+            if (cached->block)
+                block = (hb_ir_block_t*)cached->block;
+            trace_jit_cached_watch_block_once(cached);
+            bool native_accounting = chain_accounting && entry_has_chain_slot(cached, NULL);
+            uint64_t before_steps = native_accounting ? ctx->step_count : 0;
+            uint64_t before_blocks = native_accounting ? ctx->block_count : 0;
+            hb_result_t run_result = run_jit_block_with_signal_guard(rt, cached, out,
+                                                                      steps, blocks_executed);
+            if (run_result != HB_OK || out->faulted) return run_result;
+            trace_jit_hot_block_tick(rt, cached);
+            if (native_accounting) {
+                uint64_t block_delta = ctx->block_count - before_blocks;
+                uint64_t step_delta = ctx->step_count - before_steps;
+                if (block_delta) {
+                    run_block_delta = block_delta;
+                    blocks_executed += block_delta;
+                    steps += step_delta;
+                    if (dispatch_stats_enabled_run) dispatch_stats_add(block_delta, step_delta);
+                } else {
+                    blocks_executed++;
+                    steps += cached->steps;
+                    if (dispatch_stats_enabled_run) dispatch_stats_add(1, cached->steps);
+                    native_accounting = false;
+                }
+            } else {
+                steps += cached->steps;
+                if (chain_accounting) blocks_executed++;
+                if (dispatch_stats_enabled_run) dispatch_stats_add(1, cached->steps);
+            }
+        } else {
+            if (rt->code_cache_full || block_cache_is_full(rt->block_cache)) {
+                /* MacRunner FIX#2a: do NOT latch code_cache_full here — the block-cache
+                 * full state is already re-checked live via block_cache_is_full() in
+                 * every JIT guard, so a transient hash-table fill no longer permanently
+                 * disables JIT (which it did while the exec buffer was 82% free). The
+                 * genuine hard limit (exec buffer full) still latches at jit_commit_blob. */
+                trace_jit_code_cache_full_once(rt, "block-cache-full", 0);
+                return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
+                                                      steps, blocks_executed,
+                                                      "JIT code cache full; interpreter fallback");
+            }
+
+            hb_cache_key_t persistent_key;
+            bool have_persistent_key = false;
+            bool loaded_from_persistent = false;
+            uint8_t* dest = NULL;
+            size_t emitted_size = 0;
+            hb_result_t r;
+
+            if (rt->persistent_cache &&
+                persistent_cache_key_for_block(rt, block, &persistent_key) == HB_OK) {
+                hb_cache_entry_t* disk_entry = NULL;
+                have_persistent_key = true;
+                r = hb_cache_lookup(rt->persistent_cache, &persistent_key, &disk_entry);
+                if (r == HB_OK && disk_entry && disk_entry->valid) {
+                    const uint8_t* load_code = NULL;
+                    uint8_t* owned_load_code = NULL;
+                    hb_ir_block_t* load_block = block_clone_for_cache(block);
+                    emitted_size = disk_entry->native_size;
+                    if (load_block &&
+                        native_blob_prepare_cache_load(disk_entry->native_code,
+                                                       disk_entry->native_size,
+                                                       load_block, &load_code,
+                                                       &owned_load_code) &&
+                        (r = jit_commit_blob(rt, load_code, emitted_size, &dest)) == HB_OK) {
+                        cached = block_cache_put(rt, rt->block_cache, ctx->pc, dest, emitted_size,
+                                                 disk_entry->steps ? disk_entry->steps
+                                                                    : jit_block_step_count(load_block),
+                                                 load_block, false, true);
+                        if (cached) {
+                            load_block = NULL;
+                            loaded_from_persistent = true;
+                            translation_cache_add_u64(&g_translation_cache_hits, 1);
+                            translation_cache_add_u64(&g_translation_cache_bytes_loaded, emitted_size);
+                        }
+                    }
+                    free(owned_load_code);
+                    if (load_block) hb_ir_block_destroy(load_block);
+                } else {
+                    translation_cache_add_u64(&g_translation_cache_misses, 1);
+                }
+                hb_cache_entry_free(disk_entry);
+            }
+
+            if (!loaded_from_persistent) {
+                hb_ir_block_t* compile_block = NULL;
+                /* Compile block into codegen buffer */
+                hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(4096);
+                if (!code_buf) return HB_ERR_OUT_OF_MEMORY;
+                compile_block = block_clone_for_cache(block);
+                if (!compile_block) {
+                    hb_codegen_buffer_destroy(code_buf);
+                    return HB_ERR_OUT_OF_MEMORY;
+                }
+
+                hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+                if (!cg) {
+                    hb_ir_block_destroy(compile_block);
+                    hb_codegen_buffer_destroy(code_buf);
+                    return HB_ERR_OUT_OF_MEMORY;
+                }
+
+                r = hb_arm64_codegen_block_with_cfg(cg, compile_block, func->cfg, code_buf);
+                hb_arm64_codegen_destroy(cg);
+                if (r != HB_OK) {
+                    hb_ir_block_destroy(compile_block);
+                    hb_codegen_buffer_destroy(code_buf);
+                    out->result = r;
+                    out->steps_executed = steps;
+                    out->blocks_executed = blocks_executed;
+                    out->faulted = true;
+                    out->fault_reason = "JIT codegen failed";
+                    return HB_OK;
+                }
+
+                emitted_size = code_buf->size;
+                r = jit_commit_blob(rt, code_buf->code, emitted_size, &dest);
+                if (r != HB_OK) {
+                    hb_ir_block_destroy(compile_block);
+                    hb_codegen_buffer_destroy(code_buf);
+                    return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
+                                                          steps, blocks_executed,
+                                                          "JIT code cache full; interpreter fallback");
+                }
+
+                if (rt->persistent_cache && have_persistent_key &&
+                    code_buf->code && code_buf->size) {
+                    const uint8_t* store_code = NULL;
+                    uint8_t* owned_store_code = NULL;
+                    hb_cache_entry_t metadata;
+                    if (native_blob_prepare_cache_store(code_buf->code, code_buf->size,
+                                                        compile_block, &store_code,
+                                                        &owned_store_code)) {
+                        memset(&metadata, 0, sizeof(metadata));
+                        metadata.steps = jit_block_step_count(compile_block);
+                        r = hb_cache_store(rt->persistent_cache, &persistent_key, store_code,
+                                           code_buf->size, &metadata);
+                        if (r == HB_OK) {
+                            translation_cache_add_u64(&g_translation_cache_stores, 1);
+                            translation_cache_add_u64(&g_translation_cache_bytes_stored,
+                                                      code_buf->size);
+                        }
+                        free(owned_store_code);
+                    } else {
+                        translation_cache_add_u64(&g_translation_cache_store_skips, 1);
+                    }
+                } else if (rt->persistent_cache && have_persistent_key) {
+                    translation_cache_add_u64(&g_translation_cache_store_skips, 1);
+                }
+                hb_codegen_buffer_destroy(code_buf);
+
+                /* Store in block cache */
+                cached = block_cache_put(rt, rt->block_cache, ctx->pc, dest, emitted_size,
+                                         jit_block_step_count(compile_block), compile_block,
+                                         false, true);
+                if (!cached) {
+                    hb_ir_block_destroy(compile_block);
+                    /* MacRunner FIX#2a: non-latching (live block_cache_is_full gates). */
+                    trace_jit_code_cache_full_once(rt, "block-cache-put-failed", emitted_size);
+                }
+                trace_jit_block(ctx->pc, dest, emitted_size, block);
+            } else if (trace_jit_blocks_enabled()) {
+                fprintf(stderr, "macrunner-hb-translation-cache-hit: guest=%p native=%p-%p size=%zu\n",
+                        (void*)(uintptr_t)ctx->pc, dest, dest + emitted_size, emitted_size);
+                fflush(stderr);
+            }
+
+            if (!cached) {
+                rt->code_cache_full = true;
+                trace_jit_code_cache_full_once(rt, "block-cache-put-failed", emitted_size);
+                return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
+                                                      steps, blocks_executed,
+                                                      "JIT code cache full; interpreter fallback");
+            }
+
+            if (!cached->fused) {
+                const hb_ir_block_t* stable_block = cached->block ? cached->block : block;
+                if (trace_jit_block_contains_guest(stable_block, trace_jit_guest_addr())) {
+                    trace_unity_sort_promote("cache-put-watch", stable_block, NULL, NULL, NULL,
+                                             ctx->mode == HB_MODE_64BIT ? ctx->regs.x64.rbp : 0);
+                }
+                if (stable_block && ((stable_block->instr_count == 7 &&
+                                       stable_block->instrs[stable_block->instr_count - 1].op == HB_IR_CALL) ||
+                                      (stable_block->instr_count == 2 &&
+                                       stable_block->instrs[stable_block->instr_count - 1].op == HB_IR_Jcc))) {
+                    trace_unity_sort_promote("cache-put-gate", stable_block, NULL, NULL, NULL,
+                                             ctx->mode == HB_MODE_64BIT ? ctx->regs.x64.rbp : 0);
+                }
+                try_promote_hot_block_families(rt, ctx, stable_block);
+                cached = block_cache_find(rt->block_cache, ctx->pc);
+                if (!cached) {
+                    rt->code_cache_full = true;
+                    trace_jit_code_cache_full_once(rt, "block-cache-promote-lost-entry", emitted_size);
+                    return set_jit_interp_fallback_result(out, HB_ERR_UNSUPPORTED_FEATURE,
+                                                          steps, blocks_executed,
+                                                          "JIT block cache lost promoted entry; interpreter fallback");
+                }
+            }
+            if (cached->block)
+                block = (hb_ir_block_t*)cached->block;
+            trace_jit_cached_watch_block_once(cached);
+
+            /* Execute */
+            bool native_accounting = chain_accounting && entry_has_chain_slot(cached, NULL);
+            uint64_t before_steps = native_accounting ? ctx->step_count : 0;
+            uint64_t before_blocks = native_accounting ? ctx->block_count : 0;
+            hb_result_t run_result = run_jit_block_with_signal_guard(rt, cached, out,
+                                                                      steps, blocks_executed);
+            if (run_result != HB_OK || out->faulted) return run_result;
+            trace_jit_hot_block_tick(rt, cached);
+            if (native_accounting) {
+                uint64_t block_delta = ctx->block_count - before_blocks;
+                uint64_t step_delta = ctx->step_count - before_steps;
+                if (block_delta) {
+                    run_block_delta = block_delta;
+                    blocks_executed += block_delta;
+                    steps += step_delta;
+                    if (dispatch_stats_enabled_run) dispatch_stats_add(block_delta, step_delta);
+                } else {
+                    blocks_executed++;
+                    steps += cached->steps ? cached->steps : jit_block_step_count(block);
+                    if (dispatch_stats_enabled_run)
+                        dispatch_stats_add(1, cached->steps ? cached->steps : jit_block_step_count(block));
+                }
+            } else {
+                steps += cached->steps ? cached->steps : jit_block_step_count(block);
+                if (chain_accounting) blocks_executed++;
+                if (dispatch_stats_enabled_run)
+                    dispatch_stats_add(1, cached->steps ? cached->steps : jit_block_step_count(block));
+            }
+        }
+        sync_arch_pc_after_jit_block(ctx);
+        trace_x86_low_pc_after_block(ctx, block, steps, blocks_executed);
+        if (ctx->last_result != HB_OK) {
+            if (trace_jit_helper_fault_enabled()) {
+                static int t;
+                if (t++ < 8)
+                    fprintf(stderr, "macrunner-hb-block-fault-pc: pc=0x%llx last=%d guest_addr=0x%llx\n",
+                            (unsigned long long)ctx->pc, (int)ctx->last_result,
+                            block ? (unsigned long long)block->guest_addr : 0);
+                trace_jit_helper_fault_block(ctx, block);
+            }
+            set_helper_fault_result(out, ctx, steps, blocks_executed);
+            return HB_OK;
+        }
+        if (chain_accounting && run_block_delta > 1) {
+            continue;
+        }
+
+        /* Determine if we should continue or stop */
+        if (block->instr_count == 0) {
+            out->result = HB_OK;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK;
+        }
+
+        const hb_ir_instr_t* transfer = first_control_transfer_instr(block);
+        const hb_ir_instr_t* last = &block->instrs[block->instr_count - 1];
+        const hb_ir_instr_t* terminal = transfer ? transfer : last;
+        if (terminal->op == HB_IR_RET) {
+            out->result = HB_OK;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK;
+        }
+
+        /* For CALL/JMP/Jcc, PC was updated by JIT code; resolve the next block once. */
+        hb_block_cache_entry_t* next_cached = NULL;
+        hb_ir_block_t* next;
+        if (dispatch_fastpath) {
+            next_cached = block_cache_find(rt->block_cache, ctx->pc);
+            next = (next_cached && next_cached->block)
+                ? (hb_ir_block_t*)next_cached->block
+                : find_block(func->cfg, ctx->pc);
+        } else {
+            next = find_block(func->cfg, ctx->pc);
+        }
+        if (!next) {
+            if (func->truncated) {
+                return set_runtime_fault_result(out, ctx, HB_ERR_TRANSLATION_TRUNCATED,
+                                                steps, blocks_executed,
+                                                "translated function truncated before branch target");
+            }
+            if (is_control_transfer_op(terminal->op)) {
+                out->result = HB_OK;
+                out->steps_executed = steps;
+                out->blocks_executed = blocks_executed;
+                return HB_OK; /* External branch/call/return boundary */
+            }
+            out->result = HB_ERR_NOT_FOUND;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            out->faulted = true;
+            out->fault_reason = "branch target block not found";
+            return HB_OK;
+        }
+        if (terminal->op == HB_IR_JMP || terminal->op == HB_IR_Jcc ||
+            terminal->op == HB_IR_CALL || terminal->op == HB_IR_LOOP ||
+            terminal->op == HB_IR_JRCXZ) {
+            if (chain_patch_enabled && cached && next_cached)
+                (void)patch_block_tail(rt, cached, next_cached);
+            if (indirect_ic_enabled &&
+                (terminal->op == HB_IR_JMP || terminal->op == HB_IR_CALL) &&
+                terminal->src1.type != HB_OP_NONE)
+                update_indirect_ic(ctx, next_cached, true);
+            /* Continue with the target block */
+            continue;
+        }
+
+        /* Sequential block end — stop */
+        ctx->pc = last->guest_addr + last->guest_len;
+        if (ctx->arch == HB_ARCH_X64) ctx->regs.x64.rip = ctx->pc;
+        else if (ctx->arch == HB_ARCH_X86) ctx->regs.x86.eip = (uint32_t)ctx->pc;
+        if (dispatch_fastpath) {
+            next_cached = block_cache_find(rt->block_cache, ctx->pc);
+            next = (next_cached && next_cached->block)
+                ? (hb_ir_block_t*)next_cached->block
+                : find_block(func->cfg, ctx->pc);
+        } else {
+            next = find_block(func->cfg, ctx->pc);
+        }
         if (next) continue;
         out->result = HB_OK;
         out->steps_executed = steps;

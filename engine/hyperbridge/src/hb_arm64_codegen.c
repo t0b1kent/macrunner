@@ -38,6 +38,10 @@ static void emit_u32(hb_codegen_buffer_t* buf, uint32_t insn) {
 static void emit_nop(hb_codegen_buffer_t* buf)   { emit_u32(buf, 0xd503201f); }
 static void emit_ret(hb_codegen_buffer_t* buf)   { emit_u32(buf, 0xd65f03c0); }
 
+static void emit_br(hb_codegen_buffer_t* buf, int rn) {
+    emit_u32(buf, 0xd61f0000 | (rn << 5));
+}
+
 static void emit_b(hb_codegen_buffer_t* buf, int32_t off) {
     uint32_t imm26 = ((off / 4) & 0x03FFFFFF);
     emit_u32(buf, 0x14000000 | imm26);
@@ -526,6 +530,18 @@ static bool jit_direct_stack_enabled(void) {
     return hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_JIT_DIRECT_STACK", 0) != 0;
 }
 
+static bool jit_block_chain_enabled(void) {
+    static int cached = -1;
+    /* UNSAFE: single-slot tail patch, needs chain-entry trampoline — see report.
+     * Generated chain slots stay behind MACRUNNER_HB_BLOCK_CHAIN=1. */
+    return hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_BLOCK_CHAIN", 0) != 0;
+}
+
+static bool jit_indirect_ic_enabled(void) {
+    static int cached = -1;
+    return hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_INDIRECT_IC", 0) != 0;
+}
+
 /* Prologue: canonical Windows ARM64 packed-unwind layout for x19-x23, lr; x19 = ctx */
 static void emit_prologue(hb_codegen_buffer_t* buf) {
     emit_u32(buf, 0xa9bd53f3); /* STP X19, X20, [SP, #-48]! */
@@ -534,8 +550,30 @@ static void emit_prologue(hb_codegen_buffer_t* buf) {
     emit_mov_reg(buf, 19, 0); /* MOV X19, X0 (ctx) */
 }
 
+static void emit_block_counter_accounting(hb_codegen_buffer_t* buf, uint32_t steps) {
+    if (!jit_block_chain_enabled()) return;
+
+    emit_ldr_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, block_count));
+    emit_add_imm(buf, 20, 20, 1);
+    emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, block_count));
+
+    emit_ldr_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, step_count));
+    emit_mov_imm_compact(buf, 21, steps);
+    emit_add_reg(buf, 20, 20, 21);
+    emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, step_count));
+}
+
+static void emit_block_chain_slot(hb_codegen_buffer_t* buf) {
+    if (!jit_block_chain_enabled()) return;
+    emit_nop(buf);
+    emit_nop(buf);
+    emit_nop(buf);
+    emit_nop(buf);
+}
+
 /* Epilogue: restore and ret */
 static void emit_epilogue(hb_codegen_buffer_t* buf) {
+    emit_block_chain_slot(buf);
     emit_u32(buf, 0xa9427bf7); /* LDP X23, LR,  [SP, #32] */
     emit_u32(buf, 0xa9415bf5); /* LDP X21, X22, [SP, #16] */
     emit_u32(buf, 0xa8c353f3); /* LDP X19, X20, [SP], #48 */
@@ -1612,11 +1650,31 @@ static size_t emit_zero_target_fault_skip_to_done(hb_codegen_buffer_t* buf, int 
     return done_branch;
 }
 
+static void emit_indirect_ic_probe(hb_codegen_buffer_t* buf, int target_reg) {
+    size_t guest_miss;
+    size_t code_zero_miss;
+
+    if (!jit_indirect_ic_enabled()) return;
+
+    emit_ldr_x(buf, 21, 19, (uint32_t)offsetof(hb_context_t, indirect_ic_guest_addr));
+    emit_cmp_reg(buf, target_reg, 21);
+    guest_miss = emit_bcond_deferred(buf, 1); /* NE -> miss */
+
+    emit_ldr_x(buf, 21, 19, (uint32_t)offsetof(hb_context_t, indirect_ic_native_code));
+    emit_cmp_imm(buf, 21, 0);
+    code_zero_miss = emit_bcond_deferred(buf, 0); /* EQ -> miss */
+    emit_br(buf, 21);
+
+    patch_bcond(buf, guest_miss, 1, buf->size);
+    patch_bcond(buf, code_zero_miss, 0, buf->size);
+}
+
 static bool emit_native_indirect_jmp(hb_codegen_buffer_t* buf, const hb_ir_instr_t* instr) {
     if (!instr || instr->op != HB_IR_JMP || instr->src1.type == HB_OP_NONE) return false;
     if (!emit_native_branch_target_to_x20(buf, &instr->src1)) return false;
     size_t done_branch = emit_zero_target_fault_skip_to_done(buf, 20);
     emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, pc));
+    emit_indirect_ic_probe(buf, 20);
     patch_b(buf, done_branch, buf->size);
     return true;
 }
@@ -1631,6 +1689,7 @@ static bool emit_native_indirect_call(hb_codegen_buffer_t* buf, const hb_ir_inst
     emit_mov_imm_compact(buf, 20, instr->guest_addr + instr->guest_len);
     emit_native_stack_push_x20(buf);
     emit_str_x(buf, 23, 19, (uint32_t)offsetof(hb_context_t, pc));
+    emit_indirect_ic_probe(buf, 23);
     patch_b(buf, done_branch, buf->size);
     return true;
 }
@@ -10050,6 +10109,7 @@ hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_
     instr_limit = codegen_instr_limit_before_fallthrough(block);
     mid_block_transfer = instr_limit < block->instr_count;
     emit_prologue(out);
+    emit_block_counter_accounting(out, (uint32_t)instr_limit);
     {
         uint64_t watch = macrunner_hb_jit_watch_guest_addr();
         if (macrunner_hb_trace_jit_blocks_enabled() && watch && block->guest_addr == watch) {

@@ -2,6 +2,7 @@ import sys
 import os
 import subprocess
 import json
+import re
 
 # Ensure tools/triage is in path so we can import triage_common
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -279,6 +280,49 @@ def pixel_truth_confirmed(run_dir):
                 continue
     return (False, None, None)
 
+_SWAPCHAIN_CREATE_MARKER = "macrunner-hb-dxgi-swapchain: create method=CreateSwapChainForHwnd"
+
+def time_to_swapchain_seconds(text):
+    """Return seconds from lane runner start to the first real CreateSwapChainForHwnd.
+
+    New laneA-run-hk.sh logs every mr-run line as:
+      [laneA-ts epoch=<epoch> +<seconds>s] ...
+    and also appends a post-run:
+      [laneA] time_to_swapchain=<seconds>s ...
+    Prefer the explicit post-run value, but tolerate direct timestamped marker
+    parsing so older partially-written runs still classify.
+    """
+    explicit = re.search(r"\btime_to_swapchain=([0-9]+(?:\.[0-9]+)?)s\b", text)
+    if explicit:
+        return float(explicit.group(1))
+
+    start_epoch = None
+    start_match = re.search(r"\[laneA\] run_start_epoch=([0-9]+(?:\.[0-9]+)?)\b", text)
+    if start_match:
+        try:
+            start_epoch = float(start_match.group(1))
+        except ValueError:
+            start_epoch = None
+
+    for line in text.splitlines():
+        if _SWAPCHAIN_CREATE_MARKER not in line:
+            continue
+        if not ("rc=0x0" in line or "rc=(nil)" in line or "rc=0x00000000" in line):
+            continue
+        rel = re.search(r"\+([0-9]+(?:\.[0-9]+)?)s\]", line)
+        if rel:
+            try:
+                return float(rel.group(1))
+            except ValueError:
+                pass
+        epoch = re.search(r"\[laneA-ts epoch=([0-9]+(?:\.[0-9]+)?)\b", line)
+        if epoch and start_epoch is not None:
+            try:
+                return float(epoch.group(1)) - start_epoch
+            except ValueError:
+                pass
+    return None
+
 def _read_head_tail(path, head=1024 * 1024, tail=4 * 1024 * 1024):
     """First `head` + last `tail` bytes — late milestones (GfxDevice/D3D11)
     live at the END of 30MB run.logs; head-only reads miss them."""
@@ -499,6 +543,7 @@ def main():
     # Present call with no pixel artifact = call reached, frame NOT confirmed.
     px_confirmed, px_artifact, px_verdict = pixel_truth_confirmed(run_dir_abs)
     pixel_moment_reached = (rung_idx == 14 and px_confirmed)
+    time_to_swapchain = time_to_swapchain_seconds(combined_log_text)
     if rung_idx > best_idx:
         try:
             with open(state_path, "w", encoding="utf-8") as f:
@@ -666,6 +711,8 @@ def main():
                   f"'{best_name}' ({best_run}). Suspect the change under test regressed an earlier "
                   f"stage (or tracing was reduced) — restore/verify the last verified-forward "
                   f"baseline BEFORE iterating further.")
+    print(f"time_to_swapchain={int(round(time_to_swapchain))}s" if time_to_swapchain is not None
+          else "time_to_swapchain=UNKNOWN")
     # Pixel-truth reporting. PIXEL_MOMENT_REACHED is the only flag that credits
     # an actual drawn frame on rungs 12-14; the call-level ladder alone never
     # does (operator rule: frame gated ONLY via pixel-truth-gate.sh).
@@ -702,6 +749,8 @@ def main():
                     f.write(f"LADDER_RUNG: {rung_idx} ({rung_name})\n")
                     f.write(f"LADDER_BEST: {best_idx} ({best_name}) run={best_run}\n")
                     f.write(f"LADDER_REGRESSION: {'YES — restore last verified-forward baseline' if ladder_regression else 'no'}\n")
+                f.write(f"time_to_swapchain={int(round(time_to_swapchain))}s\n" if time_to_swapchain is not None
+                        else "time_to_swapchain=UNKNOWN\n")
                 f.write(f"PIXEL_TRUTH: {'CONFIRMED' if px_confirmed else ('NO_ARTIFACT' if not px_artifact else 'NOT_CONFIRMED')} verdict={px_verdict} artifact={px_artifact}\n")
                 f.write(f"PIXEL_MOMENT_REACHED: {'yes' if pixel_moment_reached else 'no'}\n")
                 f.write(f"WHY_PRIMARY_WON: {why_primary_won}\n")
@@ -749,6 +798,7 @@ def main():
                 "ladder_rung": {"idx": rung_idx, "name": rung_name},
                 "ladder_best": {"idx": best_idx, "name": best_name, "run": best_run},
                 "ladder_regression": ladder_regression,
+                "time_to_swapchain_sec": time_to_swapchain,
                 "pixel_truth": {"confirmed": px_confirmed, "artifact": px_artifact, "verdict": px_verdict},
                 "pixel_moment_reached": pixel_moment_reached,
                 "secondary_classes": secondary_classes,

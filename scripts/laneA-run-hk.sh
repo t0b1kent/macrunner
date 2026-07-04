@@ -44,6 +44,54 @@ if [ ! -f "$DXMT_DIST/$MACHINE_DIR/dxgi.dll" ] || [ ! -f "$DXMT_DIST/$MACHINE_DI
   exit 2
 fi
 
+timestamp_stream() {
+  python3 -c 'import os, sys, time
+start = float(os.environ.get("LANEA_RUN_START_EPOCH") or time.time())
+for line in sys.stdin:
+    now = time.time()
+    sys.stdout.write("[laneA-ts epoch=%.3f +%.3fs] %s" % (now, now - start, line))
+    sys.stdout.flush()
+'
+}
+
+append_time_to_swapchain() {
+  python3 - "$1" <<'PY' >> "$1" 2>/dev/null || true
+import re
+import sys
+
+path = sys.argv[1]
+marker = "macrunner-hb-dxgi-swapchain: create method=CreateSwapChainForHwnd"
+try:
+    text = open(path, "r", encoding="utf-8", errors="ignore").read()
+except OSError:
+    sys.exit(0)
+
+if re.search(r"\btime_to_swapchain=[0-9]+(?:\.[0-9]+)?s\b", text):
+    sys.exit(0)
+
+start = None
+m = re.search(r"\[laneA\] run_start_epoch=([0-9]+(?:\.[0-9]+)?)\b", text)
+if m:
+    start = float(m.group(1))
+
+for line in text.splitlines():
+    if marker not in line:
+        continue
+    if not ("rc=0x0" in line or "rc=(nil)" in line or "rc=0x00000000" in line):
+        continue
+    rel = re.search(r"\+([0-9]+(?:\.[0-9]+)?)s\]", line)
+    if rel:
+        print("[laneA] time_to_swapchain=%ds source=laneA-ts marker=CreateSwapChainForHwnd" % round(float(rel.group(1))))
+        sys.exit(0)
+    epoch = re.search(r"\[laneA-ts epoch=([0-9]+(?:\.[0-9]+)?)\b", line)
+    if epoch and start is not None:
+        print("[laneA] time_to_swapchain=%ds source=epoch marker=CreateSwapChainForHwnd" % round(float(epoch.group(1)) - start))
+        sys.exit(0)
+
+print("[laneA] time_to_swapchain=UNKNOWN source=missing-timestamp marker=CreateSwapChainForHwnd")
+PY
+}
+
 # Heartbeat tracing produces 100MB+ logs that choke the auto-triage
 # (classify_run/analyze_generic_fallback: 94% CPU, 70+ min, killed). Default
 # auto-triage OFF when heartbeat is on, unless the caller set it explicitly.
@@ -124,6 +172,12 @@ for try in $(seq 1 "$MAX"); do
     echo "[laneA] single_lookup=${MACRUNNER_HB_SINGLE_LOOKUP:-1}"
   } >> "$RUNDIR/run.log"
 
+  RUN_START_EPOCH="$(python3 -c 'import time; print("%.3f" % time.time())')"
+  export LANEA_RUN_START_EPOCH="$RUN_START_EPOCH"
+  echo "[laneA] run_start_epoch=$RUN_START_EPOCH" >> "$RUNDIR/run.log"
+
+  set +e
+  set -o pipefail
     MACRUNNER_RUN_DIR="$RUNDIR" MACRUNNER_HB_TRANSLATION_CACHE="$CACHE_ENABLED" \
     MACRUNNER_HB_TRANSLATION_CACHE_ROOT="$CACHE_ROOT" \
     MACRUNNER_HB_TRACE_D3D_BOUNDARY="${MACRUNNER_HB_TRACE_D3D_BOUNDARY:-1}" \
@@ -138,8 +192,10 @@ for try in $(seq 1 "$MAX"); do
     WINEDLLPATH="$OVERLAY_MACHINE_DIR:$OVERLAY_UNIX_DIR:$WINE_DIST/lib/wine/$MACHINE_DIR:$WINE_DIST/lib/wine/$UNIX_DIR" \
     WINESYSTEMDLLPATH="$OVERLAY_MACHINE_DIR" \
     WINEDEBUG="${WINEDEBUG:--all}" "$ROOT/scripts/mr-run.sh" \
-    "$WINE_DIST" "$HK" "$TMO" ${HK_EXTRA_ARGS:-} >> "$RUNDIR/run.log" 2>&1
-  rc=$?
+    "$WINE_DIST" "$HK" "$TMO" ${HK_EXTRA_ARGS:-} 2>&1 | timestamp_stream >> "$RUNDIR/run.log"
+  rc=${PIPESTATUS[0]}
+  set +o pipefail
+  append_time_to_swapchain "$RUNDIR/run.log"
   lines=$(wc -l < "$RUNDIR/run.log")
   echo "try$try rc=$rc lines=$lines $RUNDIR"
   if grep -q 'Mono path' "$RUNDIR/run.log" 2>/dev/null; then

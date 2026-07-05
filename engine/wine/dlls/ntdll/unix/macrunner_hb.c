@@ -1339,7 +1339,7 @@ static int macrunner_hb_trace_tls_import_enabled(void)
 static int macrunner_hb_tls_shadow_get_enabled(void)
 {
     static int cache = -1;
-    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TLS_SHADOW_GET" );
+    return macrunner_hb_cached_env_flag_default_on( &cache, "MACRUNNER_HB_TLS_SHADOW_GET" );
 }
 
 static int macrunner_hb_trace_tls_shadow_enabled(void)

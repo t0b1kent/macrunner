@@ -3739,8 +3739,16 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
              *   0F AE /1 FXRSTOR m512 -- restore x87/SSE state image
              *   0F AE /2 LDMXCSR m32  -- no-op until MXCSR is modeled
              *   0F AE /3 STMXCSR m32  -- store architectural reset MXCSR
+             *   0F AE /4 XSAVE m*     -- save extended state (x87+SSE image)
+             *   0F AE /5 XRSTOR m*    -- restore extended state (x87+SSE image)
+             *   0F AE /6 XSAVEOPT m*  -- optimized save (66-prefixed = CLWB hint)
+             *   0F AE /7 CLFLUSH m8   -- cache-line flush hint (NOP)
              *   0F AE E8/F0/F8        -- LFENCE/MFENCE/SFENCE ordering fences
-             * XSAVE/XRSTOR remain unsupported until the wider xstate image is modeled. */
+             * Patch H: XSAVE/XRSTOR/XSAVEOPT are decoded as their FXSAVE/FXRSTOR
+             * equivalents -- without AVX-state modeling the x87+SSE image round-trips
+             * identically, and both save+restore go through the same 512-byte legacy
+             * region so guest state is consistent. The wider AVX xstate header/YMM
+             * components are not modeled (matches the CPUID leaf-7 AVX gating). */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
             uint8_t mod = (modrm >> 6) & 3;
@@ -3781,6 +3789,34 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                 hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 4, out, 1);
                 if (r != HB_OK) return r;
                 set_imm(out, 2, HB_X64_DEFAULT_MXCSR, 4);
+                return HB_OK;
+            }
+            if (ext == 4) {
+                /* XSAVE m* -- FXSAVE-equivalent for the x87+SSE image (Patch H). */
+                out->opcode = HB_INS_X87_FXSAVE;
+                hb_result_t r = parse_modrm_ext(d, modrm, rex_w, rex_b, HB_SIZE_512, out, 1);
+                if (r != HB_OK) return r;
+                return HB_OK;
+            }
+            if (ext == 5) {
+                /* XRSTOR m* -- FXRSTOR-equivalent for the x87+SSE image (Patch H). */
+                out->opcode = HB_INS_X87_FXRSTOR;
+                hb_result_t r = parse_modrm_ext(d, modrm, rex_w, rex_b, HB_SIZE_512, out, 1);
+                if (r != HB_OK) return r;
+                return HB_OK;
+            }
+            if (ext == 6) {
+                /* 66 0F AE /6 CLWB (cache write-back hint) -> NOP;
+                 * 0F AE /6 XSAVEOPT -> FXSAVE-equivalent (Patch H). */
+                if (operand16) {
+                    out->opcode = HB_INS_NOP;
+                    hb_result_t r = parse_modrm_ext(d, modrm, false, rex_b, 1, out, 1);
+                    if (r != HB_OK) return r;
+                    return HB_OK;
+                }
+                out->opcode = HB_INS_X87_FXSAVE;
+                hb_result_t r = parse_modrm_ext(d, modrm, rex_w, rex_b, HB_SIZE_512, out, 1);
+                if (r != HB_OK) return r;
                 return HB_OK;
             }
             if (ext == 7) {
@@ -4586,9 +4622,24 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             return HB_OK;
         }
         if (op2 == 0xC7) {
-            /* CMPXCHG8B m64 / CMPXCHG16B m128 (REX.W). */
+            /* CMPXCHG8B m64 / CMPXCHG16B m128 (REX.W) -- /1 memory form.
+             * Register forms /6 and /7 are RDRAND / RDSEED (Patch H). */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
+            uint8_t c7_mod = (modrm >> 6) & 3;
+            uint8_t c7_ext = (modrm >> 3) & 7;
+            if (c7_mod == 3 && (c7_ext == 6 || c7_ext == 7)) {
+                /* 0F C7 /6 RDRAND r16/32/64, 0F C7 /7 RDSEED r16/32/64.
+                 * Destination is the r/m register; sets CF=1 on success and
+                 * clears OF/SF/ZF/AF/PF. Interpreter-backed (not a hot path). */
+                out->opcode = (c7_ext == 6) ? HB_INS_RDRAND : HB_INS_RDSEED;
+                out->writes_flags = true;
+                uint8_t rd_size = rex_w ? 8 : (operand16 ? 2 : 4);
+                hb_result_t r = parse_modrm_ext(d, modrm, rex_w, rex_b, rd_size, out, 1);
+                if (r != HB_OK) return r;
+                refresh_rip_targets(d, out);
+                return HB_OK;
+            }
             if (((modrm >> 3) & 7) != 1 || (modrm >> 6) == 3)
                 return HB_ERR_UNSUPPORTED_OPCODE;
             out->opcode = HB_INS_CMPXCHG8B;
@@ -5298,6 +5349,8 @@ const char* hb_opcode_name(int opcode) {
         case HB_INS_SAHF: return "SAHF";
         case HB_INS_CPUID: return "CPUID";
         case HB_INS_XGETBV: return "XGETBV";
+        case HB_INS_RDRAND: return "RDRAND";
+        case HB_INS_RDSEED: return "RDSEED";
         case HB_INS_NOP: return "NOP";
         case HB_INS_FENCE: return "FENCE";
         case HB_INS_MOVS: return "MOVS";

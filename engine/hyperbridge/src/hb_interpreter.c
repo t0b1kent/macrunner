@@ -1925,7 +1925,17 @@ static hb_result_t x87_fxsave_mem(hb_context_t* ctx, const hb_ir_operand_t* op) 
         unsigned phys = (x87->top + i) & 7u;
         if (((x87->tag_word >> (phys * 2u)) & 3u) != 3u)
             double_to_ext80(x87->st[phys], image + 0x20 + i * 16);
-        memcpy(image + 0xa0 + i * 16, ctx->regs.x86.xmm[i], 16);
+    }
+    /* XMM save area (offset 0xA0). Patch H fix: mode-aware. 32-bit guests keep
+     * XMM0-7 in the x86 register view; 64-bit guests keep XMM0-15 in the x64 view
+     * (regs is a union, so the two live at different offsets). Reading
+     * ctx->regs.x86.xmm unconditionally saved the wrong bytes -- and only 8 of the
+     * 16 registers -- for x64 FXSAVE/XSAVE. Use the same accessor the SSE ops use. */
+    unsigned xmm_count = (ctx->mode == HB_MODE_32BIT) ? 8u : 16u;
+    for (unsigned i = 0; i < xmm_count; i++) {
+        uint64_t v[2] = {0, 0};
+        (void)read_xmm_reg(ctx, HB_REG_XMM0 + (int)i, v);
+        memcpy(image + 0xa0 + i * 16, v, 16);
     }
     return hb_memory_write(ctx->memory, addr, image, sizeof(image));
 }
@@ -1950,7 +1960,15 @@ static hb_result_t x87_fxrstor_mem(hb_context_t* ctx, const hb_ir_operand_t* op)
             x87->st[phys] = 0.0;
             x87_set_tag_entry(x87, phys, 0x3u);
         }
-        memcpy(ctx->regs.x86.xmm[i], image + 0xa0 + i * 16, 16);
+    }
+    /* XMM restore area -- mode-aware (see the save-side comment). Restoring into
+     * ctx->regs.x86.xmm unconditionally wrote the wrong union member for x64
+     * guests, so XMM registers were silently not restored after FXRSTOR/XRSTOR. */
+    unsigned xmm_count = (ctx->mode == HB_MODE_32BIT) ? 8u : 16u;
+    for (unsigned i = 0; i < xmm_count; i++) {
+        uint64_t v[2] = {0, 0};
+        memcpy(v, image + 0xa0 + i * 16, 16);
+        (void)write_xmm_reg(ctx, HB_REG_XMM0 + (int)i, v);
     }
     return HB_OK;
 }
@@ -2386,6 +2404,8 @@ static const char* ir_op_name(hb_ir_op_t op) {
         case HB_IR_SAHF: return "SAHF";
         case HB_IR_CPUID: return "CPUID";
         case HB_IR_XGETBV: return "XGETBV";
+        case HB_IR_RDRAND: return "RDRAND";
+        case HB_IR_RDSEED: return "RDSEED";
         case HB_IR_SETcc: return "SETcc";
         case HB_IR_CMOVcc: return "CMOVcc";
         case HB_IR_LOAD: return "LOAD";
@@ -4832,6 +4852,27 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
 
             write_reg_sized(ctx, HB_REG_RAX, (uint32_t)xcr0, HB_SIZE_32);
             write_reg_sized(ctx, HB_REG_RDX, (uint32_t)(xcr0 >> 32), HB_SIZE_32);
+            return HB_OK;
+        }
+
+        case HB_IR_RDRAND:
+        case HB_IR_RDSEED: {
+            /* Patch H: RDRAND/RDSEED r16/32/64. Destination is a register operand;
+             * fill it with a fresh random value and report success (CF=1), clearing
+             * OF/SF/ZF/AF/PF per the Intel SDM. arc4random_buf is a good-quality CSPRNG
+             * on the host, adequate for both the "random" and "seed" flavours. */
+            if (instr->dst.type != HB_OP_REG) return HB_ERR_INTERNAL;
+            hb_size_t size = instr->dst.size ? instr->dst.size : HB_SIZE_32;
+            uint64_t rnd = 0;
+            arc4random_buf(&rnd, sizeof(rnd));
+            write_reg_sized_offset(ctx, instr->dst.reg, rnd, size, instr->dst.reg_offset);
+            hb_lazy_flags_clear(ctx);
+            ctx->flags.cf = true;
+            ctx->flags.of = false;
+            ctx->flags.sf = false;
+            ctx->flags.zf = false;
+            ctx->flags.af = false;
+            ctx->flags.pf = false;
             return HB_OK;
         }
 

@@ -1989,6 +1989,14 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             emit(b, hb_ir_emit(b, HB_IR_XGETBV), dec);
             return HB_OK;
         }
+        case HB_INS_RDRAND:
+            /* dst = r/m register (slot 1); interpreter fills it with a random
+             * value and sets CF=1 / clears OF/SF/ZF/AF/PF (Patch H). */
+            emit(b, hb_ir_emit_unop(b, HB_IR_RDRAND, operand_from_dec(dec, 1), hb_ir_none()), dec);
+            return HB_OK;
+        case HB_INS_RDSEED:
+            emit(b, hb_ir_emit_unop(b, HB_IR_RDSEED, operand_from_dec(dec, 1), hb_ir_none()), dec);
+            return HB_OK;
         case HB_INS_X87_FNCLEX:
         case HB_INS_X87_FNINIT:
             emit(b, hb_ir_emit(b, HB_IR_NOP), dec);
@@ -2058,6 +2066,12 @@ hb_result_t hb_lift_x64(const hb_decoded_t* dec, hb_ir_builder_t* b) {
             return HB_OK;
         case HB_INS_X87_FXCH:
             emit(b, hb_ir_emit_unop(b, HB_IR_X87_FXCH, hb_ir_none(), operand_from_dec(dec, 1)), dec);
+            return HB_OK;
+        case HB_INS_X87_FXSAVE:
+            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FXSAVE, operand_from_dec(dec, 1), hb_ir_none()), dec);
+            return HB_OK;
+        case HB_INS_X87_FXRSTOR:
+            emit(b, hb_ir_emit_unop(b, HB_IR_X87_FXRSTOR, hb_ir_none(), operand_from_dec(dec, 1)), dec);
             return HB_OK;
         case HB_INS_X87_FRNDINT:
             emit(b, hb_ir_emit(b, HB_IR_X87_FRNDINT), dec);

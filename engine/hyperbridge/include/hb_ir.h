@@ -292,6 +292,8 @@ typedef enum {
     HB_IR_SAHF,
     HB_IR_CPUID,
     HB_IR_XGETBV,
+    HB_IR_RDRAND,
+    HB_IR_RDSEED,
     HB_IR_SETcc,
     HB_IR_CMOVcc,
     HB_IR_LOAD,

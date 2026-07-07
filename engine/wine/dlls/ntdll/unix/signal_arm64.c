@@ -1913,6 +1913,17 @@ static BOOL handle_syscall_fault( ucontext_t *context, EXCEPTION_RECORD *rec )
     }
     else
     {
+        if (PC_sig(context) < 0x10000)
+        {
+            static int macrunner_lowpc_reject_count;
+            if (macrunner_lowpc_reject_count++ < 64)
+                ERR( "macrunner-hb-syscall-lowpc-resume-reject: code=%08x pc=%p lr=%p sp=%p "
+                     "frame=%p frame_pc=%p ret=%08x\n",
+                     rec->ExceptionCode, (void *)PC_sig(context), (void *)LR_sig(context),
+                     (void *)SP_sig(context), frame, frame ? (void *)(uintptr_t)frame->pc : NULL,
+                     rec->ExceptionCode );
+            return FALSE;
+        }
         TRACE( "returning to user mode ip=%p ret=%08x\n", (void *)frame->pc, rec->ExceptionCode );
         REGn_sig(0, context)  = rec->ExceptionCode;
         SP_sig(context)       = (ULONG_PTR)frame;

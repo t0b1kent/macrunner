@@ -3735,11 +3735,12 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
         }
         if (op2 == 0xAE) {
             /* Control-state group needed by compiler setjmp helpers:
+             *   0F AE /0 FXSAVE m512  -- save x87/SSE state image
+             *   0F AE /1 FXRSTOR m512 -- restore x87/SSE state image
              *   0F AE /2 LDMXCSR m32  -- no-op until MXCSR is modeled
              *   0F AE /3 STMXCSR m32  -- store architectural reset MXCSR
              *   0F AE E8/F0/F8        -- LFENCE/MFENCE/SFENCE ordering fences
-             * FXSAVE/FXRSTOR/XSAVE/XRSTOR are not scalar control-word ops and
-             * require a real extended-state image, so keep them unsupported. */
+             * XSAVE/XRSTOR remain unsupported until the wider xstate image is modeled. */
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);
             uint8_t mod = (modrm >> 6) & 3;
@@ -3756,6 +3757,18 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
                     return HB_OK;
                 }
                 return HB_ERR_UNSUPPORTED_OPCODE;
+            }
+            if (ext == 0) {
+                out->opcode = HB_INS_X87_FXSAVE;
+                hb_result_t r = parse_modrm_ext(d, modrm, rex_w, rex_b, HB_SIZE_512, out, 1);
+                if (r != HB_OK) return r;
+                return HB_OK;
+            }
+            if (ext == 1) {
+                out->opcode = HB_INS_X87_FXRSTOR;
+                hb_result_t r = parse_modrm_ext(d, modrm, rex_w, rex_b, HB_SIZE_512, out, 1);
+                if (r != HB_OK) return r;
+                return HB_OK;
             }
             if (ext == 2) {
                 out->opcode = HB_INS_NOP;

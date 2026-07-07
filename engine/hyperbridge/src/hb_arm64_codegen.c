@@ -3238,6 +3238,8 @@ extern void     hb_jit_helper_xgetbv(hb_context_t* ctx);
 extern void     hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern hb_result_t hb_interpreter_exec_one_for_jit(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_interp_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
+static void     hb_jit_helper_exec_pushf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
+static void     hb_jit_helper_exec_popf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_atomic_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_two_block_loop(hb_context_t* ctx,
                                                   const hb_ir_block_t* first,
@@ -4661,11 +4663,23 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
         case HB_IR_XADD:
             return emit_atomic_ir_helper(buf, instr);
 
+        case HB_IR_PUSHF:
+            emit_mov_reg(buf, 0, 19);
+            emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+            emit_call_helper(buf, (void*)hb_jit_helper_exec_pushf_ir);
+            emit_return_if_helper_failed(buf);
+            return HB_OK;
+
+        case HB_IR_POPF:
+            emit_mov_reg(buf, 0, 19);
+            emit_mov_imm64(buf, 1, (uint64_t)(uintptr_t)instr);
+            emit_call_helper(buf, (void*)hb_jit_helper_exec_popf_ir);
+            emit_return_if_helper_failed(buf);
+            return HB_OK;
+
         case HB_IR_MOV_SEG:
         case HB_IR_CLD:
         case HB_IR_STD:
-        case HB_IR_PUSHF:
-        case HB_IR_POPF:
         case HB_IR_MOVS:
         case HB_IR_CMPS:
         case HB_IR_LODS:
@@ -5312,6 +5326,165 @@ void hb_jit_helper_push(hb_context_t* ctx, uint64_t val) {
                     (unsigned long long)(ctx->mode == HB_MODE_32BIT ?
                         (uint64_t)ctx->regs.x86.esp : ctx->regs.x64.rsp), (int)r, (int)ctx->mode);
     }
+    ctx->last_result = r;
+}
+
+static uint64_t hb_jit_flags_status_mask(void) {
+    return (1ULL << 0) | (1ULL << 2) | (1ULL << 4) |
+           (1ULL << 6) | (1ULL << 7) | (1ULL << 11);
+}
+
+static uint64_t hb_jit_flags_width_mask(hb_size_t size) {
+    if (size == HB_SIZE_16) return 0xffffu;
+    if (size == HB_SIZE_32) return 0xffffffffu;
+    return UINT64_MAX;
+}
+
+static void hb_jit_sync_status_flags_from_image(hb_context_t* ctx, uint64_t image) {
+    ctx->flags.cf = (image & (1ULL << 0)) != 0;
+    ctx->flags.pf = (image & (1ULL << 2)) != 0;
+    ctx->flags.af = (image & (1ULL << 4)) != 0;
+    ctx->flags.zf = (image & (1ULL << 6)) != 0;
+    ctx->flags.sf = (image & (1ULL << 7)) != 0;
+    ctx->flags.of = (image & (1ULL << 11)) != 0;
+}
+
+static hb_size_t hb_jit_pushf_operand_size(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    if (instr && instr->src1.type == HB_OP_IMM) {
+        if (instr->src1.imm == 2) return HB_SIZE_16;
+        if (instr->src1.imm == 4) return HB_SIZE_32;
+        if (instr->src1.imm == 8) return HB_SIZE_64;
+    }
+    if (instr && (instr->src1.size == HB_SIZE_16 ||
+                  instr->src1.size == HB_SIZE_32 ||
+                  instr->src1.size == HB_SIZE_64)) {
+        return instr->src1.size;
+    }
+    return ctx && ctx->mode == HB_MODE_64BIT ? HB_SIZE_64 : HB_SIZE_32;
+}
+
+static uint64_t hb_jit_pushf_stack_bytes(hb_context_t* ctx, hb_size_t size) {
+    if (ctx && ctx->mode == HB_MODE_32BIT)
+        return size == HB_SIZE_16 ? 2 : 4;
+    return size == HB_SIZE_16 ? 2 : 8;
+}
+
+static hb_result_t hb_jit_read_flags_image(hb_context_t* ctx, hb_size_t size, uint64_t* out) {
+    uint64_t image;
+    hb_result_t r;
+    if (!ctx || !out) return HB_ERR_INVALID_ARG;
+    r = hb_lazy_flags_materialize(ctx, HB_FLAG_BIT_ALL);
+    if (r != HB_OK) return r;
+    image = ctx->mode == HB_MODE_32BIT ? ctx->regs.x86.eflags : ctx->regs.x64.rflags;
+    image &= ~hb_jit_flags_status_mask();
+    image |= ctx->flags.cf ? (1ULL << 0) : 0;
+    image |= ctx->flags.pf ? (1ULL << 2) : 0;
+    image |= ctx->flags.af ? (1ULL << 4) : 0;
+    image |= ctx->flags.zf ? (1ULL << 6) : 0;
+    image |= ctx->flags.sf ? (1ULL << 7) : 0;
+    image |= ctx->flags.of ? (1ULL << 11) : 0;
+    image |= 0x2u;
+    if (ctx->mode == HB_MODE_32BIT) ctx->regs.x86.eflags = (uint32_t)image;
+    else ctx->regs.x64.rflags = image;
+    *out = image & hb_jit_flags_width_mask(size);
+    return HB_OK;
+}
+
+static hb_result_t hb_jit_write_flags_image(hb_context_t* ctx, hb_size_t size, uint64_t value) {
+    uint64_t image;
+    uint64_t mask;
+    if (!ctx) return HB_ERR_INVALID_ARG;
+    image = ctx->mode == HB_MODE_32BIT ? ctx->regs.x86.eflags : ctx->regs.x64.rflags;
+    mask = hb_jit_flags_width_mask(size);
+    image = (image & ~mask) | (value & mask);
+    image |= 0x2u;
+    if (ctx->mode == HB_MODE_32BIT) ctx->regs.x86.eflags = (uint32_t)image;
+    else ctx->regs.x64.rflags = image;
+    hb_jit_sync_status_flags_from_image(ctx, image);
+    hb_lazy_flags_clear(ctx);
+    return HB_OK;
+}
+
+static hb_result_t hb_jit_push_flags_stack(hb_context_t* ctx, hb_size_t size, uint64_t value) {
+    uint64_t width;
+    if (!ctx || !ctx->memory) return HB_ERR_MEMORY_FAULT;
+    width = hb_jit_pushf_stack_bytes(ctx, size);
+    if (ctx->mode == HB_MODE_32BIT) {
+        uint32_t new_esp = ctx->regs.x86.esp - (uint32_t)width;
+        hb_result_t r = width == 2 ?
+            hb_jit_helper_write_u16_tso(ctx, new_esp, (uint16_t)value) :
+            hb_jit_helper_write_u32_tso(ctx, new_esp, (uint32_t)value);
+        if (r == HB_OK) ctx->regs.x86.esp = new_esp;
+        return r;
+    } else {
+        uint64_t new_rsp = ctx->regs.x64.rsp - width;
+        hb_result_t r = width == 2 ?
+            hb_jit_helper_write_u16_tso(ctx, new_rsp, (uint16_t)value) :
+            hb_jit_helper_write_u64_tso(ctx, new_rsp, value);
+        if (r == HB_OK) ctx->regs.x64.rsp = new_rsp;
+        return r;
+    }
+}
+
+static hb_result_t hb_jit_pop_flags_stack(hb_context_t* ctx, hb_size_t size, uint64_t* value) {
+    uint64_t width;
+    if (!ctx || !ctx->memory || !value) return HB_ERR_MEMORY_FAULT;
+    width = hb_jit_pushf_stack_bytes(ctx, size);
+    if (ctx->mode == HB_MODE_32BIT) {
+        hb_result_t r;
+        uint32_t esp = ctx->regs.x86.esp;
+        if (width == 2) {
+            uint16_t v16 = 0;
+            r = hb_jit_helper_read_u16_tso(ctx, esp, &v16);
+            *value = v16;
+        } else {
+            uint32_t v32 = 0;
+            r = hb_jit_helper_read_u32_tso(ctx, esp, &v32);
+            *value = v32;
+        }
+        if (r == HB_OK) ctx->regs.x86.esp = esp + (uint32_t)width;
+        return r;
+    } else {
+        uint64_t rsp = ctx->regs.x64.rsp;
+        if (width == 2) {
+            uint16_t v16 = 0;
+            hb_result_t r = hb_jit_helper_read_u16_tso(ctx, rsp, &v16);
+            *value = v16;
+            if (r == HB_OK) ctx->regs.x64.rsp = rsp + width;
+            return r;
+        } else {
+            hb_result_t r = hb_jit_helper_read_u64_tso(ctx, rsp, value);
+            if (r == HB_OK) ctx->regs.x64.rsp = rsp + width;
+            return r;
+        }
+    }
+}
+
+static void hb_jit_helper_exec_pushf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_size_t size;
+    uint64_t value = 0;
+    hb_result_t r;
+    if (!ctx || !instr) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    size = hb_jit_pushf_operand_size(ctx, instr);
+    r = hb_jit_read_flags_image(ctx, size, &value);
+    if (r == HB_OK) r = hb_jit_push_flags_stack(ctx, size, value);
+    ctx->last_result = r;
+}
+
+static void hb_jit_helper_exec_popf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_size_t size;
+    uint64_t value = 0;
+    hb_result_t r;
+    if (!ctx || !instr) {
+        if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
+        return;
+    }
+    size = hb_jit_pushf_operand_size(ctx, instr);
+    r = hb_jit_pop_flags_stack(ctx, size, &value);
+    if (r == HB_OK) r = hb_jit_write_flags_image(ctx, size, value);
     ctx->last_result = r;
 }
 

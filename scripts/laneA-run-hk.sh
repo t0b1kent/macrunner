@@ -25,7 +25,7 @@ set -u
 TAG="${1:?need tag}"; TMO="${2:-420}"; MAX="${3:-3}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HK="$ROOT/../game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/Hollow Knight.exe"
-WINE_DIST="$ROOT/engine/wine/dist-arm64ec-spike"
+WINE_DIST="${MACRUNNER_LANEA_WINE_DIST:-$ROOT/engine/wine/dist-arm64ec-spike}"
 DXMT_DIST="$ROOT/engine/graphics/dist/dxmt"
 DXVK_DIST="$ROOT/engine/graphics/dist/dxvk"
 MACHINE_DIR="x86_64-windows"

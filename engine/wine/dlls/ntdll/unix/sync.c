@@ -90,6 +90,249 @@ static BOOL trace_ui_wait_enabled(void)
     return enabled;
 }
 
+static const char *debugstr_timeout( const LARGE_INTEGER *timeout );
+
+static BOOL macrunner_hb_wait_event_trace_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *env = getenv( "MACRUNNER_HB_WAIT_EVENT_TRACE" );
+        enabled = (env && env[0] && strcmp( env, "0" )) ? 1 : 0;
+    }
+    return enabled;
+}
+
+static BOOL macrunner_hb_wait_event_trace_take_slot(void)
+{
+    static unsigned int count;
+    static unsigned int max_count;
+
+    if (!macrunner_hb_wait_event_trace_enabled()) return FALSE;
+    if (!max_count)
+    {
+        const char *env = getenv( "MACRUNNER_HB_WAIT_EVENT_TRACE_MAX" );
+        char *end = NULL;
+        unsigned long parsed = env && env[0] ? strtoul( env, &end, 0 ) : 0;
+        max_count = (end && end != env && parsed > 0 && parsed <= 1000000) ? parsed : 20000;
+    }
+    return ++count <= max_count;
+}
+
+static uintptr_t macrunner_hb_wait_event_stack_target(void)
+{
+    static int initialized;
+    static uintptr_t target;
+
+    if (!initialized)
+    {
+        const char *env = getenv( "MACRUNNER_HB_WAIT_EVENT_STACK_HANDLE" );
+        char *end = NULL;
+        unsigned long long parsed = env && env[0] ? strtoull( env, &end, 0 ) : 0;
+
+        target = (end && end != env && parsed) ? (uintptr_t)parsed : 0xe0;
+        initialized = 1;
+    }
+    return target;
+}
+
+static BOOL macrunner_hb_wait_event_stack_trace_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *env = getenv( "MACRUNNER_HB_WAIT_EVENT_STACK_TRACE" );
+        enabled = (env && env[0] && strcmp( env, "0" )) ? 1 : 0;
+    }
+    return enabled;
+}
+
+static BOOL macrunner_hb_wait_event_stack_trace_take_slot(void)
+{
+    static unsigned int count;
+    static unsigned int max_count;
+
+    if (!max_count)
+    {
+        const char *env = getenv( "MACRUNNER_HB_WAIT_EVENT_STACK_TRACE_MAX" );
+        char *end = NULL;
+        unsigned long parsed = env && env[0] ? strtoul( env, &end, 0 ) : 0;
+
+        max_count = (end && end != env && parsed > 0 && parsed <= 100000) ? parsed : 4096;
+    }
+    return ++count <= max_count;
+}
+
+struct macrunner_hb_wait_event_syscall_frame
+{
+    char opaque[0x300];
+};
+
+#define MR_FRAME_RIP(pf)     (*(ULONG64 *)((char *)(pf) + 0x70))
+#define MR_FRAME_RSP(pf)     (*(ULONG64 *)((char *)(pf) + 0x88))
+#define MR_FRAME_RBP(pf)     (*(ULONG64 *)((char *)(pf) + 0x98))
+#define MR_FRAME_PREV(pf)    (*(struct macrunner_hb_wait_event_syscall_frame **)((char *)(pf) + 0xa0))
+#define MR_FRAME_RESTORE(pf) (*(DWORD *)((char *)(pf) + 0xb4))
+
+static struct macrunner_hb_wait_event_syscall_frame *macrunner_hb_wait_event_current_syscall_frame(void)
+{
+    TEB *teb = NtCurrentTeb();
+
+    if (!teb) return NULL;
+    return *(struct macrunner_hb_wait_event_syscall_frame **)((char *)teb + 0x378);
+}
+
+static ULONG_PTR macrunner_hb_wait_event_unity_rva( ULONG_PTR pc )
+{
+    return (pc >= 0x180000000ULL && pc < 0x182000000ULL) ? pc - 0x180000000ULL : 0;
+}
+
+static ULONG64 macrunner_hb_wait_event_read_stack_qword( ULONG64 sp )
+{
+    TEB *teb = NtCurrentTeb();
+    ULONG_PTR stack_lo = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
+    ULONG_PTR stack_hi = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
+
+    if (!sp || sp < stack_lo || sp + sizeof(ULONG64) > stack_hi) return 0;
+    return *(const ULONG64 *)(ULONG_PTR)sp;
+}
+
+static ULONG64 macrunner_hb_wait_event_read_u64( ULONG_PTR addr )
+{
+    return *(const ULONG64 *)addr;
+}
+
+static unsigned char macrunner_hb_wait_event_read_u8( ULONG_PTR addr )
+{
+    return *(const unsigned char *)addr;
+}
+
+static void __attribute__((noinline)) macrunner_hb_wait_event_stack_trace( const char *op, const char *phase,
+                                                                           NTSTATUS status, HANDLE handle0,
+                                                                           HANDLE handle1, ULONG count,
+                                                                           ULONG arg0, BOOLEAN alertable,
+                                                                           const LARGE_INTEGER *timeout,
+                                                                           const void *ret0 )
+{
+    const void *ra1 = NULL, *ra2 = NULL, *ra3 = NULL, *ra4 = NULL, *ra5 = NULL;
+    struct macrunner_hb_wait_event_syscall_frame *frame, *prev;
+    ULONG64 frame_pc = 0, frame_lr = 0, frame_sp = 0, prev_pc = 0, prev_lr = 0, prev_sp = 0, prev_sp0 = 0;
+    ULONG64 gate40 = 0, gate48 = 0, phase_flag = 0, render_sync = 0, rs_event = 0;
+    ULONG64 phase58 = 0, phase70 = 0;
+    ULONG_PTR ret0_rva, frame_pc_rva, frame_lr_rva, prev_pc_rva, prev_lr_rva, prev_sp0_rva;
+    unsigned char rs_stop = 0, rs_cs = 0;
+    unsigned char phase60 = 0, phase61 = 0, phase62 = 0, phase63 = 0, phase64 = 0;
+    unsigned char phase65 = 0, phase66 = 0, phase67 = 0, phase68 = 0;
+
+    if (!macrunner_hb_wait_event_stack_trace_enabled()) return;
+    if ((uintptr_t)handle0 != macrunner_hb_wait_event_stack_target()) return;
+    if (!macrunner_hb_wait_event_stack_trace_take_slot()) return;
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wframe-address"
+#endif
+#if defined(__GNUC__)
+    ra1 = __builtin_extract_return_addr( __builtin_return_address(1) );
+    ra2 = __builtin_extract_return_addr( __builtin_return_address(2) );
+    ra3 = __builtin_extract_return_addr( __builtin_return_address(3) );
+    ra4 = __builtin_extract_return_addr( __builtin_return_address(4) );
+    ra5 = __builtin_extract_return_addr( __builtin_return_address(5) );
+#endif
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
+    frame = macrunner_hb_wait_event_current_syscall_frame();
+    prev = frame ? MR_FRAME_PREV(frame) : NULL;
+    if (frame)
+    {
+        frame_pc = MR_FRAME_RIP(frame);
+        frame_lr = frame_pc;
+        frame_sp = MR_FRAME_RSP(frame);
+    }
+    if (prev)
+    {
+        prev_pc = MR_FRAME_RIP(prev);
+        prev_lr = prev_pc;
+        prev_sp = MR_FRAME_RSP(prev);
+        prev_sp0 = macrunner_hb_wait_event_read_stack_qword( prev_sp );
+    }
+
+    ret0_rva = macrunner_hb_wait_event_unity_rva( (ULONG_PTR)ret0 );
+    frame_pc_rva = macrunner_hb_wait_event_unity_rva( frame_pc );
+    frame_lr_rva = macrunner_hb_wait_event_unity_rva( frame_lr );
+    prev_pc_rva = macrunner_hb_wait_event_unity_rva( prev_pc );
+    prev_lr_rva = macrunner_hb_wait_event_unity_rva( prev_lr );
+    prev_sp0_rva = macrunner_hb_wait_event_unity_rva( prev_sp0 );
+
+    gate40 = macrunner_hb_wait_event_read_u64( 0x181f27340ULL );
+    gate48 = macrunner_hb_wait_event_read_u64( 0x181f27348ULL );
+    phase58 = macrunner_hb_wait_event_read_u64( 0x181f50f58ULL );
+    phase60 = macrunner_hb_wait_event_read_u8( 0x181f50f60ULL );
+    phase61 = macrunner_hb_wait_event_read_u8( 0x181f50f61ULL );
+    phase62 = macrunner_hb_wait_event_read_u8( 0x181f50f62ULL );
+    phase63 = macrunner_hb_wait_event_read_u8( 0x181f50f63ULL );
+    phase64 = macrunner_hb_wait_event_read_u8( 0x181f50f64ULL );
+    phase65 = macrunner_hb_wait_event_read_u8( 0x181f50f65ULL );
+    phase66 = macrunner_hb_wait_event_read_u8( 0x181f50f66ULL );
+    phase67 = macrunner_hb_wait_event_read_u8( 0x181f50f67ULL );
+    phase68 = macrunner_hb_wait_event_read_u8( 0x181f50f68ULL );
+    phase70 = macrunner_hb_wait_event_read_u64( 0x181f50f70ULL );
+    phase_flag = phase65;
+    render_sync = macrunner_hb_wait_event_read_u64( 0x181ebc780ULL );
+    if (render_sync)
+    {
+        rs_event = macrunner_hb_wait_event_read_u64( (ULONG_PTR)render_sync + 0xb8 );
+        rs_stop = macrunner_hb_wait_event_read_u8( (ULONG_PTR)render_sync + 0x81 );
+        rs_cs = macrunner_hb_wait_event_read_u8( (ULONG_PTR)render_sync + 0xc0 );
+    }
+
+    fprintf( stderr,
+             "macrunner-hb-waitevent-stack: op=%s phase=%s pid=%d tid=0x%lx status=0x%08x "
+             "handle0=%p handle1=%p count=%lu arg0=0x%lx alertable=%u timeout=%s "
+             "ret0=%p ret0_rva=0x%lx ra1=%p ra2=%p ra3=%p ra4=%p ra5=%p "
+             "frame=%p frame_pc=%p frame_pc_rva=0x%lx frame_lr=%p frame_lr_rva=0x%lx frame_sp=%p "
+             "prev=%p prev_pc=%p prev_pc_rva=0x%lx prev_lr=%p prev_lr_rva=0x%lx prev_sp=%p "
+             "prev_sp0=%p prev_sp0_rva=0x%lx "
+             "gate40=%p gate48=%p phase58=%p phase60=0x%02x phase61=0x%02x phase62=0x%02x "
+             "phase63=0x%02x phase64=0x%02x phase65=0x%02x phase66=0x%02x phase67=0x%02x "
+             "phase68=0x%02x phase70=%p phase_flag=0x%02llx "
+             "gRenderSync=%p rs_event=%p rs_stop=%u rs_cs=%u\n",
+             op, phase, getpid(), (unsigned long)GetCurrentThreadId(), (unsigned int)status,
+             handle0, handle1, (unsigned long)count, (unsigned long)arg0, alertable,
+             debugstr_timeout( timeout ), ret0, (unsigned long)ret0_rva, ra1, ra2, ra3, ra4, ra5,
+             frame, (void *)(ULONG_PTR)frame_pc, (unsigned long)frame_pc_rva,
+             (void *)(ULONG_PTR)frame_lr, (unsigned long)frame_lr_rva, (void *)(ULONG_PTR)frame_sp,
+             prev, (void *)(ULONG_PTR)prev_pc, (unsigned long)prev_pc_rva,
+             (void *)(ULONG_PTR)prev_lr, (unsigned long)prev_lr_rva, (void *)(ULONG_PTR)prev_sp,
+             (void *)(ULONG_PTR)prev_sp0, (unsigned long)prev_sp0_rva,
+             (void *)(ULONG_PTR)gate40, (void *)(ULONG_PTR)gate48, (void *)(ULONG_PTR)phase58,
+             phase60, phase61, phase62, phase63, phase64, phase65, phase66, phase67, phase68,
+             (void *)(ULONG_PTR)phase70, phase_flag,
+             (void *)(ULONG_PTR)render_sync, (void *)(ULONG_PTR)rs_event, rs_stop, rs_cs );
+    fflush( stderr );
+}
+
+static void macrunner_hb_wait_event_trace( const char *op, const char *phase, NTSTATUS status,
+                                           HANDLE handle0, HANDLE handle1, ULONG count,
+                                           ULONG arg0, BOOLEAN alertable,
+                                           const LARGE_INTEGER *timeout, const void *ret0 )
+{
+    macrunner_hb_wait_event_stack_trace( op, phase, status, handle0, handle1, count,
+                                         arg0, alertable, timeout, ret0 );
+    if (!macrunner_hb_wait_event_trace_take_slot()) return;
+    fprintf( stderr,
+             "macrunner-hb-waitevent: op=%s phase=%s pid=%d tid=0x%lx status=0x%08x "
+             "handle0=%p handle1=%p count=%lu arg0=0x%lx alertable=%u timeout=%s ret0=%p\n",
+             op, phase, getpid(), (unsigned long)GetCurrentThreadId(), (unsigned int)status,
+             handle0, handle1, (unsigned long)count, (unsigned long)arg0, alertable,
+             debugstr_timeout( timeout ), ret0 );
+    fflush( stderr );
+}
+
 static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
 {
     if (!timeout) return "(infinite)";
@@ -1247,6 +1490,8 @@ NTSTATUS WINAPI GPT_IMPORT(NtCreateEvent)( HANDLE *handle, ACCESS_MASK access, c
     SERVER_END_REQ;
 
     free( objattr );
+    macrunner_hb_wait_event_trace( "NtCreateEvent", "ret-server", ret, *handle, NULL, access,
+                                   ((ULONG)type << 8) | state, FALSE, NULL, __builtin_return_address(0) );
     return ret;
 }
 
@@ -1297,8 +1542,10 @@ NTSTATUS WINAPI GPT_IMPORT(NtSetEvent)( HANDLE handle, LONG *prev_state )
 {
     /* This comment is a dummy to make sure this patch applies in the right place. */
     unsigned int ret;
+    const void *ret0 = __builtin_return_address(0);
 
     TRACE( "handle %p, prev_state %p\n", handle, prev_state );
+    macrunner_hb_wait_event_trace( "NtSetEvent", "enter", 0, handle, NULL, 0, 0, FALSE, NULL, ret0 );
 
     if ((ret = inproc_set_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
     {
@@ -1308,6 +1555,8 @@ NTSTATUS WINAPI GPT_IMPORT(NtSetEvent)( HANDLE handle, LONG *prev_state )
         if (en) { uint64_t f = __atomic_add_fetch(&fast,1,__ATOMIC_RELAXED);
             if ((f % 4000)==0) fprintf(stderr,"macrunner-msync-diag: NtSetEvent fast(msync)=%llu server=%llu\n",
                 (unsigned long long)f,(unsigned long long)__atomic_load_n(&slow,__ATOMIC_RELAXED)), fflush(stderr); }
+        macrunner_hb_wait_event_trace( "NtSetEvent", "ret-inproc", ret, handle, NULL, 0,
+                                       prev_state ? *prev_state : 0, FALSE, NULL, ret0 );
         return ret;
     }
 
@@ -1325,6 +1574,8 @@ NTSTATUS WINAPI GPT_IMPORT(NtSetEvent)( HANDLE handle, LONG *prev_state )
         if (!ret && prev_state) *prev_state = reply->state;
     }
     SERVER_END_REQ;
+    macrunner_hb_wait_event_trace( "NtSetEvent", "ret-server", ret, handle, NULL, 0,
+                                   prev_state ? *prev_state : 0, FALSE, NULL, ret0 );
     return ret;
 }
 
@@ -1356,11 +1607,17 @@ NTSTATUS WINAPI GPT_IMPORT(NtResetEvent)( HANDLE handle, LONG *prev_state )
 {
     /* This comment is a dummy to make sure this patch applies in the right place. */
     unsigned int ret;
+    const void *ret0 = __builtin_return_address(0);
 
     TRACE( "handle %p, prev_state %p\n", handle, prev_state );
+    macrunner_hb_wait_event_trace( "NtResetEvent", "enter", 0, handle, NULL, 0, 0, FALSE, NULL, ret0 );
 
     if ((ret = inproc_reset_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
+    {
+        macrunner_hb_wait_event_trace( "NtResetEvent", "ret-inproc", ret, handle, NULL, 0,
+                                       prev_state ? *prev_state : 0, FALSE, NULL, ret0 );
         return ret;
+    }
 
     SERVER_START_REQ( event_op )
     {
@@ -1370,6 +1627,8 @@ NTSTATUS WINAPI GPT_IMPORT(NtResetEvent)( HANDLE handle, LONG *prev_state )
         if (!ret && prev_state) *prev_state = reply->state;
     }
     SERVER_END_REQ;
+    macrunner_hb_wait_event_trace( "NtResetEvent", "ret-server", ret, handle, NULL, 0,
+                                   prev_state ? *prev_state : 0, FALSE, NULL, ret0 );
     return ret;
 }
 
@@ -1413,11 +1672,17 @@ GPT_ABI_WRAPPER( NtClearEvent );
 NTSTATUS WINAPI GPT_IMPORT(NtPulseEvent)( HANDLE handle, LONG *prev_state )
 {
     unsigned int ret;
+    const void *ret0 = __builtin_return_address(0);
 
     TRACE( "handle %p, prev_state %p\n", handle, prev_state );
+    macrunner_hb_wait_event_trace( "NtPulseEvent", "enter", 0, handle, NULL, 0, 0, FALSE, NULL, ret0 );
 
     if ((ret = inproc_pulse_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
+    {
+        macrunner_hb_wait_event_trace( "NtPulseEvent", "ret-inproc", ret, handle, NULL, 0,
+                                       prev_state ? *prev_state : 0, FALSE, NULL, ret0 );
         return ret;
+    }
 
     SERVER_START_REQ( event_op )
     {
@@ -1427,6 +1692,8 @@ NTSTATUS WINAPI GPT_IMPORT(NtPulseEvent)( HANDLE handle, LONG *prev_state )
         if (!ret && prev_state) *prev_state = reply->state;
     }
     SERVER_END_REQ;
+    macrunner_hb_wait_event_trace( "NtPulseEvent", "ret-server", ret, handle, NULL, 0,
+                                   prev_state ? *prev_state : 0, FALSE, NULL, ret0 );
     return ret;
 }
 
@@ -2513,9 +2780,13 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
     union select_op select_op;
     UINT i, flags = SELECT_INTERRUPTIBLE;
     unsigned int ret;
+    const void *ret0 = __builtin_return_address(0);
 
     if (!count || count > MAXIMUM_WAIT_OBJECTS) return STATUS_INVALID_PARAMETER_1;
     if (type != WaitAll && type != WaitAny) FIXME( "Unsupported wait type %u\n", type );
+    macrunner_hb_wait_event_trace( "NtWaitForMultipleObjects", "enter", 0, handles[0],
+                                   count > 1 ? handles[1] : NULL, count, type,
+                                   alertable, timeout, ret0 );
 
     if (trace_ui_wait_enabled())
     {
@@ -2549,6 +2820,9 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
             fflush( stderr );
         }
         TRACE( "-> %#x\n", ret );
+        macrunner_hb_wait_event_trace( "NtWaitForMultipleObjects", "ret-inproc", ret, handles[0],
+                                       count > 1 ? handles[1] : NULL, count, type,
+                                       alertable, timeout, ret0 );
         return ret;
     }
 
@@ -2564,6 +2838,9 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
         fflush( stderr );
     }
     TRACE( "-> %#x\n", ret );
+    macrunner_hb_wait_event_trace( "NtWaitForMultipleObjects", "ret-server", ret, handles[0],
+                                   count > 1 ? handles[1] : NULL, count, type,
+                                   alertable, timeout, ret0 );
     return ret;
 }
 
@@ -2576,12 +2853,17 @@ NTSTATUS WINAPI NtWaitForSingleObject( HANDLE handle, BOOLEAN alertable, const L
     union select_op select_op;
     UINT flags = SELECT_INTERRUPTIBLE;
     unsigned int ret;
+    const void *ret0 = __builtin_return_address(0);
 
     TRACE( "handle %p, alertable %u, timeout %s\n", handle, alertable, debugstr_timeout(timeout) );
+    macrunner_hb_wait_event_trace( "NtWaitForSingleObject", "enter", 0, handle, NULL, 1, 0,
+                                   alertable, timeout, ret0 );
 
     if ((ret = inproc_wait( 1, &handle, WaitAny, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
     {
         TRACE( "-> %#x\n", ret );
+        macrunner_hb_wait_event_trace( "NtWaitForSingleObject", "ret-inproc", ret, handle, NULL, 1, 0,
+                                       alertable, timeout, ret0 );
         return ret;
     }
 
@@ -2590,6 +2872,8 @@ NTSTATUS WINAPI NtWaitForSingleObject( HANDLE handle, BOOLEAN alertable, const L
     select_op.wait.handles[0] = wine_server_obj_handle( handle );
     ret = server_wait( &select_op, offsetof( union select_op, wait.handles[1] ), flags, timeout );
     TRACE( "-> %#x\n", ret );
+    macrunner_hb_wait_event_trace( "NtWaitForSingleObject", "ret-server", ret, handle, NULL, 1, 0,
+                                   alertable, timeout, ret0 );
     return ret;
 }
 
@@ -2603,19 +2887,29 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
     union select_op select_op;
     UINT flags = SELECT_INTERRUPTIBLE;
     NTSTATUS ret;
+    const void *ret0 = __builtin_return_address(0);
 
     TRACE( "signal %p, wait %p, alertable %u, timeout %s\n", signal, wait, alertable, debugstr_timeout(timeout) );
+    macrunner_hb_wait_event_trace( "NtSignalAndWaitForSingleObject", "enter", 0, signal, wait, 2, 0,
+                                   alertable, timeout, ret0 );
 
     if (!signal) return STATUS_INVALID_HANDLE;
 
     if ((ret = inproc_signal_and_wait( signal, wait, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
+    {
+        macrunner_hb_wait_event_trace( "NtSignalAndWaitForSingleObject", "ret-inproc", ret, signal, wait, 2, 0,
+                                       alertable, timeout, ret0 );
         return ret;
+    }
 
     if (alertable) flags |= SELECT_ALERTABLE;
     select_op.signal_and_wait.op = SELECT_SIGNAL_AND_WAIT;
     select_op.signal_and_wait.wait = wine_server_obj_handle( wait );
     select_op.signal_and_wait.signal = wine_server_obj_handle( signal );
-    return server_wait( &select_op, sizeof(select_op.signal_and_wait), flags, timeout );
+    ret = server_wait( &select_op, sizeof(select_op.signal_and_wait), flags, timeout );
+    macrunner_hb_wait_event_trace( "NtSignalAndWaitForSingleObject", "ret-server", ret, signal, wait, 2, 0,
+                                   alertable, timeout, ret0 );
+    return ret;
 }
 
 

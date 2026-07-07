@@ -55,6 +55,30 @@ static CFMutableDictionaryRef win_datas;
 
 static unsigned int activate_on_focus_time;
 
+static BOOL macrunner_trace_winshow_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *env = getenv("MACRUNNER_HB_TRACE_WINSHOW");
+        enabled = env && env[0] && env[0] != '0';
+    }
+    return enabled;
+}
+
+static void macrunner_trace_winshow(const char *stage, HWND hwnd, struct macdrv_win_data *data,
+                                    DWORD style, BOOL activate)
+{
+    if (!macrunner_trace_winshow_enabled()) return;
+
+    fprintf(stderr, "macrunner-winshow: stage=%s hwnd=%p data=%p cocoa=%p "
+            "on_screen=%d style=0x%x activate=%d tid=%lu\n",
+            stage ? stage : "?", hwnd, data, data ? data->cocoa_window : NULL,
+            data ? data->on_screen : -1, style, activate,
+            (unsigned long)GetCurrentThreadId());
+    fflush(stderr);
+}
 
 /* CrossOver Hack #16933 */
 static BOOL is_main_quicken_window(HWND hwnd)
@@ -645,6 +669,10 @@ static struct macdrv_win_data *macdrv_create_win_data(HWND hwnd, const struct wi
 }
 
 
+/* MacRunner winshow: forward declaration -- show_window is defined below
+ * macdrv_ensure_win_data but the on-demand path needs it to complete realization. */
+static void show_window(struct macdrv_win_data *data);
+
 /***********************************************************************
  *              macdrv_ensure_win_data
  *
@@ -698,6 +726,36 @@ struct macdrv_win_data *macdrv_ensure_win_data(HWND hwnd)
             hwnd, data, data ? data->cocoa_window : NULL, parent, parent == desktop,
             style, ex_style, debugstr_window_rects(&rects));
     fflush(stderr);
+
+    /* MacRunner winshow: complete on-demand realization to parity with the
+     * normal macdrv_WindowPosChanged path. macdrv_create_win_data() only
+     * creates the Cocoa NSWindow; it explicitly leaves on_screen = FALSE and
+     * never orders the NSWindow front (see create_cocoa_window). Without this
+     * the game window is invisible and inactive, so no WINDOW_GOT_FOCUS event
+     * is ever posted by the Cocoa event loop and win32u therefore never sends
+     * WM_ACTIVATE / WM_SETFOCUS to the guest. Engines that gate the render
+     * loop on window activation then park forever in NtWaitForSingleObject
+     * before issuing the first GetBuffer/Present. Re-acquire the (recursive)
+     * win_data_mutex and run show_window exactly as WindowPosChanged does, so
+     * the NSWindow is ordered front, on_screen becomes TRUE, and the focus
+     * event can fire. */
+    if (data && data->cocoa_window && (style & WS_VISIBLE) && !data->on_screen)
+    {
+        BOOL activate = (style & WS_POPUP) != 0;
+
+        macrunner_trace_winshow("f2-defer-show", hwnd, data, style, FALSE);
+        macrunner_trace_winshow("f2-before-async-show", hwnd, data, style, activate);
+        macdrv_async_show_cocoa_window(data->cocoa_window, activate);
+        macrunner_trace_winshow("f2-after-async-show", hwnd, data, style, activate);
+        data->on_screen = TRUE;
+        macrunner_trace_winshow("f2-after-on-screen", hwnd, data, style, activate);
+        macrunner_trace_winshow("f2-before-post-activate", hwnd, data, style, activate);
+        NtUserPostMessage(hwnd, WM_ACTIVATE, WA_ACTIVE, 0);
+        NtUserPostMessage(hwnd, WM_SETFOCUS, 0, 0);
+        macrunner_trace_winshow("f2-after-post-activate", hwnd, data, style, activate);
+        if (activate)
+            activate_on_focus_time = 0;
+    }
 
     return data;
 }
@@ -760,12 +818,49 @@ static void set_focus(HWND hwnd, BOOL raise)
 
     if (data->cocoa_window && data->on_screen)
     {
-        BOOL activate = activate_on_focus_time && (NtGetTickCount() - activate_on_focus_time < 2000);
+        DWORD style_for_gate = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
+        BOOL activate = (style_for_gate & WS_POPUP) ||
+                        (activate_on_focus_time && (NtGetTickCount() - activate_on_focus_time < 2000));
+
+        /* MacRunner winshow: on-demand top-level WS_POPUP render windows can be
+         * realized long after the 2s launch activation window.  Keep the old
+         * time gate for normal windows, but force activation for borderless
+         * game render windows so Cocoa focus can produce guest WM_ACTIVATE. */
         /* Set Mac focus */
         macdrv_give_cocoa_window_focus(data->cocoa_window, activate);
         activate_on_focus_time = 0;
     }
 
+    release_win_data(data);
+}
+
+void macdrv_winshow_activate(HWND hwnd)
+{
+    struct macdrv_win_data *data;
+    DWORD style;
+
+    if (!(data = get_win_data(hwnd))) return;
+
+    style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+    macrunner_trace_winshow("event-enter", hwnd, data, style, FALSE);
+
+    if (data->cocoa_window && (style & WS_VISIBLE))
+    {
+        if (!data->on_screen)
+        {
+            macrunner_trace_winshow("event-before-show-window", hwnd, data, style, FALSE);
+            show_window(data);
+            macrunner_trace_winshow("event-after-show-window", hwnd, data, style, FALSE);
+        }
+        else
+        {
+            macrunner_trace_winshow("event-before-focus-on-screen", hwnd, data, style, TRUE);
+            macdrv_give_cocoa_window_focus(data->cocoa_window, TRUE);
+            macrunner_trace_winshow("event-after-focus-on-screen", hwnd, data, style, TRUE);
+        }
+    }
+
+    macrunner_trace_winshow("event-exit", hwnd, data, style, FALSE);
     release_win_data(data);
 }
 
@@ -779,6 +874,7 @@ static void show_window(struct macdrv_win_data *data)
     macdrv_window prev_window = NULL;
     macdrv_window next_window = NULL;
     BOOL activate = FALSE;
+    DWORD style_for_gate;
     GUITHREADINFO info;
 
     /* find window that this one must be after */
@@ -799,14 +895,28 @@ static void show_window(struct macdrv_win_data *data)
           data->hwnd, data->cocoa_window, prev, prev_window, next, next_window);
 
     if (!prev_window)
-        activate = activate_on_focus_time && (NtGetTickCount() - activate_on_focus_time < 2000);
+    {
+        style_for_gate = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
+        /* MacRunner winshow: top-level WS_POPUP render windows are often
+         * shown on-demand after activate_on_focus_time has aged out.  Without
+         * activation, orderFront does not yield WINDOW_GOT_FOCUS and Unity
+         * keeps Application.isFocused false before the first frame. */
+        activate = (style_for_gate & WS_POPUP) ||
+                   (activate_on_focus_time && (NtGetTickCount() - activate_on_focus_time < 2000));
+    }
+    else style_for_gate = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
+    macrunner_trace_winshow("show-before-order", data->hwnd, data, style_for_gate, activate);
     macdrv_order_cocoa_window(data->cocoa_window, prev_window, next_window, activate);
+    macrunner_trace_winshow("show-after-order", data->hwnd, data, style_for_gate, activate);
     data->on_screen = TRUE;
+    macrunner_trace_winshow("show-after-on-screen", data->hwnd, data, style_for_gate, activate);
 
     info.cbSize = sizeof(info);
+    macrunner_trace_winshow("show-before-focus-check", data->hwnd, data, style_for_gate, activate);
     if (NtUserGetGUIThreadInfo(NtUserGetWindowThread(data->hwnd, NULL), &info) && info.hwndFocus &&
         (data->hwnd == info.hwndFocus || NtUserIsChild(data->hwnd, info.hwndFocus)))
         set_focus(info.hwndFocus, FALSE);
+    macrunner_trace_winshow("show-after-focus-check", data->hwnd, data, style_for_gate, activate);
     if (activate)
         activate_on_focus_time = 0;
 }

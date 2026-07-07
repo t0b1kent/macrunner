@@ -1,9 +1,69 @@
 # ACTIVE INVESTIGATION — живое состояние
 
-Last update: 2026-07-02 22:47 VLAT, Codex.
+Last update: 2026-07-07, Opus (HK dist rebuilt+deployed with Patch H).
 
 Читайте этот файл первым после compaction. Не перепроверять DISPROVED без нового
 контр-факта. Не возвращать Wine-render патчи.
+
+## Heartbeat 2026-07-07 — HK dist rebuilt + deployed with Patch H — DONE
+
+HK dist ntdll.so was on Patch G (5d3110c0); source at HEAD 67e0e287 (Patch H). Rebuilt from source and
+deployed so HK runs now use Patch H (XSAVE/XRSTOR/XSAVEOPT, RDRAND/RDSEED, x64 FXSAVE XMM8-15 fix).
+- WAITED for the active HK run (laneA-run-hk.sh unity-probe 300) to finish first — polled to idle,
+  re-checked immediately before the cp. HK idle throughout rebuild+deploy. No source touched, no commit.
+- `make -C engine/hyperbridge` (ccache, clean) + `make ... dlls/ntdll/ntdll.so` (forced relink).
+- Deployed: build ntdll.so → engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so.
+- SHA: libhyperbridge.a=bf563e32; **dist ntdll.so now 37b849cae4461ebd… (== build), was 5d3110c0 (Patch G).**
+  New ntdll SHA differs from the Patch-H-session build (643521e0) because the ntdll unix source
+  (uncommitted HK-path edits in macrunner_hb.c/sync.c) advanced since — fresh build carries BOTH
+  Patch H lib + latest ntdll source (correct for HK).
+- SHA record: reports/PATCHH-DIST-REBUILD-SHA.txt (the intended reports/phase4-hollow-knight/ path is
+  on the archive volume "/Volumes/MacOS 1" which is currently mounted READ-ONLY — existing PATCHH-*
+  reports there stay intact/readable; only new writes are blocked).
+
+## Heartbeat 2026-07-07 — HB UNSUPPORTED-opcode audit — DONE (read-only, no Patch I needed)
+
+Audited all 77 `return HB_ERR_UNSUPPORTED_OPCODE` in hb_decode_x64.c (467 supported). Verdict:
+**no unsupported opcode is on the HK/ABZU critical path.** Classification: A) x87 reserved-ModRM 16,
+B) SSE/SSE2 legacy 6, C) 3-byte 0F38/0F3A 6, D) 1-byte group reserved-ext 16 — all DEFENSIVE guards
+for architecturally-invalid encodings (correct to reject); E) AVX/AVX-512 VEX/EVEX 32 = the only
+reachable gaps but AVX-512-only and **CPUID-gated OFF**; F) final catch-all 1. Probe-verified as
+SUPPORTED (people assume missing): MOVBE, SHA1/256-NI, CRC32, MOVDIR64B, ROUNDxx, STMXCSR, MOV-Sreg.
+Empirical: 10 newest HK runs + all ABZU runtime logs opcode-clean; 14/244 historical HK hits = 12×
+INT3-padding (control-flow/thunk bug, not decoder; INT3 decodes, lift=-6→trap) + 2× a context-save
+block that failed in patchE/F verify but now decodes fully. Current HK wall = PRESENT_MISSING
+(graphics), triage classifier has no opcode class. **Patch I: DEFER** (AVX-512 = high-effort/zero-
+payoff while gated). Report: reports/phase4-hollow-knight/HB-UNSUPPORTED-OPCODE-AUDIT.md. No source
+touched; Patch C/D/E/F/G/H untouched; no game runs.
+
+## Heartbeat 2026-07-07 — Patch H (HB extended-state / flags-stack family) — DONE + COMMITTED 67e0e287, VERDICT PASS
+
+Update 2026-07-07 (later): first pass applied the edits but left them UNCOMMITTED in the
+main worktree → looked like "drift" from any other worktree/checkout. Re-verified in source
+AND committed: `67e0e287` on main (parent 4780f1dd), 5 source files, `+115/-4`, builds clean,
+smoke re-run PASS. (Operator's git-add list was corrected: it named nonexistent hb_instr.h
+and omitted hb_lift_x64.c + hb_decoder.h; committed the actual 5 Patch-H files.)
+
+Isolated opcode-coverage worktree (NO game runs). Closed the rest of the extended-state
+family in the HB x64 decoder so it stops unblocking one opcode at a time (F/G already did
+pushf/popf + FXSAVE/FXRSTOR at HEAD 4780f1d):
+- `0F AE /4,/5,/6` XSAVE/XRSTOR/XSAVEOPT → reuse FXSAVE/FXRSTOR IR (FXSAVE-equiv w/o AVX
+  modeling); `66 0F AE /6` CLWB → NOP.
+- `0F C7 /6,/7` RDRAND/RDSEED (reg form) → new `HB_INS_/HB_IR_RDRAND/RDSEED`; interp fills
+  dst via arc4random, CF=1 + others cleared; codegen uses the existing interp `default:`
+  fallback (no ARM64 emitter needed). CMPXCHG8B/16B `/1` mem form regression-safe.
+- FXSAVE64 (`REX.W`/`66 0F AE /0`) already decoded — confirmed, no change.
+- **Step-4 bug found + fixed:** `x87_fxsave_mem`/`x87_fxrstor_mem` used `regs.x86.xmm[i]`
+  (wrong union member in x64 mode) and only 8/16 XMM regs → x64 FXSAVE/XSAVE saved wrong
+  bytes + dropped XMM8-15, FXRSTOR restored nothing. Now mode-aware (8 regs 32-bit via x86
+  view, 16 regs 64-bit via x64 view). Behavioral delta on the shipping x64 FXSAVE path —
+  flagged for operator review.
+
+Verify: `libhyperbridge.a` + `ntdll.so` clean under `-Werror`; 15-vector decode/lift matrix
+all HB_OK; `rdrand_exec_test` + `fxsave_exec_test` (x64 XMM0+XMM8 round-trip) PASS. Details:
+`reports/phase4-hollow-knight/PATCHH-{VERIFY-RUN,SMOKE-TEST,BUILD-SHA}`. Final ntdll.so
+SHA `643521e0c93a8d12720c07f602bcdc8c66dd95cac0e13745bf31ccc28637ee56`.
+Did NOT touch C/D/E/F/G; did NOT wipe translation cache / build/ / lib (incremental only).
 
 ## Current Task
 
@@ -1512,3 +1572,108 @@ or memory-protection sync path, depending on run timing.
   when scalar/native JIT direct-memory paths were explicitly off. The runner now
   exports `MACRUNNER_HB_JIT_DIRECT_SCALAR_MEM=0`, and the codegen default only
   enables that path when `MACRUNNER_HB_JIT_DIRECT_MEM=1` is explicit.
+
+2026-07-04 · ABZU ARM64X view saga status
+- CodeMap-aware in-image dispatch closed the ARM64X nonexec/wrong-view class in the 900s ABZU run: nonexec=0, refuse=0, dxgi+0x12c78=0, c0000005=0, RSS max 1.07GB.
+- Remaining blocker is no longer ARM64X nonexec: c000007b=3 runtime exits in ABZU/dynamic callback path, and graphics triage reports no real D3D11CreateDevice marker.
+
+## 2026-07-04 - HK Mono throughput plateau / region-fusion WIP
+
+Current state: region-fusion lever-2 is built and deployed in `dist-arm64ec-spike` behind default-off `MACRUNNER_HB_REGION_FUSION`. Gate is Mono-only for HK metadata/type-resolution plateau. A/B wrapper exists at `scripts/laneA-run-hk-region-fusion-ab.sh`, but first launch refused because game processes were already present; no new HK run was started. Floor is blocked by driftcheck until source is clean and expected WIP-token policy is resolved.
+
+## 2026-07-04 - HK region-fusion A/B result
+
+`hk-region-fusion-ab` completed, but the comparison is invalid: both base (`MACRUNNER_HB_REGION_FUSION=0`) and region (`=1`) timed out before `CreateSwapChainForHwnd rc=0`, so rung 11 did not hold. Region installs/rejects were 0/0 because the post-swapchain Mono plateau was never reached. Do not tune region detector from this run; first restore default-off rung 11 on the current WIP deploy or isolate the pre-swapchain regression/setup issue.
+
+## 2026-07-05 - HK clean ntdll/dxmtpoll restore verify
+
+Clean floor `ntdll.so` (`1cf6f31c...`) and dxmtpoll `d3d11.dll` (`b9eb822c...` aarch64 variant) were restored without rebuild. Post-run hashes stayed correct. HK verify `hk-dxmtpoll-restored-verify` flaked before DXGI: no `CreateDXGIFactory`, no `CreateSwapChainForHwnd`, no heartbeat, `time_to_swapchain=UNKNOWN`, timeout rc=143. Do not rerun region-fusion A/B until this restored baseline reaches rung 11 again.
+
+## 2026-07-05 - HK full dist restore blocked by incomplete clean-head floor
+
+Full `rsync --delete` from `hk-rung11-clean-head-jetsam-attributed-20260704-105034/payload/dist` restored the correct unix/PE `ntdll` pair (`1cf6f31c` / `64570dd0`) and dxmtpoll `d3d11` was overlaid (`b9eb822c` / `303572e0`). Verify run exited before HK because `wineserver` failed to load `l_intl.nls`. The clean-head payload dist contains zero `*.nls` files, so it is not a complete dist for destructive restore. Need full external clean archive before rerunning baseline/region-fusion.
+
+## 2026-07-05 - HK trusted dxmtpoll baseline restored
+
+Restored full dist from dxmtpoll milestone, then overlaid only clean unix `ntdll.so`. Hash gate: unix `ntdll.so=1cf6f31c`, PE `ntdll.dll=64570dd0`, d3d11 aarch64 `b9eb822c`, d3d11 x86_64 `303572e0`, `l_intl.nls` present. Verify `laneA-hk-trusted-dxmtpoll-full-restore-verify-try1-040234` is valid: rung 11 yes, `time_to_swapchain=143s`, DXMT bins `0xeee00/0xef049=0/0`, no regression classes. Region-fusion A/B can be rerun from this baseline when requested.
+
+## 2026-07-05 - HK region-fusion valid A/B verdict
+
+Force-clean rebuilt HyperBridge+ntdll from the applied region-fusion WIP and deployed ntdll-only: `libhyperbridge.a=be7cfa8e`, unix `ntdll.so=33d54abb`, PE `ntdll.dll=27530080`; d3d11 stayed `b9eb822c` / `303572e0`. Valid control is base retry `laneA-hk-region-fusion-base-retry-20260705-111613-try1-111613`: swapchain 156.399s, DXMT bins `0xeee00/0xef049=0`, no fusion traces, no GetBuffer/RTV. Region leg `laneA-hk-region-fusion-valid-20260705-105238-region-try1-105718`: swapchain 147.936s, installs/rejects/trace lines `0/0/0`, no GetBuffer/RTV. Verdict: detector does not catch Mono plateau bins `0x392609/0x392653/0x3926fb`; trace enabled but no candidate/reject lines emit. Report: `reports/phase4-hollow-knight/hk-region-fusion-valid-verdict-20260705-113259.md`.
+
+## 2026-07-05 - HK isolated region-fusion A/B
+
+Non-fusion loader/signal drift was stashed; isolated region-fusion ntdll built as `d70eed1a...`. A/B on trusted dxmtpoll baseline is valid. Base rung 11 holds (`tts=154s`, DXMT bins 0/0). Region rung 11 also holds (`tts=165s`, DXMT bins 0/0) but `region_installs=0`, `region_rejects=0`; Mono plateau unchanged at 30 RVA/min and no GetBuffer. Detector did not reach candidate stage for Mono bins, not a threshold win. Next work: add pre-candidate region-fusion trace or redesign detector for Mono metadata/name-resolution chain shape.
+
+2026-07-07 10:01 · HB EH-dispatch Patch C · implemented RaiseException guest KiUserExceptionDispatcher delivery; targeted ntdll build rc=0; build sha ecf3c8d3a79b55971edb85f445e38e3428124965d854d1156c6ad25eaa942b58; no game run
+10:04 · PatchA/PatchB build · start ntdll + hyperbridge artifact build; no runs/no dist install · pending
+10:04 · PatchB build · ntdll.so built, SHA recorded · next PatchA hyperbridge build
+10:04 · PatchA build · hyperbridge built, SHA recorded (engine/hyperbridge/libhyperbridge.dylib) · no runs/no dist install
+
+2026-07-07 10:25 · PATCHC verify · PARTIAL: no Galaxy64+0x831682/e06d7363, swapchain rc=0 at +146.157s tid=0x64, process to +930s; GetBuffer/RTV/Present1=0; separate ntdll EH fault code=406d1388 at +33s
+
+10:57 · HK ntdll+0x6229c diagnosis · root cause: guest x64 ntdll __wine_unix_call_dispatcher cell is zero; virtual_unwind WINE_UNIX_CALL hits jit-nullcall at 0x622d3 · next: patch dispatcher-cell init before/at AMD64 ntdll load
+
+11:24 · Patch D verify · PARTIAL: ntdll dispatcher cell fixed (unix 0->native, syscall 0->native), old 0x622d3 nullcall=0; next blocker KiUserExceptionDispatcher tail INT3 after unhandled Mono 406d1388; GetBuffer=0
+
+11:47 · Patch E verify · PARTIAL: KiUser tail INT3 gone, old nullcall gone, semantic RaiseException uses RtlRaiseException for 406d1388 and e06d7363; new blocker ntdll!RtlCaptureContext rva=0x618dc unsupported opcode 0x9c pushfq; swapchain +177s, GetBuffer=0
+11:56 · Patch F · implemented dedicated HB JIT PUSHF/POPF helper path; build/verify pending
+12:00 · Patch F cleanup · main worktree cleaned of Patch A leftovers in hb_runtime.c/hb_context.h; C/D/E/F files preserved
+12:01 · Patch F cleanup · remaining Patch A resume_exact_pc references removed; rebuild retry
+12:02 · Patch F build · SUCCESS; libhyperbridge=956afa4ba0ff6675f5ddfcaf8aa4d64bf0fa2cc05386b90394116beedd774d4e ntdll.so=2bf8885930ac09df784d998b139e5141887eb79818a0e308bca8a54334fbf01d
+12:02 · Patch F deploy · dist ntdll.so SHA256=2bf8885930ac09df784d998b139e5141887eb79818a0e308bca8a54334fbf01d; libhyperbridge static in ntdll.so
+12:22 · Patch F verify · PARTIAL; RtlCaptureContext block now fails at FXSAVE rva=0x6197a after pushfq, swapchain reached, GetBuffer/RTV/Present1=0
+12:27 · Patch G build · FXSAVE/FXRSTOR decode+lift built; libhyperbridge=a0c4053fb11ce113cff505d9a33ead88ba5704c5175a2dafd924b167dcb58dac ntdll.so=2bf8885930ac09df784d998b139e5141887eb79818a0e308bca8a54334fbf01d
+12:27 · Patch G relink · forced ntdll.so relink; SHA256=e29b5af1fab5f4abf03494b3ef2da8b8047b7c0d52a75f0251fc0085b64d0fe0
+12:27 · Patch G deploy · dist ntdll.so SHA256=e29b5af1fab5f4abf03494b3ef2da8b8047b7c0d52a75f0251fc0085b64d0fe0; HB static in ntdll.so
+12:45 · Patch G verify · PARTIAL; RtlCaptureContext FXSAVE fixed (unsupported/runtime-fail=0), run reaches Unity D3D init/Mono reload, GetBuffer/RTV/Present1=0
+13:34 · Patch G verify2 · PARTIAL_COLD; warm root ntdll-e29b5af1fab5f4ab did not reach real swapchain in 900/1800s; EH remains clean
+
+14:01 · HK PatchG verify2 regression · report written: cache poisoning not supported; likely benign 0x406d1388 EH completion/resume semantics block Mono reload before swapchain.
+
+14:08 · HK PatchG EH A/B · ntdll rebuilt and deployed with MACRUNNER_HB_EH_COMPLETION_PROBE and MACRUNNER_HB_EH_BENIGN_NOOP gates.
+
+14:24 · HK PatchG EH probe · 406d1388 did not hit expected Mono resume PC after RtlRaiseException; starting MACRUNNER_HB_EH_BENIGN_NOOP A/B.
+
+14:43 · HK WINSHOW F2+F3 · applied show_window on-demand path and WS_POPUP activation gate; native artifacts deployed for verify.
+
+15:13 · HK PatchG EH A/B · report written. Benign 0x406d1388 EH completion confirmed as swapchain regression; no-op restores swapchain, WINSHOW verify inconclusive because UI trace produced 23.9GB log and was scoped-stopped.
+
+16:22 · HK cleanup · removed invalid 23.9GB winshow-verify run artifacts before bounded verify2; disk 97Gi free -> 97Gi free.
+
+16:30 · HK WINSHOW verify2 · report written. Bounded run FAIL: F2/F3 reaches d3d_on_demand but CreateSwapChain does not return; no WM_ACTIVATE/Present1. Disk: /dev/disk3s1   460Gi   336Gi    98Gi    78%    2.5M  1.0G    0%   /System/Volumes/Data
+
+16:38 · HK WINSHOW trace · built/deployed MACRUNNER_HB_TRACE_WINSHOW artifacts for verify3. Disk: /dev/disk3s1   460Gi   337Gi    97Gi    78%    2.5M  1.0G    0%   /System/Volumes/Data
+
+16:46 · HK WINSHOW defer · built/deployed deferred show_window variant for verify4. Disk: /dev/disk3s1   460Gi   337Gi    97Gi    78%    2.5M  1.0G    0%   /System/Volumes/Data
+
+16:53 · HK WINSHOW verify3/4 · report written. Deferred show restores swapchain but marker is not consumed by WindowPosChanged, so activation/render gate remains closed. Disk: /dev/disk3s1   460Gi   337Gi    97Gi    78%    2.5M  1.0G    0%   /System/Volumes/Data
+17:09 · HK WINSHOW queue activation deployed · winemac.so SHA recorded · next bounded verify5
+17:16 · HK WINSHOW verify5 · current-thread queue post not consumed; swapchain OK, activation missing · next retarget show/activate off DXGI thread
+17:18 · HK WINSHOW queue2 · window-owned queue post deployed · next bounded verify5b
+17:26 · HK WINSHOW async · Cocoa-main async show deployed · next bounded verify6
+17:34 · HK WINSHOW delayed async · deployed delayed Cocoa-main show · next bounded verify7
+17:40 · HK WINSHOW verify7 · orderBelow blocks in Cocoa main callback; swapchain OK, activation missing · next split focus/order path
+17:41 · HK WINSHOW direct-orderFront · deployed direct orderFront+focus path · next bounded verify8
+17:47 · HK WINSHOW verify8 · direct orderFront ok, makeFocused blocks · next post Wine focus event without makeKeyWindow
+17:48 · HK WINSHOW windowGotFocus · deployed nonblocking focus event path · next bounded verify9
+17:55 · HK WINSHOW direct WM_ACTIVATE · deployed direct guest activation post · next bounded verify10
+18:02 · HK WINSHOW verify5 report · activation queue/direct paths failed; orderBelow/makeFocused blocking isolated · next render-consumer probe after swapchain
+18:09 · HK post-swapchain consumer probe · report written; current lane before GetBuffer, rung13 before Present1 on 0xe0 second signal · next scoped PE-layer phase gate probe
+2026-07-07 18:37 · HK unity phase probe: H1 refuted; swapchain +148.595s, phase65=0, signal_plain@0xa14420 hit=5, GetBuffer/RTV/Present=0. Next target downstream signal/event consumer after signal_plain; note lane runner used ntdll-37b849 cache root despite e793 deploy.
+2026-07-07 20:21 · HK post-signal probe: final run laneA-post-signal-probe3-try1-201420, ntdll SHA 42e21a22/root ntdll-42e21a22c3d7bcaf. signal_plain@0xa14420 armed; SetEvent/NtSetEvent=0, is_e0 waits=0, GetBuffer/RTV/Present1=0. Triage POST_SWAPCHAIN_WORKER_THREAD_DEATH at ntdll+0x714fd MEMORY_FAULT. Next: disasm/probe UnityPlayer+0xa14420..0xa144a0 and callee 0xa02780, plus root-cause ntdll+0x714fd.
+20:35 · HK SIGNAL-SETVENT-GAP-CAUSE · wrote report; A=SetEvent import exists but probe misses/indirect dispatch unresolved, B=Galaxy e06d7363 unwind fault at RtlVirtualUnwind2 with Context.Rsp=0x202 · no fixes/runs
+20:35 · cleanup check · run.log 516K, /Users free 96Gi; no cleanup needed after read-only diagnosis · next decision: Unity+0xa14492 probe vs EH unwind probe
+20:58 · HK SetEvent/EH probes patched · call-site sample around Unity+0xa14492 and e06d7363/RtlVirtualUnwind2 context sample added; default-off · next build/deploy/run
+20:58 · HK probes build/deploy · ntdll.so SHA=7fb6dd0aaec4ba149f4393bd019d16cb7b49ad0988d1f54956cc793cf4e37a38 deployed; probes default-off until env · next laneA run
+21:07 · HK setvent-eh-probe try1 invalid · no swapchain/signal/EH, cold cache root ntdll-7fb6dd0aaec4ba14; WINSHOW-off not runnable without touching Patch H · next warm rerun
+21:19 · HK EH probe tightened · fixed probe overhead: RtlVirtualUnwind2 sampler armed only after e06d7363 delivery; previous probe runs invalid/no swapchain · next rebuild
+21:20 · HK probes tightened build/deploy · ntdll.so SHA=b93fc9e9b0f3849534ad1349519647de3a48183fdaddc471a09c500d208ce76e deployed; EH sampler arm-only · next final probe run
+21:33 · HK SETVENT-EH report · A resolved: SetEvent(0xe0) executes and returns success; B not reproduced in valid run; GetBuffer regression now handle/consumer mapping, not missing SetEvent · cleanup next
+21:33 · cleanup done · invalid probe dirs removed, valid tight run retained; disk free=97Gi; translation cache/build tree untouched · next handle-lifecycle map 0xe0/0x1d0/0x1e0
+21:39 · HK handle lifecycle probe patched · default-off import-boundary probe for create/set/wait handle map; no behavior change · next build/deploy/run
+21:39 · HK handle lifecycle build/deploy · ntdll.so SHA=fa9975ce67fb773c93cbcec37231cbe79180e0050eda3902e82aff7903371626 deployed; cache root will change, no cache deletion · next run
+21:47 · HK handle lifecycle probe extended · 0x1d0 appears not event-created; added thread-handle create mapping · next rebuild/deploy/run2
+21:47 · HK handle lifecycle2 build/deploy · ntdll.so SHA=d75b7a5a94aad93fdb766edbac5f97da9f80ad5ef58dee4683b1c70889567291 deployed with CreateThread mapping · next run
+21:55 · HK handle lifecycle · report written; 0xe0 signaled TRUE, visible 0x1d0 waits are success-returning and separate; no fix applied
+22:19 · HK GetBuffer path · rung12 producer identified: Unity backbuffer block 0x90bb70..0x90c330 / GetBuffer call 0x90bc6b; current stops before block after factory association/signal_plain; no fix applied

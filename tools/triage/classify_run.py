@@ -150,8 +150,10 @@ LADDER_RUNGS = [
     # "candidate" line is the MakeWindowAssociation ложняк (factory slot 8
     # misread as Present). Hard rule below: real-method line, no "candidate",
     # rc=0. GetBuffer (slot 9) has no candidate path at all -> inherently safe.
-    ("getbuffer",      ["macrunner-hb-dxgi-swapchain: method=GetBuffer slot=9"]),
-    ("rtv",            ["macrunner-hb-d3d-rtv: CreateRenderTargetView rc=0x0"]),
+    ("getbuffer",      ["macrunner-hb-dxgi-swapchain: method=GetBuffer slot=9",
+                        "dxmt-hk-swaptrace: kind=SwapChain method=GetBuffer"]),
+    ("rtv",            ["macrunner-hb-d3d-rtv: CreateRenderTargetView rc=0x0",
+                        "dxmt-hk-swaptrace: kind=Device method=CreateRenderTargetView"]),
     ("real-present",   ["macrunner-hb-dxgi-swapchain: method=Present slot=8"]),
 ]
 
@@ -161,6 +163,11 @@ LADDER_RUNGS = [
 # like "CreateDXGIFactory" would false-match any of them and report a graphics rung
 # (dxgi-factory) the run never actually reached. Reject any hit on such a line.
 _IATENTRY_TAGS = ("iatentry", "cpdecision", "cpresult", "iatfinal")
+
+# HK rung12 false-positive: UnityPlayer+0x173fc30/0x173fca4 is FMOD thread
+# stop/run-loop machinery, not a render gate. See:
+# reports/phase4-hollow-knight/HK-RUNG12-CLEAR-GATE-FMOD-THREAD-REPORT.md
+_NON_RENDER_GATE_TAGS = ("0x173fc30", "0x173fca4", "UnityPlayer+0x173fc30", "UnityPlayer+0x173fca4")
 
 def _marker_hit(text, marker):
     """Substring hit, but reject (a) counter lines like 'D3D11CreateDevice=0' /
@@ -178,7 +185,7 @@ def _marker_hit(text, marker):
             line_start = text.rfind("\n", 0, i) + 1
             line_end = text.find("\n", j)
             line = text[line_start:line_end if line_end >= 0 else len(text)]
-            if not any(tag in line for tag in _IATENTRY_TAGS):
+            if not any(tag in line for tag in _IATENTRY_TAGS) and not any(tag in line for tag in _NON_RENDER_GATE_TAGS):
                 return True
         start = j
 
@@ -336,6 +343,102 @@ def _read_head_tail(path, head=1024 * 1024, tail=4 * 1024 * 1024):
             return data + "\n" + f.read()
     except Exception:
         return ""
+
+_REL_TS_RE = re.compile(r"\+([0-9]+(?:\.[0-9]+)?)s\]")
+
+def _line_rel_seconds(line):
+    m = _REL_TS_RE.search(line)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+def detect_post_swapchain_worker_thread_death(logs, combined_text, time_to_swapchain):
+    """Streaming HK classifier: swapchain reached, GetBuffer absent, then a guest
+    worker thread exits with c000007b/runtime after a MEMORY_FAULT and the run
+    keeps spinning until the watchdog. This prevents the D3D gate from masking
+    the real Lane-A thread-death blocker as PRESENT_MISSING."""
+    paths = []
+    for log_type in ("run", "stderr", "stdout"):
+        path = logs.get(log_type)
+        if path and os.path.exists(path) and path not in paths:
+            paths.append(path)
+
+    swap_t = time_to_swapchain
+    getbuffer_seen = _swapchain_real_call_hit(
+        combined_text, "macrunner-hb-dxgi-swapchain: method=GetBuffer slot=9")
+    runtime_fault = None
+    death = None
+    late_heartbeat = None
+    max_t = 0.0
+
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for raw in f:
+                    line = raw.rstrip("\n")
+                    t = _line_rel_seconds(line)
+                    if t is not None and t > max_t:
+                        max_t = t
+                    if swap_t is None and _SWAPCHAIN_CREATE_MARKER in line and (
+                            "rc=0x0" in line or "rc=(nil)" in line or "rc=0x00000000" in line):
+                        swap_t = t
+                    if ("macrunner-hb-dxgi-swapchain: method=GetBuffer slot=9" in line and
+                            "candidate" not in line and ("rc=0x0" in line or "rc=(nil)" in line or "rc=0x00000000" in line)):
+                        getbuffer_seen = True
+                    if ("macrunner-hb-runtime-fail: label=thread" in line and
+                            "out=MEMORY_FAULT" in line):
+                        runtime_fault = (t, line[:360])
+                    if ("macrunner-hb-run-exit: label=thread" in line and
+                            "status=c000007b" in line and "reason=runtime" in line):
+                        delta = None if (t is None or swap_t is None) else t - swap_t
+                        if swap_t is None or delta is None or (120.0 <= delta <= 400.0):
+                            death = (t, delta, line[:360])
+                    if death and t is not None and death[0] is not None and t > death[0] + 30.0:
+                        if "macrunner-hb-heartbeat:" in line:
+                            late_heartbeat = (t, line[:240])
+        except Exception:
+            continue
+
+    watchdog_kill = "[mr-run] exit=143" in combined_text or " rc=143 " in combined_text
+    if not death or getbuffer_seen:
+        return None
+    if swap_t is None:
+        return None
+    if not (runtime_fault or "MEMORY_FAULT" in death[2]):
+        return None
+    if not (watchdog_kill or late_heartbeat or (death[0] is not None and max_t > death[0] + 120.0)):
+        return None
+
+    evidence = [
+        "[classify_run] swapchain reached at +%.1fs; GetBuffer not reached." % swap_t,
+        "[classify_run] worker thread exited with c000007b/runtime%s: %s" %
+        ("" if death[1] is None else " %.1fs after swapchain" % death[1], death[2]),
+    ]
+    if runtime_fault:
+        evidence.append("[classify_run] matching thread MEMORY_FAULT: %s" % runtime_fault[1])
+    if late_heartbeat:
+        evidence.append("[classify_run] run continued after worker death; late heartbeat at +%.1fs: %s" %
+                        (late_heartbeat[0], late_heartbeat[1]))
+    if watchdog_kill:
+        evidence.append("[classify_run] watchdog exit=143 after the worker death, consistent with main-loop wait.")
+
+    return {
+        "verdict": "BLOCKED",
+        "owner": "Lane A",
+        "class": "POST_SWAPCHAIN_WORKER_THREAD_DEATH",
+        "confidence": 0.92,
+        "evidence": evidence,
+        "next_action": (
+            "Deliver guest SEH AV for HyperBridge MEMORY_FAULT instead of returning "
+            "STATUS_INVALID_IMAGE_FORMAT from macrunner_hb_run_x64; if delivery fails, "
+            "store-watch the corrupted Unity descriptor slot."
+        ),
+        "missing_markers": {"critical": ["GetBuffer"], "secondary": []},
+        "next_run_env": {"MACRUNNER_HB_GUEST_AV_DELIVERY": "1"}
+    }
 
 FAULT_PATTERNS = ["MEMORY_FAULT", "err:seh", "c0000005", "Unhandled exception",
                   "runtime-fail", "callback-route-reject", "SIGBUS", "SIGSEGV"]
@@ -544,6 +647,8 @@ def main():
     px_confirmed, px_artifact, px_verdict = pixel_truth_confirmed(run_dir_abs)
     pixel_moment_reached = (rung_idx == 14 and px_confirmed)
     time_to_swapchain = time_to_swapchain_seconds(combined_log_text)
+    worker_thread_death = detect_post_swapchain_worker_thread_death(
+        logs, combined_log_text, time_to_swapchain)
     if rung_idx > best_idx:
         try:
             with open(state_path, "w", encoding="utf-8") as f:
@@ -587,6 +692,8 @@ def main():
                 return 96
             elif klass == "SYSTEM_DLL_INIT_CASCADE":
                 return 94
+            elif klass == "POST_SWAPCHAIN_WORKER_THREAD_DEATH":
+                return 91
             elif klass in ("D3D11_CREATE_DEVICE_MISSING", "WINED3D_FALLBACK", "D3D11_DLL_NOT_LOADED", "DXGI_DLL_NOT_LOADED", "CREATE_DXGI_FACTORY_MISSING", "PRESENT_MISSING") or klass.startswith("D3D11_"):
                 return 70
             elif klass.startswith("ARM64EC_"):
@@ -662,6 +769,19 @@ def main():
                 "next_run_env": {}
             }
             why_primary_won = "No analyzer returned results."
+
+    if worker_thread_death and (
+            selected_result["class"] in ("PRESENT_MISSING", "D3D11_CREATE_DEVICE_MISSING",
+                                         "WINED3D_FALLBACK", "D3D11_DLL_NOT_LOADED",
+                                         "DXGI_DLL_NOT_LOADED", "CREATE_DXGI_FACTORY_MISSING") or
+            selected_result["class"].startswith("D3D11_") or
+            float(selected_result.get("confidence", 0) or 0) < worker_thread_death["confidence"]):
+        previous = selected_result
+        selected_result = worker_thread_death
+        secondary_classes = [previous["class"]] + secondary_classes
+        why_primary_won = (
+            "Overridden by classify_run: post-swapchain x64 worker thread death "
+            "is upstream of the downstream graphics/PRESENT_MISSING symptom.")
 
     # --- SILENT_SPIN_NO_MARKERS: watchdog kill + ZERO faults + no forward markers ---
     watchdog_kill = "[mr-run] exit=143" in combined_log_text

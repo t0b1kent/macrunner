@@ -693,3 +693,18 @@ What: Ported Fable's default-off `MACRUNNER_HB_NATIVE_MEMMOVE` uCRT SSE2 memmove
 Why: HK and ABZU are both JIT-throughput bound in string/memory-heavy startup work. The memmove fast path is isolated and default-off, so it can be A/B tested without changing the current rung-11 floor.
 Verify: Forced `hb_arm64_codegen.o`/`hb_runtime.o`/HyperBridge rebuild, targeted `ntdll.so` relink, and deployed `ntdll.so` `1cf6f31c3da49da458042b90c1d9b9c37592bb07d01f077f230715d762b1bc98` over backup `artifacts/deploy-backups/20260703-230114-native-memmove/ntdll.so.before` (`9a955f2a86f7552fbeba8b472ca69098f3b57852f1d5b6a2ef1033411d4db3fc`). Default-off smoke `laneA-fable-native-memmove-off-smoke-try1-230152` reached filtered rung 11 (`CreateSwapChainForHwnd rc=0`), with no `GetBuffer`/RTV/real Present and no native-memmove hits.
 Status: native-memmove-port-landed-default-off
+
+2026-07-04 · ARM64X CodeMap-aware run_x64 in-image dispatch
+- Added CodeMap type classifier for ARM64X ranges and used it in run_x64 in-image routing so type=2 x64/CHPE code is executable-translatable while type=1/type=0 are not decoded as x64 bytes.
+- Validation: control smoke crash-clean; ABZU 900s closed nonexec/refuse/dxgi storm but still red on runtime c000007b=3 and no real D3D11CreateDevice.
+
+## 2026-07-04 - HK Mono plateau region-fusion WIP
+
+- Added default-off `MACRUNNER_HB_REGION_FUSION` superblock/region fusion path from UTFFUSION WIP for hot cross-block backedges.
+- Narrowed Wine-side enablement to Mono modules for HK metadata/type-resolution plateau.
+- Added rate-limited region-fusion reject diagnostics under `MACRUNNER_HB_TRACE_REGION_FUSION=1`.
+- Rebuilt HyperBridge and relinked arm64ec-spike `ntdll.so`; floor is blocked until source is clean and driftcheck policy is satisfied.
+
+2026-07-04 · JIT last_result per-block reset
+- Cleared `ctx->last_result` before each native JIT block execution to prevent stale helper MEMORY_FAULT state from poisoning later control-only blocks.
+- Validation: control smoke clean; ABZU c000007b/runtime_fail/jit_fail dropped to zero, but new host-side c0000005 surfaced in ntdll debug-string path before real D3D11CreateDevice.

@@ -253,6 +253,8 @@ hb_cache_t* hb_cache_open(const char* root, const hb_cache_options_t* options) {
     snprintf(c->path, sizeof(c->path), "%s/translation-cache.bin", c->root);
     if (ensure_file(c) != 0) { free(c); return NULL; }
     if (load_entries(c, &c->entries, &c->count) != HB_OK) { free(c); return NULL; }
+    c->stats.entries_loaded = c->count;
+    c->stats.entries_current = c->count;
     c->cap = c->count ? c->count : 16;
     return c;
 }
@@ -266,6 +268,8 @@ hb_cache_t* hb_cache_create(const char* path) {
     else strncpy(c->path, "build/hyperbridge-cache/translation-cache.bin", sizeof(c->path) - 1);
     if (ensure_file(c) != 0) { free(c); return NULL; }
     if (load_entries(c, &c->entries, &c->count) != HB_OK) { free(c); return NULL; }
+    c->stats.entries_loaded = c->count;
+    c->stats.entries_current = c->count;
     c->cap = c->count ? c->count : 16;
     return c;
 }
@@ -429,6 +433,7 @@ hb_result_t hb_cache_put(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_
         if (cache->hash_index && cache->index_valid)
             hb_cache_index_insert_pos(cache, pos);
     }
+    cache->stats.entries_current = cache->count;
     return append_entry(cache, &cache->entries[pos]);
 }
 
@@ -459,6 +464,7 @@ hb_result_t hb_cache_invalidate(hb_cache_t* cache, uint32_t version) {
         }
     }
     cache->count = keep;
+    cache->stats.entries_current = cache->count;
     cache->index_valid = false;  /* entries compacted -> positions changed; rebuild index lazily */
     r = write_entries_atomic(cache, cache->entries, cache->count);
     return r;
@@ -479,6 +485,7 @@ hb_result_t hb_cache_invalidate_module(hb_cache_t* cache, uint64_t module_id) {
         }
     }
     cache->count = keep;
+    cache->stats.entries_current = cache->count;
     cache->index_valid = false;  /* entries compacted -> positions changed; rebuild index lazily */
     r = write_entries_atomic(cache, cache->entries, cache->count);
     return r;
@@ -498,6 +505,7 @@ hb_result_t hb_cache_clear(hb_cache_t* cache) {
     cache->entries = NULL;
     cache->count = 0;
     cache->cap = 0;
+    cache->stats.entries_current = 0;
     cache->index_valid = false;  /* all entries gone -> drop the index (rebuilt empty on next use) */
     cache->stats.invalidations++;
     return write_entries_atomic(cache, NULL, 0);
@@ -506,6 +514,7 @@ hb_result_t hb_cache_clear(hb_cache_t* cache) {
 hb_result_t hb_cache_stats(hb_cache_t* cache, hb_cache_stats_t* out) {
     if (!cache || !out) return HB_ERR_INVALID_ARG;
     *out = cache->stats;
+    out->entries_current = cache->count;
     return HB_OK;
 }
 

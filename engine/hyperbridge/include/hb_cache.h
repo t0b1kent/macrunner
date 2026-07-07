@@ -56,6 +56,8 @@ typedef struct {
     uint64_t misses;
     uint64_t bytes_stored;
     uint64_t entries_stored;
+    uint64_t entries_loaded;
+    uint64_t entries_current;
     uint64_t invalidations;
     uint64_t corrupt_entries_ignored;
 } hb_cache_stats_t;

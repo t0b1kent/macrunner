@@ -351,6 +351,12 @@ static BOOL is_special_env_var( const char *var )
 static BOOL is_ignored_env_var( const char *var )
 {
     return (STARTS_WITH( var, "NIXPKGS_" ) ||
+            STARTS_WITH( var, "MACRUNNER_GUEST_PEB_OBSERVER_ENABLE=" ) ||
+            STARTS_WITH( var, "MACRUNNER_GUEST_PEB_OBSERVER_DIR=" ) ||
+            STARTS_WITH( var, "MACRUNNER_GUEST_PEB_OBSERVER_RUN_ID=" ) ||
+            STARTS_WITH( var, "MACRUNNER_GUEST_PEB_OBSERVER_EXPECTED_IMAGE_SHA256=" ) ||
+            STARTS_WITH( var, "MACRUNNER_GUEST_PEB_OBSERVER_EXPECTED_VIEW=" ) ||
+            STARTS_WITH( var, "MACRUNNER_GUEST_PEB_OBSERVER_EXPECTED_WINE_SHA256=" ) ||
             STARTS_WITH( var, "QT_" ) ||
             STARTS_WITH( var, "SDL_AUDIODRIVER=" ) ||
             STARTS_WITH( var, "SDL_AUDIO_DRIVER=" ) ||

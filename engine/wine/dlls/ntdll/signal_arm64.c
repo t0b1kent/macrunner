@@ -1812,7 +1812,12 @@ restart:
         static unsigned int report_count;
         const EXCEPTION_RECORD *rec = macrunner_hb_current_exception_record;
         LDR_DATA_TABLE_ENTRY *module = NULL;
+        LDR_DATA_TABLE_ENTRY *lr_module = NULL;
+        LDR_DATA_TABLE_ENTRY *x17_module = NULL;
         NTSTATUS ldr_status = LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module );
+        NTSTATUS lr_ldr_status = LdrFindEntryForAddress( (void *)(ULONG_PTR)context->Lr, &lr_module );
+        NTSTATUS x17_ldr_status =
+            LdrFindEntryForAddress( (void *)(ULONG_PTR)context->X[17], &x17_module );
         DWORD tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
 
         if (report_count++ < 64)
@@ -1828,6 +1833,24 @@ restart:
                      rec ? rec->ExceptionAddress : NULL,
                      (ULONG_PTR)(rec && rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0),
                      (void *)(ULONG_PTR)(rec && rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0) );
+            if (lr_module)
+            {
+                const ULONG *insn = (const ULONG *)(ULONG_PTR)context->Lr;
+                MESSAGE( "macrunner-hb-seh-nullcall-native: lr_status=%08lx module=%s base=%p "
+                         "lr_rva=%Ix insn[-4..0]=%08lx/%08lx/%08lx/%08lx/%08lx "
+                         "x17_status=%08lx x17_module=%s x17_base=%p x17_rva=%Ix x17_value=%p\n",
+                         lr_ldr_status, debugstr_w( lr_module->BaseDllName.Buffer ),
+                         lr_module->DllBase,
+                         context->Lr - (ULONG64)(ULONG_PTR)lr_module->DllBase,
+                         insn[-4], insn[-3], insn[-2], insn[-1], insn[0],
+                         x17_ldr_status,
+                         x17_module ? debugstr_w( x17_module->BaseDllName.Buffer ) : "(none)",
+                         x17_module ? x17_module->DllBase : NULL,
+                         x17_module ? context->X[17] - (ULONG64)(ULONG_PTR)x17_module->DllBase : 0,
+                         x17_module && context->X[17] + sizeof(ULONG64) <=
+                             (ULONG64)(ULONG_PTR)x17_module->DllBase + x17_module->SizeOfImage
+                             ? (void *)*(const ULONG64 *)(ULONG_PTR)context->X[17] : NULL );
+            }
             /* MacRunner diag: a NULL-call boundary (exc_addr=0, EXECUTE) carries the
              * original fault registers here (first unwind step).  Dump them + a stack
              * window so the guest return address (a guest-range value, the call site)

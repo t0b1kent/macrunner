@@ -97,6 +97,18 @@ static BOOL trace_ui_thread_enabled(void)
     return enabled;
 }
 
+static BOOL trace_present_follow_thread_lifecycle_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *value = getenv("MACRUNNER_HB_PRESENT_FOLLOW_PROBE");
+        enabled = value && value[0] && value[0] != '0';
+    }
+    return enabled;
+}
+
 static inline int get_unix_exit_code( NTSTATUS status )
 {
     /* prevent a nonzero exit code to end up truncated to zero in unix */
@@ -1115,6 +1127,14 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
  */
 static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
 {
+    if (trace_present_follow_thread_lifecycle_enabled())
+    {
+        fprintf( stderr,
+                 "macrunner-hb-present-thread-lifecycle: stage=pthread-exit pid=%d tid=%lx status=0x%x\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), status );
+        fflush( stderr );
+    }
+
     close( ntdll_get_thread_data()->alert_fd );
     close( ntdll_get_thread_data()->wait_fd[0] );
     close( ntdll_get_thread_data()->wait_fd[1] );
@@ -1555,6 +1575,14 @@ GPT_ABI_WRAPPER( NtCreateThreadEx );
  */
 void abort_thread( int status )
 {
+    if (trace_present_follow_thread_lifecycle_enabled())
+    {
+        fprintf( stderr,
+                 "macrunner-hb-present-thread-lifecycle: stage=abort-thread pid=%d tid=%lx status=0x%x\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), status );
+        fflush( stderr );
+    }
+
     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
     if (InterlockedDecrement( &nb_threads ) <= 0) abort_process( status );
     pthread_exit_wrapper( status );
@@ -1577,6 +1605,14 @@ static DECLSPEC_NORETURN void exit_thread( int status )
 {
     static void *prev_teb;
     TEB *teb;
+
+    if (trace_present_follow_thread_lifecycle_enabled())
+    {
+        fprintf( stderr,
+                 "macrunner-hb-present-thread-lifecycle: stage=exit-thread pid=%d tid=%lx status=0x%x\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), status );
+        fflush( stderr );
+    }
 
     if (trace_ui_thread_enabled())
     {
@@ -1872,6 +1908,14 @@ NTSTATUS WINAPI NtTerminateThread( HANDLE handle, LONG exit_code )
     unsigned int ret;
     BOOL self;
 
+    if (trace_present_follow_thread_lifecycle_enabled())
+    {
+        fprintf( stderr,
+                 "macrunner-hb-present-thread-lifecycle: stage=terminate-enter pid=%d tid=%lx handle=%p status=0x%x\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), handle, (unsigned int)exit_code );
+        fflush( stderr );
+    }
+
     if (trace_ui_thread_enabled())
     {
         fprintf( stderr,
@@ -1888,6 +1932,15 @@ NTSTATUS WINAPI NtTerminateThread( HANDLE handle, LONG exit_code )
         self = !ret && reply->self;
     }
     SERVER_END_REQ;
+
+    if (trace_present_follow_thread_lifecycle_enabled())
+    {
+        fprintf( stderr,
+                 "macrunner-hb-present-thread-lifecycle: stage=terminate-result pid=%d tid=%lx handle=%p status=0x%x ret=0x%x self=%u\n",
+                 getpid(), (unsigned long)GetCurrentThreadId(), handle, (unsigned int)exit_code,
+                 ret, self );
+        fflush( stderr );
+    }
 
     if (trace_ui_thread_enabled())
     {

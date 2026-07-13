@@ -1423,9 +1423,20 @@ static BOOL macrunner_hb_is_address_wait_semantic_import( const char *import_nam
            macrunner_hb_ascii_ieq( import_name, "RtlWakeAddressSingle" );
 }
 
+static BOOL macrunner_hb_is_x64_stack_probe_semantic_import( const char *dll_name,
+                                                              const char *import_name )
+{
+    return macrunner_hb_ascii_ieq( dll_name, "ntdll.dll" ) &&
+           (macrunner_hb_ascii_ieq( import_name, "___chkstk_ms" ) ||
+            macrunner_hb_ascii_ieq( import_name, "__chkstk_ms" ) ||
+            macrunner_hb_ascii_ieq( import_name, "__chkstk" ));
+}
+
 static BOOL macrunner_hb_is_semantic_import_stub( const char *dll_name, const char *import_name )
 {
     if (macrunner_hb_is_address_wait_semantic_import( import_name ))
+        return TRUE;
+    if (macrunner_hb_is_x64_stack_probe_semantic_import( dll_name, import_name ))
         return TRUE;
 
     if (macrunner_hb_ascii_ieq( dll_name, "ucrtbase.dll" ))

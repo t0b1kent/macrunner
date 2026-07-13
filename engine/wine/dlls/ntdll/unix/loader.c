@@ -1802,7 +1802,7 @@ static NTSTATUS pe_module_loaded( void *args )
     }
     return STATUS_SUCCESS;
 }
-#elif defined(__x86_64__)
+#else
 static NTSTATUS pe_module_loaded( void *args ) { return STATUS_NOT_IMPLEMENTED; }
 #endif
 
@@ -1810,6 +1810,7 @@ extern NTSTATUS macrunner_hb_register_import_thunk( void *args );
 extern NTSTATUS macrunner_hb_x64_dll_entry( void *args );
 extern NTSTATUS macrunner_hb_x64_thread_entry( void *args );
 extern NTSTATUS macrunner_hb_x64_import_context( void *args );
+extern NTSTATUS macrunner_guest_peb_observe( void *args );
 
 static const unixlib_entry_t unix_call_funcs[] =
 {
@@ -1825,9 +1826,8 @@ static const unixlib_entry_t unix_call_funcs[] =
     macrunner_hb_x64_dll_entry,
     macrunner_hb_x64_thread_entry,
     macrunner_hb_x64_import_context,
-#if defined(__x86_64__)
     pe_module_loaded,
-#endif
+    macrunner_guest_peb_observe,
 };
 
 
@@ -1850,9 +1850,7 @@ static NTSTATUS wow64_macrunner_hb_register_import_thunk( void *args ) { return 
 static NTSTATUS wow64_macrunner_hb_x64_dll_entry( void *args ) { return STATUS_NOT_IMPLEMENTED; }
 static NTSTATUS wow64_macrunner_hb_x64_thread_entry( void *args ) { return STATUS_NOT_IMPLEMENTED; }
 static NTSTATUS wow64_macrunner_hb_x64_import_context( void *args ) { return STATUS_NOT_IMPLEMENTED; }
-#if defined(__x86_64__)
 static NTSTATUS wow64_pe_module_loaded( void *args ) { return STATUS_NOT_IMPLEMENTED; }
-#endif
 
 const unixlib_entry_t unix_call_wow64_funcs[] =
 {
@@ -1868,9 +1866,8 @@ const unixlib_entry_t unix_call_wow64_funcs[] =
     wow64_macrunner_hb_x64_dll_entry,
     wow64_macrunner_hb_x64_thread_entry,
     wow64_macrunner_hb_x64_import_context,
-#if defined(__x86_64__)
     wow64_pe_module_loaded,
-#endif
+    macrunner_guest_peb_observe,
 };
 
 #endif  /* _WIN64 */

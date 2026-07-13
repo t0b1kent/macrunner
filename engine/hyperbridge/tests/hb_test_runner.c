@@ -797,6 +797,85 @@ TEST(memory_live_protect_to_exec_bumps_generation) {
     tests_passed++;
 }
 
+TEST(memory_live_subrange_protect_preserves_neighbors) {
+    const size_t page = 4096;
+    uint8_t* backing = mmap(NULL, page * 3, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT(backing != MAP_FAILED);
+
+    hb_memory_t* mem = hb_memory_create(0);
+    ASSERT(mem != NULL);
+    ASSERT(hb_memory_map(mem, (hb_gva_t)(uintptr_t)backing, page * 3,
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ASSERT(hb_memory_protect(mem, (hb_gva_t)(uintptr_t)(backing + page), page,
+                             HB_PERM_READ) == HB_OK);
+
+    hb_region_t* left = hb_memory_find_region(mem, (hb_gva_t)(uintptr_t)backing);
+    hb_region_t* middle = hb_memory_find_region(mem, (hb_gva_t)(uintptr_t)(backing + page));
+    hb_region_t* right = hb_memory_find_region(mem, (hb_gva_t)(uintptr_t)(backing + page * 2));
+    ASSERT(left != NULL && middle != NULL && right != NULL);
+    ASSERT(left->base == (hb_gva_t)(uintptr_t)backing && left->size == page);
+    ASSERT(middle->base == (hb_gva_t)(uintptr_t)(backing + page) && middle->size == page);
+    ASSERT(right->base == (hb_gva_t)(uintptr_t)(backing + page * 2) && right->size == page);
+    ASSERT(left->perm == (HB_PERM_READ | HB_PERM_WRITE));
+    ASSERT(middle->perm == HB_PERM_READ);
+    ASSERT(right->perm == (HB_PERM_READ | HB_PERM_WRITE));
+
+    hb_memory_destroy(mem);
+    munmap(backing, page * 3);
+    tests_passed++;
+}
+
+TEST(memory_private_subrange_protect_preserves_neighbors) {
+    const size_t page = (size_t)getpagesize();
+    const hb_gva_t guest = 0x500000000ULL;
+    hb_memory_t* mem = hb_memory_create(0);
+    ASSERT(mem != NULL);
+    ASSERT(hb_memory_map_private(mem, guest, page * 3,
+                                 HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ASSERT(hb_memory_protect(mem, guest + page, page, HB_PERM_READ) == HB_OK);
+
+    hb_region_t* left = hb_memory_find_region(mem, guest);
+    hb_region_t* middle = hb_memory_find_region(mem, guest + page);
+    hb_region_t* right = hb_memory_find_region(mem, guest + page * 2);
+    ASSERT(left != NULL && middle != NULL && right != NULL);
+    ASSERT(left->base == guest && left->size == page && left->allocated);
+    ASSERT(middle->base == guest + page && middle->size == page && middle->allocated);
+    ASSERT(right->base == guest + page * 2 && right->size == page && right->allocated);
+    ASSERT(left->perm == (HB_PERM_READ | HB_PERM_WRITE));
+    ASSERT(middle->perm == HB_PERM_READ);
+    ASSERT(right->perm == (HB_PERM_READ | HB_PERM_WRITE));
+
+    hb_memory_destroy(mem);
+    tests_passed++;
+}
+
+TEST(memory_multi_region_protect_keeps_fallback_coverage) {
+    const size_t page = 4096;
+    uint8_t* backing = mmap(NULL, page * 2, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT(backing != MAP_FAILED);
+
+    hb_memory_t* mem = hb_memory_create(0);
+    ASSERT(mem != NULL);
+    ASSERT(hb_memory_map(mem, (hb_gva_t)(uintptr_t)backing, page,
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ASSERT(hb_memory_map(mem, (hb_gva_t)(uintptr_t)(backing + page), page,
+                         HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+    ASSERT(hb_memory_protect(mem, (hb_gva_t)(uintptr_t)backing, page * 2,
+                             HB_PERM_READ) == HB_OK);
+
+    hb_region_t* first = hb_memory_find_region(mem, (hb_gva_t)(uintptr_t)backing);
+    hb_region_t* second = hb_memory_find_region(mem, (hb_gva_t)(uintptr_t)(backing + page));
+    ASSERT(first != NULL && second != NULL);
+    ASSERT(first->perm == HB_PERM_READ);
+    ASSERT(second->perm == HB_PERM_READ);
+
+    hb_memory_destroy(mem);
+    munmap(backing, page * 2);
+    tests_passed++;
+}
+
 TEST(memory_live_exec_write_uses_protected_path_and_bumps_generation) {
 #ifdef __APPLE__
     const size_t page = 4096;
@@ -24498,6 +24577,9 @@ int main(int argc, char** argv) {
     test_memory_special_write_unmapped_live_range();
     test_memory_cross_region_write_read_span();
     test_memory_live_protect_to_exec_bumps_generation();
+    test_memory_live_subrange_protect_preserves_neighbors();
+    test_memory_private_subrange_protect_preserves_neighbors();
+    test_memory_multi_region_protect_keeps_fallback_coverage();
     test_memory_live_exec_write_uses_protected_path_and_bumps_generation();
     test_memory_private_guest_low_va_backing();
     test_memory_guest32_window_direct_mapping();

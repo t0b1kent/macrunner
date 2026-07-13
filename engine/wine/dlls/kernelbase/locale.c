@@ -36,6 +36,7 @@
 #include "winuser.h"
 #include "winternl.h"
 #include "kernelbase.h"
+#include "macrunner_wcstombs_probe.h"
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(nls);
@@ -320,6 +321,156 @@ static unsigned int nb_codepages;
 
 static struct norm_table *norm_info;
 
+#define MACRUNNER_HB_WCSTOMBS_PROBE_MAGIC 0x57564350u /* WCVP */
+
+struct macrunner_hb_wcstombs_probe_state
+{
+    DWORD magic;
+    volatile int32_t enabled;
+    volatile int32_t once;
+};
+
+static struct macrunner_hb_wcstombs_probe_state macrunner_hb_wcstombs_owner_view_state
+    __attribute__((section(".mrdiag"), used, aligned(4))) =
+    { MACRUNNER_HB_WCSTOMBS_PROBE_MAGIC, -1, 0 };
+
+static struct macrunner_hb_wcstombs_probe_state *macrunner_hb_wcstombs_probe_state(void)
+{
+    extern IMAGE_DOS_HEADER __ImageBase;
+    const IMAGE_DOS_HEADER *dos = &__ImageBase;
+    const IMAGE_NT_HEADERS *nt;
+    const IMAGE_SECTION_HEADER *section;
+    unsigned int i;
+
+    nt = (const IMAGE_NT_HEADERS *)((const char *)dos + dos->e_lfanew);
+    section = IMAGE_FIRST_SECTION( nt );
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, section++)
+    {
+        struct macrunner_hb_wcstombs_probe_state *state;
+        SIZE_T offset;
+
+        if (memcmp( section->Name, ".mrdiag", sizeof(".mrdiag") - 1 )) continue;
+        for (offset = 0; offset + sizeof(*state) <= section->Misc.VirtualSize;
+             offset += sizeof(DWORD))
+        {
+            state = (void *)((char *)dos + section->VirtualAddress + offset);
+            if (state->magic == MACRUNNER_HB_WCSTOMBS_PROBE_MAGIC) return state;
+        }
+    }
+    return &macrunner_hb_wcstombs_owner_view_state;
+}
+
+static BOOL macrunner_hb_trace_wcstombs_owner_view_enabled(
+    struct macrunner_hb_wcstombs_probe_state *state )
+{
+    static const WCHAR nameW[] = L"MACRUNNER_HB_TRACE_WCSTOMBS_OWNER_VIEW";
+    WCHAR valueW[2] = {0};
+    UNICODE_STRING name, value;
+    int32_t enabled, expected;
+
+    enabled = __atomic_load_n( &state->enabled, __ATOMIC_ACQUIRE );
+    if (enabled >= 0) return enabled;
+
+    name.Buffer = (WCHAR *)nameW;
+    name.Length = sizeof(nameW) - sizeof(*nameW);
+    name.MaximumLength = sizeof(nameW);
+    value.Buffer = valueW;
+    value.Length = 0;
+    value.MaximumLength = sizeof(valueW);
+    enabled = !RtlQueryEnvironmentVariable_U( NULL, &name, &value ) &&
+              macrunner_hb_wcstombs_probe_env_enabled( (const uint16_t *)valueW, value.Length );
+
+    expected = -1;
+    __atomic_compare_exchange_n( &state->enabled, &expected,
+                                 enabled, 0, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE );
+    return __atomic_load_n( &state->enabled, __ATOMIC_ACQUIRE );
+}
+
+static unsigned int macrunner_hb_wcstombs_owner_view_source( const WCHAR *src,
+                                                             unsigned int srclen,
+                                                             WCHAR values[2],
+                                                             const char **state )
+{
+    static const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                                  PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                                  PAGE_EXECUTE_WRITECOPY;
+    MEMORY_BASIC_INFORMATION info = {0};
+    SIZE_T ret_size;
+    NTSTATUS status;
+    unsigned int count;
+
+    if (!src || !srclen)
+    {
+        *state = "empty";
+        return 0;
+    }
+
+    status = NtQueryVirtualMemory( GetCurrentProcess(), src, MemoryBasicInformation,
+                                   &info, sizeof(info), &ret_size );
+    count = macrunner_hb_wcstombs_probe_readable_source_count(
+        (uintptr_t)src, srclen, (uintptr_t)info.BaseAddress, info.RegionSize,
+        !status && info.State == MEM_COMMIT,
+        !status && !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
+        !!(info.Protect & readable) );
+    if (!count)
+    {
+        *state = "unreadable";
+        return 0;
+    }
+
+    values[0] = src[0];
+    if (count > 1) values[1] = src[1];
+    *state = "readable";
+    return count;
+}
+
+static const char *macrunner_hb_wcstombs_owner_name( enum macrunner_hb_wcstombs_owner_class class )
+{
+    switch (class)
+    {
+    case MACRUNNER_HB_WCSTOMBS_OWNER_ANSI: return "ANSI";
+    case MACRUNNER_HB_WCSTOMBS_OWNER_OEM: return "OEM";
+    case MACRUNNER_HB_WCSTOMBS_OWNER_CODEPAGES: return "codepages";
+    default: return "other";
+    }
+}
+
+static void macrunner_hb_trace_wcstombs_owner_view( const CPTABLEINFO *info,
+                                                    const USHORT *table,
+                                                    const WCHAR *src,
+                                                    unsigned int srclen,
+                                                    char *dst,
+                                                    unsigned int dstlen )
+{
+    struct macrunner_hb_wcstombs_probe_state *state;
+    struct macrunner_hb_wcstombs_owner owner;
+    WCHAR values[2] = {0};
+    const char *src_state;
+    unsigned int src_count;
+
+    state = macrunner_hb_wcstombs_probe_state();
+    if (!macrunner_hb_wcstombs_probe_try_begin(
+            &state->once, macrunner_hb_trace_wcstombs_owner_view_enabled( state ), dstlen,
+            (uintptr_t)info->DBCSOffsets, (uintptr_t)table ))
+        return;
+
+    owner = macrunner_hb_wcstombs_probe_classify_owner(
+        (uintptr_t)info, (uintptr_t)&ansi_cpinfo, (uintptr_t)&oem_cpinfo,
+        (uintptr_t)codepages, ARRAY_SIZE(codepages), sizeof(codepages[0]) );
+    src_count = macrunner_hb_wcstombs_owner_view_source( src, srclen, values, &src_state );
+
+    MESSAGE( "macrunner-hb-wcstombs-owner-view: tid=%p ret=%p probe_state=%p cp=%u info=%p "
+             "owner=%s owner_index=%d ansi=%p oem=%p codepages=%p codepages_end=%p "
+             "nb_addr=%p nb=%u dbcs=%p wide=%p src=%p srclen=%u dst=%p dstlen=%u "
+             "src_state=%s src_count=%u src0=%04x src1=%04x\n",
+             NtCurrentTeb()->ClientId.UniqueThread, __builtin_return_address(0), state,
+             (unsigned int)info->CodePage, info, macrunner_hb_wcstombs_owner_name( owner.class ),
+             owner.index, &ansi_cpinfo, &oem_cpinfo, codepages,
+             codepages + ARRAY_SIZE(codepages), &nb_codepages, nb_codepages,
+             info->DBCSOffsets, table, src, srclen, dst, dstlen, src_state, src_count,
+             (unsigned int)values[0], (unsigned int)values[1] );
+}
+
 static void init_default_codepage_tables(void)
 {
     USHORT utf8[2] = { 0, CP_UTF8 };
@@ -538,20 +689,22 @@ static void load_sortdefault_nls(void)
 /* MacRunner stopgap (Lane D 2026-06-15): the ARM64X kernelbase twin carries TWO copies of the
  * init-populated locale globals in .data.  Native init code (load_locale_nls/load_sortdefault_nls/
  * init_locale) writes the native-view copy, but the export-reachable native NLS functions
- * (GetStringTypeW/LCMapString/CompareString/get_language_sort/...) read the EC-view copy 0x27d8
- * bytes below it, which no code ever writes (image DVRT has no .data entries to coalesce the two
+ * (GetStringTypeW/LCMapString/CompareString/get_language_sort/...) read linker-layout-specific
+ * EC-view copies which no code ever writes (image DVRT has no .data entries to coalesce the two
  * views; the x64 side is .hexpthk thunks into ARM64, so there is no x64 init that writes the EC
- * copy).  Mirror each initialised global into its EC-view copy so native importers (e.g. DXMT) read
- * valid locale tables instead of NULL.  Guarded to the ARM64X image (CHPE metadata) so pure
- * x86_64/i386 kernelbase builds are untouched.  TODO: replace once general ARM64X .data
+ * copy).  Mirror each initialised global into its exact EC-view copy so native importers (e.g.
+ * DXMT) read valid locale tables instead of NULL.  Guarded to the ARM64X image (CHPE metadata) so
+ * pure x86_64/i386 kernelbase builds are untouched.  TODO: replace once general ARM64X .data
  * view-coherence lands (see reports/research/arm64x-sync-stopgaps.md). */
 /* Mirror one native-view global into its EC-view copy below.  noinline + opaque pointer
  * parameter so _FORTIFY_SOURCE cannot infer a sub-object (size 0) destination and insert a
  * __memcpy_chk that would abort at runtime. */
-#define MACRUNNER_HB_LOCALE_EC_DELTA 0x27d8
-static void __attribute__((noinline)) macrunner_hb_mirror_ec_copy( const void *native_addr, SIZE_T size )
+#define MACRUNNER_HB_LOCALE_CORE_EC_DELTA  0x27e8
+#define MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA 0x1b00
+static void __attribute__((noinline)) macrunner_hb_mirror_ec_copy( const void *native_addr,
+                                                                  SIZE_T size, SIZE_T delta )
 {
-    memcpy( (void *)((uintptr_t)native_addr - MACRUNNER_HB_LOCALE_EC_DELTA), native_addr, size );
+    memcpy( (void *)((uintptr_t)native_addr - delta), native_addr, size );
 }
 
 static void macrunner_hb_sync_locale_ec_copies(void)
@@ -581,8 +734,9 @@ static void macrunner_hb_sync_locale_ec_copies(void)
         MESSAGE( "macrunner-hb-sync-locale-ec: skip reason=not-arm64x handle=%p\n", kernelbase_handle );
         return; /* not ARM64X: single .data copy, nothing to mirror */
     }
-    MESSAGE( "macrunner-hb-sync-locale-ec: mirroring handle=%p delta=0x%x\n",
-             kernelbase_handle, MACRUNNER_HB_LOCALE_EC_DELTA );
+    MESSAGE( "macrunner-hb-sync-locale-ec: mirroring handle=%p core_delta=0x%x entry_delta=0x%x\n",
+             kernelbase_handle, MACRUNNER_HB_LOCALE_CORE_EC_DELTA,
+             MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA );
 
     /* MacRunner (2026-07-01): confirmed via live probe that GetStringTypeW (called from
      * ucrtbase's CRT startup) reads a fixed image RVA landing in ansi_cpinfo/oem_cpinfo
@@ -596,78 +750,82 @@ static void macrunner_hb_sync_locale_ec_copies(void)
      * included too: wineboot/DXMT-prefix init reaches update_locale_registry through the EC
      * view before DXMT code, and RegSetKeyValueW faulted on an unmirrored entry_sintlsymbol
      * subkey pointer (kernelbase+0x59930, ldrh w8,[x23]). */
-#define MR_SYNC_EC( g ) macrunner_hb_mirror_ec_copy( &(g), sizeof(g) )
-    MR_SYNC_EC( sort );
-    MR_SYNC_EC( locale_table );
-    MR_SYNC_EC( lcids_index );
-    MR_SYNC_EC( lcnames_index );
-    MR_SYNC_EC( locale_strings );
-    MR_SYNC_EC( locale_sorts );
-    MR_SYNC_EC( system_locale );
-    MR_SYNC_EC( user_locale );
-    MR_SYNC_EC( current_locale_sort );
-    MR_SYNC_EC( system_lcid );
-    MR_SYNC_EC( user_lcid );
-    MR_SYNC_EC( ansi_cpinfo );
-    MR_SYNC_EC( oem_cpinfo );
-    MR_SYNC_EC( unix_cp );
-    MR_SYNC_EC( codepages );
-    MR_SYNC_EC( nb_codepages );
-    MR_SYNC_EC( norm_info );
-    MR_SYNC_EC( charmaps );
-    MR_SYNC_EC( geo_ids );
-    MR_SYNC_EC( geo_index );
-    MR_SYNC_EC( geo_ids_count );
-    MR_SYNC_EC( geo_index_count );
-    MR_SYNC_EC( intl_key );
-    MR_SYNC_EC( nls_key );
-    MR_SYNC_EC( tz_key );
-    MR_SYNC_EC( entry_icalendartype );
-    MR_SYNC_EC( entry_icountry );
-    MR_SYNC_EC( entry_icurrdigits );
-    MR_SYNC_EC( entry_icurrency );
-    MR_SYNC_EC( entry_idigits );
-    MR_SYNC_EC( entry_idigitsubstitution );
-    MR_SYNC_EC( entry_ifirstdayofweek );
-    MR_SYNC_EC( entry_ifirstweekofyear );
-    MR_SYNC_EC( entry_ilzero );
-    MR_SYNC_EC( entry_imeasure );
-    MR_SYNC_EC( entry_inegcurr );
-    MR_SYNC_EC( entry_inegnumber );
-    MR_SYNC_EC( entry_ipapersize );
-    MR_SYNC_EC( entry_s1159 );
-    MR_SYNC_EC( entry_s2359 );
-    MR_SYNC_EC( entry_scurrency );
-    MR_SYNC_EC( entry_sdecimal );
-    MR_SYNC_EC( entry_sgrouping );
-    MR_SYNC_EC( entry_sintlsymbol );
-    MR_SYNC_EC( entry_slist );
-    MR_SYNC_EC( entry_slongdate );
-    MR_SYNC_EC( entry_smondecimalsep );
-    MR_SYNC_EC( entry_smongrouping );
-    MR_SYNC_EC( entry_smonthousandsep );
-    MR_SYNC_EC( entry_snativedigits );
-    MR_SYNC_EC( entry_snegativesign );
-    MR_SYNC_EC( entry_spositivesign );
-    MR_SYNC_EC( entry_sshortdate );
-    MR_SYNC_EC( entry_sshorttime );
-    MR_SYNC_EC( entry_sthousand );
-    MR_SYNC_EC( entry_stimeformat );
-    MR_SYNC_EC( entry_syearmonth );
-#undef MR_SYNC_EC
+#define MR_SYNC_CORE_EC( g ) \
+    macrunner_hb_mirror_ec_copy( &(g), sizeof(g), MACRUNNER_HB_LOCALE_CORE_EC_DELTA )
+#define MR_SYNC_ENTRY_EC( g ) \
+    macrunner_hb_mirror_ec_copy( &(g), sizeof(g), MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA )
+    MR_SYNC_CORE_EC( sort );
+    MR_SYNC_CORE_EC( locale_table );
+    MR_SYNC_CORE_EC( lcids_index );
+    MR_SYNC_CORE_EC( lcnames_index );
+    MR_SYNC_CORE_EC( locale_strings );
+    MR_SYNC_CORE_EC( locale_sorts );
+    MR_SYNC_CORE_EC( system_locale );
+    MR_SYNC_CORE_EC( user_locale );
+    MR_SYNC_CORE_EC( current_locale_sort );
+    MR_SYNC_CORE_EC( system_lcid );
+    MR_SYNC_CORE_EC( user_lcid );
+    MR_SYNC_CORE_EC( ansi_cpinfo );
+    MR_SYNC_CORE_EC( oem_cpinfo );
+    MR_SYNC_ENTRY_EC( unix_cp );
+    MR_SYNC_CORE_EC( codepages );
+    MR_SYNC_CORE_EC( nb_codepages );
+    MR_SYNC_CORE_EC( norm_info );
+    MR_SYNC_CORE_EC( charmaps );
+    MR_SYNC_CORE_EC( geo_ids );
+    MR_SYNC_CORE_EC( geo_index );
+    MR_SYNC_CORE_EC( geo_ids_count );
+    MR_SYNC_CORE_EC( geo_index_count );
+    MR_SYNC_CORE_EC( intl_key );
+    MR_SYNC_CORE_EC( nls_key );
+    MR_SYNC_CORE_EC( tz_key );
+    MR_SYNC_ENTRY_EC( entry_icalendartype );
+    MR_SYNC_ENTRY_EC( entry_icountry );
+    MR_SYNC_ENTRY_EC( entry_icurrdigits );
+    MR_SYNC_ENTRY_EC( entry_icurrency );
+    MR_SYNC_ENTRY_EC( entry_idigits );
+    MR_SYNC_ENTRY_EC( entry_idigitsubstitution );
+    MR_SYNC_ENTRY_EC( entry_ifirstdayofweek );
+    MR_SYNC_ENTRY_EC( entry_ifirstweekofyear );
+    MR_SYNC_ENTRY_EC( entry_ilzero );
+    MR_SYNC_ENTRY_EC( entry_imeasure );
+    MR_SYNC_ENTRY_EC( entry_inegcurr );
+    MR_SYNC_ENTRY_EC( entry_inegnumber );
+    MR_SYNC_ENTRY_EC( entry_ipapersize );
+    MR_SYNC_ENTRY_EC( entry_s1159 );
+    MR_SYNC_ENTRY_EC( entry_s2359 );
+    MR_SYNC_ENTRY_EC( entry_scurrency );
+    MR_SYNC_ENTRY_EC( entry_sdecimal );
+    MR_SYNC_ENTRY_EC( entry_sgrouping );
+    MR_SYNC_ENTRY_EC( entry_sintlsymbol );
+    MR_SYNC_ENTRY_EC( entry_slist );
+    MR_SYNC_ENTRY_EC( entry_slongdate );
+    MR_SYNC_ENTRY_EC( entry_smondecimalsep );
+    MR_SYNC_ENTRY_EC( entry_smongrouping );
+    MR_SYNC_ENTRY_EC( entry_smonthousandsep );
+    MR_SYNC_ENTRY_EC( entry_snativedigits );
+    MR_SYNC_ENTRY_EC( entry_snegativesign );
+    MR_SYNC_ENTRY_EC( entry_spositivesign );
+    MR_SYNC_ENTRY_EC( entry_sshortdate );
+    MR_SYNC_ENTRY_EC( entry_sshorttime );
+    MR_SYNC_ENTRY_EC( entry_sthousand );
+    MR_SYNC_ENTRY_EC( entry_stimeformat );
+    MR_SYNC_ENTRY_EC( entry_syearmonth );
+#undef MR_SYNC_ENTRY_EC
+#undef MR_SYNC_CORE_EC
 
     MESSAGE( "macrunner-hb-sync-locale-ec: verify native_sort=%p ec_sort=%p "
              "native_ctypes=%p native_ctype_idx=%p ec_ctypes=%p ec_ctype_idx=%p\n",
-             &sort, (void *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA),
-              sort.ctypes, sort.ctype_idx,
-              ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA))->ctypes,
-              ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_EC_DELTA))->ctype_idx );
+             &sort, (void *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_CORE_EC_DELTA),
+             sort.ctypes, sort.ctype_idx,
+             ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_CORE_EC_DELTA))->ctypes,
+             ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_CORE_EC_DELTA))->ctype_idx );
     MESSAGE( "macrunner-hb-sync-locale-ec: verify registry native_intl=%p ec_intl=%p "
              "native_sintl_value=%p native_sintl_subkey=%p ec_sintl_value=%p ec_sintl_subkey=%p\n",
-             intl_key, *(HKEY *)((uintptr_t)&intl_key - MACRUNNER_HB_LOCALE_EC_DELTA),
+             intl_key, *(HKEY *)((uintptr_t)&intl_key - MACRUNNER_HB_LOCALE_CORE_EC_DELTA),
              entry_sintlsymbol.value, entry_sintlsymbol.subkey,
-             ((typeof(entry_sintlsymbol) *)((uintptr_t)&entry_sintlsymbol - MACRUNNER_HB_LOCALE_EC_DELTA))->value,
-             ((typeof(entry_sintlsymbol) *)((uintptr_t)&entry_sintlsymbol - MACRUNNER_HB_LOCALE_EC_DELTA))->subkey );
+             ((typeof(entry_sintlsymbol) *)((uintptr_t)&entry_sintlsymbol - MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA))->value,
+             ((typeof(entry_sintlsymbol) *)((uintptr_t)&entry_sintlsymbol - MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA))->subkey );
 }
 
 
@@ -3128,6 +3286,7 @@ static int wcstombs_dbcs( const CPTABLEINFO *info, const WCHAR *src, unsigned in
 
     if (!dstlen)
     {
+        macrunner_hb_trace_wcstombs_owner_view( info, table, src, srclen, dst, dstlen );
         for (i = 0; srclen; src++, srclen--, i++) if (table[*src] & 0xff00) i++;
         return i;
     }

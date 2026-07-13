@@ -8520,6 +8520,84 @@ BOOLEAN WINAPI RtlDllShutdownInProgress(void)
     return process_detaching;
 }
 
+/* ARM64X carries native and hybrid delay-import IAT/INT tables back-to-back.
+ * The dynamic-relocation view selected for an AMD64 main image rewrites the
+ * shared descriptor to the hybrid tables, while a native ARM64 thunk still
+ * passes its slot from the immediately adjacent native tables.  Select the
+ * sibling view only when CHPE metadata advertises the dual delay-IAT family
+ * and both complete, terminated tables fit inside the image. */
+static BOOL macrunner_hb_select_arm64x_delay_import_view( void *base,
+                                                          IMAGE_THUNK_DATA **iat,
+                                                          IMAGE_THUNK_DATA **int_table,
+                                                          SIZE_T import_count,
+                                                          IMAGE_THUNK_DATA *addr )
+{
+    IMAGE_ARM64EC_METADATA *metadata = macrunner_hb_get_arm64x_metadata( base );
+    IMAGE_NT_HEADERS *nt = RtlImageNtHeader( base );
+    ULONG_PTR image_base = (ULONG_PTR)base, image_end;
+    ULONG_PTR iat_addr = (ULONG_PTR)*iat, int_addr = (ULONG_PTR)*int_table;
+    ULONG_PTR thunk_addr = (ULONG_PTR)addr, candidate_iat_addr, candidate_int_addr;
+    SIZE_T candidate_count, span;
+    int direction;
+
+    if (!metadata || !nt || !import_count) return FALSE;
+    if (!image_contains_array( base, metadata, 1, sizeof(*metadata) )) return FALSE;
+    if (metadata->Version < 2) return FALSE;
+    if (!metadata->AuxiliaryDelayloadIAT || !metadata->AuxiliaryDelayloadIATCopy)
+        return FALSE;
+    if (!image_contains_array( base, get_rva( base, metadata->AuxiliaryDelayloadIAT ),
+                               1, sizeof(IMAGE_THUNK_DATA) ) ||
+        !image_contains_array( base, get_rva( base, metadata->AuxiliaryDelayloadIATCopy ),
+                               1, sizeof(IMAGE_THUNK_DATA) ))
+        return FALSE;
+    if (import_count == ~(SIZE_T)0 || import_count + 1 > ~(SIZE_T)0 / sizeof(**iat))
+        return FALSE;
+    span = (import_count + 1) * sizeof(**iat);
+    if (span > nt->OptionalHeader.SizeOfImage) return FALSE;
+    if (nt->OptionalHeader.SizeOfImage > ~(ULONG_PTR)0 - image_base) return FALSE;
+    image_end = image_base + nt->OptionalHeader.SizeOfImage;
+
+    for (direction = -1; direction <= 1; direction += 2)
+    {
+        if (direction < 0)
+        {
+            if (iat_addr < image_base + span || int_addr < image_base + span) continue;
+            candidate_iat_addr = iat_addr - span;
+            candidate_int_addr = int_addr - span;
+        }
+        else
+        {
+            if (iat_addr > image_end - span || int_addr > image_end - span) continue;
+            candidate_iat_addr = iat_addr + span;
+            candidate_int_addr = int_addr + span;
+        }
+
+        if (candidate_iat_addr < image_base || candidate_iat_addr > image_end - span ||
+            candidate_int_addr < image_base || candidate_int_addr > image_end - span)
+            continue;
+        if (!image_contains_array( base, (void *)candidate_iat_addr, import_count + 1,
+                                   sizeof(**iat) ) ||
+            !image_contains_array( base, (void *)candidate_int_addr, import_count + 1,
+                                   sizeof(**int_table) ))
+            continue;
+        if ((*iat)[import_count].u1.Function ||
+            ((IMAGE_THUNK_DATA *)candidate_iat_addr)[import_count].u1.Function)
+            continue;
+        if (get_import_thunk_count( base, (IMAGE_THUNK_DATA *)candidate_int_addr,
+                                    &candidate_count ) || candidate_count != import_count)
+            continue;
+        if (thunk_addr < candidate_iat_addr ||
+            thunk_addr - candidate_iat_addr >= import_count * sizeof(**iat) ||
+            (thunk_addr - candidate_iat_addr) % sizeof(**iat))
+            continue;
+
+        *iat = (IMAGE_THUNK_DATA *)candidate_iat_addr;
+        *int_table = (IMAGE_THUNK_DATA *)candidate_int_addr;
+        return TRUE;
+    }
+    return FALSE;
+}
+
 /****************************************************************************
  *              LdrResolveDelayLoadedAPI   (NTDLL.@)
  */
@@ -8537,11 +8615,20 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
     SIZE_T import_count;
     ULONG_PTR iat_addr, thunk_addr, offset;
     BOOL import_by_ordinal;
+    BOOL trace_macrunner_delay;
     NTSTATUS nts;
-    FARPROC fp;
+    FARPROC fp = NULL;
     INT_PTR id;
+    WCHAR macrunner_delay_probe_value[8] = {0};
+    static unsigned int macrunner_delay_trace_count;
 
     TRACE( "(%p, %p, %p, %p, %p, 0x%08lx)\n", base, desc, dllhook, syshook, addr, flags );
+    trace_macrunner_delay = get_env( L"MACRUNNER_HB_DELAY_RESOLVE_PROBE",
+                                     macrunner_delay_probe_value,
+                                     sizeof(macrunner_delay_probe_value) ) &&
+                            macrunner_delay_probe_value[0] &&
+                            macrunner_delay_probe_value[0] != '0' &&
+                            macrunner_delay_trace_count++ < 4096;
 
     phmod = get_rva(base, desc->ModuleHandleRVA);
     pIAT = get_rva(base, desc->ImportAddressTableRVA);
@@ -8552,6 +8639,10 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
         get_import_thunk_count( base, pINT, &import_count ) ||
         !image_contains_array( base, pIAT, import_count + 1, sizeof(*pIAT) ))
     {
+        if (trace_macrunner_delay)
+            MESSAGE( "macrunner-hb-delay-resolve: stage=invalid-descriptor base=%p desc=%p "
+                     "dll=%s phmod=%p iat=%p int=%p\n",
+                     base, desc, name ? name : "(invalid)", phmod, pIAT, pINT );
         WARN( "invalid delay-load descriptor %p for base %p\n", desc, base );
         return NULL;
     }
@@ -8561,19 +8652,48 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
     if (thunk_addr < iat_addr || (offset = thunk_addr - iat_addr) % sizeof(*pIAT) ||
         offset / sizeof(*pIAT) >= import_count)
     {
-        WARN( "delay-load thunk %p is outside IAT %p count %Iu for %s\n",
-              addr, pIAT, import_count, name );
-        return NULL;
+        IMAGE_THUNK_DATA *descriptor_iat = pIAT;
+
+        if (!macrunner_hb_select_arm64x_delay_import_view( base, &pIAT, &pINT,
+                                                            import_count, addr ))
+        {
+            if (trace_macrunner_delay)
+                MESSAGE( "macrunner-hb-delay-resolve: stage=invalid-thunk base=%p dll=%s "
+                         "iat=%p addr=%p count=%Iu\n", base, name, pIAT, addr, import_count );
+            WARN( "delay-load thunk %p is outside IAT %p count %Iu for %s\n",
+                  addr, pIAT, import_count, name );
+            return NULL;
+        }
+        iat_addr = (ULONG_PTR)pIAT;
+        if (trace_macrunner_delay)
+            MESSAGE( "macrunner-hb-delay-resolve: stage=arm64x-sibling-view base=%p dll=%s "
+                     "descriptor_iat=%p selected_iat=%p selected_int=%p addr=%p count=%Iu\n",
+                     base, name, descriptor_iat, pIAT, pINT, addr, import_count );
     }
 
+    offset = thunk_addr - iat_addr;
     id = offset / sizeof(*pIAT);
     import_by_ordinal = IMAGE_SNAP_BY_ORDINAL(pINT[id].u1.Ordinal);
     if (!import_by_ordinal &&
         !(iibn = image_import_by_name( base, (DWORD)pINT[id].u1.AddressOfData )))
     {
+        if (trace_macrunner_delay)
+            MESSAGE( "macrunner-hb-delay-resolve: stage=invalid-import base=%p dll=%s "
+                     "id=%Id int=%p value=%Ix\n", base, name, id, pINT,
+                     (ULONG_PTR)pINT[id].u1.AddressOfData );
         WARN( "invalid delay-load import-by-name rva %Ix for %s\n",
               (ULONG_PTR)pINT[id].u1.AddressOfData, name );
         return NULL;
+    }
+    if (trace_macrunner_delay)
+    {
+        IMAGE_NT_HEADERS *importer_nt = RtlImageNtHeader( base );
+
+        MESSAGE( "macrunner-hb-delay-resolve: stage=start base=%p machine=%04x "
+                 "dll=%s id=%Id import=%s iat=%p addr=%p phmod=%p value=%p\n",
+                 base, importer_nt ? importer_nt->FileHeader.Machine : 0, name, id,
+                 import_by_ordinal ? "(ordinal)" : (const char *)iibn->Name,
+                 pIAT, addr, phmod, *phmod );
     }
 
     if (!*phmod)
@@ -8593,6 +8713,9 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
             macrunner_hb_native_counterpart_machine = current_machine;
         }
         nts = LdrLoadDll(NULL, 0, &mod, phmod);
+        if (trace_macrunner_delay)
+            MESSAGE( "macrunner-hb-delay-resolve: stage=load dll=%s force_native=%u "
+                     "status=%08lx module=%p\n", name, force_native_module, nts, *phmod );
         if (force_native_module)
             macrunner_hb_native_counterpart_machine = prev_native_counterpart_machine;
         RtlFreeUnicodeString(&mod);
@@ -8608,6 +8731,15 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
         RtlInitAnsiString(&fnc, (char*)iibn->Name);
         nts = LdrGetProcedureAddress(*phmod, &fnc, 0, (void**)&fp);
     }
+    if (trace_macrunner_delay)
+    {
+        IMAGE_NT_HEADERS *target_nt = *phmod ? RtlImageNtHeader( *phmod ) : NULL;
+
+        MESSAGE( "macrunner-hb-delay-resolve: stage=lookup dll=%s module=%p "
+                 "machine=%04x import=%s status=%08lx target=%p\n",
+                 name, *phmod, target_nt ? target_nt->FileHeader.Machine : 0,
+                 import_by_ordinal ? "(ordinal)" : (const char *)iibn->Name, nts, fp );
+    }
     if (!nts)
     {
         const char *import_name = NULL;
@@ -8616,10 +8748,18 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
         fp = macrunner_hb_maybe_register_dynamic_import_thunk( base, *phmod, name, import_name,
                                                                LOWORD(pINT[id].u1.Ordinal), fp );
         pIAT[id].u1.Function = (ULONG_PTR)fp;
+        if (trace_macrunner_delay)
+            MESSAGE( "macrunner-hb-delay-resolve: stage=success dll=%s import=%s "
+                     "iat_slot=%p target=%p\n", name,
+                     import_name ? import_name : "(ordinal)", &pIAT[id], fp );
         return fp;
     }
 
 fail:
+    if (trace_macrunner_delay)
+        MESSAGE( "macrunner-hb-delay-resolve: stage=fail dll=%s import=%s "
+                 "status=%08lx module=%p\n", name,
+                 import_by_ordinal ? "(ordinal)" : (const char *)iibn->Name, nts, *phmod );
     delayinfo.Size = sizeof(delayinfo);
     delayinfo.DelayloadDescriptor = desc;
     delayinfo.ThunkAddress = addr;
@@ -9411,6 +9551,14 @@ void loader_init( CONTEXT *context, void **entry )
         if (needs_elevation())
             elevate_token();
         get_env_var( L"WINESYSTEMDLLPATH", 0, &system_dll_path );
+
+        /*
+         * ProcessParameters (including the selected native/WOW64 environment)
+         * are final here, while the main image imports and entry point have not
+         * run.  The observer is default-off and its result cannot affect loader
+         * status or control flow.
+         */
+        macrunner_observe_initial_guest_peb();
         if (wm->ldr.Flags & LDR_COR_ILONLY)
             status = fixup_imports_ilonly( wm, NULL, entry );
         else

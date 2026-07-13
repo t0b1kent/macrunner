@@ -1,6 +1,7 @@
 #include "hb_runtime.h"
 #include "hb_codegen.h"
 #include "hb_memory.h"
+#include "hb_contract_telemetry.h"
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,14 +80,6 @@ typedef struct hb_jit_signal_fault_frame {
 static __thread hb_jit_signal_fault_frame_t* g_jit_signal_fault_frame;
 static unsigned int g_jit_signal_fault_reports;
 
-static uint64_t g_translation_cache_hits;
-static uint64_t g_translation_cache_misses;
-static uint64_t g_translation_cache_stores;
-static uint64_t g_translation_cache_store_skips;
-static uint64_t g_translation_cache_bytes_loaded;
-static uint64_t g_translation_cache_bytes_stored;
-static int g_translation_cache_atexit_registered;
-
 static uint64_t g_dispatch_stats_blocks;
 static uint64_t g_dispatch_stats_dispatches;
 static uint64_t g_dispatch_stats_steps;
@@ -109,38 +102,15 @@ static int runtime_single_lookup_enabled(void);
 static int runtime_indirect_ic_enabled(void);
 
 static int translation_cache_trace_enabled(void) {
-    static int cached = -1;
-    if (cached < 0) {
-        const char* env = getenv("MACRUNNER_HB_TRACE_TRANSLATION_CACHE");
-        cached = env && *env && *env != '0';
-    }
-    return cached;
-}
-
-static void translation_cache_add_u64(uint64_t* dst, uint64_t val) {
-    __atomic_fetch_add(dst, val, __ATOMIC_RELAXED);
+    return hb_contract_telemetry_enabled();
 }
 
 static void translation_cache_trace_summary(void) {
-    if (!translation_cache_trace_enabled()) return;
-    fprintf(stderr,
-            "macrunner-hb-translation-cache-summary: hits=%llu misses=%llu stores=%llu "
-            "store_skips=%llu bytes_loaded=%llu bytes_stored=%llu\n",
-            (unsigned long long)__atomic_load_n(&g_translation_cache_hits, __ATOMIC_RELAXED),
-            (unsigned long long)__atomic_load_n(&g_translation_cache_misses, __ATOMIC_RELAXED),
-            (unsigned long long)__atomic_load_n(&g_translation_cache_stores, __ATOMIC_RELAXED),
-            (unsigned long long)__atomic_load_n(&g_translation_cache_store_skips, __ATOMIC_RELAXED),
-            (unsigned long long)__atomic_load_n(&g_translation_cache_bytes_loaded, __ATOMIC_RELAXED),
-            (unsigned long long)__atomic_load_n(&g_translation_cache_bytes_stored, __ATOMIC_RELAXED));
-    fflush(stderr);
+    (void)hb_contract_telemetry_emit_summary(stderr);
 }
 
 static void translation_cache_register_atexit(void) {
-    int expected = 0;
-    if (__atomic_compare_exchange_n(&g_translation_cache_atexit_registered, &expected, 1,
-                                    false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
-        atexit(translation_cache_trace_summary);
-    }
+    hb_contract_telemetry_register_atexit();
 }
 
 static uint64_t runtime_now_ns(void) {
@@ -261,6 +231,7 @@ static void dispatch_stats_flush_thread(int force) {
 }
 
 static void dispatch_stats_add(uint64_t dispatches, uint64_t blocks, uint64_t steps) {
+    hb_contract_telemetry_record_dispatch(dispatches, blocks, steps);
     if (!trace_dispatch_stats_enabled()) return;
     dispatch_stats_register();
     if (!t_dispatch_stats_next_report)
@@ -505,6 +476,7 @@ static hb_block_cache_entry_t* block_cache_put(hb_jit_runtime_t* rt, hb_block_ca
                 cache->used_slots[cache->used_count++] = (uint32_t)probe;
             else
                 cache->used_overflow = true;  /* tracking full -> reset does the safe full memset */
+            hb_contract_telemetry_record_translation(true);
             return &cache->entries[probe];
         }
         if (cache->entries[probe].guest_addr == addr) {
@@ -522,6 +494,7 @@ static hb_block_cache_entry_t* block_cache_put(hb_jit_runtime_t* rt, hb_block_ca
             cache->entries[probe].block = block;
             cache->entries[probe].owns_block = owns_block || keep_existing_owner;
             cache->entries[probe].fused = fused;
+            hb_contract_telemetry_record_translation(false);
             return &cache->entries[probe];
         }
     }
@@ -1400,6 +1373,7 @@ hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
         hb_cache_options_t options;
         memset(&options, 0, sizeof(options));
         rt->persistent_cache = hb_cache_open(cache_root && *cache_root ? cache_root : NULL, &options);
+        hb_contract_telemetry_record_open(rt->persistent_cache != NULL);
         translation_cache_register_atexit();
         if (translation_cache_trace_enabled()) {
             fprintf(stderr, "macrunner-hb-translation-cache-open: root=%s status=%s\n",
@@ -1795,6 +1769,7 @@ static void try_promote_copy_scan_counted_loop(hb_jit_runtime_t* rt, hb_context_
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    hb_contract_telemetry_record_compile();
     block_cache_put(rt, rt->block_cache, body->guest_addr, dest, emitted_size,
                     (uint32_t)(body->instr_count + guard->instr_count), body, true, false);
     if (trace_jit_blocks_enabled()) {
@@ -1866,6 +1841,7 @@ static void try_promote_bounded_scan_loop(hb_jit_runtime_t* rt, hb_context_t* ct
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    hb_contract_telemetry_record_compile();
     block_cache_put(rt, rt->block_cache, guard->guest_addr, dest, emitted_size,
                     (uint32_t)(guard->instr_count + body->instr_count), guard, true, false);
     if (trace_jit_blocks_enabled()) {
@@ -2022,6 +1998,7 @@ static void try_promote_byte_compare_loop(hb_jit_runtime_t* rt, hb_context_t* ct
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    hb_contract_telemetry_record_compile();
     block_cache_put(rt, rt->block_cache, cmp_block->guest_addr, dest, emitted_size,
                     (uint32_t)(cmp_block->instr_count + backedge_block->instr_count),
                     cmp_block, true, false);
@@ -2172,6 +2149,7 @@ static void try_promote_null_qword_scan_loop(hb_jit_runtime_t* rt, hb_context_t*
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    hb_contract_telemetry_record_compile();
     block_cache_put(rt, rt->block_cache, load_block->guest_addr, dest, emitted_size,
                     (uint32_t)(load_block->instr_count + dec_block->instr_count +
                                test_block->instr_count),
@@ -2327,6 +2305,7 @@ static void try_promote_i32_less_tiebreaker_comparator(hb_jit_runtime_t* rt, hb_
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    hb_contract_telemetry_record_compile();
     block_cache_put(rt, rt->block_cache, entry_block->guest_addr, dest, emitted_size,
                     (uint32_t)(entry_block->instr_count + equal->block->instr_count +
                                (less && less->block ? less->block->instr_count : 0)),
@@ -2566,6 +2545,7 @@ static void try_promote_unity_sort_inner_loop(hb_jit_runtime_t* rt, hb_context_t
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    hb_contract_telemetry_record_compile();
     block_cache_put(rt, rt->block_cache, sort->guest_addr, dest, emitted_size,
                     (uint32_t)(sort->instr_count + cont->instr_count),
                     sort, true, false);
@@ -2649,6 +2629,7 @@ static void try_promote_self_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
     hb_codegen_buffer_destroy(code_buf);
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
+    hb_contract_telemetry_record_compile();
     block_cache_put(rt, rt->block_cache, block->guest_addr, dest, emitted_size,
                     (uint32_t)block->instr_count, block, true, false);
     if (trace_jit_blocks_enabled()) {
@@ -2831,14 +2812,13 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                         if (cached) {
                             load_block = NULL;
                             loaded_from_persistent = true;
-                            translation_cache_add_u64(&g_translation_cache_hits, 1);
-                            translation_cache_add_u64(&g_translation_cache_bytes_loaded, emitted_size);
+                            hb_contract_telemetry_record_cache_hit(emitted_size);
                         }
                     }
                     free(owned_load_code);
                     if (load_block) hb_ir_block_destroy(load_block);
                 } else {
-                    translation_cache_add_u64(&g_translation_cache_misses, 1);
+                    hb_contract_telemetry_record_cache_miss();
                 }
                 hb_cache_entry_free(disk_entry);
             }
@@ -2883,6 +2863,7 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                                                           steps, blocks_executed,
                                                           "JIT code cache full; interpreter fallback");
                 }
+                hb_contract_telemetry_record_compile();
 
                 if (rt->persistent_cache && have_persistent_key &&
                     code_buf->code && code_buf->size) {
@@ -2897,16 +2878,14 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                         r = hb_cache_store(rt->persistent_cache, &persistent_key, store_code,
                                            code_buf->size, &metadata);
                         if (r == HB_OK) {
-                            translation_cache_add_u64(&g_translation_cache_stores, 1);
-                            translation_cache_add_u64(&g_translation_cache_bytes_stored,
-                                                      code_buf->size);
+                            hb_contract_telemetry_record_cache_store(code_buf->size);
                         }
                         free(owned_store_code);
                     } else {
-                        translation_cache_add_u64(&g_translation_cache_store_skips, 1);
+                        hb_contract_telemetry_record_cache_store_skip();
                     }
                 } else if (rt->persistent_cache && have_persistent_key) {
-                    translation_cache_add_u64(&g_translation_cache_store_skips, 1);
+                    hb_contract_telemetry_record_cache_store_skip();
                 }
                 hb_codegen_buffer_destroy(code_buf);
 
@@ -3247,14 +3226,13 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                         if (cached) {
                             load_block = NULL;
                             loaded_from_persistent = true;
-                            translation_cache_add_u64(&g_translation_cache_hits, 1);
-                            translation_cache_add_u64(&g_translation_cache_bytes_loaded, emitted_size);
+                            hb_contract_telemetry_record_cache_hit(emitted_size);
                         }
                     }
                     free(owned_load_code);
                     if (load_block) hb_ir_block_destroy(load_block);
                 } else {
-                    translation_cache_add_u64(&g_translation_cache_misses, 1);
+                    hb_contract_telemetry_record_cache_miss();
                 }
                 hb_cache_entry_free(disk_entry);
             }
@@ -3299,6 +3277,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                                                           steps, blocks_executed,
                                                           "JIT code cache full; interpreter fallback");
                 }
+                hb_contract_telemetry_record_compile();
 
                 if (rt->persistent_cache && have_persistent_key &&
                     code_buf->code && code_buf->size) {
@@ -3313,16 +3292,14 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                         r = hb_cache_store(rt->persistent_cache, &persistent_key, store_code,
                                            code_buf->size, &metadata);
                         if (r == HB_OK) {
-                            translation_cache_add_u64(&g_translation_cache_stores, 1);
-                            translation_cache_add_u64(&g_translation_cache_bytes_stored,
-                                                      code_buf->size);
+                            hb_contract_telemetry_record_cache_store(code_buf->size);
                         }
                         free(owned_store_code);
                     } else {
-                        translation_cache_add_u64(&g_translation_cache_store_skips, 1);
+                        hb_contract_telemetry_record_cache_store_skip();
                     }
                 } else if (rt->persistent_cache && have_persistent_key) {
-                    translation_cache_add_u64(&g_translation_cache_store_skips, 1);
+                    hb_contract_telemetry_record_cache_store_skip();
                 }
                 hb_codegen_buffer_destroy(code_buf);
 

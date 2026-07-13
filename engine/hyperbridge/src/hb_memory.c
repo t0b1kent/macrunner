@@ -995,6 +995,27 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
         return HB_OK;
     }
 
+    /*
+     * A protection change wholly contained by one region needs at most two
+     * splits.  Re-enter after those splits so the exact-region path below
+     * updates only the requested segment.  Falling through used to scan every
+     * node in mem->regions even though the treap had already identified the
+     * sole containing region.  Mono heap realloc traffic makes this the common
+     * case, so that O(n) walk dominated the swapchain creator thread before its
+     * first Present.
+     *
+     * Keep the full-list fallback for ranges that genuinely span multiple
+     * regions or holes.
+     */
+    if (exact && start >= exact->base && top <= exact->base + exact->size &&
+        (start != exact->base || top != exact->base + exact->size)) {
+        res = split_all_regions_at(mem, start);
+        if (res != HB_OK) return res;
+        res = split_all_regions_at(mem, top);
+        if (res != HB_OK) return res;
+        return hb_memory_protect(mem, start, (size_t)(top - start), perm);
+    }
+
     if (exact && exact->base == start && exact->size == (size_t)(top - start)) {
         hb_perm_t old_perm = exact->perm;
 

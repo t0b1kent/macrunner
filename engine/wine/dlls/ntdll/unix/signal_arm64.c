@@ -792,6 +792,7 @@ extern void macrunner_hb_dmem_fault_recover( unsigned long long fault_addr );
  * the signal handler. See macrunner_hb.c for the strict scope (never masks a genuine AV/OOB). */
 extern BOOL macrunner_hb_try_commit_or_upgrade_page( unsigned long long addr );
 extern void macrunner_hb_x64_callback_trampoline(void);
+extern BOOL macrunner_hb_present_signal_probe_enabled_for_current_thread(void);
 static BOOL macrunner_hb_x64_loader_enabled(void);
 static BOOL macrunner_hb_trace_callback_route_enabled(void)
 {
@@ -3442,6 +3443,26 @@ static void macrunner_hb_chain_signal( int sig, siginfo_t *siginfo, void *sigcon
 static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, void *sigcontext )
 {
     ULONG_PTR fault_addr = (sig == SIGILL) ? 0 : (ULONG_PTR)siginfo->si_addr;
+    ucontext_t *context = sigcontext;
+
+    if (macrunner_hb_present_signal_probe_enabled_for_current_thread())
+    {
+        static __thread unsigned int signal_count;
+        unsigned int count = ++signal_count;
+
+        if (count <= 128 || (!(count & 0x3ff) && count <= 131072))
+            macrunner_signal_writef(
+                "macrunner-hb-present-signal-probe: hit=%u sig=%d code=%d "
+                "pc=%p fault=%p lr=%p sp=%p x0=%p x1=%p x4=%p x16=%p x18=%p\n",
+                count, sig, siginfo ? siginfo->si_code : 0,
+                (void *)(ULONG_PTR)PC_sig(context), (void *)fault_addr,
+                (void *)(ULONG_PTR)LR_sig(context), (void *)(ULONG_PTR)SP_sig(context),
+                (void *)(ULONG_PTR)REGn_sig(0, context),
+                (void *)(ULONG_PTR)REGn_sig(1, context),
+                (void *)(ULONG_PTR)REGn_sig(4, context),
+                (void *)(ULONG_PTR)REGn_sig(16, context),
+                (void *)(ULONG_PTR)REGn_sig(18, context) );
+    }
 
     /* MacRunner diag: does ANY signal handler see the NULL-target (pc=0) fault? */
     {

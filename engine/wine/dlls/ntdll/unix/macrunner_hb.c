@@ -2189,6 +2189,60 @@ static uint64_t macrunner_hb_current_tid64(void)
     return (uint64_t)(uintptr_t)NtCurrentTeb()->ClientId.UniqueThread;
 }
 
+static void macrunner_hb_wait_handle_note_event_signal( uint64_t handle, const char *op,
+                                                         NTSTATUS status );
+static void macrunner_hb_post_signal_probe_module_rva( uint64_t pc, char *name,
+                                                        size_t name_size, uint64_t *rva );
+static void macrunner_hb_present_gate_wait_observer( hb_context_t *ctx, const char *import_name,
+                                                      uint64_t handle, uint32_t wait_index,
+                                                      uint32_t wait_count, const char *phase,
+                                                      NTSTATUS status );
+
+static BOOL macrunner_hb_present_pump_enabled(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_PRESENT_PUMP" );
+}
+
+static BOOL macrunner_hb_present_pump_handle( uint64_t handle )
+{
+    return handle == 0xe0 || handle == 0xec;
+}
+
+static void macrunner_hb_present_pump_signal( hb_context_t *ctx, const char *import_name,
+                                              uint64_t handle, uint32_t wait_index,
+                                              uint32_t wait_count )
+{
+    static unsigned int trace_budget;
+    uint64_t tid = macrunner_hb_current_tid64();
+    uint64_t caller, caller_rva = 0;
+    char caller_module[128] = "";
+    NTSTATUS status;
+
+    if (!macrunner_hb_present_pump_enabled()) return;
+    if (handle != 0xe0) return;
+
+    caller = macrunner_hb_trace_return_address( ctx );
+    macrunner_hb_post_signal_probe_module_rva( caller, caller_module,
+                                                sizeof(caller_module), &caller_rva );
+    if ((!macrunner_hb_strieq( caller_module, "UnityPlayer.dll" ) &&
+         !macrunner_hb_strieq( caller_module, "UnityPlayer" )) ||
+        caller_rva != 0xa00916)
+        return;
+
+    status = NtSetEvent( (HANDLE)(uintptr_t)handle, NULL );
+    macrunner_hb_wait_handle_note_event_signal( handle, "present-pump", status );
+    if (trace_budget++ < 128)
+        fprintf( stderr, "macrunner-hb-present-pump: import=%s tid=0x%llx "
+                 "handle=%p index=%u count=%u status=%08lx pc=%p caller=%p rsp=%p\n",
+                 import_name ? import_name : "?", (unsigned long long)tid,
+                 (void *)(uintptr_t)handle, wait_index, wait_count, (unsigned long)status,
+                 ctx ? (void *)(uintptr_t)ctx->pc : NULL,
+                 (void *)(uintptr_t)caller,
+                 ctx ? (void *)(uintptr_t)ctx->regs.x64.rsp : NULL );
+}
+
 static uint64_t macrunner_hb_current_native_tid64(void)
 {
     uint64_t tid = 0;
@@ -3950,6 +4004,133 @@ static struct macrunner_hb_import_thunk *macrunner_hb_find_import_thunk_by_name(
     return NULL;
 }
 
+static BOOL macrunner_hb_is_x64_stack_probe_import( const char *dll_name, const char *import_name )
+{
+    return macrunner_hb_strieq( dll_name, "ntdll.dll" ) &&
+           (macrunner_hb_strieq( import_name, "___chkstk_ms" ) ||
+            macrunner_hb_strieq( import_name, "__chkstk_ms" ) ||
+            macrunner_hb_strieq( import_name, "__chkstk" ));
+}
+
+static BOOL macrunner_hb_native_direct_callback_split_enabled(void)
+{
+    static int cached = -1;
+    const char *env;
+
+    if (cached < 0)
+    {
+        env = getenv( "MACRUNNER_HB_NATIVE_DIRECT_CALLBACK_SPLIT" );
+        cached = env && strcmp( env, "0" );
+    }
+    return cached;
+}
+
+static uint64_t macrunner_hb_module_size( void *module );
+
+static BOOL macrunner_hb_image_rva_range_valid( void *module, DWORD rva, size_t size )
+{
+    size_t image_size;
+
+    if (!module || !rva) return FALSE;
+    image_size = macrunner_hb_module_size( module );
+    if (!image_size || rva >= image_size) return FALSE;
+    return size <= image_size - rva;
+}
+
+static BOOL macrunner_hb_find_import_name_by_iat_slot( void *module, uint64_t slot_addr,
+                                                       char *dll_name, size_t dll_name_size,
+                                                       char *import_name, size_t import_name_size )
+{
+    IMAGE_DATA_DIRECTORY *dir;
+    IMAGE_IMPORT_BY_NAME *name;
+    IMAGE_IMPORT_DESCRIPTOR *desc;
+    IMAGE_NT_HEADERS *nt;
+    DWORD first_rva, name_rva, orig_rva;
+    unsigned int desc_idx, thunk_idx;
+    size_t image_size;
+
+    if (dll_name && dll_name_size) dll_name[0] = 0;
+    if (import_name && import_name_size) import_name[0] = 0;
+    if (!module || !slot_addr || !dll_name || !dll_name_size || !import_name || !import_name_size)
+        return FALSE;
+    if (!(nt = macrunner_hb_image_nt_header( module ))) return FALSE;
+    image_size = macrunner_hb_module_size( module );
+    if (!image_size) return FALSE;
+
+    dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (!dir->VirtualAddress || !dir->Size ||
+        !macrunner_hb_image_rva_range_valid( module, dir->VirtualAddress, sizeof(*desc) ))
+        return FALSE;
+
+    desc = (IMAGE_IMPORT_DESCRIPTOR *)((char *)module + dir->VirtualAddress);
+    for (desc_idx = 0; desc_idx < 4096; desc_idx++, desc++)
+    {
+        IMAGE_THUNK_DATA64 *iat, *orig;
+        uint64_t iat_addr, name_or_ordinal;
+
+        if ((char *)(desc + 1) > (char *)module + image_size) return FALSE;
+        if (!desc->Name && !desc->FirstThunk && !desc->OriginalFirstThunk) break;
+        if (!desc->Name || !desc->FirstThunk) continue;
+
+        first_rva = desc->FirstThunk;
+        if (!macrunner_hb_image_rva_range_valid( module, first_rva, sizeof(*iat) )) continue;
+        iat = (IMAGE_THUNK_DATA64 *)((char *)module + first_rva);
+        iat_addr = (uint64_t)(uintptr_t)iat;
+        if (slot_addr < iat_addr || ((slot_addr - iat_addr) & (sizeof(*iat) - 1))) continue;
+
+        thunk_idx = (unsigned int)((slot_addr - iat_addr) / sizeof(*iat));
+        if (thunk_idx >= 4096 ||
+            !macrunner_hb_image_rva_range_valid( module, first_rva + thunk_idx * sizeof(*iat), sizeof(*iat) ) ||
+            !iat[thunk_idx].u1.Function)
+            continue;
+
+        orig_rva = desc->OriginalFirstThunk ? desc->OriginalFirstThunk : desc->FirstThunk;
+        if (!macrunner_hb_image_rva_range_valid( module, orig_rva + thunk_idx * sizeof(*orig), sizeof(*orig) ))
+            continue;
+        orig = (IMAGE_THUNK_DATA64 *)((char *)module + orig_rva);
+        name_or_ordinal = orig[thunk_idx].u1.AddressOfData;
+        if (!name_or_ordinal) continue;
+
+        if (!macrunner_hb_image_rva_range_valid( module, desc->Name, 1 )) continue;
+        macrunner_hb_copy_cstr( dll_name, dll_name_size, (const char *)module + desc->Name );
+
+        if (name_or_ordinal & IMAGE_ORDINAL_FLAG64)
+        {
+            snprintf( import_name, import_name_size, "#%u", (unsigned int)(name_or_ordinal & 0xffff) );
+            return TRUE;
+        }
+        name_rva = (DWORD)name_or_ordinal;
+        if (!macrunner_hb_image_rva_range_valid( module, name_rva, sizeof(WORD) + 1 )) continue;
+        name = (IMAGE_IMPORT_BY_NAME *)((char *)module + name_rva);
+        macrunner_hb_copy_cstr( import_name, import_name_size, (const char *)name->Name );
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL macrunner_hb_find_import_name_by_iat_jump( void *module, uint64_t block_pc, uint64_t target,
+                                                       char *dll_name, size_t dll_name_size,
+                                                       char *import_name, size_t import_name_size )
+{
+    BYTE *code;
+    int32_t disp;
+    uint64_t base, slot, slot_value;
+
+    if (!module || !block_pc) return FALSE;
+    base = (uint64_t)(uintptr_t)module;
+    if (!macrunner_hb_image_rva_range_valid( module, (DWORD)(block_pc - base), 6 )) return FALSE;
+    code = (BYTE *)(uintptr_t)block_pc;
+    if (code[0] != 0xff || code[1] != 0x25) return FALSE;
+    memcpy( &disp, code + 2, sizeof(disp) );
+    slot = block_pc + 6 + disp;
+    if (slot < base || !macrunner_hb_image_rva_range_valid( module, (DWORD)(slot - base), sizeof(slot_value) ))
+        return FALSE;
+    memcpy( &slot_value, (void *)(uintptr_t)slot, sizeof(slot_value) );
+    if (target && slot_value != target) return FALSE;
+    return macrunner_hb_find_import_name_by_iat_slot( module, slot, dll_name, dll_name_size,
+                                                      import_name, import_name_size );
+}
+
 static uint64_t macrunner_hb_register_dynamic_import_thunk( const struct macrunner_hb_import_thunk *source,
                                                             void *target, void *module_base,
                                                             const char *import_name )
@@ -4026,6 +4207,16 @@ static BOOL macrunner_hb_dxgi_swapchain_trace_enabled(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN" );
 }
 
+static BOOL macrunner_hb_dxmt_method_trace_enabled(void)
+{
+    static int cache = -1;
+    static int present_sched_cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_DXMT_METHOD_TRACE" ) ||
+           macrunner_hb_cached_env_flag( &present_sched_cache,
+                                         "MACRUNNER_HB_PRESENT_SCHEDULING_PROBE" );
+}
+
 static int macrunner_hb_post_swapchain_wait_trace_budget_allows(void)
 {
     static int count;
@@ -4057,6 +4248,9 @@ static BOOL macrunner_hb_d3d_boundary_trace_budget_allows(void)
     return count++ < 4000;
 }
 
+static void macrunner_hb_post_ready_consumer_follow_render_boundary(
+    const char *phase, hb_context_t *ctx, const struct macrunner_hb_import_thunk *thunk );
+
 static void macrunner_hb_trace_d3d_boundary(
     const char *phase, hb_context_t *ctx, const struct macrunner_hb_import_thunk *thunk,
     uint64_t ret_addr, uint64_t rc, const uint64_t *args, unsigned int arg_count,
@@ -4067,6 +4261,8 @@ static void macrunner_hb_trace_d3d_boundary(
     unsigned int valid = 0;
     unsigned int limit;
     unsigned int i;
+
+    macrunner_hb_post_ready_consumer_follow_render_boundary( phase, ctx, thunk );
 
     if (!macrunner_hb_d3d_boundary_trace_interesting( thunk ) ||
         !macrunner_hb_d3d_boundary_trace_budget_allows())
@@ -4709,6 +4905,7 @@ static uint64_t macrunner_hb_dxgi_swapchain_creator_pc;
 static uint64_t macrunner_hb_dxgi_swapchain_creator_ret;
 static uint64_t macrunner_hb_dxgi_swapchain_creator_hwnd;
 static uint64_t macrunner_hb_dxgi_swapchain_creator_object;
+static uint64_t macrunner_hb_dxgi_swapchain_create_us;
 
 static BOOL macrunner_hb_current_thread_is_swapchain_creator(void)
 {
@@ -4813,6 +5010,8 @@ static void macrunner_hb_trace_dxgi_swapchain(
                           arg_count > 2 ? args[2] : 0, __ATOMIC_RELEASE );
         __atomic_store_n( &macrunner_hb_dxgi_swapchain_creator_object,
                           swapchain, __ATOMIC_RELEASE );
+        __atomic_store_n( &macrunner_hb_dxgi_swapchain_create_us,
+                          macrunner_hb_now_us(), __ATOMIC_RELEASE );
         __atomic_store_n( &macrunner_hb_dxgi_swapchain_create_seen, 1, __ATOMIC_RELEASE );
         fprintf( stderr,
                  "macrunner-hb-dxgi-swapchain: create method=%s slot=%u tid=0x%llx native_tid=0x%llx factory=%p swapchain=%p "
@@ -5778,12 +5977,123 @@ static int macrunner_hb_backbuffer_gate_probe_enabled(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_BACKBUFFER_GATE_PROBE" );
 }
 
+static int macrunner_hb_post_rtv_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_POST_RTV_PROBE" );
+}
+
+static int macrunner_hb_present_gate_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_PRESENT_GATE_PROBE" );
+}
+
+static int macrunner_hb_present_scheduling_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_PRESENT_SCHEDULING_PROBE" );
+}
+
+static int macrunner_hb_present_follow_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_PRESENT_FOLLOW_PROBE" );
+}
+
+static int macrunner_hb_post_ready_consumer_follow_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache,
+                                         "MACRUNNER_HB_POST_READY_CONSUMER_FOLLOW" );
+}
+
+static int macrunner_hb_present_import_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_PRESENT_IMPORT_PROBE" );
+}
+
+BOOL macrunner_hb_present_signal_probe_enabled_for_current_thread(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_PRESENT_SIGNAL_PROBE" ) &&
+           __atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE ) &&
+           macrunner_hb_current_thread_is_swapchain_creator();
+}
+
+static int macrunner_hb_present_ready_watch_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_PRESENT_READY_WATCH" );
+}
+
+static int macrunner_hb_force_isfocused_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_FORCE_ISFOCUSED" );
+}
+
+static int macrunner_hb_isfocused_field_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_ISFOCUSED_FIELD_PROBE" );
+}
+
+static int macrunner_hb_store_watch_0x138_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_STORE_WATCH_0x138" );
+}
+
+static int macrunner_hb_descriptor_dispatch_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_DESCRIPTOR_DISPATCH_PROBE" );
+}
+
+static int macrunner_hb_present_gate_parent_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_PRESENT_GATE_PARENT_PROBE" );
+}
+
 static unsigned int macrunner_hb_post_signal_probe_armed;
 static uint64_t macrunner_hb_post_signal_probe_us;
 static uint64_t macrunner_hb_post_signal_probe_tid;
 static uint64_t macrunner_hb_post_signal_probe_native_tid;
 static uint64_t macrunner_hb_post_signal_probe_consumer_tid;
 static uint64_t macrunner_hb_post_signal_probe_consumer_native_tid;
+static unsigned int macrunner_hb_present_scheduling_probe_armed;
+static uint64_t macrunner_hb_present_scheduling_probe_us;
+static unsigned int macrunner_hb_present_ready_watch_seen;
+static uint64_t macrunner_hb_present_ready_watch_object;
+static uint8_t macrunner_hb_present_ready_watch_ready138;
+static uint32_t macrunner_hb_present_ready_watch_state13c;
+static unsigned int macrunner_hb_isfocused_field_probe_seen;
+static uint64_t macrunner_hb_isfocused_field_probe_object;
+static uint64_t macrunner_hb_isfocused_field_probe_hash;
+static uint8_t macrunner_hb_isfocused_field_probe_phase65;
+static uint8_t macrunner_hb_isfocused_field_probe_phase67;
+static unsigned int macrunner_hb_store_watch_0x138_seen;
+static uint64_t macrunner_hb_store_watch_0x138_object;
+static uint64_t macrunner_hb_store_watch_0x138_q138;
+static uint32_t macrunner_hb_store_watch_0x138_d13c;
+static uint8_t macrunner_hb_store_watch_0x138_b138;
+static uint8_t macrunner_hb_store_watch_0x138_b139;
+static uint64_t macrunner_hb_store_watch_0x138_last_pc;
+static uint64_t macrunner_hb_store_watch_0x138_last_rva;
+static uint64_t macrunner_hb_store_watch_0x138_last_tid;
+static uint64_t macrunner_hb_store_watch_0x138_last_native_tid;
+static unsigned int macrunner_hb_descriptor_dispatch_seen_descriptor;
+static unsigned int macrunner_hb_descriptor_dispatch_seen_ready_table;
+static unsigned int macrunner_hb_descriptor_dispatch_seen_byte_table;
+static unsigned int macrunner_hb_descriptor_dispatch_seen_setter;
+static unsigned int macrunner_hb_present_gate_parent_seen;
+
+static void macrunner_hb_post_signal_probe_module_rva( uint64_t pc, char *name,
+                                                       size_t name_size, uint64_t *rva );
 
 static long long macrunner_hb_post_signal_probe_since_ms(void)
 {
@@ -5914,6 +6224,10 @@ static void macrunner_hb_backbuffer_gate_probe_before_block( const char *label,
 
 static BOOL macrunner_hb_post_signal_probe_should_trace(void)
 {
+    if (macrunner_hb_present_scheduling_probe_enabled() &&
+        __atomic_load_n( &macrunner_hb_present_scheduling_probe_armed,
+                         __ATOMIC_ACQUIRE ))
+        return TRUE;
     if (!macrunner_hb_post_signal_probe_enabled()) return FALSE;
     return __atomic_load_n( &macrunner_hb_post_signal_probe_armed, __ATOMIC_ACQUIRE ) ||
            __atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE );
@@ -5933,6 +6247,1865 @@ static void macrunner_hb_post_signal_probe_module_rva( uint64_t pc, char *name,
     if (name && name_size) macrunner_hb_get_export_module_name( module, name, name_size );
     base = (uint64_t)(uintptr_t)module;
     if (rva && pc >= base) *rva = pc - base;
+}
+
+static const char *macrunner_hb_post_rtv_stage_name( uint64_t rva )
+{
+    if (rva >= 0x90bc6b && rva < 0x90bc6f) return "getbuffer-return";
+    if (rva >= 0x90bc6f && rva < 0x90c250) return "rtv-prep";
+    if (rva >= 0x90c250 && rva < 0x90c330) return "rtv-return-tail";
+    if (rva >= 0x90c330 && rva < 0x90c980) return "post-backbuffer-tail";
+    if (rva >= 0x905400 && rva < 0x905540) return "omset-one";
+    if (rva >= 0xa14420 && rva <= 0xa144a5) return "signal-plain";
+    return "nearby";
+}
+
+static void macrunner_hb_post_rtv_probe_before_block( const char *label,
+                                                       hb_context_t *ctx,
+                                                       uint64_t block_pc,
+                                                       uint64_t blocks,
+                                                       uint64_t steps )
+{
+    static unsigned int reports;
+    char module_name[128] = "";
+    uint64_t rva = 0, base = 0, rsi, swapchain = 0, swapchain_vtbl = 0, depth = 0;
+    uint32_t count33c = 0;
+    uint8_t flag341 = 0, flag342 = 0, flag360 = 0, phase65 = 0, phase67 = 0;
+    BOOL is_unity, is_creator, interesting;
+    unsigned int report;
+    const char *stage;
+
+    if (!macrunner_hb_post_rtv_probe_enabled()) return;
+    if (!ctx || !ctx->memory || !block_pc) return;
+    if (!__atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE )) return;
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module_name, sizeof(module_name), &rva );
+    is_unity = macrunner_hb_strieq( module_name, "UnityPlayer.dll" ) ||
+               macrunner_hb_strieq( module_name, "UnityPlayer" );
+    is_creator = macrunner_hb_current_thread_is_swapchain_creator();
+    if (!is_unity || !is_creator) return;
+
+    interesting = (rva >= 0x90bc6b && rva < 0x90c980) ||
+                  (rva >= 0x905400 && rva < 0x905540) ||
+                  (rva >= 0xa14420 && rva <= 0xa144a5);
+    if (!interesting) return;
+
+    report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 768 && (report & 0x1f)) return;
+
+    base = block_pc - rva;
+    rsi = ctx->regs.x64.rsi;
+    if (rsi)
+    {
+        swapchain = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, rsi + 0x320 );
+        depth = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, rsi + 0x328 );
+        count33c = macrunner_hb_trace_read_u32_or_zero( ctx, rsi + 0x33c );
+        flag341 = macrunner_hb_trace_read_u8_or_zero( ctx, rsi + 0x341 );
+        flag342 = macrunner_hb_trace_read_u8_or_zero( ctx, rsi + 0x342 );
+        flag360 = macrunner_hb_trace_read_u8_or_zero( ctx, rsi + 0x360 );
+    }
+    if (swapchain)
+        swapchain_vtbl = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, swapchain );
+    if (base)
+    {
+        phase65 = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f65 );
+        phase67 = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f67 );
+    }
+    stage = macrunner_hb_post_rtv_stage_name( rva );
+
+    fprintf( stderr,
+             "macrunner-hb-post-rtv-probe: hit=%u stage=%s label=%s "
+             "tid=0x%llx native_tid=0x%llx pc=%p rva=0x%llx "
+             "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p r12=%p r12b=%u rsp=%p "
+             "swapchain=%p swap_vtbl=%p depth=%p count33c=%u "
+             "flag341=%u flag342=%u flag360=%u phase65=%u phase67=%u blocks=%s steps=%s\n",
+             report, stage, label ? label : "entry",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             (void *)(uintptr_t)block_pc, (unsigned long long)rva,
+             (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.r12,
+             (unsigned int)(ctx->regs.x64.r12 & 0xff),
+             (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (void *)(uintptr_t)swapchain, (void *)(uintptr_t)swapchain_vtbl,
+             (void *)(uintptr_t)depth, count33c, flag341, flag342, flag360,
+             phase65, phase67, wine_dbgstr_longlong(blocks),
+             wine_dbgstr_longlong(steps) );
+    fflush( stderr );
+}
+
+static const char *macrunner_hb_dxmt_method_probe_name( unsigned int slot,
+                                                        const char *swapchain_method,
+                                                        const char *factory_method,
+                                                        uint64_t caller_rva )
+{
+    if (swapchain_method) return swapchain_method;
+    if (factory_method) return factory_method;
+    if (caller_rva >= 0x90bc6b && caller_rva < 0x90bc6f) return "GetBuffer-ret";
+    if (caller_rva >= 0x90c250 && caller_rva < 0x90c330) return "CreateRenderTargetView-ret";
+    if (caller_rva >= 0x905400 && caller_rva < 0x905540) return "OMSetRenderTargets-ret";
+    if (caller_rva >= 0x90bb00 && caller_rva < 0x90c980) return "BackbufferSetup-com";
+    return "dxmt-com";
+}
+
+static void macrunner_hb_trace_dxmt_method_probe(
+    hb_context_t *ctx, const struct macrunner_hb_import_thunk *thunk,
+    const char *phase, uint64_t ret_addr, uint64_t rc,
+    const uint64_t *args, unsigned int arg_count )
+{
+    static unsigned int reports;
+    unsigned int slot, pp_index = UINT_MAX, valid = 0, i, limit;
+    const char *factory_method, *swapchain_method, *method;
+    char caller_name[128] = "";
+    uint64_t caller_rva = 0, out[6] = { 0 };
+    BOOL known_swapchain = FALSE, caller_unity, interesting;
+    unsigned int report;
+
+    if (!macrunner_hb_dxmt_method_trace_enabled()) return;
+    if (!ctx || !thunk || !args || !phase) return;
+    if (!macrunner_hb_dxmt_com_import_slot( thunk->import_name, &slot )) return;
+
+    macrunner_hb_post_signal_probe_module_rva( ret_addr, caller_name, sizeof(caller_name),
+                                               &caller_rva );
+    caller_unity = macrunner_hb_strieq( caller_name, "UnityPlayer.dll" ) ||
+                   macrunner_hb_strieq( caller_name, "UnityPlayer" );
+    pthread_mutex_lock( &macrunner_hb_dxgi_swapchain_mutex );
+    known_swapchain = arg_count > 0 && macrunner_hb_dxgi_swapchain_known_locked( args[0] );
+    pthread_mutex_unlock( &macrunner_hb_dxgi_swapchain_mutex );
+
+    factory_method = macrunner_hb_dxgi_factory_slot_name( slot, &pp_index );
+    swapchain_method = macrunner_hb_dxgi_swapchain_slot_name( slot );
+    method = macrunner_hb_dxmt_method_probe_name( slot, swapchain_method, factory_method,
+                                                  caller_rva );
+    interesting = known_swapchain || factory_method || slot == 8 || slot == 9 ||
+                  slot == 13 || slot == 22 ||
+                  (caller_unity && ((caller_rva >= 0x905000 && caller_rva < 0x906000) ||
+                                    (caller_rva >= 0x90b000 && caller_rva < 0x90d000)));
+    if (!interesting) return;
+
+    report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 512) return;
+
+    limit = arg_count < ARRAY_SIZE(out) ? arg_count : ARRAY_SIZE(out);
+    for (i = 0; i < limit; i++)
+    {
+        if (args[i] >= 0x10000 &&
+            macrunner_hb_read_local_memory( (uintptr_t)args[i], &out[i], sizeof(out[i]) ))
+            valid |= 1u << i;
+    }
+
+    fprintf( stderr,
+             "macrunner-hb-dxmt-method-probe: hit=%u phase=%s method=%s slot=%u "
+             "known_swapchain=%u import=%s!%s tid=0x%llx native_tid=0x%llx "
+             "caller=%p caller_module=%s caller_rva=0x%llx pc=%p rc=%p "
+             "a0=%p a1=%p a2=%p a3=%p a4=%p a5=%p "
+             "out_valid=0x%x out0=%p out1=%p out2=%p out3=%p out4=%p out5=%p\n",
+             report, phase, method ? method : "dxmt-com", slot, known_swapchain,
+             thunk->dll_name, thunk->import_name,
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             (void *)(uintptr_t)ret_addr, caller_name[0] ? caller_name : "?",
+             (unsigned long long)caller_rva,
+             ctx ? (void *)(uintptr_t)ctx->pc : NULL, (void *)(uintptr_t)rc,
+             (void *)(uintptr_t)(arg_count > 0 ? args[0] : 0),
+             (void *)(uintptr_t)(arg_count > 1 ? args[1] : 0),
+             (void *)(uintptr_t)(arg_count > 2 ? args[2] : 0),
+             (void *)(uintptr_t)(arg_count > 3 ? args[3] : 0),
+             (void *)(uintptr_t)(arg_count > 4 ? args[4] : 0),
+             (void *)(uintptr_t)(arg_count > 5 ? args[5] : 0),
+             valid, (void *)(uintptr_t)out[0], (void *)(uintptr_t)out[1],
+             (void *)(uintptr_t)out[2], (void *)(uintptr_t)out[3],
+             (void *)(uintptr_t)out[4], (void *)(uintptr_t)out[5] );
+    fflush( stderr );
+}
+
+static unsigned int macrunner_hb_present_gate_probe_armed;
+static uint64_t macrunner_hb_present_gate_probe_us;
+
+static const char *macrunner_hb_present_gate_stage( uint64_t rva )
+{
+    if (rva >= 0x905400 && rva < 0x905540) return "omset-one";
+    if (rva >= 0xa14420 && rva <= 0xa144a5) return "signal-plain";
+    if (rva >= 0x90bb00 && rva < 0x90c980) return "backbuffer-tail";
+    if (rva >= 0x87f000 && rva < 0x930000) return "gfx-near";
+    if (rva >= 0xa00000 && rva < 0xab8000) return "present-candidate-band";
+    return "unity";
+}
+
+static long long macrunner_hb_present_gate_since_ms(void)
+{
+    uint64_t start_us = __atomic_load_n( &macrunner_hb_present_gate_probe_us,
+                                         __ATOMIC_ACQUIRE );
+    uint64_t now_us;
+
+    if (!start_us) return -1;
+    now_us = macrunner_hb_now_us();
+    if (now_us < start_us) return 0;
+    return (long long)((now_us - start_us) / 1000);
+}
+
+static void macrunner_hb_present_gate_probe_before_block( const char *label,
+                                                          hb_context_t *ctx,
+                                                          uint64_t block_pc,
+                                                          uint64_t blocks,
+                                                          uint64_t steps )
+{
+    static unsigned int reports;
+    char module_name[128] = "";
+    uint64_t rva = 0, base = 0, rsi, swapchain = 0, swapchain_vtbl = 0;
+    uint64_t global27340 = 0, global27348 = 0, render_sync = 0, render_handle = 0;
+    uint32_t count33c = 0;
+    uint8_t flag341 = 0, flag342 = 0, flag360 = 0, phase65 = 0, phase67 = 0;
+    BOOL is_unity, is_creator;
+    unsigned int report;
+    const char *stage;
+
+    if (!macrunner_hb_present_gate_probe_enabled()) return;
+    if (!ctx || !ctx->memory || !block_pc) return;
+    if (!__atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE )) return;
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module_name, sizeof(module_name), &rva );
+    is_unity = macrunner_hb_strieq( module_name, "UnityPlayer.dll" ) ||
+               macrunner_hb_strieq( module_name, "UnityPlayer" );
+    is_creator = macrunner_hb_current_thread_is_swapchain_creator();
+    if (!is_unity || !is_creator) return;
+
+    if (rva >= 0x9054f0 && rva <= 0x905510)
+    {
+        if (!__atomic_exchange_n( &macrunner_hb_present_gate_probe_armed, 1,
+                                  __ATOMIC_ACQ_REL ))
+            __atomic_store_n( &macrunner_hb_present_gate_probe_us,
+                              macrunner_hb_now_us(), __ATOMIC_RELEASE );
+    }
+
+    if (!__atomic_load_n( &macrunner_hb_present_gate_probe_armed, __ATOMIC_ACQUIRE ))
+        return;
+
+    report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 768) return;
+
+    base = block_pc - rva;
+    rsi = ctx->regs.x64.rsi;
+    if (rsi)
+    {
+        swapchain = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, rsi + 0x320 );
+        count33c = macrunner_hb_trace_read_u32_or_zero( ctx, rsi + 0x33c );
+        flag341 = macrunner_hb_trace_read_u8_or_zero( ctx, rsi + 0x341 );
+        flag342 = macrunner_hb_trace_read_u8_or_zero( ctx, rsi + 0x342 );
+        flag360 = macrunner_hb_trace_read_u8_or_zero( ctx, rsi + 0x360 );
+    }
+    if (swapchain)
+        swapchain_vtbl = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, swapchain );
+    if (base)
+    {
+        phase65 = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f65 );
+        phase67 = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f67 );
+        global27340 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1f27340 );
+        global27348 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1f27348 );
+        render_sync = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1ebc780 );
+        if (render_sync)
+            render_handle = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, render_sync + 0xb8 );
+    }
+    stage = macrunner_hb_present_gate_stage( rva );
+
+    fprintf( stderr,
+             "macrunner-hb-present-gate-probe: hit=%u stage=%s label=%s "
+             "tid=0x%llx native_tid=0x%llx since_omset_ms=%lld pc=%p rva=0x%llx "
+             "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p r10=%p r11=%p r12=%p rsp=%p "
+             "swapchain=%p swap_vtbl=%p count33c=%u flag341=%u flag342=%u flag360=%u "
+             "phase65=%u phase67=%u global27340=%p global27348=%p render_sync=%p render_handle=%p "
+             "blocks=%s steps=%s\n",
+             report, stage, label ? label : "entry",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             macrunner_hb_present_gate_since_ms(),
+             (void *)(uintptr_t)block_pc, (unsigned long long)rva,
+             (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.r10,
+             (void *)(uintptr_t)ctx->regs.x64.r11,
+             (void *)(uintptr_t)ctx->regs.x64.r12,
+             (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (void *)(uintptr_t)swapchain, (void *)(uintptr_t)swapchain_vtbl,
+             count33c, flag341, flag342, flag360, phase65, phase67,
+             (void *)(uintptr_t)global27340, (void *)(uintptr_t)global27348,
+             (void *)(uintptr_t)render_sync, (void *)(uintptr_t)render_handle,
+             wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps) );
+    fflush( stderr );
+}
+
+static long long macrunner_hb_present_scheduling_since_ms(void)
+{
+    uint64_t start_us = __atomic_load_n( &macrunner_hb_present_scheduling_probe_us,
+                                         __ATOMIC_ACQUIRE );
+    uint64_t now_us;
+
+    if (!start_us) return -1;
+    now_us = macrunner_hb_now_us();
+    if (now_us < start_us) return 0;
+    return (long long)((now_us - start_us) / 1000);
+}
+
+static BOOL macrunner_hb_present_scheduling_is_present1_candidate( uint64_t rva )
+{
+    static const uint64_t candidates[] =
+    {
+        0x8f0337, 0x8f5dad, 0x913579, 0x9139dd,
+        0xa2d551, 0xaa887a, 0xaa97e1, 0xaa9ae2
+    };
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(candidates); i++)
+        if (rva >= candidates[i] - 0x10 && rva <= candidates[i] + 0x10)
+            return TRUE;
+    return FALSE;
+}
+
+static const char *macrunner_hb_present_scheduling_stage( uint64_t rva )
+{
+    if (macrunner_hb_present_scheduling_is_present1_candidate( rva ))
+        return "present1-slot-candidate";
+    if (rva >= 0x905400 && rva < 0x905900) return "post-omset";
+    if (rva >= 0x90bb00 && rva < 0x90ca20) return "backbuffer-tail";
+    if (rva >= 0xa14420 && rva <= 0xa144a5) return "signal-plain";
+    if (rva >= 0xa00000 && rva < 0xab8000) return "present-candidate-band";
+    if (rva >= 0x7c0000 && rva < 0x7d9000) return "playerloop-scheduling";
+    if (rva >= 0x3a0000 && rva < 0x3a8000) return "managed-dispatch-loop";
+    if (rva >= 0x580000 && rva < 0x582000) return "focus-update-band";
+    return "unity";
+}
+
+static BOOL macrunner_hb_present_scheduling_interesting_rva( uint64_t rva )
+{
+    return (rva >= 0x905400 && rva < 0x905900) ||
+           (rva >= 0x90bb00 && rva < 0x90ca20) ||
+           (rva >= 0xa14420 && rva <= 0xa144a5) ||
+           (rva >= 0xa00000 && rva < 0xab8000) ||
+           (rva >= 0x7c0000 && rva < 0x7d9000) ||
+           (rva >= 0x3a0000 && rva < 0x3a8000) ||
+           (rva >= 0x580000 && rva < 0x582000);
+}
+
+static void macrunner_hb_present_scheduling_probe_before_block( const char *label,
+                                                                hb_context_t *ctx,
+                                                                uint64_t block_pc,
+                                                                uint64_t blocks,
+                                                                uint64_t steps )
+{
+    static unsigned int reports;
+    char module_name[128] = "", phase_cluster[49];
+    uint64_t rva = 0, base = 0, rsi, swapchain = 0, swapchain_vtbl = 0;
+    uint64_t global27340 = 0, global27348 = 0, render_sync = 0, render_handle = 0;
+    uint32_t count33c = 0;
+    uint8_t flag341 = 0, flag342 = 0, flag360 = 0, phase65 = 0, phase67 = 0;
+    BOOL is_unity, is_creator;
+    unsigned int report, i;
+    const char *stage;
+
+    if (!macrunner_hb_present_scheduling_probe_enabled()) return;
+    if (!ctx || !ctx->memory || !block_pc) return;
+    if (!__atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE )) return;
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module_name, sizeof(module_name), &rva );
+    is_unity = macrunner_hb_strieq( module_name, "UnityPlayer.dll" ) ||
+               macrunner_hb_strieq( module_name, "UnityPlayer" );
+    is_creator = macrunner_hb_current_thread_is_swapchain_creator();
+    if (!is_unity || !is_creator) return;
+
+    if (rva >= 0x9054f0 && rva <= 0x905510)
+    {
+        if (!__atomic_exchange_n( &macrunner_hb_present_scheduling_probe_armed, 1,
+                                  __ATOMIC_ACQ_REL ))
+            __atomic_store_n( &macrunner_hb_present_scheduling_probe_us,
+                              macrunner_hb_now_us(), __ATOMIC_RELEASE );
+    }
+
+    if (!__atomic_load_n( &macrunner_hb_present_scheduling_probe_armed,
+                          __ATOMIC_ACQUIRE ))
+        return;
+    if (!macrunner_hb_present_scheduling_interesting_rva( rva )) return;
+
+    report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 4096 && (report & 0xff)) return;
+
+    phase_cluster[0] = 0;
+    base = block_pc - rva;
+    rsi = ctx->regs.x64.rsi;
+    if (rsi)
+    {
+        swapchain = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, rsi + 0x320 );
+        count33c = macrunner_hb_trace_read_u32_or_zero( ctx, rsi + 0x33c );
+        flag341 = macrunner_hb_trace_read_u8_or_zero( ctx, rsi + 0x341 );
+        flag342 = macrunner_hb_trace_read_u8_or_zero( ctx, rsi + 0x342 );
+        flag360 = macrunner_hb_trace_read_u8_or_zero( ctx, rsi + 0x360 );
+    }
+    if (swapchain)
+        swapchain_vtbl = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, swapchain );
+    if (base)
+    {
+        phase65 = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f65 );
+        phase67 = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f67 );
+        global27340 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1f27340 );
+        global27348 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1f27348 );
+        render_sync = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1ebc780 );
+        if (render_sync)
+            render_handle = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, render_sync + 0xb8 );
+        for (i = 0; i < 24; i++)
+        {
+            static const char hexdigits[] = "0123456789abcdef";
+            uint8_t v = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f58 + i );
+            phase_cluster[i * 2] = hexdigits[v >> 4];
+            phase_cluster[i * 2 + 1] = hexdigits[v & 0xf];
+        }
+        phase_cluster[48] = 0;
+    }
+    stage = macrunner_hb_present_scheduling_stage( rva );
+
+    fprintf( stderr,
+             "macrunner-hb-present-scheduling-probe: hit=%u stage=%s label=%s "
+             "tid=0x%llx native_tid=0x%llx since_omset_ms=%lld pc=%p rva=0x%llx "
+             "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p r10=%p r11=%p r12=%p rsp=%p "
+             "swapchain=%p swap_vtbl=%p count33c=%u flag341=%u flag342=%u flag360=%u "
+             "phase65=%u phase67=%u phase_cluster_1f50f58=%s "
+             "global27340=%p global27348=%p render_sync=%p render_handle=%p "
+             "present1_candidate=%u blocks=%s steps=%s\n",
+             report, stage, label ? label : "entry",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             macrunner_hb_present_scheduling_since_ms(),
+             (void *)(uintptr_t)block_pc, (unsigned long long)rva,
+             (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.r10,
+             (void *)(uintptr_t)ctx->regs.x64.r11,
+             (void *)(uintptr_t)ctx->regs.x64.r12,
+             (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (void *)(uintptr_t)swapchain, (void *)(uintptr_t)swapchain_vtbl,
+             count33c, flag341, flag342, flag360, phase65, phase67,
+             phase_cluster[0] ? phase_cluster : "unreadable",
+             (void *)(uintptr_t)global27340, (void *)(uintptr_t)global27348,
+             (void *)(uintptr_t)render_sync, (void *)(uintptr_t)render_handle,
+             macrunner_hb_present_scheduling_is_present1_candidate( rva ),
+             wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps) );
+    fflush( stderr );
+}
+
+static unsigned int macrunner_hb_present_follow_probe_armed;
+static uint64_t macrunner_hb_present_follow_probe_us;
+
+static void macrunner_hb_present_follow_probe_before_block( const char *label,
+                                                             hb_context_t *ctx,
+                                                             uint64_t block_pc,
+                                                             uint64_t blocks,
+                                                             uint64_t steps )
+{
+    static unsigned int reports;
+    static __thread uint64_t seen_blocks, last_rva;
+    static __thread char last_module_name[128];
+    char module_name[128] = "";
+    uint64_t rva = 0, base, now_us, start_us, since_ms;
+    uint64_t stack_unity[6] = { 0 }, stack_rva[6] = { 0 }, q = 0;
+    unsigned int report, found = 0, i;
+    BOOL is_unity, is_creator, log_block, present_candidate;
+    const char *reason;
+
+    if (!macrunner_hb_present_follow_probe_enabled()) return;
+    if (!ctx || !ctx->memory || !block_pc) return;
+    if (!__atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen, __ATOMIC_ACQUIRE )) return;
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module_name, sizeof(module_name), &rva );
+    is_unity = macrunner_hb_strieq( module_name, "UnityPlayer.dll" ) ||
+               macrunner_hb_strieq( module_name, "UnityPlayer" );
+    is_creator = macrunner_hb_current_thread_is_swapchain_creator();
+    if (!is_creator) return;
+
+    if (!__atomic_load_n( &macrunner_hb_present_follow_probe_armed, __ATOMIC_ACQUIRE ))
+    {
+        if (!is_unity || rva != 0x9054ff) return;
+        __atomic_store_n( &macrunner_hb_present_follow_probe_us,
+                          macrunner_hb_now_us(), __ATOMIC_RELEASE );
+        __atomic_store_n( &macrunner_hb_present_follow_probe_armed, 1, __ATOMIC_RELEASE );
+    }
+
+    start_us = __atomic_load_n( &macrunner_hb_present_follow_probe_us, __ATOMIC_ACQUIRE );
+    now_us = macrunner_hb_now_us();
+    since_ms = start_us && now_us >= start_us ? (now_us - start_us) / 1000 : 0;
+    if (since_ms > 160000) return;
+
+    seen_blocks++;
+    present_candidate = is_unity && macrunner_hb_present_scheduling_is_present1_candidate( rva );
+    log_block = seen_blocks <= 128 || present_candidate || !(seen_blocks & 0xffff);
+    if (!log_block)
+    {
+        last_rva = rva;
+        snprintf( last_module_name, sizeof(last_module_name), "%s", module_name );
+        return;
+    }
+
+    reason = seen_blocks <= 128 ? "initial" :
+             present_candidate ? "present-candidate" : "sample";
+    report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 2048) return;
+
+    base = block_pc - rva;
+    if (base && ctx->regs.x64.rsp)
+    {
+        for (i = 0; i < 128 && found < ARRAY_SIZE(stack_unity); i++)
+        {
+            if (hb_memory_read_u64( ctx->memory,
+                                    (hb_gva_t)(ctx->regs.x64.rsp + i * sizeof(q)), &q ) != HB_OK)
+                break;
+            if (q >= base && q < base + 0x2500000)
+            {
+                stack_unity[found] = q;
+                stack_rva[found] = q - base;
+                found++;
+            }
+        }
+    }
+
+    fprintf( stderr,
+             "macrunner-hb-present-follow-probe: hit=%u seq=%llu reason=%s label=%s "
+             "tid=0x%llx native_tid=0x%llx since_omset_ms=%llu module=%s last_module=%s "
+             "pc=%p rva=0x%llx last_rva=0x%llx "
+             "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p "
+             "r10=%p r11=%p r12=%p rsp=%p "
+             "stack0_rva=0x%llx stack1_rva=0x%llx stack2_rva=0x%llx "
+             "stack3_rva=0x%llx stack4_rva=0x%llx stack5_rva=0x%llx "
+             "present_candidate=%u blocks=%s steps=%s\n",
+             report, (unsigned long long)seen_blocks, reason, label ? label : "entry",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             (unsigned long long)since_ms, module_name[0] ? module_name : "?",
+             last_module_name[0] ? last_module_name : "?", (void *)(uintptr_t)block_pc,
+             (unsigned long long)rva, (unsigned long long)last_rva,
+             (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.r10,
+             (void *)(uintptr_t)ctx->regs.x64.r11,
+             (void *)(uintptr_t)ctx->regs.x64.r12,
+             (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (unsigned long long)stack_rva[0], (unsigned long long)stack_rva[1],
+             (unsigned long long)stack_rva[2], (unsigned long long)stack_rva[3],
+             (unsigned long long)stack_rva[4], (unsigned long long)stack_rva[5],
+             present_candidate,
+             wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps) );
+    fflush( stderr );
+
+    last_rva = rva;
+    snprintf( last_module_name, sizeof(last_module_name), "%s", module_name );
+}
+
+#define MACRUNNER_HB_POST_READY_FOLLOW_MAX_REPORTS 64
+#define MACRUNNER_HB_POST_READY_FOLLOW_MAX_BLOCKS 8000000ULL
+#define MACRUNNER_HB_POST_READY_FOLLOW_MAX_US 60000000ULL
+
+static unsigned int macrunner_hb_post_ready_consumer_follow_claimed;
+static unsigned int macrunner_hb_post_ready_consumer_follow_state;
+static unsigned int macrunner_hb_post_ready_consumer_follow_reports;
+static uint64_t macrunner_hb_post_ready_consumer_follow_tid;
+static uint64_t macrunner_hb_post_ready_consumer_follow_native_tid;
+static uint64_t macrunner_hb_post_ready_consumer_follow_item;
+static uint64_t macrunner_hb_post_ready_consumer_follow_mgr;
+static uint64_t macrunner_hb_post_ready_consumer_follow_ready_seq;
+static uint64_t macrunner_hb_post_ready_consumer_follow_arm_us;
+static uint64_t macrunner_hb_post_ready_consumer_follow_unity_base;
+static uint64_t macrunner_hb_post_ready_consumer_follow_seen_blocks;
+static uint64_t macrunner_hb_post_ready_consumer_follow_last_report_block;
+static uint64_t macrunner_hb_post_ready_consumer_follow_last_rva;
+static uint64_t macrunner_hb_post_ready_consumer_follow_last_blocks;
+static uint64_t macrunner_hb_post_ready_consumer_follow_last_steps;
+static uint64_t macrunner_hb_post_ready_consumer_follow_last_pc;
+static unsigned int macrunner_hb_post_ready_consumer_follow_last_is_unity;
+
+static void macrunner_hb_post_ready_consumer_follow_stop( const char *reason,
+                                                           const char *detail_a,
+                                                           const char *detail_b,
+                                                           hb_context_t *ctx,
+                                                           uint64_t block_pc,
+                                                           uint64_t blocks,
+                                                           uint64_t steps )
+{
+    unsigned int expected = 1;
+    uint64_t arm_us, now_us, since_us;
+
+    if (!macrunner_hb_post_ready_consumer_follow_enabled()) return;
+    if (macrunner_hb_current_tid64() != macrunner_hb_post_ready_consumer_follow_tid) return;
+    if (!__atomic_compare_exchange_n( &macrunner_hb_post_ready_consumer_follow_state,
+                                      &expected, 2, FALSE,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
+        return;
+
+    arm_us = macrunner_hb_post_ready_consumer_follow_arm_us;
+    now_us = macrunner_hb_now_us();
+    since_us = arm_us && now_us >= arm_us ? now_us - arm_us : 0;
+    fprintf( stderr,
+             "macrunner-hb-post-ready-consumer-follow: event=stop reason=%s "
+             "detail_a=%s detail_b=%s tid=0x%llx native_tid=0x%llx "
+             "item=0x%llx mgr=0x%llx ready_seq=%llu since_ready_us=%llu "
+             "follow_blocks=%llu pc=%p rax=%p rsp=%p blocks=%s steps=%s\n",
+             reason ? reason : "?", detail_a ? detail_a : "-",
+             detail_b ? detail_b : "-",
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_tid,
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_native_tid,
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_item,
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_mgr,
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_ready_seq,
+             (unsigned long long)since_us,
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_seen_blocks,
+             (void *)(uintptr_t)block_pc,
+             ctx ? (void *)(uintptr_t)ctx->regs.x64.rax : NULL,
+             ctx ? (void *)(uintptr_t)ctx->regs.x64.rsp : NULL,
+             wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps) );
+    fflush( stderr );
+}
+
+static void macrunner_hb_post_ready_consumer_follow_arm( hb_context_t *ctx,
+                                                          uint64_t image_start,
+                                                          uint64_t item,
+                                                          uint64_t mgr,
+                                                          uint64_t ready_seq,
+                                                          uint64_t ready_age_us,
+                                                          uint64_t active0 )
+{
+    unsigned int expected = 0;
+
+    if (!macrunner_hb_post_ready_consumer_follow_enabled()) return;
+    if (!ctx || !image_start || item < 0x10000 || !ready_seq) return;
+    if (!__atomic_compare_exchange_n( &macrunner_hb_post_ready_consumer_follow_claimed,
+                                      &expected, 1, FALSE,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
+        return;
+
+    macrunner_hb_post_ready_consumer_follow_tid = macrunner_hb_current_tid64();
+    macrunner_hb_post_ready_consumer_follow_native_tid = macrunner_hb_current_native_tid64();
+    macrunner_hb_post_ready_consumer_follow_item = item;
+    macrunner_hb_post_ready_consumer_follow_mgr = mgr;
+    macrunner_hb_post_ready_consumer_follow_ready_seq = ready_seq;
+    macrunner_hb_post_ready_consumer_follow_arm_us = macrunner_hb_now_us();
+    macrunner_hb_post_ready_consumer_follow_unity_base = image_start;
+    macrunner_hb_post_ready_consumer_follow_seen_blocks = 0;
+    macrunner_hb_post_ready_consumer_follow_last_report_block = 0;
+    macrunner_hb_post_ready_consumer_follow_last_rva = 0;
+    macrunner_hb_post_ready_consumer_follow_last_blocks = 0;
+    macrunner_hb_post_ready_consumer_follow_last_steps = 0;
+    macrunner_hb_post_ready_consumer_follow_last_pc = image_start + 0x587249;
+    macrunner_hb_post_ready_consumer_follow_last_is_unity = 1;
+    __atomic_store_n( &macrunner_hb_post_ready_consumer_follow_state, 1, __ATOMIC_RELEASE );
+
+    fprintf( stderr,
+             "macrunner-hb-post-ready-consumer-follow: event=arm site=consumer-after-active-peek "
+             "rva=0x587249 tid=0x%llx native_tid=0x%llx item=0x%llx mgr=0x%llx "
+             "active0=0x%llx item40=1 ready_seq=%llu ready_age_us=%llu "
+             "limits={reports:%u,blocks:%llu,us:%llu}\n",
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_tid,
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_native_tid,
+             (unsigned long long)item, (unsigned long long)mgr,
+             (unsigned long long)active0, (unsigned long long)ready_seq,
+             (unsigned long long)ready_age_us,
+             MACRUNNER_HB_POST_READY_FOLLOW_MAX_REPORTS,
+             (unsigned long long)MACRUNNER_HB_POST_READY_FOLLOW_MAX_BLOCKS,
+             (unsigned long long)MACRUNNER_HB_POST_READY_FOLLOW_MAX_US );
+    fflush( stderr );
+}
+
+static void macrunner_hb_post_ready_consumer_follow_before_block( const char *label,
+                                                                   hb_context_t *ctx,
+                                                                   uint64_t block_pc,
+                                                                   uint64_t blocks,
+                                                                   uint64_t steps )
+{
+    char module_name[128] = "";
+    uint64_t base, rva = 0, seen, since_us = 0;
+    unsigned int is_unity, last_is_unity, page_changed, transition, periodic, report;
+    const char *reason;
+
+    if (!macrunner_hb_post_ready_consumer_follow_enabled()) return;
+    if (!ctx || !block_pc) return;
+    if (__atomic_load_n( &macrunner_hb_post_ready_consumer_follow_state,
+                         __ATOMIC_ACQUIRE ) != 1)
+        return;
+    if (macrunner_hb_current_tid64() != macrunner_hb_post_ready_consumer_follow_tid) return;
+
+    seen = ++macrunner_hb_post_ready_consumer_follow_seen_blocks;
+    macrunner_hb_post_ready_consumer_follow_last_blocks = blocks;
+    macrunner_hb_post_ready_consumer_follow_last_steps = steps;
+    macrunner_hb_post_ready_consumer_follow_last_pc = block_pc;
+
+    if (seen > MACRUNNER_HB_POST_READY_FOLLOW_MAX_BLOCKS)
+    {
+        macrunner_hb_post_ready_consumer_follow_stop( "block-budget", NULL, NULL,
+                                                       ctx, block_pc, blocks, steps );
+        return;
+    }
+    if (!(seen & 0xfff))
+    {
+        uint64_t now_us = macrunner_hb_now_us();
+        uint64_t arm_us = macrunner_hb_post_ready_consumer_follow_arm_us;
+        since_us = arm_us && now_us >= arm_us ? now_us - arm_us : 0;
+        if (since_us > MACRUNNER_HB_POST_READY_FOLLOW_MAX_US)
+        {
+            macrunner_hb_post_ready_consumer_follow_stop( "time-budget", NULL, NULL,
+                                                           ctx, block_pc, blocks, steps );
+            return;
+        }
+    }
+
+    base = macrunner_hb_post_ready_consumer_follow_unity_base;
+    is_unity = base && block_pc >= base && block_pc < base + 0x2500000;
+    if (is_unity) rva = block_pc - base;
+    last_is_unity = macrunner_hb_post_ready_consumer_follow_last_is_unity;
+    page_changed = is_unity && last_is_unity &&
+                   ((rva >> 12) != (macrunner_hb_post_ready_consumer_follow_last_rva >> 12));
+    transition = is_unity != last_is_unity;
+    periodic = !(seen & 0xffff);
+
+    if (!(seen <= 8 || periodic || transition ||
+          (page_changed && seen - macrunner_hb_post_ready_consumer_follow_last_report_block >= 256)))
+    {
+        macrunner_hb_post_ready_consumer_follow_last_is_unity = is_unity;
+        macrunner_hb_post_ready_consumer_follow_last_rva = rva;
+        return;
+    }
+
+    report = __atomic_add_fetch( &macrunner_hb_post_ready_consumer_follow_reports,
+                                 1, __ATOMIC_ACQ_REL );
+    if (report > MACRUNNER_HB_POST_READY_FOLLOW_MAX_REPORTS) return;
+    if (is_unity)
+        snprintf( module_name, sizeof(module_name), "UnityPlayer.dll" );
+    else
+        macrunner_hb_post_signal_probe_module_rva( block_pc, module_name,
+                                                    sizeof(module_name), &rva );
+
+    if (!since_us)
+    {
+        uint64_t now_us = macrunner_hb_now_us();
+        uint64_t arm_us = macrunner_hb_post_ready_consumer_follow_arm_us;
+        since_us = arm_us && now_us >= arm_us ? now_us - arm_us : 0;
+    }
+    reason = seen <= 8 ? "initial" : transition ? "module-transition" :
+             page_changed ? "unity-page" : "periodic";
+    fprintf( stderr,
+             "macrunner-hb-post-ready-consumer-follow: event=sample hit=%u seq=%llu "
+             "reason=%s label=%s tid=0x%llx native_tid=0x%llx since_ready_us=%llu "
+             "module=%s pc=%p rva=0x%llx last_rva=0x%llx "
+             "rax=%p rcx=%p rdx=%p rsi=%p rdi=%p rsp=%p blocks=%s steps=%s\n",
+             report, (unsigned long long)seen, reason, label ? label : "entry",
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_tid,
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_native_tid,
+             (unsigned long long)since_us, module_name[0] ? module_name : "?",
+             (void *)(uintptr_t)block_pc, (unsigned long long)rva,
+             (unsigned long long)macrunner_hb_post_ready_consumer_follow_last_rva,
+             (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.rsp,
+             wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps) );
+    fflush( stderr );
+
+    macrunner_hb_post_ready_consumer_follow_last_report_block = seen;
+    macrunner_hb_post_ready_consumer_follow_last_is_unity = is_unity;
+    macrunner_hb_post_ready_consumer_follow_last_rva = rva;
+}
+
+static void macrunner_hb_post_ready_consumer_follow_render_boundary(
+    const char *phase, hb_context_t *ctx, const struct macrunner_hb_import_thunk *thunk )
+{
+    if (!phase || strcmp( phase, "before" )) return;
+    if (!macrunner_hb_post_ready_consumer_follow_enabled()) return;
+    if (!ctx || !macrunner_hb_d3d_boundary_trace_interesting( thunk )) return;
+    if (__atomic_load_n( &macrunner_hb_post_ready_consumer_follow_state,
+                         __ATOMIC_ACQUIRE ) != 1)
+        return;
+    if (macrunner_hb_current_tid64() != macrunner_hb_post_ready_consumer_follow_tid) return;
+
+    macrunner_hb_post_ready_consumer_follow_stop(
+        "render-boundary", thunk->dll_name, thunk->import_name, ctx,
+        ctx->pc, macrunner_hb_post_ready_consumer_follow_last_blocks,
+        macrunner_hb_post_ready_consumer_follow_last_steps );
+}
+
+static void macrunner_hb_post_ready_consumer_follow_on_exit( const char *label,
+                                                              const char *status_reason,
+                                                              NTSTATUS status,
+                                                              hb_context_t *ctx,
+                                                              uint64_t last_block_pc,
+                                                              uint64_t blocks,
+                                                              uint64_t steps )
+{
+    if (!label || strcmp( label, "thread" )) return;
+    if (!macrunner_hb_post_ready_consumer_follow_enabled()) return;
+    if (macrunner_hb_current_tid64() != macrunner_hb_post_ready_consumer_follow_tid) return;
+
+    macrunner_hb_post_ready_consumer_follow_stop(
+        status ? "thread-exit-status" : "normal-exit",
+        status_reason ? status_reason : "?", status ? "nonzero" : "zero",
+        ctx, last_block_pc, blocks, steps );
+}
+
+static void macrunner_hb_present_ready_watch_before_block( const char *label,
+                                                           hb_context_t *ctx,
+                                                           uint64_t block_pc,
+                                                           uint64_t blocks,
+                                                           uint64_t steps )
+{
+    static unsigned int reports, gate_reports;
+    char module_name[128] = "";
+    uint64_t rva = 0, base = 0, object = 0;
+    uint8_t ready138 = 0, phase65 = 0, phase67 = 0;
+    uint32_t state13c = 0;
+    unsigned int report;
+    BOOL is_unity, gate_hit, changed = FALSE, first_seen = FALSE;
+    const char *event = "sample";
+    const char *branch = "not-gate";
+    BOOL force_ready = FALSE;
+
+    if (!macrunner_hb_present_ready_watch_enabled()) return;
+    if (!ctx || !ctx->memory || !block_pc) return;
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module_name, sizeof(module_name), &rva );
+    is_unity = macrunner_hb_strieq( module_name, "UnityPlayer.dll" ) ||
+               macrunner_hb_strieq( module_name, "UnityPlayer" );
+    if (!is_unity) return;
+
+    base = block_pc - rva;
+    if (!base) return;
+
+    object = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1f31a08 );
+    if (object)
+    {
+        ready138 = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x138 );
+        state13c = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x13c );
+    }
+    phase65 = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f65 );
+    phase67 = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f67 );
+
+    gate_hit = rva >= 0xa15dd0 && rva <= 0xa15e10;
+    if (gate_hit)
+    {
+        unsigned int gates = __atomic_add_fetch( &gate_reports, 1, __ATOMIC_ACQ_REL );
+        if (gates > 128 && (gates & 0x3f)) return;
+        event = "gate";
+        if (!object) branch = "skip_no_object";
+        else if (state13c == 0 && !ready138) branch = "skip_ready138_zero";
+        else if (state13c == 1) branch = "submit_state13c_one";
+        else if (state13c == 0 && ready138) branch = "submit_ready138_nonzero";
+        else branch = "state13c_other";
+
+        if (object && state13c == 0 && !ready138 &&
+            macrunner_hb_force_isfocused_enabled())
+        {
+            uint8_t one = 1;
+            if (hb_memory_write( ctx->memory, (hb_gva_t)(object + 0x138), &one,
+                                 sizeof(one) ) == HB_OK)
+            {
+                ready138 = 1;
+                force_ready = TRUE;
+                event = "force-ready138";
+                branch = "forced_submit_ready138";
+            }
+            else
+            {
+                event = "force-failed";
+                branch = "force_write_failed";
+            }
+        }
+    }
+
+    if (!gate_hit)
+    {
+        uint64_t old_object = __atomic_load_n( &macrunner_hb_present_ready_watch_object,
+                                               __ATOMIC_ACQUIRE );
+        uint8_t old_ready = __atomic_load_n( &macrunner_hb_present_ready_watch_ready138,
+                                             __ATOMIC_ACQUIRE );
+        uint32_t old_state = __atomic_load_n( &macrunner_hb_present_ready_watch_state13c,
+                                              __ATOMIC_ACQUIRE );
+
+        if (!__atomic_exchange_n( &macrunner_hb_present_ready_watch_seen, 1,
+                                  __ATOMIC_ACQ_REL ))
+        {
+            first_seen = TRUE;
+            event = "initial";
+        }
+        else if (old_object != object || old_ready != ready138 || old_state != state13c)
+        {
+            changed = TRUE;
+            event = "change";
+        }
+        else return;
+    }
+
+    __atomic_store_n( &macrunner_hb_present_ready_watch_object, object, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_ready_watch_ready138, ready138, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_ready_watch_state13c, state13c, __ATOMIC_RELEASE );
+
+    report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 512 && !gate_hit && !changed && !first_seen) return;
+
+    fprintf( stderr,
+             "macrunner-hb-present-ready-watch: hit=%u event=%s branch=%s label=%s "
+             "tid=0x%llx native_tid=0x%llx pc=%p rva=0x%llx "
+             "object=%p ready138=%u state13c=%u phase65=%u phase67=%u force=%u "
+             "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p r12=%p rsp=%p "
+             "blocks=%s steps=%s\n",
+             report, event, branch, label ? label : "entry",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             (void *)(uintptr_t)block_pc, (unsigned long long)rva,
+             (void *)(uintptr_t)object, ready138, state13c, phase65, phase67,
+             force_ready,
+             (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.r12,
+             (void *)(uintptr_t)ctx->regs.x64.rsp,
+             wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps) );
+    fflush( stderr );
+}
+
+static void macrunner_hb_isfocused_field_probe_before_block( const char *label,
+                                                             hb_context_t *ctx,
+                                                             uint64_t block_pc,
+                                                             uint64_t blocks,
+                                                             uint64_t steps )
+{
+    static unsigned int reports, gate_reports, owner_reports, focus_reports;
+    char module_name[128] = "";
+    uint64_t rva = 0, base = 0, object = 0, vtbl = 0, owner8 = 0, owner10 = 0;
+    uint64_t q130 = 0, q138 = 0, q140 = 0, q148 = 0;
+    uint32_t d130 = 0, d134 = 0, d138 = 0, d13c = 0, d140 = 0;
+    uint32_t d144 = 0, d148 = 0, d14c = 0, d150 = 0;
+    uint8_t b138 = 0, b13c = 0, phase65 = 0, phase67 = 0;
+    uint64_t hash, old_object, old_hash;
+    uint8_t old_phase65, old_phase67;
+    unsigned int report;
+    BOOL is_unity, gate_hit, owner_hit, focus_band_hit, changed = FALSE, first_seen = FALSE;
+    const char *event = "sample";
+    const char *branch = "not-gate";
+
+    if (!macrunner_hb_isfocused_field_probe_enabled()) return;
+    if (!ctx || !ctx->memory || !block_pc) return;
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module_name, sizeof(module_name), &rva );
+    is_unity = macrunner_hb_strieq( module_name, "UnityPlayer.dll" ) ||
+               macrunner_hb_strieq( module_name, "UnityPlayer" );
+    if (!is_unity) return;
+
+    base = block_pc - rva;
+    if (!base) return;
+
+    object = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1f31a08 );
+    if (object)
+    {
+        vtbl = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object );
+        owner8 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 8 );
+        owner10 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x10 );
+        q130 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x130 );
+        q138 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x138 );
+        q140 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x140 );
+        q148 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x148 );
+        d130 = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x130 );
+        d134 = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x134 );
+        d138 = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x138 );
+        d13c = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x13c );
+        d140 = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x140 );
+        d144 = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x144 );
+        d148 = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x148 );
+        d14c = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x14c );
+        d150 = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x150 );
+        b138 = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x138 );
+        b13c = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x13c );
+    }
+    phase65 = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f65 );
+    phase67 = macrunner_hb_trace_read_u8_or_zero( ctx, base + 0x1f50f67 );
+
+    gate_hit = rva >= 0xa15dd0 && rva <= 0xa15e10;
+    owner_hit = rva >= 0x15a400 && rva <= 0x15a540;
+    focus_band_hit = (rva >= 0x580000 && rva < 0x582000) ||
+                     (rva >= 0x7c0000 && rva < 0x7d9000);
+
+    hash = object ^ q130 ^ (q138 * 0x9e3779b97f4a7c15ULL) ^
+           (q140 * 0xbf58476d1ce4e5b9ULL) ^
+           (q148 * 0x94d049bb133111ebULL) ^
+           ((uint64_t)d150 << 32) ^ ((uint64_t)phase65 << 8) ^ phase67;
+
+    old_object = __atomic_load_n( &macrunner_hb_isfocused_field_probe_object, __ATOMIC_ACQUIRE );
+    old_hash = __atomic_load_n( &macrunner_hb_isfocused_field_probe_hash, __ATOMIC_ACQUIRE );
+    old_phase65 = __atomic_load_n( &macrunner_hb_isfocused_field_probe_phase65, __ATOMIC_ACQUIRE );
+    old_phase67 = __atomic_load_n( &macrunner_hb_isfocused_field_probe_phase67, __ATOMIC_ACQUIRE );
+
+    if (!__atomic_exchange_n( &macrunner_hb_isfocused_field_probe_seen, 1, __ATOMIC_ACQ_REL ))
+    {
+        first_seen = TRUE;
+        event = "initial";
+    }
+    else if (old_object != object || old_hash != hash ||
+             old_phase65 != phase65 || old_phase67 != phase67)
+    {
+        changed = TRUE;
+        event = "change";
+    }
+    else if (gate_hit)
+    {
+        unsigned int gates = __atomic_add_fetch( &gate_reports, 1, __ATOMIC_ACQ_REL );
+        if (gates > 128 && (gates & 0x3f)) return;
+        event = "gate";
+    }
+    else if (owner_hit)
+    {
+        unsigned int owners = __atomic_add_fetch( &owner_reports, 1, __ATOMIC_ACQ_REL );
+        if (owners > 64 && (owners & 0x1f)) return;
+        event = "owner-band";
+    }
+    else if (focus_band_hit)
+    {
+        unsigned int focus = __atomic_add_fetch( &focus_reports, 1, __ATOMIC_ACQ_REL );
+        if (focus > 64 && (focus & 0x3f)) return;
+        event = "focus-band";
+    }
+    else return;
+
+    if (gate_hit)
+    {
+        if (!object) branch = "skip_no_object";
+        else if (!d13c && !b138) branch = "skip_ready138_zero";
+        else if (d13c == 1) branch = "submit_state13c_one";
+        else if (!d13c && b138) branch = "submit_ready138_nonzero";
+        else branch = "state13c_other";
+    }
+
+    __atomic_store_n( &macrunner_hb_isfocused_field_probe_object, object, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_isfocused_field_probe_hash, hash, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_isfocused_field_probe_phase65, phase65, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_isfocused_field_probe_phase67, phase67, __ATOMIC_RELEASE );
+
+    report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 1024 && !gate_hit && !owner_hit && !focus_band_hit && !changed && !first_seen) return;
+
+    fprintf( stderr,
+             "macrunner-hb-isfocused-field-probe: hit=%u event=%s branch=%s label=%s "
+             "tid=0x%llx native_tid=0x%llx pc=%p rva=0x%llx "
+             "isfocused_known=0 object=%p vtbl=%p owner8=%p owner10=%p "
+             "q130=%#llx q138=%#llx q140=%#llx q148=%#llx "
+             "d130=%#x d134=%#x d138=%#x d13c=%#x d140=%#x d144=%#x "
+             "d148=%#x d14c=%#x d150=%#x b138=%u b13c=%u phase65=%u phase67=%u "
+             "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p r12=%p rsp=%p "
+             "hash=%#llx blocks=%s steps=%s\n",
+             report, event, branch, label ? label : "entry",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             (void *)(uintptr_t)block_pc, (unsigned long long)rva,
+             (void *)(uintptr_t)object, (void *)(uintptr_t)vtbl,
+             (void *)(uintptr_t)owner8, (void *)(uintptr_t)owner10,
+             (unsigned long long)q130, (unsigned long long)q138,
+             (unsigned long long)q140, (unsigned long long)q148,
+             d130, d134, d138, d13c, d140, d144, d148, d14c, d150,
+             b138, b13c, phase65, phase67,
+             (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.r12,
+             (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (unsigned long long)hash, wine_dbgstr_longlong(blocks),
+             wine_dbgstr_longlong(steps) );
+    fflush( stderr );
+}
+
+static const char *macrunner_hb_store_watch_0x138_candidate( uint64_t rva )
+{
+    switch (rva)
+    {
+    case 0x4734a:  return "byte_copy_al";
+    case 0x782a7:  return "byte_copy_bl";
+    case 0x798a7:  return "byte_copy_bl";
+    case 0x9619b:  return "dword_set_1";
+    case 0x99635:  return "byte_clear";
+    case 0x9b11e:  return "byte_clear";
+    case 0x9bd9c:  return "dword_set_edx";
+    case 0xa39f7c: return "word_init_di";
+    case 0xa45ec8: return "qword_set_1";
+    case 0xa7b756: return "float_set_1";
+    case 0xaebe0:  return "byte_set_1";
+    case 0x10ef9d: return "byte_set_al";
+    case 0xa15dde: return "gate_read_state13c";
+    case 0xa15df5: return "gate_read_byte138";
+    default:       return NULL;
+    }
+}
+
+static const char *macrunner_hb_descriptor_dispatch_site( uint64_t rva )
+{
+    switch (rva)
+    {
+    case 0x193c542: return "descriptor_ref_58";
+    case 0x193d7db: return "descriptor_ref_14c_a";
+    case 0x193d826: return "descriptor_ref_14c_b";
+    case 0x193e4d4: return "descriptor_ref_68";
+    case 0x193ee22: return "descriptor_ref_98";
+    case 0x193ef21: return "descriptor_ref_7c_a";
+    case 0x193ef6a: return "descriptor_ref_7c_b";
+    case 0x193faa1: return "descriptor_ref_154";
+    case 0x193fb78: return "descriptor_ref_14c_c";
+    case 0x19403b8: return "descriptor_ref_13c";
+    case 0x1940a33: return "descriptor_ref_78";
+    case 0x1940bc6: return "descriptor_ref_80";
+    case 0xaebe0:  return "byte_table_setter_138_to_1";
+    case 0x10ef70: return "property_getter_138";
+    case 0x10ef80: return "property_setter_138_entry";
+    case 0x10ef9d: return "property_setter_138_store";
+    default:
+        if (rva >= 0x193c000 && rva <= 0x1941200) return "descriptor_dispatch_band";
+        return NULL;
+    }
+}
+
+static void macrunner_hb_descriptor_dispatch_probe_before_block( const char *label,
+                                                                 hb_context_t *ctx,
+                                                                 uint64_t block_pc,
+                                                                 uint64_t blocks,
+                                                                 uint64_t steps )
+{
+    static unsigned int reports, band_reports;
+    char module_name[128] = "";
+    uint64_t rva = 0, base = 0, object = 0, vtbl = 0, q138 = 0;
+    uint64_t descriptor = 0, byte_table_slot = 0, ready_table_slot = 0;
+    uint64_t byte_table_target = 0, ready_table_target = 0, stack_ret = 0;
+    uint64_t desc0 = 0, desc58 = 0, desc68 = 0, desc80 = 0, desc98 = 0;
+    uint64_t desc13c = 0, desc14c = 0, desc154 = 0;
+    uint32_t d13c = 0;
+    uint8_t b138 = 0, b139 = 0;
+    const char *site;
+    unsigned int report;
+    BOOL is_unity, is_band, is_target, is_known_ref;
+
+    if (!macrunner_hb_descriptor_dispatch_probe_enabled()) return;
+    if (!ctx || !ctx->memory || !block_pc) return;
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module_name, sizeof(module_name), &rva );
+    is_unity = macrunner_hb_strieq( module_name, "UnityPlayer.dll" ) ||
+               macrunner_hb_strieq( module_name, "UnityPlayer" );
+    if (!is_unity) return;
+
+    site = macrunner_hb_descriptor_dispatch_site( rva );
+    if (!site) return;
+
+    is_band = !strcmp( site, "descriptor_dispatch_band" );
+    is_target = rva == 0xaebe0 || rva == 0x10ef70 || rva == 0x10ef80 || rva == 0x10ef9d;
+    is_known_ref = !is_band && !is_target;
+    if (is_band)
+    {
+        unsigned int bands = __atomic_add_fetch( &band_reports, 1, __ATOMIC_ACQ_REL );
+        if (bands > 128 && (bands & 0x3f)) return;
+    }
+
+    base = block_pc - rva;
+    if (!base) return;
+
+    descriptor = base + 0x1a53de0;
+    byte_table_slot = base + 0x1a78728;
+    ready_table_slot = base + 0x1abfb48;
+    object = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1f31a08 );
+    byte_table_target = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, byte_table_slot );
+    ready_table_target = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, ready_table_slot );
+    desc0 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, descriptor );
+    desc58 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, descriptor + 0x58 );
+    desc68 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, descriptor + 0x68 );
+    desc80 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, descriptor + 0x80 );
+    desc98 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, descriptor + 0x98 );
+    desc13c = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, descriptor + 0x13c );
+    desc14c = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, descriptor + 0x14c );
+    desc154 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, descriptor + 0x154 );
+    if (object)
+    {
+        vtbl = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object );
+        q138 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x138 );
+        d13c = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x13c );
+        b138 = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x138 );
+        b139 = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x139 );
+    }
+    if (ctx->regs.x64.rsp)
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &stack_ret );
+
+    if (is_known_ref)
+        __atomic_store_n( &macrunner_hb_descriptor_dispatch_seen_descriptor, 1, __ATOMIC_RELEASE );
+    if (rva == 0xaebe0)
+        __atomic_store_n( &macrunner_hb_descriptor_dispatch_seen_byte_table, 1, __ATOMIC_RELEASE );
+    if (rva == 0x10ef70 || rva == 0x10ef80 || rva == 0x10ef9d)
+        __atomic_store_n( &macrunner_hb_descriptor_dispatch_seen_ready_table, 1, __ATOMIC_RELEASE );
+    if (is_target)
+        __atomic_store_n( &macrunner_hb_descriptor_dispatch_seen_setter, 1, __ATOMIC_RELEASE );
+
+    report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 768 && !is_target && !is_known_ref) return;
+
+    fprintf( stderr,
+             "macrunner-hb-descriptor-dispatch-probe: hit=%u site=%s label=%s "
+             "tid=0x%llx native_tid=0x%llx pc=%p rva=0x%llx base=%p "
+             "object=%p vtbl=%p b138=%u b139=%u q138=%#llx d13c=%#x "
+             "descriptor=%p byte_slot=%p byte_target=%p ready_slot=%p ready_target=%p "
+             "desc0=%#llx desc58=%#llx desc68=%#llx desc80=%#llx desc98=%#llx "
+             "desc13c=%#llx desc14c=%#llx desc154=%#llx "
+             "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p r12=%p rsp=%p stack_ret=%p "
+             "reg_desc=%u reg_byte_slot=%u reg_ready_slot=%u reg_object=%u "
+             "seen_desc=%u seen_byte_table=%u seen_ready_table=%u seen_setter=%u "
+             "blocks=%s steps=%s\n",
+             report, site, label ? label : "entry",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             (void *)(uintptr_t)block_pc, (unsigned long long)rva,
+             (void *)(uintptr_t)base, (void *)(uintptr_t)object,
+             (void *)(uintptr_t)vtbl, b138, b139, (unsigned long long)q138,
+             d13c, (void *)(uintptr_t)descriptor,
+             (void *)(uintptr_t)byte_table_slot, (void *)(uintptr_t)byte_table_target,
+             (void *)(uintptr_t)ready_table_slot, (void *)(uintptr_t)ready_table_target,
+             (unsigned long long)desc0, (unsigned long long)desc58,
+             (unsigned long long)desc68, (unsigned long long)desc80,
+             (unsigned long long)desc98, (unsigned long long)desc13c,
+             (unsigned long long)desc14c, (unsigned long long)desc154,
+             (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.r12,
+             (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (void *)(uintptr_t)stack_ret,
+             ctx->regs.x64.rax == descriptor || ctx->regs.x64.rbx == descriptor ||
+             ctx->regs.x64.rcx == descriptor || ctx->regs.x64.rdx == descriptor ||
+             ctx->regs.x64.r8 == descriptor || ctx->regs.x64.r9 == descriptor ||
+             ctx->regs.x64.r12 == descriptor,
+             ctx->regs.x64.rax == byte_table_slot || ctx->regs.x64.rbx == byte_table_slot ||
+             ctx->regs.x64.rcx == byte_table_slot || ctx->regs.x64.rdx == byte_table_slot ||
+             ctx->regs.x64.r8 == byte_table_slot || ctx->regs.x64.r9 == byte_table_slot ||
+             ctx->regs.x64.r12 == byte_table_slot,
+             ctx->regs.x64.rax == ready_table_slot || ctx->regs.x64.rbx == ready_table_slot ||
+             ctx->regs.x64.rcx == ready_table_slot || ctx->regs.x64.rdx == ready_table_slot ||
+             ctx->regs.x64.r8 == ready_table_slot || ctx->regs.x64.r9 == ready_table_slot ||
+             ctx->regs.x64.r12 == ready_table_slot,
+             object && (ctx->regs.x64.rax == object || ctx->regs.x64.rbx == object ||
+             ctx->regs.x64.rcx == object || ctx->regs.x64.rdx == object ||
+             ctx->regs.x64.r8 == object || ctx->regs.x64.r9 == object ||
+             ctx->regs.x64.r12 == object),
+             __atomic_load_n( &macrunner_hb_descriptor_dispatch_seen_descriptor, __ATOMIC_ACQUIRE ),
+             __atomic_load_n( &macrunner_hb_descriptor_dispatch_seen_byte_table, __ATOMIC_ACQUIRE ),
+             __atomic_load_n( &macrunner_hb_descriptor_dispatch_seen_ready_table, __ATOMIC_ACQUIRE ),
+             __atomic_load_n( &macrunner_hb_descriptor_dispatch_seen_setter, __ATOMIC_ACQUIRE ),
+             wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps) );
+    fflush( stderr );
+}
+
+struct macrunner_hb_present_gate_wait_snapshot
+{
+    uint64_t sequence;
+    uint64_t enter_us;
+    uint64_t caller;
+    uint64_t caller_rva;
+    uint64_t unity_base;
+    uint64_t object;
+    uint64_t q138;
+    uint32_t d13c;
+    uint8_t b138;
+    uint8_t b139;
+    uint64_t handle;
+};
+
+static __thread struct macrunner_hb_present_gate_wait_snapshot
+    macrunner_hb_present_gate_wait_snapshot;
+static unsigned int macrunner_hb_present_gate_wait_sequence;
+static unsigned int macrunner_hb_present_gate_wait_reports;
+
+static void macrunner_hb_present_gate_wait_observer( hb_context_t *ctx, const char *import_name,
+                                                      uint64_t handle, uint32_t wait_index,
+                                                      uint32_t wait_count, const char *phase,
+                                                      NTSTATUS status )
+{
+    struct macrunner_hb_present_gate_wait_snapshot *before =
+        &macrunner_hb_present_gate_wait_snapshot;
+    char module_name[128] = "";
+    uint64_t caller = 0, caller_rva = 0, unity_base = 0, object = 0, q138 = 0;
+    uint64_t now_us, swapchain_us, wait_us = 0;
+    uint32_t d13c = 0;
+    uint8_t b138 = 0, b139 = 0;
+    unsigned int report, sequence;
+    BOOL is_enter, is_unity, changed = FALSE;
+    long long since_swapchain_ms = -1;
+
+    if (!macrunner_hb_present_gate_parent_probe_enabled()) return;
+    if (!ctx || !ctx->memory || !macrunner_hb_present_pump_handle( handle )) return;
+
+    is_enter = phase && !strcmp( phase, "enter" );
+    caller = macrunner_hb_trace_return_address( ctx );
+    macrunner_hb_post_signal_probe_module_rva( caller, module_name, sizeof(module_name), &caller_rva );
+    is_unity = macrunner_hb_strieq( module_name, "UnityPlayer.dll" ) ||
+               macrunner_hb_strieq( module_name, "UnityPlayer" );
+    if (is_unity && caller >= caller_rva) unity_base = caller - caller_rva;
+
+    if (!is_enter && before->handle == handle)
+    {
+        if (!unity_base) unity_base = before->unity_base;
+        object = before->object;
+    }
+    if (!object && unity_base)
+        object = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, unity_base + 0x1f31a08 );
+    if (object)
+    {
+        q138 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x138 );
+        d13c = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x13c );
+        b138 = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x138 );
+        b139 = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x139 );
+    }
+
+    now_us = macrunner_hb_now_us();
+    swapchain_us = __atomic_load_n( &macrunner_hb_dxgi_swapchain_create_us, __ATOMIC_ACQUIRE );
+    if (swapchain_us && now_us >= swapchain_us)
+        since_swapchain_ms = (long long)((now_us - swapchain_us) / 1000);
+
+    if (is_enter)
+    {
+        sequence = __atomic_add_fetch( &macrunner_hb_present_gate_wait_sequence, 1,
+                                       __ATOMIC_ACQ_REL );
+        before->sequence = sequence;
+        before->enter_us = now_us;
+        before->caller = caller;
+        before->caller_rva = caller_rva;
+        before->unity_base = unity_base;
+        before->object = object;
+        before->q138 = q138;
+        before->d13c = d13c;
+        before->b138 = b138;
+        before->b139 = b139;
+        before->handle = handle;
+    }
+    else
+    {
+        sequence = before->sequence;
+        if (before->enter_us && now_us >= before->enter_us) wait_us = now_us - before->enter_us;
+        changed = object != before->object || q138 != before->q138 || d13c != before->d13c ||
+                  b138 != before->b138 || b139 != before->b139;
+    }
+
+    report = __atomic_add_fetch( &macrunner_hb_present_gate_wait_reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 256 && !changed && (report & 0x3f)) return;
+
+    fprintf( stderr,
+             "macrunner-hb-present-gate-wait-observer: hit=%u seq=%u phase=%s pump=%u "
+             "import=%s handle=%p index=%u count=%u status=%08lx "
+             "tid=0x%llx native_tid=0x%llx caller=%p caller_module=%s caller_rva=0x%llx "
+             "object_before=%p b138_before=%u b139_before=%u q138_before=%#llx d13c_before=%#x "
+             "object_after=%p b138_after=%u b139_after=%u q138_after=%#llx d13c_after=%#x "
+             "changed=%u wait_us=%llu since_swapchain_ms=%lld pc=%p rsp=%p\n",
+             report, sequence, phase ? phase : "?", macrunner_hb_present_pump_enabled(),
+             import_name ? import_name : "?", (void *)(uintptr_t)handle, wait_index, wait_count,
+             (unsigned long)status,
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             (void *)(uintptr_t)caller, module_name[0] ? module_name : "?",
+             (unsigned long long)caller_rva,
+             (void *)(uintptr_t)(is_enter ? object : before->object),
+             is_enter ? b138 : before->b138, is_enter ? b139 : before->b139,
+             (unsigned long long)(is_enter ? q138 : before->q138),
+             is_enter ? d13c : before->d13c,
+             (void *)(uintptr_t)object, b138, b139, (unsigned long long)q138, d13c,
+             changed, (unsigned long long)wait_us, since_swapchain_ms,
+             (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)ctx->regs.x64.rsp );
+    fflush( stderr );
+}
+
+struct macrunner_hb_present_gate_parent_snapshot
+{
+    uint64_t object;
+    uint64_t q138;
+    uint64_t call_us;
+    uint64_t rcx;
+    uint64_t rdx;
+    uint64_t r8;
+    uint64_t r9;
+    uint32_t d13c;
+    uint8_t b138;
+    uint8_t b139;
+    BOOL armed;
+};
+
+static __thread struct macrunner_hb_present_gate_parent_snapshot
+    macrunner_hb_present_gate_parent_snapshot;
+
+static void macrunner_hb_present_gate_parent_probe_before_block( const char *label,
+                                                                 hb_context_t *ctx,
+                                                                 uint64_t block_pc,
+                                                                 uint64_t blocks,
+                                                                 uint64_t steps )
+{
+    static unsigned int reports, parent_reports;
+    struct macrunner_hb_present_gate_parent_snapshot *parent =
+        &macrunner_hb_present_gate_parent_snapshot;
+    char module_name[128] = "", ret0_name[128] = "";
+    uint64_t rva = 0, base = 0, object = 0, q138 = 0, ret0 = 0, ret0_rva = 0;
+    uint64_t stack_unity[5] = { 0 }, stack_rva[5] = { 0 };
+    uint64_t q = 0, rsp = 0, rbp = 0, now_us = 0, call_us = 0, swapchain_us = 0;
+    uint32_t d13c = 0;
+    uint8_t b138 = 0, b139 = 0, cl = 0;
+    unsigned int report, found = 0, i;
+    const char *stage = NULL, *branch = "unknown";
+    BOOL is_unity, parent_stage = FALSE, parent_pre_call = FALSE, parent_post_call = FALSE;
+    long long since_swapchain_ms = -1;
+
+    if (!macrunner_hb_present_gate_parent_probe_enabled()) return;
+    if (!ctx || !ctx->memory || !block_pc) return;
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module_name, sizeof(module_name), &rva );
+    is_unity = macrunner_hb_strieq( module_name, "UnityPlayer.dll" ) ||
+               macrunner_hb_strieq( module_name, "UnityPlayer" );
+    if (!is_unity) return;
+
+    if (rva == 0x7d62ec)
+    {
+        stage = "parent_initial_dispatch";
+        parent_stage = TRUE;
+    }
+    else if (rva == 0x7d637a)
+    {
+        stage = "parent_gate_call";
+        parent_stage = TRUE;
+        parent_pre_call = TRUE;
+    }
+    else if (rva == 0x7d637f)
+    {
+        stage = "parent_gate_return_al";
+        parent_stage = TRUE;
+        parent_post_call = TRUE;
+    }
+    else if (rva == 0x7d6381)
+    {
+        stage = "parent_return_branch";
+        parent_stage = TRUE;
+        parent_post_call = TRUE;
+    }
+    else if (rva == 0x7d6383)
+    {
+        stage = "parent_submit_result";
+        parent_stage = TRUE;
+        parent_post_call = TRUE;
+    }
+    else if (rva == 0x7d638a)
+    {
+        stage = "parent_fallback_path";
+        parent_stage = TRUE;
+        parent_post_call = TRUE;
+    }
+    else if (rva == 0x7d6396)
+    {
+        stage = "parent_fallback_call";
+        parent_stage = TRUE;
+        parent_post_call = TRUE;
+    }
+    else if (rva == 0x7d639c)
+    {
+        stage = "parent_exit";
+        parent_stage = TRUE;
+        parent_post_call = TRUE;
+    }
+    else if (rva == 0xa15d80)
+    {
+        stage = "function_entry";
+        parent_pre_call = TRUE;
+    }
+    else if (rva == 0xa15dde) stage = "state13c_cmp";
+    else if (rva == 0xa15df5) stage = "byte138_load";
+    else if (rva == 0xa15e00) stage = "byte138_test";
+    else if (rva == 0xa15e02) stage = "byte138_branch";
+    else if (rva == 0xa15e2a) stage = "submit_path";
+    else if (rva == 0xa15e04) stage = "skip_path";
+    else if (rva >= 0xa15d80 && rva <= 0xa15e60) stage = "gate_function_band";
+    else return;
+
+    if (parent_stage)
+    {
+        report = __atomic_add_fetch( &parent_reports, 1, __ATOMIC_ACQ_REL );
+        if (report > 512 && (report & 0x3f)) return;
+    }
+    else if (!strcmp( stage, "gate_function_band" ))
+    {
+        report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+        if (report > 64 && (report & 0x1f)) return;
+    }
+    else
+        report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 512 && rva != 0xa15df5 && rva != 0xa15e00 && rva != 0xa15e02 &&
+        rva != 0xa15e2a && rva != 0xa15e04)
+        return;
+
+    base = block_pc - rva;
+    if (parent_pre_call && base)
+        object = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1f31a08 );
+    else if (parent_post_call && parent->armed)
+        object = parent->object;
+    else if (parent_stage && base)
+        object = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1f31a08 );
+    else
+        object = ctx->regs.x64.r8;
+    if (object)
+    {
+        q138 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x138 );
+        d13c = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x13c );
+        b138 = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x138 );
+        b139 = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x139 );
+    }
+    cl = (uint8_t)(ctx->regs.x64.rcx & 0xff);
+    now_us = macrunner_hb_now_us();
+    swapchain_us = __atomic_load_n( &macrunner_hb_dxgi_swapchain_create_us, __ATOMIC_ACQUIRE );
+    if (swapchain_us && now_us >= swapchain_us)
+        since_swapchain_ms = (long long)((now_us - swapchain_us) / 1000);
+
+    if (parent_pre_call)
+    {
+        parent->object = object;
+        parent->q138 = q138;
+        parent->d13c = d13c;
+        parent->b138 = b138;
+        parent->b139 = b139;
+        parent->call_us = now_us;
+        parent->rcx = ctx->regs.x64.rcx;
+        parent->rdx = ctx->regs.x64.rdx;
+        parent->r8 = ctx->regs.x64.r8;
+        parent->r9 = ctx->regs.x64.r9;
+        parent->armed = TRUE;
+        branch = "call_gate_a15d80";
+    }
+    else if (parent_post_call)
+    {
+        if (parent->call_us && now_us >= parent->call_us) call_us = now_us - parent->call_us;
+        if (rva == 0x7d637f)
+            branch = (ctx->regs.x64.rax & 0xff) ? "callee_return_true" : "callee_return_false";
+        else if (rva == 0x7d6381)
+            branch = (ctx->regs.x64.rax & 0xff) ? "take_submit_result" : "take_fallback";
+        else if (rva == 0x7d6383)
+            branch = "submit_result_path_reached";
+        else if (rva == 0x7d638a || rva == 0x7d6396)
+            branch = "fallback_path_reached";
+        else
+            branch = "parent_exit_reached";
+    }
+    else if (parent_stage)
+        branch = "parent_input_path";
+    else if (rva == 0xa15df5)
+        branch = b138 ? "would_take_submit_jne_0xa15e2a" : "would_skip_submit_fallthrough";
+    else if (rva == 0xa15e00 || rva == 0xa15e02)
+        branch = cl ? "take_submit_jne_0xa15e2a" : "skip_submit_fallthrough";
+    else if (rva == 0xa15e2a)
+        branch = "submit_path_reached";
+    else if (rva == 0xa15e04)
+        branch = "skip_path_reached";
+
+    rbp = ctx->regs.x64.rbp;
+    rsp = ctx->regs.x64.rsp;
+    if (rbp)
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)(rbp + 0x348), &ret0 );
+    if (ret0)
+        macrunner_hb_post_signal_probe_module_rva( ret0, ret0_name, sizeof(ret0_name), &ret0_rva );
+
+    if (base && rsp)
+    {
+        for (i = 0; i < 96 && found < ARRAY_SIZE(stack_unity); i++)
+        {
+            if (hb_memory_read_u64( ctx->memory, (hb_gva_t)(rsp + i * sizeof(q)), &q ) != HB_OK)
+                break;
+            if (q >= base && q < base + 0x2500000)
+            {
+                stack_unity[found] = q;
+                stack_rva[found] = q - base;
+                found++;
+            }
+        }
+    }
+
+    __atomic_store_n( &macrunner_hb_present_gate_parent_seen, 1, __ATOMIC_RELEASE );
+    fprintf( stderr,
+             "macrunner-hb-present-gate-parent-probe: hit=%u stage=%s branch=%s label=%s "
+             "tid=0x%llx native_tid=0x%llx pc=%p rva=0x%llx base=%p "
+             "object=%p b138=%u b139=%u q138=%#llx d13c=%#x cl=%u "
+             "parent_armed=%u parent_object=%p parent_b138_before=%u parent_b139_before=%u "
+             "parent_q138_before=%#llx parent_d13c_before=%#x al=%u call_us=%llu "
+             "since_swapchain_ms=%lld parent_rcx=%p parent_rdx=%p parent_r8=%p parent_r9=%p "
+             "ret0=%p ret0_module=%s ret0_rva=0x%llx rbp=%p rsp=%p "
+             "stack0=%p stack0_rva=0x%llx stack1=%p stack1_rva=0x%llx "
+             "stack2=%p stack2_rva=0x%llx stack3=%p stack3_rva=0x%llx "
+             "stack4=%p stack4_rva=0x%llx "
+             "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p r12=%p "
+             "blocks=%s steps=%s seen=%u\n",
+             report, stage, branch, label ? label : "entry",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             (void *)(uintptr_t)block_pc, (unsigned long long)rva,
+             (void *)(uintptr_t)base,
+             (void *)(uintptr_t)object, b138, b139, (unsigned long long)q138,
+             d13c, cl, parent->armed, (void *)(uintptr_t)parent->object,
+             parent->b138, parent->b139, (unsigned long long)parent->q138,
+             parent->d13c, (unsigned int)(ctx->regs.x64.rax & 0xff),
+             (unsigned long long)call_us, since_swapchain_ms,
+             (void *)(uintptr_t)parent->rcx, (void *)(uintptr_t)parent->rdx,
+             (void *)(uintptr_t)parent->r8, (void *)(uintptr_t)parent->r9,
+             (void *)(uintptr_t)ret0,
+             ret0_name[0] ? ret0_name : "?",
+             (unsigned long long)ret0_rva,
+             (void *)(uintptr_t)rbp, (void *)(uintptr_t)rsp,
+             (void *)(uintptr_t)stack_unity[0], (unsigned long long)stack_rva[0],
+             (void *)(uintptr_t)stack_unity[1], (unsigned long long)stack_rva[1],
+             (void *)(uintptr_t)stack_unity[2], (unsigned long long)stack_rva[2],
+             (void *)(uintptr_t)stack_unity[3], (unsigned long long)stack_rva[3],
+             (void *)(uintptr_t)stack_unity[4], (unsigned long long)stack_rva[4],
+             (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.r12,
+             wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps),
+             __atomic_load_n( &macrunner_hb_present_gate_parent_seen, __ATOMIC_ACQUIRE ) );
+    fflush( stderr );
+}
+
+static void macrunner_hb_store_watch_0x138_before_block( const char *label,
+                                                         hb_context_t *ctx,
+                                                         uint64_t block_pc,
+                                                         uint64_t blocks,
+                                                         uint64_t steps )
+{
+    static unsigned int reports, candidate_reports, change_reports;
+    char module_name[128] = "";
+    uint64_t rva = 0, base = 0, object = 0, q138 = 0, q130 = 0, q140 = 0;
+    uint64_t old_object, old_q138, prev_pc, prev_rva, prev_tid, prev_native_tid;
+    uint32_t d13c = 0, old_d13c;
+    uint8_t b138 = 0, b139 = 0, old_b138, old_b139;
+    const char *candidate, *event = NULL;
+    unsigned int report;
+    BOOL is_unity, first_seen = FALSE, changed = FALSE;
+    BOOL store_enabled, parent_enabled;
+
+    store_enabled = macrunner_hb_store_watch_0x138_enabled();
+    parent_enabled = macrunner_hb_present_gate_parent_probe_enabled();
+    if (store_enabled) parent_enabled = TRUE;
+    if (!store_enabled && !parent_enabled) return;
+    if (!ctx || !ctx->memory || !block_pc) return;
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module_name, sizeof(module_name), &rva );
+    is_unity = macrunner_hb_strieq( module_name, "UnityPlayer.dll" ) ||
+               macrunner_hb_strieq( module_name, "UnityPlayer" );
+    if (!is_unity) return;
+
+    base = block_pc - rva;
+    if (!base) return;
+
+    object = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, base + 0x1f31a08 );
+    if (object)
+    {
+        q130 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x130 );
+        q138 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x138 );
+        q140 = macrunner_hb_trace_main_gate_read_u64_or_zero( ctx, object + 0x140 );
+        d13c = macrunner_hb_trace_read_u32_or_zero( ctx, object + 0x13c );
+        b138 = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x138 );
+        b139 = macrunner_hb_trace_read_u8_or_zero( ctx, object + 0x139 );
+    }
+
+    old_object = __atomic_load_n( &macrunner_hb_store_watch_0x138_object, __ATOMIC_ACQUIRE );
+    old_q138 = __atomic_load_n( &macrunner_hb_store_watch_0x138_q138, __ATOMIC_ACQUIRE );
+    old_d13c = __atomic_load_n( &macrunner_hb_store_watch_0x138_d13c, __ATOMIC_ACQUIRE );
+    old_b138 = __atomic_load_n( &macrunner_hb_store_watch_0x138_b138, __ATOMIC_ACQUIRE );
+    old_b139 = __atomic_load_n( &macrunner_hb_store_watch_0x138_b139, __ATOMIC_ACQUIRE );
+    prev_pc = __atomic_load_n( &macrunner_hb_store_watch_0x138_last_pc, __ATOMIC_ACQUIRE );
+    prev_rva = __atomic_load_n( &macrunner_hb_store_watch_0x138_last_rva, __ATOMIC_ACQUIRE );
+    prev_tid = __atomic_load_n( &macrunner_hb_store_watch_0x138_last_tid, __ATOMIC_ACQUIRE );
+    prev_native_tid = __atomic_load_n( &macrunner_hb_store_watch_0x138_last_native_tid, __ATOMIC_ACQUIRE );
+
+    candidate = macrunner_hb_store_watch_0x138_candidate( rva );
+    if (!__atomic_exchange_n( &macrunner_hb_store_watch_0x138_seen, 1, __ATOMIC_ACQ_REL ))
+    {
+        first_seen = TRUE;
+        event = "initial";
+    }
+    else if (old_object != object || old_q138 != q138 || old_d13c != d13c ||
+             old_b138 != b138 || old_b139 != b139)
+    {
+        changed = TRUE;
+        event = "change";
+        __atomic_add_fetch( &change_reports, 1, __ATOMIC_ACQ_REL );
+    }
+    else if (candidate)
+    {
+        unsigned int candidates = __atomic_add_fetch( &candidate_reports, 1, __ATOMIC_ACQ_REL );
+        if (candidates > 256 && (candidates & 0x3f)) goto update_last;
+        event = candidate;
+    }
+    else goto update_last;
+
+    __atomic_store_n( &macrunner_hb_store_watch_0x138_object, object, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_store_watch_0x138_q138, q138, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_store_watch_0x138_d13c, d13c, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_store_watch_0x138_b138, b138, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_store_watch_0x138_b139, b139, __ATOMIC_RELEASE );
+
+    report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (store_enabled && (report <= 1024 || changed || first_seen))
+    {
+        fprintf( stderr,
+                 "macrunner-hb-store-watch-0x138: hit=%u event=%s candidate=%s label=%s "
+                 "tid=0x%llx native_tid=0x%llx pc=%p rva=0x%llx "
+                 "object=%p b138=%u b139=%u q138=%#llx d13c=%#x q130=%#llx q140=%#llx "
+                 "old_object=%p old_b138=%u old_b139=%u old_q138=%#llx old_d13c=%#x "
+                 "prev_pc=%p prev_rva=0x%llx prev_tid=0x%llx prev_native_tid=0x%llx "
+                 "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p r12=%p rsp=%p "
+                 "reg_match_rax=%u reg_match_rbx=%u reg_match_rcx=%u reg_match_rdi=%u reg_match_r8=%u "
+                 "blocks=%s steps=%s changes=%u\n",
+                 report, event ? event : "sample", candidate ? candidate : "(none)",
+                 label ? label : "entry",
+                 (unsigned long long)macrunner_hb_current_tid64(),
+                 (unsigned long long)macrunner_hb_current_native_tid64(),
+                 (void *)(uintptr_t)block_pc, (unsigned long long)rva,
+                 (void *)(uintptr_t)object, b138, b139, (unsigned long long)q138,
+                 d13c, (unsigned long long)q130, (unsigned long long)q140,
+                 (void *)(uintptr_t)old_object, old_b138, old_b139,
+                 (unsigned long long)old_q138, old_d13c,
+                 (void *)(uintptr_t)prev_pc, (unsigned long long)prev_rva,
+                 (unsigned long long)prev_tid, (unsigned long long)prev_native_tid,
+                 (void *)(uintptr_t)ctx->regs.x64.rax,
+                 (void *)(uintptr_t)ctx->regs.x64.rbx,
+                 (void *)(uintptr_t)ctx->regs.x64.rcx,
+                 (void *)(uintptr_t)ctx->regs.x64.rdx,
+                 (void *)(uintptr_t)ctx->regs.x64.rsi,
+                 (void *)(uintptr_t)ctx->regs.x64.rdi,
+                 (void *)(uintptr_t)ctx->regs.x64.r8,
+                 (void *)(uintptr_t)ctx->regs.x64.r9,
+                 (void *)(uintptr_t)ctx->regs.x64.r12,
+                 (void *)(uintptr_t)ctx->regs.x64.rsp,
+                 object && ctx->regs.x64.rax == object,
+                 object && ctx->regs.x64.rbx == object,
+                 object && ctx->regs.x64.rcx == object,
+                 object && ctx->regs.x64.rdi == object,
+                 object && ctx->regs.x64.r8 == object,
+                 wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps),
+                 __atomic_load_n( &change_reports, __ATOMIC_ACQUIRE ) );
+        fflush( stderr );
+    }
+    if (parent_enabled && candidate && (rva == 0xa15dde || rva == 0xa15df5))
+    {
+        char ret0_name[128] = "";
+        uint64_t ret0 = 0, ret0_rva = 0;
+        uint64_t stack_unity[5] = { 0 }, stack_rva[5] = { 0 };
+        uint64_t rbp = ctx->regs.x64.rbp;
+        uint64_t rsp = ctx->regs.x64.rsp;
+        uint64_t q;
+        uint8_t cl = (uint8_t)(ctx->regs.x64.rcx & 0xff);
+        unsigned int i, found = 0;
+        const char *branch = "pre-test";
+
+        if (rva == 0xa15df5)
+            branch = b138 ? "would_take_submit_jne_0xa15e2a" : "would_skip_submit_fallthrough";
+        if (rbp)
+            (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)(rbp + 0x348), &ret0 );
+        if (ret0)
+            macrunner_hb_post_signal_probe_module_rva( ret0, ret0_name, sizeof(ret0_name), &ret0_rva );
+        if (base && rsp)
+        {
+            for (i = 0; i < 96 && found < ARRAY_SIZE(stack_unity); i++)
+            {
+                if (hb_memory_read_u64( ctx->memory, (hb_gva_t)(rsp + i * sizeof(q)), &q ) != HB_OK)
+                    break;
+                if (q >= base && q < base + 0x2500000)
+                {
+                    stack_unity[found] = q;
+                    stack_rva[found] = q - base;
+                    found++;
+                }
+            }
+        }
+        __atomic_store_n( &macrunner_hb_present_gate_parent_seen, 1, __ATOMIC_RELEASE );
+        fprintf( stderr,
+                 "macrunner-hb-present-gate-parent-probe: hit=%u source=store-watch stage=%s branch=%s label=%s "
+                 "tid=0x%llx native_tid=0x%llx pc=%p rva=0x%llx base=%p "
+                 "object_r8=%p object_global=%p b138=%u b139=%u q138=%#llx d13c=%#x cl=%u "
+                 "ret0=%p ret0_module=%s ret0_rva=0x%llx rbp=%p rsp=%p "
+                 "stack0=%p stack0_rva=0x%llx stack1=%p stack1_rva=0x%llx "
+                 "stack2=%p stack2_rva=0x%llx stack3=%p stack3_rva=0x%llx "
+                 "stack4=%p stack4_rva=0x%llx "
+                 "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p r12=%p "
+                 "prev_pc=%p prev_rva=0x%llx blocks=%s steps=%s seen=%u\n",
+                 report, candidate, branch, label ? label : "entry",
+                 (unsigned long long)macrunner_hb_current_tid64(),
+                 (unsigned long long)macrunner_hb_current_native_tid64(),
+                 (void *)(uintptr_t)block_pc, (unsigned long long)rva,
+                 (void *)(uintptr_t)base, (void *)(uintptr_t)ctx->regs.x64.r8,
+                 (void *)(uintptr_t)object, b138, b139, (unsigned long long)q138,
+                 d13c, cl, (void *)(uintptr_t)ret0, ret0_name[0] ? ret0_name : "?",
+                 (unsigned long long)ret0_rva, (void *)(uintptr_t)rbp, (void *)(uintptr_t)rsp,
+                 (void *)(uintptr_t)stack_unity[0], (unsigned long long)stack_rva[0],
+                 (void *)(uintptr_t)stack_unity[1], (unsigned long long)stack_rva[1],
+                 (void *)(uintptr_t)stack_unity[2], (unsigned long long)stack_rva[2],
+                 (void *)(uintptr_t)stack_unity[3], (unsigned long long)stack_rva[3],
+                 (void *)(uintptr_t)stack_unity[4], (unsigned long long)stack_rva[4],
+                 (void *)(uintptr_t)ctx->regs.x64.rax,
+                 (void *)(uintptr_t)ctx->regs.x64.rbx,
+                 (void *)(uintptr_t)ctx->regs.x64.rcx,
+                 (void *)(uintptr_t)ctx->regs.x64.rdx,
+                 (void *)(uintptr_t)ctx->regs.x64.rsi,
+                 (void *)(uintptr_t)ctx->regs.x64.rdi,
+                 (void *)(uintptr_t)ctx->regs.x64.r8,
+                 (void *)(uintptr_t)ctx->regs.x64.r9,
+                 (void *)(uintptr_t)ctx->regs.x64.r12,
+                 (void *)(uintptr_t)prev_pc, (unsigned long long)prev_rva,
+                 wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps),
+                 __atomic_load_n( &macrunner_hb_present_gate_parent_seen, __ATOMIC_ACQUIRE ) );
+        fflush( stderr );
+    }
+
+update_last:
+    __atomic_store_n( &macrunner_hb_store_watch_0x138_last_pc, block_pc, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_store_watch_0x138_last_rva, rva, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_store_watch_0x138_last_tid,
+                      macrunner_hb_current_tid64(), __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_store_watch_0x138_last_native_tid,
+                      macrunner_hb_current_native_tid64(), __ATOMIC_RELEASE );
 }
 
 static void macrunner_hb_post_signal_probe_wait_handles( hb_context_t *ctx,
@@ -8904,6 +11077,304 @@ static void *macrunner_hb_find_loaded_module_by_name( const char *name, USHORT p
     return first;
 }
 
+/* Default-off, process-one-shot discriminator for the first x64 execution window
+ * after UnityPlayer emits its final "Mono config path" line.  This is deliberately
+ * host-side: macrunner_hb_cached_env_flag() uses libc getenv(), not the guest PEB. */
+#define MACRUNNER_HB_POST_MONO_UNITY_ARM_RVA_START 0x72f87b
+#define MACRUNNER_HB_POST_MONO_UNITY_ARM_RVA_END   0x72f893
+#define MACRUNNER_HB_POST_MONO_SAMPLE_LIMIT        262144
+#define MACRUNNER_HB_POST_MONO_TABLE_SIZE          65536
+
+enum macrunner_hb_post_mono_module
+{
+    MACRUNNER_HB_POST_MONO_MODULE_OTHER,
+    MACRUNNER_HB_POST_MONO_MODULE_UNITY,
+    MACRUNNER_HB_POST_MONO_MODULE_MONO
+};
+
+struct macrunner_hb_post_mono_entry
+{
+    uint64_t pc;
+    uint32_t hits;
+    uint8_t module;
+};
+
+struct macrunner_hb_post_mono_state
+{
+    BOOL enabled;
+    BOOL armed;
+    BOOL done;
+    BOOL mono_latched;
+    BOOL table_full;
+    void *unity_base;
+    void *mono_base;
+    uint64_t unity_size;
+    uint64_t mono_size;
+    uint64_t next_unity_resolve_block;
+    uint64_t next_mono_resolve_sample;
+    uint64_t samples;
+    uint64_t unity_blocks;
+    uint64_t mono_blocks;
+    uint64_t other_blocks;
+    uint64_t unity_unique;
+    uint64_t mono_unique;
+    uint64_t unity_cache_hits;
+    uint64_t unity_cache_misses;
+    uint64_t mono_cache_hits;
+    uint64_t mono_cache_misses;
+    uint64_t unity_last_new_sample;
+    uint64_t mono_last_new_sample;
+    uint64_t unity_quarter_new[4];
+    uint64_t mono_quarter_new[4];
+    struct macrunner_hb_post_mono_entry *table;
+};
+
+static int macrunner_hb_post_mono_claimed;
+
+static int macrunner_hb_post_mono_discriminator_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_TRACE_POST_MONO_DISCRIMINATOR" );
+}
+
+static void macrunner_hb_post_mono_discriminator_init( struct macrunner_hb_post_mono_state *state )
+{
+    memset( state, 0, sizeof(*state) );
+    state->enabled = macrunner_hb_post_mono_discriminator_enabled();
+    if (!state->enabled) return;
+
+    state->unity_base = macrunner_hb_find_loaded_module_by_name( "UnityPlayer.dll",
+                                                                 IMAGE_FILE_MACHINE_AMD64 );
+    if (state->unity_base &&
+        macrunner_hb_module_machine( state->unity_base ) != IMAGE_FILE_MACHINE_AMD64)
+        state->unity_base = NULL;
+    state->unity_size = macrunner_hb_module_size( state->unity_base );
+}
+
+static enum macrunner_hb_post_mono_module macrunner_hb_post_mono_module_for_pc(
+    const struct macrunner_hb_post_mono_state *state, uint64_t pc )
+{
+    uint64_t base = (uint64_t)(uintptr_t)state->unity_base;
+
+    if (base && pc >= base && pc - base < state->unity_size)
+        return MACRUNNER_HB_POST_MONO_MODULE_UNITY;
+    base = (uint64_t)(uintptr_t)state->mono_base;
+    if (base && pc >= base && pc - base < state->mono_size)
+        return MACRUNNER_HB_POST_MONO_MODULE_MONO;
+    return MACRUNNER_HB_POST_MONO_MODULE_OTHER;
+}
+
+static BOOL macrunner_hb_post_mono_record_pc( struct macrunner_hb_post_mono_state *state,
+                                               enum macrunner_hb_post_mono_module module,
+                                               uint64_t pc )
+{
+    size_t index = (size_t)((pc >> 4) ^ (pc >> 17)) & (MACRUNNER_HB_POST_MONO_TABLE_SIZE - 1);
+    size_t probe;
+
+    for (probe = 0; probe < MACRUNNER_HB_POST_MONO_TABLE_SIZE; probe++)
+    {
+        struct macrunner_hb_post_mono_entry *entry =
+            &state->table[(index + probe) & (MACRUNNER_HB_POST_MONO_TABLE_SIZE - 1)];
+
+        if (!entry->pc)
+        {
+            entry->pc = pc;
+            entry->hits = 1;
+            entry->module = module;
+            return TRUE;
+        }
+        if (entry->pc == pc)
+        {
+            if (entry->hits != UINT32_MAX) entry->hits++;
+            return FALSE;
+        }
+    }
+    state->table_full = TRUE;
+    return FALSE;
+}
+
+static void macrunner_hb_post_mono_discriminator_finish( struct macrunner_hb_post_mono_state *state,
+                                                          const char *reason, uint64_t blocks,
+                                                          uint64_t steps )
+{
+    uint64_t unity_top_pc = 0, mono_top_pc = 0;
+    uint32_t unity_top_hits = 0, mono_top_hits = 0;
+    size_t i;
+
+    if (!state->armed || state->done) return;
+    for (i = 0; state->table && i < MACRUNNER_HB_POST_MONO_TABLE_SIZE; i++)
+    {
+        const struct macrunner_hb_post_mono_entry *entry = &state->table[i];
+
+        if (entry->module == MACRUNNER_HB_POST_MONO_MODULE_UNITY && entry->hits > unity_top_hits)
+        {
+            unity_top_pc = entry->pc;
+            unity_top_hits = entry->hits;
+        }
+        else if (entry->module == MACRUNNER_HB_POST_MONO_MODULE_MONO && entry->hits > mono_top_hits)
+        {
+            mono_top_pc = entry->pc;
+            mono_top_hits = entry->hits;
+        }
+    }
+    fprintf( stderr,
+             "macrunner-hb-post-mono: phase=summary reason=%s samples=%s blocks=%s steps=%s "
+             "unity_blocks=%s mono_blocks=%s other_blocks=%s unity_unique=%s mono_unique=%s "
+             "unity_cache_hit=%s unity_cache_miss=%s mono_cache_hit=%s mono_cache_miss=%s "
+             "unity_quarter_new=%s,%s,%s,%s mono_quarter_new=%s,%s,%s,%s "
+             "unity_last_new=%s mono_last_new=%s unity_top=%p/%u mono_top=%p/%u table_full=%u\n",
+             reason ? reason : "exit", wine_dbgstr_longlong(state->samples),
+             wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps),
+             wine_dbgstr_longlong(state->unity_blocks), wine_dbgstr_longlong(state->mono_blocks),
+             wine_dbgstr_longlong(state->other_blocks), wine_dbgstr_longlong(state->unity_unique),
+             wine_dbgstr_longlong(state->mono_unique), wine_dbgstr_longlong(state->unity_cache_hits),
+             wine_dbgstr_longlong(state->unity_cache_misses),
+             wine_dbgstr_longlong(state->mono_cache_hits),
+             wine_dbgstr_longlong(state->mono_cache_misses),
+             wine_dbgstr_longlong(state->unity_quarter_new[0]),
+             wine_dbgstr_longlong(state->unity_quarter_new[1]),
+             wine_dbgstr_longlong(state->unity_quarter_new[2]),
+             wine_dbgstr_longlong(state->unity_quarter_new[3]),
+             wine_dbgstr_longlong(state->mono_quarter_new[0]),
+             wine_dbgstr_longlong(state->mono_quarter_new[1]),
+             wine_dbgstr_longlong(state->mono_quarter_new[2]),
+             wine_dbgstr_longlong(state->mono_quarter_new[3]),
+             wine_dbgstr_longlong(state->unity_last_new_sample),
+             wine_dbgstr_longlong(state->mono_last_new_sample),
+             (void *)(uintptr_t)unity_top_pc, unity_top_hits,
+             (void *)(uintptr_t)mono_top_pc, mono_top_hits, state->table_full );
+    fflush( stderr );
+    free( state->table );
+    state->table = NULL;
+    state->done = TRUE;
+}
+
+static enum macrunner_hb_post_mono_module macrunner_hb_post_mono_discriminator_observe(
+    struct macrunner_hb_post_mono_state *state, uint64_t block_pc, uint64_t blocks )
+{
+    enum macrunner_hb_post_mono_module module;
+    uint64_t unity_base;
+    unsigned int quarter;
+    int expected = 0;
+    BOOL is_new;
+
+    if (!state->enabled || state->done) return MACRUNNER_HB_POST_MONO_MODULE_OTHER;
+    if (!state->armed)
+    {
+        if (!state->unity_base && blocks >= state->next_unity_resolve_block)
+        {
+            state->unity_base = macrunner_hb_find_loaded_module_by_name( "UnityPlayer.dll",
+                                                                         IMAGE_FILE_MACHINE_AMD64 );
+            if (state->unity_base &&
+                macrunner_hb_module_machine( state->unity_base ) != IMAGE_FILE_MACHINE_AMD64)
+                state->unity_base = NULL;
+            state->unity_size = macrunner_hb_module_size( state->unity_base );
+            state->next_unity_resolve_block = blocks + 4096;
+        }
+        unity_base = (uint64_t)(uintptr_t)state->unity_base;
+        if (!unity_base || block_pc < unity_base + MACRUNNER_HB_POST_MONO_UNITY_ARM_RVA_START ||
+            block_pc >= unity_base + MACRUNNER_HB_POST_MONO_UNITY_ARM_RVA_END)
+            return MACRUNNER_HB_POST_MONO_MODULE_OTHER;
+        if (!__atomic_compare_exchange_n( &macrunner_hb_post_mono_claimed, &expected, 1, FALSE,
+                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED ))
+        {
+            state->enabled = FALSE;
+            return MACRUNNER_HB_POST_MONO_MODULE_OTHER;
+        }
+        state->table = calloc( MACRUNNER_HB_POST_MONO_TABLE_SIZE, sizeof(*state->table) );
+        if (!state->table)
+        {
+            fprintf( stderr, "macrunner-hb-post-mono: phase=summary reason=alloc-failed\n" );
+            fflush( stderr );
+            state->done = TRUE;
+            return MACRUNNER_HB_POST_MONO_MODULE_OTHER;
+        }
+        state->mono_base = macrunner_hb_find_loaded_module_by_name( "mono-2.0-bdwgc.dll",
+                                                                    IMAGE_FILE_MACHINE_AMD64 );
+        if (state->mono_base &&
+            macrunner_hb_module_machine( state->mono_base ) != IMAGE_FILE_MACHINE_AMD64)
+            state->mono_base = NULL;
+        state->mono_size = macrunner_hb_module_size( state->mono_base );
+        state->next_mono_resolve_sample = 1;
+        state->armed = TRUE;
+        fprintf( stderr,
+                 "macrunner-hb-post-mono: phase=armed gate=host-getenv unity=%p machine=%04x "
+                 "arm_rva=%p mono=%p mono_machine=%04x sample_limit=%u table_size=%u\n",
+                 state->unity_base, macrunner_hb_module_machine( state->unity_base ),
+                 (void *)(uintptr_t)(block_pc - unity_base), state->mono_base,
+                 state->mono_base ? macrunner_hb_module_machine( state->mono_base ) : 0,
+                 MACRUNNER_HB_POST_MONO_SAMPLE_LIMIT, MACRUNNER_HB_POST_MONO_TABLE_SIZE );
+        fflush( stderr );
+        return MACRUNNER_HB_POST_MONO_MODULE_OTHER;
+    }
+
+    state->samples++;
+    if (!state->mono_base && state->samples >= state->next_mono_resolve_sample)
+    {
+        state->mono_base = macrunner_hb_find_loaded_module_by_name( "mono-2.0-bdwgc.dll",
+                                                                    IMAGE_FILE_MACHINE_AMD64 );
+        if (state->mono_base &&
+            macrunner_hb_module_machine( state->mono_base ) != IMAGE_FILE_MACHINE_AMD64)
+            state->mono_base = NULL;
+        state->mono_size = macrunner_hb_module_size( state->mono_base );
+        state->next_mono_resolve_sample = state->samples + 4096;
+    }
+    module = macrunner_hb_post_mono_module_for_pc( state, block_pc );
+    if (module == MACRUNNER_HB_POST_MONO_MODULE_UNITY) state->unity_blocks++;
+    else if (module == MACRUNNER_HB_POST_MONO_MODULE_MONO) state->mono_blocks++;
+    else state->other_blocks++;
+
+    if (module == MACRUNNER_HB_POST_MONO_MODULE_MONO && !state->mono_latched)
+    {
+        state->mono_latched = TRUE;
+        fprintf( stderr,
+                 "macrunner-hb-post-mono: phase=mono-latched sample=%s block=%s pc=%p rva=%p\n",
+                 wine_dbgstr_longlong(state->samples), wine_dbgstr_longlong(blocks),
+                 (void *)(uintptr_t)block_pc,
+                 (void *)(uintptr_t)(block_pc - (uint64_t)(uintptr_t)state->mono_base) );
+        fflush( stderr );
+    }
+    if (module == MACRUNNER_HB_POST_MONO_MODULE_OTHER) return module;
+
+    is_new = macrunner_hb_post_mono_record_pc( state, module, block_pc );
+    if (!is_new) return module;
+    quarter = (unsigned int)((state->samples - 1) /
+                             (MACRUNNER_HB_POST_MONO_SAMPLE_LIMIT / 4));
+    if (quarter > 3) quarter = 3;
+    if (module == MACRUNNER_HB_POST_MONO_MODULE_UNITY)
+    {
+        state->unity_unique++;
+        state->unity_last_new_sample = state->samples;
+        state->unity_quarter_new[quarter]++;
+    }
+    else
+    {
+        state->mono_unique++;
+        state->mono_last_new_sample = state->samples;
+        state->mono_quarter_new[quarter]++;
+    }
+    return module;
+}
+
+static void macrunner_hb_post_mono_discriminator_cache_result(
+    struct macrunner_hb_post_mono_state *state, enum macrunner_hb_post_mono_module module,
+    BOOL cache_hit, uint64_t blocks, uint64_t steps )
+{
+    if (!state->armed || state->done) return;
+    if (module == MACRUNNER_HB_POST_MONO_MODULE_UNITY)
+    {
+        if (cache_hit) state->unity_cache_hits++;
+        else state->unity_cache_misses++;
+    }
+    else if (module == MACRUNNER_HB_POST_MONO_MODULE_MONO)
+    {
+        if (cache_hit) state->mono_cache_hits++;
+        else state->mono_cache_misses++;
+    }
+    if (state->samples >= MACRUNNER_HB_POST_MONO_SAMPLE_LIMIT)
+        macrunner_hb_post_mono_discriminator_finish( state, "window-complete", blocks, steps );
+}
+
 struct macrunner_hb_amd64_machine_frame
 {
     ULONG64 rip;
@@ -9103,11 +11574,43 @@ static BOOL macrunner_hb_eh_benign_noop_enabled(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_EH_BENIGN_NOOP" );
 }
 
+static BOOL macrunner_hb_eh_real_rflags_enabled(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_EH_REAL_RFLAGS" );
+}
+
 static BOOL macrunner_hb_eh_context_probe_enabled(void)
 {
     static int cache = -1;
 
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_EH_CONTEXT_PROBE" );
+}
+
+static void macrunner_hb_eh_materialize_real_rflags( hb_context_t *ctx )
+{
+    extern hb_result_t hb_lazy_flags_materialize( hb_context_t *c, uint32_t mask );
+    uint64_t rf;
+
+    if (!ctx || !macrunner_hb_eh_real_rflags_enabled()) return;
+
+    /* Wine-arm64ec mirror fix: guest EH contexts must carry the real x64 RFLAGS
+     * image.  Leaving regs.x64.rflags zero makes context fill fall back to the
+     * synthetic 0x202 image, which later showed up as corrupted unwind state
+     * (Context.Rsp=0x202 at ntdll!RtlVirtualUnwind2+0x7d0).  Mirror the
+     * interpreter PUSHF/read_flags_image path: materialize lazy flags, merge the
+     * status bits into the stored x64 RFLAGS image, and keep bit 1 set. */
+    if (hb_lazy_flags_materialize( ctx, HB_FLAG_BIT_ALL ) != HB_OK) return;
+    rf = ctx->regs.x64.rflags &
+         ~((1ULL << 0) | (1ULL << 2) | (1ULL << 4) | (1ULL << 6) | (1ULL << 7) | (1ULL << 11));
+    rf |= ctx->flags.cf ? (1ULL << 0)  : 0;
+    rf |= ctx->flags.pf ? (1ULL << 2)  : 0;
+    rf |= ctx->flags.af ? (1ULL << 4)  : 0;
+    rf |= ctx->flags.zf ? (1ULL << 6)  : 0;
+    rf |= ctx->flags.sf ? (1ULL << 7)  : 0;
+    rf |= ctx->flags.of ? (1ULL << 11) : 0;
+    ctx->regs.x64.rflags = rf | 0x2ULL;
 }
 
 static BOOL macrunner_hb_is_benign_thread_name_exception( const EXCEPTION_RECORD *record )
@@ -9371,147 +11874,709 @@ static void macrunner_hb_eh_completion_probe_check( const char *label, hb_contex
     fflush( stderr );
 }
 
+
+struct macrunner_hb_amd64_dispatcher_context
+{
+    ULONG64 ControlPc;
+    ULONG64 ImageBase;
+    ULONG64 FunctionEntry;
+    ULONG64 EstablisherFrame;
+    ULONG64 TargetIp;
+    ULONG64 ContextRecord;
+    ULONG64 LanguageHandler;
+    ULONG64 HandlerData;
+    ULONG64 HistoryTable;
+    DWORD ScopeIndex;
+    DWORD Fill0;
+};
+
+struct macrunner_hb_amd64_unwind_history_table
+{
+    DWORD Count;
+    BYTE LocalHint;
+    BYTE GlobalHint;
+    BYTE Search;
+    BYTE Once;
+    ULONG64 LowAddress;
+    ULONG64 HighAddress;
+    struct
+    {
+        ULONG64 ImageBase;
+        ULONG64 FunctionEntry;
+    } Entry[12];
+};
+
+struct macrunner_hb_x64_exception_dispatch_state
+{
+    EXCEPTION_RECORD rec;
+    ARM64EC_NT_CONTEXT orig_context;
+    ARM64EC_NT_CONTEXT walk_context;
+    ARM64EC_NT_CONTEXT frame_context;
+    struct macrunner_hb_amd64_dispatcher_context dispatch;
+    struct macrunner_hb_amd64_unwind_history_table history;
+    ULONG64 image_base;
+    ULONG64 handler_data;
+    ULONG64 establisher_frame;
+    ULONG64 language_handler;
+};
+
+/* A guest x64 language handler runs in a nested HyperBridge invocation with a
+ * synthetic bridge stack.  Wine's x64 RtlUnwindEx begins by calling
+ * RtlCaptureContext, which must observe the selected application frame before
+ * RtlVirtualUnwind advances walk_context to its caller.  It must not observe
+ * the synthetic C-to-guest call frame, the original fault frame below the
+ * target, or the already-unwound parent frame above it.  Keep that exact outer
+ * frame context and the application stack bounds live only while a language
+ * handler is executing.  NtContinue completes the non-returning unwind through
+ * the same record below. */
+struct macrunner_hb_x64_eh_runtime_bridge
+{
+    const AMD64_CONTEXT *capture_seed;
+    ULONG64 capture_context;
+    AMD64_CONTEXT continuation;
+    void *stack_limit;
+    void *stack_base;
+    BOOL continuation_ready;
+};
+
+static __thread struct macrunner_hb_x64_eh_runtime_bridge *macrunner_hb_x64_eh_runtime_bridge;
+
+static void macrunner_hb_copy_amd64_context_to_regs( hb_context_t *ctx, const AMD64_CONTEXT *context )
+{
+    unsigned int i;
+
+    if (!ctx || !context) return;
+    ctx->regs.x64.rax = context->Rax;
+    ctx->regs.x64.rcx = context->Rcx;
+    ctx->regs.x64.rdx = context->Rdx;
+    ctx->regs.x64.rbx = context->Rbx;
+    ctx->regs.x64.rsp = context->Rsp;
+    ctx->regs.x64.rbp = context->Rbp;
+    ctx->regs.x64.rsi = context->Rsi;
+    ctx->regs.x64.rdi = context->Rdi;
+    ctx->regs.x64.r8  = context->R8;
+    ctx->regs.x64.r9  = context->R9;
+    ctx->regs.x64.r10 = context->R10;
+    ctx->regs.x64.r11 = context->R11;
+    ctx->regs.x64.r12 = context->R12;
+    ctx->regs.x64.r13 = context->R13;
+    ctx->regs.x64.r14 = context->R14;
+    ctx->regs.x64.r15 = context->R15;
+    ctx->regs.x64.rip = context->Rip;
+    ctx->regs.x64.rflags = context->EFlags | 2;
+    for (i = 0; i < 16; i++)
+    {
+        ctx->regs.x64.xmm[i][0] = context->FltSave.XmmRegisters[i].Low;
+        ctx->regs.x64.xmm[i][1] = (uint64_t)context->FltSave.XmmRegisters[i].High;
+    }
+    ctx->pc = context->Rip;
+    ctx->last_result = HB_OK;
+}
+
+static BOOL macrunner_hb_x64_exception_frame_is_valid( ULONG64 frame )
+{
+    TEB *teb = NtCurrentTeb();
+    ULONG64 low = (ULONG64)(uintptr_t)teb->Tib.StackLimit;
+    ULONG64 high = (ULONG64)(uintptr_t)teb->Tib.StackBase;
+
+    return frame && frame >= low && frame < high && !(frame & 7);
+}
+
+static NTSTATUS macrunner_hb_call_guest_x64_abi( void *entry, hb_abi_x64_call_t *call,
+                                                 ULONG64 *ret_value, const char *label )
+{
+    ULONG64 blocks = 0, steps = 0;
+    void *image_base = NULL;
+
+    if (!entry) return STATUS_INVALID_PARAMETER;
+    image_base = macrunner_hb_module_from_pc( entry );
+    if (!image_base || macrunner_hb_module_machine( image_base ) != IMAGE_FILE_MACHINE_AMD64)
+        image_base = NtCurrentTeb()->Peb ? NtCurrentTeb()->Peb->ImageBaseAddress : NULL;
+    return macrunner_hb_run_x64( entry, call, ret_value, &blocks, &steps,
+                                 label ? label : "x64-eh", image_base );
+}
+
+static BOOL macrunner_hb_try_retarget_x64_eh_native_rtl_unwind_ex( hb_context_t *ctx,
+                                                                    const char *label,
+                                                                    void **image_base,
+                                                                    uint64_t *image_start,
+                                                                    uint64_t *image_size )
+{
+    static unsigned int trace_budget;
+    void *native_module, *native_ntdll, *native_rtl_unwind_ex;
+    void *x64_ntdll, *x64_rtl_unwind_ex;
+    WORD native_machine;
+    uint64_t x64_size;
+
+    if (!ctx || !label || (strcmp( label, "x64-eh-language-handler" ) &&
+                           strcmp( label, "x64-eh-teb-handler" )))
+        return FALSE;
+    native_module = macrunner_hb_module_from_pc( (void *)(uintptr_t)ctx->pc );
+    if (!native_module) return FALSE;
+    native_machine = macrunner_hb_module_machine( native_module );
+    if (native_machine == IMAGE_FILE_MACHINE_AMD64) return FALSE;
+
+    native_ntdll = macrunner_hb_find_loaded_module_by_name( "ntdll.dll", native_machine );
+    if (native_ntdll && native_ntdll != native_module) return FALSE;
+    native_rtl_unwind_ex = macrunner_hb_find_named_export( native_module, "RtlUnwindEx" );
+    if ((uint64_t)(uintptr_t)native_rtl_unwind_ex != ctx->pc) return FALSE;
+
+    x64_ntdll = macrunner_hb_find_loaded_module_by_name( "ntdll.dll", IMAGE_FILE_MACHINE_AMD64 );
+    if (!x64_ntdll) return FALSE;
+    x64_rtl_unwind_ex = macrunner_hb_find_named_export( x64_ntdll, "RtlUnwindEx" );
+    x64_size = macrunner_hb_module_size( x64_ntdll );
+    if (!x64_rtl_unwind_ex || !x64_size) return FALSE;
+
+    if (trace_budget++ < 40)
+        fprintf( stderr, "macrunner-hb-eh-retarget-native-unwind: label=%s "
+                 "native_pc=%p native_module=%p x64_pc=%p x64_module=%p\n",
+                 label, (void *)(uintptr_t)ctx->pc, native_module,
+                 x64_rtl_unwind_ex, x64_ntdll );
+
+    ctx->pc = (uint64_t)(uintptr_t)x64_rtl_unwind_ex;
+    ctx->regs.x64.rip = ctx->pc;
+    if (image_base) *image_base = x64_ntdll;
+    if (image_start) *image_start = (uint64_t)(uintptr_t)x64_ntdll;
+    if (image_size) *image_size = x64_size;
+    return TRUE;
+}
+
+static BOOL macrunner_hb_eh_x64_frame_trace_enabled(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_EH_X64_FRAME_TRACE" );
+}
+
+static BOOL macrunner_hb_try_bridge_x64_eh_capture_context( hb_context_t *ctx,
+                                                             const char *label )
+{
+    struct macrunner_hb_x64_eh_runtime_bridge *bridge = macrunner_hb_x64_eh_runtime_bridge;
+    void *ntdll, *capture;
+    uint64_t ret_addr;
+
+    if (!bridge || !bridge->capture_seed || !ctx || !ctx->memory || !label ||
+        (strcmp( label, "x64-eh-language-handler" ) &&
+         strcmp( label, "x64-eh-teb-handler" )))
+        return FALSE;
+    ntdll = macrunner_hb_find_loaded_module_by_name( "ntdll.dll", IMAGE_FILE_MACHINE_AMD64 );
+    capture = ntdll ? macrunner_hb_find_named_export( ntdll, "RtlCaptureContext" ) : NULL;
+    if (!capture || ctx->pc != (uint64_t)(uintptr_t)capture || !ctx->regs.x64.rcx)
+        return FALSE;
+    if (hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &ret_addr ) != HB_OK ||
+        !ret_addr)
+        return FALSE;
+    if (hb_memory_write( ctx->memory, (hb_gva_t)ctx->regs.x64.rcx, bridge->capture_seed,
+                         sizeof(*bridge->capture_seed) ) != HB_OK)
+        return FALSE;
+
+    bridge->capture_context = ctx->regs.x64.rcx;
+    NtCurrentTeb()->Tib.StackLimit = bridge->stack_limit;
+    NtCurrentTeb()->Tib.StackBase = bridge->stack_base;
+    if (macrunner_hb_eh_x64_frame_trace_enabled())
+        fprintf( stderr, "macrunner-hb-eh-capture-bridge: context=%p rip=%p rsp=%p "
+                 "rbx=%p rsi=%p rdi=%p r12=%p r13=%p r14=%p r15=%p "
+                 "ret=%p stack=%p-%p\n",
+                 (void *)(uintptr_t)bridge->capture_context,
+                 (void *)(uintptr_t)bridge->capture_seed->Rip,
+                 (void *)(uintptr_t)bridge->capture_seed->Rsp,
+                 (void *)(uintptr_t)bridge->capture_seed->Rbx,
+                 (void *)(uintptr_t)bridge->capture_seed->Rsi,
+                 (void *)(uintptr_t)bridge->capture_seed->Rdi,
+                 (void *)(uintptr_t)bridge->capture_seed->R12,
+                 (void *)(uintptr_t)bridge->capture_seed->R13,
+                 (void *)(uintptr_t)bridge->capture_seed->R14,
+                 (void *)(uintptr_t)bridge->capture_seed->R15,
+                 (void *)(uintptr_t)ret_addr, bridge->stack_limit, bridge->stack_base );
+    macrunner_hb_finish_import( ctx, ret_addr, 0 );
+    return TRUE;
+}
+
+static BOOL macrunner_hb_try_bridge_x64_eh_ntcontinue( hb_context_t *ctx, void *target,
+                                                        uint64_t context_addr )
+{
+    struct macrunner_hb_x64_eh_runtime_bridge *bridge = macrunner_hb_x64_eh_runtime_bridge;
+
+    if (!bridge || !bridge->capture_context || !ctx || !ctx->memory || target != (void *)NtContinue ||
+        context_addr != bridge->capture_context)
+        return FALSE;
+    if (hb_memory_read( ctx->memory, (hb_gva_t)context_addr, &bridge->continuation,
+                        sizeof(bridge->continuation) ) != HB_OK)
+        return FALSE;
+
+    bridge->continuation_ready = TRUE;
+    if (macrunner_hb_eh_x64_frame_trace_enabled())
+        fprintf( stderr, "macrunner-hb-eh-continue-bridge: context=%p rip=%p rsp=%p rax=%p "
+                 "rbx=%p rsi=%p rdi=%p r12=%p r13=%p r14=%p r15=%p\n",
+                 (void *)(uintptr_t)context_addr,
+                 (void *)(uintptr_t)bridge->continuation.Rip,
+                 (void *)(uintptr_t)bridge->continuation.Rsp,
+                 (void *)(uintptr_t)bridge->continuation.Rax,
+                 (void *)(uintptr_t)bridge->continuation.Rbx,
+                 (void *)(uintptr_t)bridge->continuation.Rsi,
+                 (void *)(uintptr_t)bridge->continuation.Rdi,
+                 (void *)(uintptr_t)bridge->continuation.R12,
+                 (void *)(uintptr_t)bridge->continuation.R13,
+                 (void *)(uintptr_t)bridge->continuation.R14,
+                 (void *)(uintptr_t)bridge->continuation.R15 );
+    ctx->regs.x64.rax = STATUS_SUCCESS;
+    ctx->pc = 0xffff0000;
+    ctx->regs.x64.rip = ctx->pc;
+    ctx->last_result = HB_OK;
+    return TRUE;
+}
+
+static int macrunner_hb_guest_x64_rtl_is_ec_code( void *entry, ULONG64 pc )
+{
+    hb_abi_x64_call_t call;
+    ULONG64 ret = 0;
+    NTSTATUS status;
+
+    if (!entry) return -1;
+    memset( &call, 0, sizeof(call) );
+    call.rcx = pc;
+    status = macrunner_hb_call_guest_x64_abi( entry, &call, &ret, "x64-eh-rtl-is-ec-code" );
+    if (status) return -2;
+    return ret ? 1 : 0;
+}
+
+static void macrunner_hb_trace_x64_exception_frame(
+    const char *label, const EXCEPTION_RECORD *record, const char *stage, unsigned int frame_index,
+    ULONG64 old_rip, ULONG64 old_rsp, int rtl_is_ec_code, NTSTATUS lookup_status,
+    ULONG64 function_entry, ULONG64 image_base, NTSTATUS unwind_status,
+    ULONG64 establisher_frame, ULONG64 language_handler, ULONG64 new_rip, ULONG64 new_rsp )
+{
+    LDR_DATA_TABLE_ENTRY *ldr;
+    char module_name[96] = "(unknown)";
+    ULONG64 rva = old_rip;
+    void *module;
+
+    if (!macrunner_hb_eh_x64_frame_trace_enabled()) return;
+    if (!record || record->ExceptionCode != MACRUNNER_HB_MSVC_CXX_EXCEPTION) return;
+
+    ldr = macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)old_rip );
+    if (ldr)
+    {
+        module = ldr->DllBase;
+        macrunner_hb_copy_unicode_ascii( module_name, sizeof(module_name), &ldr->BaseDllName );
+        rva = old_rip - (ULONG64)(uintptr_t)module;
+    }
+    else if ((module = macrunner_hb_module_from_pc( (void *)(uintptr_t)old_rip )))
+    {
+        macrunner_hb_get_export_module_name( module, module_name, sizeof(module_name) );
+        rva = old_rip - (ULONG64)(uintptr_t)module;
+    }
+
+    fprintf( stderr,
+             "macrunner-hb-eh-x64-frame: label=%s stage=%s idx=%u code=%08lx "
+             "pc=%p module=%s rva=%p rsp=%p rtl_is_ec=%d lookup=%08lx "
+             "function=%p image=%p unwind=%08lx frame=%p handler=%p "
+             "new_rip=%p new_rsp=%p\n",
+             label ? label : "entry", stage ? stage : "frame", frame_index,
+             (unsigned long)record->ExceptionCode, (void *)(uintptr_t)old_rip,
+             module_name[0] ? module_name : "(unknown)", (void *)(uintptr_t)rva,
+             (void *)(uintptr_t)old_rsp, rtl_is_ec_code, (unsigned long)lookup_status,
+             (void *)(uintptr_t)function_entry, (void *)(uintptr_t)image_base,
+             (unsigned long)unwind_status, (void *)(uintptr_t)establisher_frame,
+             (void *)(uintptr_t)language_handler, (void *)(uintptr_t)new_rip,
+             (void *)(uintptr_t)new_rsp );
+    fflush( stderr );
+}
+
+static NTSTATUS macrunner_hb_local_amd64_lookup_function_entry(
+    struct macrunner_hb_x64_exception_dispatch_state *state,
+    ULONG64 pc, ULONG64 *function_entry )
+{
+    IMAGE_AMD64_RUNTIME_FUNCTION_ENTRY *funcs;
+    IMAGE_DATA_DIRECTORY *dir;
+    LDR_DATA_TABLE_ENTRY *ldr;
+    IMAGE_NT_HEADERS *nt;
+    uint64_t module_size;
+    uint64_t image_base;
+    unsigned int count, i;
+    void *module = NULL;
+    DWORD rva;
+
+    if (function_entry) *function_entry = 0;
+    if (!state || !pc) return STATUS_INVALID_PARAMETER;
+    state->image_base = 0;
+
+    if ((ldr = macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)pc )))
+        module = ldr->DllBase;
+    else
+        module = macrunner_hb_module_from_pc( (void *)(uintptr_t)pc );
+    if (!module) return STATUS_SUCCESS;
+
+    module_size = macrunner_hb_module_size( module );
+    image_base = (uint64_t)(uintptr_t)module;
+    if (!module_size || pc < image_base || pc >= image_base + module_size)
+        return STATUS_SUCCESS;
+
+    nt = macrunner_hb_image_nt_header( module );
+    if (!nt || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
+        return STATUS_SUCCESS;
+
+    state->image_base = image_base;
+    dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    if (!dir->VirtualAddress || dir->Size < sizeof(*funcs))
+        return STATUS_SUCCESS;
+    if ((uint64_t)dir->VirtualAddress + dir->Size > module_size)
+        return STATUS_SUCCESS;
+
+    rva = (DWORD)(pc - image_base);
+    funcs = (IMAGE_AMD64_RUNTIME_FUNCTION_ENTRY *)((char *)module + dir->VirtualAddress);
+    count = dir->Size / sizeof(*funcs);
+    for (i = 0; i < count; i++)
+    {
+        if (!funcs[i].BeginAddress || funcs[i].EndAddress <= funcs[i].BeginAddress)
+            continue;
+        if (rva >= funcs[i].BeginAddress && rva < funcs[i].EndAddress)
+        {
+            if (function_entry) *function_entry = (ULONG64)(uintptr_t)&funcs[i];
+            return STATUS_SUCCESS;
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS macrunner_hb_guest_x64_virtual_unwind(
+    void *virtual_unwind_entry, struct macrunner_hb_x64_exception_dispatch_state *state,
+    ULONG type, ULONG64 pc, ULONG64 function_entry )
+{
+    hb_abi_x64_call_t call;
+    uint64_t stack_args[9];
+    ULONG64 ret = 0;
+    NTSTATUS status;
+
+    state->handler_data = 0;
+    state->establisher_frame = 0;
+    state->language_handler = 0;
+    memset( stack_args, 0, sizeof(stack_args) );
+    stack_args[0] = (ULONG64)(uintptr_t)&state->walk_context.AMD64_Context;
+    stack_args[1] = 0;
+    stack_args[2] = (ULONG64)(uintptr_t)&state->handler_data;
+    stack_args[3] = (ULONG64)(uintptr_t)&state->establisher_frame;
+    stack_args[4] = 0;
+    stack_args[5] = 0;
+    stack_args[6] = 0;
+    stack_args[7] = (ULONG64)(uintptr_t)&state->language_handler;
+    stack_args[8] = 0;
+
+    memset( &call, 0, sizeof(call) );
+    call.rcx = type;
+    call.rdx = state->image_base;
+    call.r8  = pc;
+    call.r9  = function_entry;
+    call.stack_args = stack_args;
+    call.stack_arg_count = ARRAY_SIZE( stack_args );
+    status = macrunner_hb_call_guest_x64_abi( virtual_unwind_entry, &call, &ret,
+                                              type == UNW_FLAG_EHANDLER ?
+                                              "x64-eh-virtual-unwind" :
+                                              "x64-eh-virtual-unwind-nhandler" );
+    if (status) return status;
+    return (NTSTATUS)ret;
+}
+
+static NTSTATUS macrunner_hb_dispatch_guest_exception_x64_domain( hb_context_t *ctx,
+                                                                  const char *label,
+                                                                  EXCEPTION_RECORD *record,
+                                                                  uint64_t exception_pc,
+                                                                  uint64_t exception_rsp )
+{
+    struct macrunner_hb_x64_exception_dispatch_state *state;
+    void *ntdll, *virtual_unwind_entry, *rtl_is_ec_code_entry;
+    ULONG64 function_entry = 0, frame, nested_frame = 0;
+    TEB *teb = NtCurrentTeb();
+    EXCEPTION_REGISTRATION_RECORD *teb_frame = teb->Tib.ExceptionList;
+    NTSTATUS status = STATUS_UNHANDLED_EXCEPTION;
+    unsigned int frame_count;
+
+    if (!ctx || !ctx->memory || !record || !exception_pc || !exception_rsp) return STATUS_INVALID_PARAMETER;
+    ntdll = macrunner_hb_find_loaded_module_by_name( "ntdll.dll", IMAGE_FILE_MACHINE_AMD64 );
+    if (!ntdll) return STATUS_DLL_NOT_FOUND;
+    virtual_unwind_entry = macrunner_hb_find_named_export( ntdll, "RtlVirtualUnwind2" );
+    rtl_is_ec_code_entry = macrunner_hb_find_named_export( ntdll, "RtlIsEcCode" );
+    if (!virtual_unwind_entry) return STATUS_PROCEDURE_NOT_FOUND;
+
+    state = macrunner_hb_local_heap_alloc( sizeof(*state), TRUE );
+    if (!state) return STATUS_NO_MEMORY;
+    macrunner_hb_sync_virtual_region( ctx, state, sizeof(*state), PAGE_READWRITE );
+
+    macrunner_hb_eh_materialize_real_rflags( ctx );
+    state->rec = *record;
+    state->rec.ExceptionAddress = (void *)(uintptr_t)exception_pc;
+
+    macrunner_hb_fill_amd64_context_from_regs( &state->orig_context.AMD64_Context,
+                                               &ctx->regs.x64, CONTEXT_AMD64_ALL );
+    state->orig_context.AMD64_Context.Rip = exception_pc;
+    state->orig_context.AMD64_Context.Rsp = exception_rsp;
+    state->orig_context.AMD64_Context.EFlags |= 2;
+    state->orig_context.ContextFlags = state->orig_context.AMD64_Context.ContextFlags;
+    state->orig_context.Pc = state->orig_context.AMD64_Context.Rip;
+    state->orig_context.Sp = state->orig_context.AMD64_Context.Rsp;
+
+    state->walk_context = state->orig_context;
+    state->walk_context.ContextFlags &= ~CONTEXT_AMD64_XSTATE;
+    state->dispatch.TargetIp = 0;
+    state->dispatch.ContextRecord = (ULONG64)(uintptr_t)&state->walk_context.AMD64_Context;
+    state->dispatch.HistoryTable = (ULONG64)(uintptr_t)&state->history;
+
+    macrunner_hb_eh_context_probe_delivery( ctx, "x64-domain-before-dispatch", label,
+                                            &state->rec, exception_pc, exception_rsp,
+                                            exception_rsp, NULL, &state->rec );
+
+    for (frame_count = 0; frame_count < 128; frame_count++)
+    {
+        ULONG64 old_rip = state->walk_context.AMD64_Context.Rip;
+        ULONG64 old_rsp = state->walk_context.AMD64_Context.Rsp;
+        int rtl_is_ec_code = macrunner_hb_guest_x64_rtl_is_ec_code( rtl_is_ec_code_entry, old_rip );
+
+        status = macrunner_hb_local_amd64_lookup_function_entry( state, old_rip,
+                                                                 &function_entry );
+        if (status)
+        {
+            macrunner_hb_trace_x64_exception_frame( label, &state->rec, "lookup-fail",
+                                                    frame_count, old_rip, old_rsp,
+                                                    rtl_is_ec_code, status, function_entry,
+                                                    state->image_base, 0, 0, 0,
+                                                    state->walk_context.AMD64_Context.Rip,
+                                                    state->walk_context.AMD64_Context.Rsp );
+            break;
+        }
+        state->dispatch.ControlPc = old_rip;
+        state->dispatch.ImageBase = state->image_base;
+        state->dispatch.FunctionEntry = function_entry;
+        state->dispatch.ScopeIndex = 0;
+        state->dispatch.HandlerData = 0;
+        state->dispatch.EstablisherFrame = 0;
+        state->dispatch.LanguageHandler = 0;
+        state->dispatch.Fill0 = 0;
+
+        state->frame_context = state->walk_context;
+        status = macrunner_hb_guest_x64_virtual_unwind( virtual_unwind_entry, state,
+                                                        UNW_FLAG_EHANDLER, old_rip,
+                                                        function_entry );
+        macrunner_hb_trace_x64_exception_frame( label, &state->rec,
+                                                status ? "unwind-fail" : "frame",
+                                                frame_count, old_rip, old_rsp,
+                                                rtl_is_ec_code, STATUS_SUCCESS,
+                                                function_entry, state->image_base,
+                                                status, state->establisher_frame,
+                                                state->language_handler,
+                                                state->walk_context.AMD64_Context.Rip,
+                                                state->walk_context.AMD64_Context.Rsp );
+        if (status) break;
+
+    unwind_done:
+        frame = state->establisher_frame;
+        state->dispatch.ImageBase = state->image_base;
+        state->dispatch.FunctionEntry = function_entry;
+        state->dispatch.EstablisherFrame = frame;
+        state->dispatch.HandlerData = state->handler_data;
+        state->dispatch.LanguageHandler = state->language_handler;
+        state->dispatch.ContextRecord = (ULONG64)(uintptr_t)&state->walk_context.AMD64_Context;
+
+        if (!frame) break;
+        if (!macrunner_hb_x64_exception_frame_is_valid( frame ))
+        {
+            state->rec.ExceptionFlags |= EXCEPTION_STACK_INVALID;
+            break;
+        }
+
+        if (state->language_handler)
+        {
+            hb_abi_x64_call_t call;
+            struct macrunner_hb_x64_eh_runtime_bridge bridge;
+            struct macrunner_hb_x64_eh_runtime_bridge *previous_bridge;
+            ULONG64 res = 0;
+
+            memset( &call, 0, sizeof(call) );
+            memset( &bridge, 0, sizeof(bridge) );
+            call.rcx = (ULONG64)(uintptr_t)&state->rec;
+            call.rdx = frame;
+            call.r8  = (ULONG64)(uintptr_t)&state->orig_context.AMD64_Context;
+            call.r9  = (ULONG64)(uintptr_t)&state->dispatch;
+            bridge.capture_seed = &state->frame_context.AMD64_Context;
+            bridge.stack_limit = teb->Tib.StackLimit;
+            bridge.stack_base = teb->Tib.StackBase;
+            previous_bridge = macrunner_hb_x64_eh_runtime_bridge;
+            macrunner_hb_x64_eh_runtime_bridge = &bridge;
+            status = macrunner_hb_call_guest_x64_abi( (void *)(uintptr_t)state->language_handler,
+                                                      &call, &res, "x64-eh-language-handler" );
+            macrunner_hb_x64_eh_runtime_bridge = previous_bridge;
+            if (bridge.continuation_ready)
+            {
+                state->orig_context.AMD64_Context = bridge.continuation;
+                state->orig_context.ContextFlags = bridge.continuation.ContextFlags;
+                state->orig_context.Pc = bridge.continuation.Rip;
+                state->orig_context.Sp = bridge.continuation.Rsp;
+                status = STATUS_SUCCESS;
+                goto done;
+            }
+            if (status) break;
+            if (state->dispatch.EstablisherFrame == nested_frame)
+                state->rec.ExceptionFlags &= EXCEPTION_NONCONTINUABLE;
+
+            switch ((DWORD)res)
+            {
+            case ExceptionContinueExecution:
+                status = (state->rec.ExceptionFlags & EXCEPTION_NONCONTINUABLE) ?
+                         STATUS_NONCONTINUABLE_EXCEPTION : STATUS_SUCCESS;
+                goto done;
+            case ExceptionContinueSearch:
+                break;
+            case ExceptionNestedException:
+                state->rec.ExceptionFlags |= EXCEPTION_NESTED_CALL;
+                nested_frame = state->dispatch.EstablisherFrame;
+                break;
+            case ExceptionCollidedUnwind:
+                state->frame_context = state->walk_context;
+                status = macrunner_hb_guest_x64_virtual_unwind( virtual_unwind_entry, state,
+                                                                UNW_FLAG_NHANDLER,
+                                                                state->dispatch.ControlPc,
+                                                                state->dispatch.FunctionEntry );
+                if (status) goto done;
+                goto unwind_done;
+            default:
+                status = STATUS_INVALID_DISPOSITION;
+                goto done;
+            }
+        }
+        else
+        {
+            while (macrunner_hb_x64_exception_frame_is_valid( (ULONG64)(uintptr_t)teb_frame ) &&
+                   (ULONG64)(uintptr_t)teb_frame < state->walk_context.AMD64_Context.Rsp)
+            {
+                hb_abi_x64_call_t call;
+                struct macrunner_hb_x64_eh_runtime_bridge bridge;
+                struct macrunner_hb_x64_eh_runtime_bridge *previous_bridge;
+                ULONG64 res = 0;
+
+                memset( &call, 0, sizeof(call) );
+                memset( &bridge, 0, sizeof(bridge) );
+                call.rcx = (ULONG64)(uintptr_t)&state->rec;
+                call.rdx = (ULONG64)(uintptr_t)teb_frame;
+                call.r8  = (ULONG64)(uintptr_t)&state->orig_context.AMD64_Context;
+                call.r9  = (ULONG64)(uintptr_t)&state->dispatch;
+                bridge.capture_seed = &state->frame_context.AMD64_Context;
+                bridge.stack_limit = teb->Tib.StackLimit;
+                bridge.stack_base = teb->Tib.StackBase;
+                previous_bridge = macrunner_hb_x64_eh_runtime_bridge;
+                macrunner_hb_x64_eh_runtime_bridge = &bridge;
+                status = macrunner_hb_call_guest_x64_abi( (void *)(uintptr_t)teb_frame->Handler,
+                                                          &call, &res, "x64-eh-teb-handler" );
+                macrunner_hb_x64_eh_runtime_bridge = previous_bridge;
+                if (bridge.continuation_ready)
+                {
+                    state->orig_context.AMD64_Context = bridge.continuation;
+                    state->orig_context.ContextFlags = bridge.continuation.ContextFlags;
+                    state->orig_context.Pc = bridge.continuation.Rip;
+                    state->orig_context.Sp = bridge.continuation.Rsp;
+                    status = STATUS_SUCCESS;
+                    goto done;
+                }
+                if (status) goto done;
+
+                switch ((DWORD)res)
+                {
+                case ExceptionContinueExecution:
+                    status = (state->rec.ExceptionFlags & EXCEPTION_NONCONTINUABLE) ?
+                             STATUS_NONCONTINUABLE_EXCEPTION : STATUS_SUCCESS;
+                    goto done;
+                case ExceptionContinueSearch:
+                    break;
+                case ExceptionNestedException:
+                    state->rec.ExceptionFlags |= EXCEPTION_NESTED_CALL;
+                    nested_frame = (ULONG64)(uintptr_t)teb_frame;
+                    break;
+                case ExceptionCollidedUnwind:
+                    state->frame_context = state->walk_context;
+                    status = macrunner_hb_guest_x64_virtual_unwind( virtual_unwind_entry, state,
+                                                                    UNW_FLAG_NHANDLER,
+                                                                    state->dispatch.ControlPc,
+                                                                    state->dispatch.FunctionEntry );
+                    if (status) goto done;
+                    teb_frame = teb_frame->Prev;
+                    goto unwind_done;
+                default:
+                    status = STATUS_INVALID_DISPOSITION;
+                    goto done;
+                }
+                teb_frame = teb_frame->Prev;
+            }
+        }
+
+        if (state->walk_context.AMD64_Context.Rsp == (ULONG64)(uintptr_t)teb->Tib.StackBase)
+            break;
+        if (state->walk_context.AMD64_Context.Rip == old_rip &&
+            state->walk_context.AMD64_Context.Rsp == old_rsp)
+        {
+            status = STATUS_BAD_FUNCTION_TABLE;
+            break;
+        }
+    }
+    status = STATUS_UNHANDLED_EXCEPTION;
+
+done:
+    fprintf( stderr, "macrunner-hb-guest-exception-delivery: label=%s "
+             "status=x64-domain-dispatch-result code=%08lx flags=%08lx "
+             "result=%08lx frames=%u pc=%p rsp=%p walk_rip=%p walk_rsp=%p "
+             "handler=%p frame=%p\n",
+             label ? label : "entry", (unsigned long)state->rec.ExceptionCode,
+             (unsigned long)state->rec.ExceptionFlags, (unsigned long)status,
+             frame_count, (void *)(uintptr_t)exception_pc, (void *)(uintptr_t)exception_rsp,
+             (void *)(uintptr_t)state->walk_context.AMD64_Context.Rip,
+             (void *)(uintptr_t)state->walk_context.AMD64_Context.Rsp,
+             (void *)(uintptr_t)state->language_handler,
+             (void *)(uintptr_t)state->establisher_frame );
+    fflush( stderr );
+
+    if (status == STATUS_SUCCESS)
+    {
+        macrunner_hb_copy_amd64_context_to_regs( ctx, &state->orig_context.AMD64_Context );
+        macrunner_hb_eh_completion_probe_arm( ctx, "x64-domain-continue", &state->rec,
+                                              exception_pc, exception_rsp, ctx->pc, NULL );
+    }
+    return status;
+}
+
 static BOOL macrunner_hb_deliver_guest_exception_record( hb_context_t *ctx, const char *label,
                                                          const EXCEPTION_RECORD *record,
                                                          uint64_t exception_pc, uint64_t exception_rsp,
                                                          const char *source )
 {
-    struct macrunner_hb_amd64_exception_frame frame;
     EXCEPTION_RECORD rtl_record;
-    EXCEPTION_RECORD *guest_record;
-    void *ntdll, *dispatcher, *rtl_raise;
-    uint64_t frame_addr, entry_rsp;
-    hb_result_t write_result;
-    BOOL semantic_raise;
+    NTSTATUS status;
 
     if (!ctx || !ctx->memory || !record || !exception_rsp) return FALSE;
-    ntdll = macrunner_hb_find_loaded_module_by_name( "ntdll.dll", IMAGE_FILE_MACHINE_AMD64 );
     /* Patch D tactical insertion: the architectural load/register path has several x64
      * module remap entries.  Ensure the AMD64 guest ntdll private dispatcher cells here
-     * before entering KiUserExceptionDispatcher, so ntdll virtual_unwind can perform its
+     * before entering guest x64 EH dispatch, so ntdll virtual_unwind can perform its
      * internal WINE_UNIX_CALL instead of reading a zero __wine_unix_call_dispatcher cell. */
     macrunner_hb_ensure_amd64_ntdll_unix_dispatchers( ctx );
-    semantic_raise = label && source && !strcmp( label, "RaiseException" ) &&
-                     !strcmp( source, "semantic-import" );
-    rtl_raise = semantic_raise ? macrunner_hb_find_named_export( ntdll, "RtlRaiseException" ) : NULL;
-    if (rtl_raise)
-    {
-        rtl_record = *record;
-        if (!rtl_record.ExceptionAddress)
-            rtl_record.ExceptionAddress = (void *)(uintptr_t)exception_pc;
-        if (exception_rsp < 8) return FALSE;
 
-        guest_record = macrunner_hb_local_heap_alloc( sizeof(*guest_record), TRUE );
-        if (!guest_record) return FALSE;
-        macrunner_hb_sync_virtual_region( ctx, guest_record, sizeof(*guest_record), PAGE_READWRITE );
-        write_result = hb_memory_write( ctx->memory, (hb_gva_t)(uintptr_t)guest_record,
-                                        &rtl_record, sizeof(rtl_record) );
-        if (write_result != HB_OK)
-        {
-            fprintf( stderr, "macrunner-hb-guest-exception-delivery: label=%s "
-                     "status=rtl-record-write-failed source=%s code=%08lx pc=%p "
-                     "record=%p write=%s entry=%p\n", label ? label : "entry",
-                     source ? source : "unknown", (unsigned long)rtl_record.ExceptionCode,
-                     (void *)(uintptr_t)exception_pc, guest_record,
-                     hb_result_string(write_result), rtl_raise );
-            fflush( stderr );
-            return FALSE;
-        }
+    /* Fix #3-B: dispatch the first-chance search loop in HB's x64 domain over
+     * an explicit ARM64EC_NT_CONTEXT/AMD64_Context buffer.  Do not enter native
+     * ARM64EC KiUserExceptionDispatcher and do not rely on guest RtlRaiseException
+     * to synthesize the frame; both paths previously let ARM64EC frame-shape
+     * mismatch leak EFlags/0x202 into the unwinder as Rsp. */
+    rtl_record = *record;
+    if (!rtl_record.ExceptionAddress)
+        rtl_record.ExceptionAddress = (void *)(uintptr_t)exception_pc;
 
-        entry_rsp = exception_rsp - 8;
-        write_result = hb_memory_write_u64( ctx->memory, (hb_gva_t)entry_rsp, exception_pc );
-        if (write_result != HB_OK)
-        {
-            (void)macrunner_hb_try_grow_guard_page( (hb_gva_t)entry_rsp );
-            write_result = hb_memory_write_u64( ctx->memory, (hb_gva_t)entry_rsp, exception_pc );
-        }
-        if (write_result != HB_OK)
-        {
-            fprintf( stderr, "macrunner-hb-guest-exception-delivery: label=%s "
-                     "status=rtl-ret-write-failed source=%s code=%08lx pc=%p "
-                     "rsp=%p write=%s entry=%p\n", label ? label : "entry",
-                     source ? source : "unknown", (unsigned long)rtl_record.ExceptionCode,
-                     (void *)(uintptr_t)exception_pc, (void *)(uintptr_t)entry_rsp,
-                     hb_result_string(write_result), rtl_raise );
-            fflush( stderr );
-            return FALSE;
-        }
+    status = macrunner_hb_dispatch_guest_exception_x64_domain( ctx, label, &rtl_record,
+                                                               exception_pc, exception_rsp );
+    if (status == STATUS_SUCCESS) return TRUE;
 
-        macrunner_hb_eh_context_probe_delivery( ctx, "rtlraise-before-entry", label,
-                                                &rtl_record, exception_pc,
-                                                exception_rsp, entry_rsp,
-                                                rtl_raise, guest_record );
-        macrunner_hb_eh_completion_probe_arm( ctx, "rtlraise-entry", &rtl_record,
-                                              exception_pc, exception_rsp, exception_pc,
-                                              rtl_raise );
-        ctx->regs.x64.rcx = (uint64_t)(uintptr_t)guest_record;
-        ctx->regs.x64.rsp = entry_rsp;
-        ctx->regs.x64.rip = (uint64_t)(uintptr_t)rtl_raise;
-        ctx->regs.x64.rflags = (ctx->regs.x64.rflags | 2) & ~(0x100 | 0x400 | 0x40000);
-        ctx->pc = (uint64_t)(uintptr_t)rtl_raise;
-        ctx->last_result = HB_OK;
-        fprintf( stderr, "macrunner-hb-guest-exception-delivery: label=%s "
-                 "status=delivered-rtlraise source=%s code=%08lx flags=%08lx "
-                 "pc=%p call_rsp=%p record=%p entry=%p\n", label ? label : "entry",
-                 source ? source : "unknown", (unsigned long)rtl_record.ExceptionCode,
-                 (unsigned long)rtl_record.ExceptionFlags, (void *)(uintptr_t)exception_pc,
-                 (void *)(uintptr_t)entry_rsp, guest_record, rtl_raise );
-        fflush( stderr );
-        return TRUE;
-    }
-    dispatcher = macrunner_hb_find_named_export( ntdll, "KiUserExceptionDispatcher" );
-    if (!dispatcher) return FALSE;
-
-    memset( &frame, 0, sizeof(frame) );
-    macrunner_hb_fill_amd64_context_from_regs( &frame.context, &ctx->regs.x64, CONTEXT_AMD64_ALL );
-    frame.context.ContextFlags |= CONTEXT_EXCEPTION_ACTIVE;
-    frame.context.Rip = exception_pc ? exception_pc : (ctx->pc ? ctx->pc : ctx->regs.x64.rip);
-    frame.context.Rsp = exception_rsp;
-    frame.context.EFlags = (frame.context.EFlags | 2) & ~(0x100 | 0x400 | 0x40000);
-    macrunner_hb_init_amd64_context_ex( &frame.context );
-
-    frame.rec = *record;
-    if (!frame.rec.ExceptionAddress)
-        frame.rec.ExceptionAddress = (void *)(uintptr_t)frame.context.Rip;
-    frame.machine_frame.rip = frame.context.Rip;
-    frame.machine_frame.cs = 0x33;
-    frame.machine_frame.eflags = frame.context.EFlags;
-    frame.machine_frame.rsp = frame.context.Rsp;
-    frame.machine_frame.ss = 0x2b;
-
-    frame_addr = (exception_rsp - sizeof(frame)) & ~63ull;
-    write_result = hb_memory_write( ctx->memory, (hb_gva_t)frame_addr, &frame, sizeof(frame) );
-    if (write_result != HB_OK)
-    {
-        (void)macrunner_hb_try_grow_guard_page( (hb_gva_t)frame_addr );
-        (void)macrunner_hb_try_grow_guard_page( (hb_gva_t)(frame_addr + sizeof(frame) - 1) );
-        write_result = hb_memory_write( ctx->memory, (hb_gva_t)frame_addr, &frame, sizeof(frame) );
-    }
-    if (write_result != HB_OK)
-    {
-        fprintf( stderr, "macrunner-hb-guest-exception-delivery: label=%s status=stack-write-failed "
-                 "source=%s code=%08lx pc=%p frame=%p write=%s dispatcher=%p\n",
-                 label ? label : "entry", source ? source : "unknown",
-                 (unsigned long)frame.rec.ExceptionCode, (void *)(uintptr_t)frame.context.Rip,
-                 (void *)(uintptr_t)frame_addr, hb_result_string(write_result), dispatcher );
-        fflush( stderr );
-        return FALSE;
-    }
-
-    ctx->regs.x64.rsp = frame_addr;
-    ctx->regs.x64.rip = (uint64_t)(uintptr_t)dispatcher;
-    ctx->regs.x64.rflags = (ctx->regs.x64.rflags | 2) & ~(0x100 | 0x400 | 0x40000);
-    ctx->pc = (uint64_t)(uintptr_t)dispatcher;
-    ctx->last_result = HB_OK;
-    fprintf( stderr, "macrunner-hb-guest-exception-delivery: label=%s status=delivered "
-             "source=%s code=%08lx flags=%08lx pc=%p rsp=%p frame=%p dispatcher=%p\n",
-             label ? label : "entry", source ? source : "unknown",
-             (unsigned long)frame.rec.ExceptionCode, (unsigned long)frame.rec.ExceptionFlags,
-             (void *)(uintptr_t)frame.context.Rip, (void *)(uintptr_t)frame.context.Rsp,
-             (void *)(uintptr_t)frame_addr,
-             dispatcher );
+    fprintf( stderr, "macrunner-hb-guest-exception-delivery: label=%s "
+             "status=x64-domain-unhandled source=%s code=%08lx flags=%08lx "
+             "result=%08lx pc=%p rsp=%p\n", label ? label : "entry",
+             source ? source : "unknown", (unsigned long)rtl_record.ExceptionCode,
+             (unsigned long)rtl_record.ExceptionFlags, (unsigned long)status,
+             (void *)(uintptr_t)exception_pc, (void *)(uintptr_t)exception_rsp );
     fflush( stderr );
-    return TRUE;
+    return FALSE;
 }
 
 static BOOL macrunner_hb_deliver_guest_access_violation( hb_context_t *ctx, const char *label,
@@ -19670,17 +22735,144 @@ static BOOL macrunner_hb_try_user32_semantic( hb_context_t *ctx,
     return TRUE;
 }
 
-static NTSTATUS macrunner_hb_critical_section_init( RTL_CRITICAL_SECTION *cs, ULONG spin )
+struct macrunner_hb_critical_section_debug_owner
 {
-    if (!cs) return STATUS_INVALID_PARAMETER;
+    RTL_CRITICAL_SECTION *critical_section;
+    RTL_CRITICAL_SECTION_DEBUG *debug_info;
+    struct macrunner_hb_critical_section_debug_owner *next;
+};
 
-    cs->DebugInfo = (void *)(ULONG_PTR)-1;
-    cs->LockCount = -1;
-    cs->RecursionCount = 0;
-    cs->OwningThread = 0;
-    cs->LockSemaphore = 0;
-    cs->SpinCount = spin & ~0x80000000u;
+static pthread_mutex_t macrunner_hb_critical_section_debug_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct macrunner_hb_critical_section_debug_owner *macrunner_hb_critical_section_debug_owners;
+
+static BOOL macrunner_hb_trace_critical_section_init_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache,
+                                         "MACRUNNER_HB_TRACE_CRITICAL_SECTION_INIT" );
+}
+
+static BOOL macrunner_hb_critical_section_debug_is_owned( RTL_CRITICAL_SECTION *cs )
+{
+    struct macrunner_hb_critical_section_debug_owner *owner;
+    BOOL found = FALSE;
+
+    pthread_mutex_lock( &macrunner_hb_critical_section_debug_mutex );
+    for (owner = macrunner_hb_critical_section_debug_owners; owner; owner = owner->next)
+    {
+        if (owner->critical_section != cs) continue;
+        found = TRUE;
+        break;
+    }
+    pthread_mutex_unlock( &macrunner_hb_critical_section_debug_mutex );
+    return found;
+}
+
+static void macrunner_hb_critical_section_debug_remember(
+    struct macrunner_hb_critical_section_debug_owner *owner )
+{
+    pthread_mutex_lock( &macrunner_hb_critical_section_debug_mutex );
+    owner->next = macrunner_hb_critical_section_debug_owners;
+    macrunner_hb_critical_section_debug_owners = owner;
+    pthread_mutex_unlock( &macrunner_hb_critical_section_debug_mutex );
+}
+
+static struct macrunner_hb_critical_section_debug_owner *
+macrunner_hb_critical_section_debug_take( RTL_CRITICAL_SECTION *cs )
+{
+    struct macrunner_hb_critical_section_debug_owner **cursor, *owner = NULL;
+
+    pthread_mutex_lock( &macrunner_hb_critical_section_debug_mutex );
+    for (cursor = &macrunner_hb_critical_section_debug_owners; *cursor; cursor = &(*cursor)->next)
+    {
+        if ((*cursor)->critical_section != cs) continue;
+        owner = *cursor;
+        *cursor = owner->next;
+        break;
+    }
+    pthread_mutex_unlock( &macrunner_hb_critical_section_debug_mutex );
+    return owner;
+}
+
+static NTSTATUS macrunner_hb_critical_section_init( hb_context_t *ctx,
+                                                     RTL_CRITICAL_SECTION *cs,
+                                                     ULONG spin, ULONG flags )
+{
+    /* Win32 documents 0/NO_DEBUG; Wine builtins also deliberately pass the
+     * internal FORCE_DEBUG flag through this public import.  Other Rtl-only
+     * flags stay on the native RtlInitializeCriticalSectionEx route. */
+    const ULONG supported_flags = RTL_CRITICAL_SECTION_FLAG_NO_DEBUG_INFO |
+                                  RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO;
+    const RTL_CRITICAL_SECTION_DEBUG *no_debug_info = (void *)(ULONG_PTR)-1;
+    struct macrunner_hb_critical_section_debug_owner *owner = NULL;
+    RTL_CRITICAL_SECTION_DEBUG debug_value, *debug_info = NULL;
+    RTL_CRITICAL_SECTION value;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (!ctx || !ctx->memory || !cs) return STATUS_INVALID_PARAMETER;
+    if ((flags & ~supported_flags) ||
+        (flags & supported_flags) == supported_flags)
+        return STATUS_INVALID_PARAMETER;
+    if (macrunner_hb_critical_section_debug_is_owned( cs ))
+        return STATUS_INVALID_PARAMETER;
+
+    if (flags & RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO)
+    {
+        if (!(owner = calloc( 1, sizeof(*owner) ))) return STATUS_NO_MEMORY;
+        if (!(debug_info = macrunner_hb_local_heap_alloc( sizeof(*debug_info), TRUE )))
+        {
+            free( owner );
+            return STATUS_NO_MEMORY;
+        }
+
+        memset( &debug_value, 0, sizeof(debug_value) );
+        debug_value.CriticalSection = cs;
+        debug_value.ProcessLocksList.Flink = &debug_info->ProcessLocksList;
+        debug_value.ProcessLocksList.Blink = &debug_info->ProcessLocksList;
+        macrunner_hb_sync_virtual_region( ctx, debug_info, sizeof(*debug_info), PAGE_READWRITE );
+        if (hb_memory_write( ctx->memory, (hb_gva_t)(uintptr_t)debug_info,
+                             &debug_value, sizeof(debug_value) ) != HB_OK)
+        {
+            status = STATUS_ACCESS_VIOLATION;
+            goto failed;
+        }
+    }
+
+    memset( &value, 0, sizeof(value) );
+    value.DebugInfo = debug_info ? debug_info : (RTL_CRITICAL_SECTION_DEBUG *)no_debug_info;
+    value.LockCount = -1;
+    if (NtCurrentTeb()->Peb->NumberOfProcessors <= 1) spin = 0;
+    value.SpinCount = spin & ~0x80000000u;
+    if (hb_memory_write( ctx->memory, (hb_gva_t)(uintptr_t)cs,
+                         &value, sizeof(value) ) != HB_OK)
+    {
+        status = STATUS_ACCESS_VIOLATION;
+        goto failed;
+    }
+
+    if (owner)
+    {
+        owner->critical_section = cs;
+        owner->debug_info = debug_info;
+        macrunner_hb_critical_section_debug_remember( owner );
+    }
+    if (debug_info && macrunner_hb_trace_critical_section_init_enabled())
+    {
+        static unsigned int trace_count;
+        unsigned int count = __atomic_add_fetch( &trace_count, 1, __ATOMIC_RELAXED );
+
+        if (count <= 256)
+            fprintf( stderr, "macrunner-hb-critical-section-init: api=Ex flags=%#lx "
+                     "cs=%p debug=%p spare0=%p tid=%#lx count=%u\n",
+                     (unsigned long)flags, cs, debug_info, &debug_info->Spare[0],
+                     (unsigned long)GetCurrentThreadId(), count );
+    }
     return STATUS_SUCCESS;
+
+failed:
+    if (debug_info) macrunner_hb_local_heap_release( debug_info );
+    free( owner );
+    return status;
 }
 
 static HANDLE macrunner_hb_critical_section_semaphore( RTL_CRITICAL_SECTION *cs )
@@ -19703,19 +22895,33 @@ static HANDLE macrunner_hb_critical_section_semaphore( RTL_CRITICAL_SECTION *cs 
     return new_sem;
 }
 
-static NTSTATUS macrunner_hb_critical_section_delete( RTL_CRITICAL_SECTION *cs )
+static NTSTATUS macrunner_hb_critical_section_delete( hb_context_t *ctx,
+                                                       RTL_CRITICAL_SECTION *cs )
 {
-    HANDLE sem;
+    struct macrunner_hb_critical_section_debug_owner *owner;
+    RTL_CRITICAL_SECTION value;
+    HANDLE sem = 0;
 
-    if (!cs) return STATUS_INVALID_PARAMETER;
+    if (!ctx || !ctx->memory || !cs) return STATUS_INVALID_PARAMETER;
+    if (hb_memory_read( ctx->memory, (hb_gva_t)(uintptr_t)cs,
+                        &value, sizeof(value) ) != HB_OK)
+        return STATUS_ACCESS_VIOLATION;
 
-    sem = (ULONG_PTR)cs->LockSemaphore > 1 ? cs->LockSemaphore : 0;
-    cs->DebugInfo = NULL;
-    cs->LockCount = -1;
-    cs->RecursionCount = 0;
-    cs->OwningThread = 0;
-    cs->LockSemaphore = 0;
-    cs->SpinCount = 0;
+    if ((ULONG_PTR)value.LockSemaphore > 1) sem = value.LockSemaphore;
+    value.DebugInfo = NULL;
+    value.LockCount = -1;
+    value.RecursionCount = 0;
+    value.OwningThread = 0;
+    value.LockSemaphore = 0;
+    if (hb_memory_write( ctx->memory, (hb_gva_t)(uintptr_t)cs,
+                         &value, sizeof(value) ) != HB_OK)
+        return STATUS_ACCESS_VIOLATION;
+
+    if ((owner = macrunner_hb_critical_section_debug_take( cs )))
+    {
+        macrunner_hb_local_heap_release( owner->debug_info );
+        free( owner );
+    }
     if (sem) NtClose( sem );
     return STATUS_SUCCESS;
 }
@@ -19973,6 +23179,26 @@ static BOOL macrunner_hb_wait_address_import( const char *name )
            macrunner_hb_strieq( name, "RtlWaitOnAddress" );
 }
 
+static BOOL macrunner_hb_cs_forward_ntdll_enabled(void)
+{
+    static int enabled = -1;
+    int value = __atomic_load_n( &enabled, __ATOMIC_RELAXED );
+
+    if (value < 0)
+    {
+        value = macrunner_hb_env_enabled( "MACRUNNER_HB_CS_FORWARD_NTDLL" );
+        __atomic_store_n( &enabled, value, __ATOMIC_RELAXED );
+    }
+    return value != 0;
+}
+
+static BOOL macrunner_hb_cs_forward_ntdll_import( const char *name )
+{
+    return macrunner_hb_strieq( name, "EnterCriticalSection" ) ||
+           macrunner_hb_strieq( name, "LeaveCriticalSection" ) ||
+           macrunner_hb_strieq( name, "TryEnterCriticalSection" );
+}
+
 static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                                                        const struct macrunner_hb_import_thunk *thunk,
                                                        const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
@@ -19991,6 +23217,24 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
     if (!macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) &&
         !macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" ))
         return FALSE;
+    if (macrunner_hb_cs_forward_ntdll_enabled() &&
+        macrunner_hb_cs_forward_ntdll_import( thunk->import_name ))
+    {
+        static unsigned int reports;
+        unsigned int report = __atomic_add_fetch( &reports, 1, __ATOMIC_RELAXED );
+
+        if (report <= 64)
+        {
+            fprintf( stderr, "macrunner-hb-cs-forward-ntdll: hit=%u import=%s!%s "
+                     "target=%p pc=%p caller=%p rsp=%p\n",
+                     report, thunk->dll_name, thunk->import_name, thunk->target,
+                     (void *)(uintptr_t)ctx->pc,
+                     (void *)(uintptr_t)macrunner_hb_trace_return_address( ctx ),
+                     (void *)(uintptr_t)ctx->regs.x64.rsp );
+            fflush( stderr );
+        }
+        return FALSE;
+    }
     if (macrunner_hb_disable_kernel32_handle_semantic() ||
         (macrunner_hb_disable_kernel32_handle_sync_semantic() &&
          macrunner_hb_kernel32_handle_sync_import( thunk->import_name )))
@@ -21063,8 +24307,7 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             spin = (DWORD)args[1];
             flags = (DWORD)args[2];
         }
-        (void)flags;
-        status = macrunner_hb_critical_section_init( cs, spin );
+        status = macrunner_hb_critical_section_init( ctx, cs, spin, flags );
 
         NtCurrentTeb()->LastStatusValue = status;
         RtlSetLastWin32Error( status ? RtlNtStatusToDosError( status ) : ERROR_SUCCESS );
@@ -21076,7 +24319,7 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
     {
         RTL_CRITICAL_SECTION *cs = (RTL_CRITICAL_SECTION *)(uintptr_t)args[0];
 
-        status = macrunner_hb_critical_section_delete( cs );
+        status = macrunner_hb_critical_section_delete( ctx, cs );
         NtCurrentTeb()->LastStatusValue = status;
         RtlSetLastWin32Error( status ? RtlNtStatusToDosError( status ) : ERROR_SUCCESS );
         *ret = 0;
@@ -21456,12 +24699,17 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                                               macrunner_hb_wfso_caller, macrunner_hb_wfso_rsp,
                                               STATUS_PENDING, (DWORD)args[1],
                                               (uint64_t)(unsigned int)alertable );
+            macrunner_hb_present_gate_wait_observer( ctx, thunk->import_name, args[0], 0, 1,
+                                                       "enter", STATUS_PENDING );
+            macrunner_hb_present_pump_signal( ctx, thunk->import_name, args[0], 0, 1 );
             if (macrunner_hb_block_trace_enabled())
                 macrunner_hb_wait_reg_enter( (uint64_t)args[0], macrunner_hb_wfso_caller );
             status = NtWaitForSingleObject( (HANDLE)(uintptr_t)args[0],
                                             macrunner_hb_strieq( thunk->import_name, "WaitForSingleObjectEx" ) &&
                                             args[2],
                                             macrunner_hb_get_nt_timeout( &timeout, (DWORD)args[1] ) );
+            macrunner_hb_present_gate_wait_observer( ctx, thunk->import_name, args[0], 0, 1,
+                                                       "return", status );
             macrunner_hb_event_handoff_trace( HB_EVENT_HANDOFF_WAIT1_EXIT, args[0],
                                               macrunner_hb_wfso_caller, macrunner_hb_wfso_rsp,
                                               status, (DWORD)args[1],
@@ -21558,20 +24806,32 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             DWORD i;
 
             for (i = 0; i < count; i++)
+            {
                 macrunner_hb_event_handoff_trace( HB_EVENT_HANDOFF_WAITM_ENTER, (uint64_t)(uintptr_t)handles[i],
                                                   caller, rsp, STATUS_PENDING, count,
                                                   ((uint64_t)(DWORD)args[3] << 32) |
                                                   ((uint64_t)(args[2] ? 1 : 0) << 16) |
                                                   ((uint64_t)(alertable ? 1 : 0) << 8) | i );
+                macrunner_hb_present_gate_wait_observer( ctx, thunk->import_name,
+                                                          (uint64_t)(uintptr_t)handles[i], i, count,
+                                                          "enter", STATUS_PENDING );
+                macrunner_hb_present_pump_signal( ctx, thunk->import_name,
+                                                  (uint64_t)(uintptr_t)handles[i], i, count );
+            }
             status = NtWaitForMultipleObjects( count, handles, args[2] ? WaitAll : WaitAny,
                                                alertable,
                                                macrunner_hb_get_nt_timeout( &timeout, (DWORD)args[3] ) );
             for (i = 0; i < count; i++)
+            {
+                macrunner_hb_present_gate_wait_observer( ctx, thunk->import_name,
+                                                          (uint64_t)(uintptr_t)handles[i], i, count,
+                                                          "return", status );
                 macrunner_hb_event_handoff_trace( HB_EVENT_HANDOFF_WAITM_EXIT, (uint64_t)(uintptr_t)handles[i],
                                                   caller, rsp, status, count,
                                                   ((uint64_t)(DWORD)args[3] << 32) |
                                                   ((uint64_t)(args[2] ? 1 : 0) << 16) |
                                                   ((uint64_t)(alertable ? 1 : 0) << 8) | i );
+            }
         }
         NtCurrentTeb()->LastStatusValue = status;
         if (NT_ERROR( status ))
@@ -23292,6 +26552,7 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     BOOL trace_createwindow;
     BOOL trace_registerclass;
     BOOL trace_tls;
+    BOOL trace_present_follow_import;
     BOOL handled_semantic = FALSE;
     BOOL control_transferred = FALSE;
     hb_result_t semantic_status = HB_OK;
@@ -23315,6 +26576,22 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     if (hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &ret_addr ) != HB_OK || !ret_addr)
         return HB_ERR_EXEC_FAULT;
 
+    /* Wine's x64 ntdll stack-probe exports are no-op `ret` stubs.  Registering
+     * the whole family at loader time keeps AMD64 callers away from an ARM64EC
+     * entry thunk while preserving RAX (the requested stack size) exactly. */
+    if (macrunner_hb_is_x64_stack_probe_import( thunk->dll_name, thunk->import_name ))
+    {
+        static unsigned int reports;
+
+        macrunner_hb_finish_import( ctx, ret_addr, ctx->regs.x64.rax );
+        if (reports++ < 64)
+            fprintf( stderr, "macrunner-hb-stack-probe-noop: import=%s!%s resume=%p rsp=%p rax=%p\n",
+                     thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ret_addr,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp,
+                     (void *)(uintptr_t)ctx->regs.x64.rax );
+        return HB_OK;
+    }
+
     args[0] = ctx->regs.x64.rcx;
     args[1] = ctx->regs.x64.rdx;
     args[2] = ctx->regs.x64.r8;
@@ -23331,6 +26608,8 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     macrunner_hb_post_signal_probe_import( ctx, thunk, "before", ret_addr, 0, args, arg_count );
     macrunner_hb_handle_lifecycle_probe_import( ctx, thunk, "before", ret_addr, 0,
                                                 args, arg_count );
+    macrunner_hb_trace_dxmt_method_probe( ctx, thunk, "before", ret_addr, 0,
+                                          args, arg_count );
     if (macrunner_hb_trace_direct_native_enabled() &&
         macrunner_hb_strieq( thunk->dll_name, "win32u.dll" ) &&
         (macrunner_hb_strieq( thunk->import_name, "NtGdiStretchDIBitsInternal" ) ||
@@ -23345,6 +26624,25 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
                  (void *)(uintptr_t)args[14], (void *)(uintptr_t)args[15],
                  (void *)(uintptr_t)args[16] );
     macrunner_hb_normalize_import_args( thunk, args );
+    trace_present_follow_import = macrunner_hb_present_import_probe_enabled() &&
+                                  macrunner_hb_current_thread_is_swapchain_creator();
+    if (trace_present_follow_import)
+    {
+        static unsigned int reports;
+        unsigned int report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+
+        if (report <= 512)
+        {
+            fprintf( stderr,
+                     "macrunner-hb-present-follow-import: hit=%u phase=enter import=%s!%s "
+                     "pc=%p ret_addr=%p a0=%p a1=%p a2=%p rsp=%p\n",
+                     report, thunk->dll_name, thunk->import_name,
+                     (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)ret_addr,
+                     (void *)(uintptr_t)args[0], (void *)(uintptr_t)args[1],
+                     (void *)(uintptr_t)args[2], (void *)(uintptr_t)ctx->regs.x64.rsp );
+            fflush( stderr );
+        }
+    }
     trace_tls = macrunner_hb_trace_tls_import_enabled() &&
                 macrunner_hb_trace_tls_import_interesting( thunk );
     trace_createwindow = macrunner_hb_trace_createwindow_enabled() &&
@@ -23496,12 +26794,31 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     }
     macrunner_hb_fix_dxmt_com_after_call( thunk, args, arg_count, rc );
     macrunner_hb_trace_dxgi_swapchain( ctx, thunk, ret_addr, rc, args, arg_count );
+    macrunner_hb_trace_dxmt_method_probe( ctx, thunk, "after", ret_addr, rc,
+                                          args, arg_count );
     macrunner_hb_post_signal_probe_import( ctx, thunk, "after", ret_addr, rc, args, arg_count );
     macrunner_hb_handle_lifecycle_probe_import( ctx, thunk, "after", ret_addr, rc,
                                                 args, arg_count );
     macrunner_hb_trace_d3d_boundary( "after", ctx, thunk, ret_addr, rc, args, arg_count,
                                      handled_semantic );
     macrunner_hb_trace_user32_message_import( ctx, thunk, "after-native", rc, args );
+    if (trace_present_follow_import)
+    {
+        static unsigned int reports;
+        unsigned int report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+
+        if (report <= 512)
+        {
+            fprintf( stderr,
+                     "macrunner-hb-present-follow-import: hit=%u phase=return import=%s!%s "
+                     "pc=%p ret_addr=%p rc=%p semantic=%u rsp=%p\n",
+                     report, thunk->dll_name, thunk->import_name,
+                     (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)ret_addr,
+                     (void *)(uintptr_t)rc, handled_semantic,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp );
+            fflush( stderr );
+        }
+    }
     if (trace_tls)
     {
         TEB *teb = NtCurrentTeb();
@@ -25104,6 +28421,8 @@ static hb_result_t macrunner_hb_dispatch_x64_syscall( hb_context_t *ctx, uint64_
         thunk.target_machine = current_machine;
         strcpy( thunk.dll_name, "native-syscall" );
         snprintf( thunk.import_name, sizeof(thunk.import_name), "%04x", service );
+        if (macrunner_hb_try_bridge_x64_eh_ntcontinue( ctx, thunk.target, args[0] ))
+            return HB_OK;
         syscall_alloc = thunk.target == (void *)NtAllocateVirtualMemory;
         syscall_free = thunk.target == (void *)NtFreeVirtualMemory;
         syscall_protect = thunk.target == (void *)NtProtectVirtualMemory;
@@ -26733,6 +30052,15 @@ static void macrunner_hb_trace_render_time_align( const char *phase, hb_context_
     after_ready = ready_seq != 0;
     if (ready_us && now_us >= ready_us) ready_age_us = now_us - ready_us;
 
+    if (macrunner_hb_post_ready_consumer_follow_enabled() && phase &&
+        !strcmp( phase, "after" ) && !strcmp( site, "consumer-after-active-peek" ) &&
+        ready_seq && item == ready_item && mgr == ready_mgr && item40 == 1 &&
+        active0 == item && (ok & (1u << 9)))
+        macrunner_hb_post_ready_consumer_follow_arm( ctx, image_start, item, mgr,
+                                                     ready_seq, ready_age_us, active0 );
+
+    if (!macrunner_hb_trace_render_time_align_enabled()) return;
+
     if (after_ready)
     {
         if (post_ready_reports < 500)
@@ -27013,10 +30341,12 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     int trace_render_queue = macrunner_hb_trace_render_queue_enabled();
     int trace_render_wait_pin = macrunner_hb_trace_render_wait_pin_enabled();
     int trace_render_time_align = macrunner_hb_trace_render_time_align_enabled();
+    int trace_post_ready_consumer_follow = macrunner_hb_post_ready_consumer_follow_enabled();
     int trace_main_gate = macrunner_hb_trace_main_gate_enabled();
     int trace_low_stack = macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_LOW_STACK" );
     int trace_thread_run = label && !strcmp( label, "thread" ) &&
                            macrunner_hb_trace_thread_lifecycle_enabled();
+    struct macrunner_hb_post_mono_state post_mono_discriminator;
 
     if (progress_env && *progress_env && *progress_env != '0')
     {
@@ -27033,6 +30363,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
 #ifndef __aarch64__
     return STATUS_NOT_IMPLEMENTED;
 #else
+    macrunner_hb_post_mono_discriminator_init( &post_mono_discriminator );
     if (debug_enabled)
         ERR( "MacRunner HyperBridge run begin %s entry=%p image=%p\n",
              label ? label : "x64", entry, image_base );
@@ -27472,8 +30803,37 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                 image_start = (uint64_t)(uintptr_t)guest_module;
                 image_size = macrunner_hb_module_size( guest_module );
             }
+            if (macrunner_hb_try_retarget_x64_eh_native_rtl_unwind_ex(
+                    ctx, label, &image_base, &image_start, &image_size ))
+                goto in_guest_image;
+
             if (macrunner_hb_pc_in_image( ctx->pc, image_start, image_size ))
                 goto in_guest_image;
+
+            if (label && (!strcmp( label, "x64-eh-language-handler" ) ||
+                          !strcmp( label, "x64-eh-teb-handler" )) &&
+                (macrunner_hb_pc_is_unix_call_dispatcher( ctx->pc ) ||
+                 macrunner_hb_pc_is_syscall_dispatcher( ctx->pc )))
+            {
+                static unsigned int x64_eh_dispatcher_bridge_budget;
+
+                if (x64_eh_dispatcher_bridge_budget++ < 40)
+                    fprintf( stderr, "macrunner-hb-eh-native-dispatcher-bridge: "
+                             "label=%s pc=%p last_block=%p\n",
+                             label, (void *)(uintptr_t)ctx->pc,
+                             (void *)(uintptr_t)last_block_pc );
+                ret = macrunner_hb_call_direct_native_target( ctx, ctx->pc );
+                if (ret != HB_OK)
+                {
+                    ERR( "MacRunner HyperBridge x64 EH native dispatcher failed "
+                         "%s pc=%p result=%s\n", label, (void *)(uintptr_t)ctx->pc,
+                         hb_result_string(ret) );
+                    status = STATUS_INVALID_IMAGE_FORMAT;
+                    status_reason = "x64-eh-native-dispatcher";
+                    break;
+                }
+                continue;
+            }
 
             if (macrunner_hb_label_allows_direct_native( label ) &&
                 (import_thunk = macrunner_hb_find_import_thunk_by_target( ctx->pc )))
@@ -27498,6 +30858,67 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
                     break;
                 }
                 continue;
+            }
+
+            if (macrunner_hb_label_allows_direct_native( label ))
+            {
+                char iat_dll_name[96];
+                char iat_import_name[128];
+
+                if (macrunner_hb_find_import_name_by_iat_jump( image_base, last_block_pc, ctx->pc,
+                                                               iat_dll_name, sizeof(iat_dll_name),
+                                                               iat_import_name, sizeof(iat_import_name) ))
+                {
+                    static unsigned int dynamic_iat_import_target_budget;
+
+                    import_thunk = macrunner_hb_find_import_thunk_by_name( iat_dll_name, iat_import_name );
+                    if (dynamic_iat_import_target_budget++ < 120)
+                        fprintf( stderr, "macrunner-hb-dynamic-iat-import-target: label=%s "
+                                 "pc=%p last_block=%p import=%s!%s registered=%d\n",
+                                 label ? label : "entry", (void *)(uintptr_t)ctx->pc,
+                                 (void *)(uintptr_t)last_block_pc, iat_dll_name, iat_import_name,
+                                 import_thunk != NULL );
+                    if (!import_thunk && macrunner_hb_native_direct_callback_split_enabled() &&
+                        macrunner_hb_is_x64_stack_probe_import( iat_dll_name, iat_import_name ))
+                    {
+                        uint64_t ret_pc = 0;
+                        hb_result_t read_ret;
+                        static unsigned int chkstk_budget;
+
+                        read_ret = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &ret_pc );
+                        if (read_ret == HB_OK && ret_pc)
+                        {
+                            macrunner_hb_finish_import( ctx, ret_pc, ctx->regs.x64.rax );
+                            if (chkstk_budget++ < 64)
+                                fprintf( stderr, "macrunner-hb-native-direct-callback-split: "
+                                         "op=chkstk-ms-noop import=%s!%s pc=%p resume=%p rsp=%p\n",
+                                         iat_dll_name, iat_import_name, (void *)(uintptr_t)ctx->pc,
+                                         (void *)(uintptr_t)ret_pc,
+                                         (void *)(uintptr_t)ctx->regs.x64.rsp );
+                            continue;
+                        }
+                        if (chkstk_budget++ < 64)
+                            fprintf( stderr, "macrunner-hb-native-direct-callback-split: "
+                                     "op=chkstk-ms-read-failed import=%s!%s pc=%p rsp=%p read=%s ret=%p\n",
+                                     iat_dll_name, iat_import_name, (void *)(uintptr_t)ctx->pc,
+                                     (void *)(uintptr_t)ctx->regs.x64.rsp, hb_result_string(read_ret),
+                                     (void *)(uintptr_t)ret_pc );
+                    }
+                    ret = import_thunk ? macrunner_hb_call_import_thunk( ctx, import_thunk )
+                                       : macrunner_hb_call_direct_native_target( ctx, ctx->pc );
+                    if (ret != HB_OK)
+                    {
+                        ERR( "MacRunner HyperBridge dynamic IAT import target failed %s pc=%p "
+                             "last_block=%p %s!%s result=%s registered=%d\n",
+                             label ? label : "entry", (void *)(uintptr_t)ctx->pc,
+                             (void *)(uintptr_t)last_block_pc, iat_dll_name, iat_import_name,
+                             hb_result_string(ret), import_thunk != NULL );
+                        status = STATUS_INVALID_IMAGE_FORMAT;
+                        status_reason = "dynamic-iat-import-target";
+                        break;
+                    }
+                    continue;
+                }
             }
 
             if (macrunner_hb_label_allows_direct_native( label ) &&
@@ -27651,6 +31072,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
             break;
         }
 	in_guest_image:
+        if (macrunner_hb_try_bridge_x64_eh_capture_context( ctx, label ))
+            continue;
         if (trace_thread_run)
         {
             fprintf( stderr, "macrunner-ui-input: stage=hb_run_x64_in_guest_image "
@@ -28069,6 +31492,16 @@ skip_version_semantic:
         last_block_pc = block_pc;
         macrunner_hb_unity_phase_probe_before_block( label, ctx, block_pc, blocks, steps );
         macrunner_hb_backbuffer_gate_probe_before_block( label, ctx, block_pc, blocks, steps );
+        macrunner_hb_post_rtv_probe_before_block( label, ctx, block_pc, blocks, steps );
+    macrunner_hb_present_gate_probe_before_block( label, ctx, block_pc, blocks, steps );
+    macrunner_hb_present_scheduling_probe_before_block( label, ctx, block_pc, blocks, steps );
+    macrunner_hb_present_follow_probe_before_block( label, ctx, block_pc, blocks, steps );
+    macrunner_hb_post_ready_consumer_follow_before_block( label, ctx, block_pc, blocks, steps );
+    macrunner_hb_present_ready_watch_before_block( label, ctx, block_pc, blocks, steps );
+        macrunner_hb_isfocused_field_probe_before_block( label, ctx, block_pc, blocks, steps );
+        macrunner_hb_store_watch_0x138_before_block( label, ctx, block_pc, blocks, steps );
+        macrunner_hb_descriptor_dispatch_probe_before_block( label, ctx, block_pc, blocks, steps );
+        macrunner_hb_present_gate_parent_probe_before_block( label, ctx, block_pc, blocks, steps );
         macrunner_hb_setevent_callsite_probe_before_block( label, ctx, block_pc, blocks, steps );
         macrunner_hb_post_signal_probe_before_block( label, ctx, block_pc, blocks, steps );
         macrunner_hb_eh_context_probe_before_block( label, ctx, block_pc, blocks, steps );
@@ -28659,6 +32092,8 @@ skip_version_semantic:
             uint64_t lift_probe_start_us = lift_probe_log ? macrunner_hb_now_us() : 0;
             uint64_t lift_probe_lift_us = 0;
             BOOL lift_probe_cache_hit;
+            enum macrunner_hb_post_mono_module post_mono_module =
+                MACRUNNER_HB_POST_MONO_MODULE_OTHER;
 
             if (lift_probe_log)
             {
@@ -28673,8 +32108,14 @@ skip_version_semantic:
                 fflush( stderr );
             }
 
+            if (post_mono_discriminator.enabled)
+                post_mono_module = macrunner_hb_post_mono_discriminator_observe(
+                    &post_mono_discriminator, block_pc, blocks );
             func = macrunner_hb_ir_cache_find( ir_cache, block_pc );
             lift_probe_cache_hit = !!func;
+            if (post_mono_discriminator.enabled)
+                macrunner_hb_post_mono_discriminator_cache_result(
+                    &post_mono_discriminator, post_mono_module, lift_probe_cache_hit, blocks, steps );
             if (func)
             {
                 ret = HB_OK;
@@ -28836,12 +32277,17 @@ skip_version_semantic:
                 (rw_rva >= 0x587794 && rw_rva <= 0x5878b0))
                 macrunner_hb_trace_render_wait_pin( "before", ctx, image_start, block_pc );
         }
-        if (trace_render_time_align && image_start && block_pc >= image_start)
+        if ((trace_render_time_align || trace_post_ready_consumer_follow) &&
+            image_start && block_pc >= image_start)
         {
             uint64_t ta_rva = block_pc - image_start;
-            if ((ta_rva >= 0x586ca0 && ta_rva <= 0x587009) ||
-                (ta_rva >= 0x587241 && ta_rva <= 0x5874d8) ||
-                (ta_rva >= 0x587794 && ta_rva <= 0x5878b0))
+            BOOL ta_site = (ta_rva >= 0x586ca0 && ta_rva <= 0x587009) ||
+                           (ta_rva >= 0x587241 && ta_rva <= 0x5874d8) ||
+                           (ta_rva >= 0x587794 && ta_rva <= 0x5878b0);
+            BOOL follow_site = ta_rva == 0x586d94 || ta_rva == 0x586daf ||
+                               ta_rva == 0x587249;
+            if ((trace_render_time_align && ta_site) ||
+                (trace_post_ready_consumer_follow && follow_site))
                 macrunner_hb_trace_render_time_align( "before", ctx, image_start, block_pc );
         }
         if (trace_unity_desc_watch && !trace_unity_event_object)
@@ -28917,12 +32363,17 @@ skip_version_semantic:
                 (rw_rva >= 0x587794 && rw_rva <= 0x5878b0))
                 macrunner_hb_trace_render_wait_pin( "after", ctx, image_start, block_pc );
         }
-        if (trace_render_time_align && image_start && block_pc >= image_start)
+        if ((trace_render_time_align || trace_post_ready_consumer_follow) &&
+            image_start && block_pc >= image_start)
         {
             uint64_t ta_rva = block_pc - image_start;
-            if ((ta_rva >= 0x586ca0 && ta_rva <= 0x587009) ||
-                (ta_rva >= 0x587241 && ta_rva <= 0x5874d8) ||
-                (ta_rva >= 0x587794 && ta_rva <= 0x5878b0))
+            BOOL ta_site = (ta_rva >= 0x586ca0 && ta_rva <= 0x587009) ||
+                           (ta_rva >= 0x587241 && ta_rva <= 0x5874d8) ||
+                           (ta_rva >= 0x587794 && ta_rva <= 0x5878b0);
+            BOOL follow_site = ta_rva == 0x586d94 || ta_rva == 0x586daf ||
+                               ta_rva == 0x587249;
+            if ((trace_render_time_align && ta_site) ||
+                (trace_post_ready_consumer_follow && follow_site))
                 macrunner_hb_trace_render_time_align( "after", ctx, image_start, block_pc );
         }
         if (trace_unity_desc_watch && !trace_unity_event_object)
@@ -29380,6 +32831,25 @@ skip_version_semantic:
     }
 
 done:
+    macrunner_hb_post_mono_discriminator_finish( &post_mono_discriminator,
+                                                  status_reason, blocks, steps );
+    macrunner_hb_post_ready_consumer_follow_on_exit( label, status_reason, status, ctx,
+                                                      last_block_pc, blocks, steps );
+    if (label && !strcmp( label, "thread" ) &&
+        macrunner_hb_present_follow_probe_enabled() &&
+        macrunner_hb_current_thread_is_swapchain_creator())
+    {
+        fprintf( stderr,
+                 "macrunner-hb-present-follow-exit: status=%08x reason=%s entry=%p "
+                 "last_block=%p pc=%p ret=%p blocks=%s steps=%s rsp=%p\n",
+                 (unsigned int)status, status_reason, entry,
+                 (void *)(uintptr_t)last_block_pc,
+                 ctx ? (void *)(uintptr_t)ctx->pc : NULL,
+                 ctx ? (void *)(uintptr_t)ctx->regs.x64.rax : NULL,
+                 wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps),
+                 ctx ? (void *)(uintptr_t)ctx->regs.x64.rsp : NULL );
+        fflush( stderr );
+    }
     if (status)
     {
         uint64_t stack0 = 0, stack8 = 0, stack10 = 0, stack18 = 0;

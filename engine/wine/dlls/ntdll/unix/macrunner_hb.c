@@ -15943,6 +15943,7 @@ extern uint64_t macrunner_hb_arm64_pe_call12( void *target, const uint64_t *args
                                               uint64_t fp_ret[2],
                                               const uint64_t fp_args[MACRUNNER_HB_IMPORT_FP_ARG_MAX][2] );
 extern uint64_t macrunner_hb_arm64_pe_call20_direct( void *target, const uint64_t *args,
+                                                     TEB *teb,
                                                      uint64_t fp_ret[2],
                                                      const uint64_t fp_args[MACRUNNER_HB_IMPORT_FP_ARG_MAX][2] );
 extern NTSTATUS call_user_mode_callback( ULONG64 user_sp, void **ret_ptr, ULONG *ret_len,
@@ -16071,6 +16072,7 @@ __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call12,
                    "ldp q4, q5, [x26, #64]\n\t"
                    "ldp q6, q7, [x26, #96]\n\t"
                    "98:\n\t"
+	                   "mov x18, x19\n\t"        /* host calls/signals may clear the Windows TEB */
 	                   "blr x20\n\t"
                    "99:\n\t"
                    "mov x23, x0\n\t"
@@ -16126,8 +16128,9 @@ __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call20_direct,
                    __ASM_CFI(".cfi_rel_offset 24,0x38\n\t")
                    "mov x20, x0\n\t"         /* target */
                    "mov x21, x1\n\t"         /* args[MACRUNNER_HB_IMPORT_ARG_MAX] */
-                   "mov x22, x2\n\t"         /* optional q0 return store */
-                   "mov x23, x3\n\t"         /* optional guest XMM0-XMM7 source */
+                   "mov x19, x2\n\t"         /* Windows ARM64 TEB */
+                   "mov x22, x3\n\t"         /* optional q0 return store */
+                   "mov x23, x4\n\t"         /* optional guest XMM0-XMM7 source */
                    "sub sp, sp, #0x60\n\t"   /* AArch64 stack args 8..19 */
                    "ldp x12, x13, [x21, #64]\n\t"
                    "stp x12, x13, [sp, #0]\n\t"
@@ -16151,6 +16154,7 @@ __ASM_GLOBAL_FUNC( macrunner_hb_arm64_pe_call20_direct,
                    "ldp q4, q5, [x23, #64]\n\t"
                    "ldp q6, q7, [x23, #96]\n"
                    "98:\n\t"
+                   "mov x18, x19\n\t"        /* direct fallback must not trust ambient x18 */
                    "blr x20\n\t"
                    "mov x24, x0\n\t"
                    "cbz x22, 97f\n\t"
@@ -16217,7 +16221,7 @@ static uint64_t macrunner_hb_call_arm64_pe_import12( const struct macrunner_hb_i
         macrunner_hb_bridge_stack_size < 0x2000)
     {
         macrunner_hb_prepare_arm64_pe_call();
-        return macrunner_hb_arm64_pe_call20_direct( target, args, fp_ret, fp_args );
+        return macrunner_hb_arm64_pe_call20_direct( target, args, teb, fp_ret, fp_args );
     }
 
     restore_base = teb->Tib.StackBase;

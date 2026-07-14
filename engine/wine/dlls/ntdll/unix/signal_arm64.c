@@ -773,13 +773,15 @@ TEB *__wine_get_current_teb_for_x18(void)
 
 extern int macrunner_hb_pc_is_x64_guest_code( void *pc );
 extern int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc );
+extern int macrunner_hb_pc_is_x64_callback_target_no_lock( void *pc );
 extern int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc );
 extern void *macrunner_hb_pe_module_from_pc_no_lock( void *pc );
 extern int macrunner_hb_pc_is_pe_code_module_no_lock( void *pc );
 extern ULONG64 macrunner_hb_normalize_x64_callback_pc( ULONG64 pc );
 extern ULONG64 macrunner_hb_normalize_x64_tls_callback_pc( ULONG64 pc, ULONG64 image_base,
                                                            ULONG64 reason );
-extern ULONG64 macrunner_hb_dispatch_x64_callback( ULONG64 target, const ULONG64 args[8] );
+extern BOOL macrunner_hb_try_dispatch_x64_callback( ULONG64 target, const ULONG64 args[8],
+                                                    ULONG64 *result );
 extern void macrunner_hb_note_x64_guest_fault_handlers_ready(void);
 /* MacRunner 2026-06-24 (HB-throughput direct-mem fast path): recover from a SIGSEGV/SIGBUS that
  * lands inside a gated direct guest-memory copy in special_read/write. siglongjmps back (does not
@@ -992,8 +994,277 @@ void macrunner_hb_trace_x64_callback_preserve( ULONG64 target, ULONG64 saved_x26
     ERR( "macrunner-hb-callback-preserve: target=%p saved_x26=%p current_x26=%p "
          "saved_x27=%p current_x27=%p\n",
          (void *)(ULONG_PTR)target, (void *)(ULONG_PTR)saved_x26,
-         (void *)(ULONG_PTR)current_x26, (void *)(ULONG_PTR)saved_x27,
-         (void *)(ULONG_PTR)current_x27 );
+                 (void *)(ULONG_PTR)current_x26, (void *)(ULONG_PTR)saved_x27,
+                 (void *)(ULONG_PTR)current_x27 );
+}
+
+/* Evidence-only correlation for the post-Mono callback/signal corridor.  Keep
+ * the signal-side path allocation-free, default-off, time-stratified, and under
+ * one global record budget.  The TLS depths distinguish sequential signals from
+ * actual signal/router re-entry without changing callback disposition. */
+#define MACRUNNER_HB_CALLBACK_LOOP_TRACE_BUDGET 5000
+
+enum macrunner_hb_callback_loop_event
+{
+    MACRUNNER_HB_CALLBACK_LOOP_SIGNAL_ENTER,
+    MACRUNNER_HB_CALLBACK_LOOP_SIGNAL_EXIT,
+    MACRUNNER_HB_CALLBACK_LOOP_ROUTE_ENTER,
+    MACRUNNER_HB_CALLBACK_LOOP_ROUTE_EXIT,
+    MACRUNNER_HB_CALLBACK_LOOP_TRAMPOLINE_ENTER,
+    MACRUNNER_HB_CALLBACK_LOOP_TRAMPOLINE_EXIT,
+    MACRUNNER_HB_CALLBACK_LOOP_DISPATCH_ENTER,
+    MACRUNNER_HB_CALLBACK_LOOP_DISPATCH_RETURN,
+    MACRUNNER_HB_CALLBACK_LOOP_DISPATCH_EXIT,
+    MACRUNNER_HB_CALLBACK_LOOP_EVENT_COUNT
+};
+
+struct macrunner_hb_callback_loop_tls
+{
+    unsigned int signal_depth;
+    unsigned int route_depth;
+    unsigned int trampoline_depth;
+    unsigned int dispatch_depth;
+    uint64_t counts[MACRUNNER_HB_CALLBACK_LOOP_EVENT_COUNT];
+    uint64_t last_emit_ns[MACRUNNER_HB_CALLBACK_LOOP_EVENT_COUNT];
+};
+
+static __thread struct macrunner_hb_callback_loop_tls macrunner_hb_callback_loop_tls;
+static volatile unsigned int macrunner_hb_callback_loop_trace_records;
+static volatile uint64_t macrunner_hb_callback_loop_trace_sequence;
+
+static BOOL macrunner_hb_callback_loop_trace_enabled(void)
+{
+    static int enabled = -1;
+    const char *value;
+
+    if (enabled >= 0) return enabled;
+    value = getenv( "MACRUNNER_HB_CALLBACK_LOOP_TRACE" );
+    enabled = value && value[0] && value[0] != '0';
+    return enabled;
+}
+
+static uint64_t macrunner_hb_callback_loop_now_ns(void)
+{
+    struct timespec ts;
+
+    if (clock_gettime( CLOCK_MONOTONIC, &ts )) return 0;
+    return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+}
+
+static uint64_t macrunner_hb_callback_loop_native_tid(void)
+{
+    uint64_t tid = 0;
+
+#ifdef __APPLE__
+    pthread_threadid_np( NULL, &tid );
+#else
+    tid = (uint64_t)(uintptr_t)pthread_self();
+#endif
+    return tid;
+}
+
+static BOOL macrunner_hb_callback_loop_should_emit( enum macrunner_hb_callback_loop_event event,
+                                                    uint64_t count )
+{
+    uint64_t now = macrunner_hb_callback_loop_now_ns();
+
+    if (count > 16 && now && now - macrunner_hb_callback_loop_tls.last_emit_ns[event] < 2000000000ull)
+        return FALSE;
+    macrunner_hb_callback_loop_tls.last_emit_ns[event] = now;
+    return __sync_add_and_fetch( &macrunner_hb_callback_loop_trace_records, 1 ) <=
+           MACRUNNER_HB_CALLBACK_LOOP_TRACE_BUDGET;
+}
+
+static void macrunner_hb_callback_loop_emit( enum macrunner_hb_callback_loop_event event,
+                                             const char *stage, const char *source,
+                                             int signal, unsigned int depth,
+                                             ULONG_PTR pc, ULONG_PTR fault, ULONG_PTR target,
+                                             ULONG_PTR lr, ULONG_PTR sp, int handled,
+                                             NTSTATUS status, uint64_t blocks, uint64_t steps,
+                                             uint64_t result, BOOL teb_valid )
+{
+    struct macrunner_hb_signal_module_info module;
+    uint64_t count, sequence, native_tid;
+    unsigned long guest_tid = 0;
+    ULONG_PTR lookup_pc = target ? target : pc;
+
+    if (!macrunner_hb_callback_loop_trace_enabled()) return;
+    count = ++macrunner_hb_callback_loop_tls.counts[event];
+    if (!macrunner_hb_callback_loop_should_emit( event, count )) return;
+    sequence = __sync_add_and_fetch( &macrunner_hb_callback_loop_trace_sequence, 1 );
+    native_tid = macrunner_hb_callback_loop_native_tid();
+    memset( &module, 0, sizeof(module) );
+    strcpy( module.name, "unknown" );
+    if (teb_valid)
+    {
+        TEB *teb = NtCurrentTeb();
+
+        if (teb) guest_tid = (unsigned long)(ULONG_PTR)teb->ClientId.UniqueThread;
+        macrunner_hb_signal_find_loader_module( lookup_pc, &module );
+    }
+    macrunner_signal_writef(
+        "macrunner-hb-callback-loop: seq=%llu stage=%s source=%s event_count=%llu "
+        "signal=%d depth=%u reentry=%u guest_tid=%04lx native_tid=%llu pc=%p fault=%p "
+        "target=%p lr=%p sp=%p handled=%d status=%08lx blocks=%llu steps=%llu "
+        "result=%p module=%s base=%p rva=%p totals=%llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu\n",
+        (unsigned long long)sequence, stage ? stage : "unknown", source ? source : "unknown",
+        (unsigned long long)count, signal, depth, depth > 1, guest_tid,
+        (unsigned long long)native_tid, (void *)pc, (void *)fault, (void *)target,
+        (void *)lr, (void *)sp, handled, (unsigned long)status,
+        (unsigned long long)blocks, (unsigned long long)steps, (void *)(ULONG_PTR)result,
+        module.name, module.base, (void *)module.rva,
+        (unsigned long long)macrunner_hb_callback_loop_tls.counts[MACRUNNER_HB_CALLBACK_LOOP_SIGNAL_ENTER],
+        (unsigned long long)macrunner_hb_callback_loop_tls.counts[MACRUNNER_HB_CALLBACK_LOOP_SIGNAL_EXIT],
+        (unsigned long long)macrunner_hb_callback_loop_tls.counts[MACRUNNER_HB_CALLBACK_LOOP_ROUTE_ENTER],
+        (unsigned long long)macrunner_hb_callback_loop_tls.counts[MACRUNNER_HB_CALLBACK_LOOP_ROUTE_EXIT],
+        (unsigned long long)macrunner_hb_callback_loop_tls.counts[MACRUNNER_HB_CALLBACK_LOOP_TRAMPOLINE_ENTER],
+        (unsigned long long)macrunner_hb_callback_loop_tls.counts[MACRUNNER_HB_CALLBACK_LOOP_TRAMPOLINE_EXIT],
+        (unsigned long long)macrunner_hb_callback_loop_tls.counts[MACRUNNER_HB_CALLBACK_LOOP_DISPATCH_ENTER],
+        (unsigned long long)macrunner_hb_callback_loop_tls.counts[MACRUNNER_HB_CALLBACK_LOOP_DISPATCH_RETURN],
+        (unsigned long long)macrunner_hb_callback_loop_tls.counts[MACRUNNER_HB_CALLBACK_LOOP_DISPATCH_EXIT] );
+}
+
+struct macrunner_hb_callback_loop_signal_scope
+{
+    BOOL active;
+    const char *source;
+    int signal;
+    ucontext_t *context;
+    unsigned int depth;
+};
+
+static struct macrunner_hb_callback_loop_signal_scope macrunner_hb_callback_loop_signal_enter(
+    const char *source, int signal, void *sigcontext )
+{
+    struct macrunner_hb_callback_loop_signal_scope scope = {0};
+
+    if (!macrunner_hb_callback_loop_trace_enabled()) return scope;
+    scope.active = TRUE;
+    scope.source = source;
+    scope.signal = signal;
+    scope.context = sigcontext;
+    scope.depth = ++macrunner_hb_callback_loop_tls.signal_depth;
+    macrunner_hb_callback_loop_emit( MACRUNNER_HB_CALLBACK_LOOP_SIGNAL_ENTER, "signal-enter",
+                                     source, signal, scope.depth, PC_sig(scope.context), 0, 0,
+                                     LR_sig(scope.context), SP_sig(scope.context), -1, 0, 0, 0, 0, FALSE );
+    return scope;
+}
+
+static void macrunner_hb_callback_loop_signal_leave(
+    struct macrunner_hb_callback_loop_signal_scope *scope )
+{
+    if (!scope || !scope->active) return;
+    macrunner_hb_callback_loop_emit( MACRUNNER_HB_CALLBACK_LOOP_SIGNAL_EXIT, "signal-exit",
+                                     scope->source, scope->signal, scope->depth,
+                                     PC_sig(scope->context), 0, 0, LR_sig(scope->context),
+                                     SP_sig(scope->context), -1, 0, 0, 0, 0, FALSE );
+    if (macrunner_hb_callback_loop_tls.signal_depth)
+        macrunner_hb_callback_loop_tls.signal_depth--;
+}
+
+struct macrunner_hb_callback_loop_route_scope
+{
+    BOOL active;
+    BOOL handled;
+    const char *source;
+    const char *disposition;
+    ucontext_t *context;
+    ULONG_PTR fault;
+    ULONG_PTR target;
+    unsigned int depth;
+};
+
+static struct macrunner_hb_callback_loop_route_scope macrunner_hb_callback_loop_route_enter(
+    ucontext_t *context, ULONG_PTR fault, const char *source )
+{
+    static uint64_t x18_provenance_records;
+    struct macrunner_hb_callback_loop_route_scope scope = {0};
+    uint64_t provenance;
+
+    if (!macrunner_hb_callback_loop_trace_enabled()) return scope;
+    scope.active = TRUE;
+    scope.source = source;
+    scope.disposition = "unhandled";
+    scope.context = context;
+    scope.fault = fault;
+    scope.depth = ++macrunner_hb_callback_loop_tls.route_depth;
+    if (fault == 0x48 &&
+        (provenance = __sync_add_and_fetch( &x18_provenance_records, 1 )) <= 256)
+        macrunner_signal_writef(
+            "macrunner-hb-x18-provenance: seq=%llu native_tid=%llu guest_tid=UNKNOWN "
+            "source=%s pc=%p fault=%p lr=%p sp=%p fp=%p x16=%p x17=%p x18=%p x19=%p x20=%p\n",
+            (unsigned long long)provenance,
+            (unsigned long long)macrunner_hb_callback_loop_native_tid(), source,
+            (void *)PC_sig(context), (void *)fault, (void *)LR_sig(context),
+            (void *)SP_sig(context), (void *)FP_sig(context),
+            (void *)REGn_sig(16, context), (void *)REGn_sig(17, context),
+            (void *)REGn_sig(18, context), (void *)REGn_sig(19, context),
+            (void *)REGn_sig(20, context) );
+    macrunner_hb_callback_loop_emit( MACRUNNER_HB_CALLBACK_LOOP_ROUTE_ENTER, "route-enter",
+                                     source, 0, scope.depth, PC_sig(context), fault, 0,
+                                     LR_sig(context), SP_sig(context), -1, 0, 0, 0, 0, FALSE );
+    return scope;
+}
+
+static void macrunner_hb_callback_loop_route_leave(
+    struct macrunner_hb_callback_loop_route_scope *scope )
+{
+    if (!scope || !scope->active) return;
+    macrunner_hb_callback_loop_emit( MACRUNNER_HB_CALLBACK_LOOP_ROUTE_EXIT, "route-exit",
+                                     scope->disposition, 0, scope->depth, PC_sig(scope->context),
+                                     scope->fault, scope->target, LR_sig(scope->context),
+                                     SP_sig(scope->context), scope->handled, 0, 0, 0, 0, FALSE );
+    if (macrunner_hb_callback_loop_tls.route_depth)
+        macrunner_hb_callback_loop_tls.route_depth--;
+}
+
+void macrunner_hb_callback_loop_trace_trampoline_entry( ULONG64 target, ULONG64 lr, ULONG64 sp )
+{
+    unsigned int depth;
+
+    if (!macrunner_hb_callback_loop_trace_enabled()) return;
+    depth = ++macrunner_hb_callback_loop_tls.trampoline_depth;
+    macrunner_hb_callback_loop_emit( MACRUNNER_HB_CALLBACK_LOOP_TRAMPOLINE_ENTER,
+                                     "trampoline-enter", "asm", 0, depth, 0, 0, target,
+                                     lr, sp, -1, 0, 0, 0, 0, TRUE );
+}
+
+void macrunner_hb_callback_loop_trace_trampoline_exit( ULONG64 target, BOOL handled,
+                                                        ULONG64 result, ULONG64 lr, ULONG64 sp )
+{
+    unsigned int depth = macrunner_hb_callback_loop_tls.trampoline_depth;
+
+    if (!macrunner_hb_callback_loop_trace_enabled()) return;
+    macrunner_hb_callback_loop_emit( MACRUNNER_HB_CALLBACK_LOOP_TRAMPOLINE_EXIT,
+                                     "trampoline-exit", handled ? "ret-lr" : "reject-br-target",
+                                     0, depth, 0, 0, target, lr, sp, handled, 0, 0, 0, result, TRUE );
+    if (macrunner_hb_callback_loop_tls.trampoline_depth)
+        macrunner_hb_callback_loop_tls.trampoline_depth--;
+}
+
+void macrunner_hb_callback_loop_trace_dispatch( const char *stage, ULONG64 target,
+                                                 ULONG64 original_target, NTSTATUS status,
+                                                 ULONG64 blocks, ULONG64 steps, ULONG64 result )
+{
+    enum macrunner_hb_callback_loop_event event = MACRUNNER_HB_CALLBACK_LOOP_DISPATCH_RETURN;
+    unsigned int depth;
+
+    if (!macrunner_hb_callback_loop_trace_enabled()) return;
+    if (!strcmp( stage, "enter" ))
+    {
+        event = MACRUNNER_HB_CALLBACK_LOOP_DISPATCH_ENTER;
+        depth = ++macrunner_hb_callback_loop_tls.dispatch_depth;
+    }
+    else
+    {
+        depth = macrunner_hb_callback_loop_tls.dispatch_depth;
+        if (strcmp( stage, "run-return" )) event = MACRUNNER_HB_CALLBACK_LOOP_DISPATCH_EXIT;
+    }
+    macrunner_hb_callback_loop_emit( event, stage, "dispatch", 0, depth, original_target, 0,
+                                     target, 0, 0, !status, status, blocks, steps, result, TRUE );
+    if (event == MACRUNNER_HB_CALLBACK_LOOP_DISPATCH_EXIT &&
+        macrunner_hb_callback_loop_tls.dispatch_depth)
+        macrunner_hb_callback_loop_tls.dispatch_depth--;
 }
 
 /* This trampoline is entered as an ARM64 PE callee when Wine native code calls
@@ -1035,9 +1306,15 @@ __ASM_GLOBAL_FUNC( macrunner_hb_x64_callback_trampoline,
                    "str x0, [x29, #0x50]\n\t"
                    "mov x18, x0\n\t"
                    "ldr x0, [x29, #0x58]\n\t"
+                   "ldr x1, [x29, #0x08]\n\t"
+                   "mov x2, x29\n\t"
+                   "bl " __ASM_NAME("macrunner_hb_callback_loop_trace_trampoline_entry") "\n\t"
+                   "ldr x18, [x29, #0x50]\n\t"
+                   "ldr x0, [x29, #0x58]\n\t"
                    "add x1, x29, #0x10\n\t"
-                   "bl " __ASM_NAME("macrunner_hb_dispatch_x64_callback") "\n\t"
-                   "str x0, [x29, #0xf0]\n\t"
+                   "add x2, x29, #0xf0\n\t"
+                   "bl " __ASM_NAME("macrunner_hb_try_dispatch_x64_callback") "\n\t"
+                   "str w0, [x29, #0xf8]\n\t"
                    "ldr x18, [x29, #0x50]\n\t"
                    "ldr x0, [x29, #0x58]\n\t"
                    "ldr x1, [x29, #0x98]\n\t"
@@ -1046,7 +1323,13 @@ __ASM_GLOBAL_FUNC( macrunner_hb_x64_callback_trampoline,
                    "mov x4, x27\n\t"
                    "bl " __ASM_NAME("macrunner_hb_trace_x64_callback_preserve") "\n\t"
                    "ldr x18, [x29, #0x50]\n\t"
-                   "ldr x0, [x29, #0xf0]\n\t"
+                   "ldr x0, [x29, #0x58]\n\t"
+                   "ldr w1, [x29, #0xf8]\n\t"
+                   "ldr x2, [x29, #0xf0]\n\t"
+                   "ldr x3, [x29, #0x08]\n\t"
+                   "mov x4, x29\n\t"
+                   "bl " __ASM_NAME("macrunner_hb_callback_loop_trace_trampoline_exit") "\n\t"
+                   "ldr x18, [x29, #0x50]\n\t"
                    "ldp d14, d15, [x29, #0xe0]\n\t"
                    "ldp d12, d13, [x29, #0xd0]\n\t"
                    "ldp d10, d11, [x29, #0xc0]\n\t"
@@ -1066,6 +1349,20 @@ __ASM_GLOBAL_FUNC( macrunner_hb_x64_callback_trampoline,
                    "ldp x19, x20, [x29, #0x60]\n\t"
                    __ASM_CFI(".cfi_same_value 19\n\t")
                    __ASM_CFI(".cfi_same_value 20\n\t")
+                   "ldr w16, [x29, #0xf8]\n\t"
+                   "cbnz w16, 1f\n\t"
+                   /* A rejected callback was not consumed.  Restore the
+                    * original call arguments and branch back to the faulting
+                    * target; the normal signal path will now classify it. */
+                   "ldp x0, x1, [x29, #0x10]\n\t"
+                   "ldp x2, x3, [x29, #0x20]\n\t"
+                   "ldp x4, x5, [x29, #0x30]\n\t"
+                   "ldp x6, x7, [x29, #0x40]\n\t"
+                   "ldr x17, [x29, #0x58]\n\t"
+                   "ldp x29, x30, [sp], #0x100\n\t"
+                   "br x17\n\t"
+                   "1:\n\t"
+                   "ldr x0, [x29, #0xf0]\n\t"
                    "ldp x29, x30, [sp], #0x100\n\t"
                    "ret" )
 
@@ -1077,6 +1374,9 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
     ULONG_PTR pc, raw_pc, x4_target, x16_target;
     BOOL raw_is_guest, fault_is_guest, x4_is_guest, x16_is_guest, sigill_source;
     static int rejected_trace_count;
+    struct macrunner_hb_callback_loop_route_scope callback_loop_scope
+        __attribute__((cleanup(macrunner_hb_callback_loop_route_leave))) =
+        macrunner_hb_callback_loop_route_enter( context, fault_addr, source );
 
     /* A native ARM64 indirect call can land on an imported ARM64X x64 entry thunk
      * (optionally still carrying the CodeMap type tag in the low 2 bits).  Redirect
@@ -1084,9 +1384,18 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
      * callback: the tag puts the PC mid-instruction (the recorded spin/OOM) and even
      * the aligned thunk cannot be JIT-executed.  This covers the SEGV/BUS fault
      * sources too (ill_handler already tries the redirect before reaching here). */
-    if (macrunner_hb_redirect_arm64x_hexpthk_sigill( context )) return TRUE;
+    if (macrunner_hb_redirect_arm64x_hexpthk_sigill( context ))
+    {
+        callback_loop_scope.handled = TRUE;
+        callback_loop_scope.disposition = "arm64x-redirect";
+        return TRUE;
+    }
 
-    if (!macrunner_hb_x64_fault_routing_enabled()) return FALSE;
+    if (!macrunner_hb_x64_fault_routing_enabled())
+    {
+        callback_loop_scope.disposition = "routing-disabled";
+        return FALSE;
+    }
     raw_pc = PC_sig(context);
     x4_target = REGn_sig(4, context);
     x16_target = REGn_sig(16, context);
@@ -1165,6 +1474,7 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
                  (void *)(ULONG_PTR)REGn_sig(26, context),
                  (void *)(ULONG_PTR)REGn_sig(27, context),
                  (void *)(ULONG_PTR)REGn_sig(28, context) );
+        callback_loop_scope.disposition = "no-x64-target";
         return FALSE;
     }
 
@@ -1191,9 +1501,27 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
              (void *)(ULONG_PTR)REGn_sig(27, context),
              (void *)(ULONG_PTR)REGn_sig(28, context) );
     }
+    /* Do not consume a non-x64 callback fault.  In particular, an I386 target
+     * must not reach the trampoline and turn its zero-valued rejection into a
+     * successful callback return to LR, which skips the active JIT epilogue. */
+    if (!macrunner_hb_pc_is_x64_callback_target_no_lock( (void *)pc ))
+    {
+        if (macrunner_hb_trace_callback_route_enabled() && rejected_trace_count++ < 96)
+            ERR( "macrunner-hb-callback-route-reject: stage=preflight source=%s "
+                 "target=%p raw_pc=%p fault=%p lr=%p sp=%p\n",
+                 source, (void *)pc, (void *)raw_pc, (void *)fault_addr,
+                 (void *)(ULONG_PTR)LR_sig(context), (void *)(ULONG_PTR)SP_sig(context) );
+        callback_loop_scope.target = pc;
+        callback_loop_scope.disposition = "preflight-reject";
+        return FALSE;
+    }
+
     REGn_sig(16, context) = pc;
     REGn_sig(18, context) = (ULONG_PTR)NtCurrentTeb();
     PC_sig(context) = (ULONG_PTR)macrunner_hb_x64_callback_trampoline;
+    callback_loop_scope.target = pc;
+    callback_loop_scope.handled = TRUE;
+    callback_loop_scope.disposition = "routed-trampoline";
     return TRUE;
 }
 
@@ -2589,6 +2917,9 @@ static BOOL macrunner_hb_trace_low_stack_fault_enabled(void)
  */
 static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
+    struct macrunner_hb_callback_loop_signal_scope callback_loop_scope
+        __attribute__((cleanup(macrunner_hb_callback_loop_signal_leave))) =
+        macrunner_hb_callback_loop_signal_enter( "segv", signal, sigcontext );
     EXCEPTION_RECORD rec = { 0 };
     ucontext_t *context = sigcontext;
     DWORD64 esr = get_fault_esr( context );
@@ -2870,6 +3201,9 @@ skip_apple_x18_heal:
  */
 static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
+    struct macrunner_hb_callback_loop_signal_scope callback_loop_scope
+        __attribute__((cleanup(macrunner_hb_callback_loop_signal_leave))) =
+        macrunner_hb_callback_loop_signal_enter( "ill", signal, sigcontext );
     EXCEPTION_RECORD rec = { EXCEPTION_ILLEGAL_INSTRUCTION };
     ucontext_t *context = sigcontext;
     static int macrunner_hb_ill_trace_count;
@@ -2919,6 +3253,9 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
  */
 static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
+    struct macrunner_hb_callback_loop_signal_scope callback_loop_scope
+        __attribute__((cleanup(macrunner_hb_callback_loop_signal_leave))) =
+        macrunner_hb_callback_loop_signal_enter( "bus", signal, sigcontext );
     EXCEPTION_RECORD rec = { EXCEPTION_DATATYPE_MISALIGNMENT };
     ucontext_t *context = sigcontext;
     BOOL alignment_fault = FALSE;
@@ -3442,6 +3779,9 @@ static void macrunner_hb_chain_signal( int sig, siginfo_t *siginfo, void *sigcon
 
 static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, void *sigcontext )
 {
+    struct macrunner_hb_callback_loop_signal_scope callback_loop_scope
+        __attribute__((cleanup(macrunner_hb_callback_loop_signal_leave))) =
+        macrunner_hb_callback_loop_signal_enter( "primary", sig, sigcontext );
     ULONG_PTR fault_addr = (sig == SIGILL) ? 0 : (ULONG_PTR)siginfo->si_addr;
     ucontext_t *context = sigcontext;
 
@@ -4045,9 +4385,10 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "1:\tldp x16, x17, [sp, #0x100]\n\t"
                    "msr NZCV, x17\n\t"
                    "ldp x30, x17, [sp, #0xf0]\n\t"
-#if defined(__APPLE__)
-                   WINE_RESTORE_X18_FROM_TEB
-#endif
+                   /* frame->x18 was populated from x17 (the entry TEB), not
+                    * from the Apple-volatile incoming x18.  Do not call a
+                    * host helper here: that would overwrite the authoritative
+                    * saved TEB immediately before returning to ARM64 PE code. */
                    /* switch to user stack */
                    "mov sp, x17\n\t"
                    "ret x16\n"

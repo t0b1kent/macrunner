@@ -3254,6 +3254,332 @@ static void macrunner_hb_post_run_x64_native_location( const void *pc,
         *rva = (uint64_t)(uintptr_t)pc - (uint64_t)(uintptr_t)info.dli_fbase;
 }
 
+/* Host-time sampler for the HK main thread.  Unlike the producer observer this
+ * owns a dedicated pthread and therefore keeps sampling while the target is in
+ * native code, a host wait, or a single long-running JIT invocation. */
+struct macrunner_hb_host_native_wait_state
+{
+    uint64_t sequence;
+    int active;
+    NTSTATUS status;
+    HANDLE handle0;
+    HANDLE handle1;
+    ULONG count;
+    ULONG arg0;
+    BOOLEAN alertable;
+    int64_t timeout;
+    const void *caller;
+    char op[48];
+    char phase[32];
+};
+
+struct macrunner_hb_host_native_exit_state
+{
+    uint64_t sequence;
+    int seen;
+    int status;
+    BOOL self;
+    BOOL remote;
+    HANDLE target;
+    const void *caller;
+    char stage[48];
+    char site[48];
+};
+
+struct macrunner_hb_host_native_sampler_state
+{
+    pthread_mutex_t lock;
+    pthread_t target_pthread;
+#ifdef __APPLE__
+    mach_port_t target_port;
+#endif
+    uint64_t guest_tid;
+    uint64_t native_tid;
+    uint64_t start_ns;
+    struct macrunner_hb_host_native_wait_state wait;
+    struct macrunner_hb_host_native_exit_state exit;
+};
+
+static struct macrunner_hb_host_native_sampler_state macrunner_hb_host_native_sampler =
+{
+    .lock = PTHREAD_MUTEX_INITIALIZER
+};
+static int macrunner_hb_host_native_sampler_started;
+static LONG macrunner_hb_host_native_sampler_wait_lines;
+
+static int macrunner_hb_host_native_sampler_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+        enabled = macrunner_hb_env_enabled( "MACRUNNER_HB_HOST_NATIVE_SAMPLER" );
+    return enabled;
+}
+
+static const char *macrunner_hb_host_native_run_state_name( int state )
+{
+#ifdef __APPLE__
+    switch (state)
+    {
+    case TH_STATE_RUNNING: return "running";
+    case TH_STATE_STOPPED: return "stopped";
+    case TH_STATE_WAITING: return "waiting";
+    case TH_STATE_UNINTERRUPTIBLE: return "uninterruptible";
+    case TH_STATE_HALTED: return "halted";
+    }
+#endif
+    return "unknown";
+}
+
+static const char *macrunner_hb_host_native_image_name( const char *path )
+{
+    const char *slash;
+
+    if (!path || !path[0]) return "unknown";
+    slash = strrchr( path, '/' );
+    return slash ? slash + 1 : path;
+}
+
+static void *macrunner_hb_host_native_sampler_thread( void *arg )
+{
+#ifdef __APPLE__
+    unsigned int sample_ms = macrunner_hb_main_producer_trace_env_uint(
+        "MACRUNNER_HB_HOST_NATIVE_SAMPLE_MS", 2000, 10000 );
+    unsigned int sample_budget = macrunner_hb_main_producer_trace_env_uint(
+        "MACRUNNER_HB_HOST_NATIVE_SAMPLE_BUDGET", 320, 4096 );
+    unsigned int sequence;
+
+    (void)arg;
+    pthread_setname_np( "hb-host-sampler" );
+    for (sequence = 1; sequence <= sample_budget; sequence++)
+    {
+        struct timespec delay;
+        arm_thread_state64_t thread_state;
+        thread_basic_info_data_t basic;
+        mach_msg_type_number_t state_count = ARM_THREAD_STATE64_COUNT;
+        mach_msg_type_number_t basic_count = THREAD_BASIC_INFO_COUNT;
+        struct macrunner_hb_host_native_wait_state wait;
+        struct macrunner_hb_host_native_exit_state exit;
+        const char *native_image, *native_symbol;
+        const void *native_base;
+        uint64_t native_rva, now, pc = 0, sp = 0, lr = 0;
+        kern_return_t state_kr, info_kr;
+        int run_state = -1;
+
+        delay.tv_sec = sample_ms / 1000;
+        delay.tv_nsec = (long)(sample_ms % 1000) * 1000000L;
+        while (nanosleep( &delay, &delay ) && errno == EINTR) continue;
+
+        memset( &thread_state, 0, sizeof(thread_state) );
+        memset( &basic, 0, sizeof(basic) );
+        state_kr = thread_get_state( macrunner_hb_host_native_sampler.target_port,
+                                     ARM_THREAD_STATE64, (thread_state_t)&thread_state,
+                                     &state_count );
+        info_kr = thread_info( macrunner_hb_host_native_sampler.target_port,
+                               THREAD_BASIC_INFO, (thread_info_t)&basic, &basic_count );
+        if (state_kr == KERN_SUCCESS)
+        {
+            pc = thread_state.__pc;
+            sp = thread_state.__sp;
+            lr = thread_state.__lr;
+        }
+        if (info_kr == KERN_SUCCESS) run_state = basic.run_state;
+
+        pthread_mutex_lock( &macrunner_hb_host_native_sampler.lock );
+        wait = macrunner_hb_host_native_sampler.wait;
+        exit = macrunner_hb_host_native_sampler.exit;
+        pthread_mutex_unlock( &macrunner_hb_host_native_sampler.lock );
+
+        now = macrunner_hb_main_producer_trace_now_ns();
+        macrunner_hb_post_run_x64_native_location( (const void *)(uintptr_t)pc,
+                                                   &native_image, &native_symbol,
+                                                   &native_base, &native_rva );
+        fprintf( stderr,
+                 "macrunner-hb-host-native-sampler: phase=sample seq=%u pid=%d "
+                 "guest_tid=%04llx native_tid=%llu elapsed_ms=%llu alive=%u "
+                 "state_kr=%d info_kr=%d run_state=%s run_state_raw=%d "
+                 "pc=%p sp=%p lr=%p native_image=%s native_path=%s native_base=%p "
+                 "native_rva=0x%llx native_symbol=%s wait_active=%u wait_seq=%llu "
+                 "wait_op=%s wait_phase=%s wait_status=0x%08x wait_handle=%p "
+                 "wait_address=%p wait_expected=0x%lx wait_timeout=%lld "
+                 "exit_seen=%u exit_seq=%llu exit_status=0x%08x exit_site=%s\n",
+                 sequence, getpid(),
+                 (unsigned long long)macrunner_hb_host_native_sampler.guest_tid,
+                 (unsigned long long)macrunner_hb_host_native_sampler.native_tid,
+                 (unsigned long long)((now - macrunner_hb_host_native_sampler.start_ns) / 1000000),
+                 state_kr == KERN_SUCCESS, state_kr, info_kr,
+                 macrunner_hb_host_native_run_state_name( run_state ), run_state,
+                 (void *)(uintptr_t)pc, (void *)(uintptr_t)sp, (void *)(uintptr_t)lr,
+                 macrunner_hb_host_native_image_name( native_image ), native_image,
+                 native_base, (unsigned long long)native_rva, native_symbol,
+                 wait.active, (unsigned long long)wait.sequence, wait.op[0] ? wait.op : "none",
+                 wait.phase[0] ? wait.phase : "none", (unsigned int)wait.status,
+                 wait.handle0, wait.handle1, (unsigned long)wait.arg0,
+                 (long long)wait.timeout, exit.seen,
+                 (unsigned long long)exit.sequence, (unsigned int)exit.status,
+                 exit.site[0] ? exit.site : "none" );
+        fflush( stderr );
+        if (state_kr != KERN_SUCCESS) break;
+    }
+    if (sequence > sample_budget)
+    {
+        fprintf( stderr,
+                 "macrunner-hb-host-native-sampler: phase=sample-budget-complete pid=%d "
+                 "guest_tid=%04llx native_tid=%llu samples=%u sample_ms=%u\n",
+                 getpid(), (unsigned long long)macrunner_hb_host_native_sampler.guest_tid,
+                 (unsigned long long)macrunner_hb_host_native_sampler.native_tid,
+                 sample_budget, sample_ms );
+        fflush( stderr );
+    }
+#else
+    (void)arg;
+#endif
+    return NULL;
+}
+
+static void macrunner_hb_host_native_sampler_try_start(void)
+{
+#ifdef __APPLE__
+    pthread_t sampler;
+    int expected = 0;
+
+    if (!macrunner_hb_host_native_sampler_enabled() ||
+        macrunner_hb_current_tid64() != 0x3c) return;
+    if (!__atomic_compare_exchange_n( &macrunner_hb_host_native_sampler_started, &expected, 1,
+                                      0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE )) return;
+
+    macrunner_hb_host_native_sampler.target_pthread = pthread_self();
+    macrunner_hb_host_native_sampler.target_port = pthread_mach_thread_np( pthread_self() );
+    macrunner_hb_host_native_sampler.guest_tid = macrunner_hb_current_tid64();
+    macrunner_hb_host_native_sampler.native_tid = macrunner_hb_main_producer_trace_native_tid();
+    macrunner_hb_host_native_sampler.start_ns = macrunner_hb_main_producer_trace_now_ns();
+    if (pthread_create( &sampler, NULL, macrunner_hb_host_native_sampler_thread, NULL ))
+    {
+        fprintf( stderr,
+                 "macrunner-hb-host-native-sampler: phase=start-failed pid=%d guest_tid=%04llx "
+                 "native_tid=%llu errno=%d\n", getpid(),
+                 (unsigned long long)macrunner_hb_host_native_sampler.guest_tid,
+                 (unsigned long long)macrunner_hb_host_native_sampler.native_tid, errno );
+        fflush( stderr );
+        __atomic_store_n( &macrunner_hb_host_native_sampler_started, 0, __ATOMIC_RELEASE );
+        return;
+    }
+    pthread_detach( sampler );
+    fprintf( stderr,
+             "macrunner-hb-host-native-sampler: phase=armed pid=%d guest_tid=%04llx "
+             "native_tid=%llu mach_thread=%u sample_ms=%u sample_budget=%u wait_budget=4096\n",
+             getpid(), (unsigned long long)macrunner_hb_host_native_sampler.guest_tid,
+             (unsigned long long)macrunner_hb_host_native_sampler.native_tid,
+             macrunner_hb_host_native_sampler.target_port,
+             macrunner_hb_main_producer_trace_env_uint( "MACRUNNER_HB_HOST_NATIVE_SAMPLE_MS",
+                                                        2000, 10000 ),
+             macrunner_hb_main_producer_trace_env_uint( "MACRUNNER_HB_HOST_NATIVE_SAMPLE_BUDGET",
+                                                        320, 4096 ) );
+    fflush( stderr );
+#endif
+}
+
+static void macrunner_hb_host_native_sampler_wait_observe( const char *op, const char *phase,
+                                                            NTSTATUS status, HANDLE handle0,
+                                                            HANDLE handle1, ULONG count, ULONG arg0,
+                                                            BOOLEAN alertable,
+                                                            const LARGE_INTEGER *timeout,
+                                                            const void *ret0 )
+{
+    struct macrunner_hb_host_native_wait_state wait;
+    const char *native_image, *native_symbol;
+    const void *native_base;
+    uint64_t native_rva;
+    LONG line;
+
+    if (!macrunner_hb_host_native_sampler_enabled() ||
+        !__atomic_load_n( &macrunner_hb_host_native_sampler_started, __ATOMIC_ACQUIRE ) ||
+        macrunner_hb_current_tid64() != 0x3c) return;
+
+    memset( &wait, 0, sizeof(wait) );
+    pthread_mutex_lock( &macrunner_hb_host_native_sampler.lock );
+    wait.sequence = macrunner_hb_host_native_sampler.wait.sequence + 1;
+    wait.active = phase && strncmp( phase, "ret-", 4 );
+    wait.status = status;
+    wait.handle0 = handle0;
+    wait.handle1 = handle1;
+    wait.count = count;
+    wait.arg0 = arg0;
+    wait.alertable = alertable;
+    wait.timeout = timeout ? timeout->QuadPart : INT64_MIN;
+    wait.caller = ret0;
+    snprintf( wait.op, sizeof(wait.op), "%s", op ? op : "unknown" );
+    snprintf( wait.phase, sizeof(wait.phase), "%s", phase ? phase : "unknown" );
+    macrunner_hb_host_native_sampler.wait = wait;
+    pthread_mutex_unlock( &macrunner_hb_host_native_sampler.lock );
+
+    line = InterlockedIncrement( &macrunner_hb_host_native_sampler_wait_lines );
+    if (line > 4096)
+    {
+        if (line == 4097)
+        {
+            fprintf( stderr,
+                     "macrunner-hb-host-native-sampler: phase=wait-budget-exhausted limit=4096\n" );
+            fflush( stderr );
+        }
+        return;
+    }
+    macrunner_hb_post_run_x64_native_location( ret0, &native_image, &native_symbol,
+                                               &native_base, &native_rva );
+    fprintf( stderr,
+             "macrunner-hb-host-native-sampler: phase=wait-boundary seq=%llu pid=%d "
+             "guest_tid=%04llx native_tid=%llu op=%s wait_phase=%s active=%u "
+             "status=0x%08x handle=%p address=%p host_address=%p count=%lu "
+             "expected=0x%lx expected_size=%lu alertable=%u timeout=%lld caller=%p "
+             "native_image=%s native_base=%p native_rva=0x%llx native_symbol=%s\n",
+             (unsigned long long)wait.sequence, getpid(),
+             (unsigned long long)macrunner_hb_host_native_sampler.guest_tid,
+             (unsigned long long)macrunner_hb_host_native_sampler.native_tid,
+             wait.op, wait.phase, wait.active, (unsigned int)wait.status,
+             wait.handle0, wait.handle0, wait.handle1, (unsigned long)wait.count,
+             (unsigned long)wait.arg0, (unsigned long)wait.count, wait.alertable,
+             (long long)wait.timeout, wait.caller, native_image, native_base,
+             (unsigned long long)native_rva, native_symbol );
+    fflush( stderr );
+}
+
+static void macrunner_hb_host_native_sampler_termination_observe( const char *stage,
+                                                                  const char *site, int status,
+                                                                  const void *caller, HANDLE target,
+                                                                  BOOL self, BOOL remote )
+{
+    struct macrunner_hb_host_native_exit_state exit;
+    int target_match;
+
+    if (!macrunner_hb_host_native_sampler_enabled() ||
+        !__atomic_load_n( &macrunner_hb_host_native_sampler_started, __ATOMIC_ACQUIRE )) return;
+    target_match = self && pthread_equal( pthread_self(),
+                                          macrunner_hb_host_native_sampler.target_pthread );
+    memset( &exit, 0, sizeof(exit) );
+    pthread_mutex_lock( &macrunner_hb_host_native_sampler.lock );
+    exit.sequence = macrunner_hb_host_native_sampler.exit.sequence + 1;
+    exit.seen = target_match;
+    exit.status = status;
+    exit.self = self;
+    exit.remote = remote;
+    exit.target = target;
+    exit.caller = caller;
+    snprintf( exit.stage, sizeof(exit.stage), "%s", stage ? stage : "unknown" );
+    snprintf( exit.site, sizeof(exit.site), "%s", site ? site : "unknown" );
+    if (target_match) macrunner_hb_host_native_sampler.exit = exit;
+    pthread_mutex_unlock( &macrunner_hb_host_native_sampler.lock );
+    fprintf( stderr,
+             "macrunner-hb-host-native-sampler: phase=termination seq=%llu pid=%d "
+             "guest_tid=%04llx native_tid=%llu target_match=%u stage=%s site=%s "
+             "status=0x%08x target=%p self=%u remote=%u caller=%p\n",
+             (unsigned long long)exit.sequence, getpid(),
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_main_producer_trace_native_tid(),
+             target_match, exit.stage, exit.site, (unsigned int)status, target,
+             self, remote, caller );
+    fflush( stderr );
+}
+
 static BOOL macrunner_hb_post_run_x64_observe_enter( void *entry, const char *label,
                                                       void *image_base, const void *caller,
                                                       unsigned int *depth_out )
@@ -3370,6 +3696,8 @@ void macrunner_hb_post_run_x64_termination_observe( const char *stage, const cha
     const void *native_base;
     uint64_t native_rva;
 
+    macrunner_hb_host_native_sampler_termination_observe( stage, site, status, caller,
+                                                          target, self, remote );
     macrunner_hb_exit_origin_report_termination( stage, site, status, self );
     if (!macrunner_hb_post_run_x64_is_armed() ||
         !macrunner_hb_post_run_x64_take_line()) return;
@@ -3482,6 +3810,8 @@ void macrunner_hb_main_009c_probe_wait_observe( const char *op, const char *phas
                                                 BOOLEAN alertable, const LARGE_INTEGER *timeout,
                                                 const void *ret0 )
 {
+    macrunner_hb_host_native_sampler_wait_observe( op, phase, status, handle0, handle1,
+                                                   count, arg0, alertable, timeout, ret0 );
     macrunner_hb_post_run_x64_observe_wait( op, phase, status, handle0, handle1, count,
                                             arg0, alertable, timeout, ret0 );
     LONG handshakes = __atomic_load_n( &macrunner_hb_main_009c_probe_handshakes,
@@ -31526,6 +31856,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     }
     if (heartbeat_enabled) heartbeat_last_us = macrunner_hb_now_us();
 
+    macrunner_hb_host_native_sampler_try_start();
     post_run_x64_frame = macrunner_hb_post_run_x64_observe_enter( entry, label, image_base,
                                                                   post_run_x64_caller,
                                                                   &post_run_x64_depth );

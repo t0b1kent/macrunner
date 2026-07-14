@@ -3220,20 +3220,31 @@ static __thread uint64_t macrunner_hb_post_run_x64_seq;
 static __thread uint64_t macrunner_hb_post_run_x64_termination_seq;
 static __thread const char *macrunner_hb_post_run_x64_previous_termination_site;
 static LONG macrunner_hb_post_run_x64_lines;
+static LONG macrunner_hb_post_run_x64_process_termination_lines;
 
-static int macrunner_hb_post_run_x64_is_armed(void)
+static int macrunner_hb_post_run_x64_process_is_armed(void)
 {
     const char *marker;
 
-    if (!macrunner_hb_post_run_x64_observer_enabled() ||
-        macrunner_hb_current_tid64() != 0x3c) return 0;
+    if (!macrunner_hb_post_run_x64_observer_enabled()) return 0;
     marker = getenv( "MACRUNNER_HB_POST_RUN_X64_OBSERVER_ARM_FILE" );
     return !marker || !marker[0] || !access( marker, F_OK );
+}
+
+static int macrunner_hb_post_run_x64_is_armed(void)
+{
+    return macrunner_hb_current_tid64() == 0x3c &&
+           macrunner_hb_post_run_x64_process_is_armed();
 }
 
 static int macrunner_hb_post_run_x64_take_line(void)
 {
     return InterlockedIncrement( &macrunner_hb_post_run_x64_lines ) <= 4096;
+}
+
+static int macrunner_hb_post_run_x64_take_process_termination_line(void)
+{
+    return InterlockedIncrement( &macrunner_hb_post_run_x64_process_termination_lines ) <= 256;
 }
 
 static void macrunner_hb_post_run_x64_native_location( const void *pc,
@@ -3698,12 +3709,18 @@ void macrunner_hb_post_run_x64_termination_observe( const char *stage, const cha
     const char *previous_site = macrunner_hb_post_run_x64_previous_termination_site;
     const void *native_base;
     uint64_t native_rva;
+    BOOL process_wide = remote && site && !strcmp( site, "NtTerminateThread" );
 
     macrunner_hb_host_native_sampler_termination_observe( stage, site, status, caller,
                                                           target, self, remote );
     macrunner_hb_exit_origin_report_termination( stage, site, status, self );
-    if (!macrunner_hb_post_run_x64_is_armed() ||
-        !macrunner_hb_post_run_x64_take_line()) return;
+    if (process_wide)
+    {
+        if (!macrunner_hb_post_run_x64_process_is_armed() ||
+            !macrunner_hb_post_run_x64_take_process_termination_line()) return;
+    }
+    else if (!macrunner_hb_post_run_x64_is_armed() ||
+             !macrunner_hb_post_run_x64_take_line()) return;
     macrunner_hb_post_run_x64_native_location( caller, &native_image, &native_symbol,
                                                &native_base, &native_rva );
     fprintf( stderr,
@@ -34603,6 +34620,11 @@ NTSTATUS macrunner_hb_x64_thread_entry( void *args )
     status = macrunner_hb_run_x64( params->entry, &call, &params->ret,
                                    &params->blocks, &params->steps, "thread",
                                    image_base );
+    macrunner_hb_post_run_x64_termination_observe(
+        "natural-return", "x64_thread_entry",
+        status ? (int)status : (int)(ULONG)params->ret,
+        __builtin_extract_return_addr( __builtin_return_address( 0 ) ),
+        NULL, TRUE, FALSE, status, TRUE );
     if (macrunner_hb_trace_thread_lifecycle_enabled())
     {
         fprintf( stderr, "macrunner-ui-input: stage=hb_x64_thread_entry_return entry=%p arg=%p status=%lx ret=%s blocks=%s steps=%s\n",

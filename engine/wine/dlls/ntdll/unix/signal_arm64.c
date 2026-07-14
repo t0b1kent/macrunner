@@ -1179,6 +1179,7 @@ static struct macrunner_hb_callback_loop_route_scope macrunner_hb_callback_loop_
 {
     static uint64_t x18_provenance_records;
     struct macrunner_hb_callback_loop_route_scope scope = {0};
+    const ULONG_PTR *fault_sp;
     uint64_t provenance;
 
     if (!macrunner_hb_callback_loop_trace_enabled()) return scope;
@@ -1190,16 +1191,21 @@ static struct macrunner_hb_callback_loop_route_scope macrunner_hb_callback_loop_
     scope.depth = ++macrunner_hb_callback_loop_tls.route_depth;
     if (fault == 0x48 &&
         (provenance = __sync_add_and_fetch( &x18_provenance_records, 1 )) <= 256)
+    {
+        fault_sp = (const ULONG_PTR *)SP_sig(context);
         macrunner_signal_writef(
             "macrunner-hb-x18-provenance: seq=%llu native_tid=%llu guest_tid=UNKNOWN "
-            "source=%s pc=%p fault=%p lr=%p sp=%p fp=%p x16=%p x17=%p x18=%p x19=%p x20=%p\n",
+            "source=%s pc=%p fault=%p lr=%p sp=%p fp=%p x16=%p x17=%p x18=%p x19=%p x20=%p "
+            "stack_c0=%p stack_150=%p\n",
             (unsigned long long)provenance,
             (unsigned long long)macrunner_hb_callback_loop_native_tid(), source,
             (void *)PC_sig(context), (void *)fault, (void *)LR_sig(context),
             (void *)SP_sig(context), (void *)FP_sig(context),
             (void *)REGn_sig(16, context), (void *)REGn_sig(17, context),
             (void *)REGn_sig(18, context), (void *)REGn_sig(19, context),
-            (void *)REGn_sig(20, context) );
+            (void *)REGn_sig(20, context), (void *)fault_sp[0xc0 / sizeof(*fault_sp)],
+            (void *)fault_sp[0x150 / sizeof(*fault_sp)] );
+    }
     macrunner_hb_callback_loop_emit( MACRUNNER_HB_CALLBACK_LOOP_ROUTE_ENTER, "route-enter",
                                      source, 0, scope.depth, PC_sig(context), fault, 0,
                                      LR_sig(context), SP_sig(context), -1, 0, 0, 0, 0, FALSE );

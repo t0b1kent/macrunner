@@ -287,6 +287,9 @@ struct macrunner_hb_x64_thread_context_entry
 static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULONG64 *ret_value,
                                       ULONG64 *blocks_out, ULONG64 *steps_out,
                                       const char *label, void *image_base );
+extern void macrunner_hb_callback_loop_trace_dispatch( const char *stage, ULONG64 target,
+                                                        ULONG64 original_target, NTSTATUS status,
+                                                        ULONG64 blocks, ULONG64 steps, ULONG64 result );
 void macrunner_hb_main_009c_probe_wait_observe( const char *op, const char *phase,
                                                 NTSTATUS status, HANDLE handle0,
                                                 HANDLE handle1, ULONG count, ULONG arg0,
@@ -30235,6 +30238,8 @@ BOOL macrunner_hb_try_dispatch_x64_callback( uint64_t target, const uint64_t arg
     original_target = target;
     target = macrunner_hb_normalize_x64_tls_callback_pc( target, args[0], args[1] );
     target_module = macrunner_hb_module_from_pc( (void *)(uintptr_t)target );
+    macrunner_hb_callback_loop_trace_dispatch( "enter", target, original_target,
+                                               STATUS_SUCCESS, 0, 0, 0 );
 
     if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CB_ROUTE" ))
     {
@@ -30294,6 +30299,8 @@ BOOL macrunner_hb_try_dispatch_x64_callback( uint64_t target, const uint64_t arg
                  (void *)(uintptr_t)args[2], (void *)(uintptr_t)args[3],
                  (void *)(uintptr_t)args[4], (void *)(uintptr_t)args[5] );
         }
+        macrunner_hb_callback_loop_trace_dispatch( "reject", target, original_target,
+                                                   STATUS_NOT_SUPPORTED, 0, 0, 0 );
         return FALSE;
     }
 
@@ -30318,11 +30325,15 @@ BOOL macrunner_hb_try_dispatch_x64_callback( uint64_t target, const uint64_t arg
     status = macrunner_hb_run_x64( (void *)(uintptr_t)target, &call, &ret, &blocks, &steps,
                                    "x64-signal-callback",
                                    target_module ? target_module : NtCurrentTeb()->Peb->ImageBaseAddress );
+    macrunner_hb_callback_loop_trace_dispatch( "run-return", target, original_target,
+                                               status, blocks, steps, ret );
     if (status)
     {
         ERR( "MacRunner Phase F x64 callback failed target=%p status=%lx blocks=%s steps=%s\n",
              (void *)(uintptr_t)target, (unsigned long)status, wine_dbgstr_longlong(blocks),
              wine_dbgstr_longlong(steps) );
+        macrunner_hb_callback_loop_trace_dispatch( "failed", target, original_target,
+                                                   status, blocks, steps, ret );
         return FALSE;
     }
     if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CB_ROUTE" ))
@@ -30334,6 +30345,8 @@ BOOL macrunner_hb_try_dispatch_x64_callback( uint64_t target, const uint64_t arg
            wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps) );
     macrunner_hb_trace_x64_callback_abi( "after", target, args, ret );
     *result = ret;
+    macrunner_hb_callback_loop_trace_dispatch( "exit", target, original_target,
+                                               STATUS_SUCCESS, blocks, steps, ret );
     return TRUE;
 }
 

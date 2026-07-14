@@ -91,6 +91,20 @@ static BOOL trace_ui_wait_enabled(void)
 }
 
 static const char *debugstr_timeout( const LARGE_INTEGER *timeout );
+extern void macrunner_hb_main_009c_probe_wait_observe( const char *op, const char *phase,
+                                                       NTSTATUS status, HANDLE handle0,
+                                                       HANDLE handle1, ULONG count, ULONG arg0,
+                                                       BOOLEAN alertable,
+                                                       const LARGE_INTEGER *timeout,
+                                                       const void *ret0 );
+extern void macrunner_hb_wait_wake_trace_signal( const char *api, const char *phase,
+                                                 NTSTATUS status, HANDLE target,
+                                                 const void *host_addr, LONG host_value,
+                                                 const void *ret0 );
+extern void macrunner_hb_wait_wake_trace_host_wait( const char *phase, const void *host_addr,
+                                                    LONG current, LONG expected,
+                                                    HANDLE waiter_tid, NTSTATUS status,
+                                                    const void *ret0 );
 
 static BOOL macrunner_hb_wait_event_trace_enabled(void)
 {
@@ -98,8 +112,10 @@ static BOOL macrunner_hb_wait_event_trace_enabled(void)
 
     if (enabled < 0)
     {
-        const char *env = getenv( "MACRUNNER_HB_WAIT_EVENT_TRACE" );
-        enabled = (env && env[0] && strcmp( env, "0" )) ? 1 : 0;
+        const char *wait_env = getenv( "MACRUNNER_HB_WAIT_EVENT_TRACE" );
+        const char *event_env = getenv( "MACRUNNER_HB_EVENT_LIFECYCLE_PROBE" );
+        enabled = ((wait_env && wait_env[0] && strcmp( wait_env, "0" )) ||
+                   (event_env && event_env[0] && strcmp( event_env, "0" ))) ? 1 : 0;
     }
     return enabled;
 }
@@ -321,6 +337,8 @@ static void macrunner_hb_wait_event_trace( const char *op, const char *phase, NT
                                            ULONG arg0, BOOLEAN alertable,
                                            const LARGE_INTEGER *timeout, const void *ret0 )
 {
+    macrunner_hb_main_009c_probe_wait_observe( op, phase, status, handle0, handle1,
+                                               count, arg0, alertable, timeout, ret0 );
     macrunner_hb_wait_event_stack_trace( op, phase, status, handle0, handle1, count,
                                          arg0, alertable, timeout, ret0 );
     if (!macrunner_hb_wait_event_trace_take_slot()) return;
@@ -1557,6 +1575,8 @@ NTSTATUS WINAPI GPT_IMPORT(NtSetEvent)( HANDLE handle, LONG *prev_state )
                 (unsigned long long)f,(unsigned long long)__atomic_load_n(&slow,__ATOMIC_RELAXED)), fflush(stderr); }
         macrunner_hb_wait_event_trace( "NtSetEvent", "ret-inproc", ret, handle, NULL, 0,
                                        prev_state ? *prev_state : 0, FALSE, NULL, ret0 );
+        macrunner_hb_wait_wake_trace_signal( "NtSetEvent", "ret-inproc", ret, handle,
+                                             NULL, prev_state ? *prev_state : 0, ret0 );
         return ret;
     }
 
@@ -1576,6 +1596,8 @@ NTSTATUS WINAPI GPT_IMPORT(NtSetEvent)( HANDLE handle, LONG *prev_state )
     SERVER_END_REQ;
     macrunner_hb_wait_event_trace( "NtSetEvent", "ret-server", ret, handle, NULL, 0,
                                    prev_state ? *prev_state : 0, FALSE, NULL, ret0 );
+    macrunner_hb_wait_wake_trace_signal( "NtSetEvent", "ret-server", ret, handle,
+                                         NULL, prev_state ? *prev_state : 0, ret0 );
     return ret;
 }
 
@@ -4046,6 +4068,7 @@ NTSTATUS WINAPI NtAlertMultipleThreadByThreadId( HANDLE *tids, ULONG count, void
 NTSTATUS WINAPI NtAlertThreadByThreadId( HANDLE tid )
 {
     union tid_alert_entry *entry = get_tid_alert_entry( tid );
+    const void *ret0 = __builtin_return_address(0);
 
     TRACE( "%p\n", tid );
 
@@ -4054,8 +4077,11 @@ NTSTATUS WINAPI NtAlertThreadByThreadId( HANDLE tid )
 #ifdef USE_FUTEX
     {
         LONG *futex = &entry->futex;
-        if (!InterlockedExchange( futex, 1 ))
+        LONG previous = InterlockedExchange( futex, 1 );
+        if (!previous)
             futex_wake_one( futex );
+        macrunner_hb_wait_wake_trace_signal( "NtAlertThreadByThreadId", "ret-futex",
+                                             STATUS_SUCCESS, tid, futex, previous, ret0 );
         return STATUS_SUCCESS;
     }
 #elif defined(HAVE_KQUEUE)
@@ -4108,14 +4134,26 @@ static LONGLONG update_timeout( ULONGLONG end )
 NTSTATUS WINAPI NtWaitForAlertByThreadId( const void *address, const LARGE_INTEGER *timeout )
 {
     union tid_alert_entry *entry = get_tid_alert_entry( NtCurrentTeb()->ClientId.UniqueThread );
+    const void *ret0 = __builtin_return_address(0);
 
     TRACE( "%p %s\n", address, debugstr_timeout( timeout ) );
 
-    if (!entry) return STATUS_INVALID_CID;
+    macrunner_hb_main_009c_probe_wait_observe( "NtWaitForAlertByThreadId", "enter", 0,
+                                               (HANDLE)address,
+                                               entry ? (HANDLE)&entry->futex : NULL,
+                                               sizeof(LONG), 0, FALSE, timeout, ret0 );
+    if (!entry)
+    {
+        macrunner_hb_main_009c_probe_wait_observe( "NtWaitForAlertByThreadId", "ret-invalid-cid",
+                                                   STATUS_INVALID_CID, (HANDLE)address, NULL,
+                                                   sizeof(LONG), 0, FALSE, timeout, ret0 );
+        return STATUS_INVALID_CID;
+    }
 
 #ifdef USE_FUTEX
     {
         LONG *futex = &entry->futex;
+        HANDLE waiter_tid = NtCurrentTeb()->ClientId.UniqueThread;
         ULONGLONG end;
         int ret;
 
@@ -4129,6 +4167,9 @@ NTSTATUS WINAPI NtWaitForAlertByThreadId( const void *address, const LARGE_INTEG
 
         while (!InterlockedExchange( futex, 0 ))
         {
+            macrunner_hb_wait_wake_trace_host_wait( "block", futex,
+                                                    __atomic_load_n( futex, __ATOMIC_RELAXED ),
+                                                    0, waiter_tid, 0, ret0 );
             if (timeout)
             {
                 LONGLONG timeleft = update_timeout( end );
@@ -4141,8 +4182,24 @@ NTSTATUS WINAPI NtWaitForAlertByThreadId( const void *address, const LARGE_INTEG
             else
                 ret = futex_wait( futex, 0, NULL );
 
-            if (ret == -1 && errno == ETIMEDOUT) return STATUS_TIMEOUT;
+            if (ret == -1 && errno == ETIMEDOUT)
+            {
+                macrunner_hb_wait_wake_trace_host_wait( "timeout", futex,
+                                                        __atomic_load_n( futex, __ATOMIC_RELAXED ),
+                                                        0, waiter_tid, STATUS_TIMEOUT, ret0 );
+                macrunner_hb_main_009c_probe_wait_observe( "NtWaitForAlertByThreadId",
+                                                           "ret-timeout", STATUS_TIMEOUT,
+                                                           (HANDLE)address, (HANDLE)futex,
+                                                           sizeof(LONG), 0, FALSE, timeout, ret0 );
+                return STATUS_TIMEOUT;
+            }
         }
+        macrunner_hb_wait_wake_trace_host_wait( "alerted", futex,
+                                                __atomic_load_n( futex, __ATOMIC_RELAXED ),
+                                                0, waiter_tid, STATUS_ALERTED, ret0 );
+        macrunner_hb_main_009c_probe_wait_observe( "NtWaitForAlertByThreadId", "ret-alerted",
+                                                   STATUS_ALERTED, (HANDLE)address, (HANDLE)futex,
+                                                   sizeof(LONG), 0, FALSE, timeout, ret0 );
         return STATUS_ALERTED;
     }
 #elif defined(HAVE_KQUEUE)
@@ -4191,6 +4248,20 @@ NTSTATUS WINAPI NtWaitForAlertByThreadId( const void *address, const LARGE_INTEG
         if (!status) return STATUS_ALERTED;
         return status;
     }
+#endif
+}
+
+const void *macrunner_hb_alert_wait_address_for_tid( DWORD tid, LONG *value )
+{
+    union tid_alert_entry *entry = get_tid_alert_entry( ULongToHandle( tid ) );
+
+#ifdef USE_FUTEX
+    if (!entry) return NULL;
+    if (value) *value = __atomic_load_n( &entry->futex, __ATOMIC_RELAXED );
+    return &entry->futex;
+#else
+    if (value) *value = 0;
+    return NULL;
 #endif
 }
 

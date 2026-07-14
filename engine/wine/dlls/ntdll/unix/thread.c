@@ -1154,6 +1154,37 @@ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
 }
 
 
+static BOOL macrunner_hb_event_lifecycle_probe_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *env = getenv( "MACRUNNER_HB_EVENT_LIFECYCLE_PROBE" );
+        enabled = (env && env[0] && strcmp( env, "0" )) ? 1 : 0;
+    }
+    return enabled;
+}
+
+static void macrunner_hb_event_lifecycle_thread_probe( const char *op, NTSTATUS status,
+                                                       HANDLE handle, DWORD target_tid,
+                                                       const void *start, const void *param,
+                                                       ULONG flags, LONG value, const void *caller )
+{
+    static LONG count;
+
+    if (!macrunner_hb_event_lifecycle_probe_enabled()) return;
+    if (InterlockedIncrement( &count ) > 512) return;
+
+    fprintf( stderr,
+             "macrunner-hb-event-lifecycle-thread: op=%s pid=%d tid=%04lx status=%08lx "
+             "handle=%p target_tid=%04lx start=%p param=%p flags=%08lx value=%ld caller=%p\n",
+             op, getpid(), (unsigned long)GetCurrentThreadId(), (unsigned long)status,
+             handle, (unsigned long)target_tid, start, param, (unsigned long)flags,
+             (long)value, caller );
+    fflush( stderr );
+}
+
 /***********************************************************************
  *           start_thread
  *
@@ -1180,6 +1211,10 @@ static void start_thread( TEB *teb )
     thread_data->pthread_id = pthread_self();
     pthread_setspecific( teb_key, teb );
     server_init_thread( thread_data->start, &suspend );
+    macrunner_hb_event_lifecycle_thread_probe( "thread-server-init", STATUS_SUCCESS, NULL,
+                                               GetCurrentThreadId(), thread_data->start,
+                                               thread_data->param, 0, suspend,
+                                               __builtin_return_address(0) );
     signal_start_thread( thread_data->start, thread_data->param, suspend, teb );
 }
 
@@ -1466,6 +1501,11 @@ NTSTATUS WINAPI GPT_IMPORT(NtCreateThreadEx)( HANDLE *handle, ACCESS_MASK access
             client_id.UniqueThread  = ULongToHandle( result.create_thread.tid );
             if (attr_list) status = update_attr_list( attr_list, *handle, &client_id, teb );
         }
+        macrunner_hb_event_lifecycle_thread_probe( "create-thread-remote", status,
+                                                   status ? NULL : *handle,
+                                                   status ? 0 : result.create_thread.tid,
+                                                   start, param, flags, -1,
+                                                   __builtin_return_address(0) );
         return status;
     }
 
@@ -1551,6 +1591,9 @@ done:
         return status;
     }
     if (attr_list) status = update_attr_list( attr_list, *handle, &teb->ClientId, teb );
+    macrunner_hb_event_lifecycle_thread_probe( "create-thread", status,
+                                               status ? NULL : *handle, tid, start, param,
+                                               flags, -1, __builtin_return_address(0) );
     return status;
 }
 
@@ -1603,8 +1646,14 @@ void abort_process( int status )
  */
 static DECLSPEC_NORETURN void exit_thread( int status )
 {
+    extern void macrunner_hb_post_run_x64_thread_exit_observe( const char *site, int status,
+                                                                const void *caller );
     static void *prev_teb;
     TEB *teb;
+
+    macrunner_hb_post_run_x64_thread_exit_observe(
+        "exit_thread", status,
+        __builtin_extract_return_addr( __builtin_return_address( 0 ) ) );
 
     if (trace_present_follow_thread_lifecycle_enabled())
     {
@@ -1846,16 +1895,21 @@ NTSTATUS WINAPI NtOpenThread( HANDLE *handle, ACCESS_MASK access,
 NTSTATUS WINAPI NtSuspendThread( HANDLE handle, ULONG *count )
 {
     unsigned int ret;
+    ULONG previous_count = ~0u;
 
     SERVER_START_REQ( suspend_thread )
     {
         req->handle = wine_server_obj_handle( handle );
         if (!(ret = wine_server_call( req )))
         {
-            if (count) *count = reply->count;
+            previous_count = reply->count;
+            if (count) *count = previous_count;
         }
     }
     SERVER_END_REQ;
+    macrunner_hb_event_lifecycle_thread_probe( "suspend-thread", ret, handle, 0, NULL, NULL,
+                                               0, ret ? -1 : previous_count,
+                                               __builtin_return_address(0) );
     return ret;
 }
 
@@ -1866,16 +1920,21 @@ NTSTATUS WINAPI NtSuspendThread( HANDLE handle, ULONG *count )
 NTSTATUS WINAPI NtResumeThread( HANDLE handle, ULONG *count )
 {
     unsigned int ret;
+    ULONG previous_count = ~0u;
 
     SERVER_START_REQ( resume_thread )
     {
         req->handle = wine_server_obj_handle( handle );
         if (!(ret = wine_server_call( req )))
         {
-            if (count) *count = reply->count;
+            previous_count = reply->count;
+            if (count) *count = previous_count;
         }
     }
     SERVER_END_REQ;
+    macrunner_hb_event_lifecycle_thread_probe( "resume-thread", ret, handle, 0, NULL, NULL,
+                                               0, ret ? -1 : previous_count,
+                                               __builtin_return_address(0) );
     return ret;
 }
 

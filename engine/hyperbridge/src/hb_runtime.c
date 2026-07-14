@@ -438,6 +438,23 @@ static hb_block_cache_entry_t* block_cache_find(hb_block_cache_t* cache, uint64_
     return NULL;
 }
 
+/* A chained block may fault after leaving the entry protected by the guard.
+ * Resolve its actual owner after siglongjmp, outside signal context. */
+static hb_block_cache_entry_t* block_cache_find_native_pc(hb_block_cache_t* cache,
+                                                          uint64_t native_pc) {
+    if (!cache || !native_pc) return NULL;
+    for (size_t i = 0; i < HB_BLOCK_CACHE_SIZE; i++) {
+        hb_block_cache_entry_t* entry = &cache->entries[i];
+        uintptr_t start, end;
+        if (!entry->valid || !entry->native_code || !entry->native_size) continue;
+        start = (uintptr_t)entry->native_code;
+        end = start + entry->native_size;
+        if (end >= start && (uintptr_t)native_pc >= start && (uintptr_t)native_pc < end)
+            return entry;
+    }
+    return NULL;
+}
+
 static bool block_cache_is_full(const hb_block_cache_t* cache) {
     return cache && cache->count >= HB_BLOCK_CACHE_SIZE;
 }
@@ -1391,6 +1408,7 @@ void hb_jit_runtime_destroy(hb_jit_runtime_t* rt) {
     hb_cache_close(rt->persistent_cache);
     hb_jit_buffer_destroy(rt->jit_mem);
     block_cache_destroy(rt->block_cache);
+    free(rt->jit_sigbus_quarantine);
     free(rt);
 }
 
@@ -1581,6 +1599,40 @@ static hb_result_t set_jit_interp_fallback_result(hb_exec_result_t* out,
     return HB_OK;
 }
 
+static bool jit_sigbus_invalidate_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* env = getenv("MACRUNNER_HB_JIT_SIGBUS_INVALIDATE");
+        enabled = env && env[0] && env[0] != '0';
+    }
+    return enabled != 0;
+}
+
+static bool jit_sigbus_quarantine_contains(const hb_jit_runtime_t* rt, uint64_t guest_addr) {
+    if (!rt || !guest_addr) return false;
+    for (size_t i = 0; i < rt->jit_sigbus_quarantine_count; i++)
+        if (rt->jit_sigbus_quarantine[i] == guest_addr) return true;
+    return false;
+}
+
+static bool jit_sigbus_quarantine_add(hb_jit_runtime_t* rt, uint64_t guest_addr) {
+    uint64_t* entries;
+    size_t capacity;
+    if (!rt || !guest_addr) return false;
+    if (jit_sigbus_quarantine_contains(rt, guest_addr)) return true;
+    if (rt->jit_sigbus_quarantine_count == rt->jit_sigbus_quarantine_capacity) {
+        capacity = rt->jit_sigbus_quarantine_capacity ?
+                   rt->jit_sigbus_quarantine_capacity * 2 : 16;
+        if (capacity < rt->jit_sigbus_quarantine_capacity) return false;
+        entries = realloc(rt->jit_sigbus_quarantine, capacity * sizeof(*entries));
+        if (!entries) return false;
+        rt->jit_sigbus_quarantine = entries;
+        rt->jit_sigbus_quarantine_capacity = capacity;
+    }
+    rt->jit_sigbus_quarantine[rt->jit_sigbus_quarantine_count++] = guest_addr;
+    return true;
+}
+
 int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int signal) {
     hb_jit_signal_fault_frame_t* frame = g_jit_signal_fault_frame;
     uintptr_t native_start, native_end, slab_start, slab_end;
@@ -1625,6 +1677,17 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         return HB_ERR_INVALID_ARG;
 
     ctx = rt->ctx;
+    if (jit_sigbus_invalidate_enabled() &&
+        (rt->jit_sigbus_disable ||
+         jit_sigbus_quarantine_contains(rt, cached->guest_addr))) {
+        ctx->pc = cached->guest_addr;
+        sync_arch_pc_after_jit_block(ctx);
+        return set_jit_interp_fallback_result(
+            out, HB_ERR_UNSUPPORTED_FEATURE, steps, blocks_executed,
+            rt->jit_sigbus_disable ?
+                "JIT disabled after unmapped SIGBUS; interpreter fallback" :
+                "JIT SIGBUS block invalidated; interpreter fallback");
+    }
     memset(&frame, 0, sizeof(frame));
     frame.prev = g_jit_signal_fault_frame;
     frame.rt = rt;
@@ -1644,6 +1707,31 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
 
     g_jit_signal_fault_frame = frame.prev;
     *ctx = frame.snapshot;
+    if (jit_sigbus_invalidate_enabled() && frame.signal == SIGBUS) {
+        hb_block_cache_entry_t* faulted =
+            block_cache_find_native_pc(rt->block_cache, frame.host_pc);
+        uint64_t fault_guest = faulted ? faulted->guest_addr : 0;
+        bool quarantined = fault_guest && jit_sigbus_quarantine_add(rt, fault_guest);
+
+        /* The snapshot is the only complete architectural checkpoint. Resume
+         * from its entry; the interpreter advances to the quarantined block
+         * without executing that native block again. */
+        ctx->pc = cached->guest_addr;
+        sync_arch_pc_after_jit_block(ctx);
+        if (!quarantined) rt->jit_sigbus_disable = true;
+        fprintf(stderr,
+                "macrunner-hb-jit-sigbus-invalidate: hostpc=%p fault=%p "
+                "fault_guest=%p resume_guest=%p mapped=%u quarantined=%u "
+                "disable_jit=%u count=%zu\n",
+                (void*)(uintptr_t)frame.host_pc,
+                (void*)(uintptr_t)frame.fault_addr,
+                (void*)(uintptr_t)fault_guest,
+                (void*)(uintptr_t)cached->guest_addr,
+                faulted ? 1u : 0u, quarantined ? 1u : 0u,
+                rt->jit_sigbus_disable ? 1u : 0u,
+                rt->jit_sigbus_quarantine_count);
+        fflush(stderr);
+    }
     if (g_jit_signal_fault_reports++ < 64) {
         /* MacRunner: dump the guest x86 bytes at the block entry (steps=0 means the
          * fault is at/near the first instruction) + the fault-address alignment, to

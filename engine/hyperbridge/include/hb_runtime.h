@@ -88,6 +88,13 @@ typedef struct {
     uint64_t code_cache_full_reports;
     hb_cache_t* persistent_cache;
     bool code_cache_full;
+    /* Default-off SIGBUS recovery quarantine. This deliberately survives
+     * hb_jit_runtime_reset(): retrying a native block that already faulted would
+     * recreate the same signal loop after the code cache is reset. */
+    uint64_t* jit_sigbus_quarantine;
+    size_t jit_sigbus_quarantine_count;
+    size_t jit_sigbus_quarantine_capacity;
+    bool jit_sigbus_disable;
 } hb_jit_runtime_t;
 
 hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx);

@@ -15197,6 +15197,23 @@ int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc )
     return macrunner_hb_pc_is_x64_guest_code_module_no_lock( pc );
 }
 
+/* Signal-safe callback preflight.  The general no-lock predicate also admits
+ * dynamically registered execution ranges; an address inside a loaded I386
+ * image must never be consumed as an x64 callback merely because such a range
+ * is stale or overly broad.  Keep the graphics ARM64X exception aligned with
+ * the strict dispatcher predicate. */
+int macrunner_hb_pc_is_x64_callback_target_no_lock( void *pc )
+{
+    void *module;
+
+    if (!pc) return FALSE;
+    if (macrunner_hb_pc_in_graphics_arm64x_x64_range( pc )) return TRUE;
+    module = macrunner_hb_pe_module_from_pc_no_lock( pc );
+    if (module && macrunner_hb_module_machine( module ) != IMAGE_FILE_MACHINE_AMD64)
+        return FALSE;
+    return macrunner_hb_pc_is_x64_guest_code_no_lock( pc );
+}
+
 static BOOL macrunner_hb_x64_callback_entry_return_sentinel( void *entry, uint64_t *sentinel )
 {
     BYTE bytes[5];
@@ -29873,7 +29890,8 @@ static hb_result_t macrunner_hb_call_direct_native_target( hb_context_t *ctx, ui
     return HB_OK;
 }
 
-uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t args[8] )
+BOOL macrunner_hb_try_dispatch_x64_callback( uint64_t target, const uint64_t args[8],
+                                             uint64_t *result )
 {
     hb_abi_x64_call_t call = {0};
     uint64_t stack_args[4] = {0};
@@ -29882,7 +29900,8 @@ uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t arg
     void *target_module;
     NTSTATUS status;
 
-    if (!target || !args) return 0;
+    if (!target || !args || !result) return FALSE;
+    *result = 0;
     original_target = target;
     target = macrunner_hb_normalize_x64_tls_callback_pc( target, args[0], args[1] );
     target_module = macrunner_hb_module_from_pc( (void *)(uintptr_t)target );
@@ -29945,7 +29964,7 @@ uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t arg
                  (void *)(uintptr_t)args[2], (void *)(uintptr_t)args[3],
                  (void *)(uintptr_t)args[4], (void *)(uintptr_t)args[5] );
         }
-        return 0;
+        return FALSE;
     }
 
     call.rcx = args[0];
@@ -29974,7 +29993,7 @@ uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t arg
         ERR( "MacRunner Phase F x64 callback failed target=%p status=%lx blocks=%s steps=%s\n",
              (void *)(uintptr_t)target, (unsigned long)status, wine_dbgstr_longlong(blocks),
              wine_dbgstr_longlong(steps) );
-        return 0;
+        return FALSE;
     }
     if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CB_ROUTE" ))
         fprintf( stderr, "macrunner-hb-callback-return: target=%p ret=%p blocks=%s steps=%s\n",
@@ -29984,7 +30003,8 @@ uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t arg
            (void *)(uintptr_t)target, (void *)(uintptr_t)ret,
            wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps) );
     macrunner_hb_trace_x64_callback_abi( "after", target, args, ret );
-    return ret;
+    *result = ret;
+    return TRUE;
 }
 
 /* Evidence-only probe for the post-input Unity event-list failure first seen at

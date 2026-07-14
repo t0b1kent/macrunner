@@ -3071,10 +3071,151 @@ static int macrunner_hb_post_run_x64_observer_enabled(void)
     return enabled;
 }
 
+static int macrunner_hb_exit_origin_probe_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *env = getenv( "MACRUNNER_HB_EXIT_ORIGIN_PROBE" );
+        enabled = (env && env[0] && strcmp( env, "0" )) ? 1 : 0;
+    }
+    return enabled;
+}
+
+struct macrunner_hb_exit_origin_block
+{
+    hb_context_t *ctx;
+    const char *label;
+    uint64_t sequence;
+    uint64_t block_pc;
+    uint64_t pre_rsp;
+    uint64_t next_pc;
+    uint64_t post_rsp;
+    uint64_t image_base;
+    uint64_t blocks;
+    uint64_t steps;
+    uint64_t block_steps;
+    hb_result_t run_result;
+    hb_result_t block_result;
+    BOOL valid;
+    BOOL completed;
+};
+
+static __thread struct macrunner_hb_exit_origin_block macrunner_hb_exit_origin_block;
+static LONG macrunner_hb_exit_origin_lines;
+
+static BOOL macrunner_hb_exit_origin_is_current(void)
+{
+    return macrunner_hb_exit_origin_probe_enabled() &&
+           macrunner_hb_current_tid64() == 0x3c;
+}
+
+static void macrunner_hb_exit_origin_before_block( hb_context_t *ctx, uint64_t block_pc,
+                                                    uint64_t image_base, const char *label,
+                                                    uint64_t blocks, uint64_t steps )
+{
+    struct macrunner_hb_exit_origin_block *state = &macrunner_hb_exit_origin_block;
+    void *module;
+
+    if (!macrunner_hb_exit_origin_is_current()) return;
+    module = macrunner_hb_module_from_pc( (void *)(uintptr_t)block_pc );
+    state->ctx = ctx;
+    state->label = label ? label : "unknown";
+    state->sequence++;
+    state->block_pc = block_pc;
+    state->pre_rsp = ctx->regs.x64.rsp;
+    state->next_pc = block_pc;
+    state->post_rsp = ctx->regs.x64.rsp;
+    state->image_base = module ? (uint64_t)(uintptr_t)module : image_base;
+    state->blocks = blocks;
+    state->steps = steps;
+    state->block_steps = 0;
+    state->run_result = HB_OK;
+    state->block_result = HB_OK;
+    state->valid = TRUE;
+    state->completed = FALSE;
+}
+
+static void macrunner_hb_exit_origin_after_block( hb_context_t *ctx, hb_result_t ret,
+                                                   const hb_exec_result_t *out )
+{
+    struct macrunner_hb_exit_origin_block *state = &macrunner_hb_exit_origin_block;
+
+    if (!macrunner_hb_exit_origin_is_current() || !state->valid || state->ctx != ctx) return;
+    state->next_pc = ctx->pc;
+    state->post_rsp = ctx->regs.x64.rsp;
+    state->run_result = ret;
+    state->block_result = out->result;
+    state->block_steps = out->steps_executed;
+    state->completed = TRUE;
+}
+
+static void macrunner_hb_exit_origin_report_termination( const char *stage, const char *site,
+                                                         int status, BOOL self )
+{
+    struct macrunner_hb_exit_origin_block *state = &macrunner_hb_exit_origin_block;
+    void *block_module, *next_module, *return_module = NULL;
+    uint64_t return_pc = 0;
+    hb_result_t stack_result = HB_ERR_NOT_FOUND;
+    char bytes[16 * 3 + 1];
+    char *p = bytes;
+    unsigned int i, byte_count = 0;
+
+    if (!macrunner_hb_exit_origin_is_current() || !self || status != STATUS_ACCESS_VIOLATION ||
+        !stage || strcmp( stage, "request-before-server" ) ||
+        !site || strcmp( site, "NtTerminateThread" )) return;
+    if (InterlockedIncrement( &macrunner_hb_exit_origin_lines ) > 32) return;
+
+    bytes[0] = 0;
+    if (state->valid && state->ctx && state->ctx->memory)
+    {
+        for (i = 0; i < 16; i++)
+        {
+            uint8_t byte;
+            if (hb_memory_read_u8( state->ctx->memory, state->block_pc + i, &byte ) != HB_OK) break;
+            p += snprintf( p, sizeof(bytes) - (p - bytes), "%s%02x", i ? ":" : "", byte );
+            byte_count++;
+        }
+        stack_result = hb_memory_read_u64( state->ctx->memory, state->post_rsp, &return_pc );
+    }
+    block_module = state->valid ?
+        macrunner_hb_module_from_pc( (void *)(uintptr_t)state->block_pc ) : NULL;
+    next_module = state->valid ?
+        macrunner_hb_module_from_pc( (void *)(uintptr_t)state->next_pc ) : NULL;
+    if (stack_result == HB_OK)
+        return_module = macrunner_hb_module_from_pc( (void *)(uintptr_t)return_pc );
+
+    fprintf( stderr,
+             "macrunner-hb-exit-origin: phase=last-guest-block guest_tid=%04llx native_tid=%llu "
+             "sequence=%llu valid=%u completed=%u label=%s block_pc=%p block_module=%p "
+             "block_rva=0x%llx pre_rsp=%p next_pc=%p next_module=%p next_rva=0x%llx "
+             "post_rsp=%p return_pc=%p return_module=%p return_rva=0x%llx "
+             "stack_result=%s run_result=%s block_result=%s blocks=%llu steps=%llu "
+             "block_steps=%llu bytes_count=%u bytes=%s\n",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_main_producer_trace_native_tid(),
+             (unsigned long long)state->sequence, state->valid, state->completed,
+             state->label ? state->label : "unknown", (void *)(uintptr_t)state->block_pc,
+             block_module,
+             block_module ? (unsigned long long)(state->block_pc - (uint64_t)(uintptr_t)block_module) : 0,
+             (void *)(uintptr_t)state->pre_rsp, (void *)(uintptr_t)state->next_pc, next_module,
+             next_module ? (unsigned long long)(state->next_pc - (uint64_t)(uintptr_t)next_module) : 0,
+             (void *)(uintptr_t)state->post_rsp, (void *)(uintptr_t)return_pc, return_module,
+             return_module ? (unsigned long long)(return_pc - (uint64_t)(uintptr_t)return_module) : 0,
+             hb_result_string( stack_result ), hb_result_string( state->run_result ),
+             hb_result_string( state->block_result ), (unsigned long long)state->blocks,
+             (unsigned long long)state->steps, (unsigned long long)state->block_steps,
+             byte_count, bytes[0] ? bytes : "unavailable" );
+    fflush( stderr );
+}
+
 static __thread unsigned int macrunner_hb_post_run_x64_depth;
 static __thread unsigned int macrunner_hb_post_run_x64_pending;
 static __thread uint64_t macrunner_hb_post_run_x64_pending_since_ns;
 static __thread uint64_t macrunner_hb_post_run_x64_seq;
+static __thread uint64_t macrunner_hb_post_run_x64_termination_seq;
+static __thread const char *macrunner_hb_post_run_x64_previous_termination_site;
 static LONG macrunner_hb_post_run_x64_lines;
 
 static int macrunner_hb_post_run_x64_is_armed(void)
@@ -3219,28 +3360,40 @@ static void macrunner_hb_post_run_x64_observe_wait( const char *op, const char *
     fflush( stderr );
 }
 
-void macrunner_hb_post_run_x64_thread_exit_observe( const char *site, int status,
-                                                     const void *caller )
+void macrunner_hb_post_run_x64_termination_observe( const char *stage, const char *site,
+                                                    int status, const void *caller,
+                                                    HANDLE target, BOOL self, BOOL remote,
+                                                    NTSTATUS result, BOOL result_valid )
 {
     const char *native_image, *native_symbol;
+    const char *previous_site = macrunner_hb_post_run_x64_previous_termination_site;
     const void *native_base;
     uint64_t native_rva;
 
+    macrunner_hb_exit_origin_report_termination( stage, site, status, self );
     if (!macrunner_hb_post_run_x64_is_armed() ||
         !macrunner_hb_post_run_x64_take_line()) return;
     macrunner_hb_post_run_x64_native_location( caller, &native_image, &native_symbol,
                                                &native_base, &native_rva );
     fprintf( stderr,
-             "macrunner-hb-post-run-x64: phase=thread-exit seq=%s guest_tid=%04llx native_tid=%llu "
-             "depth=%u pending=%u site=%s status=0x%08x caller=%p native_image=%s "
-             "native_base=%p native_rva=0x%llx native_symbol=%s\n",
+             "macrunner-hb-post-run-x64: phase=termination seq=%s termination_seq=%s "
+             "stage=%s site=%s prev_site=%s chain=%s>%s guest_tid=%04llx native_tid=%llu "
+             "depth=%u pending=%u status=0x%08x target=%p self=%u remote=%u "
+             "result_valid=%u result=0x%08x caller=%p native_image=%s native_base=%p "
+             "native_rva=0x%llx native_symbol=%s\n",
              wine_dbgstr_longlong( ++macrunner_hb_post_run_x64_seq ),
+             wine_dbgstr_longlong( ++macrunner_hb_post_run_x64_termination_seq ),
+             stage ? stage : "not-applicable", site ? site : "not-applicable",
+             previous_site ? previous_site : "none",
+             previous_site ? previous_site : "none", site ? site : "not-applicable",
              (unsigned long long)macrunner_hb_current_tid64(),
              (unsigned long long)macrunner_hb_main_producer_trace_native_tid(),
              macrunner_hb_post_run_x64_depth, macrunner_hb_post_run_x64_pending,
-             site ? site : "unknown", (unsigned int)status, caller, native_image,
-             native_base, (unsigned long long)native_rva, native_symbol );
+             (unsigned int)status, target, self, remote, result_valid,
+             (unsigned int)result, caller, native_image, native_base,
+             (unsigned long long)native_rva, native_symbol );
     fflush( stderr );
+    macrunner_hb_post_run_x64_previous_termination_site = site;
 }
 
 static int macrunner_hb_main_producer_trace_try_arm(void)
@@ -32487,6 +32640,7 @@ skip_version_semantic:
         if (trace_calc_object) macrunner_hb_trace_calc_probe( ctx, image_start, "before-block" );
         if (trace_npp_open_pack) macrunner_hb_trace_npp_open_pack( ctx, image_start, "before-block" );
         block_pc = ctx->pc;
+        macrunner_hb_exit_origin_before_block( ctx, block_pc, image_start, label, blocks, steps );
         ctx->codegen_flags &= ~HB_CONTEXT_CODEGEN_MONO_MODULE;
         if (macrunner_hb_pc_in_mono_module( block_pc ))
             ctx->codegen_flags |= HB_CONTEXT_CODEGEN_MONO_MODULE;
@@ -33338,6 +33492,7 @@ skip_version_semantic:
         else
             ret = hb_runtime_run( ctx, func, HB_BACKEND_INTERP, &out );
         macrunner_hb_update_current_x64_context( ctx, label );
+        macrunner_hb_exit_origin_after_block( ctx, ret, &out );
         macrunner_hb_main_009c_probe_block( label, ctx, image_start, block_pc, blocks,
                                             steps, ret, &out );
         if (trace_unity_owner_block)

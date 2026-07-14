@@ -51,6 +51,12 @@ extern void *__wine_syscall_dispatcher;
 
 static const EXCEPTION_RECORD *macrunner_hb_current_exception_record;
 
+extern void macrunner_hb_exit_origin_seh_handler_observe( const char *kind,
+                                                           const void *handler,
+                                                           ULONG_PTR control_pc,
+                                                           ULONG_PTR establisher_frame,
+                                                           DWORD disposition );
+
 struct macrunner_hb_syscall_frame
 {
     ULONG64 x[29];
@@ -2417,6 +2423,9 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
                                     &dispatch, dispatch.LanguageHandler );
             rec->ExceptionFlags &= EXCEPTION_NONCONTINUABLE;
             TRACE( "handler at %p returned %lu\n", dispatch.LanguageHandler, res );
+            macrunner_hb_exit_origin_seh_handler_observe( "language", dispatch.LanguageHandler,
+                                                          dispatch.ControlPc,
+                                                          dispatch.EstablisherFrame, res );
 
             switch (res)
             {
@@ -2454,6 +2463,9 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
             res = call_seh_handler( rec, (ULONG_PTR)teb_frame, orig_context,
                                     &dispatch, (PEXCEPTION_ROUTINE)teb_frame->Handler );
             TRACE( "TEB handler at %p returned %lu\n", teb_frame->Handler, res );
+            macrunner_hb_exit_origin_seh_handler_observe( "teb", teb_frame->Handler,
+                                                          context->Pc, (ULONG_PTR)teb_frame,
+                                                          res );
 
             switch (res)
             {

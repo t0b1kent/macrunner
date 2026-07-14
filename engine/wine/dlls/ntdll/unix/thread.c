@@ -1125,8 +1125,19 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
 /***********************************************************************
  *           pthread_exit_wrapper
  */
+extern void macrunner_hb_post_run_x64_termination_observe( const char *stage,
+                                                            const char *site, int status,
+                                                            const void *caller, HANDLE target,
+                                                            BOOL self, BOOL remote,
+                                                            NTSTATUS result, BOOL result_valid );
+
 static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
 {
+    macrunner_hb_post_run_x64_termination_observe(
+        "ultimate", "pthread_exit_wrapper", status,
+        __builtin_extract_return_addr( __builtin_return_address( 0 ) ),
+        NULL, FALSE, FALSE, 0, FALSE );
+
     if (trace_present_follow_thread_lifecycle_enabled())
     {
         fprintf( stderr,
@@ -1618,6 +1629,11 @@ GPT_ABI_WRAPPER( NtCreateThreadEx );
  */
 void abort_thread( int status )
 {
+    macrunner_hb_post_run_x64_termination_observe(
+        "enter", "abort_thread", status,
+        __builtin_extract_return_addr( __builtin_return_address( 0 ) ),
+        NULL, FALSE, FALSE, 0, FALSE );
+
     if (trace_present_follow_thread_lifecycle_enabled())
     {
         fprintf( stderr,
@@ -1646,14 +1662,13 @@ void abort_process( int status )
  */
 static DECLSPEC_NORETURN void exit_thread( int status )
 {
-    extern void macrunner_hb_post_run_x64_thread_exit_observe( const char *site, int status,
-                                                                const void *caller );
     static void *prev_teb;
     TEB *teb;
 
-    macrunner_hb_post_run_x64_thread_exit_observe(
-        "exit_thread", status,
-        __builtin_extract_return_addr( __builtin_return_address( 0 ) ) );
+    macrunner_hb_post_run_x64_termination_observe(
+        "enter", "exit_thread", status,
+        __builtin_extract_return_addr( __builtin_return_address( 0 ) ),
+        NULL, FALSE, FALSE, 0, FALSE );
 
     if (trace_present_follow_thread_lifecycle_enabled())
     {
@@ -1964,8 +1979,14 @@ NTSTATUS WINAPI NtAlertThread( HANDLE handle )
  */
 NTSTATUS WINAPI NtTerminateThread( HANDLE handle, LONG exit_code )
 {
+    const void *caller = __builtin_extract_return_addr( __builtin_return_address( 0 ) );
     unsigned int ret;
     BOOL self;
+    BOOL self_hint = handle == NtCurrentThread();
+
+    macrunner_hb_post_run_x64_termination_observe(
+        "request-before-server", "NtTerminateThread", exit_code, caller, handle,
+        self_hint, !self_hint, 0, FALSE );
 
     if (trace_present_follow_thread_lifecycle_enabled())
     {
@@ -1991,6 +2012,10 @@ NTSTATUS WINAPI NtTerminateThread( HANDLE handle, LONG exit_code )
         self = !ret && reply->self;
     }
     SERVER_END_REQ;
+
+    macrunner_hb_post_run_x64_termination_observe(
+        "result-after-server", "NtTerminateThread", exit_code, caller, handle,
+        self, !self, ret, TRUE );
 
     if (trace_present_follow_thread_lifecycle_enabled())
     {

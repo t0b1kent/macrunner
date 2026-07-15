@@ -80,6 +80,9 @@ extern void macrunner_hb_trace_nullcall_site( const char *source, uint64_t host_
 extern void macrunner_hb_trace_hk_memcpy_fault( const char *source, uint64_t host_pc, uint64_t fault_addr );
 extern int hb_jit_runtime_handle_signal_fault( ULONG_PTR pc, ULONG_PTR fault_addr, int signal,
                                                const void *host_context );
+extern int hb_jit_runtime_handle_owned_sigill( ULONG_PTR pc, ULONG native_word,
+                                               int native_word_valid,
+                                               const void *host_context );
 
 /***********************************************************************
  * signal context platform-specific definitions
@@ -801,6 +804,18 @@ static BOOL macrunner_hb_trace_callback_route_enabled(void)
 {
     const char *value = getenv( "MACRUNNER_HB_TRACE_CALLBACK_ROUTE" );
     return value && value[0] && value[0] != '0';
+}
+
+static BOOL macrunner_hb_jit_sigill_ownership_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *value = getenv( "MACRUNNER_HB_JIT_SIGILL_OWNERSHIP" );
+        enabled = value && value[0] && value[0] != '0';
+    }
+    return enabled != 0;
 }
 
 static BOOL macrunner_hb_x64_fault_routing_enabled(void)
@@ -3214,9 +3229,11 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     EXCEPTION_RECORD rec = { EXCEPTION_ILLEGAL_INSTRUCTION };
     ucontext_t *context = sigcontext;
     static int macrunner_hb_ill_trace_count;
+    BOOL jit_sigill_ownership = macrunner_hb_jit_sigill_ownership_enabled();
+    BOOL instr_valid;
     ULONG instr = 0;
 
-    macrunner_signal_read_u32_aligned( PC_sig( context ), &instr );
+    instr_valid = macrunner_signal_read_u32_aligned( PC_sig( context ), &instr );
 
     if (macrunner_hb_trace_callback_route_enabled() && macrunner_hb_ill_trace_count++ < 16)
         ERR( "macrunner-hb-signal-entry: kind=ill pid=%d pc=%p sp=%p instr=%#lx "
@@ -3231,8 +3248,16 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
              (void *)(ULONG_PTR)REGn_sig(23, context),
              (void *)(ULONG_PTR)REGn_sig(26, context) );
 
+    /* An active HyperBridge JIT guard owns SIGILL even if generated code jumped
+     * through a stale/corrupt target outside the current slab.  Claim it before
+     * the ARM64X candidate/module/Mach-VM scan and carry the already-probed word
+     * across siglongjmp; a non-owned signal keeps the old ARM64X path. */
+    if (jit_sigill_ownership &&
+        hb_jit_runtime_handle_owned_sigill( PC_sig(context), instr,
+                                            instr_valid, context )) return;
     if (macrunner_hb_redirect_arm64x_hexpthk_sigill( context )) return;
-    if (hb_jit_runtime_handle_signal_fault( PC_sig(context), 0, signal, context ) ||
+    if ((!jit_sigill_ownership &&
+         hb_jit_runtime_handle_signal_fault( PC_sig(context), 0, signal, context )) ||
         hb_jit_runtime_handle_signal_fault( LR_sig(context), 0, signal, context )) return;
     if (macrunner_hb_route_x64_callback_fault( context, 0, "sigill" )) return;
 

@@ -82,6 +82,9 @@ typedef struct hb_jit_signal_fault_frame {
     uint64_t host_sp;
     uint64_t host_fault_pc;
     uint64_t host_pstate;
+    uint32_t native_word;
+    bool native_word_valid;
+    bool active_guard_claim;
     uint8_t aa_dst_pre[32];
     uint8_t aa_src_pre[32];
     uint8_t aa_dst_post[32];
@@ -99,6 +102,7 @@ typedef struct hb_jit_signal_fault_frame {
 static __thread hb_jit_signal_fault_frame_t* g_jit_signal_fault_frame;
 static unsigned int g_jit_signal_fault_reports;
 static unsigned int g_jit_aa_sigbus_reports;
+static unsigned int g_jit_sigill_ownership_reports;
 
 static uint64_t g_dispatch_stats_blocks;
 static uint64_t g_dispatch_stats_dispatches;
@@ -1428,7 +1432,7 @@ void hb_jit_runtime_destroy(hb_jit_runtime_t* rt) {
     hb_cache_close(rt->persistent_cache);
     hb_jit_buffer_destroy(rt->jit_mem);
     block_cache_destroy(rt->block_cache);
-    free(rt->jit_sigbus_quarantine);
+    free(rt->jit_signal_quarantine);
     free(rt);
 }
 
@@ -1626,6 +1630,25 @@ static bool jit_sigbus_invalidate_enabled(void) {
         enabled = env && env[0] && env[0] != '0';
     }
     return enabled != 0;
+}
+
+static bool jit_sigill_ownership_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* env = getenv("MACRUNNER_HB_JIT_SIGILL_OWNERSHIP");
+        enabled = env && env[0] && env[0] != '0';
+    }
+    return enabled != 0;
+}
+
+static bool jit_signal_quarantine_enabled(void) {
+    return jit_sigbus_invalidate_enabled() || jit_sigill_ownership_enabled();
+}
+
+static bool jit_signal_quarantine_enabled_for(int signal) {
+    if (signal == SIGBUS) return jit_sigbus_invalidate_enabled();
+    if (signal == SIGILL) return jit_sigill_ownership_enabled();
+    return false;
 }
 
 static bool jit_aa_sigbus_probe_enabled(void) {
@@ -2077,29 +2100,72 @@ static hb_jit_aa_vm_region_t jit_aa_query_vm_region(uint64_t address) {
     return result;
 }
 
-static bool jit_sigbus_quarantine_contains(const hb_jit_runtime_t* rt, uint64_t guest_addr) {
+static bool jit_signal_quarantine_contains(const hb_jit_runtime_t* rt, uint64_t guest_addr) {
     if (!rt || !guest_addr) return false;
-    for (size_t i = 0; i < rt->jit_sigbus_quarantine_count; i++)
-        if (rt->jit_sigbus_quarantine[i] == guest_addr) return true;
+    for (size_t i = 0; i < rt->jit_signal_quarantine_count; i++)
+        if (rt->jit_signal_quarantine[i] == guest_addr) return true;
     return false;
 }
 
-static bool jit_sigbus_quarantine_add(hb_jit_runtime_t* rt, uint64_t guest_addr) {
+static bool jit_signal_quarantine_add(hb_jit_runtime_t* rt, uint64_t guest_addr) {
     uint64_t* entries;
     size_t capacity;
     if (!rt || !guest_addr) return false;
-    if (jit_sigbus_quarantine_contains(rt, guest_addr)) return true;
-    if (rt->jit_sigbus_quarantine_count == rt->jit_sigbus_quarantine_capacity) {
-        capacity = rt->jit_sigbus_quarantine_capacity ?
-                   rt->jit_sigbus_quarantine_capacity * 2 : 16;
-        if (capacity < rt->jit_sigbus_quarantine_capacity) return false;
-        entries = realloc(rt->jit_sigbus_quarantine, capacity * sizeof(*entries));
+    if (jit_signal_quarantine_contains(rt, guest_addr)) return true;
+    if (rt->jit_signal_quarantine_count == rt->jit_signal_quarantine_capacity) {
+        capacity = rt->jit_signal_quarantine_capacity ?
+                   rt->jit_signal_quarantine_capacity * 2 : 16;
+        if (capacity < rt->jit_signal_quarantine_capacity) return false;
+        entries = realloc(rt->jit_signal_quarantine, capacity * sizeof(*entries));
         if (!entries) return false;
-        rt->jit_sigbus_quarantine = entries;
-        rt->jit_sigbus_quarantine_capacity = capacity;
+        rt->jit_signal_quarantine = entries;
+        rt->jit_signal_quarantine_capacity = capacity;
     }
-    rt->jit_sigbus_quarantine[rt->jit_sigbus_quarantine_count++] = guest_addr;
+    rt->jit_signal_quarantine[rt->jit_signal_quarantine_count++] = guest_addr;
     return true;
+}
+
+static int jit_signal_fault_claim(hb_jit_signal_fault_frame_t* frame,
+                                  uint64_t pc, uint64_t fault_addr, int signal,
+                                  uint32_t native_word, bool native_word_valid,
+                                  bool active_guard_claim,
+                                  const void* host_context) {
+    if (!frame || !frame->rt || !frame->rt->jit_mem || !frame->entry ||
+        !frame->entry->native_code || !frame->entry->native_size)
+        return 0;
+
+    frame->host_pc = pc;
+    frame->fault_addr = fault_addr;
+    frame->signal = signal;
+    frame->native_word = native_word;
+    frame->native_word_valid = native_word_valid;
+    frame->active_guard_claim = active_guard_claim;
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (host_context) {
+        const ucontext_t* context = (const ucontext_t*)host_context;
+        if (context->uc_mcontext) {
+            for (unsigned int i = 0; i < 29; i++)
+                frame->host_gpr[i] = context->uc_mcontext->__ss.__x[i];
+            frame->host_gpr[29] = context->uc_mcontext->__ss.__fp;
+            frame->host_gpr[30] = context->uc_mcontext->__ss.__lr;
+            frame->host_sp = context->uc_mcontext->__ss.__sp;
+            frame->host_fault_pc = context->uc_mcontext->__ss.__pc;
+            frame->host_pstate = context->uc_mcontext->__ss.__cpsr;
+            frame->host_context_valid = true;
+        }
+    }
+#else
+    (void)host_context;
+#endif
+    {
+        static int traced;
+        if (traced++ < 8 && getenv("MACRUNNER_HB_TRACE_JIT_HELPER_FAIL"))
+            fprintf(stderr, "macrunner-hb-jit-native-sigfault: host_pc=0x%llx fault=0x%llx sig=%d active_guard=%u\n",
+                    (unsigned long long)pc, (unsigned long long)fault_addr, signal,
+                    active_guard_claim ? 1u : 0u);
+    }
+    siglongjmp(frame->env, 1);
+    return 1;
 }
 
 int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int signal,
@@ -2120,34 +2186,21 @@ int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int sig
         !((uintptr_t)pc >= slab_start && (uintptr_t)pc < slab_end))
         return 0;
 
-    frame->host_pc = pc;
-    frame->fault_addr = fault_addr;
-    frame->signal = signal;
-#if defined(__APPLE__) && defined(__aarch64__)
-    if (frame->aa_enabled && host_context) {
-        const ucontext_t* context = (const ucontext_t*)host_context;
-        if (context->uc_mcontext) {
-            for (unsigned int i = 0; i < 29; i++)
-                frame->host_gpr[i] = context->uc_mcontext->__ss.__x[i];
-            frame->host_gpr[29] = context->uc_mcontext->__ss.__fp;
-            frame->host_gpr[30] = context->uc_mcontext->__ss.__lr;
-            frame->host_sp = context->uc_mcontext->__ss.__sp;
-            frame->host_fault_pc = context->uc_mcontext->__ss.__pc;
-            frame->host_pstate = context->uc_mcontext->__ss.__cpsr;
-            frame->host_context_valid = true;
-        }
-    }
-#else
-    (void)host_context;
-#endif
-    {
-        static int traced;
-        if (traced++ < 8 && getenv("MACRUNNER_HB_TRACE_JIT_HELPER_FAIL"))
-            fprintf(stderr, "macrunner-hb-jit-native-sigfault: host_pc=0x%llx fault=0x%llx sig=%d\n",
-                    (unsigned long long)pc, (unsigned long long)fault_addr, signal);
-    }
-    siglongjmp(frame->env, 1);
-    return 1;
+    return jit_signal_fault_claim(frame, pc, fault_addr, signal, 0, false,
+                                  false, host_context);
+}
+
+int hb_jit_runtime_handle_owned_sigill(uint64_t pc, uint32_t native_word,
+                                       int native_word_valid,
+                                       const void* host_context) {
+    hb_jit_signal_fault_frame_t* frame = g_jit_signal_fault_frame;
+
+    /* The caller has already applied MACRUNNER_HB_JIT_SIGILL_OWNERSHIP.  An
+     * active guard is the ownership authority here, not Mach VM membership:
+     * the observed failure is a generated tail branch into an old zero RX page
+     * outside both the guarded entry and the current JIT slab. */
+    return jit_signal_fault_claim(frame, pc, 0, SIGILL, native_word,
+                                  native_word_valid != 0, true, host_context);
 }
 
 static void jit_aa_report_sigbus(const hb_jit_signal_fault_frame_t* frame,
@@ -2295,6 +2348,7 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
     typedef void (*jit_block_t)(hb_context_t*);
     hb_jit_signal_fault_frame_t frame;
     hb_context_t* ctx;
+    hb_block_cache_entry_t* faulted;
     jit_block_t exec;
 
     if (!rt || !rt->ctx || !cached || !cached->native_code || !out)
@@ -2305,16 +2359,16 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
     jit_aa_mono_4ee14b_transparency_probe(rt, cached, steps, blocks_executed);
     if (jit_aa_force_mono_simd_copy_interp(rt, cached, out, steps, blocks_executed))
         return HB_OK;
-    if (jit_sigbus_invalidate_enabled() &&
-        (rt->jit_sigbus_disable ||
-         jit_sigbus_quarantine_contains(rt, cached->guest_addr))) {
+    if (jit_signal_quarantine_enabled() &&
+        (rt->jit_signal_disable ||
+         jit_signal_quarantine_contains(rt, cached->guest_addr))) {
         ctx->pc = cached->guest_addr;
         sync_arch_pc_after_jit_block(ctx);
         return set_jit_interp_fallback_result(
             out, HB_ERR_UNSUPPORTED_FEATURE, steps, blocks_executed,
-            rt->jit_sigbus_disable ?
-                "JIT disabled after unmapped SIGBUS; interpreter fallback" :
-                "JIT SIGBUS block invalidated; interpreter fallback");
+            rt->jit_signal_disable ?
+                "JIT disabled after unmapped native signal; interpreter fallback" :
+                "JIT native-signal block quarantined; interpreter fallback");
     }
     memset(&frame, 0, sizeof(frame));
     frame.prev = g_jit_signal_fault_frame;
@@ -2348,32 +2402,138 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
             frame.snapshot.memory, frame.snapshot.regs.x64.rdx, frame.aa_src_post);
     }
     *ctx = frame.snapshot;
-    if (jit_sigbus_invalidate_enabled() && frame.signal == SIGBUS) {
-        hb_block_cache_entry_t* faulted =
-            block_cache_find_native_pc(rt->block_cache, frame.host_pc);
-        uint64_t fault_guest = faulted ? faulted->guest_addr : 0;
-        bool quarantined = fault_guest && jit_sigbus_quarantine_add(rt, fault_guest);
+    faulted = block_cache_find_native_pc(rt->block_cache, frame.host_pc);
+    if (jit_signal_quarantine_enabled_for(frame.signal)) {
+        hb_block_cache_entry_t* quarantine_entry = faulted ? faulted : cached;
+        uint64_t fault_guest = quarantine_entry ? quarantine_entry->guest_addr : 0;
+        bool quarantined = fault_guest && jit_signal_quarantine_add(rt, fault_guest);
+        const char* record = frame.signal == SIGILL ? "sigill-own" : "sigbus-invalidate";
 
-        jit_aa_report_sigbus(&frame, faulted);
+        if (frame.signal == SIGBUS) jit_aa_report_sigbus(&frame, faulted);
 
         /* The snapshot is the only complete architectural checkpoint. Resume
          * from its entry; the interpreter advances to the quarantined block
          * without executing that native block again. */
         ctx->pc = cached->guest_addr;
         sync_arch_pc_after_jit_block(ctx);
-        if (!quarantined) rt->jit_sigbus_disable = true;
+        if (!quarantined) rt->jit_signal_disable = true;
         fprintf(stderr,
-                "macrunner-hb-jit-sigbus-invalidate: hostpc=%p fault=%p "
+                "macrunner-hb-jit-%s: hostpc=%p fault=%p signal=%d "
                 "fault_guest=%p resume_guest=%p mapped=%u quarantined=%u "
-                "disable_jit=%u count=%zu\n",
+                "active_guard=%u disable_jit=%u count=%zu\n",
+                record,
                 (void*)(uintptr_t)frame.host_pc,
                 (void*)(uintptr_t)frame.fault_addr,
+                frame.signal,
                 (void*)(uintptr_t)fault_guest,
                 (void*)(uintptr_t)cached->guest_addr,
                 faulted ? 1u : 0u, quarantined ? 1u : 0u,
-                rt->jit_sigbus_disable ? 1u : 0u,
-                rt->jit_sigbus_quarantine_count);
+                frame.active_guard_claim ? 1u : 0u,
+                rt->jit_signal_disable ? 1u : 0u,
+                rt->jit_signal_quarantine_count);
         fflush(stderr);
+    }
+    if (frame.signal == SIGILL && g_jit_sigill_ownership_reports++ < 32) {
+        hb_block_cache_entry_t* source = faulted ? faulted : cached;
+        uintptr_t native_start = source ? (uintptr_t)source->native_code : 0;
+        uintptr_t native_end = source ? native_start + source->native_size : 0;
+        uintptr_t word_pc = (uintptr_t)frame.host_pc & ~(uintptr_t)3;
+        uint32_t native_word = frame.native_word;
+        bool word_valid = frame.native_word_valid;
+        char guest_bytes[64] = {0};
+        char* p = guest_bytes;
+
+        if (!word_valid && faulted && native_end >= native_start && word_pc >= native_start &&
+            word_pc <= native_end && native_end - word_pc >= sizeof(native_word)) {
+            memcpy(&native_word, (const void*)word_pc, sizeof(native_word));
+            word_valid = true;
+        }
+        if (source && ctx && ctx->memory) {
+            for (int i = 0; i < 16 && (size_t)(p - guest_bytes) < sizeof(guest_bytes) - 3; i++) {
+                uint8_t b = 0;
+                if (hb_memory_read_u8(ctx->memory,
+                                      (hb_gva_t)(source->guest_addr + (uint64_t)i), &b) != HB_OK)
+                    break;
+                p += snprintf(p, sizeof(guest_bytes) - (size_t)(p - guest_bytes),
+                              "%s%02x", i ? " " : "", b);
+            }
+        }
+        fprintf(stderr,
+                "macrunner-hb-jit-sigill-native: guest=%p owner_native=%p-%p "
+                "hostpc=%p offset=%#llx mapped=%u active_guard=%u "
+                "word_valid=%u word=%08x x20=%#llx x21=%#llx lr=%#llx gbytes=%s\n",
+                (void*)(uintptr_t)(source ? source->guest_addr : 0),
+                (void*)native_start, (void*)native_end,
+                (void*)(uintptr_t)frame.host_pc,
+                (unsigned long long)(faulted && (uintptr_t)frame.host_pc >= native_start ?
+                                     (uintptr_t)frame.host_pc - native_start : 0),
+                faulted ? 1u : 0u, frame.active_guard_claim ? 1u : 0u,
+                word_valid ? 1u : 0u, native_word,
+                (unsigned long long)(frame.host_context_valid ? frame.host_gpr[20] : 0),
+                (unsigned long long)(frame.host_context_valid ? frame.host_gpr[21] : 0),
+                (unsigned long long)(frame.host_context_valid ? frame.host_gpr[30] : 0),
+                guest_bytes);
+        fflush(stderr);
+
+        /* A SIGILL target outside the source entry is normally reached by a
+         * direct/indirect native branch.  Decode the bounded source blob after
+         * siglongjmp (never in the signal handler) and report only an edge whose
+         * resolved target equals the fault PC.  This identifies the emitting
+         * branch family without dumping the whole block or guessing from UDF #0. */
+        if (source && source->native_code && source->native_size && frame.host_pc) {
+            unsigned int matches = 0;
+            for (size_t off = 0; off + sizeof(uint32_t) <= source->native_size; off += 4) {
+                uint32_t insn;
+                uintptr_t site = (uintptr_t)source->native_code + off;
+                uintptr_t target = 0;
+                unsigned int reg = 0;
+                const char* kind = NULL;
+
+                memcpy(&insn, source->native_code + off, sizeof(insn));
+                if ((insn & 0xfc000000u) == 0x14000000u ||
+                    (insn & 0xfc000000u) == 0x94000000u) {
+                    int32_t imm26 = (int32_t)(insn & 0x03ffffffu);
+                    if (imm26 & 0x02000000) imm26 |= (int32_t)~0x03ffffffu;
+                    target = (uintptr_t)((intptr_t)site + (intptr_t)imm26 * 4);
+                    kind = (insn & 0x80000000u) ? "BL" : "B";
+                } else if ((insn & 0xff000010u) == 0x54000000u) {
+                    int32_t imm19 = (int32_t)((insn >> 5) & 0x7ffffu);
+                    if (imm19 & 0x40000) imm19 |= (int32_t)~0x7ffffu;
+                    target = (uintptr_t)((intptr_t)site + (intptr_t)imm19 * 4);
+                    kind = "B.cond";
+                } else if ((insn & 0xfffffc1fu) == 0xd61f0000u ||
+                           (insn & 0xfffffc1fu) == 0xd63f0000u ||
+                           (insn & 0xfffffc1fu) == 0xd65f0000u) {
+                    reg = (insn >> 5) & 31u;
+                    if (frame.host_context_valid && reg < 31) target = frame.host_gpr[reg];
+                    if ((insn & 0xfffffc1fu) == 0xd61f0000u) kind = "BR";
+                    else if ((insn & 0xfffffc1fu) == 0xd63f0000u) kind = "BLR";
+                    else kind = "RET";
+                }
+                if (kind && target == (uintptr_t)frame.host_pc && matches++ < 8) {
+                    fprintf(stderr,
+                            "macrunner-hb-jit-sigill-branch-source: guest=%p site=%p "
+                            "offset=%#zx word=%08x kind=%s reg=%u target=%p matched=1\n",
+                            (void*)(uintptr_t)source->guest_addr, (void*)site, off, insn,
+                            kind, reg, (void*)target);
+                }
+            }
+            if (!matches) {
+                uint32_t tail[4] = {0};
+                size_t tail_size = source->native_size < sizeof(tail) ?
+                                   source->native_size : sizeof(tail);
+                memcpy((uint8_t*)tail + sizeof(tail) - tail_size,
+                       source->native_code + source->native_size - tail_size, tail_size);
+                fprintf(stderr,
+                        "macrunner-hb-jit-sigill-branch-source: guest=%p owner_native=%p-%p "
+                        "hostpc=%p matched=0 tail=%08x,%08x,%08x,%08x\n",
+                        (void*)(uintptr_t)source->guest_addr,
+                        source->native_code, source->native_code + source->native_size,
+                        (void*)(uintptr_t)frame.host_pc,
+                        tail[0], tail[1], tail[2], tail[3]);
+            }
+            fflush(stderr);
+        }
     }
     if (g_jit_signal_fault_reports++ < 64) {
         /* MacRunner: dump the guest x86 bytes at the block entry (steps=0 means the
@@ -2393,9 +2553,11 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
             /* Dump the native ARM64 words around the faulting host pc (JIT code is
              * host-mapped readable) to see if the 8-byte load was lowered to an
              * alignment-requiring instruction (LDAR/LDXR/atomic) vs a plain LDR. */
+            const hb_block_cache_entry_t* native_entry = faulted ? faulted : cached;
             const uint32_t *hp = (const uint32_t *)(uintptr_t)(frame.host_pc & ~3ull);
-            if (frame.host_pc >= (uint64_t)(uintptr_t)cached->native_code &&
-                frame.host_pc < (uint64_t)(uintptr_t)(cached->native_code + cached->native_size))
+            if (frame.host_pc >= (uint64_t)(uintptr_t)(native_entry->native_code + 8) &&
+                frame.host_pc + 12 <=
+                    (uint64_t)(uintptr_t)(native_entry->native_code + native_entry->native_size))
                 fprintf(stderr, "macrunner-hb-jit-natinsn: hostpc=%p w[-2..+2]= %08x %08x [%08x] %08x %08x\n",
                         (void*)(uintptr_t)frame.host_pc,
                         hp[-2], hp[-1], hp[0], hp[1], hp[2]);

@@ -7829,6 +7829,80 @@ TEST(legitimate_zero_read_is_not_fault) {
     tests_passed++;
 }
 
+static char* read_source_contract_file(const char* local_path, const char* root_path) {
+    FILE* file = fopen(local_path, "rb");
+    char* bytes;
+    long size;
+
+    if (!file) file = fopen(root_path, "rb");
+    if (!file || fseek(file, 0, SEEK_END) != 0) {
+        if (file) fclose(file);
+        return NULL;
+    }
+    size = ftell(file);
+    if (size < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    bytes = malloc((size_t)size + 1);
+    if (!bytes) {
+        fclose(file);
+        return NULL;
+    }
+    if (fread(bytes, 1, (size_t)size, file) != (size_t)size) {
+        free(bytes);
+        fclose(file);
+        return NULL;
+    }
+    bytes[size] = '\0';
+    fclose(file);
+    return bytes;
+}
+
+TEST(jit_sigill_owner_precedes_arm64x_scan_source_contract) {
+    char* source = read_source_contract_file(
+        "../wine/dlls/ntdll/unix/signal_arm64.c",
+        "engine/wine/dlls/ntdll/unix/signal_arm64.c");
+    char* handler;
+    char* owner;
+    char* arm64x;
+    char* non_owner;
+
+    ASSERT(source != NULL);
+    handler = strstr(source, "static void ill_handler");
+    ASSERT(handler != NULL);
+    owner = strstr(handler, "hb_jit_runtime_handle_owned_sigill");
+    arm64x = strstr(handler, "macrunner_hb_redirect_arm64x_hexpthk_sigill");
+    non_owner = strstr(handler, "if ((!jit_sigill_ownership &&");
+    ASSERT(owner != NULL && arm64x != NULL && non_owner != NULL);
+    ASSERT(owner < arm64x);
+    ASSERT(arm64x < non_owner);
+    free(source);
+    tests_passed++;
+}
+
+TEST(jit_native_signal_quarantine_family_source_contract) {
+    char* source = read_source_contract_file(
+        "src/hb_runtime.c", "engine/hyperbridge/src/hb_runtime.c");
+
+    ASSERT(source != NULL);
+    ASSERT(strstr(source, "MACRUNNER_HB_JIT_SIGILL_OWNERSHIP") != NULL);
+    ASSERT(strstr(source, "MACRUNNER_HB_JIT_SIGBUS_INVALIDATE") != NULL);
+    ASSERT(strstr(source,
+                  "if (signal == SIGBUS) return jit_sigbus_invalidate_enabled();") != NULL);
+    ASSERT(strstr(source,
+                  "if (signal == SIGILL) return jit_sigill_ownership_enabled();") != NULL);
+    ASSERT(strstr(source, "jit_signal_quarantine_enabled_for(frame.signal)") != NULL);
+    ASSERT(strstr(source, "int hb_jit_runtime_handle_owned_sigill") != NULL);
+    ASSERT(strstr(source, "frame->active_guard_claim = active_guard_claim") != NULL);
+    ASSERT(strstr(source, "hb_block_cache_entry_t* quarantine_entry = faulted ? faulted : cached") != NULL);
+    ASSERT(strstr(source, "frame.native_word_valid") != NULL);
+    ASSERT(strstr(source, "macrunner-hb-jit-sigill-branch-source") != NULL);
+    ASSERT(strstr(source, "target == (uintptr_t)frame.host_pc") != NULL);
+    free(source);
+    tests_passed++;
+}
+
 TEST(block_limit_env_0_unlimited) {
     char* saved = save_env_var("MACRUNNER_HB_X64_BLOCK_LIMIT");
     setenv("MACRUNNER_HB_X64_BLOCK_LIMIT", "0", 1);
@@ -24413,6 +24487,12 @@ int main(int argc, char** argv) {
     if (argc == 2 && strcmp(argv[1], "--phase2-bench") == 0)
         return run_phase2_bench();
     if (argc == 3 && strcmp(argv[1], "--fast-family") == 0) {
+        if (!strcmp(argv[2], "jit_signal_ownership")) {
+            test_jit_sigill_owner_precedes_arm64x_scan_source_contract();
+            test_jit_native_signal_quarantine_family_source_contract();
+            printf("%d passed, %d failed\n", tests_passed, tests_failed);
+            return tests_failed ? 1 : 0;
+        }
         if (!strcmp(argv[2], "rep_movs") || !strcmp(argv[2], "string_ops")) {
             printf("rep_movs_enter\n");
             printf("df=0\n");
@@ -24715,6 +24795,8 @@ int main(int argc, char** argv) {
     test_interp_call_push_fault_preserves_pc_and_rsp();
     test_jit_jcc_helper_fault_stops_before_pc_update();
     test_legitimate_zero_read_is_not_fault();
+    test_jit_sigill_owner_precedes_arm64x_scan_source_contract();
+    test_jit_native_signal_quarantine_family_source_contract();
     test_block_limit_env_0_unlimited();
     test_block_limit_explicit_fault();
     test_lifter_truncation_not_success();

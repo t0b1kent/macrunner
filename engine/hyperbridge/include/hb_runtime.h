@@ -88,13 +88,14 @@ typedef struct {
     uint64_t code_cache_full_reports;
     hb_cache_t* persistent_cache;
     bool code_cache_full;
-    /* Default-off SIGBUS recovery quarantine. This deliberately survives
+    /* Default-off native-signal recovery quarantine, shared by the SIGBUS
+     * invalidation and SIGILL ownership paths. This deliberately survives
      * hb_jit_runtime_reset(): retrying a native block that already faulted would
      * recreate the same signal loop after the code cache is reset. */
-    uint64_t* jit_sigbus_quarantine;
-    size_t jit_sigbus_quarantine_count;
-    size_t jit_sigbus_quarantine_capacity;
-    bool jit_sigbus_disable;
+    uint64_t* jit_signal_quarantine;
+    size_t jit_signal_quarantine_count;
+    size_t jit_signal_quarantine_capacity;
+    bool jit_signal_disable;
 } hb_jit_runtime_t;
 
 hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx);
@@ -107,6 +108,14 @@ void hb_jit_runtime_reset(hb_jit_runtime_t* rt, hb_context_t* ctx);
 hb_result_t hb_jit_runtime_compile(hb_jit_runtime_t* rt, const hb_ir_func_t* func);
 hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out);
 int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int signal,
+                                       const void* host_context);
+/* SIGILL ownership is selected by ntdll's cached, default-off gate.  Unlike the
+ * generic range-based path this claims any active TLS JIT guard: generated code
+ * can branch through a stale/corrupt native target outside the current slab.
+ * The signal handler supplies the already-probed instruction word so the
+ * runtime never dereferences an arbitrary fault PC after siglongjmp(). */
+int hb_jit_runtime_handle_owned_sigill(uint64_t pc, uint32_t native_word,
+                                       int native_word_valid,
                                        const void* host_context);
 
 /* Unified runtime entry */

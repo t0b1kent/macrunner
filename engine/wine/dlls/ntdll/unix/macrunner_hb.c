@@ -23248,6 +23248,12 @@ static int macrunner_hb_gfx_thread_event_probe_enabled(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_GFX_THREAD_EVENT_PROBE" );
 }
 
+static int macrunner_hb_ring_pop_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_RING_POP_PROBE" );
+}
+
 static int macrunner_hb_trace_waitaddr_mach_enabled(void)
 {
     static int cache = -1;
@@ -23297,6 +23303,45 @@ static uint64_t macrunner_hb_gfx_thread_wait_addr;
 static DWORD macrunner_hb_gfx_thread_tid;
 static unsigned int macrunner_hb_gfx_thread_event_emitted;
 static unsigned int macrunner_hb_gfx_thread_thunk_calls;
+static unsigned int macrunner_hb_ring_pop_probe_emitted;
+static unsigned int macrunner_hb_ring_pop_probe_sequence;
+
+struct macrunner_hb_ring_pop_probe_tls
+{
+    BOOL armed;
+    uint64_t sequence;
+    uint64_t unity_base;
+    uint64_t object;
+    uint64_t signal;
+    uint64_t blocks;
+    uint64_t callback180_attempts;
+    uint64_t callback118_attempts;
+    uint64_t pending180_return_rva;
+    uint64_t pending118_return_rva;
+};
+
+static __thread struct macrunner_hb_ring_pop_probe_tls macrunner_hb_ring_pop_probe_tls;
+
+struct macrunner_hb_ring_pop_snapshot
+{
+    uint32_t published_c0;
+    uint32_t worker_10c;
+    uint32_t worker_limit_110;
+    uint32_t consumer_114;
+    uint32_t write_148;
+    uint32_t capacity_14c;
+    uint32_t epoch_154;
+    uint32_t head_words[4];
+    uint32_t last_word;
+    uint64_t buffer_140;
+    uint64_t callback_118;
+    uint64_t callback_arg_120;
+    uint64_t callback_128;
+    uint64_t callback_180;
+    unsigned int valid;
+    unsigned int head_words_valid;
+    BOOL last_word_valid;
+};
 
 static void macrunner_hb_wait_wake_trace_thread_name( char *name, size_t size )
 {
@@ -23318,6 +23363,277 @@ static void macrunner_hb_wait_wake_trace_module( uint64_t pc, char *name, size_t
     if (!module) return;
     if (name && size) macrunner_hb_get_export_module_name( module, name, size );
     if (rva) *rva = pc - (uint64_t)(uintptr_t)module;
+}
+
+static int macrunner_hb_ring_pop_probe_take_slot(void)
+{
+    const char *value;
+    unsigned int limit, slot;
+
+    if (!macrunner_hb_ring_pop_probe_enabled()) return 0;
+    value = getenv( "MACRUNNER_HB_RING_POP_PROBE_BUDGET" );
+    limit = value && value[0] ? strtoul( value, NULL, 0 ) : 5000;
+    if (!limit) return 1;
+    slot = __atomic_fetch_add( &macrunner_hb_ring_pop_probe_emitted, 1, __ATOMIC_RELAXED );
+    if (slot < limit) return 1;
+    if (slot == limit)
+    {
+        fprintf( stderr, "macrunner-hb-ring-pop: stage=budget-exhausted limit=%u\n", limit );
+        fflush( stderr );
+    }
+    return 0;
+}
+
+static void macrunner_hb_ring_pop_probe_capture( hb_context_t *ctx, uint64_t object,
+                                                  struct macrunner_hb_ring_pop_snapshot *snap )
+{
+    uint32_t head_local;
+    unsigned int i;
+
+    memset( snap, 0, sizeof(*snap) );
+    if (!ctx || !ctx->memory || !object) return;
+    if (hb_memory_read_u32( ctx->memory, (hb_gva_t)object + 0xc0,
+                            &snap->published_c0 ) == HB_OK) snap->valid |= 1u << 0;
+    if (hb_memory_read_u32( ctx->memory, (hb_gva_t)object + 0x10c,
+                            &snap->worker_10c ) == HB_OK) snap->valid |= 1u << 1;
+    if (hb_memory_read_u32( ctx->memory, (hb_gva_t)object + 0x110,
+                            &snap->worker_limit_110 ) == HB_OK) snap->valid |= 1u << 2;
+    if (hb_memory_read_u32( ctx->memory, (hb_gva_t)object + 0x114,
+                            &snap->consumer_114 ) == HB_OK) snap->valid |= 1u << 3;
+    if (hb_memory_read_u64( ctx->memory, (hb_gva_t)object + 0x118,
+                            &snap->callback_118 ) == HB_OK) snap->valid |= 1u << 4;
+    if (hb_memory_read_u64( ctx->memory, (hb_gva_t)object + 0x120,
+                            &snap->callback_arg_120 ) == HB_OK) snap->valid |= 1u << 5;
+    if (hb_memory_read_u64( ctx->memory, (hb_gva_t)object + 0x128,
+                            &snap->callback_128 ) == HB_OK) snap->valid |= 1u << 6;
+    if (hb_memory_read_u64( ctx->memory, (hb_gva_t)object + 0x140,
+                            &snap->buffer_140 ) == HB_OK) snap->valid |= 1u << 7;
+    if (hb_memory_read_u32( ctx->memory, (hb_gva_t)object + 0x148,
+                            &snap->write_148 ) == HB_OK) snap->valid |= 1u << 8;
+    if (hb_memory_read_u32( ctx->memory, (hb_gva_t)object + 0x14c,
+                            &snap->capacity_14c ) == HB_OK) snap->valid |= 1u << 9;
+    if (hb_memory_read_u32( ctx->memory, (hb_gva_t)object + 0x154,
+                            &snap->epoch_154 ) == HB_OK) snap->valid |= 1u << 10;
+    if (hb_memory_read_u64( ctx->memory, (hb_gva_t)object + 0x180,
+                            &snap->callback_180 ) == HB_OK) snap->valid |= 1u << 11;
+
+    if (!snap->buffer_140 || !snap->capacity_14c || snap->capacity_14c > 0x40000000)
+        return;
+    if (snap->consumer_114 < snap->epoch_154) return;
+    head_local = snap->consumer_114 - snap->epoch_154;
+    for (i = 0; i < ARRAY_SIZE(snap->head_words); i++)
+    {
+        uint64_t offset = (uint64_t)head_local + i * sizeof(uint32_t);
+        if (offset + sizeof(uint32_t) > snap->capacity_14c) break;
+        if (hb_memory_read_u32( ctx->memory, (hb_gva_t)snap->buffer_140 + offset,
+                                &snap->head_words[i] ) != HB_OK) break;
+        snap->head_words_valid++;
+    }
+    if (snap->write_148 >= sizeof(uint32_t) && snap->write_148 <= snap->capacity_14c &&
+        hb_memory_read_u32( ctx->memory,
+                            (hb_gva_t)snap->buffer_140 + snap->write_148 - sizeof(uint32_t),
+                            &snap->last_word ) == HB_OK)
+        snap->last_word_valid = TRUE;
+}
+
+static void macrunner_hb_ring_pop_probe_log_snapshot( const char *stage, hb_context_t *ctx,
+                                                       uint64_t block_pc )
+{
+    struct macrunner_hb_ring_pop_probe_tls *tls = &macrunner_hb_ring_pop_probe_tls;
+    struct macrunner_hb_ring_pop_snapshot snap;
+    uint64_t block_rva = 0, next_rva = 0, callback118_rva = 0, callback180_rva = 0;
+    int64_t available;
+
+    if (!tls->armed || !macrunner_hb_ring_pop_probe_take_slot()) return;
+    macrunner_hb_ring_pop_probe_capture( ctx, tls->object, &snap );
+    if (block_pc >= tls->unity_base) block_rva = block_pc - tls->unity_base;
+    if (ctx->pc >= tls->unity_base) next_rva = ctx->pc - tls->unity_base;
+    if (snap.callback_118 >= tls->unity_base) callback118_rva = snap.callback_118 - tls->unity_base;
+    if (snap.callback_180 >= tls->unity_base) callback180_rva = snap.callback_180 - tls->unity_base;
+    available = (int64_t)(int32_t)(snap.published_c0 - snap.consumer_114);
+    fprintf( stderr, "macrunner-hb-ring-pop: stage=%s seq=%llu tid=%04lx object=%p signal=%p "
+             "block=%p block_rva=0x%llx next=%p next_rva=0x%llx blocks=%llu "
+             "published_c0=0x%x consumer_114=0x%x available=%lld worker_10c=0x%x "
+             "worker_limit_110=0x%x buffer_140=%p write_148=0x%x capacity_14c=0x%x "
+             "epoch_154=0x%x head_words=%08x,%08x,%08x,%08x head_valid=%u "
+             "last_word=%08x last_valid=%u cb180=%p cb180_rva=0x%llx "
+             "cb118=%p cb118_rva=0x%llx cb118_arg=%p cb128=%p valid=0x%x "
+             "attempt180=%llu attempt118=%llu\n",
+             stage ? stage : "snapshot", (unsigned long long)tls->sequence,
+             (unsigned long)GetCurrentThreadId(), (void *)(uintptr_t)tls->object,
+             (void *)(uintptr_t)tls->signal, (void *)(uintptr_t)block_pc,
+             (unsigned long long)block_rva, (void *)(uintptr_t)ctx->pc,
+             (unsigned long long)next_rva, (unsigned long long)tls->blocks,
+             snap.published_c0, snap.consumer_114, (long long)available,
+             snap.worker_10c, snap.worker_limit_110,
+             (void *)(uintptr_t)snap.buffer_140, snap.write_148, snap.capacity_14c,
+             snap.epoch_154, snap.head_words[0], snap.head_words[1],
+             snap.head_words[2], snap.head_words[3], snap.head_words_valid,
+             snap.last_word, snap.last_word_valid,
+             (void *)(uintptr_t)snap.callback_180, (unsigned long long)callback180_rva,
+             (void *)(uintptr_t)snap.callback_118, (unsigned long long)callback118_rva,
+             (void *)(uintptr_t)snap.callback_arg_120,
+             (void *)(uintptr_t)snap.callback_128, snap.valid,
+             (unsigned long long)tls->callback180_attempts,
+             (unsigned long long)tls->callback118_attempts );
+    fflush( stderr );
+}
+
+static void macrunner_hb_ring_pop_probe_wait( const char *event,
+                                               const struct macrunner_hb_wait_addr_entry *entry )
+{
+    struct macrunner_hb_ring_pop_probe_tls *tls = &macrunner_hb_ring_pop_probe_tls;
+    const char *reject = NULL;
+    uint64_t signal, unity_base;
+
+    if (!entry || !macrunner_hb_ring_pop_probe_enabled()) return;
+    if (!strcmp( event, "dequeue-wait" ))
+    {
+        if (tls->armed && macrunner_hb_ring_pop_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-ring-pop: stage=cycle-next-wait seq=%llu tid=%04lx "
+                     "object=%p signal=%p blocks=%llu attempt180=%llu attempt118=%llu\n",
+                     (unsigned long long)tls->sequence, (unsigned long)entry->tid,
+                     (void *)(uintptr_t)tls->object, (void *)(uintptr_t)tls->signal,
+                     (unsigned long long)tls->blocks,
+                     (unsigned long long)tls->callback180_attempts,
+                     (unsigned long long)tls->callback118_attempts );
+            fflush( stderr );
+        }
+        memset( tls, 0, sizeof(*tls) );
+        return;
+    }
+    if (strcmp( event, "dequeue-ready" ) && strcmp( event, "dequeue-immediate" )) return;
+    signal = entry->addr ? (uint64_t)(uintptr_t)entry->addr :
+             __atomic_load_n( &macrunner_hb_gfx_thread_wait_addr, __ATOMIC_ACQUIRE );
+    if (entry->caller_rva != 0x2aee71) reject = "caller-rva";
+    else if (!entry->caller) reject = "caller-null";
+    else if (!entry->parent_return) reject = "parent-null";
+    else if (signal < 0x60) reject = "signal-invalid";
+    unity_base = entry->caller - entry->caller_rva;
+    if (!reject && entry->parent_return != unity_base + 0x62b199) reject = "parent-rva";
+    if (reject)
+    {
+        if (macrunner_hb_ring_pop_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-ring-pop: stage=arm-reject reason=%s tid=%04lx "
+                     "event=%s caller=%p caller_rva=0x%llx parent=%p expected_parent=%p "
+                     "entry_signal=%p resolved_signal=%p\n", reject,
+                     (unsigned long)entry->tid, event,
+                     (void *)(uintptr_t)entry->caller,
+                     (unsigned long long)entry->caller_rva,
+                     (void *)(uintptr_t)entry->parent_return,
+                     (void *)(uintptr_t)(unity_base + 0x62b199), entry->addr,
+                     (void *)(uintptr_t)signal );
+            fflush( stderr );
+        }
+        return;
+    }
+
+    memset( tls, 0, sizeof(*tls) );
+    tls->armed = TRUE;
+    tls->sequence = __atomic_add_fetch( &macrunner_hb_ring_pop_probe_sequence, 1,
+                                        __ATOMIC_RELAXED );
+    tls->unity_base = unity_base;
+    tls->signal = signal;
+    /* Unity +0x62b190 loads RCX from [RDI+0x60]; the wait address is a
+     * separately allocated signal object, not an embedded object field.  RDI
+     * remains the worker object across the wait and is captured at resume. */
+    tls->object = 0;
+    if (macrunner_hb_ring_pop_probe_take_slot())
+    {
+        fprintf( stderr, "macrunner-hb-ring-pop: stage=armed seq=%llu tid=%04lx event=%s "
+                 "unity=%p object=%p signal=%p resume=%p\n",
+                 (unsigned long long)tls->sequence, (unsigned long)entry->tid,
+                 event, (void *)(uintptr_t)tls->unity_base, (void *)(uintptr_t)tls->object,
+                 (void *)(uintptr_t)tls->signal, (void *)(uintptr_t)entry->parent_return );
+        fflush( stderr );
+    }
+}
+
+static void macrunner_hb_ring_pop_probe_block( hb_context_t *ctx, uint64_t block_pc )
+{
+    struct macrunner_hb_ring_pop_probe_tls *tls = &macrunner_hb_ring_pop_probe_tls;
+    struct macrunner_hb_ring_pop_snapshot snap;
+    uint64_t block_rva, next_rva;
+
+    if (!tls->armed || !ctx || !macrunner_hb_ring_pop_probe_enabled()) return;
+    if (++tls->blocks > 4096)
+    {
+        macrunner_hb_ring_pop_probe_log_snapshot( "cycle-block-limit", ctx, block_pc );
+        memset( tls, 0, sizeof(*tls) );
+        return;
+    }
+    if (block_pc < tls->unity_base || ctx->pc < tls->unity_base) return;
+    block_rva = block_pc - tls->unity_base;
+    next_rva = ctx->pc - tls->unity_base;
+
+    if (!tls->object && block_rva >= 0x62b040 && block_rva <= 0x62b1fd &&
+        ctx->regs.x64.rdi)
+    {
+        uint64_t object_signal = 0;
+
+        tls->object = ctx->regs.x64.rdi;
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)tls->object + 0x60,
+                                  &object_signal );
+        if (macrunner_hb_ring_pop_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-ring-pop: stage=object-resolved seq=%llu "
+                     "tid=%04lx object=%p rdi=%p signal=%p object_signal=%p match=%d "
+                     "block_rva=0x%llx\n", (unsigned long long)tls->sequence,
+                     (unsigned long)GetCurrentThreadId(),
+                     (void *)(uintptr_t)tls->object,
+                     (void *)(uintptr_t)ctx->regs.x64.rdi,
+                     (void *)(uintptr_t)tls->signal,
+                     (void *)(uintptr_t)object_signal, object_signal == tls->signal,
+                     (unsigned long long)block_rva );
+            fflush( stderr );
+        }
+    }
+
+    if (tls->pending180_return_rva && next_rva == tls->pending180_return_rva)
+    {
+        macrunner_hb_ring_pop_probe_log_snapshot( "callback180-return", ctx, block_pc );
+        tls->pending180_return_rva = 0;
+    }
+    if (tls->pending118_return_rva && next_rva == tls->pending118_return_rva)
+    {
+        macrunner_hb_ring_pop_probe_log_snapshot( "callback118-return", ctx, block_pc );
+        tls->pending118_return_rva = 0;
+    }
+
+    if (block_rva == 0x62b0f0 || block_rva == 0x62b17e || block_rva == 0x62b199)
+    {
+        uint64_t return_rva = block_rva == 0x62b0f0 ? 0x62b102 :
+                              block_rva == 0x62b17e ? 0x62b190 : 0x62b1ab;
+        const char *stage = block_rva == 0x62b199 ? "postwake-callback180-call" :
+                            block_rva == 0x62b17e ? "prewait-callback180-call" :
+                                                   "loop-callback180-call";
+        macrunner_hb_ring_pop_probe_capture( ctx, tls->object, &snap );
+        tls->callback180_attempts++;
+        macrunner_hb_ring_pop_probe_log_snapshot( stage, ctx, block_pc );
+        if (snap.callback_180 && next_rva != return_rva)
+            tls->pending180_return_rva = return_rva;
+        else
+            macrunner_hb_ring_pop_probe_log_snapshot( "callback180-skipped", ctx, block_pc );
+    }
+    if (block_rva == 0x62b166 || block_rva == 0x62b1ab)
+    {
+        uint64_t return_rva = block_rva == 0x62b166 ? 0x62b17e : 0x62b1c3;
+        const char *stage = block_rva == 0x62b1ab ? "postwake-callback118-call" :
+                                                   "prewait-callback118-call";
+        macrunner_hb_ring_pop_probe_capture( ctx, tls->object, &snap );
+        tls->callback118_attempts++;
+        macrunner_hb_ring_pop_probe_log_snapshot( stage, ctx, block_pc );
+        if (snap.callback_118 && next_rva != return_rva)
+            tls->pending118_return_rva = return_rva;
+        else
+            macrunner_hb_ring_pop_probe_log_snapshot( "callback118-skipped", ctx, block_pc );
+    }
+    if (block_rva == 0x62b1c3)
+        macrunner_hb_ring_pop_probe_log_snapshot( "iteration-tail", ctx, block_pc );
+    if (block_rva == 0x62b1f5 || block_rva == 0x62b1fa || block_rva == 0x62b1fd)
+        macrunner_hb_ring_pop_probe_log_snapshot( "worker-return", ctx, block_pc );
 }
 
 static int macrunner_hb_gfx_thread_event_probe_take_slot(void)
@@ -23348,11 +23664,13 @@ static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
                                                        const struct macrunner_hb_wait_addr_entry *entry,
                                                        NTSTATUS status, BOOL status_valid )
 {
+    static LONG ring_gate_logged;
     char parent_module[64];
     uint64_t addr, current, parent_rva = 0;
     DWORD gfx_tid;
 
-    if (!entry || !macrunner_hb_gfx_thread_event_probe_enabled()) return;
+    if (!entry || (!macrunner_hb_gfx_thread_event_probe_enabled() &&
+                   !macrunner_hb_ring_pop_probe_enabled())) return;
     gfx_tid = __atomic_load_n( &macrunner_hb_gfx_thread_tid, __ATOMIC_ACQUIRE );
     if (macrunner_hb_gfx_thread_name( entry->thread_name ))
     {
@@ -23363,6 +23681,26 @@ static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
         gfx_tid = entry->tid;
     }
     if (!gfx_tid || entry->tid != gfx_tid) return;
+    if ((!strcmp( event, "dequeue-ready" ) || !strcmp( event, "dequeue-immediate" )) &&
+        entry->caller_rva == 0x2aee71 &&
+        !InterlockedCompareExchange( &ring_gate_logged, 1, 0 ))
+    {
+        const char *raw = getenv( "MACRUNNER_HB_RING_POP_PROBE" );
+        uint64_t signal = entry->addr ? (uint64_t)(uintptr_t)entry->addr :
+                          __atomic_load_n( &macrunner_hb_gfx_thread_wait_addr,
+                                           __ATOMIC_ACQUIRE );
+        fprintf( stderr, "macrunner-hb-ring-pop: stage=gate-check enabled=%d raw=%s "
+                 "tid=%04lx caller=%p caller_rva=0x%llx parent=%p "
+                 "entry_signal=%p resolved_signal=%p\n",
+                 macrunner_hb_ring_pop_probe_enabled(), raw ? raw : "<unset>",
+                 (unsigned long)entry->tid, (void *)(uintptr_t)entry->caller,
+                 (unsigned long long)entry->caller_rva,
+                 (void *)(uintptr_t)entry->parent_return, entry->addr,
+                 (void *)(uintptr_t)signal );
+        fflush( stderr );
+    }
+    macrunner_hb_ring_pop_probe_wait( event, entry );
+    if (!macrunner_hb_gfx_thread_event_probe_enabled()) return;
     if (!macrunner_hb_gfx_thread_event_probe_take_slot()) return;
 
     addr = entry->addr ? (uint64_t)(uintptr_t)entry->addr :
@@ -23891,7 +24229,8 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
     {
         uint64_t caller = (macrunner_hb_trace_waitaddr_enabled() ||
                            macrunner_hb_wait_wake_trace_enabled() ||
-                           macrunner_hb_gfx_thread_event_probe_enabled()) ?
+                           macrunner_hb_gfx_thread_event_probe_enabled() ||
+                           macrunner_hb_ring_pop_probe_enabled()) ?
             macrunner_hb_trace_return_address( ctx ) : 0;
         macrunner_hb_rtl_wake_address_all( ctx, (const void *)(uintptr_t)args[0],
                                            thunk->dll_name, thunk->import_name,
@@ -23946,7 +24285,8 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
         uint64_t stk0 = 0, stk1 = 0, stk5 = 0, stk10 = 0, stk11 = 0, stk12 = 0;
         unsigned int stk_mask = 0;
         if (macrunner_hb_trace_waitaddr_stack_enabled() ||
-            macrunner_hb_gfx_thread_event_probe_enabled())
+            macrunner_hb_gfx_thread_event_probe_enabled() ||
+            macrunner_hb_ring_pop_probe_enabled())
         {
             if (macrunner_hb_waitaddr_stack_slot( ctx, 0, &stk0 )) stk_mask |= 1u << 0;
             if (macrunner_hb_waitaddr_stack_slot( ctx, 1, &stk1 )) stk_mask |= 1u << 1;
@@ -23955,7 +24295,8 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
             if (macrunner_hb_waitaddr_stack_slot( ctx, 11, &stk11 )) stk_mask |= 1u << 11;
             if (macrunner_hb_waitaddr_stack_slot( ctx, 12, &stk12 )) stk_mask |= 1u << 12;
         }
-        if (macrunner_hb_gfx_thread_event_probe_enabled())
+        if (macrunner_hb_gfx_thread_event_probe_enabled() ||
+            macrunner_hb_ring_pop_probe_enabled())
             parent_return = macrunner_hb_trace_stack_address( ctx, 6 );
         timeout_ptr = macrunner_hb_get_nt_timeout( &timeout, (DWORD)args[3] );
         if (macrunner_hb_trace_wait_semantic_budget_allows())
@@ -24008,13 +24349,15 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
     {
         uint64_t caller = (macrunner_hb_trace_waitaddr_enabled() ||
                            macrunner_hb_wait_wake_trace_enabled() ||
-                           macrunner_hb_gfx_thread_event_probe_enabled()) ?
+                           macrunner_hb_gfx_thread_event_probe_enabled() ||
+                           macrunner_hb_ring_pop_probe_enabled()) ?
             macrunner_hb_trace_return_address( ctx ) : 0;
         uint64_t parent_return = 0;
         uint64_t stk0 = 0, stk1 = 0, stk5 = 0, stk10 = 0, stk11 = 0, stk12 = 0;
         unsigned int stk_mask = 0;
         if (macrunner_hb_trace_waitaddr_stack_enabled() ||
-            macrunner_hb_gfx_thread_event_probe_enabled())
+            macrunner_hb_gfx_thread_event_probe_enabled() ||
+            macrunner_hb_ring_pop_probe_enabled())
         {
             if (macrunner_hb_waitaddr_stack_slot( ctx, 0, &stk0 )) stk_mask |= 1u << 0;
             if (macrunner_hb_waitaddr_stack_slot( ctx, 1, &stk1 )) stk_mask |= 1u << 1;
@@ -24023,7 +24366,8 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
             if (macrunner_hb_waitaddr_stack_slot( ctx, 11, &stk11 )) stk_mask |= 1u << 11;
             if (macrunner_hb_waitaddr_stack_slot( ctx, 12, &stk12 )) stk_mask |= 1u << 12;
         }
-        if (macrunner_hb_gfx_thread_event_probe_enabled())
+        if (macrunner_hb_gfx_thread_event_probe_enabled() ||
+            macrunner_hb_ring_pop_probe_enabled())
             parent_return = macrunner_hb_trace_stack_address( ctx, 6 );
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
@@ -34644,6 +34988,7 @@ skip_version_semantic:
         macrunner_hb_exit_origin_after_block( ctx, ret, &out );
         macrunner_hb_main_009c_probe_block( label, ctx, image_start, block_pc, blocks,
                                             steps, ret, &out );
+        macrunner_hb_ring_pop_probe_block( ctx, block_pc );
         if (trace_unity_owner_block)
             macrunner_hb_trace_unity_owner_block( "after", ctx, image_start, block_pc );
         if (trace_unity_origin)

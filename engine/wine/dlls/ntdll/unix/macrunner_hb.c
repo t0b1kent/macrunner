@@ -23254,6 +23254,13 @@ static int macrunner_hb_ring_pop_probe_enabled(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_RING_POP_PROBE" );
 }
 
+static int macrunner_hb_readable_range_decode_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache,
+                                         "MACRUNNER_HB_READABLE_RANGE_DECODE_PROBE" );
+}
+
 static int macrunner_hb_trace_waitaddr_mach_enabled(void)
 {
     static int cache = -1;
@@ -23305,6 +23312,8 @@ static unsigned int macrunner_hb_gfx_thread_event_emitted;
 static unsigned int macrunner_hb_gfx_thread_thunk_calls;
 static unsigned int macrunner_hb_ring_pop_probe_emitted;
 static unsigned int macrunner_hb_ring_pop_probe_sequence;
+static unsigned int macrunner_hb_readable_range_decode_probe_emitted;
+static unsigned int macrunner_hb_readable_range_decode_probe_sequence;
 
 struct macrunner_hb_ring_pop_probe_tls
 {
@@ -23321,6 +23330,25 @@ struct macrunner_hb_ring_pop_probe_tls
 };
 
 static __thread struct macrunner_hb_ring_pop_probe_tls macrunner_hb_ring_pop_probe_tls;
+
+struct macrunner_hb_readable_range_decode_probe_tls
+{
+    BOOL armed;
+    BOOL selected;
+    BOOL caller_seen;
+    uint64_t sequence;
+    uint64_t unity_base;
+    uint64_t object;
+    uint64_t signal;
+    uint64_t packed;
+    uint64_t output;
+    uint64_t range_address;
+    uint64_t trace_blocks;
+    uint64_t previous_rsp;
+};
+
+static __thread struct macrunner_hb_readable_range_decode_probe_tls
+    macrunner_hb_readable_range_decode_probe_tls;
 
 struct macrunner_hb_ring_pop_snapshot
 {
@@ -23434,6 +23462,243 @@ static void macrunner_hb_ring_pop_probe_capture( hb_context_t *ctx, uint64_t obj
                             (hb_gva_t)snap->buffer_140 + snap->write_148 - sizeof(uint32_t),
                             &snap->last_word ) == HB_OK)
         snap->last_word_valid = TRUE;
+}
+
+static int macrunner_hb_readable_range_decode_probe_take_slot(void)
+{
+    const char *value;
+    unsigned int limit, slot;
+
+    if (!macrunner_hb_readable_range_decode_probe_enabled()) return 0;
+    value = getenv( "MACRUNNER_HB_READABLE_RANGE_DECODE_PROBE_BUDGET" );
+    limit = value && value[0] ? strtoul( value, NULL, 0 ) : 5000;
+    if (!limit) return 1;
+    slot = __atomic_fetch_add( &macrunner_hb_readable_range_decode_probe_emitted, 1,
+                               __ATOMIC_RELAXED );
+    if (slot < limit) return 1;
+    if (slot == limit)
+    {
+        fprintf( stderr, "macrunner-hb-readable-range: stage=budget-exhausted limit=%u\n",
+                 limit );
+        fflush( stderr );
+    }
+    return 0;
+}
+
+static void macrunner_hb_readable_range_decode_probe_wait(
+    const char *event, const struct macrunner_hb_wait_addr_entry *entry )
+{
+    struct macrunner_hb_readable_range_decode_probe_tls *tls =
+        &macrunner_hb_readable_range_decode_probe_tls;
+    uint64_t signal, unity_base;
+
+    if (!entry || !macrunner_hb_readable_range_decode_probe_enabled()) return;
+    if (!strcmp( event, "dequeue-wait" ))
+    {
+        if (tls->armed && macrunner_hb_readable_range_decode_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-readable-range: stage=cycle-end seq=%llu "
+                     "tid=%04lx selected=%u caller_seen=%u trace_blocks=%llu\n",
+                     (unsigned long long)tls->sequence, (unsigned long)entry->tid,
+                     tls->selected, tls->caller_seen,
+                     (unsigned long long)tls->trace_blocks );
+            fflush( stderr );
+        }
+        memset( tls, 0, sizeof(*tls) );
+        return;
+    }
+    if (strcmp( event, "dequeue-ready" ) && strcmp( event, "dequeue-immediate" )) return;
+    signal = entry->addr ? (uint64_t)(uintptr_t)entry->addr :
+             __atomic_load_n( &macrunner_hb_gfx_thread_wait_addr, __ATOMIC_ACQUIRE );
+    if (entry->caller_rva != 0x2aee71 || !entry->caller || !entry->parent_return ||
+        signal < 0x60)
+        return;
+    unity_base = entry->caller - entry->caller_rva;
+    if (entry->parent_return != unity_base + 0x62b199) return;
+
+    memset( tls, 0, sizeof(*tls) );
+    tls->armed = TRUE;
+    tls->sequence = __atomic_add_fetch( &macrunner_hb_readable_range_decode_probe_sequence,
+                                        1, __ATOMIC_RELAXED );
+    tls->unity_base = unity_base;
+    tls->signal = signal;
+}
+
+static void macrunner_hb_readable_range_decode_probe_log_range(
+    hb_context_t *ctx, uint64_t block_pc, uint64_t packed, uint64_t output )
+{
+    struct macrunner_hb_readable_range_decode_probe_tls *tls =
+        &macrunner_hb_readable_range_decode_probe_tls;
+    struct macrunner_hb_ring_pop_snapshot snap;
+    unsigned char bytes[96];
+    char hex[sizeof(bytes) * 2 + 1];
+    uint64_t output_value = 0, range_start, range_end, range_span = 0;
+    uint64_t local_start, range_size;
+    uint64_t readable_address = 0;
+    size_t capture = 0, i;
+    BOOL output_valid = FALSE, bytes_valid = FALSE, contains_27a9 = FALSE;
+
+    if (!ctx || !ctx->memory || !tls->object) return;
+    macrunner_hb_ring_pop_probe_capture( ctx, tls->object, &snap );
+    tls->packed = packed;
+    tls->output = output;
+    range_start = (uint32_t)tls->packed;
+    range_end = tls->packed >> 32;
+    if (range_end >= range_start) range_span = range_end - range_start;
+    if (tls->output && hb_memory_read_u64( ctx->memory, tls->output,
+                                           &output_value ) == HB_OK)
+        output_valid = TRUE;
+    if (snap.buffer_140 && snap.capacity_14c && range_start >= snap.consumer_114 &&
+        range_end >= range_start)
+    {
+        local_start = range_start - snap.consumer_114;
+        range_size = range_end - range_start;
+        if (local_start <= snap.capacity_14c && range_size <= snap.capacity_14c - local_start)
+        {
+            readable_address = snap.buffer_140 + local_start;
+            capture = range_size < sizeof(bytes) ? range_size : sizeof(bytes);
+            if (capture && hb_memory_read( ctx->memory, readable_address, bytes,
+                                           capture ) == HB_OK)
+            {
+                bytes_valid = TRUE;
+                for (i = 0; i < capture; i++) snprintf( hex + i * 2, 3, "%02x", bytes[i] );
+                hex[capture * 2] = 0;
+                for (i = 0; i + sizeof(uint32_t) <= capture; i++)
+                {
+                    uint32_t word;
+                    memcpy( &word, bytes + i, sizeof(word) );
+                    if (word == 0x27a9)
+                    {
+                        contains_27a9 = TRUE;
+                        tls->range_address = readable_address + i;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!bytes_valid) strcpy( hex, "<unreadable>" );
+    tls->selected = contains_27a9;
+    if (!macrunner_hb_readable_range_decode_probe_take_slot()) return;
+    fprintf( stderr, "macrunner-hb-readable-range: stage=range-return seq=%llu tid=%04lx "
+             "block=%p block_rva=0x%llx object=%p signal=%p output=%p "
+             "output_value=0x%llx output_valid=%u packed=0x%llx start=0x%llx end=0x%llx "
+             "span=%llu base_114=0x%x limit_10c=0x%x published_c0=0x%x buffer=%p "
+             "range_addr=%p capture=%zu bytes_valid=%u bytes=%s contains_27a9=%u "
+             "token_addr=%p\n",
+             (unsigned long long)tls->sequence, (unsigned long)GetCurrentThreadId(),
+             (void *)(uintptr_t)block_pc,
+             (unsigned long long)(block_pc - tls->unity_base),
+             (void *)(uintptr_t)tls->object, (void *)(uintptr_t)tls->signal,
+             (void *)(uintptr_t)tls->output, (unsigned long long)output_value,
+             output_valid, (unsigned long long)tls->packed,
+             (unsigned long long)range_start, (unsigned long long)range_end,
+             (unsigned long long)range_span, snap.consumer_114,
+             snap.worker_10c, snap.published_c0, (void *)(uintptr_t)snap.buffer_140,
+             (void *)(uintptr_t)readable_address, capture, bytes_valid, hex,
+             contains_27a9, (void *)(uintptr_t)tls->range_address );
+    fflush( stderr );
+}
+
+static void macrunner_hb_readable_range_decode_probe_pre_block( hb_context_t *ctx,
+                                                                 uint64_t block_pc )
+{
+    struct macrunner_hb_readable_range_decode_probe_tls *tls =
+        &macrunner_hb_readable_range_decode_probe_tls;
+    struct macrunner_hb_ring_pop_snapshot snap;
+    uint64_t block_rva;
+    int32_t available;
+    uint32_t effective_readable;
+
+    if (!tls->armed || !ctx || !macrunner_hb_readable_range_decode_probe_enabled() ||
+        block_pc < tls->unity_base)
+        return;
+    block_rva = block_pc - tls->unity_base;
+    if (!tls->object && block_rva >= 0x62b040 && block_rva <= 0x62b1fd &&
+        ctx->regs.x64.rdi)
+        tls->object = ctx->regs.x64.rdi;
+    if (block_rva != 0x62b1c3 || !tls->object) return;
+
+    macrunner_hb_ring_pop_probe_capture( ctx, tls->object, &snap );
+    /* HyperBridge may fuse the refill epilogue, 0x62a0c0 return and its caller
+     * continuation into this translated block.  Capture the packed range while
+     * RBX/R14 still hold the refill input/output.  Only the iteration that can
+     * exit is the semantic range return.  +0x10c is stale at block entry: this
+     * block first recomputes it as max(0, c0 - 114), clamped to +0x110. */
+    if ((snap.valid & ((1u << 0) | (1u << 2) | (1u << 3))) !=
+        ((1u << 0) | (1u << 2) | (1u << 3)))
+        return;
+    available = (int32_t)(snap.published_c0 - snap.consumer_114);
+    effective_readable = available > 0 ? (uint32_t)available : 0;
+    if (effective_readable > snap.worker_limit_110)
+        effective_readable = snap.worker_limit_110;
+    if ((uint32_t)ctx->regs.x64.r15 > effective_readable) return;
+    macrunner_hb_readable_range_decode_probe_log_range( ctx, block_pc,
+                                                         ctx->regs.x64.rbx,
+                                                         ctx->regs.x64.r14 );
+}
+
+static void macrunner_hb_readable_range_decode_probe_block( hb_context_t *ctx,
+                                                             uint64_t block_pc )
+{
+    struct macrunner_hb_readable_range_decode_probe_tls *tls =
+        &macrunner_hb_readable_range_decode_probe_tls;
+    char block_module[64], next_module[64];
+    uint64_t block_rva = 0, next_rva = 0;
+    int64_t rsp_delta;
+
+    if (!tls->armed || !ctx || !macrunner_hb_readable_range_decode_probe_enabled()) return;
+    macrunner_hb_wait_wake_trace_module( block_pc, block_module, sizeof(block_module),
+                                         &block_rva );
+    if (block_pc >= tls->unity_base) block_rva = block_pc - tls->unity_base;
+    if (!tls->object && block_pc >= tls->unity_base + 0x62b040 &&
+        block_pc <= tls->unity_base + 0x62b1fd && ctx->regs.x64.rdi)
+        tls->object = ctx->regs.x64.rdi;
+
+    if ((block_rva == 0x62b1c3 || block_rva == 0x62a1dc) && tls->selected)
+    {
+        tls->caller_seen = TRUE;
+        tls->previous_rsp = ctx->regs.x64.rsp;
+        macrunner_hb_wait_wake_trace_module( ctx->pc, next_module, sizeof(next_module),
+                                             &next_rva );
+        if (macrunner_hb_readable_range_decode_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-readable-range: stage=consumer-return seq=%llu "
+                     "tid=%04lx packed=0x%llx token_addr=%p caller=%p caller_module=%s "
+                     "caller_rva=0x%llx rsp=%p\n",
+                     (unsigned long long)tls->sequence, (unsigned long)GetCurrentThreadId(),
+                     (unsigned long long)tls->packed,
+                     (void *)(uintptr_t)tls->range_address, (void *)(uintptr_t)ctx->pc,
+                     next_module[0] ? next_module : "?", (unsigned long long)next_rva,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp );
+            fflush( stderr );
+        }
+        return;
+    }
+    if (!tls->selected || !tls->caller_seen || tls->trace_blocks >= 1024) return;
+
+    tls->trace_blocks++;
+    macrunner_hb_wait_wake_trace_module( ctx->pc, next_module, sizeof(next_module),
+                                         &next_rva );
+    rsp_delta = tls->previous_rsp ? (int64_t)ctx->regs.x64.rsp -
+                                    (int64_t)tls->previous_rsp : 0;
+    tls->previous_rsp = ctx->regs.x64.rsp;
+    if (!macrunner_hb_readable_range_decode_probe_take_slot()) return;
+    fprintf( stderr, "macrunner-hb-readable-range: stage=decode-flow seq=%llu tid=%04lx "
+             "n=%llu block=%p block_module=%s block_rva=0x%llx next=%p next_module=%s "
+             "next_rva=0x%llx rsp=%p rsp_delta=%lld rax=%p rbx=%p rcx=%p rdx=%p "
+             "r8=%p r9=%p r10=%p r11=%p\n",
+             (unsigned long long)tls->sequence, (unsigned long)GetCurrentThreadId(),
+             (unsigned long long)tls->trace_blocks, (void *)(uintptr_t)block_pc,
+             block_module[0] ? block_module : "?", (unsigned long long)block_rva,
+             (void *)(uintptr_t)ctx->pc, next_module[0] ? next_module : "?",
+             (unsigned long long)next_rva, (void *)(uintptr_t)ctx->regs.x64.rsp,
+             (long long)rsp_delta, (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx, (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9, (void *)(uintptr_t)ctx->regs.x64.r10,
+             (void *)(uintptr_t)ctx->regs.x64.r11 );
+    fflush( stderr );
 }
 
 static void macrunner_hb_ring_pop_probe_log_snapshot( const char *stage, hb_context_t *ctx,
@@ -23670,7 +23935,8 @@ static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
     DWORD gfx_tid;
 
     if (!entry || (!macrunner_hb_gfx_thread_event_probe_enabled() &&
-                   !macrunner_hb_ring_pop_probe_enabled())) return;
+                   !macrunner_hb_ring_pop_probe_enabled() &&
+                   !macrunner_hb_readable_range_decode_probe_enabled())) return;
     gfx_tid = __atomic_load_n( &macrunner_hb_gfx_thread_tid, __ATOMIC_ACQUIRE );
     if (macrunner_hb_gfx_thread_name( entry->thread_name ))
     {
@@ -23700,6 +23966,7 @@ static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
         fflush( stderr );
     }
     macrunner_hb_ring_pop_probe_wait( event, entry );
+    macrunner_hb_readable_range_decode_probe_wait( event, entry );
     if (!macrunner_hb_gfx_thread_event_probe_enabled()) return;
     if (!macrunner_hb_gfx_thread_event_probe_take_slot()) return;
 
@@ -34896,6 +35163,7 @@ skip_version_semantic:
         }
         if (trace_unity_owner_block)
             macrunner_hb_trace_unity_owner_block( "before", ctx, image_start, block_pc );
+        macrunner_hb_readable_range_decode_probe_pre_block( ctx, block_pc );
         if (trace_unity_origin)
             macrunner_hb_trace_unity_origin( "before", ctx, image_start, block_pc );
         if (trace_vfunc58_scan)
@@ -34989,6 +35257,7 @@ skip_version_semantic:
         macrunner_hb_main_009c_probe_block( label, ctx, image_start, block_pc, blocks,
                                             steps, ret, &out );
         macrunner_hb_ring_pop_probe_block( ctx, block_pc );
+        macrunner_hb_readable_range_decode_probe_block( ctx, block_pc );
         if (trace_unity_owner_block)
             macrunner_hb_trace_unity_owner_block( "after", ctx, image_start, block_pc );
         if (trace_unity_origin)

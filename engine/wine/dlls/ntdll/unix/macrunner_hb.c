@@ -5356,10 +5356,30 @@ static BOOL macrunner_hb_dxmt_method_trace_enabled(void)
 {
     static int cache = -1;
     static int present_sched_cache = -1;
+    static int object_aware_cache = -1;
+    static int post_makeassoc_cache = -1;
 
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_DXMT_METHOD_TRACE" ) ||
            macrunner_hb_cached_env_flag( &present_sched_cache,
-                                         "MACRUNNER_HB_PRESENT_SCHEDULING_PROBE" );
+                                         "MACRUNNER_HB_PRESENT_SCHEDULING_PROBE" ) ||
+           macrunner_hb_cached_env_flag( &object_aware_cache,
+                                         "MACRUNNER_HB_DXMT_OBJECT_AWARE_TRACE" ) ||
+           macrunner_hb_cached_env_flag( &post_makeassoc_cache,
+                                         "MACRUNNER_HB_MAIN_POST_MAKEASSOC_PROBE" );
+}
+
+static BOOL macrunner_hb_dxmt_object_aware_trace_enabled(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_DXMT_OBJECT_AWARE_TRACE" );
+}
+
+static BOOL macrunner_hb_main_post_makeassoc_probe_enabled(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_MAIN_POST_MAKEASSOC_PROBE" );
 }
 
 static int macrunner_hb_post_swapchain_wait_trace_budget_allows(void)
@@ -6039,10 +6059,11 @@ static BOOL macrunner_hb_dxmt_com_import_slot( const char *import_name, unsigned
     return TRUE;
 }
 
-#define MACRUNNER_HB_DXGI_SWAPCHAIN_MAX 32
+#define MACRUNNER_HB_DXGI_OBJECT_MAX 32
 
 static pthread_mutex_t macrunner_hb_dxgi_swapchain_mutex = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t macrunner_hb_dxgi_swapchains[MACRUNNER_HB_DXGI_SWAPCHAIN_MAX];
+static uint64_t macrunner_hb_dxgi_factories[MACRUNNER_HB_DXGI_OBJECT_MAX];
+static uint64_t macrunner_hb_dxgi_swapchains[MACRUNNER_HB_DXGI_OBJECT_MAX];
 static int macrunner_hb_dxgi_swapchain_create_seen;
 static uint64_t macrunner_hb_dxgi_swapchain_creator_tid;
 static uint64_t macrunner_hb_dxgi_swapchain_creator_native_tid;
@@ -6069,15 +6090,29 @@ static const char *macrunner_hb_dxgi_factory_slot_name( unsigned int slot, unsig
     if (pp_index) *pp_index = UINT_MAX;
     switch (slot)
     {
+    case 7:  return "EnumAdapters";
+    case 8:  return "MakeWindowAssociation";
+    case 9:  return "GetWindowAssociation";
     case 10:
         if (pp_index) *pp_index = 3;
         return "CreateSwapChain";
+    case 11: return "CreateSoftwareAdapter";
+    case 12: return "EnumAdapters1";
+    case 13: return "IsCurrent";
+    case 14: return "IsWindowedStereoEnabled";
     case 15:
         if (pp_index) *pp_index = 6;
         return "CreateSwapChainForHwnd";
     case 16:
         if (pp_index) *pp_index = 5;
         return "CreateSwapChainForCoreWindow";
+    case 17: return "GetSharedResourceAdapterLuid";
+    case 18: return "RegisterStereoStatusWindow";
+    case 19: return "RegisterStereoStatusEvent";
+    case 20: return "UnregisterStereoStatus";
+    case 21: return "RegisterOcclusionStatusWindow";
+    case 22: return "RegisterOcclusionStatusEvent";
+    case 23: return "UnregisterOcclusionStatus";
     case 24:
         if (pp_index) *pp_index = 3;
         return "CreateSwapChainForComposition";
@@ -6108,6 +6143,31 @@ static BOOL macrunner_hb_dxgi_swapchain_known_locked( uint64_t object )
     return FALSE;
 }
 
+static BOOL macrunner_hb_dxgi_factory_known_locked( uint64_t object )
+{
+    unsigned int i;
+
+    if (!object) return FALSE;
+    for (i = 0; i < ARRAY_SIZE(macrunner_hb_dxgi_factories); i++)
+        if (macrunner_hb_dxgi_factories[i] == object) return TRUE;
+    return FALSE;
+}
+
+static void macrunner_hb_dxgi_factory_remember_locked( uint64_t object )
+{
+    unsigned int i;
+
+    if (!object || macrunner_hb_dxgi_factory_known_locked( object )) return;
+    for (i = 0; i < ARRAY_SIZE(macrunner_hb_dxgi_factories); i++)
+    {
+        if (!macrunner_hb_dxgi_factories[i])
+        {
+            macrunner_hb_dxgi_factories[i] = object;
+            return;
+        }
+    }
+}
+
 static void macrunner_hb_dxgi_swapchain_remember_locked( uint64_t object )
 {
     unsigned int i;
@@ -6127,20 +6187,23 @@ static void macrunner_hb_trace_dxgi_swapchain(
     hb_context_t *ctx, const struct macrunner_hb_import_thunk *thunk,
     uint64_t ret_addr, uint64_t rc, const uint64_t *args, unsigned int arg_count )
 {
-    const char *factory_method, *swapchain_method;
+    const char *factory_slot_method, *factory_method, *swapchain_method;
     unsigned int slot, pp_index = UINT_MAX;
-    BOOL known_swapchain = FALSE;
+    BOOL known_factory = FALSE, known_swapchain = FALSE;
     uint64_t swapchain = 0, query_object = 0;
 
-    if (!macrunner_hb_dxgi_swapchain_trace_enabled() || !thunk || !args) return;
+    if ((!macrunner_hb_dxgi_swapchain_trace_enabled() &&
+         !macrunner_hb_dxmt_object_aware_trace_enabled() &&
+         !macrunner_hb_main_post_makeassoc_probe_enabled()) || !thunk || !args) return;
     if (!macrunner_hb_dxmt_com_import_slot( thunk->import_name, &slot )) return;
 
-    factory_method = macrunner_hb_dxgi_factory_slot_name( slot, &pp_index );
-    if (factory_method && rc == 0 && pp_index < arg_count && args[pp_index] >= 0x10000 &&
+    factory_slot_method = macrunner_hb_dxgi_factory_slot_name( slot, &pp_index );
+    if (factory_slot_method && rc == 0 && pp_index < arg_count && args[pp_index] >= 0x10000 &&
         macrunner_hb_read_local_memory( (uintptr_t)args[pp_index], &swapchain, sizeof(swapchain) ) &&
         swapchain)
     {
         pthread_mutex_lock( &macrunner_hb_dxgi_swapchain_mutex );
+        macrunner_hb_dxgi_factory_remember_locked( args[0] );
         macrunner_hb_dxgi_swapchain_remember_locked( swapchain );
         pthread_mutex_unlock( &macrunner_hb_dxgi_swapchain_mutex );
         __atomic_store_n( &macrunner_hb_dxgi_swapchain_creator_tid,
@@ -6161,7 +6224,7 @@ static void macrunner_hb_trace_dxgi_swapchain(
         fprintf( stderr,
                  "macrunner-hb-dxgi-swapchain: create method=%s slot=%u tid=0x%llx native_tid=0x%llx factory=%p swapchain=%p "
                  "pp=%p hwnd=%p desc=%p rc=%p ret_addr=%p pc=%p\n",
-                 factory_method, slot, (unsigned long long)macrunner_hb_current_tid64(),
+                 factory_slot_method, slot, (unsigned long long)macrunner_hb_current_tid64(),
                  (unsigned long long)macrunner_hb_current_native_tid64(),
                  (void *)(uintptr_t)args[0],
                  (void *)(uintptr_t)swapchain, (void *)(uintptr_t)args[pp_index],
@@ -6175,11 +6238,13 @@ static void macrunner_hb_trace_dxgi_swapchain(
     }
 
     pthread_mutex_lock( &macrunner_hb_dxgi_swapchain_mutex );
+    known_factory = arg_count > 0 && macrunner_hb_dxgi_factory_known_locked( args[0] );
     known_swapchain = arg_count > 0 && macrunner_hb_dxgi_swapchain_known_locked( args[0] );
     pthread_mutex_unlock( &macrunner_hb_dxgi_swapchain_mutex );
 
-    swapchain_method = macrunner_hb_dxgi_swapchain_slot_name( slot );
-    if (!known_swapchain && (slot == 8 || slot == 22))
+    factory_method = known_factory ? factory_slot_method : NULL;
+    swapchain_method = known_swapchain ? macrunner_hb_dxgi_swapchain_slot_name( slot ) : NULL;
+    if (!known_factory && !known_swapchain && (slot == 8 || slot == 22))
     {
         static unsigned int candidate_count;
         unsigned int n = __atomic_fetch_add( &candidate_count, 1, __ATOMIC_RELAXED );
@@ -6187,9 +6252,9 @@ static void macrunner_hb_trace_dxgi_swapchain(
         if (n < 128)
         {
             fprintf( stderr,
-                     "macrunner-hb-dxgi-swapchain: candidate method=%s slot=%u object=%p rc=%p "
+                     "macrunner-hb-dxgi-object: candidate method=unknown slot=%u object=%p rc=%p "
                      "a1=%p a2=%p a3=%p ret_addr=%p pc=%p import=%s\n",
-                     swapchain_method ? swapchain_method : "unknown", slot,
+                     slot,
                      (void *)(uintptr_t)(arg_count > 0 ? args[0] : 0),
                      (void *)(uintptr_t)rc,
                      (void *)(uintptr_t)(arg_count > 1 ? args[1] : 0),
@@ -6200,6 +6265,30 @@ static void macrunner_hb_trace_dxgi_swapchain(
                      thunk->import_name );
             fflush( stderr );
         }
+    }
+
+    if (known_factory && slot == 0 && rc == 0 && arg_count > 2 && args[2] >= 0x10000 &&
+        macrunner_hb_read_local_memory( (uintptr_t)args[2], &query_object, sizeof(query_object) ) &&
+        query_object)
+    {
+        pthread_mutex_lock( &macrunner_hb_dxgi_swapchain_mutex );
+        macrunner_hb_dxgi_factory_remember_locked( query_object );
+        pthread_mutex_unlock( &macrunner_hb_dxgi_swapchain_mutex );
+    }
+
+    if (known_factory)
+    {
+        fprintf( stderr,
+                 "macrunner-hb-dxgi-object: type=factory method=%s slot=%u object=%p rc=%p "
+                 "a1=%p a2=%p a3=%p ret_addr=%p pc=%p\n",
+                 factory_method ? factory_method : "unknown", slot,
+                 (void *)(uintptr_t)args[0], (void *)(uintptr_t)rc,
+                 (void *)(uintptr_t)(arg_count > 1 ? args[1] : 0),
+                 (void *)(uintptr_t)(arg_count > 2 ? args[2] : 0),
+                 (void *)(uintptr_t)(arg_count > 3 ? args[3] : 0),
+                 (void *)(uintptr_t)ret_addr,
+                 ctx ? (void *)(uintptr_t)ctx->pc : NULL );
+        fflush( stderr );
     }
     if (!known_swapchain) return;
 
@@ -7500,6 +7589,154 @@ static const char *macrunner_hb_dxmt_method_probe_name( unsigned int slot,
     return "dxmt-com";
 }
 
+static int macrunner_hb_main_post_makeassoc_armed;
+static uint64_t macrunner_hb_main_post_makeassoc_tid;
+static uint64_t macrunner_hb_main_post_makeassoc_native_tid;
+static uint64_t macrunner_hb_main_post_makeassoc_start_us;
+static uint64_t macrunner_hb_main_post_makeassoc_last_log_us;
+static uint64_t macrunner_hb_main_post_makeassoc_last_block_us;
+static uint64_t macrunner_hb_main_post_makeassoc_last_block_pc;
+static uint64_t macrunner_hb_main_post_makeassoc_block_entries;
+static uint64_t macrunner_hb_main_post_makeassoc_factory;
+static uint64_t macrunner_hb_main_post_makeassoc_swapchain;
+
+static void macrunner_hb_main_post_makeassoc_probe_arm( hb_context_t *ctx,
+                                                        uint64_t factory,
+                                                        uint64_t hwnd,
+                                                        uint64_t ret_addr,
+                                                        const char *caller_name,
+                                                        uint64_t caller_rva )
+{
+    uint64_t now_us;
+    int expected = 0;
+
+    if (!macrunner_hb_main_post_makeassoc_probe_enabled()) return;
+    if (!__atomic_compare_exchange_n( &macrunner_hb_main_post_makeassoc_armed, &expected, 1,
+                                      0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE )) return;
+
+    now_us = macrunner_hb_now_us();
+    __atomic_store_n( &macrunner_hb_main_post_makeassoc_tid,
+                      macrunner_hb_current_tid64(), __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_main_post_makeassoc_native_tid,
+                      macrunner_hb_current_native_tid64(), __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_main_post_makeassoc_start_us, now_us, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_main_post_makeassoc_last_log_us, now_us,
+                      __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_main_post_makeassoc_last_block_us, now_us,
+                      __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_main_post_makeassoc_factory, factory, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_main_post_makeassoc_swapchain,
+                      __atomic_load_n( &macrunner_hb_dxgi_swapchain_creator_object,
+                                       __ATOMIC_ACQUIRE ),
+                      __ATOMIC_RELEASE );
+    fprintf( stderr,
+             "macrunner-hb-main-post-makeassoc: event=armed tid=0x%llx native_tid=0x%llx "
+             "factory=%p swapchain=%p hwnd=%p caller=%p caller_module=%s "
+             "caller_rva=0x%llx pc=%p\n",
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             (void *)(uintptr_t)factory,
+             (void *)(uintptr_t)__atomic_load_n( &macrunner_hb_main_post_makeassoc_swapchain,
+                                                  __ATOMIC_ACQUIRE ),
+             (void *)(uintptr_t)hwnd, (void *)(uintptr_t)ret_addr,
+             caller_name && caller_name[0] ? caller_name : "?",
+             (unsigned long long)caller_rva, ctx ? (void *)(uintptr_t)ctx->pc : NULL );
+    fflush( stderr );
+}
+
+static void macrunner_hb_main_post_makeassoc_probe_before_block( const char *label,
+                                                                 hb_context_t *ctx,
+                                                                 uint64_t block_pc,
+                                                                 uint64_t blocks,
+                                                                 uint64_t steps )
+{
+    char module_name[128] = "";
+    uint64_t rva = 0, now_us, start_us, previous_log_us, entry;
+    BOOL periodic = FALSE;
+
+    if (!macrunner_hb_main_post_makeassoc_probe_enabled() || !ctx || !block_pc) return;
+    if (!__atomic_load_n( &macrunner_hb_main_post_makeassoc_armed, __ATOMIC_ACQUIRE )) return;
+    if (__atomic_load_n( &macrunner_hb_main_post_makeassoc_tid, __ATOMIC_ACQUIRE ) !=
+        macrunner_hb_current_tid64()) return;
+
+    now_us = macrunner_hb_now_us();
+    start_us = __atomic_load_n( &macrunner_hb_main_post_makeassoc_start_us, __ATOMIC_ACQUIRE );
+    entry = __atomic_add_fetch( &macrunner_hb_main_post_makeassoc_block_entries, 1,
+                                __ATOMIC_ACQ_REL );
+    __atomic_store_n( &macrunner_hb_main_post_makeassoc_last_block_pc, block_pc, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_main_post_makeassoc_last_block_us, now_us, __ATOMIC_RELEASE );
+
+    if (entry > 96)
+    {
+        previous_log_us = __atomic_load_n( &macrunner_hb_main_post_makeassoc_last_log_us,
+                                           __ATOMIC_ACQUIRE );
+        if (now_us < previous_log_us || now_us - previous_log_us < 5000000) return;
+        if (!__atomic_compare_exchange_n( &macrunner_hb_main_post_makeassoc_last_log_us,
+                                          &previous_log_us, now_us, 0,
+                                          __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE )) return;
+        periodic = TRUE;
+    }
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module_name, sizeof(module_name), &rva );
+    fprintf( stderr,
+             "macrunner-hb-main-post-makeassoc: event=block sample=%s entry=%llu label=%s "
+             "since_ms=%llu tid=0x%llx native_tid=0x%llx pc=%p module=%s rva=0x%llx "
+             "ctx_pc=%p rsp=%p rbp=%p rax=%p rcx=%p rdx=%p r8=%p r9=%p "
+             "blocks=%s steps=%s\n",
+             periodic ? "periodic" : "initial", (unsigned long long)entry,
+             label ? label : "entry",
+             (unsigned long long)(now_us >= start_us ? (now_us - start_us) / 1000 : 0),
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             (void *)(uintptr_t)block_pc, module_name[0] ? module_name : "?",
+             (unsigned long long)rva, (void *)(uintptr_t)ctx->pc,
+             (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)ctx->regs.x64.rbp,
+             (void *)(uintptr_t)ctx->regs.x64.rax, (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9, wine_dbgstr_longlong(blocks),
+             wine_dbgstr_longlong(steps) );
+    fflush( stderr );
+}
+
+static void macrunner_hb_main_post_makeassoc_probe_import(
+    hb_context_t *ctx, const struct macrunner_hb_import_thunk *thunk,
+    const char *phase, uint64_t ret_addr, uint64_t rc,
+    const uint64_t *args, unsigned int arg_count )
+{
+    static unsigned int reports;
+    char caller_name[128] = "";
+    uint64_t caller_rva = 0, start_us, now_us;
+    unsigned int report;
+
+    if (!macrunner_hb_main_post_makeassoc_probe_enabled() || !ctx || !thunk || !phase) return;
+    if (!__atomic_load_n( &macrunner_hb_main_post_makeassoc_armed, __ATOMIC_ACQUIRE )) return;
+    if (__atomic_load_n( &macrunner_hb_main_post_makeassoc_tid, __ATOMIC_ACQUIRE ) !=
+        macrunner_hb_current_tid64()) return;
+    report = __atomic_add_fetch( &reports, 1, __ATOMIC_ACQ_REL );
+    if (report > 256) return;
+
+    now_us = macrunner_hb_now_us();
+    start_us = __atomic_load_n( &macrunner_hb_main_post_makeassoc_start_us, __ATOMIC_ACQUIRE );
+    macrunner_hb_post_signal_probe_module_rva( ret_addr, caller_name, sizeof(caller_name),
+                                               &caller_rva );
+    fprintf( stderr,
+             "macrunner-hb-main-post-makeassoc: event=import hit=%u phase=%s since_ms=%llu "
+             "tid=0x%llx native_tid=0x%llx import=%s!%s caller=%p caller_module=%s "
+             "caller_rva=0x%llx pc=%p rc=%p a0=%p a1=%p a2=%p a3=%p\n",
+             report, phase,
+             (unsigned long long)(now_us >= start_us ? (now_us - start_us) / 1000 : 0),
+             (unsigned long long)macrunner_hb_current_tid64(),
+             (unsigned long long)macrunner_hb_current_native_tid64(),
+             thunk->dll_name, thunk->import_name, (void *)(uintptr_t)ret_addr,
+             caller_name[0] ? caller_name : "?", (unsigned long long)caller_rva,
+             (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)rc,
+             (void *)(uintptr_t)(arg_count > 0 ? args[0] : 0),
+             (void *)(uintptr_t)(arg_count > 1 ? args[1] : 0),
+             (void *)(uintptr_t)(arg_count > 2 ? args[2] : 0),
+             (void *)(uintptr_t)(arg_count > 3 ? args[3] : 0) );
+    fflush( stderr );
+}
+
 static void macrunner_hb_trace_dxmt_method_probe(
     hb_context_t *ctx, const struct macrunner_hb_import_thunk *thunk,
     const char *phase, uint64_t ret_addr, uint64_t rc,
@@ -7510,7 +7747,7 @@ static void macrunner_hb_trace_dxmt_method_probe(
     const char *factory_method, *swapchain_method, *method;
     char caller_name[128] = "";
     uint64_t caller_rva = 0, out[6] = { 0 };
-    BOOL known_swapchain = FALSE, caller_unity, interesting;
+    BOOL known_factory = FALSE, known_swapchain = FALSE, caller_unity, interesting;
     unsigned int report;
 
     if (!macrunner_hb_dxmt_method_trace_enabled()) return;
@@ -7522,14 +7759,19 @@ static void macrunner_hb_trace_dxmt_method_probe(
     caller_unity = macrunner_hb_strieq( caller_name, "UnityPlayer.dll" ) ||
                    macrunner_hb_strieq( caller_name, "UnityPlayer" );
     pthread_mutex_lock( &macrunner_hb_dxgi_swapchain_mutex );
+    known_factory = arg_count > 0 && macrunner_hb_dxgi_factory_known_locked( args[0] );
     known_swapchain = arg_count > 0 && macrunner_hb_dxgi_swapchain_known_locked( args[0] );
     pthread_mutex_unlock( &macrunner_hb_dxgi_swapchain_mutex );
 
-    factory_method = macrunner_hb_dxgi_factory_slot_name( slot, &pp_index );
-    swapchain_method = macrunner_hb_dxgi_swapchain_slot_name( slot );
+    factory_method = known_factory ? macrunner_hb_dxgi_factory_slot_name( slot, &pp_index ) : NULL;
+    swapchain_method = known_swapchain ? macrunner_hb_dxgi_swapchain_slot_name( slot ) : NULL;
     method = macrunner_hb_dxmt_method_probe_name( slot, swapchain_method, factory_method,
                                                   caller_rva );
-    interesting = known_swapchain || factory_method || slot == 8 || slot == 9 ||
+    if (known_factory && slot == 8 && !strcmp( phase, "after" ) && rc == 0)
+        macrunner_hb_main_post_makeassoc_probe_arm( ctx, args[0],
+                                                    arg_count > 1 ? args[1] : 0,
+                                                    ret_addr, caller_name, caller_rva );
+    interesting = known_factory || known_swapchain || slot == 8 || slot == 9 ||
                   slot == 13 || slot == 22 ||
                   (caller_unity && ((caller_rva >= 0x905000 && caller_rva < 0x906000) ||
                                     (caller_rva >= 0x90b000 && caller_rva < 0x90d000)));
@@ -7548,11 +7790,14 @@ static void macrunner_hb_trace_dxmt_method_probe(
 
     fprintf( stderr,
              "macrunner-hb-dxmt-method-probe: hit=%u phase=%s method=%s slot=%u "
-             "known_swapchain=%u import=%s!%s tid=0x%llx native_tid=0x%llx "
+             "object_type=%s known_factory=%u known_swapchain=%u import=%s!%s "
+             "tid=0x%llx native_tid=0x%llx "
              "caller=%p caller_module=%s caller_rva=0x%llx pc=%p rc=%p "
              "a0=%p a1=%p a2=%p a3=%p a4=%p a5=%p "
              "out_valid=0x%x out0=%p out1=%p out2=%p out3=%p out4=%p out5=%p\n",
-             report, phase, method ? method : "dxmt-com", slot, known_swapchain,
+             report, phase, method ? method : "dxmt-com", slot,
+             known_swapchain ? "swapchain" : (known_factory ? "factory" : "unknown"),
+             known_factory, known_swapchain,
              thunk->dll_name, thunk->import_name,
              (unsigned long long)macrunner_hb_current_tid64(),
              (unsigned long long)macrunner_hb_current_native_tid64(),
@@ -28141,6 +28386,8 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
                                                 args, arg_count );
     macrunner_hb_trace_dxmt_method_probe( ctx, thunk, "before", ret_addr, 0,
                                           args, arg_count );
+    macrunner_hb_main_post_makeassoc_probe_import( ctx, thunk, "before", ret_addr, 0,
+                                                    args, arg_count );
     if (macrunner_hb_trace_direct_native_enabled() &&
         macrunner_hb_strieq( thunk->dll_name, "win32u.dll" ) &&
         (macrunner_hb_strieq( thunk->import_name, "NtGdiStretchDIBitsInternal" ) ||
@@ -28327,6 +28574,8 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     macrunner_hb_trace_dxgi_swapchain( ctx, thunk, ret_addr, rc, args, arg_count );
     macrunner_hb_trace_dxmt_method_probe( ctx, thunk, "after", ret_addr, rc,
                                           args, arg_count );
+    macrunner_hb_main_post_makeassoc_probe_import( ctx, thunk, "after", ret_addr, rc,
+                                                    args, arg_count );
     macrunner_hb_post_signal_probe_import( ctx, thunk, "after", ret_addr, rc, args, arg_count );
     macrunner_hb_handle_lifecycle_probe_import( ctx, thunk, "after", ret_addr, rc,
                                                 args, arg_count );
@@ -33356,6 +33605,7 @@ skip_version_semantic:
         macrunner_hb_present_gate_parent_probe_before_block( label, ctx, block_pc, blocks, steps );
         macrunner_hb_setevent_callsite_probe_before_block( label, ctx, block_pc, blocks, steps );
         macrunner_hb_post_signal_probe_before_block( label, ctx, block_pc, blocks, steps );
+        macrunner_hb_main_post_makeassoc_probe_before_block( label, ctx, block_pc, blocks, steps );
         macrunner_hb_eh_context_probe_before_block( label, ctx, block_pc, blocks, steps );
         macrunner_hb_eh_completion_probe_check( label, ctx, block_pc, blocks, steps );
         if (macrunner_hb_block_trace_enabled())

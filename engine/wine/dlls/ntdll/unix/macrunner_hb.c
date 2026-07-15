@@ -300,6 +300,7 @@ static int macrunner_hb_pc_in_executable_section( void *module, uint64_t pc );
 static void macrunner_hb_trace_guest_wstr( hb_context_t *ctx, const char *name, uint64_t addr );
 static void macrunner_hb_remember_apiset_module_locked( const char *dll_name, uint64_t module_id,
                                                         USHORT machine );
+static int macrunner_hb_gfx_thread_event_probe_enabled(void);
 
 static pthread_mutex_t macrunner_hb_import_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct macrunner_hb_import_thunk macrunner_hb_imports[MACRUNNER_HB_IMPORT_MAX];
@@ -22895,6 +22896,21 @@ static BOOL macrunner_hb_try_thread_creation_semantic( hb_context_t *ctx,
         info.ThreadName.Buffer = (WCHAR *)description;
         name_status = NtSetInformationThread( (HANDLE)(uintptr_t)args[0], ThreadNameInformation,
                                               &info, sizeof(info) );
+        if (macrunner_hb_gfx_thread_event_probe_enabled())
+        {
+            char name[64];
+            size_t i, chars = length / sizeof(WCHAR);
+
+            if (chars >= sizeof(name)) chars = sizeof(name) - 1;
+            for (i = 0; i < chars; i++)
+                name[i] = description[i] < 0x80 ? (char)description[i] : '?';
+            name[chars] = 0;
+            fprintf( stderr, "macrunner-hb-gfx-thread-event: event=thread-name pid=%d "
+                     "setter_tid=%04lx target=%p name=%s status=%08lx\n",
+                     getpid(), (unsigned long)GetCurrentThreadId(),
+                     (void *)(uintptr_t)args[0], name, (unsigned long)name_status );
+            fflush( stderr );
+        }
         NtCurrentTeb()->LastStatusValue = name_status;
         *ret = name_status ? HRESULT_FROM_NT( name_status ) : S_OK;
         return TRUE;
@@ -23104,6 +23120,22 @@ static BOOL macrunner_hb_try_thread_creation_semantic( hb_context_t *ctx,
     }
 
     *ret = (uint64_t)(uintptr_t)handle;
+    if (macrunner_hb_gfx_thread_event_probe_enabled())
+    {
+        static unsigned int create_events;
+        unsigned int event = __atomic_fetch_add( &create_events, 1, __ATOMIC_RELAXED );
+
+        if (event < 256)
+        {
+            fprintf( stderr, "macrunner-hb-gfx-thread-event: event=thread-create pid=%d "
+                     "creator_tid=%04lx handle=%p tid=%04lx start=%p param=%p flags=%#lx\n",
+                     getpid(), (unsigned long)GetCurrentThreadId(),
+                     (void *)(uintptr_t)*ret, (unsigned long)tid,
+                     (void *)(uintptr_t)start, (void *)(uintptr_t)param,
+                     (unsigned long)flags );
+            fflush( stderr );
+        }
+    }
     if (macrunner_hb_trace_wait_semantic_budget_allows())
     {
         fprintf( stderr, "macrunner-hb-wait-semantic: thread import=%s!%s pc=%p rsp=%p "
@@ -23139,6 +23171,7 @@ struct macrunner_hb_wait_addr_entry
     uint64_t pc;
     uint64_t caller;
     uint64_t rsp;
+    uint64_t parent_return;
     LONGLONG timeout;
     BOOL has_timeout;
     char thread_name[64];
@@ -23209,6 +23242,12 @@ static int macrunner_hb_wait_wake_trace_enabled(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_WAIT_WAKE_TRACE" );
 }
 
+static int macrunner_hb_gfx_thread_event_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_GFX_THREAD_EVENT_PROBE" );
+}
+
 static int macrunner_hb_trace_waitaddr_mach_enabled(void)
 {
     static int cache = -1;
@@ -23254,6 +23293,10 @@ extern const void *macrunner_hb_alert_wait_address_for_tid( DWORD tid, LONG *val
 static LONG macrunner_hb_wait_wake_trace_armed;
 static LONG macrunner_hb_wait_wake_trace_observer_started;
 static unsigned int macrunner_hb_wait_wake_trace_emitted;
+static uint64_t macrunner_hb_gfx_thread_wait_addr;
+static DWORD macrunner_hb_gfx_thread_tid;
+static unsigned int macrunner_hb_gfx_thread_event_emitted;
+static unsigned int macrunner_hb_gfx_thread_thunk_calls;
 
 static void macrunner_hb_wait_wake_trace_thread_name( char *name, size_t size )
 {
@@ -23275,6 +23318,136 @@ static void macrunner_hb_wait_wake_trace_module( uint64_t pc, char *name, size_t
     if (!module) return;
     if (name && size) macrunner_hb_get_export_module_name( module, name, size );
     if (rva) *rva = pc - (uint64_t)(uintptr_t)module;
+}
+
+static int macrunner_hb_gfx_thread_event_probe_take_slot(void)
+{
+    const char *value;
+    unsigned int limit, slot;
+
+    if (!macrunner_hb_gfx_thread_event_probe_enabled()) return 0;
+    value = getenv( "MACRUNNER_HB_GFX_THREAD_EVENT_BUDGET" );
+    limit = value && value[0] ? strtoul( value, NULL, 0 ) : 4096;
+    if (!limit) return 1;
+    slot = __atomic_fetch_add( &macrunner_hb_gfx_thread_event_emitted, 1, __ATOMIC_RELAXED );
+    if (slot < limit) return 1;
+    if (slot == limit)
+    {
+        fprintf( stderr, "macrunner-hb-gfx-thread-event: event=budget-exhausted limit=%u\n", limit );
+        fflush( stderr );
+    }
+    return 0;
+}
+
+static BOOL macrunner_hb_gfx_thread_name( const char *name )
+{
+    return name && (strstr( name, "Gfx" ) || strstr( name, "gfx" ));
+}
+
+static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
+                                                       const struct macrunner_hb_wait_addr_entry *entry,
+                                                       NTSTATUS status, BOOL status_valid )
+{
+    char parent_module[64];
+    uint64_t addr, current, parent_rva = 0;
+    DWORD gfx_tid;
+
+    if (!entry || !macrunner_hb_gfx_thread_event_probe_enabled()) return;
+    gfx_tid = __atomic_load_n( &macrunner_hb_gfx_thread_tid, __ATOMIC_ACQUIRE );
+    if (macrunner_hb_gfx_thread_name( entry->thread_name ))
+    {
+        __atomic_store_n( &macrunner_hb_gfx_thread_tid, entry->tid, __ATOMIC_RELEASE );
+        if (entry->addr)
+            __atomic_store_n( &macrunner_hb_gfx_thread_wait_addr,
+                              (uint64_t)(uintptr_t)entry->addr, __ATOMIC_RELEASE );
+        gfx_tid = entry->tid;
+    }
+    if (!gfx_tid || entry->tid != gfx_tid) return;
+    if (!macrunner_hb_gfx_thread_event_probe_take_slot()) return;
+
+    addr = entry->addr ? (uint64_t)(uintptr_t)entry->addr :
+           __atomic_load_n( &macrunner_hb_gfx_thread_wait_addr, __ATOMIC_ACQUIRE );
+    current = macrunner_hb_waitaddr_read_val( (const void *)(uintptr_t)addr, entry->size );
+    macrunner_hb_wait_wake_trace_module( entry->parent_return, parent_module,
+                                         sizeof(parent_module), &parent_rva );
+    fprintf( stderr, "macrunner-hb-gfx-thread-event: event=%s pid=%d tid=%04lx thread=%s "
+             "queue_signal=%p size=%zu current=0x%llx expected=0x%llx status=%s%08lx "
+             "wait_caller=%s+0x%llx parent=%s+0x%llx parent_pc=%p\n",
+             event ? event : "wait", getpid(), (unsigned long)entry->tid,
+             entry->thread_name, (void *)(uintptr_t)addr, (size_t)entry->size,
+             (unsigned long long)current, (unsigned long long)entry->expected,
+             status_valid ? "" : "na:", (unsigned long)status,
+             entry->caller_module[0] ? entry->caller_module : "?",
+             (unsigned long long)entry->caller_rva,
+             parent_module[0] ? parent_module : "?", (unsigned long long)parent_rva,
+             (void *)(uintptr_t)entry->parent_return );
+    fflush( stderr );
+}
+
+static void macrunner_hb_gfx_thread_event_probe_wake( hb_context_t *ctx, const char *api,
+                                                       const char *mode, const void *addr,
+                                                       unsigned int found, DWORD target_tid,
+                                                       uint64_t pc, uint64_t caller,
+                                                       uint64_t rsp )
+{
+    char caller_module[64], producer_module[64];
+    uint64_t caller_rva = 0, producer_rva = 0, producer_return = 0;
+    uint64_t gfx_addr;
+    DWORD gfx_tid;
+
+    if (!ctx || !macrunner_hb_gfx_thread_event_probe_enabled()) return;
+    gfx_addr = __atomic_load_n( &macrunner_hb_gfx_thread_wait_addr, __ATOMIC_ACQUIRE );
+    gfx_tid = __atomic_load_n( &macrunner_hb_gfx_thread_tid, __ATOMIC_ACQUIRE );
+    if (!gfx_addr || (uint64_t)(uintptr_t)addr != gfx_addr) return;
+    if (!macrunner_hb_gfx_thread_event_probe_take_slot()) return;
+
+    /* At the nested wake import, RSP is below the release helper's push rbx,
+     * 0x20-byte shadow space, and the import return address. */
+    (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)rsp + 0x30, &producer_return );
+    macrunner_hb_wait_wake_trace_module( caller, caller_module, sizeof(caller_module), &caller_rva );
+    macrunner_hb_wait_wake_trace_module( producer_return, producer_module,
+                                         sizeof(producer_module), &producer_rva );
+    fprintf( stderr, "macrunner-hb-gfx-thread-event: event=enqueue-wake pid=%d "
+             "producer_tid=%04lx gfx_tid=%04lx api=%s mode=%s queue_signal=%p found=%u "
+             "target_tid=%04lx wake_caller=%s+0x%llx producer=%s+0x%llx producer_pc=%p "
+             "pc=%p rsp=%p rax=%p rbx=%p rcx=%p rdx=%p r8=%p r9=%p\n",
+             getpid(), (unsigned long)GetCurrentThreadId(), (unsigned long)gfx_tid,
+             api ? api : "?", mode ? mode : "?", addr, found, (unsigned long)target_tid,
+             caller_module[0] ? caller_module : "?", (unsigned long long)caller_rva,
+             producer_module[0] ? producer_module : "?", (unsigned long long)producer_rva,
+             (void *)(uintptr_t)producer_return, (void *)(uintptr_t)pc, (void *)(uintptr_t)rsp,
+             (void *)(uintptr_t)ctx->regs.x64.rax, (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (void *)(uintptr_t)ctx->regs.x64.rcx, (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.r8, (void *)(uintptr_t)ctx->regs.x64.r9 );
+    fflush( stderr );
+}
+
+static void macrunner_hb_gfx_thread_event_probe_thunk( hb_context_t *ctx,
+                                                        const struct macrunner_hb_import_thunk *thunk )
+{
+    char caller_module[64];
+    uint64_t caller, caller_rva = 0;
+    unsigned int call;
+
+    if (!ctx || !thunk || !macrunner_hb_gfx_thread_event_probe_enabled() ||
+        thunk->guest_target != MACRUNNER_HB_IMPORT_BASE + 0x3d80) return;
+    call = __atomic_add_fetch( &macrunner_hb_gfx_thread_thunk_calls, 1, __ATOMIC_RELAXED );
+    if (call > 64 && call % 1000000) return;
+    if (!macrunner_hb_gfx_thread_event_probe_take_slot()) return;
+
+    caller = macrunner_hb_trace_return_address( ctx );
+    macrunner_hb_wait_wake_trace_module( caller, caller_module, sizeof(caller_module), &caller_rva );
+    fprintf( stderr, "macrunner-hb-gfx-thread-event: event=thunk-call pid=%d tid=%04lx "
+             "call=%u pc=%p slot=984 array_index=983 import=%s!%s semantic=%u target=%p "
+             "caller=%s+0x%llx caller_pc=%p rcx=%p rdx=%p r8=%p r9=%p\n",
+             getpid(), (unsigned long)GetCurrentThreadId(), call,
+             (void *)(uintptr_t)thunk->guest_target, thunk->dll_name, thunk->import_name,
+             (unsigned int)thunk->semantic_class, thunk->target,
+             caller_module[0] ? caller_module : "?", (unsigned long long)caller_rva,
+             (void *)(uintptr_t)caller, (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9 );
+    fflush( stderr );
 }
 
 static int macrunner_hb_wait_wake_trace_take_slot(void)
@@ -23458,6 +23631,7 @@ static NTSTATUS macrunner_hb_rtl_wait_on_address( const void *addr, const void *
                                                   const LARGE_INTEGER *timeout,
                                                   const char *dll_name, const char *import_name,
                                                   uint64_t pc, uint64_t caller, uint64_t rsp,
+                                                  uint64_t parent_return,
                                                   uint64_t stk0, uint64_t stk1, uint64_t stk5,
                                                   uint64_t stk10, uint64_t stk11, uint64_t stk12,
                                                   unsigned int stk_mask )
@@ -23479,6 +23653,7 @@ static NTSTATUS macrunner_hb_rtl_wait_on_address( const void *addr, const void *
     entry.pc = pc;
     entry.caller = caller;
     entry.rsp = rsp;
+    entry.parent_return = parent_return;
     entry.timeout = timeout ? timeout->QuadPart : 0;
     entry.has_timeout = !!timeout;
     macrunner_hb_wait_wake_trace_thread_name( entry.thread_name, sizeof(entry.thread_name) );
@@ -23525,6 +23700,8 @@ static NTSTATUS macrunner_hb_rtl_wait_on_address( const void *addr, const void *
     if (!macrunner_hb_compare_wait_addr( addr, cmp, size ))
     {
         macrunner_hb_wait_addr_spin_unlock( &queue->lock );
+        macrunner_hb_gfx_thread_event_probe_wait( "dequeue-immediate", &entry,
+                                                   STATUS_SUCCESS, TRUE );
         macrunner_hb_wait_wake_trace_log_entry( "wait-immediate", &entry );
         return STATUS_SUCCESS;
     }
@@ -23533,9 +23710,11 @@ static NTSTATUS macrunner_hb_rtl_wait_on_address( const void *addr, const void *
         list_init( &queue->queue );
     list_add_tail( &queue->queue, &entry.entry );
     macrunner_hb_wait_addr_spin_unlock( &queue->lock );
+    macrunner_hb_gfx_thread_event_probe_wait( "dequeue-wait", &entry, 0, FALSE );
     macrunner_hb_wait_wake_trace_log_entry( "wait-enter", &entry );
 
     status = NtWaitForAlertByThreadId( NULL, timeout );
+    macrunner_hb_gfx_thread_event_probe_wait( "dequeue-ready", &entry, status, TRUE );
     macrunner_hb_wait_wake_trace_log_entry( "wait-return", &entry );
 
     if (macrunner_hb_trace_waitaddr_enabled())
@@ -23572,7 +23751,8 @@ static NTSTATUS macrunner_hb_rtl_wait_on_address( const void *addr, const void *
     return status == STATUS_ALERTED ? STATUS_SUCCESS : status;
 }
 
-static void macrunner_hb_rtl_wake_address_all( const void *addr, const char *dll_name,
+static void macrunner_hb_rtl_wake_address_all( hb_context_t *ctx, const void *addr,
+                                               const char *dll_name,
                                                const char *import_name, uint64_t pc,
                                                uint64_t caller, uint64_t rsp )
 {
@@ -23622,13 +23802,16 @@ static void macrunner_hb_rtl_wake_address_all( const void *addr, const char *dll
             fflush( stderr );
         }
     }
+    macrunner_hb_gfx_thread_event_probe_wake( ctx, import_name, "all", addr, total,
+                                               first_tid, pc, caller, rsp );
     macrunner_hb_wait_wake_trace_log_wake( import_name, "all", addr, total, first_tid,
                                             pc, caller, rsp );
     if (count)
         NtAlertMultipleThreadByThreadId( tids, count, NULL, NULL );
 }
 
-static void macrunner_hb_rtl_wake_address_single( const void *addr, const char *dll_name,
+static void macrunner_hb_rtl_wake_address_single( hb_context_t *ctx, const void *addr,
+                                                  const char *dll_name,
                                                   const char *import_name, uint64_t pc,
                                                   uint64_t caller, uint64_t rsp )
 {
@@ -23670,6 +23853,8 @@ static void macrunner_hb_rtl_wake_address_single( const void *addr, const char *
             fflush( stderr );
         }
     }
+    macrunner_hb_gfx_thread_event_probe_wake( ctx, import_name, "single", addr, !!tid,
+                                               tid, pc, caller, rsp );
     macrunner_hb_wait_wake_trace_log_wake( import_name, "single", addr, !!tid, tid,
                                             pc, caller, rsp );
     if (tid)
@@ -23705,9 +23890,10 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
         macrunner_hb_strieq( thunk->import_name, "RtlWakeAddressAll" ))
     {
         uint64_t caller = (macrunner_hb_trace_waitaddr_enabled() ||
-                           macrunner_hb_wait_wake_trace_enabled()) ?
+                           macrunner_hb_wait_wake_trace_enabled() ||
+                           macrunner_hb_gfx_thread_event_probe_enabled()) ?
             macrunner_hb_trace_return_address( ctx ) : 0;
-        macrunner_hb_rtl_wake_address_all( (const void *)(uintptr_t)args[0],
+        macrunner_hb_rtl_wake_address_all( ctx, (const void *)(uintptr_t)args[0],
                                            thunk->dll_name, thunk->import_name,
                                            ctx->pc, caller, ctx->regs.x64.rsp );
         NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
@@ -23729,9 +23915,10 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
         macrunner_hb_strieq( thunk->import_name, "RtlWakeAddressSingle" ))
     {
         uint64_t caller = (macrunner_hb_trace_waitaddr_enabled() ||
-                           macrunner_hb_wait_wake_trace_enabled()) ?
+                           macrunner_hb_wait_wake_trace_enabled() ||
+                           macrunner_hb_gfx_thread_event_probe_enabled()) ?
             macrunner_hb_trace_return_address( ctx ) : 0;
-        macrunner_hb_rtl_wake_address_single( (const void *)(uintptr_t)args[0],
+        macrunner_hb_rtl_wake_address_single( ctx, (const void *)(uintptr_t)args[0],
                                               thunk->dll_name, thunk->import_name,
                                               ctx->pc, caller, ctx->regs.x64.rsp );
         NtCurrentTeb()->LastStatusValue = STATUS_SUCCESS;
@@ -23752,11 +23939,14 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
     if (macrunner_hb_strieq( thunk->import_name, "WaitOnAddress" ))
     {
         uint64_t caller = (macrunner_hb_trace_waitaddr_enabled() ||
-                           macrunner_hb_wait_wake_trace_enabled()) ?
+                           macrunner_hb_wait_wake_trace_enabled() ||
+                           macrunner_hb_gfx_thread_event_probe_enabled()) ?
             macrunner_hb_trace_return_address( ctx ) : 0;
+        uint64_t parent_return = 0;
         uint64_t stk0 = 0, stk1 = 0, stk5 = 0, stk10 = 0, stk11 = 0, stk12 = 0;
         unsigned int stk_mask = 0;
-        if (macrunner_hb_trace_waitaddr_stack_enabled())
+        if (macrunner_hb_trace_waitaddr_stack_enabled() ||
+            macrunner_hb_gfx_thread_event_probe_enabled())
         {
             if (macrunner_hb_waitaddr_stack_slot( ctx, 0, &stk0 )) stk_mask |= 1u << 0;
             if (macrunner_hb_waitaddr_stack_slot( ctx, 1, &stk1 )) stk_mask |= 1u << 1;
@@ -23765,6 +23955,8 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
             if (macrunner_hb_waitaddr_stack_slot( ctx, 11, &stk11 )) stk_mask |= 1u << 11;
             if (macrunner_hb_waitaddr_stack_slot( ctx, 12, &stk12 )) stk_mask |= 1u << 12;
         }
+        if (macrunner_hb_gfx_thread_event_probe_enabled())
+            parent_return = macrunner_hb_trace_stack_address( ctx, 6 );
         timeout_ptr = macrunner_hb_get_nt_timeout( &timeout, (DWORD)args[3] );
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
@@ -23782,6 +23974,7 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
                                                    (SIZE_T)args[2], timeout_ptr,
                                                    thunk->dll_name, thunk->import_name,
                                                    ctx->pc, caller, ctx->regs.x64.rsp,
+                                                   parent_return,
                                                    stk0, stk1, stk5, stk10, stk11, stk12,
                                                    stk_mask );
         NtCurrentTeb()->LastStatusValue = status;
@@ -23814,11 +24007,14 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
     if (macrunner_hb_strieq( thunk->import_name, "RtlWaitOnAddress" ))
     {
         uint64_t caller = (macrunner_hb_trace_waitaddr_enabled() ||
-                           macrunner_hb_wait_wake_trace_enabled()) ?
+                           macrunner_hb_wait_wake_trace_enabled() ||
+                           macrunner_hb_gfx_thread_event_probe_enabled()) ?
             macrunner_hb_trace_return_address( ctx ) : 0;
+        uint64_t parent_return = 0;
         uint64_t stk0 = 0, stk1 = 0, stk5 = 0, stk10 = 0, stk11 = 0, stk12 = 0;
         unsigned int stk_mask = 0;
-        if (macrunner_hb_trace_waitaddr_stack_enabled())
+        if (macrunner_hb_trace_waitaddr_stack_enabled() ||
+            macrunner_hb_gfx_thread_event_probe_enabled())
         {
             if (macrunner_hb_waitaddr_stack_slot( ctx, 0, &stk0 )) stk_mask |= 1u << 0;
             if (macrunner_hb_waitaddr_stack_slot( ctx, 1, &stk1 )) stk_mask |= 1u << 1;
@@ -23827,6 +24023,8 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
             if (macrunner_hb_waitaddr_stack_slot( ctx, 11, &stk11 )) stk_mask |= 1u << 11;
             if (macrunner_hb_waitaddr_stack_slot( ctx, 12, &stk12 )) stk_mask |= 1u << 12;
         }
+        if (macrunner_hb_gfx_thread_event_probe_enabled())
+            parent_return = macrunner_hb_trace_stack_address( ctx, 6 );
         if (macrunner_hb_trace_wait_semantic_budget_allows())
         {
             uint64_t caller = macrunner_hb_trace_return_address( ctx );
@@ -23844,6 +24042,7 @@ static BOOL macrunner_hb_try_wait_address_semantic( hb_context_t *ctx,
                                                    (const LARGE_INTEGER *)(uintptr_t)args[3],
                                                    thunk->dll_name, thunk->import_name,
                                                    ctx->pc, caller, ctx->regs.x64.rsp,
+                                                   parent_return,
                                                    stk0, stk1, stk5, stk10, stk11, stk12,
                                                    stk_mask );
         NtCurrentTeb()->LastStatusValue = status;
@@ -28859,6 +29058,8 @@ NTSTATUS macrunner_hb_x64_import_context( void *args )
     if (!(thunk = macrunner_hb_find_import_thunk( ctx->pc )))
         goto done;
 
+    macrunner_hb_gfx_thread_event_probe_thunk( ctx, thunk );
+
     trace_import = macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_XTAJIT64_IMPORT" );
     if (trace_import)
     {
@@ -32706,6 +32907,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
         }
         if ((import_thunk = macrunner_hb_find_import_thunk( ctx->pc )))
         {
+            macrunner_hb_gfx_thread_event_probe_thunk( ctx, import_thunk );
             if (trace_direct_native) macrunner_hb_trace_winemetal_resume_point( "import-thunk", ctx );
             macrunner_hb_main_009c_probe_import( label, ctx, import_thunk );
             if (trace_thread_run)

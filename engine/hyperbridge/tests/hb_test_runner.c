@@ -17136,8 +17136,10 @@ TEST(jit_x64_native_xmm_load_store_pair) {
 TEST(jit_x64_checked_xmm_store_exec_page) {
 #ifdef __APPLE__
     const size_t page_size = 0x4000;
-    uint8_t* page = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+    uint8_t* page = mmap(NULL, page_size * 2, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    uint8_t* edge;
+    uint64_t priming[2] = {0x8877665544332211ULL, 0x0f1e2d3c4b5a6978ULL};
     uint64_t expected[2] = {0x0123456789abcdefULL, 0xfedcba9876543210ULL};
     uint64_t observed[2] = {0, 0};
     hb_ir_func_t* func;
@@ -17149,7 +17151,8 @@ TEST(jit_x64_checked_xmm_store_exec_page) {
     char* saved;
 
     ASSERT(page != MAP_FAILED);
-    memset(page, 0, page_size);
+    edge = page + page_size - 8;
+    memset(page, 0, page_size * 2);
     func = hb_ir_func_create(0x5370, 0);
     ASSERT(func != NULL);
     blk = hb_ir_block_create(0, 0x5370);
@@ -17174,28 +17177,40 @@ TEST(jit_x64_checked_xmm_store_exec_page) {
     ctx->memory = hb_memory_create(0);
     ASSERT(ctx->memory != NULL);
     ASSERT(hb_memory_sync_live_range(ctx->memory, (hb_gva_t)(uintptr_t)page,
-                                     page_size,
+                                     page_size * 2,
                                      HB_PERM_READ | HB_PERM_WRITE | HB_PERM_EXEC) == HB_OK);
-    ASSERT(mprotect(page, page_size, PROT_READ | PROT_EXEC) == 0);
-    generation = hb_memory_generation(ctx->memory);
     ctx->pc = 0x5370;
-    ctx->regs.x64.r9 = (uint64_t)(uintptr_t)page;
-    ctx->regs.x64.xmm[0][0] = expected[0];
-    ctx->regs.x64.xmm[0][1] = expected[1];
+    ctx->regs.x64.r9 = (uint64_t)(uintptr_t)(page + 0x100);
+    ctx->regs.x64.xmm[0][0] = priming[0];
+    ctx->regs.x64.xmm[0][1] = priming[1];
 
     saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
     setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    /* Prime hb_jit_live_host_ptr while the live mapping is RW.  The regression
+     * was the next store reusing that stale writable cache entry after Mono
+     * changed the very same region to RX. */
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    ASSERT(out.result == HB_OK);
+    memcpy(observed, page + 0x100, sizeof(observed));
+    ASSERT(observed[0] == priming[0] && observed[1] == priming[1]);
+
+    ASSERT(mprotect(page, page_size * 2, PROT_READ | PROT_EXEC) == 0);
+    generation = hb_memory_generation(ctx->memory);
+    ctx->pc = 0x5370;
+    ctx->regs.x64.r9 = (uint64_t)(uintptr_t)edge;
+    ctx->regs.x64.xmm[0][0] = expected[0];
+    ctx->regs.x64.xmm[0][1] = expected[1];
     ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
     restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
     ASSERT(out.result == HB_OK);
     ASSERT_EQ(out.blocks_executed, 1);
-    memcpy(observed, page, sizeof(observed));
+    memcpy(observed, edge, sizeof(observed));
     ASSERT(observed[0] == expected[0] && observed[1] == expected[1]);
     ASSERT(hb_memory_generation(ctx->memory) > generation);
 
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
-    ASSERT(munmap(page, page_size) == 0);
+    ASSERT(munmap(page, page_size * 2) == 0);
 #endif
     tests_passed++;
 }

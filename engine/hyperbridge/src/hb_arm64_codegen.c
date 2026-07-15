@@ -5982,7 +5982,13 @@ static void* hb_jit_live_host_ptr(hb_memory_t* mem, uint64_t addr, size_t bytes,
     if ((perms & HB_PERM_READ) != 0) needed |= VM_PROT_READ;
     if ((perms & HB_PERM_WRITE) != 0) needed |= VM_PROT_WRITE;
     if (!needed) needed = VM_PROT_READ;
-    {
+    /* A cached read mapping is stable enough for loads, but a writable mapping
+     * is not: Windows/Mono can flip a live code page from RW to RX without
+     * changing HB's region metadata.  Reusing the old VM_PROT_WRITE cache entry
+     * would hand store helpers a raw pointer to the now-RX page and bypass
+     * hb_memory_write's W^X transition plus executable-generation bump.  Every
+     * write request must therefore re-read the current Mach protection. */
+    if (!(needed & VM_PROT_WRITE)) {
         void* cached = hb_jit_live_read_cache_lookup(addr, bytes, needed);
         if (cached) {
             if (macrunner_hb_codegendv_hit(addr))

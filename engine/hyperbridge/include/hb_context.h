@@ -218,6 +218,11 @@ struct hb_context {
      * offsetof(), and default-off runs leave them unused. */
     uint64_t indirect_ic_guest_addr;
     uint64_t indirect_ic_native_code;
+
+    /* Current PE module base for host-side block policy/probes. Appended-only:
+     * generated code does not read this field. Zero when the current block has no
+     * module classification. */
+    uint64_t codegen_module_base;
 };
 
 hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend);

@@ -106,7 +106,8 @@ void hb_jit_runtime_destroy(hb_jit_runtime_t* rt);
 void hb_jit_runtime_reset(hb_jit_runtime_t* rt, hb_context_t* ctx);
 hb_result_t hb_jit_runtime_compile(hb_jit_runtime_t* rt, const hb_ir_func_t* func);
 hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out);
-int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int signal);
+int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int signal,
+                                       const void* host_context);
 
 /* Unified runtime entry */
 hb_result_t hb_runtime_run(hb_context_t* ctx, const hb_ir_func_t* func, hb_backend_t backend, hb_exec_result_t* out);

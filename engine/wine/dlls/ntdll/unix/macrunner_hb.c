@@ -28042,6 +28042,18 @@ static unsigned int macrunner_hb_import_arg_count( const struct macrunner_hb_imp
     return count;
 }
 
+struct macrunner_hb_import_fault_probe_state
+{
+    const char *stage;
+    hb_result_t stack_status;
+    uint64_t guest_ret;
+    BOOL semantic_handled;
+    BOOL control_transferred;
+    hb_result_t semantic_status;
+};
+
+static __thread struct macrunner_hb_import_fault_probe_state macrunner_hb_import_fault_probe_state;
+
 static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
                                                    const struct macrunner_hb_import_thunk *thunk )
 {
@@ -28057,6 +28069,12 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     BOOL handled_semantic = FALSE;
     BOOL control_transferred = FALSE;
     hb_result_t semantic_status = HB_OK;
+
+    memset( &macrunner_hb_import_fault_probe_state, 0,
+            sizeof(macrunner_hb_import_fault_probe_state) );
+    macrunner_hb_import_fault_probe_state.stage = "validate";
+    macrunner_hb_import_fault_probe_state.stack_status = HB_OK;
+    macrunner_hb_import_fault_probe_state.semantic_status = HB_OK;
 
     if (!ctx || !ctx->memory || !thunk || !thunk->target) return HB_ERR_INVALID_ARG;
 
@@ -28074,8 +28092,20 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
         if (sync_import_barrier) __sync_synchronize();
     }
 
-    if (hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &ret_addr ) != HB_OK || !ret_addr)
+    macrunner_hb_import_fault_probe_state.stack_status =
+        hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &ret_addr );
+    macrunner_hb_import_fault_probe_state.guest_ret = ret_addr;
+    if (macrunner_hb_import_fault_probe_state.stack_status != HB_OK)
+    {
+        macrunner_hb_import_fault_probe_state.stage = "guest-return-read";
         return HB_ERR_EXEC_FAULT;
+    }
+    if (!ret_addr)
+    {
+        macrunner_hb_import_fault_probe_state.stage = "guest-return-null";
+        return HB_ERR_EXEC_FAULT;
+    }
+    macrunner_hb_import_fault_probe_state.stage = "dispatch";
 
     /* Wine's x64 ntdll stack-probe exports are no-op `ret` stubs.  Registering
      * the whole family at loader time keeps AMD64 callers away from an ARM64EC
@@ -28443,7 +28473,14 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
     }
     macrunner_hb_trace_image_api( ctx, "after", thunk, ret_addr, rc, args );
     macrunner_hb_trace_geometry_api( "after", thunk, ret_addr, rc, args );
-    if (semantic_status != HB_OK) return semantic_status;
+    macrunner_hb_import_fault_probe_state.semantic_handled = handled_semantic;
+    macrunner_hb_import_fault_probe_state.control_transferred = control_transferred;
+    macrunner_hb_import_fault_probe_state.semantic_status = semantic_status;
+    if (semantic_status != HB_OK)
+    {
+        macrunner_hb_import_fault_probe_state.stage = "semantic-dispatch";
+        return semantic_status;
+    }
     if (control_transferred) return HB_OK;
     if (rc && (macrunner_hb_strieq( thunk->dll_name, "kernel32.dll" ) ||
                macrunner_hb_strieq( thunk->dll_name, "kernelbase.dll" )) &&
@@ -31837,6 +31874,160 @@ static void macrunner_hb_trace_winemetal_resume_point( const char *stage, hb_con
              (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.r8 );
 }
 
+struct macrunner_hb_aa_rbp_state
+{
+    BOOL active;
+    uintptr_t module;
+    uint64_t entry_rsp;
+    uint64_t expected_rbp;
+    uint64_t last_pc;
+    unsigned int reports;
+};
+
+static __thread struct macrunner_hb_aa_rbp_state macrunner_hb_aa_rbp;
+
+static BOOL macrunner_hb_aa_mono_site( uint64_t pc, uintptr_t *module_out, size_t *rva_out )
+{
+    LDR_DATA_TABLE_ENTRY *ldr;
+    char base_name[128];
+    uintptr_t module;
+
+    if (!pc) return FALSE;
+    ldr = macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)pc );
+    if (!ldr || !ldr->DllBase) return FALSE;
+    base_name[0] = 0;
+    macrunner_hb_copy_unicode_ascii( base_name, sizeof(base_name), &ldr->BaseDllName );
+    if (strcasecmp( base_name, "mono-2.0-bdwgc.dll" )) return FALSE;
+    module = (uintptr_t)ldr->DllBase;
+    if ((uintptr_t)pc < module || (uintptr_t)pc >= module + ldr->SizeOfImage) return FALSE;
+    if (module_out) *module_out = module;
+    if (rva_out) *rva_out = (size_t)((uintptr_t)pc - module);
+    return TRUE;
+}
+
+static void macrunner_hb_aa_rbp_probe( const char *phase, hb_context_t *ctx,
+                                       uint64_t block_pc )
+{
+    struct macrunner_hb_aa_rbp_state *state = &macrunner_hb_aa_rbp;
+    uintptr_t module;
+    size_t rva;
+    BOOL in_guest_stack, expected_in_guest_stack, checkpoint, mismatch;
+
+    if (!ctx || !macrunner_hb_env_enabled( "MACRUNNER_HB_AA_RBP_PROBE" ) ||
+        !macrunner_hb_aa_mono_site( block_pc, &module, &rva )) return;
+    if (rva == 0x425870 && !strcmp( phase, "before" ))
+    {
+        memset( state, 0, sizeof(*state) );
+        state->active = TRUE;
+        state->module = module;
+        state->entry_rsp = ctx->regs.x64.rsp;
+        state->expected_rbp = state->entry_rsp - 0x3e8;
+    }
+    if (!state->active || state->module != module || rva < 0x425870 || rva > 0x425c8e)
+        return;
+
+    /* RBP is established by the LEA at 0x425879.  Do not compare the
+     * before-state of a block that starts at or before that instruction. */
+    mismatch = (rva >= 0x425880 || strcmp( phase, "before" )) &&
+               ctx->regs.x64.rbp != state->expected_rbp;
+    checkpoint = rva == 0x425870 || rva == 0x425879 || rva == 0x425880 ||
+                 rva == 0x425887 || rva == 0x425891 || rva >= 0x425c60;
+    in_guest_stack = (uintptr_t)ctx->regs.x64.rbp >= (uintptr_t)macrunner_hb_bridge_stack_limit &&
+                     (uintptr_t)ctx->regs.x64.rbp < (uintptr_t)macrunner_hb_bridge_stack_base;
+    expected_in_guest_stack = (uintptr_t)state->expected_rbp >=
+                                  (uintptr_t)macrunner_hb_bridge_stack_limit &&
+                              (uintptr_t)state->expected_rbp <
+                                  (uintptr_t)macrunner_hb_bridge_stack_base;
+    if ((mismatch || checkpoint) && state->reports++ < 48)
+    {
+        fprintf( stderr,
+                 "macrunner-hb-aa-rbp: phase=%s module=%p rva=%p block_pc=%p current_pc=%p "
+                 "entry_rsp=%p expected_rbp=%p actual_rbp=%p rsp=%p mismatch=%u "
+                 "guest_stack=%p-%p actual_in_stack=%u expected_in_stack=%u last_pc=%p "
+                 "rax=%p rcx=%p rdx=%p r8=%p tid=%04x\n",
+                 phase, (void *)module, (void *)rva, (void *)(uintptr_t)block_pc,
+                 (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)state->entry_rsp,
+                 (void *)(uintptr_t)state->expected_rbp, (void *)(uintptr_t)ctx->regs.x64.rbp,
+                 (void *)(uintptr_t)ctx->regs.x64.rsp, mismatch ? 1u : 0u,
+                 macrunner_hb_bridge_stack_limit, macrunner_hb_bridge_stack_base,
+                 in_guest_stack ? 1u : 0u, expected_in_guest_stack ? 1u : 0u,
+                 (void *)(uintptr_t)state->last_pc,
+                 (void *)(uintptr_t)ctx->regs.x64.rax, (void *)(uintptr_t)ctx->regs.x64.rcx,
+                 (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.r8,
+                 (unsigned int)(uintptr_t)NtCurrentTeb()->ClientId.UniqueThread );
+        fflush( stderr );
+    }
+    state->last_pc = block_pc;
+}
+
+struct macrunner_hb_aa_patch_state
+{
+    uint64_t code;
+    uint64_t target;
+    size_t entry_rva;
+};
+
+static __thread struct macrunner_hb_aa_patch_state macrunner_hb_aa_patch;
+
+static void macrunner_hb_aa_mono_patch_probe( hb_context_t *ctx, uint64_t block_pc )
+{
+    static unsigned int reports;
+    uintptr_t module;
+    size_t rva;
+    char bytes[33];
+    uint32_t valid = 0;
+    uint64_t code, target;
+
+    if (!ctx || !macrunner_hb_env_enabled( "MACRUNNER_HB_AA_MONO_PATCH_PROBE" ) ||
+        !macrunner_hb_aa_mono_site( block_pc, &module, &rva )) return;
+    if (rva == 0x4260b0 || rva == 0x426890)
+    {
+        macrunner_hb_aa_patch.code = ctx->regs.x64.rcx;
+        macrunner_hb_aa_patch.target = ctx->regs.x64.rdx;
+        macrunner_hb_aa_patch.entry_rva = rva;
+        return;
+    }
+    if ((rva != 0x4261e2 && rva != 0x4269c2) ||
+        __atomic_add_fetch( &reports, 1, __ATOMIC_RELAXED ) > 16) return;
+
+    code = ctx->regs.x64.rdi;
+    target = ctx->regs.x64.rbx;
+    for (unsigned int i = 0; i < 16; i++)
+    {
+        uint8_t byte = 0;
+        if (hb_memory_read_u8( ctx->memory, (hb_gva_t)(code + i), &byte ) == HB_OK)
+        {
+            static const char hex[] = "0123456789abcdef";
+            bytes[i * 2] = hex[byte >> 4];
+            bytes[i * 2 + 1] = hex[byte & 15];
+            valid |= 1u << i;
+        }
+        else bytes[i * 2] = bytes[i * 2 + 1] = '?';
+    }
+    bytes[32] = 0;
+    fprintf( stderr,
+             "macrunner-hb-aa-mono-patch-assert: module=%p assertion_rva=%p block_pc=%p "
+             "patch_site=%p target=%p bytes16=%s valid=%04x first_opcode=%02x "
+             "entry_rva=%p entry_patch_site=%p entry_target=%p args_match=%u "
+             "rsp=%p rbp=%p rax=%p rcx=%p rdx=%p rdi=%p rbx=%p tid=%04x\n",
+             (void *)module, (void *)rva, (void *)(uintptr_t)block_pc,
+             (void *)(uintptr_t)code, (void *)(uintptr_t)target, bytes, valid,
+             valid & 1 ? (unsigned int)(strchr( "0123456789abcdef", bytes[0] ) -
+                                        "0123456789abcdef") * 16 +
+                           (unsigned int)(strchr( "0123456789abcdef", bytes[1] ) -
+                                          "0123456789abcdef") : 0,
+             (void *)macrunner_hb_aa_patch.entry_rva,
+             (void *)(uintptr_t)macrunner_hb_aa_patch.code,
+             (void *)(uintptr_t)macrunner_hb_aa_patch.target,
+             code == macrunner_hb_aa_patch.code && target == macrunner_hb_aa_patch.target,
+             (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)ctx->regs.x64.rbp,
+             (void *)(uintptr_t)ctx->regs.x64.rax, (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx, (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (unsigned int)(uintptr_t)NtCurrentTeb()->ClientId.UniqueThread );
+    fflush( stderr );
+}
+
 static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULONG64 *ret_value,
                                       ULONG64 *blocks_out, ULONG64 *steps_out,
                                       const char *label, void *image_base )
@@ -32279,6 +32470,80 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
             ret = macrunner_hb_call_import_thunk( ctx, import_thunk );
             if (ret != HB_OK)
             {
+                if (macrunner_hb_env_enabled( "MACRUNNER_HB_IMPORT_THUNK_FAULT_PROBE" ))
+                {
+                    static unsigned long long sequence;
+                    unsigned long long seq = __atomic_add_fetch( &sequence, 1, __ATOMIC_RELAXED );
+                    uint64_t terminal_ret = 0;
+                    hb_result_t terminal_stack_status =
+                        hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp,
+                                            &terminal_ret );
+                    uintptr_t native_pc = 0;
+                    uintptr_t native_lr = (uintptr_t)__builtin_return_address( 0 );
+                    uintptr_t target_base = 0;
+                    uint64_t import_index = ((uint64_t)(uintptr_t)ctx->pc -
+                                             MACRUNNER_HB_IMPORT_BASE) /
+                                            MACRUNNER_HB_IMPORT_STRIDE;
+                    Dl_info target_info = {0};
+                    const char *target_image = "UNKNOWN";
+                    const char *target_symbol = "UNKNOWN";
+                    unsigned long long native_tid;
+
+#if defined(__aarch64__) || defined(__arm64__)
+                    __asm__ volatile( "adr %0, ." : "=r"(native_pc) );
+#endif
+#ifdef __APPLE__
+                    native_tid = (unsigned long long)pthread_mach_thread_np( pthread_self() );
+#else
+                    native_tid = (unsigned long long)(uintptr_t)pthread_self();
+#endif
+                    if (dladdr( import_thunk->target, &target_info ))
+                    {
+                        if (target_info.dli_fname) target_image = target_info.dli_fname;
+                        if (target_info.dli_sname) target_symbol = target_info.dli_sname;
+                        target_base = (uintptr_t)target_info.dli_fbase;
+                    }
+                    if (seq <= 64)
+                    {
+                        fprintf( stderr,
+                                 "macrunner-hb-import-thunk-fault: seq=%llu stage=%s result=%s "
+                                 "index=%llu dll=%s api=%s import_pc=%p guest_target=%p "
+                                 "target=%p target_valid=%u target_machine=%04x semantic_class=%u "
+                                 "module_id=%llx pe_call12=%p pe_callback12=%p "
+                                 "target_image=%s target_symbol=%s target_base=%p target_rva=%llx "
+                                 "call_stack_status=%s call_guest_ret=%p terminal_stack_status=%s "
+                                 "terminal_guest_ret=%p guest_rsp=%p semantic_handled=%u "
+                                 "control_transferred=%u semantic_status=%s native_pc=%p native_lr=%p "
+                                 "guest_tid=%04x native_tid=%llu\n",
+                                 seq,
+                                 macrunner_hb_import_fault_probe_state.stage ?
+                                     macrunner_hb_import_fault_probe_state.stage : "UNKNOWN",
+                                 hb_result_string( ret ), import_index,
+                                 import_thunk->dll_name, import_thunk->import_name,
+                                 (void *)(uintptr_t)ctx->pc,
+                                 (void *)(uintptr_t)import_thunk->guest_target, import_thunk->target,
+                                 import_thunk->target != NULL,
+                                 (unsigned int)import_thunk->target_machine,
+                                 (unsigned int)import_thunk->semantic_class,
+                                 (unsigned long long)import_thunk->module_id,
+                                 import_thunk->pe_call12, import_thunk->pe_callback12,
+                                 target_image, target_symbol, (void *)target_base,
+                                 target_base ?
+                                     (unsigned long long)((uintptr_t)import_thunk->target - target_base) : 0,
+                                 hb_result_string( macrunner_hb_import_fault_probe_state.stack_status ),
+                                 (void *)(uintptr_t)macrunner_hb_import_fault_probe_state.guest_ret,
+                                 hb_result_string( terminal_stack_status ),
+                                 (void *)(uintptr_t)terminal_ret,
+                                 (void *)(uintptr_t)ctx->regs.x64.rsp,
+                                 (unsigned int)macrunner_hb_import_fault_probe_state.semantic_handled,
+                                 (unsigned int)macrunner_hb_import_fault_probe_state.control_transferred,
+                                 hb_result_string( macrunner_hb_import_fault_probe_state.semantic_status ),
+                                 (void *)native_pc, (void *)native_lr,
+                                 (unsigned int)(uintptr_t)NtCurrentTeb()->ClientId.UniqueThread,
+                                 native_tid );
+                        fflush( stderr );
+                    }
+                }
                 ERR( "MacRunner HyperBridge import thunk failed pc=%p %s!%s result=%s\n",
                      (void *)(uintptr_t)ctx->pc, import_thunk->dll_name, import_thunk->import_name,
                      hb_result_string(ret) );
@@ -33062,10 +33327,19 @@ skip_version_semantic:
         if (trace_calc_object) macrunner_hb_trace_calc_probe( ctx, image_start, "before-block" );
         if (trace_npp_open_pack) macrunner_hb_trace_npp_open_pack( ctx, image_start, "before-block" );
         block_pc = ctx->pc;
+        macrunner_hb_aa_rbp_probe( "before", ctx, block_pc );
+        macrunner_hb_aa_mono_patch_probe( ctx, block_pc );
         macrunner_hb_exit_origin_before_block( ctx, block_pc, image_start, label, blocks, steps );
         ctx->codegen_flags &= ~HB_CONTEXT_CODEGEN_MONO_MODULE;
+        ctx->codegen_module_base = 0;
         if (macrunner_hb_pc_in_mono_module( block_pc ))
+        {
+            LDR_DATA_TABLE_ENTRY *codegen_ldr =
+                macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)block_pc );
             ctx->codegen_flags |= HB_CONTEXT_CODEGEN_MONO_MODULE;
+            if (codegen_ldr)
+                ctx->codegen_module_base = (uint64_t)(uintptr_t)codegen_ldr->DllBase;
+        }
         if (trace_direct_native) macrunner_hb_trace_winemetal_resume_point( "before-block", ctx );
         last_block_pc = block_pc;
         macrunner_hb_unity_phase_probe_before_block( label, ctx, block_pc, blocks, steps );
@@ -33914,6 +34188,7 @@ skip_version_semantic:
         else
             ret = hb_runtime_run( ctx, func, HB_BACKEND_INTERP, &out );
         macrunner_hb_update_current_x64_context( ctx, label );
+        macrunner_hb_aa_rbp_probe( "after", ctx, block_pc );
         macrunner_hb_exit_origin_after_block( ctx, ret, &out );
         macrunner_hb_main_009c_probe_block( label, ctx, image_start, block_pc, blocks,
                                             steps, ret, &out );
@@ -34141,6 +34416,111 @@ skip_version_semantic:
                     for (i = 0; i < 16; i++)
                         ptr += snprintf( ptr, sizeof(fault_bytes) - (ptr - fault_bytes),
                                          "%s%02x", i ? " " : "", bytes[i] );
+                }
+            }
+            if (macrunner_hb_env_enabled( "MACRUNNER_HB_FASTFAIL_PROBE" ) && fault_ldr &&
+                block_pc >= fault_module && block_pc + 7 <= fault_module + fault_ldr->SizeOfImage)
+            {
+                const BYTE *bytes = (const BYTE *)(uintptr_t)block_pc;
+                BOOL mov_ecx_int29 = bytes[0] == 0xb9 && bytes[5] == 0xcd && bytes[6] == 0x29;
+                BOOL direct_int29 = bytes[0] == 0xcd && bytes[1] == 0x29;
+
+                if (mov_ecx_int29 || direct_int29)
+                {
+                    static unsigned long long sequence;
+                    unsigned long long seq = __atomic_add_fetch( &sequence, 1, __ATOMIC_RELAXED );
+                    uint64_t stack_words[13] = {0};
+                    uint64_t stack_valid = 0;
+                    uint64_t mono_cookie = 0, mono_slot = 0, saved_mismatch = 0;
+                    hb_result_t mono_cookie_r = HB_ERR_NOT_FOUND;
+                    hb_result_t mono_slot_r = HB_ERR_NOT_FOUND;
+                    hb_result_t saved_mismatch_r = HB_ERR_NOT_FOUND;
+                    uint64_t caller_rsp = ctx->regs.x64.rsp + 0x40;
+                    uint64_t computed_cookie = 0;
+                    uint32_t code = (uint32_t)ctx->regs.x64.rcx;
+                    uintptr_t host_x18 = 0;
+                    unsigned int i;
+
+                    if (mov_ecx_int29) memcpy( &code, bytes + 1, sizeof(code) );
+                    for (i = 0; i < ARRAY_SIZE(stack_words); i++)
+                    {
+                        if (hb_memory_read_u64( ctx->memory,
+                                                (hb_gva_t)ctx->regs.x64.rsp + i * 8,
+                                                &stack_words[i] ) == HB_OK)
+                            stack_valid |= 1ULL << i;
+                    }
+#if defined(__aarch64__) || defined(__arm64__)
+                    __asm__ volatile( "mov %0, x18" : "=r"(host_x18) );
+#endif
+                    if (!strcasecmp( fault_base, "mono-2.0-bdwgc.dll" ) &&
+                        fault_rva == 0x4ec20c)
+                    {
+                        mono_cookie_r = hb_memory_read_u64( ctx->memory,
+                                                            (hb_gva_t)fault_module + 0x73a2f8,
+                                                            &mono_cookie );
+                        mono_slot_r = hb_memory_read_u64( ctx->memory,
+                                                          (hb_gva_t)ctx->regs.x64.rbp + 0x3b0,
+                                                          &mono_slot );
+                        saved_mismatch_r = hb_memory_read_u64( ctx->memory,
+                                                               (hb_gva_t)ctx->regs.x64.rsp + 0x40,
+                                                               &saved_mismatch );
+                        computed_cookie = mono_slot ^ caller_rsp;
+                    }
+                    if (seq <= 16)
+                    {
+                        fprintf( stderr,
+                                 "macrunner-hb-fastfail-probe: seq=%llu module=%s rva=%p "
+                                 "block_pc=%p int_pc=%p code=%u code_name=%s source=%s "
+                                 "rax=%p rcx=%p rsp=%p rbp=%p caller_rsp40=%p "
+                                 "stack_valid=%llx s00=%p s08=%p s10=%p s18=%p s20=%p "
+                                 "s28=%p s30=%p s38=%p s40=%p s48=%p s50=%p s58=%p s60=%p "
+                                 "mono_cookie_addr=%p mono_cookie=%p/%s mono_slot_addr=%p "
+                                 "mono_slot=%p/%s computed_cookie=%p cookie_match=%u "
+                                 "saved_mismatch_addr=%p saved_mismatch=%p/%s "
+                                 "saved_matches_computed=%u host_x18=%p teb=%p guest_tid=%04x "
+                                 "native_tid=%llu\n",
+                                 seq, fault_base[0] ? fault_base : "(unknown)", (void *)fault_rva,
+                                 (void *)(uintptr_t)block_pc,
+                                 (void *)(uintptr_t)(block_pc + (mov_ecx_int29 ? 5 : 0)),
+                                 code, code == FAST_FAIL_STACK_COOKIE_CHECK_FAILURE ?
+                                     "FAST_FAIL_STACK_COOKIE_CHECK_FAILURE" : "OTHER",
+                                 mov_ecx_int29 ? "mov-ecx-imm32" : "rcx",
+                                 (void *)(uintptr_t)ctx->regs.x64.rax,
+                                 (void *)(uintptr_t)ctx->regs.x64.rcx,
+                                 (void *)(uintptr_t)ctx->regs.x64.rsp,
+                                 (void *)(uintptr_t)ctx->regs.x64.rbp,
+                                 (void *)(uintptr_t)caller_rsp,
+                                 (unsigned long long)stack_valid,
+                                 (void *)(uintptr_t)stack_words[0],
+                                 (void *)(uintptr_t)stack_words[1],
+                                 (void *)(uintptr_t)stack_words[2],
+                                 (void *)(uintptr_t)stack_words[3],
+                                 (void *)(uintptr_t)stack_words[4],
+                                 (void *)(uintptr_t)stack_words[5],
+                                 (void *)(uintptr_t)stack_words[6],
+                                 (void *)(uintptr_t)stack_words[7],
+                                 (void *)(uintptr_t)stack_words[8],
+                                 (void *)(uintptr_t)stack_words[9],
+                                 (void *)(uintptr_t)stack_words[10],
+                                 (void *)(uintptr_t)stack_words[11],
+                                 (void *)(uintptr_t)stack_words[12],
+                                 (void *)(uintptr_t)(fault_module + 0x73a2f8),
+                                 (void *)(uintptr_t)mono_cookie, hb_result_string(mono_cookie_r),
+                                 (void *)(uintptr_t)(ctx->regs.x64.rbp + 0x3b0),
+                                 (void *)(uintptr_t)mono_slot, hb_result_string(mono_slot_r),
+                                 (void *)(uintptr_t)computed_cookie,
+                                 mono_cookie_r == HB_OK && mono_slot_r == HB_OK &&
+                                     computed_cookie == mono_cookie,
+                                 (void *)(uintptr_t)(ctx->regs.x64.rsp + 0x40),
+                                 (void *)(uintptr_t)saved_mismatch,
+                                 hb_result_string(saved_mismatch_r),
+                                 saved_mismatch_r == HB_OK && mono_slot_r == HB_OK &&
+                                     saved_mismatch == computed_cookie,
+                                 (void *)host_x18, (void *)NtCurrentTeb(),
+                                 (unsigned int)(uintptr_t)NtCurrentTeb()->ClientId.UniqueThread,
+                                 (unsigned long long)macrunner_hb_current_native_tid64() );
+                        fflush( stderr );
+                    }
                 }
             }
             fprintf( stderr, "macrunner-hb-runtime-fail: label=%s block_pc=%p next_pc=%p "

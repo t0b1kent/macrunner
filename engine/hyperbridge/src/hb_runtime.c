@@ -7,6 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#if defined(__APPLE__)
+#include <sys/ucontext.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 
 #define HB_RUNTIME_PERSISTENT_CACHE_VERSION 20u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_MEM   0x01u
@@ -73,12 +78,27 @@ typedef struct hb_jit_signal_fault_frame {
     uint64_t blocks_executed;
     uint64_t host_pc;
     uint64_t fault_addr;
+    uint64_t host_gpr[31];
+    uint64_t host_sp;
+    uint64_t host_fault_pc;
+    uint64_t host_pstate;
+    uint8_t aa_dst_pre[32];
+    uint8_t aa_src_pre[32];
+    uint8_t aa_dst_post[32];
+    uint8_t aa_src_post[32];
+    uint32_t aa_dst_pre_valid;
+    uint32_t aa_src_pre_valid;
+    uint32_t aa_dst_post_valid;
+    uint32_t aa_src_post_valid;
+    bool aa_enabled;
+    bool host_context_valid;
     int signal;
     sigjmp_buf env;
 } hb_jit_signal_fault_frame_t;
 
 static __thread hb_jit_signal_fault_frame_t* g_jit_signal_fault_frame;
 static unsigned int g_jit_signal_fault_reports;
+static unsigned int g_jit_aa_sigbus_reports;
 
 static uint64_t g_dispatch_stats_blocks;
 static uint64_t g_dispatch_stats_dispatches;
@@ -1608,6 +1628,455 @@ static bool jit_sigbus_invalidate_enabled(void) {
     return enabled != 0;
 }
 
+static bool jit_aa_sigbus_probe_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* env = getenv("MACRUNNER_HB_AA_SIGBUS_PROBE");
+        enabled = env && env[0] && env[0] != '0';
+    }
+    return enabled != 0;
+}
+
+static bool jit_aa_force_mono_simd_copy_interp_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* env = getenv("MACRUNNER_HB_AA_FORCE_MONO_SIMD_COPY_INTERP");
+        enabled = env && env[0] && env[0] != '0';
+    }
+    return enabled != 0;
+}
+
+static bool jit_aa_mono_simd_copy_gate_probe_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* env = getenv("MACRUNNER_HB_AA_MONO_SIMD_COPY_GATE_PROBE");
+        enabled = env && env[0] && env[0] != '0';
+    }
+    return enabled != 0;
+}
+
+static bool jit_aa_mono_4ee14b_transparency_probe_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* env = getenv("MACRUNNER_HB_AA_MONO_4EE14B_TRANSPARENCY_PROBE");
+        enabled = env && env[0] && env[0] != '0';
+    }
+    return enabled != 0;
+}
+
+static bool jit_aa_is_mono_simd_copy_block(hb_context_t* ctx,
+                                           const hb_block_cache_entry_t* entry,
+                                           uint8_t bytes[16],
+                                           uint64_t* rva_out) {
+    static const uint8_t sig_4ee14b[16] = {
+        0x0f, 0x1f, 0x44, 0x00, 0x00, /* nop dword ptr [rax+rax] */
+        0xf3, 0x0f, 0x6f, 0x0a,       /* movdqu xmm1, xmmword ptr [rdx] */
+        0xf3, 0x0f, 0x6f, 0x52, 0x10, /* movdqu xmm2, xmmword ptr [rdx+0x10] */
+        0xf3, 0x0f                    /* next movdqu */
+    };
+    static const uint8_t sig_4ee150[16] = {
+        0xf3, 0x0f, 0x6f, 0x0a,
+        0xf3, 0x0f, 0x6f, 0x52, 0x10,
+        0xf3, 0x0f, 0x6f, 0x5a, 0x20,
+        0xf3, 0x0f
+    };
+    uint64_t rva;
+    if (!ctx || !ctx->memory || !entry || !entry->guest_addr)
+        return false;
+    if (!(ctx->codegen_flags & HB_CONTEXT_CODEGEN_MONO_MODULE) ||
+        !ctx->codegen_module_base || entry->guest_addr < ctx->codegen_module_base)
+        return false;
+    rva = entry->guest_addr - ctx->codegen_module_base;
+    if (rva != 0x4ee14bull && rva != 0x4ee150ull)
+        return false;
+    for (size_t i = 0; i < 16; i++) {
+        if (hb_memory_read_u8(ctx->memory, (hb_gva_t)(entry->guest_addr + i),
+                              &bytes[i]) != HB_OK)
+            return false;
+    }
+    if (rva_out) *rva_out = rva;
+    if (rva == 0x4ee14bull)
+        return memcmp(bytes, sig_4ee14b, sizeof(sig_4ee14b)) == 0;
+    return memcmp(bytes, sig_4ee150, sizeof(sig_4ee150)) == 0;
+}
+
+static void jit_aa_probe_mono_simd_copy_gate(hb_jit_runtime_t* rt,
+                                             hb_block_cache_entry_t* cached,
+                                             uint64_t steps,
+                                             uint64_t blocks_executed) {
+    static unsigned int reports;
+    hb_context_t* ctx;
+    uint8_t bytes[16] = {0};
+    uint64_t rva = 0;
+
+    if (!jit_aa_mono_simd_copy_gate_probe_enabled() || !rt || !cached)
+        return;
+    ctx = rt->ctx;
+    if (!jit_aa_is_mono_simd_copy_block(ctx, cached, bytes, &rva))
+        return;
+    if (reports++ < 16) {
+        fprintf(stderr,
+                "macrunner-hb-aa-mono-simd-gate-probe: would_force=1 module_base=%p "
+                "rva=0x%llx guest=%p native=%p-%p steps=%llu blocks=%llu "
+                "dst=%p src=%p len=%llu "
+                "bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                (void*)(uintptr_t)ctx->codegen_module_base,
+                (unsigned long long)rva,
+                (void*)(uintptr_t)cached->guest_addr,
+                cached->native_code, cached->native_code + cached->native_size,
+                (unsigned long long)steps, (unsigned long long)blocks_executed,
+                (void*)(uintptr_t)ctx->regs.x64.rcx,
+                (void*)(uintptr_t)ctx->regs.x64.rdx,
+                (unsigned long long)ctx->regs.x64.r8,
+                bytes[0], bytes[1], bytes[2], bytes[3],
+                bytes[4], bytes[5], bytes[6], bytes[7],
+                bytes[8], bytes[9], bytes[10], bytes[11],
+                bytes[12], bytes[13], bytes[14], bytes[15]);
+        fflush(stderr);
+    }
+}
+
+static bool jit_aa_force_mono_simd_copy_interp(hb_jit_runtime_t* rt,
+                                               hb_block_cache_entry_t* cached,
+                                               hb_exec_result_t* out,
+                                               uint64_t steps,
+                                               uint64_t blocks_executed) {
+    static unsigned int reports;
+    hb_context_t* ctx;
+    uint8_t bytes[16] = {0};
+    uint64_t rva = 0;
+
+    if (!jit_aa_force_mono_simd_copy_interp_enabled() || !rt || !cached || !out)
+        return false;
+    if (!cached->block)
+        return false;
+    ctx = rt->ctx;
+    if (!jit_aa_is_mono_simd_copy_block(ctx, cached, bytes, &rva))
+        return false;
+
+    ctx->pc = cached->guest_addr;
+    sync_arch_pc_after_jit_block(ctx);
+    if (reports++ < 16) {
+        fprintf(stderr,
+                "macrunner-hb-aa-force-mono-simd-interp: module_base=%p rva=0x%llx "
+                "guest=%p native=%p-%p "
+                "steps=%llu blocks=%llu dst=%p src=%p len=%llu "
+                "bytes=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                (void*)(uintptr_t)ctx->codegen_module_base,
+                (unsigned long long)rva,
+                (void*)(uintptr_t)cached->guest_addr,
+                cached->native_code, cached->native_code + cached->native_size,
+                (unsigned long long)steps, (unsigned long long)blocks_executed,
+                (void*)(uintptr_t)ctx->regs.x64.rcx,
+                (void*)(uintptr_t)ctx->regs.x64.rdx,
+                (unsigned long long)ctx->regs.x64.r8,
+                bytes[0], bytes[1], bytes[2], bytes[3],
+                bytes[4], bytes[5], bytes[6], bytes[7],
+                bytes[8], bytes[9], bytes[10], bytes[11],
+                bytes[12], bytes[13], bytes[14], bytes[15]);
+        fflush(stderr);
+    }
+    hb_jit_helper_exec_ir_block(ctx, cached->block);
+    if (ctx->last_result != HB_OK) {
+        out->result = ctx->last_result;
+        out->steps_executed = steps;
+        out->blocks_executed = blocks_executed;
+        out->faulted = true;
+        out->fault_reason = "A/B forced Mono RVA-scoped SIMD-copy inline interpreter fault";
+    }
+    return true;
+}
+
+static uint32_t jit_aa_capture_window(hb_memory_t* memory, uint64_t address,
+                                      uint8_t bytes[32]) {
+    uint32_t valid = 0;
+    if (!memory || !address) return 0;
+    for (unsigned int i = 0; i < 32; i++) {
+        uint8_t byte = 0;
+        if (hb_memory_read_u8(memory, (hb_gva_t)(address + i), &byte) == HB_OK) {
+            bytes[i] = byte;
+            valid |= (uint32_t)1u << i;
+        }
+    }
+    return valid;
+}
+
+static void jit_aa_format_window(const uint8_t bytes[32], uint32_t valid,
+                                 char text[65]) {
+    static const char hex[] = "0123456789abcdef";
+    for (unsigned int i = 0; i < 32; i++) {
+        if (valid & ((uint32_t)1u << i)) {
+            text[i * 2] = hex[bytes[i] >> 4];
+            text[i * 2 + 1] = hex[bytes[i] & 15];
+        } else {
+            text[i * 2] = '?';
+            text[i * 2 + 1] = '?';
+        }
+    }
+    text[64] = 0;
+}
+
+#define JIT_AA_MONO_4EE14B_WINDOW 256u
+
+typedef struct jit_aa_mono_4ee14b_window {
+    uint8_t bytes[JIT_AA_MONO_4EE14B_WINDOW];
+    uint8_t valid[JIT_AA_MONO_4EE14B_WINDOW];
+    size_t size;
+    uint64_t hash;
+    unsigned int valid_count;
+} jit_aa_mono_4ee14b_window_t;
+
+static uint64_t jit_aa_hash_bytes(const void* data, size_t size) {
+    const uint8_t* p = (const uint8_t*)data;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < size; i++) {
+        h ^= (uint64_t)p[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+static void jit_aa_mono_4ee14b_capture_window(hb_memory_t* memory, uint64_t address,
+                                              size_t size,
+                                              jit_aa_mono_4ee14b_window_t* out) {
+    memset(out, 0, sizeof(*out));
+    if (!memory || !address) return;
+    if (size > JIT_AA_MONO_4EE14B_WINDOW) size = JIT_AA_MONO_4EE14B_WINDOW;
+    out->size = size;
+    out->hash = 1469598103934665603ull;
+    for (size_t i = 0; i < size; i++) {
+        uint8_t byte = 0;
+        if (hb_memory_read_u8(memory, (hb_gva_t)(address + i), &byte) == HB_OK) {
+            out->bytes[i] = byte;
+            out->valid[i] = 1;
+            out->valid_count++;
+        }
+        out->hash ^= (uint64_t)out->valid[i];
+        out->hash *= 1099511628211ull;
+        if (out->valid[i]) {
+            out->hash ^= (uint64_t)byte;
+            out->hash *= 1099511628211ull;
+        }
+    }
+}
+
+static bool jit_aa_mono_4ee14b_restore_window(hb_memory_t* memory, uint64_t address,
+                                              const jit_aa_mono_4ee14b_window_t* in) {
+    bool ok = true;
+    if (!memory || !address || !in) return false;
+    for (size_t i = 0; i < in->size; i++) {
+        if (!in->valid[i]) continue;
+        if (hb_memory_write(memory, (hb_gva_t)(address + i), &in->bytes[i], 1) != HB_OK)
+            ok = false;
+    }
+    return ok;
+}
+
+static bool jit_aa_mono_4ee14b_windows_equal(const jit_aa_mono_4ee14b_window_t* a,
+                                             const jit_aa_mono_4ee14b_window_t* b) {
+    if (!a || !b || a->size != b->size || a->valid_count != b->valid_count ||
+        a->hash != b->hash)
+        return false;
+    for (size_t i = 0; i < a->size; i++) {
+        if (a->valid[i] != b->valid[i]) return false;
+        if (a->valid[i] && a->bytes[i] != b->bytes[i]) return false;
+    }
+    return true;
+}
+
+static void jit_aa_mono_4ee14b_format32(const jit_aa_mono_4ee14b_window_t* w,
+                                        char text[65]) {
+    uint8_t bytes[32] = {0};
+    uint32_t valid = 0;
+    if (w) {
+        size_t n = w->size < 32 ? w->size : 32;
+        for (size_t i = 0; i < n; i++) {
+            bytes[i] = w->bytes[i];
+            if (w->valid[i]) valid |= (uint32_t)1u << i;
+        }
+    }
+    jit_aa_format_window(bytes, valid, text);
+}
+
+static bool jit_aa_mono_4ee14b_gpr_equal(const hb_regs_x64_t* a,
+                                         const hb_regs_x64_t* b) {
+    return a->rax == b->rax && a->rbx == b->rbx &&
+           a->rcx == b->rcx && a->rdx == b->rdx &&
+           a->rsi == b->rsi && a->rdi == b->rdi &&
+           a->rsp == b->rsp && a->rbp == b->rbp &&
+           a->r8  == b->r8  && a->r9  == b->r9  &&
+           a->r10 == b->r10 && a->r11 == b->r11 &&
+           a->r12 == b->r12 && a->r13 == b->r13 &&
+           a->r14 == b->r14 && a->r15 == b->r15 &&
+           a->rip == b->rip && a->rflags == b->rflags;
+}
+
+static void jit_aa_mono_4ee14b_transparency_probe(hb_jit_runtime_t* rt,
+                                                  hb_block_cache_entry_t* cached,
+                                                  uint64_t steps,
+                                                  uint64_t blocks_executed) {
+    typedef void (*jit_block_t)(hb_context_t*);
+    static unsigned int reports;
+    hb_context_t* ctx;
+    hb_context_t pre_ctx, jit_ctx, interp_ctx;
+    hb_jit_signal_fault_frame_t frame;
+    jit_aa_mono_4ee14b_window_t pre_dst, pre_src, jit_dst, jit_src, interp_dst, interp_src;
+    uint8_t bytes[16] = {0};
+    uint64_t rva = 0;
+    uint64_t dst, src, len;
+    size_t window;
+    int jit_signal = 0;
+    hb_result_t interp_result;
+    bool restore_pre_ok;
+    char pre_dst_text[65], jit_dst_text[65], interp_dst_text[65];
+    char pre_src_text[65], jit_src_text[65], interp_src_text[65];
+
+    if (!jit_aa_mono_4ee14b_transparency_probe_enabled() || !rt || !cached ||
+        !cached->native_code || !cached->block || reports >= 8)
+        return;
+    ctx = rt->ctx;
+    if (!jit_aa_is_mono_simd_copy_block(ctx, cached, bytes, &rva) ||
+        rva != 0x4ee14bull)
+        return;
+
+    reports++;
+    pre_ctx = *ctx;
+    dst = pre_ctx.regs.x64.rcx;
+    src = pre_ctx.regs.x64.rdx;
+    len = pre_ctx.regs.x64.r8;
+    window = len < 128 ? 128 : (size_t)len;
+    if (window > JIT_AA_MONO_4EE14B_WINDOW) window = JIT_AA_MONO_4EE14B_WINDOW;
+    jit_aa_mono_4ee14b_capture_window(pre_ctx.memory, dst, window, &pre_dst);
+    jit_aa_mono_4ee14b_capture_window(pre_ctx.memory, src, window, &pre_src);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.prev = g_jit_signal_fault_frame;
+    frame.rt = rt;
+    frame.ctx = ctx;
+    frame.entry = cached;
+    frame.snapshot = pre_ctx;
+    frame.steps = steps;
+    frame.blocks_executed = blocks_executed;
+    frame.aa_enabled = false;
+    g_jit_signal_fault_frame = &frame;
+    if (sigsetjmp(frame.env, 0) == 0) {
+        jit_block_t exec = (jit_block_t)(void*)cached->native_code;
+        exec(ctx);
+    } else {
+        jit_signal = frame.signal ? frame.signal : -1;
+        *ctx = pre_ctx;
+    }
+    g_jit_signal_fault_frame = frame.prev;
+    jit_ctx = *ctx;
+    jit_aa_mono_4ee14b_capture_window(pre_ctx.memory, dst, window, &jit_dst);
+    jit_aa_mono_4ee14b_capture_window(pre_ctx.memory, src, window, &jit_src);
+
+    *ctx = pre_ctx;
+    (void)jit_aa_mono_4ee14b_restore_window(pre_ctx.memory, dst, &pre_dst);
+    hb_jit_helper_exec_ir_block(ctx, cached->block);
+    interp_result = ctx->last_result;
+    interp_ctx = *ctx;
+    jit_aa_mono_4ee14b_capture_window(pre_ctx.memory, dst, window, &interp_dst);
+    jit_aa_mono_4ee14b_capture_window(pre_ctx.memory, src, window, &interp_src);
+
+    *ctx = pre_ctx;
+    restore_pre_ok = jit_aa_mono_4ee14b_restore_window(pre_ctx.memory, dst, &pre_dst);
+    jit_aa_mono_4ee14b_format32(&pre_dst, pre_dst_text);
+    jit_aa_mono_4ee14b_format32(&jit_dst, jit_dst_text);
+    jit_aa_mono_4ee14b_format32(&interp_dst, interp_dst_text);
+    jit_aa_mono_4ee14b_format32(&pre_src, pre_src_text);
+    jit_aa_mono_4ee14b_format32(&jit_src, jit_src_text);
+    jit_aa_mono_4ee14b_format32(&interp_src, interp_src_text);
+
+    fprintf(stderr,
+            "macrunner-hb-mono-4ee14b-diff: seq=%u module_base=%p rva=0x%llx "
+            "guest=%p native=%p-%p instrs=%zu steps=%llu blocks=%llu "
+            "pre_pc=%p pre_rip=%p dst=%p src=%p len=%llu window=%zu "
+            "jit_signal=%d interp_result=%s restore_pre=%u "
+            "pc_equal=%u rip_equal=%u gpr_equal=%u regs_equal=%u xmm_hash_equal=%u "
+            "dst_equal=%u src_equal=%u "
+            "jit_pc=%p interp_pc=%p jit_rip=%p interp_rip=%p "
+            "jit_rcx=%p interp_rcx=%p jit_rdx=%p interp_rdx=%p "
+            "jit_r8=%p interp_r8=%p jit_r15=%p interp_r15=%p "
+            "jit_last=%s interp_last=%s "
+            "pre_dst=%s jit_dst=%s interp_dst=%s "
+            "pre_src=%s jit_src=%s interp_src=%s "
+            "dst_hash_pre=%016llx dst_hash_jit=%016llx dst_hash_interp=%016llx "
+            "src_hash_pre=%016llx src_hash_jit=%016llx src_hash_interp=%016llx\n",
+            reports,
+            (void*)(uintptr_t)pre_ctx.codegen_module_base,
+            (unsigned long long)rva,
+            (void*)(uintptr_t)cached->guest_addr,
+            cached->native_code, cached->native_code + cached->native_size,
+            cached->block->instr_count,
+            (unsigned long long)steps, (unsigned long long)blocks_executed,
+            (void*)(uintptr_t)pre_ctx.pc,
+            (void*)(uintptr_t)pre_ctx.regs.x64.rip,
+            (void*)(uintptr_t)dst, (void*)(uintptr_t)src,
+            (unsigned long long)len, window,
+            jit_signal, hb_result_string(interp_result),
+            restore_pre_ok ? 1u : 0u,
+            jit_ctx.pc == interp_ctx.pc ? 1u : 0u,
+            jit_ctx.regs.x64.rip == interp_ctx.regs.x64.rip ? 1u : 0u,
+            jit_aa_mono_4ee14b_gpr_equal(&jit_ctx.regs.x64, &interp_ctx.regs.x64) ? 1u : 0u,
+            memcmp(&jit_ctx.regs.x64, &interp_ctx.regs.x64, sizeof(jit_ctx.regs.x64)) == 0 ? 1u : 0u,
+            jit_aa_hash_bytes(jit_ctx.regs.x64.xmm, sizeof(jit_ctx.regs.x64.xmm)) ==
+                jit_aa_hash_bytes(interp_ctx.regs.x64.xmm, sizeof(interp_ctx.regs.x64.xmm)) ? 1u : 0u,
+            jit_aa_mono_4ee14b_windows_equal(&jit_dst, &interp_dst) ? 1u : 0u,
+            jit_aa_mono_4ee14b_windows_equal(&jit_src, &interp_src) ? 1u : 0u,
+            (void*)(uintptr_t)jit_ctx.pc, (void*)(uintptr_t)interp_ctx.pc,
+            (void*)(uintptr_t)jit_ctx.regs.x64.rip, (void*)(uintptr_t)interp_ctx.regs.x64.rip,
+            (void*)(uintptr_t)jit_ctx.regs.x64.rcx, (void*)(uintptr_t)interp_ctx.regs.x64.rcx,
+            (void*)(uintptr_t)jit_ctx.regs.x64.rdx, (void*)(uintptr_t)interp_ctx.regs.x64.rdx,
+            (void*)(uintptr_t)jit_ctx.regs.x64.r8, (void*)(uintptr_t)interp_ctx.regs.x64.r8,
+            (void*)(uintptr_t)jit_ctx.regs.x64.r15, (void*)(uintptr_t)interp_ctx.regs.x64.r15,
+            hb_result_string(jit_ctx.last_result), hb_result_string(interp_ctx.last_result),
+            pre_dst_text, jit_dst_text, interp_dst_text,
+            pre_src_text, jit_src_text, interp_src_text,
+            (unsigned long long)pre_dst.hash, (unsigned long long)jit_dst.hash,
+            (unsigned long long)interp_dst.hash,
+            (unsigned long long)pre_src.hash, (unsigned long long)jit_src.hash,
+            (unsigned long long)interp_src.hash);
+    fflush(stderr);
+}
+
+typedef struct hb_jit_aa_vm_region {
+    uint64_t start;
+    uint64_t end;
+    int protection;
+    int max_protection;
+    int status;
+} hb_jit_aa_vm_region_t;
+
+static hb_jit_aa_vm_region_t jit_aa_query_vm_region(uint64_t address) {
+    hb_jit_aa_vm_region_t result;
+    memset(&result, 0, sizeof(result));
+#if defined(__APPLE__)
+    {
+        mach_vm_address_t region = (mach_vm_address_t)address;
+        mach_vm_size_t size = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        memory_object_name_t object = MACH_PORT_NULL;
+        kern_return_t kr = mach_vm_region(mach_task_self(), &region, &size,
+                                          VM_REGION_BASIC_INFO_64,
+                                          (vm_region_info_t)&info, &count, &object);
+        result.status = kr;
+        if (kr == KERN_SUCCESS) {
+            result.start = (uint64_t)region;
+            result.end = (uint64_t)(region + size);
+            result.protection = info.protection;
+            result.max_protection = info.max_protection;
+        }
+        if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+    }
+#else
+    (void)address;
+    result.status = -1;
+#endif
+    return result;
+}
+
 static bool jit_sigbus_quarantine_contains(const hb_jit_runtime_t* rt, uint64_t guest_addr) {
     if (!rt || !guest_addr) return false;
     for (size_t i = 0; i < rt->jit_sigbus_quarantine_count; i++)
@@ -1633,7 +2102,8 @@ static bool jit_sigbus_quarantine_add(hb_jit_runtime_t* rt, uint64_t guest_addr)
     return true;
 }
 
-int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int signal) {
+int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int signal,
+                                       const void* host_context) {
     hb_jit_signal_fault_frame_t* frame = g_jit_signal_fault_frame;
     uintptr_t native_start, native_end, slab_start, slab_end;
 
@@ -1653,6 +2123,23 @@ int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int sig
     frame->host_pc = pc;
     frame->fault_addr = fault_addr;
     frame->signal = signal;
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (frame->aa_enabled && host_context) {
+        const ucontext_t* context = (const ucontext_t*)host_context;
+        if (context->uc_mcontext) {
+            for (unsigned int i = 0; i < 29; i++)
+                frame->host_gpr[i] = context->uc_mcontext->__ss.__x[i];
+            frame->host_gpr[29] = context->uc_mcontext->__ss.__fp;
+            frame->host_gpr[30] = context->uc_mcontext->__ss.__lr;
+            frame->host_sp = context->uc_mcontext->__ss.__sp;
+            frame->host_fault_pc = context->uc_mcontext->__ss.__pc;
+            frame->host_pstate = context->uc_mcontext->__ss.__cpsr;
+            frame->host_context_valid = true;
+        }
+    }
+#else
+    (void)host_context;
+#endif
     {
         static int traced;
         if (traced++ < 8 && getenv("MACRUNNER_HB_TRACE_JIT_HELPER_FAIL"))
@@ -1661,6 +2148,143 @@ int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int sig
     }
     siglongjmp(frame->env, 1);
     return 1;
+}
+
+static void jit_aa_report_sigbus(const hb_jit_signal_fault_frame_t* frame,
+                                 const hb_block_cache_entry_t* faulted) {
+    const hb_context_t* entry_ctx;
+    const hb_block_cache_entry_t* native_entry;
+    hb_jit_aa_vm_region_t fault_region, dst_region, src_region;
+    char dst_pre[65], src_pre[65], dst_post[65], src_post[65], guest_text[65];
+    uint8_t guest_bytes[32] = {0};
+    uint32_t guest_valid;
+    uint32_t native_words[5] = {0};
+    unsigned int native_valid = 0;
+    uint64_t dst, src, length, dst_end, src_end, fault_guest;
+    unsigned int seq;
+
+    if (!frame || !frame->aa_enabled || frame->signal != SIGBUS) return;
+    seq = __sync_add_and_fetch(&g_jit_aa_sigbus_reports, 1);
+    if (seq > 8) return;
+
+    entry_ctx = &frame->snapshot;
+    native_entry = faulted ? faulted : frame->entry;
+    fault_guest = faulted ? faulted->guest_addr : frame->entry->guest_addr;
+    dst = entry_ctx->regs.x64.rcx;
+    src = entry_ctx->regs.x64.rdx;
+    length = entry_ctx->regs.x64.r8;
+    dst_end = length > UINT64_MAX - dst ? UINT64_MAX : dst + length;
+    src_end = length > UINT64_MAX - src ? UINT64_MAX : src + length;
+
+    jit_aa_format_window(frame->aa_dst_pre, frame->aa_dst_pre_valid, dst_pre);
+    jit_aa_format_window(frame->aa_src_pre, frame->aa_src_pre_valid, src_pre);
+    jit_aa_format_window(frame->aa_dst_post, frame->aa_dst_post_valid, dst_post);
+    jit_aa_format_window(frame->aa_src_post, frame->aa_src_post_valid, src_post);
+    guest_valid = jit_aa_capture_window(entry_ctx->memory, fault_guest, guest_bytes);
+    jit_aa_format_window(guest_bytes, guest_valid, guest_text);
+
+    if (native_entry && native_entry->native_code && native_entry->native_size) {
+        uintptr_t start = (uintptr_t)native_entry->native_code;
+        uintptr_t end = start + native_entry->native_size;
+        uintptr_t center = (uintptr_t)frame->host_pc & ~(uintptr_t)3;
+        for (int i = -2; i <= 2; i++) {
+            uintptr_t at = center + (intptr_t)i * 4;
+            if (at >= start && at + sizeof(uint32_t) <= end) {
+                memcpy(&native_words[i + 2], (const void*)at, sizeof(uint32_t));
+                native_valid |= 1u << (i + 2);
+            }
+        }
+    }
+
+    fault_region = jit_aa_query_vm_region(frame->fault_addr);
+    dst_region = jit_aa_query_vm_region(dst);
+    src_region = jit_aa_query_vm_region(src);
+    fprintf(stderr,
+            "macrunner-hb-aa-sigbus-state: seq=%u signal=%d block_entry=%p fault_guest=%p "
+            "native_entry=%p hostpc=%p fault=%p steps=%llu blocks=%llu "
+            "dst=%p-%p src=%p-%p len=%llu\n",
+            seq, frame->signal, (void*)(uintptr_t)frame->entry->guest_addr,
+            (void*)(uintptr_t)fault_guest,
+            native_entry ? (void*)native_entry->native_code : NULL,
+            (void*)(uintptr_t)frame->host_pc, (void*)(uintptr_t)frame->fault_addr,
+            (unsigned long long)frame->steps,
+            (unsigned long long)frame->blocks_executed,
+            (void*)(uintptr_t)dst, (void*)(uintptr_t)dst_end,
+            (void*)(uintptr_t)src, (void*)(uintptr_t)src_end,
+            (unsigned long long)length);
+    fprintf(stderr,
+            "macrunner-hb-aa-sigbus-entry-gpr: seq=%u pc=%p rip=%p rflags=%llx "
+            "rax=%llx rbx=%llx rcx=%llx rdx=%llx rsi=%llx rdi=%llx rsp=%llx rbp=%llx\n",
+            seq, (void*)(uintptr_t)entry_ctx->pc,
+            (void*)(uintptr_t)entry_ctx->regs.x64.rip,
+            (unsigned long long)entry_ctx->regs.x64.rflags,
+            (unsigned long long)entry_ctx->regs.x64.rax,
+            (unsigned long long)entry_ctx->regs.x64.rbx,
+            (unsigned long long)entry_ctx->regs.x64.rcx,
+            (unsigned long long)entry_ctx->regs.x64.rdx,
+            (unsigned long long)entry_ctx->regs.x64.rsi,
+            (unsigned long long)entry_ctx->regs.x64.rdi,
+            (unsigned long long)entry_ctx->regs.x64.rsp,
+            (unsigned long long)entry_ctx->regs.x64.rbp);
+    fprintf(stderr,
+            "macrunner-hb-aa-sigbus-entry-ext: seq=%u r8=%llx r9=%llx r10=%llx r11=%llx "
+            "r12=%llx r13=%llx r14=%llx r15=%llx\n",
+            seq, (unsigned long long)entry_ctx->regs.x64.r8,
+            (unsigned long long)entry_ctx->regs.x64.r9,
+            (unsigned long long)entry_ctx->regs.x64.r10,
+            (unsigned long long)entry_ctx->regs.x64.r11,
+            (unsigned long long)entry_ctx->regs.x64.r12,
+            (unsigned long long)entry_ctx->regs.x64.r13,
+            (unsigned long long)entry_ctx->regs.x64.r14,
+            (unsigned long long)entry_ctx->regs.x64.r15);
+    fprintf(stderr,
+            "macrunner-hb-aa-sigbus-memory: seq=%u dst_valid_pre=%08x dst_pre=%s "
+            "dst_valid_native_post=%08x dst_native_post=%s src_valid_pre=%08x src_pre=%s "
+            "src_valid_native_post=%08x src_native_post=%s\n",
+            seq, frame->aa_dst_pre_valid, dst_pre, frame->aa_dst_post_valid, dst_post,
+            frame->aa_src_pre_valid, src_pre, frame->aa_src_post_valid, src_post);
+    fprintf(stderr,
+            "macrunner-hb-aa-sigbus-insn: seq=%u guest_pc=%p guest_valid=%08x guest32=%s "
+            "native_pc=%p native_valid=%02x native_w_m2_p2=%08x,%08x,%08x,%08x,%08x\n",
+            seq, (void*)(uintptr_t)fault_guest, guest_valid, guest_text,
+            (void*)(uintptr_t)frame->host_pc, native_valid,
+            native_words[0], native_words[1], native_words[2], native_words[3], native_words[4]);
+    fprintf(stderr,
+            "macrunner-hb-aa-sigbus-vm: seq=%u fault_region=%p-%p prot=%x max=%x status=%d "
+            "dst_region=%p-%p prot=%x max=%x status=%d src_region=%p-%p prot=%x max=%x status=%d\n",
+            seq, (void*)(uintptr_t)fault_region.start, (void*)(uintptr_t)fault_region.end,
+            fault_region.protection, fault_region.max_protection, fault_region.status,
+            (void*)(uintptr_t)dst_region.start, (void*)(uintptr_t)dst_region.end,
+            dst_region.protection, dst_region.max_protection, dst_region.status,
+            (void*)(uintptr_t)src_region.start, (void*)(uintptr_t)src_region.end,
+            src_region.protection, src_region.max_protection, src_region.status);
+    fprintf(stderr,
+            "macrunner-hb-aa-sigbus-ucontext-0: seq=%u valid=%u pc=%llx sp=%llx pstate=%llx "
+            "x0=%llx x1=%llx x2=%llx x3=%llx x4=%llx x5=%llx x6=%llx x7=%llx\n",
+            seq, frame->host_context_valid ? 1u : 0u,
+            (unsigned long long)frame->host_fault_pc,
+            (unsigned long long)frame->host_sp,
+            (unsigned long long)frame->host_pstate,
+            (unsigned long long)frame->host_gpr[0], (unsigned long long)frame->host_gpr[1],
+            (unsigned long long)frame->host_gpr[2], (unsigned long long)frame->host_gpr[3],
+            (unsigned long long)frame->host_gpr[4], (unsigned long long)frame->host_gpr[5],
+            (unsigned long long)frame->host_gpr[6], (unsigned long long)frame->host_gpr[7]);
+    for (unsigned int base = 8; base < 31; base += 8) {
+        unsigned int last = base + 7 < 31 ? base + 7 : 30;
+        fprintf(stderr,
+                "macrunner-hb-aa-sigbus-ucontext-n: seq=%u range=x%u-x%u "
+                "v=%llx,%llx,%llx,%llx,%llx,%llx,%llx,%llx\n",
+                seq, base, last,
+                (unsigned long long)frame->host_gpr[base],
+                (unsigned long long)frame->host_gpr[base + 1],
+                (unsigned long long)frame->host_gpr[base + 2],
+                (unsigned long long)frame->host_gpr[base + 3],
+                (unsigned long long)frame->host_gpr[base + 4],
+                (unsigned long long)frame->host_gpr[base + 5],
+                (unsigned long long)frame->host_gpr[base + 6],
+                (unsigned long long)(base + 7 < 31 ? frame->host_gpr[base + 7] : 0));
+    }
+    fflush(stderr);
 }
 
 static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
@@ -1677,6 +2301,10 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         return HB_ERR_INVALID_ARG;
 
     ctx = rt->ctx;
+    jit_aa_probe_mono_simd_copy_gate(rt, cached, steps, blocks_executed);
+    jit_aa_mono_4ee14b_transparency_probe(rt, cached, steps, blocks_executed);
+    if (jit_aa_force_mono_simd_copy_interp(rt, cached, out, steps, blocks_executed))
+        return HB_OK;
     if (jit_sigbus_invalidate_enabled() &&
         (rt->jit_sigbus_disable ||
          jit_sigbus_quarantine_contains(rt, cached->guest_addr))) {
@@ -1696,6 +2324,13 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
     frame.snapshot = *ctx;
     frame.steps = steps;
     frame.blocks_executed = blocks_executed;
+    frame.aa_enabled = jit_aa_sigbus_probe_enabled();
+    if (frame.aa_enabled) {
+        frame.aa_dst_pre_valid = jit_aa_capture_window(
+            frame.snapshot.memory, frame.snapshot.regs.x64.rcx, frame.aa_dst_pre);
+        frame.aa_src_pre_valid = jit_aa_capture_window(
+            frame.snapshot.memory, frame.snapshot.regs.x64.rdx, frame.aa_src_pre);
+    }
     g_jit_signal_fault_frame = &frame;
 
     if (sigsetjmp(frame.env, 0) == 0) {
@@ -1706,12 +2341,20 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
     }
 
     g_jit_signal_fault_frame = frame.prev;
+    if (frame.aa_enabled && frame.signal == SIGBUS) {
+        frame.aa_dst_post_valid = jit_aa_capture_window(
+            frame.snapshot.memory, frame.snapshot.regs.x64.rcx, frame.aa_dst_post);
+        frame.aa_src_post_valid = jit_aa_capture_window(
+            frame.snapshot.memory, frame.snapshot.regs.x64.rdx, frame.aa_src_post);
+    }
     *ctx = frame.snapshot;
     if (jit_sigbus_invalidate_enabled() && frame.signal == SIGBUS) {
         hb_block_cache_entry_t* faulted =
             block_cache_find_native_pc(rt->block_cache, frame.host_pc);
         uint64_t fault_guest = faulted ? faulted->guest_addr : 0;
         bool quarantined = fault_guest && jit_sigbus_quarantine_add(rt, fault_guest);
+
+        jit_aa_report_sigbus(&frame, faulted);
 
         /* The snapshot is the only complete architectural checkpoint. Resume
          * from its entry; the interpreter advances to the quarantined block

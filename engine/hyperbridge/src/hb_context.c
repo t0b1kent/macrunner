@@ -77,6 +77,7 @@ hb_result_t hb_context_reset(hb_context_t* ctx) {
     ctx->last_result = HB_OK;
     ctx->indirect_ic_guest_addr = 0;
     ctx->indirect_ic_native_code = 0;
+    ctx->codegen_module_base = 0;
     return HB_OK;
 }
 

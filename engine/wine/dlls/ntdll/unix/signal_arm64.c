@@ -78,7 +78,8 @@ extern NTSTATUS macrunner_hb_get_x64_thread_context( HANDLE handle, AMD64_CONTEX
 extern NTSTATUS macrunner_hb_set_x64_thread_context( HANDLE handle, const AMD64_CONTEXT *context );
 extern void macrunner_hb_trace_nullcall_site( const char *source, uint64_t host_pc, uint64_t fault_addr );
 extern void macrunner_hb_trace_hk_memcpy_fault( const char *source, uint64_t host_pc, uint64_t fault_addr );
-extern int hb_jit_runtime_handle_signal_fault( ULONG_PTR pc, ULONG_PTR fault_addr, int signal );
+extern int hb_jit_runtime_handle_signal_fault( ULONG_PTR pc, ULONG_PTR fault_addr, int signal,
+                                               const void *host_context );
 
 /***********************************************************************
  * signal context platform-specific definitions
@@ -3012,8 +3013,8 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                                               rec.ExceptionInformation[1] );
     }
 
-    if (hb_jit_runtime_handle_signal_fault( PC_sig(context), rec.ExceptionInformation[1], signal ) ||
-        hb_jit_runtime_handle_signal_fault( LR_sig(context), rec.ExceptionInformation[1], signal ))
+    if (hb_jit_runtime_handle_signal_fault( PC_sig(context), rec.ExceptionInformation[1], signal, context ) ||
+        hb_jit_runtime_handle_signal_fault( LR_sig(context), rec.ExceptionInformation[1], signal, context ))
         return;
 
     /* MacRunner Phase F: on macOS, executing x86_64 guest bytes on the
@@ -3231,8 +3232,8 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
              (void *)(ULONG_PTR)REGn_sig(26, context) );
 
     if (macrunner_hb_redirect_arm64x_hexpthk_sigill( context )) return;
-    if (hb_jit_runtime_handle_signal_fault( PC_sig(context), 0, signal ) ||
-        hb_jit_runtime_handle_signal_fault( LR_sig(context), 0, signal )) return;
+    if (hb_jit_runtime_handle_signal_fault( PC_sig(context), 0, signal, context ) ||
+        hb_jit_runtime_handle_signal_fault( LR_sig(context), 0, signal, context )) return;
     if (macrunner_hb_route_x64_callback_fault( context, 0, "sigill" )) return;
 
     if (!(PSTATE_sig( context ) & 0x10) && /* AArch64 (not WoW) */
@@ -3388,8 +3389,8 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         }
     }
 #endif
-    if (hb_jit_runtime_handle_signal_fault( PC_sig(context), rec.ExceptionInformation[1], signal ) ||
-        hb_jit_runtime_handle_signal_fault( LR_sig(context), rec.ExceptionInformation[1], signal ))
+    if (hb_jit_runtime_handle_signal_fault( PC_sig(context), rec.ExceptionInformation[1], signal, context ) ||
+        hb_jit_runtime_handle_signal_fault( LR_sig(context), rec.ExceptionInformation[1], signal, context ))
         return;
 
     /* Same Phase F rule as segv_handler: macOS can surface execution of

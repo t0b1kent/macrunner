@@ -13,7 +13,7 @@
 #include <mach/mach_vm.h>
 #endif
 
-#define HB_RUNTIME_PERSISTENT_CACHE_VERSION 20u
+#define HB_RUNTIME_PERSISTENT_CACHE_VERSION 21u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_MEM   0x01u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_STACK 0x02u
 #define HB_RUNTIME_PERSISTENT_CACHE_FLAG_DIRECT_SCALAR_SCAN 0x04u
@@ -82,6 +82,13 @@ typedef struct hb_jit_signal_fault_frame {
     uint64_t host_sp;
     uint64_t host_fault_pc;
     uint64_t host_pstate;
+    uint64_t dispatched_guest;
+    uint64_t dispatched_native;
+    size_t dispatched_native_size;
+    uint64_t fault_guest_pc;
+    uint64_t fault_arch_pc;
+    uint64_t fault_indirect_ic_guest;
+    uint64_t fault_indirect_ic_native;
     uint32_t native_word;
     bool native_word_valid;
     bool active_guard_claim;
@@ -2140,6 +2147,15 @@ static int jit_signal_fault_claim(hb_jit_signal_fault_frame_t* frame,
     frame->native_word = native_word;
     frame->native_word_valid = native_word_valid;
     frame->active_guard_claim = active_guard_claim;
+    if (frame->ctx) {
+        frame->fault_guest_pc = frame->ctx->pc;
+        if (frame->ctx->arch == HB_ARCH_X64)
+            frame->fault_arch_pc = frame->ctx->regs.x64.rip;
+        else if (frame->ctx->arch == HB_ARCH_X86)
+            frame->fault_arch_pc = frame->ctx->regs.x86.eip;
+        frame->fault_indirect_ic_guest = frame->ctx->indirect_ic_guest_addr;
+        frame->fault_indirect_ic_native = frame->ctx->indirect_ic_native_code;
+    }
 #if defined(__APPLE__) && defined(__aarch64__)
     if (host_context) {
         const ucontext_t* context = (const ucontext_t*)host_context;
@@ -2389,6 +2405,9 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
 
     if (sigsetjmp(frame.env, 0) == 0) {
         exec = (jit_block_t)(void*)cached->native_code;
+        frame.dispatched_guest = cached->guest_addr;
+        frame.dispatched_native = (uint64_t)(uintptr_t)exec;
+        frame.dispatched_native_size = cached->native_size;
         exec(ctx);
         g_jit_signal_fault_frame = frame.prev;
         return HB_OK;
@@ -2437,7 +2456,16 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         hb_block_cache_entry_t* source = faulted ? faulted : cached;
         uintptr_t native_start = source ? (uintptr_t)source->native_code : 0;
         uintptr_t native_end = source ? native_start + source->native_size : 0;
+        uintptr_t arena_start = rt->jit_mem ? (uintptr_t)rt->jit_mem->executable : 0;
+        uintptr_t arena_end = rt->jit_mem && rt->jit_mem->size <= UINTPTR_MAX - arena_start ?
+                              arena_start + rt->jit_mem->size : 0;
+        uintptr_t arena_used_end = rt->jit_mem && rt->jit_mem->used <= UINTPTR_MAX - arena_start ?
+                                   arena_start + rt->jit_mem->used : 0;
         uintptr_t word_pc = (uintptr_t)frame.host_pc & ~(uintptr_t)3;
+        hb_jit_aa_vm_region_t fault_region = jit_aa_query_vm_region(frame.host_pc);
+        hb_jit_aa_vm_region_t dispatch_region = jit_aa_query_vm_region(frame.dispatched_native);
+        hb_jit_aa_vm_region_t x21_region = jit_aa_query_vm_region(
+            frame.host_context_valid ? frame.host_gpr[21] : 0);
         uint32_t native_word = frame.native_word;
         bool word_valid = frame.native_word_valid;
         char guest_bytes[64] = {0};
@@ -2474,6 +2502,85 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
                 (unsigned long long)(frame.host_context_valid ? frame.host_gpr[30] : 0),
                 guest_bytes);
         fflush(stderr);
+
+        fprintf(stderr,
+                "macrunner-hb-jit-sigill-dispatch: dispatch_guest=%p "
+                "dispatch_native=%p-%p current_guest=%p current_native=%p-%p "
+                "hostpc=%p x8=%#llx x28=%#llx lr=%#llx "
+                "fault_ctx_pc=%p fault_arch_pc=%p ic_guest=%p ic_native=%p "
+                "arena=%p-%p used_end=%p in_arena=%u in_used=%u\n",
+                (void*)(uintptr_t)frame.dispatched_guest,
+                (void*)(uintptr_t)frame.dispatched_native,
+                (void*)(uintptr_t)(frame.dispatched_native + frame.dispatched_native_size),
+                (void*)(uintptr_t)(source ? source->guest_addr : 0),
+                (void*)native_start, (void*)native_end,
+                (void*)(uintptr_t)frame.host_pc,
+                (unsigned long long)(frame.host_context_valid ? frame.host_gpr[8] : 0),
+                (unsigned long long)(frame.host_context_valid ? frame.host_gpr[28] : 0),
+                (unsigned long long)(frame.host_context_valid ? frame.host_gpr[30] : 0),
+                (void*)(uintptr_t)frame.fault_guest_pc,
+                (void*)(uintptr_t)frame.fault_arch_pc,
+                (void*)(uintptr_t)frame.fault_indirect_ic_guest,
+                (void*)(uintptr_t)frame.fault_indirect_ic_native,
+                (void*)arena_start, (void*)arena_end, (void*)arena_used_end,
+                arena_end >= arena_start && (uintptr_t)frame.host_pc >= arena_start &&
+                    (uintptr_t)frame.host_pc < arena_end ? 1u : 0u,
+                arena_used_end >= arena_start && (uintptr_t)frame.host_pc >= arena_start &&
+                    (uintptr_t)frame.host_pc < arena_used_end ? 1u : 0u);
+        fflush(stderr);
+
+        fprintf(stderr,
+                "macrunner-hb-jit-sigill-vm: hostpc=%p region=%p-%p prot=%#x max=%#x kr=%d "
+                "dispatch=%p region=%p-%p prot=%#x max=%#x kr=%d "
+                "x21=%p region=%p-%p prot=%#x max=%#x kr=%d same_host_x21=%u\n",
+                (void*)(uintptr_t)frame.host_pc,
+                (void*)(uintptr_t)fault_region.start, (void*)(uintptr_t)fault_region.end,
+                fault_region.protection, fault_region.max_protection, fault_region.status,
+                (void*)(uintptr_t)frame.dispatched_native,
+                (void*)(uintptr_t)dispatch_region.start, (void*)(uintptr_t)dispatch_region.end,
+                dispatch_region.protection, dispatch_region.max_protection, dispatch_region.status,
+                (void*)(uintptr_t)(frame.host_context_valid ? frame.host_gpr[21] : 0),
+                (void*)(uintptr_t)x21_region.start, (void*)(uintptr_t)x21_region.end,
+                x21_region.protection, x21_region.max_protection, x21_region.status,
+                frame.host_context_valid && frame.host_pc == frame.host_gpr[21] ? 1u : 0u);
+        fflush(stderr);
+
+        /* MOVDQA/MOVDQU stores lower through one codegen family.  Record every
+         * exact DMB ISHST; STR X20,[X21]; STR X22,[X21,#8] instance in the
+         * guarded source block.  The ordinal maps monotonically to the guest
+         * SIMD stores and proves whether the encoder emitted a branch/zero word
+         * at the RCX+0x60 trigger without changing generated execution. */
+        if (source && source->native_code && source->native_size >= 12) {
+            unsigned int stores = 0;
+            for (size_t off = 0; off + 12 <= source->native_size; off += 4) {
+                uint32_t words[7] = {0};
+                uint32_t w0, w1, w2;
+                size_t window_start;
+                size_t window_size;
+
+                memcpy(&w0, source->native_code + off, 4);
+                memcpy(&w1, source->native_code + off + 4, 4);
+                memcpy(&w2, source->native_code + off + 8, 4);
+                if (w0 != 0xd5033abfu || w1 != 0xf90002b4u || w2 != 0xf90006b6u)
+                    continue;
+                window_start = off >= 8 ? off - 8 : 0;
+                window_size = source->native_size - window_start;
+                if (window_size > sizeof(words)) window_size = sizeof(words);
+                memcpy(words, source->native_code + window_start, window_size);
+                fprintf(stderr,
+                        "macrunner-hb-jit-sigill-simd-store: ordinal=%u site=%p "
+                        "offset=%#zx window_start=%#zx words=%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+                        stores, source->native_code + off, off, window_start,
+                        words[0], words[1], words[2], words[3], words[4], words[5], words[6]);
+                stores++;
+            }
+            fprintf(stderr,
+                    "macrunner-hb-jit-sigill-simd-store-summary: guest=%p native=%p-%p "
+                    "stores=%u expected_store_words=d5033abf,f90002b4,f90006b6\n",
+                    (void*)(uintptr_t)source->guest_addr, source->native_code,
+                    source->native_code + source->native_size, stores);
+            fflush(stderr);
+        }
 
         /* A SIGILL target outside the source entry is normally reached by a
          * direct/indirect native branch.  Decode the bounded source blob after
@@ -2532,6 +2639,60 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
                         (void*)(uintptr_t)frame.host_pc,
                         tail[0], tail[1], tail[2], tail[3]);
             }
+            fflush(stderr);
+        }
+
+        /* Search every live cache entry, not only the guarded entry.  This is
+         * bounded to the used-slot index and runs after siglongjmp, so it is
+         * signal-safe and does not turn SIGILL handling into a Mach-VM scan. */
+        if (rt->block_cache && frame.host_pc) {
+            unsigned int matches = 0;
+            size_t scanned_entries = 0;
+            for (size_t used = 0; used < rt->block_cache->used_count; used++) {
+                size_t slot = rt->block_cache->used_slots[used];
+                hb_block_cache_entry_t* entry;
+                if (slot >= HB_BLOCK_CACHE_SIZE) continue;
+                entry = &rt->block_cache->entries[slot];
+                if (!entry->valid || !entry->native_code || !entry->native_size) continue;
+                scanned_entries++;
+                for (size_t off = 0; off + sizeof(uint32_t) <= entry->native_size; off += 4) {
+                    uint32_t insn;
+                    uintptr_t site = (uintptr_t)entry->native_code + off;
+                    uintptr_t target = 0;
+                    unsigned int reg = 0;
+                    const char* kind = NULL;
+                    memcpy(&insn, entry->native_code + off, sizeof(insn));
+                    if ((insn & 0xfc000000u) == 0x14000000u ||
+                        (insn & 0xfc000000u) == 0x94000000u) {
+                        int32_t imm26 = (int32_t)(insn & 0x03ffffffu);
+                        if (imm26 & 0x02000000) imm26 |= (int32_t)~0x03ffffffu;
+                        target = (uintptr_t)((intptr_t)site + (intptr_t)imm26 * 4);
+                        kind = (insn & 0x80000000u) ? "BL" : "B";
+                    } else if ((insn & 0xff000010u) == 0x54000000u) {
+                        int32_t imm19 = (int32_t)((insn >> 5) & 0x7ffffu);
+                        if (imm19 & 0x40000) imm19 |= (int32_t)~0x7ffffu;
+                        target = (uintptr_t)((intptr_t)site + (intptr_t)imm19 * 4);
+                        kind = "B.cond";
+                    } else if ((insn & 0xfffffc1fu) == 0xd61f0000u) {
+                        reg = (insn >> 5) & 31u;
+                        if (frame.host_context_valid && reg < 31) target = frame.host_gpr[reg];
+                        kind = "BR";
+                    }
+                    if (kind && target == (uintptr_t)frame.host_pc && matches++ < 16) {
+                        fprintf(stderr,
+                                "macrunner-hb-jit-sigill-branch-all: guest=%p native=%p-%p "
+                                "site=%p offset=%#zx word=%08x kind=%s reg=%u target=%p\n",
+                                (void*)(uintptr_t)entry->guest_addr,
+                                entry->native_code, entry->native_code + entry->native_size,
+                                (void*)site, off, insn, kind, reg, (void*)target);
+                    }
+                }
+            }
+            fprintf(stderr,
+                    "macrunner-hb-jit-sigill-branch-all-summary: hostpc=%p "
+                    "entries=%zu matches=%u used_slots=%zu cache_count=%zu\n",
+                    (void*)(uintptr_t)frame.host_pc, scanned_entries, matches,
+                    rt->block_cache->used_count, rt->block_cache->count);
             fflush(stderr);
         }
     }

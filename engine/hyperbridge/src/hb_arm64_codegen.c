@@ -688,6 +688,8 @@ extern void     hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr
                                                  uint64_t dst_reg_offset);
 extern void     hb_jit_helper_store_sized(hb_context_t* ctx, uint64_t addr,
                                           uint64_t val, uint64_t size);
+extern void     hb_jit_helper_store_u128(hb_context_t* ctx, uint64_t addr,
+                                         uint64_t lo, uint64_t hi);
 uint64_t hb_jit_helper_try_native_memmove(hb_context_t* ctx, const hb_ir_block_t* block);
 
 #ifdef __APPLE__
@@ -1331,12 +1333,21 @@ static void emit_direct_mem128_load_to_x20_x22(hb_codegen_buffer_t* buf) {
 }
 
 static void emit_direct_mem128_store_from_x20_x22(hb_codegen_buffer_t* buf) {
-    emit_dmb_ishst(buf);
-    emit_str_x(buf, 20, 21, 0);
-    emit_str_x(buf, 22, 21, 8);
-    /* x86-TSO store-promptness: drain so a 16-byte XMM store (e.g. a
-     * copied handle/registry struct) is globally visible before a peer
-     * thread checks the coordinator word and parks. */
+    /* Direct STR/STR is only correct for ordinary writable data.  Mono emits
+     * x64 code with MOVDQA/MOVDQU stores into live pages whose HB metadata is
+     * RWX while the current Mach mapping is RX.  A raw store bypasses
+     * hb_memory_write's W^X transition and executable-generation bump.  Route
+     * the complete 128-bit store family through the checked TSO helper: its
+     * normal RW path is still a host memcpy, while executable destinations use
+     * the authoritative live-VM write/invalidation path. */
+    emit_mov_reg(buf, 0, 19);
+    emit_mov_reg(buf, 1, 21);
+    emit_mov_reg(buf, 2, 20);
+    emit_mov_reg(buf, 3, 22);
+    emit_call_helper(buf, (void*)hb_jit_helper_store_u128);
+    emit_return_if_helper_failed(buf);
+    /* x86-TSO store-promptness: drain so a 16-byte XMM store is globally
+     * visible before a peer checks a coordinator word and parks. */
     if (jit_direct_store_fence_enabled())
         emit_dmb_ish(buf);
 }
@@ -5091,7 +5102,7 @@ static hb_result_t hb_jit_helper_write_u64_tso(hb_context_t* ctx, uint64_t addr,
 }
 
 static hb_result_t hb_jit_helper_write_bytes_tso(hb_context_t* ctx, uint64_t addr,
-                                                 const void* src, size_t size) {
+                                                  const void* src, size_t size) {
     void* ptr;
     if (!ctx || !ctx->memory || !src) return HB_ERR_MEMORY_FAULT;
     ptr = hb_memory_host_ptr(ctx->memory, (hb_gva_t)addr, size, HB_PERM_WRITE);
@@ -5105,6 +5116,13 @@ static hb_result_t hb_jit_helper_write_bytes_tso(hb_context_t* ctx, uint64_t add
     }
     __atomic_thread_fence(__ATOMIC_RELEASE);
     return hb_memory_write(ctx->memory, (hb_gva_t)addr, src, size);
+}
+
+void hb_jit_helper_store_u128(hb_context_t* ctx, uint64_t addr,
+                              uint64_t lo, uint64_t hi) {
+    uint64_t value[2] = {lo, hi};
+    if (!ctx) return;
+    ctx->last_result = hb_jit_helper_write_bytes_tso(ctx, addr, value, sizeof(value));
 }
 
 static hb_result_t hb_jit_helper_exchange_u64_tso(hb_context_t* ctx, uint64_t addr,

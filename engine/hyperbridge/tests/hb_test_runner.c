@@ -17117,12 +17117,86 @@ TEST(jit_x64_native_xmm_load_store_pair) {
     ASSERT(code_buf != NULL && cg != NULL);
     ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
     restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
-    ASSERT(code_buf->size <= 96);
+    /* The checked store family must not regress to the unsafe raw
+     * DMB ISHST; STR X20,[X21]; STR X22,[X21,#8] sequence. */
+    for (size_t off = 0; off + 12 <= code_buf->size; off += 4) {
+        uint32_t w[3];
+        memcpy(w, code_buf->code + off, sizeof(w));
+        ASSERT(!(w[0] == 0xd5033abfu && w[1] == 0xf90002b4u && w[2] == 0xf90006b6u));
+    }
+    ASSERT(code_buf->size <= 160);
     hb_arm64_codegen_destroy(cg);
     hb_codegen_buffer_destroy(code_buf);
 
     hb_context_destroy(ctx);
     hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_checked_xmm_store_exec_page) {
+#ifdef __APPLE__
+    const size_t page_size = 0x4000;
+    uint8_t* page = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    uint64_t expected[2] = {0x0123456789abcdefULL, 0xfedcba9876543210ULL};
+    uint64_t observed[2] = {0, 0};
+    hb_ir_func_t* func;
+    hb_ir_block_t* blk;
+    hb_ir_builder_t* b;
+    hb_context_t* ctx;
+    hb_exec_result_t out;
+    uint64_t generation;
+    char* saved;
+
+    ASSERT(page != MAP_FAILED);
+    memset(page, 0, page_size);
+    func = hb_ir_func_create(0x5370, 0);
+    ASSERT(func != NULL);
+    blk = hb_ir_block_create(0, 0x5370);
+    ASSERT(blk != NULL);
+    hb_ir_cfg_add_block(func->cfg, blk);
+    func->cfg->entry = blk;
+    b = hb_ir_builder_create(func);
+    ASSERT(b != NULL);
+    hb_ir_builder_set_block(b, blk);
+    {
+        hb_ir_instr_t* store = hb_ir_emit_store(
+            b, hb_ir_mem(HB_REG_R9, HB_REG_COUNT, 1, 0, HB_SIZE_128),
+            hb_ir_reg(HB_REG_XMM0, HB_SIZE_128));
+        ASSERT(store != NULL);
+        store->guest_addr = 0x5370;
+        store->guest_len = 4;
+    }
+    hb_ir_builder_destroy(b);
+
+    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    ASSERT(ctx != NULL);
+    ctx->memory = hb_memory_create(0);
+    ASSERT(ctx->memory != NULL);
+    ASSERT(hb_memory_sync_live_range(ctx->memory, (hb_gva_t)(uintptr_t)page,
+                                     page_size,
+                                     HB_PERM_READ | HB_PERM_WRITE | HB_PERM_EXEC) == HB_OK);
+    ASSERT(mprotect(page, page_size, PROT_READ | PROT_EXEC) == 0);
+    generation = hb_memory_generation(ctx->memory);
+    ctx->pc = 0x5370;
+    ctx->regs.x64.r9 = (uint64_t)(uintptr_t)page;
+    ctx->regs.x64.xmm[0][0] = expected[0];
+    ctx->regs.x64.xmm[0][1] = expected[1];
+
+    saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    ASSERT(out.result == HB_OK);
+    ASSERT_EQ(out.blocks_executed, 1);
+    memcpy(observed, page, sizeof(observed));
+    ASSERT(observed[0] == expected[0] && observed[1] == expected[1]);
+    ASSERT(hb_memory_generation(ctx->memory) > generation);
+
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    ASSERT(munmap(page, page_size) == 0);
+#endif
     tests_passed++;
 }
 
@@ -24493,6 +24567,12 @@ int main(int argc, char** argv) {
             printf("%d passed, %d failed\n", tests_passed, tests_failed);
             return tests_failed ? 1 : 0;
         }
+        if (!strcmp(argv[2], "jit_xmm_store_wx")) {
+            test_jit_x64_native_xmm_load_store_pair();
+            test_jit_x64_checked_xmm_store_exec_page();
+            printf("%d passed, %d failed\n", tests_passed, tests_failed);
+            return tests_failed ? 1 : 0;
+        }
         if (!strcmp(argv[2], "rep_movs") || !strcmp(argv[2], "string_ops")) {
             printf("rep_movs_enter\n");
             printf("df=0\n");
@@ -25024,6 +25104,7 @@ int main(int argc, char** argv) {
     test_jit_x64_native_mov_lea_same_base_pair();
     test_jit_x64_native_store_imm_mov_lea_same_base();
     test_jit_x64_native_xmm_load_store_pair();
+    test_jit_x64_checked_xmm_store_exec_page();
     test_jit_x64_native_scalar_load_store_pair();
     test_jit_x64_native_test_same_reg_jcc_pair();
     test_jit_x64_hot_word_scan_loop_native();

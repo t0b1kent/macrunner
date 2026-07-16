@@ -23267,6 +23267,13 @@ static int macrunner_hb_frame_finalize_probe_enabled(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_FRAME_FINALIZE_PROBE" );
 }
 
+static int macrunner_hb_callback_4784d0_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache,
+                                         "MACRUNNER_HB_CALLBACK_4784D0_PROBE" );
+}
+
 static int macrunner_hb_trace_waitaddr_mach_enabled(void)
 {
     static int cache = -1;
@@ -23323,6 +23330,10 @@ static unsigned int macrunner_hb_readable_range_decode_probe_sequence;
 static unsigned int macrunner_hb_frame_finalize_probe_emitted;
 static unsigned int macrunner_hb_frame_finalize_probe_sequence;
 static uint64_t macrunner_hb_frame_finalize_unity_base;
+static unsigned int macrunner_hb_callback_4784d0_probe_emitted;
+static unsigned int macrunner_hb_callback_4784d0_plan_sequence;
+static unsigned int macrunner_hb_callback_4784d0_entry_sequence;
+static uint64_t macrunner_hb_callback_4784d0_unity_base;
 
 struct macrunner_hb_ring_pop_probe_tls
 {
@@ -23375,6 +23386,35 @@ struct macrunner_hb_frame_finalize_probe_tls
 
 static __thread struct macrunner_hb_frame_finalize_probe_tls
     macrunner_hb_frame_finalize_probe_tls;
+
+struct macrunner_hb_callback_4784d0_probe_tls
+{
+    BOOL plan_active;
+    BOOL callback_active;
+    uint64_t plan_sequence;
+    uint64_t callback_sequence;
+    uint64_t unity_base;
+    uint64_t coordinator;
+    uint64_t handle_slot;
+    uint64_t callback_return;
+    uint64_t enqueue_return;
+    uint64_t callback_blocks;
+};
+
+static __thread struct macrunner_hb_callback_4784d0_probe_tls
+    macrunner_hb_callback_4784d0_probe_tls;
+
+struct macrunner_hb_callback_4784d0_snapshot
+{
+    uint64_t work_18d0;
+    uint64_t handle_18d8;
+    uint64_t handle_18e0;
+    uint32_t tag_18ec;
+    uint32_t refs_2628;
+    uint32_t generation_262c;
+    uint8_t pending_18e8;
+    uint8_t mode_2630;
+};
 
 struct macrunner_hb_ring_pop_snapshot
 {
@@ -23949,6 +23989,332 @@ static void macrunner_hb_frame_finalize_probe_block( hb_context_t *ctx,
     }
 }
 
+static int macrunner_hb_callback_4784d0_probe_take_slot(void)
+{
+    const char *value;
+    unsigned int limit, slot;
+
+    if (!macrunner_hb_callback_4784d0_probe_enabled()) return 0;
+    value = getenv( "MACRUNNER_HB_CALLBACK_4784D0_PROBE_BUDGET" );
+    limit = value && value[0] ? strtoul( value, NULL, 0 ) : 5000;
+    if (!limit) return 1;
+    slot = __atomic_fetch_add( &macrunner_hb_callback_4784d0_probe_emitted, 1,
+                               __ATOMIC_RELAXED );
+    if (slot < limit) return 1;
+    if (slot == limit)
+    {
+        fprintf( stderr, "macrunner-hb-callback-4784d0: stage=budget-exhausted "
+                 "limit=%u\n", limit );
+        fflush( stderr );
+    }
+    return 0;
+}
+
+static unsigned int macrunner_hb_callback_4784d0_probe_trace_events(void)
+{
+    const char *value = getenv( "MACRUNNER_HB_CALLBACK_4784D0_PROBE_TRACE_EVENTS" );
+    return value && value[0] ? strtoul( value, NULL, 0 ) : 4;
+}
+
+static unsigned int macrunner_hb_callback_4784d0_probe_block_limit(void)
+{
+    const char *value = getenv( "MACRUNNER_HB_CALLBACK_4784D0_PROBE_BLOCKS" );
+    return value && value[0] ? strtoul( value, NULL, 0 ) : 512;
+}
+
+static void macrunner_hb_callback_4784d0_probe_capture(
+    hb_context_t *ctx, uint64_t coordinator,
+    struct macrunner_hb_callback_4784d0_snapshot *snap )
+{
+    memset( snap, 0, sizeof(*snap) );
+    if (!ctx || !ctx->memory || !coordinator) return;
+    (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)coordinator + 0x18d0,
+                              &snap->work_18d0 );
+    (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)coordinator + 0x18d8,
+                              &snap->handle_18d8 );
+    (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)coordinator + 0x18e0,
+                              &snap->handle_18e0 );
+    (void)hb_memory_read_u8( ctx->memory, (hb_gva_t)coordinator + 0x18e8,
+                             &snap->pending_18e8 );
+    (void)hb_memory_read_u32( ctx->memory, (hb_gva_t)coordinator + 0x18ec,
+                              &snap->tag_18ec );
+    (void)hb_memory_read_u32( ctx->memory, (hb_gva_t)coordinator + 0x2628,
+                              &snap->refs_2628 );
+    (void)hb_memory_read_u32( ctx->memory, (hb_gva_t)coordinator + 0x262c,
+                              &snap->generation_262c );
+    (void)hb_memory_read_u8( ctx->memory, (hb_gva_t)coordinator + 0x2630,
+                             &snap->mode_2630 );
+}
+
+static void macrunner_hb_callback_4784d0_probe_log_snapshot(
+    const char *stage, hb_context_t *ctx, uint64_t block_pc, uint64_t sequence,
+    uint64_t coordinator )
+{
+    struct macrunner_hb_callback_4784d0_snapshot snap;
+    char block_module[64], next_module[64];
+    uint64_t block_rva = 0, next_rva = 0, unity_base;
+
+    if (!macrunner_hb_callback_4784d0_probe_take_slot()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_callback_4784d0_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    macrunner_hb_callback_4784d0_probe_capture( ctx, coordinator, &snap );
+    macrunner_hb_wait_wake_trace_module( block_pc, block_module, sizeof(block_module),
+                                         &block_rva );
+    macrunner_hb_wait_wake_trace_module( ctx ? ctx->pc : 0, next_module,
+                                         sizeof(next_module), &next_rva );
+    if (unity_base && block_pc >= unity_base && block_pc < unity_base + 0x2200000)
+        block_rva = block_pc - unity_base;
+    if (ctx && unity_base && ctx->pc >= unity_base &&
+        ctx->pc < unity_base + 0x2200000)
+        next_rva = ctx->pc - unity_base;
+    fprintf( stderr, "macrunner-hb-callback-4784d0: stage=%s seq=%llu tid=%04lx "
+             "block=%p block_module=%s block_rva=0x%llx next=%p next_module=%s "
+             "next_rva=0x%llx coordinator=%p work_18d0=%p handle_18d8=%p "
+             "handle_18e0=%p pending_18e8=%u tag_18ec=0x%x refs_2628=%u "
+             "generation_262c=0x%x mode_2630=%u rsp=%p rax=%p rcx=%p rdx=%p "
+             "r8=%p r9=%p\n", stage, (unsigned long long)sequence,
+             (unsigned long)GetCurrentThreadId(), (void *)(uintptr_t)block_pc,
+             block_module[0] ? block_module : "?", (unsigned long long)block_rva,
+             (void *)(uintptr_t)(ctx ? ctx->pc : 0),
+             next_module[0] ? next_module : "?", (unsigned long long)next_rva,
+             (void *)(uintptr_t)coordinator, (void *)(uintptr_t)snap.work_18d0,
+             (void *)(uintptr_t)snap.handle_18d8,
+             (void *)(uintptr_t)snap.handle_18e0, snap.pending_18e8,
+             snap.tag_18ec, snap.refs_2628, snap.generation_262c, snap.mode_2630,
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rsp : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rax : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rcx : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rdx : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r8 : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r9 : 0) );
+    fflush( stderr );
+}
+
+static void macrunner_hb_callback_4784d0_probe_wait(
+    const char *event, const struct macrunner_hb_wait_addr_entry *entry )
+{
+    static LONG armed_logged;
+    uint64_t unity_base;
+
+    if (!entry || !macrunner_hb_callback_4784d0_probe_enabled()) return;
+    if (strcmp( event, "dequeue-ready" ) && strcmp( event, "dequeue-immediate" )) return;
+    if (entry->caller_rva != 0x2aee71 || !entry->caller || !entry->parent_return) return;
+    unity_base = entry->caller - entry->caller_rva;
+    if (entry->parent_return != unity_base + 0x62b199) return;
+    __atomic_store_n( &macrunner_hb_callback_4784d0_unity_base, unity_base,
+                      __ATOMIC_RELEASE );
+    if (!InterlockedCompareExchange( &armed_logged, 1, 0 ) &&
+        macrunner_hb_callback_4784d0_probe_take_slot())
+    {
+        fprintf( stderr, "macrunner-hb-callback-4784d0: stage=armed tid=%04lx "
+                 "unity_base=%p caller=%p parent=%p\n", (unsigned long)entry->tid,
+                 (void *)(uintptr_t)unity_base, (void *)(uintptr_t)entry->caller,
+                 (void *)(uintptr_t)entry->parent_return );
+        fflush( stderr );
+    }
+}
+
+static void macrunner_hb_callback_4784d0_probe_pre_block( hb_context_t *ctx,
+                                                           uint64_t block_pc )
+{
+    struct macrunner_hb_callback_4784d0_probe_tls *tls =
+        &macrunner_hb_callback_4784d0_probe_tls;
+    struct macrunner_hb_callback_4784d0_snapshot snap;
+    uint64_t unity_base, return_pc = 0, descriptor_callback = 0;
+    uint64_t descriptor_aux = 0, scheduler0 = 0, scheduler20 = 0;
+
+    if (!ctx || !macrunner_hb_callback_4784d0_probe_enabled()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_callback_4784d0_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    if (!unity_base) return;
+
+    if (block_pc == unity_base + 0x51b4b0 &&
+        ctx->regs.x64.rdx == unity_base + 0x4784d0)
+    {
+        tls->plan_active = TRUE;
+        tls->plan_sequence = __atomic_add_fetch(
+            &macrunner_hb_callback_4784d0_plan_sequence, 1, __ATOMIC_RELAXED );
+        tls->unity_base = unity_base;
+        tls->handle_slot = ctx->regs.x64.rcx;
+        tls->coordinator = ctx->regs.x64.r8;
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp,
+                                  &return_pc );
+        macrunner_hb_callback_4784d0_probe_log_snapshot(
+            "scheduler-wrapper-entry", ctx, block_pc, tls->plan_sequence,
+            tls->coordinator );
+        if (macrunner_hb_callback_4784d0_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-callback-4784d0: stage=plan-proof "
+                     "seq=%llu tid=%04lx callback=%p context=%p handle_slot=%p "
+                     "wrapper_return=%p\n", (unsigned long long)tls->plan_sequence,
+                     (unsigned long)GetCurrentThreadId(),
+                     (void *)(uintptr_t)ctx->regs.x64.rdx,
+                     (void *)(uintptr_t)ctx->regs.x64.r8,
+                     (void *)(uintptr_t)ctx->regs.x64.rcx,
+                     (void *)(uintptr_t)return_pc );
+            fflush( stderr );
+        }
+    }
+
+    if (tls->plan_active && block_pc == unity_base + 0x51e840)
+    {
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rdx,
+                                  &descriptor_callback );
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rdx + 8,
+                                  &descriptor_aux );
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rcx,
+                                  &scheduler0 );
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rcx + 0x20,
+                                  &scheduler20 );
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp,
+                                  &tls->enqueue_return );
+        if (macrunner_hb_callback_4784d0_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-callback-4784d0: stage=enqueue-entry "
+                     "seq=%llu tid=%04lx scheduler=%p scheduler_0=%p scheduler_20=%p "
+                     "descriptor=%p descriptor_callback=%p descriptor_aux=%p "
+                     "context=%p return=%p r9=%p\n",
+                     (unsigned long long)tls->plan_sequence,
+                     (unsigned long)GetCurrentThreadId(),
+                     (void *)(uintptr_t)ctx->regs.x64.rcx,
+                     (void *)(uintptr_t)scheduler0, (void *)(uintptr_t)scheduler20,
+                     (void *)(uintptr_t)ctx->regs.x64.rdx,
+                     (void *)(uintptr_t)descriptor_callback,
+                     (void *)(uintptr_t)descriptor_aux,
+                     (void *)(uintptr_t)ctx->regs.x64.r8,
+                     (void *)(uintptr_t)tls->enqueue_return,
+                     (void *)(uintptr_t)ctx->regs.x64.r9 );
+            fflush( stderr );
+        }
+    }
+
+    if (tls->plan_active && block_pc == unity_base + 0x51b55a)
+    {
+        if (macrunner_hb_callback_4784d0_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-callback-4784d0: stage=enqueue-return "
+                     "seq=%llu tid=%04lx rax_handle=%p rdx_handle=%p expected_return=%p "
+                     "rsp=%p\n", (unsigned long long)tls->plan_sequence,
+                     (unsigned long)GetCurrentThreadId(),
+                     (void *)(uintptr_t)ctx->regs.x64.rax,
+                     (void *)(uintptr_t)ctx->regs.x64.rdx,
+                     (void *)(uintptr_t)tls->enqueue_return,
+                     (void *)(uintptr_t)ctx->regs.x64.rsp );
+            fflush( stderr );
+        }
+    }
+
+    if (block_pc == unity_base + 0x4784d0)
+    {
+        if (tls->callback_active && macrunner_hb_callback_4784d0_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-callback-4784d0: stage=callback-overlap "
+                     "old_seq=%llu old_blocks=%llu tid=%04lx\n",
+                     (unsigned long long)tls->callback_sequence,
+                     (unsigned long long)tls->callback_blocks,
+                     (unsigned long)GetCurrentThreadId() );
+            fflush( stderr );
+        }
+        tls->callback_sequence = __atomic_add_fetch(
+            &macrunner_hb_callback_4784d0_entry_sequence, 1, __ATOMIC_RELAXED );
+        tls->unity_base = unity_base;
+        tls->coordinator = ctx->regs.x64.rcx;
+        tls->callback_blocks = 0;
+        tls->callback_return = 0;
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp,
+                                  &tls->callback_return );
+        tls->callback_active = tls->callback_sequence <=
+                               macrunner_hb_callback_4784d0_probe_trace_events();
+        macrunner_hb_callback_4784d0_probe_capture( ctx, tls->coordinator, &snap );
+        macrunner_hb_callback_4784d0_probe_log_snapshot(
+            "callback-entry", ctx, block_pc, tls->callback_sequence,
+            tls->coordinator );
+        if (macrunner_hb_callback_4784d0_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-callback-4784d0: stage=execution-proof "
+                     "seq=%llu tid=%04lx traced=%u return=%p pending=%u handle=%p/%p "
+                     "work=%p\n", (unsigned long long)tls->callback_sequence,
+                     (unsigned long)GetCurrentThreadId(), tls->callback_active,
+                     (void *)(uintptr_t)tls->callback_return, snap.pending_18e8,
+                     (void *)(uintptr_t)snap.handle_18d8,
+                     (void *)(uintptr_t)snap.handle_18e0,
+                     (void *)(uintptr_t)snap.work_18d0 );
+            fflush( stderr );
+        }
+    }
+
+    if (tls->callback_active && block_pc >= unity_base + 0x478620 &&
+        block_pc <= unity_base + 0x478646)
+        macrunner_hb_callback_4784d0_probe_log_snapshot(
+            "pending-clear-pre", ctx, block_pc, tls->callback_sequence,
+            tls->coordinator );
+}
+
+static void macrunner_hb_callback_4784d0_probe_block( hb_context_t *ctx,
+                                                       uint64_t block_pc )
+{
+    struct macrunner_hb_callback_4784d0_probe_tls *tls =
+        &macrunner_hb_callback_4784d0_probe_tls;
+    uint64_t unity_base, block_rva = 0, next_rva = 0;
+    unsigned int block_limit;
+    const char *stage = "callback-flow";
+    BOOL done = FALSE;
+
+    if (!ctx || !macrunner_hb_callback_4784d0_probe_enabled()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_callback_4784d0_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    if (!unity_base) return;
+
+    if (tls->plan_active && block_pc == unity_base + 0x51b55a)
+    {
+        macrunner_hb_callback_4784d0_probe_log_snapshot(
+            "scheduler-wrapper-return", ctx, block_pc, tls->plan_sequence,
+            tls->coordinator );
+        tls->plan_active = FALSE;
+    }
+
+    if (!tls->callback_active) return;
+    tls->callback_blocks++;
+    if (block_pc >= unity_base && block_pc < unity_base + 0x2200000)
+        block_rva = block_pc - unity_base;
+    if (ctx->pc >= unity_base && ctx->pc < unity_base + 0x2200000)
+        next_rva = ctx->pc - unity_base;
+    if (ctx->pc == tls->callback_return)
+    {
+        stage = "callback-return";
+        done = TRUE;
+    }
+    else if (next_rva == 0x4783a0)
+        stage = "tail-reschedule";
+    else if (next_rva == 0x51b4b0)
+        stage = "nested-plan";
+    else if ((block_rva >= 0x478620 && block_rva <= 0x478646) ||
+             (next_rva >= 0x478620 && next_rva <= 0x478646))
+        stage = "pending-clear-flow";
+    macrunner_hb_callback_4784d0_probe_log_snapshot(
+        stage, ctx, block_pc, tls->callback_sequence, tls->coordinator );
+    if (done)
+    {
+        tls->callback_active = FALSE;
+        return;
+    }
+    block_limit = macrunner_hb_callback_4784d0_probe_block_limit();
+    if (block_limit && tls->callback_blocks >= block_limit)
+    {
+        if (macrunner_hb_callback_4784d0_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-callback-4784d0: stage=trace-limit "
+                     "seq=%llu tid=%04lx blocks=%llu limit=%u current=%p\n",
+                     (unsigned long long)tls->callback_sequence,
+                     (unsigned long)GetCurrentThreadId(),
+                     (unsigned long long)tls->callback_blocks, block_limit,
+                     (void *)(uintptr_t)ctx->pc );
+            fflush( stderr );
+        }
+        tls->callback_active = FALSE;
+    }
+}
+
 static void macrunner_hb_ring_pop_probe_log_snapshot( const char *stage, hb_context_t *ctx,
                                                        uint64_t block_pc )
 {
@@ -24185,7 +24551,8 @@ static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
     if (!entry || (!macrunner_hb_gfx_thread_event_probe_enabled() &&
                    !macrunner_hb_ring_pop_probe_enabled() &&
                    !macrunner_hb_readable_range_decode_probe_enabled() &&
-                   !macrunner_hb_frame_finalize_probe_enabled())) return;
+                   !macrunner_hb_frame_finalize_probe_enabled() &&
+                   !macrunner_hb_callback_4784d0_probe_enabled())) return;
     gfx_tid = __atomic_load_n( &macrunner_hb_gfx_thread_tid, __ATOMIC_ACQUIRE );
     if (macrunner_hb_gfx_thread_name( entry->thread_name ))
     {
@@ -24217,6 +24584,7 @@ static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
     macrunner_hb_ring_pop_probe_wait( event, entry );
     macrunner_hb_readable_range_decode_probe_wait( event, entry );
     macrunner_hb_frame_finalize_probe_wait( event, entry );
+    macrunner_hb_callback_4784d0_probe_wait( event, entry );
     if (!macrunner_hb_gfx_thread_event_probe_enabled()) return;
     if (!macrunner_hb_gfx_thread_event_probe_take_slot()) return;
 
@@ -35415,6 +35783,7 @@ skip_version_semantic:
             macrunner_hb_trace_unity_owner_block( "before", ctx, image_start, block_pc );
         macrunner_hb_readable_range_decode_probe_pre_block( ctx, block_pc );
         macrunner_hb_frame_finalize_probe_pre_block( ctx, block_pc );
+        macrunner_hb_callback_4784d0_probe_pre_block( ctx, block_pc );
         if (trace_unity_origin)
             macrunner_hb_trace_unity_origin( "before", ctx, image_start, block_pc );
         if (trace_vfunc58_scan)
@@ -35510,6 +35879,7 @@ skip_version_semantic:
         macrunner_hb_ring_pop_probe_block( ctx, block_pc );
         macrunner_hb_readable_range_decode_probe_block( ctx, block_pc );
         macrunner_hb_frame_finalize_probe_block( ctx, block_pc );
+        macrunner_hb_callback_4784d0_probe_block( ctx, block_pc );
         if (trace_unity_owner_block)
             macrunner_hb_trace_unity_owner_block( "after", ctx, image_start, block_pc );
         if (trace_unity_origin)

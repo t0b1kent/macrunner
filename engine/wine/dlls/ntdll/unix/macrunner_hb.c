@@ -328,6 +328,8 @@ static int macrunner_hb_host_native_guest_progress_active;
 static uint64_t macrunner_hb_host_native_guest_pc;
 static uint64_t macrunner_hb_host_native_guest_pc_sequence;
 static uint64_t macrunner_hb_host_native_guest_pc_changes;
+static uint64_t macrunner_hb_host_native_guest_rsp;
+static uint64_t macrunner_hb_host_native_guest_rbp;
 static pthread_mutex_t macrunner_hb_error_mode_mutex = PTHREAD_MUTEX_INITIALIZER;
 static DWORD macrunner_hb_error_mode;
 static __thread DWORD macrunner_hb_thread_error_mode;
@@ -1865,6 +1867,10 @@ static void macrunner_hb_update_current_x64_context( hb_context_t *ctx, const ch
         __atomic_add_fetch( &macrunner_hb_host_native_guest_pc_sequence, 1, __ATOMIC_RELAXED );
         if (old_pc != guest_pc)
             __atomic_add_fetch( &macrunner_hb_host_native_guest_pc_changes, 1, __ATOMIC_RELAXED );
+        __atomic_store_n( &macrunner_hb_host_native_guest_rsp, ctx->regs.x64.rsp,
+                          __ATOMIC_RELAXED );
+        __atomic_store_n( &macrunner_hb_host_native_guest_rbp, ctx->regs.x64.rbp,
+                          __ATOMIC_RELAXED );
     }
     if (!macrunner_hb_should_register_x64_context_label( label )) return;
     /* MacRunner 2026-06-20 (throughput): this runs PER BLOCK on every guest thread
@@ -3342,12 +3348,22 @@ static struct macrunner_hb_host_native_sampler_state macrunner_hb_host_native_sa
 static int macrunner_hb_host_native_sampler_started;
 static LONG macrunner_hb_host_native_sampler_wait_lines;
 
+static int macrunner_hb_mono_init_stall_probe_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+        enabled = macrunner_hb_env_enabled( "MACRUNNER_HB_MONO_INIT_STALL_PROBE" );
+    return enabled;
+}
+
 static int macrunner_hb_host_native_sampler_enabled(void)
 {
     static int enabled = -1;
 
     if (enabled < 0)
-        enabled = macrunner_hb_env_enabled( "MACRUNNER_HB_HOST_NATIVE_SAMPLER" );
+        enabled = macrunner_hb_env_enabled( "MACRUNNER_HB_HOST_NATIVE_SAMPLER" ) ||
+                  macrunner_hb_mono_init_stall_probe_enabled();
     return enabled;
 }
 
@@ -3375,11 +3391,44 @@ static const char *macrunner_hb_host_native_image_name( const char *path )
     return slash ? slash + 1 : path;
 }
 
+#ifdef __APPLE__
+static void macrunner_hb_mono_init_stall_native_frames( unsigned int sample, uint64_t frame )
+{
+    unsigned int depth;
+
+    if (!macrunner_hb_mono_init_stall_probe_enabled()) return;
+    for (depth = 0; depth < 12 && frame >= 0x10000; depth++)
+    {
+        uint64_t pair[2] = {0, 0};
+        mach_vm_size_t read_size = 0;
+        const char *image, *symbol;
+        const void *base;
+        uint64_t rva;
+        kern_return_t kr;
+
+        kr = mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)frame,
+                                     sizeof(pair), (mach_vm_address_t)pair, &read_size );
+        if (kr != KERN_SUCCESS || read_size != sizeof(pair) || !pair[1]) break;
+        macrunner_hb_post_run_x64_native_location( (const void *)(uintptr_t)pair[1],
+                                                   &image, &symbol, &base, &rva );
+        fprintf( stderr,
+                 "macrunner-hb-mono-init-stall: event=native-frame sample=%u depth=%u "
+                 "fp=%p next_fp=%p return=%p image=%s path=%s base=%p rva=0x%llx symbol=%s\n",
+                 sample, depth, (void *)(uintptr_t)frame, (void *)(uintptr_t)pair[0],
+                 (void *)(uintptr_t)pair[1], macrunner_hb_host_native_image_name( image ),
+                 image, base, (unsigned long long)rva, symbol );
+        if (pair[0] <= frame || pair[0] - frame > 0x800000 || (pair[0] & 0xf)) break;
+        frame = pair[0];
+    }
+}
+#endif
+
 static void *macrunner_hb_host_native_sampler_thread( void *arg )
 {
 #ifdef __APPLE__
     unsigned int sample_ms = macrunner_hb_main_producer_trace_env_uint(
-        "MACRUNNER_HB_HOST_NATIVE_SAMPLE_MS", 2000, 10000 );
+        "MACRUNNER_HB_HOST_NATIVE_SAMPLE_MS",
+        macrunner_hb_mono_init_stall_probe_enabled() ? 5000 : 2000, 10000 );
     unsigned int sample_budget = macrunner_hb_main_producer_trace_env_uint(
         "MACRUNNER_HB_HOST_NATIVE_SAMPLE_BUDGET", 320, 4096 );
     unsigned int sequence;
@@ -3398,7 +3447,7 @@ static void *macrunner_hb_host_native_sampler_thread( void *arg )
         const char *native_image, *native_symbol;
         const void *native_base;
         uint64_t native_rva, now, pc = 0, sp = 0, lr = 0;
-        uint64_t guest_pc, guest_pc_sequence, guest_pc_changes;
+        uint64_t guest_pc, guest_pc_sequence, guest_pc_changes, guest_rsp, guest_rbp;
         kern_return_t state_kr, info_kr;
         int run_state = -1;
 
@@ -3430,7 +3479,9 @@ static void *macrunner_hb_host_native_sampler_thread( void *arg )
         guest_pc_sequence = __atomic_load_n( &macrunner_hb_host_native_guest_pc_sequence,
                                              __ATOMIC_RELAXED );
         guest_pc_changes = __atomic_load_n( &macrunner_hb_host_native_guest_pc_changes,
-                                            __ATOMIC_RELAXED );
+                                             __ATOMIC_RELAXED );
+        guest_rsp = __atomic_load_n( &macrunner_hb_host_native_guest_rsp, __ATOMIC_RELAXED );
+        guest_rbp = __atomic_load_n( &macrunner_hb_host_native_guest_rbp, __ATOMIC_RELAXED );
 
         now = macrunner_hb_main_producer_trace_now_ns();
         macrunner_hb_post_run_x64_native_location( (const void *)(uintptr_t)pc,
@@ -3440,7 +3491,7 @@ static void *macrunner_hb_host_native_sampler_thread( void *arg )
                  "macrunner-hb-host-native-sampler: phase=sample seq=%u pid=%d "
                  "guest_tid=%04llx native_tid=%llu elapsed_ms=%llu alive=%u "
                  "state_kr=%d info_kr=%d run_state=%s run_state_raw=%d "
-                 "guest_pc=%p guest_pc_seq=%llu guest_pc_changes=%llu "
+                 "guest_pc=%p guest_pc_seq=%llu guest_pc_changes=%llu guest_rsp=%p guest_rbp=%p "
                  "pc=%p sp=%p lr=%p native_image=%s native_path=%s native_base=%p "
                  "native_rva=0x%llx native_symbol=%s wait_active=%u wait_seq=%llu "
                  "wait_op=%s wait_phase=%s wait_status=0x%08x wait_handle=%p "
@@ -3455,6 +3506,7 @@ static void *macrunner_hb_host_native_sampler_thread( void *arg )
                  (void *)(uintptr_t)guest_pc,
                  (unsigned long long)guest_pc_sequence,
                  (unsigned long long)guest_pc_changes,
+                 (void *)(uintptr_t)guest_rsp, (void *)(uintptr_t)guest_rbp,
                  (void *)(uintptr_t)pc, (void *)(uintptr_t)sp, (void *)(uintptr_t)lr,
                  macrunner_hb_host_native_image_name( native_image ), native_image,
                  native_base, (unsigned long long)native_rva, native_symbol,
@@ -3464,6 +3516,8 @@ static void *macrunner_hb_host_native_sampler_thread( void *arg )
                  (long long)wait.timeout, exit.seen,
                  (unsigned long long)exit.sequence, (unsigned int)exit.status,
                  exit.site[0] ? exit.site : "none" );
+        if (state_kr == KERN_SUCCESS)
+            macrunner_hb_mono_init_stall_native_frames( sequence, thread_state.__fp );
         fflush( stderr );
         if (state_kr != KERN_SUCCESS) break;
     }
@@ -3503,6 +3557,8 @@ static void macrunner_hb_host_native_sampler_try_start(void)
     __atomic_store_n( &macrunner_hb_host_native_guest_pc, 0, __ATOMIC_RELAXED );
     __atomic_store_n( &macrunner_hb_host_native_guest_pc_sequence, 0, __ATOMIC_RELAXED );
     __atomic_store_n( &macrunner_hb_host_native_guest_pc_changes, 0, __ATOMIC_RELAXED );
+    __atomic_store_n( &macrunner_hb_host_native_guest_rsp, 0, __ATOMIC_RELAXED );
+    __atomic_store_n( &macrunner_hb_host_native_guest_rbp, 0, __ATOMIC_RELAXED );
     __atomic_store_n( &macrunner_hb_host_native_guest_progress_active, 1, __ATOMIC_RELEASE );
     if (pthread_create( &sampler, NULL, macrunner_hb_host_native_sampler_thread, NULL ))
     {

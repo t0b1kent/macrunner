@@ -1623,7 +1623,7 @@ static hb_result_t x87_fld_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     double value;
     hb_result_t r = x87_read_real_mem(ctx, op, &value);
     if (r != HB_OK) return r;
-    return hb_x87_push_f64(&ctx->regs.x86.x87, value);
+    return hb_x87_push_f64(hb_context_x87(ctx), value);
 }
 
 /* Convert an IEEE 754 double to an 80-bit extended precision encoding
@@ -1664,10 +1664,33 @@ static void double_to_ext80(double value, uint8_t out[10]) {
     memcpy(out + 8, &se, sizeof(se));
 }
 
+static hb_result_t x87_st0_for_store(hb_context_t* ctx, double* value,
+                                      bool* masked_underflow) {
+    hb_x87_state_t* x87 = hb_context_x87(ctx);
+    hb_result_t r;
+
+    if (!value || !masked_underflow) return HB_ERR_INVALID_ARG;
+    *masked_underflow = false;
+    r = hb_x87_st_f64(x87, 0, value);
+    if (r == HB_OK) return HB_OK;
+    if (r != HB_ERR_EXEC_FAULT) return r;
+    r = hb_x87_stack_underflow(x87, value);
+    if (r == HB_OK) *masked_underflow = true;
+    return r;
+}
+
+static void x87_indefinite_ext80(uint8_t out[10]) {
+    const uint64_t sig = UINT64_C(0xc000000000000000);
+    const uint16_t se = UINT16_C(0xffff);
+    memcpy(out, &sig, sizeof(sig));
+    memcpy(out + 8, &se, sizeof(se));
+}
+
 static hb_result_t x87_fstp_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint64_t addr = resolve_addr(ctx, op);
     double value;
-    hb_result_t r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &value);
+    bool masked_underflow;
+    hb_result_t r = x87_st0_for_store(ctx, &value, &masked_underflow);
     if (r != HB_OK) return r;
 
     if (op->size == HB_SIZE_32) {
@@ -1677,19 +1700,21 @@ static hb_result_t x87_fstp_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
         r = hb_memory_write(ctx->memory, addr, &value, sizeof(value));
     } else if (op->size == HB_SIZE_80) {
         uint8_t bytes[10];
-        double_to_ext80(value, bytes);
+        if (masked_underflow) x87_indefinite_ext80(bytes);
+        else double_to_ext80(value, bytes);
         r = hb_memory_write(ctx->memory, addr, bytes, sizeof(bytes));
     } else {
         return HB_ERR_UNSUPPORTED_FEATURE;
     }
     if (r != HB_OK) return r;
-    return hb_x87_pop(&ctx->regs.x86.x87);
+    return hb_x87_fstp_pop(hb_context_x87(ctx));
 }
 
 static hb_result_t x87_fst_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint64_t addr = resolve_addr(ctx, op);
     double value;
-    hb_result_t r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &value);
+    bool masked_underflow;
+    hb_result_t r = x87_st0_for_store(ctx, &value, &masked_underflow);
     if (r != HB_OK) return r;
 
     if (op->size == HB_SIZE_32) {
@@ -1701,7 +1726,8 @@ static hb_result_t x87_fst_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     }
     if (op->size == HB_SIZE_80) {
         uint8_t bytes[10];
-        double_to_ext80(value, bytes);
+        if (masked_underflow) x87_indefinite_ext80(bytes);
+        else double_to_ext80(value, bytes);
         return hb_memory_write(ctx->memory, addr, bytes, sizeof(bytes));
     }
     return HB_ERR_UNSUPPORTED_FEATURE;
@@ -1729,7 +1755,7 @@ static hb_result_t x87_fild_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     } else {
         return HB_ERR_UNSUPPORTED_FEATURE;
     }
-    return hb_x87_push_f64(&ctx->regs.x86.x87, value);
+    return hb_x87_push_f64(hb_context_x87(ctx), value);
 }
 
 static hb_result_t x87_fistp_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
@@ -1737,19 +1763,19 @@ static hb_result_t x87_fistp_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
 
     if (op->size == HB_SIZE_16) {
         int16_t v;
-        hb_result_t r = hb_x87_fistp_i16(&ctx->regs.x86.x87, &v);
+        hb_result_t r = hb_x87_fistp_i16(hb_context_x87(ctx), &v);
         if (r != HB_OK) return r;
         return hb_memory_write(ctx->memory, addr, &v, sizeof(v));
     }
     if (op->size == HB_SIZE_32) {
         int32_t v;
-        hb_result_t r = hb_x87_fistp_i32(&ctx->regs.x86.x87, &v);
+        hb_result_t r = hb_x87_fistp_i32(hb_context_x87(ctx), &v);
         if (r != HB_OK) return r;
         return hb_memory_write(ctx->memory, addr, &v, sizeof(v));
     }
     if (op->size == HB_SIZE_64) {
         int64_t v;
-        hb_result_t r = hb_x87_fistp_i64(&ctx->regs.x86.x87, &v);
+        hb_result_t r = hb_x87_fistp_i64(hb_context_x87(ctx), &v);
         if (r != HB_OK) return r;
         return hb_memory_write(ctx->memory, addr, &v, sizeof(v));
     }
@@ -1762,13 +1788,13 @@ static hb_result_t x87_fist_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
 
     if (op->size == HB_SIZE_16) {
         int16_t v;
-        hb_result_t r = hb_x87_fist_i16(&ctx->regs.x86.x87, &v);
+        hb_result_t r = hb_x87_fist_i16(hb_context_x87(ctx), &v);
         if (r != HB_OK) return r;
         return hb_memory_write(ctx->memory, addr, &v, sizeof(v));
     }
     if (op->size == HB_SIZE_32) {
         int32_t v;
-        hb_result_t r = hb_x87_fist_i32(&ctx->regs.x86.x87, &v);
+        hb_result_t r = hb_x87_fist_i32(hb_context_x87(ctx), &v);
         if (r != HB_OK) return r;
         return hb_memory_write(ctx->memory, addr, &v, sizeof(v));
     }
@@ -1780,19 +1806,19 @@ static hb_result_t x87_fldcw_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint64_t addr = resolve_addr(ctx, op);
     hb_result_t r = hb_memory_read(ctx->memory, addr, &cw, sizeof(cw));
     if (r != HB_OK) return r;
-    return hb_x87_fldcw(&ctx->regs.x86.x87, cw);
+    return hb_x87_fldcw(hb_context_x87(ctx), cw);
 }
 
 static hb_result_t x87_fnstcw_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint16_t cw;
     uint64_t addr = resolve_addr(ctx, op);
-    hb_result_t r = hb_x87_fnstcw(&ctx->regs.x86.x87, &cw);
+    hb_result_t r = hb_x87_fnstcw(hb_context_x87(ctx), &cw);
     if (r != HB_OK) return r;
     return hb_memory_write(ctx->memory, addr, &cw, sizeof(cw));
 }
 
 static hb_result_t x87_fnstsw_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
-    uint16_t sw = ctx->regs.x86.x87.status_word;
+    uint16_t sw = hb_context_x87(ctx)->status_word;
     uint64_t addr = resolve_addr(ctx, op);
     return hb_memory_write(ctx->memory, addr, &sw, sizeof(sw));
 }
@@ -1862,7 +1888,7 @@ static hb_result_t x87_fnstenv_mem(hb_context_t* ctx, const hb_ir_operand_t* op)
     uint8_t env[28];
     uint64_t addr = resolve_addr(ctx, op);
 
-    x87_store_env32(&ctx->regs.x86.x87, env);
+    x87_store_env32(hb_context_x87(ctx), env);
     return hb_memory_write(ctx->memory, addr, env, sizeof(env));
 }
 
@@ -1872,13 +1898,13 @@ static hb_result_t x87_fldenv_mem(hb_context_t* ctx, const hb_ir_operand_t* op) 
     hb_result_t r = hb_memory_read(ctx->memory, addr, env, sizeof(env));
 
     if (r != HB_OK) return r;
-    x87_load_env32(&ctx->regs.x86.x87, env);
+    x87_load_env32(hb_context_x87(ctx), env);
     return HB_OK;
 }
 
 static hb_result_t x87_fnsave_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint8_t image[108];
-    hb_x87_state_t* x87 = &ctx->regs.x86.x87;
+    hb_x87_state_t* x87 = hb_context_x87(ctx);
     uint64_t addr = resolve_addr(ctx, op);
     hb_result_t r;
 
@@ -1896,7 +1922,7 @@ static hb_result_t x87_fnsave_mem(hb_context_t* ctx, const hb_ir_operand_t* op) 
 
 static hb_result_t x87_frstor_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint8_t image[108];
-    hb_x87_state_t* x87 = &ctx->regs.x86.x87;
+    hb_x87_state_t* x87 = hb_context_x87(ctx);
     uint64_t addr = resolve_addr(ctx, op);
     hb_result_t r = hb_memory_read(ctx->memory, addr, image, sizeof(image));
 
@@ -1911,7 +1937,7 @@ static hb_result_t x87_frstor_mem(hb_context_t* ctx, const hb_ir_operand_t* op) 
 
 static hb_result_t x87_fxsave_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint8_t image[512];
-    hb_x87_state_t* x87 = &ctx->regs.x86.x87;
+    hb_x87_state_t* x87 = hb_context_x87(ctx);
     uint16_t sw = (uint16_t)((x87->status_word & ~(7u << 11)) | ((x87->top & 7u) << 11));
     uint64_t addr = resolve_addr(ctx, op);
 
@@ -1942,7 +1968,7 @@ static hb_result_t x87_fxsave_mem(hb_context_t* ctx, const hb_ir_operand_t* op) 
 
 static hb_result_t x87_fxrstor_mem(hb_context_t* ctx, const hb_ir_operand_t* op) {
     uint8_t image[512];
-    hb_x87_state_t* x87 = &ctx->regs.x86.x87;
+    hb_x87_state_t* x87 = hb_context_x87(ctx);
     uint64_t addr = resolve_addr(ctx, op);
     hb_result_t r = hb_memory_read(ctx->memory, addr, image, sizeof(image));
 
@@ -1979,7 +2005,7 @@ static hb_result_t x87_arith_mem(hb_context_t* ctx, const hb_ir_operand_t* op, h
     double result;
     hb_result_t r = x87_read_real_mem(ctx, op, &rhs);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &lhs);
+    r = hb_x87_st_f64(hb_context_x87(ctx), 0, &lhs);
     if (r != HB_OK) return r;
 
     switch (arith_op) {
@@ -1991,16 +2017,16 @@ static hb_result_t x87_arith_mem(hb_context_t* ctx, const hb_ir_operand_t* op, h
         case HB_IR_X87_FDIVR: result = rhs / lhs; break;
         default: return HB_ERR_INTERNAL;
     }
-    return hb_x87_set_st_f64(&ctx->regs.x86.x87, 0, result);
+    return hb_x87_set_st_f64(hb_context_x87(ctx), 0, result);
 }
 
 static hb_result_t x87_fcom_mem(hb_context_t* ctx, const hb_ir_operand_t* op, bool pop_after) {
     double rhs;
     hb_result_t r = x87_read_real_mem(ctx, op, &rhs);
     if (r != HB_OK) return r;
-    r = hb_x87_fcom(&ctx->regs.x86.x87, rhs);
+    r = hb_x87_fcom(hb_context_x87(ctx), rhs);
     if (r != HB_OK) return r;
-    return pop_after ? hb_x87_pop(&ctx->regs.x86.x87) : HB_OK;
+    return pop_after ? hb_x87_pop(hb_context_x87(ctx)) : HB_OK;
 }
 
 static hb_result_t x87_st_index(const hb_ir_operand_t* op, unsigned* index) {
@@ -2009,16 +2035,34 @@ static hb_result_t x87_st_index(const hb_ir_operand_t* op, unsigned* index) {
     return HB_OK;
 }
 
+/* DD D0+i / DD D8+i: copy ST(0) to ST(i), then optionally pop.
+ * Register-form FST/FSTP uses the same IR operations as the memory forms,
+ * with an immediate logical stack index as the destination. */
+static hb_result_t x87_fst_st(hb_context_t* ctx, const hb_ir_operand_t* op,
+                              bool pop_after) {
+    hb_x87_state_t* x87 = hb_context_x87(ctx);
+    unsigned index;
+    double value;
+    hb_result_t r = x87_st_index(op, &index);
+    if (r != HB_OK) return r;
+    r = hb_x87_st_f64(x87, 0, &value);
+    if (r == HB_ERR_EXEC_FAULT) r = hb_x87_stack_underflow(x87, &value);
+    if (r != HB_OK) return r;
+    r = hb_x87_store_st_f64(x87, index, value);
+    if (r != HB_OK) return r;
+    return pop_after ? hb_x87_fstp_pop(x87) : HB_OK;
+}
+
 static hb_result_t x87_fld_st(hb_context_t* ctx, const hb_ir_operand_t* op) {
     unsigned index;
     double value;
-    if (op && op->type == HB_OP_IMM && op->imm == -1) return hb_x87_push_f64(&ctx->regs.x86.x87, 1.0);
+    if (op && op->type == HB_OP_IMM && op->imm == -1) return hb_x87_push_f64(hb_context_x87(ctx), 1.0);
     if (op && op->type == HB_OP_IMM && op->imm == -2) {
         /* FLDZ: push 0.0 and set tag to "zero" (01). */
-        hb_result_t r = hb_x87_push_f64(&ctx->regs.x86.x87, 0.0);
+        hb_result_t r = hb_x87_push_f64(hb_context_x87(ctx), 0.0);
         if (r != HB_OK) return r;
-        uint16_t shift = (uint16_t)(ctx->regs.x86.x87.top * 2u);
-        ctx->regs.x86.x87.tag_word = (uint16_t)((ctx->regs.x86.x87.tag_word & ~(0x3u << shift)) |
+        uint16_t shift = (uint16_t)(hb_context_x87(ctx)->top * 2u);
+        hb_context_x87(ctx)->tag_word = (uint16_t)((hb_context_x87(ctx)->tag_word & ~(0x3u << shift)) |
                                                 (0x1u << shift));
         return HB_OK;
     }
@@ -2037,14 +2081,14 @@ static hb_result_t x87_fld_st(hb_context_t* ctx, const hb_ir_operand_t* op) {
             default: break;
         }
         if (op->imm >= -7 && op->imm <= -3) {
-            return hb_x87_push_f64(&ctx->regs.x86.x87, cnst);
+            return hb_x87_push_f64(hb_context_x87(ctx), cnst);
         }
     }
     hb_result_t r = x87_st_index(op, &index);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &value);
+    r = hb_x87_st_f64(hb_context_x87(ctx), index, &value);
     if (r != HB_OK) return r;
-    return hb_x87_push_f64(&ctx->regs.x86.x87, value);
+    return hb_x87_push_f64(hb_context_x87(ctx), value);
 }
 
 static hb_result_t x87_fxch(hb_context_t* ctx, const hb_ir_operand_t* op) {
@@ -2053,13 +2097,13 @@ static hb_result_t x87_fxch(hb_context_t* ctx, const hb_ir_operand_t* op) {
     double sti;
     hb_result_t r = x87_st_index(op, &index);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &st0);
+    r = hb_x87_st_f64(hb_context_x87(ctx), 0, &st0);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &sti);
+    r = hb_x87_st_f64(hb_context_x87(ctx), index, &sti);
     if (r != HB_OK) return r;
-    r = hb_x87_set_st_f64(&ctx->regs.x86.x87, 0, sti);
+    r = hb_x87_set_st_f64(hb_context_x87(ctx), 0, sti);
     if (r != HB_OK) return r;
-    return hb_x87_set_st_f64(&ctx->regs.x86.x87, index, st0);
+    return hb_x87_set_st_f64(hb_context_x87(ctx), index, st0);
 }
 
 static hb_result_t x87_arith_st0_sti(hb_context_t* ctx, const hb_ir_operand_t* op, hb_ir_op_t arith_op) {
@@ -2069,9 +2113,9 @@ static hb_result_t x87_arith_st0_sti(hb_context_t* ctx, const hb_ir_operand_t* o
     double result;
     hb_result_t r = x87_st_index(op, &index);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &lhs);
+    r = hb_x87_st_f64(hb_context_x87(ctx), 0, &lhs);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &rhs);
+    r = hb_x87_st_f64(hb_context_x87(ctx), index, &rhs);
     if (r != HB_OK) return r;
     switch (arith_op) {
         case HB_IR_X87_FADD:  result = lhs + rhs; break;
@@ -2082,7 +2126,7 @@ static hb_result_t x87_arith_st0_sti(hb_context_t* ctx, const hb_ir_operand_t* o
         case HB_IR_X87_FDIVR: result = rhs / lhs; break;
         default: return HB_ERR_INTERNAL;
     }
-    return hb_x87_set_st_f64(&ctx->regs.x86.x87, 0, result);
+    return hb_x87_set_st_f64(hb_context_x87(ctx), 0, result);
 }
 
 static hb_result_t x87_arith_pop_sti_st0(hb_context_t* ctx, const hb_ir_operand_t* op, hb_ir_op_t arith_op) {
@@ -2092,9 +2136,9 @@ static hb_result_t x87_arith_pop_sti_st0(hb_context_t* ctx, const hb_ir_operand_
     double result;
     hb_result_t r = x87_st_index(op, &index);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &st0);
+    r = hb_x87_st_f64(hb_context_x87(ctx), 0, &st0);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &sti);
+    r = hb_x87_st_f64(hb_context_x87(ctx), index, &sti);
     if (r != HB_OK) return r;
     switch (arith_op) {
         case HB_IR_X87_FADDP:  result = sti + st0; break;
@@ -2105,9 +2149,9 @@ static hb_result_t x87_arith_pop_sti_st0(hb_context_t* ctx, const hb_ir_operand_
         case HB_IR_X87_FDIVRP: result = st0 / sti; break;
         default: return HB_ERR_INTERNAL;
     }
-    r = hb_x87_set_st_f64(&ctx->regs.x86.x87, index, result);
+    r = hb_x87_set_st_f64(hb_context_x87(ctx), index, result);
     if (r != HB_OK) return r;
-    return hb_x87_pop(&ctx->regs.x86.x87);
+    return hb_x87_pop(hb_context_x87(ctx));
 }
 
 static hb_result_t x87_fcom_st(hb_context_t* ctx, const hb_ir_operand_t* op, unsigned pops) {
@@ -2115,12 +2159,12 @@ static hb_result_t x87_fcom_st(hb_context_t* ctx, const hb_ir_operand_t* op, uns
     double rhs;
     hb_result_t r = x87_st_index(op, &index);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &rhs);
+    r = hb_x87_st_f64(hb_context_x87(ctx), index, &rhs);
     if (r != HB_OK) return r;
-    r = hb_x87_fcom(&ctx->regs.x86.x87, rhs);
+    r = hb_x87_fcom(hb_context_x87(ctx), rhs);
     if (r != HB_OK) return r;
     while (pops--) {
-        r = hb_x87_pop(&ctx->regs.x86.x87);
+        r = hb_x87_pop(hb_context_x87(ctx));
         if (r != HB_OK) return r;
     }
     return HB_OK;
@@ -2149,13 +2193,13 @@ static hb_result_t x87_fcomi_st(hb_context_t* ctx, const hb_ir_operand_t* op,
     double lhs, rhs;
     hb_result_t r = x87_st_index(op, &index);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, 0, &lhs);
+    r = hb_x87_st_f64(hb_context_x87(ctx), 0, &lhs);
     if (r != HB_OK) return r;
-    r = hb_x87_st_f64(&ctx->regs.x86.x87, index, &rhs);
+    r = hb_x87_st_f64(hb_context_x87(ctx), index, &rhs);
     if (r != HB_OK) return r;
 
     /* Update the FPU C0/C2/C3 condition flags first. */
-    r = hb_x87_fcom(&ctx->regs.x86.x87, rhs);
+    r = hb_x87_fcom(hb_context_x87(ctx), rhs);
     if (r != HB_OK) return r;
 
     /* Mirror to EFLAGS (lazy-flags cleared so values land in canonical slot). */
@@ -2182,7 +2226,7 @@ static hb_result_t x87_fcomi_st(hb_context_t* ctx, const hb_ir_operand_t* op,
     }
 
     while (pops--) {
-        r = hb_x87_pop(&ctx->regs.x86.x87);
+        r = hb_x87_pop(hb_context_x87(ctx));
         if (r != HB_OK) return r;
     }
     return HB_OK;
@@ -3815,10 +3859,12 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             return x87_fld_mem(ctx, &instr->src1);
 
         case HB_IR_X87_FST:
+            if (instr->dst.type == HB_OP_IMM) return x87_fst_st(ctx, &instr->dst, false);
             if (instr->dst.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             return x87_fst_mem(ctx, &instr->dst);
 
         case HB_IR_X87_FSTP:
+            if (instr->dst.type == HB_OP_IMM) return x87_fst_st(ctx, &instr->dst, true);
             if (instr->dst.type != HB_OP_MEM) return HB_ERR_INTERNAL;
             return x87_fstp_mem(ctx, &instr->dst);
 
@@ -3844,7 +3890,7 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
 
         case HB_IR_X87_FNSTSW:
             if (instr->dst.type == HB_OP_REG) {
-                return write_operand_value(ctx, &instr->dst, ctx->regs.x86.x87.status_word);
+                return write_operand_value(ctx, &instr->dst, hb_context_x87(ctx)->status_word);
             }
             if (instr->dst.type == HB_OP_MEM) {
                 return x87_fnstsw_mem(ctx, &instr->dst);
@@ -3929,40 +3975,40 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
             return x87_fxch(ctx, &instr->src1);
 
         case HB_IR_X87_FRNDINT:
-            return hb_x87_frndint(&ctx->regs.x86.x87);
+            return hb_x87_frndint(hb_context_x87(ctx));
 
         case HB_IR_X87_FINCSTP:
-            return hb_x87_fincstp(&ctx->regs.x86.x87);
+            return hb_x87_fincstp(hb_context_x87(ctx));
 
         case HB_IR_X87_FDECSTP:
-            return hb_x87_fdecstp(&ctx->regs.x86.x87);
+            return hb_x87_fdecstp(hb_context_x87(ctx));
 
         case HB_IR_X87_FNCLEX:
-            return hb_x87_fnclex(&ctx->regs.x86.x87);
+            return hb_x87_fnclex(hb_context_x87(ctx));
 
         case HB_IR_X87_FNINIT:
-            return hb_x87_fninit(&ctx->regs.x86.x87);
+            return hb_x87_fninit(hb_context_x87(ctx));
 
         case HB_IR_X87_FXAM:
-            return hb_x87_fxam(&ctx->regs.x86.x87);
+            return hb_x87_fxam(hb_context_x87(ctx));
 
-        case HB_IR_X87_FSQRT:   return hb_x87_fsqrt(&ctx->regs.x86.x87);
-        case HB_IR_X87_F2XM1:   return hb_x87_f2xm1(&ctx->regs.x86.x87);
-        case HB_IR_X87_FYL2X:   return hb_x87_fyl2x(&ctx->regs.x86.x87);
-        case HB_IR_X87_FPTAN:   return hb_x87_fptan(&ctx->regs.x86.x87);
-        case HB_IR_X87_FPATAN:  return hb_x87_fpatan(&ctx->regs.x86.x87);
-        case HB_IR_X87_FXTRACT: return hb_x87_fxtract(&ctx->regs.x86.x87);
-        case HB_IR_X87_FPREM1:  return hb_x87_fprem1(&ctx->regs.x86.x87);
-        case HB_IR_X87_FPREM:   return hb_x87_fprem(&ctx->regs.x86.x87);
-        case HB_IR_X87_FYL2XP1: return hb_x87_fyl2xp1(&ctx->regs.x86.x87);
-        case HB_IR_X87_FSINCOS: return hb_x87_fsincos(&ctx->regs.x86.x87);
-        case HB_IR_X87_FSCALE:  return hb_x87_fscale(&ctx->regs.x86.x87);
-        case HB_IR_X87_FSIN:    return hb_x87_fsin(&ctx->regs.x86.x87);
-        case HB_IR_X87_FCOS:    return hb_x87_fcos(&ctx->regs.x86.x87);
-        case HB_IR_X87_FNOP:    return hb_x87_fnop(&ctx->regs.x86.x87);
-        case HB_IR_X87_FCHS:    return hb_x87_fchs(&ctx->regs.x86.x87);
-        case HB_IR_X87_FABS:    return hb_x87_fabs(&ctx->regs.x86.x87);
-        case HB_IR_X87_FTST:    return hb_x87_ftst(&ctx->regs.x86.x87);
+        case HB_IR_X87_FSQRT:   return hb_x87_fsqrt(hb_context_x87(ctx));
+        case HB_IR_X87_F2XM1:   return hb_x87_f2xm1(hb_context_x87(ctx));
+        case HB_IR_X87_FYL2X:   return hb_x87_fyl2x(hb_context_x87(ctx));
+        case HB_IR_X87_FPTAN:   return hb_x87_fptan(hb_context_x87(ctx));
+        case HB_IR_X87_FPATAN:  return hb_x87_fpatan(hb_context_x87(ctx));
+        case HB_IR_X87_FXTRACT: return hb_x87_fxtract(hb_context_x87(ctx));
+        case HB_IR_X87_FPREM1:  return hb_x87_fprem1(hb_context_x87(ctx));
+        case HB_IR_X87_FPREM:   return hb_x87_fprem(hb_context_x87(ctx));
+        case HB_IR_X87_FYL2XP1: return hb_x87_fyl2xp1(hb_context_x87(ctx));
+        case HB_IR_X87_FSINCOS: return hb_x87_fsincos(hb_context_x87(ctx));
+        case HB_IR_X87_FSCALE:  return hb_x87_fscale(hb_context_x87(ctx));
+        case HB_IR_X87_FSIN:    return hb_x87_fsin(hb_context_x87(ctx));
+        case HB_IR_X87_FCOS:    return hb_x87_fcos(hb_context_x87(ctx));
+        case HB_IR_X87_FNOP:    return hb_x87_fnop(hb_context_x87(ctx));
+        case HB_IR_X87_FCHS:    return hb_x87_fchs(hb_context_x87(ctx));
+        case HB_IR_X87_FABS:    return hb_x87_fabs(hb_context_x87(ctx));
+        case HB_IR_X87_FTST:    return hb_x87_ftst(hb_context_x87(ctx));
 
         case HB_IR_PUSHA: {
             /* PUSHA / PUSHAD — push EAX/ECX/EDX/EBX/EBP/ESI/EDI then the original ESP.

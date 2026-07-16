@@ -2718,7 +2718,7 @@ TEST(interp_x64_x87_fld_tbyte_memory_form) {
 
     hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
     ASSERT(ctx != NULL);
-    hb_x87_reset(&ctx->regs.x86.x87);
+    hb_x87_reset(hb_context_x87(ctx));
     ctx->memory = hb_memory_create(0);
     ASSERT(ctx->memory != NULL);
     ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&block, sizeof(block),
@@ -2728,10 +2728,185 @@ TEST(interp_x64_x87_fld_tbyte_memory_form) {
     ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
     ASSERT(out.result == HB_OK);
     double got = 0.0;
-    ASSERT(hb_x87_st_f64(&ctx->regs.x86.x87, 0, &got) == HB_OK);
+    ASSERT(hb_x87_st_f64(hb_context_x87(ctx), 0, &got) == HB_OK);
     ASSERT(got == 1.5);
 
     hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(x64_x87_state_isolated_interp_jit_fld_fstp) {
+    struct {
+        uint8_t code[8];
+        double value;
+    } backing = {
+        /* Exact managed trigger family: fld/fstp qword [rsp-8]. */
+        {0xdd, 0x44, 0x24, 0xf8, 0xdd, 0x5c, 0x24, 0xf8},
+        3.25
+    };
+    const uint64_t base = (uint64_t)(uintptr_t)backing.code;
+    const uint64_t guest_rsp = (uint64_t)(uintptr_t)&backing.value + 8;
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, backing.code,
+                                           sizeof(backing.code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    const hb_backend_t backends[] = {HB_BACKEND_INTERP, HB_BACKEND_JIT};
+    for (size_t i = 0; i < sizeof(backends) / sizeof(backends[0]); i++) {
+        hb_context_t* ctx = hb_context_create(HB_ARCH_X64, backends[i]);
+        ASSERT(ctx != NULL);
+        ctx->memory = hb_memory_create(0);
+        ASSERT(ctx->memory != NULL);
+        ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)&backing,
+                             sizeof(backing),
+                             HB_PERM_READ | HB_PERM_WRITE | HB_PERM_EXEC) == HB_OK);
+        ctx->pc = base;
+        ctx->regs.x64.rip = base;
+        ctx->regs.x64.rdi = 0x000000044e0359a0ULL;
+        ctx->regs.x64.rsp = guest_rsp;
+        ctx->regs.x64.rbp = 0x1111111122222222ULL;
+        ctx->regs.x64.r8  = 0x3333333344444444ULL;
+        ctx->regs.x64.r9  = 0x5555555566666666ULL;
+        ctx->regs.x64.r10 = 0x7777777788888888ULL;
+        ctx->regs.x64.r11 = 0x99999999aaaaaaaaULL;
+        ctx->regs.x64.r12 = 0xbbbbbbbbccccccccULL;
+        ctx->regs.x64.r13 = 0xddddddddeeeeeeeeULL;
+        ctx->regs.x64.r14 = 0xfffffff000000001ULL;
+
+        hb_exec_result_t out;
+        ASSERT(hb_runtime_run(ctx, func, backends[i], &out) == HB_OK);
+        ASSERT(out.result == HB_OK);
+        ASSERT(backing.value == 3.25);
+        ASSERT(hb_context_x87(ctx)->control_word == 0x037f);
+        ASSERT(hb_context_x87(ctx)->tag_word == 0xffff);
+        ASSERT(hb_context_x87(ctx)->top == 0);
+        ASSERT(ctx->regs.x64.rdi == 0x000000044e0359a0ULL);
+        ASSERT(ctx->regs.x64.rsp == guest_rsp);
+        ASSERT(ctx->regs.x64.rbp == 0x1111111122222222ULL);
+        ASSERT(ctx->regs.x64.r8  == 0x3333333344444444ULL);
+        ASSERT(ctx->regs.x64.r9  == 0x5555555566666666ULL);
+        ASSERT(ctx->regs.x64.r10 == 0x7777777788888888ULL);
+        ASSERT(ctx->regs.x64.r11 == 0x99999999aaaaaaaaULL);
+        ASSERT(ctx->regs.x64.r12 == 0xbbbbbbbbccccccccULL);
+        ASSERT(ctx->regs.x64.r13 == 0xddddddddeeeeeeeeULL);
+        ASSERT(ctx->regs.x64.r14 == 0xfffffff000000001ULL);
+        hb_context_destroy(ctx);
+    }
+
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(x64_x87_fst_fstp_register_family_interp_jit) {
+    const struct {
+        uint8_t code[4];
+        size_t len;
+        bool pop_pair;
+    } cases[] = {
+        {{0xdd, 0xd1, 0x00, 0x00}, 2, false}, /* FST ST(1) sibling */
+        {{0xdd, 0xd8, 0xdd, 0xd9}, 4, true}   /* FSTP ST(0); FSTP ST(1), trigger */
+    };
+    const hb_backend_t backends[] = {HB_BACKEND_INTERP, HB_BACKEND_JIT};
+
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        const uint64_t base = (uint64_t)(uintptr_t)cases[c].code;
+        hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, cases[c].code,
+                                               cases[c].len, base);
+        hb_ir_func_t* func = NULL;
+        ASSERT(dec != NULL);
+        ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+        hb_decoder_destroy(dec);
+        ASSERT(func != NULL);
+
+        for (size_t b = 0; b < sizeof(backends) / sizeof(backends[0]); b++) {
+            hb_context_t* ctx = hb_context_create(HB_ARCH_X64, backends[b]);
+            hb_x87_state_t* x87;
+            hb_exec_result_t out;
+            double st0 = 0.0;
+            double st1 = 0.0;
+            ASSERT(ctx != NULL);
+            ctx->memory = hb_memory_create(0);
+            ASSERT(ctx->memory != NULL);
+            ASSERT(hb_memory_map(ctx->memory, base, cases[c].len,
+                                 HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+            ctx->pc = base;
+            ctx->regs.x64.rip = base;
+            x87 = hb_context_x87(ctx);
+            if (cases[c].pop_pair) {
+                ASSERT(hb_x87_push_f64(x87, 1.0) == HB_OK);
+                ASSERT(hb_x87_push_f64(x87, 2.0) == HB_OK);
+                ASSERT(hb_x87_push_f64(x87, 3.0) == HB_OK);
+            } else {
+                /* FST ST(1) must also populate an empty destination slot. */
+                ASSERT(hb_x87_push_f64(x87, 2.0) == HB_OK);
+            }
+
+            ASSERT(hb_runtime_run(ctx, func, backends[b], &out) == HB_OK);
+            ASSERT(out.result == HB_OK);
+            ASSERT(hb_x87_st_f64(x87, 0, &st0) == HB_OK);
+            ASSERT(st0 == 2.0);
+            if (cases[c].pop_pair) {
+                ASSERT(x87->top == 7);
+            } else {
+                ASSERT(hb_x87_st_f64(x87, 1, &st1) == HB_OK);
+                ASSERT(st1 == 2.0);
+                ASSERT(x87->top == 7);
+            }
+            hb_context_destroy(ctx);
+        }
+        hb_ir_func_destroy(func);
+    }
+
+    tests_passed++;
+}
+
+TEST(x64_x87_fstp_masked_empty_stack_interp_jit) {
+    /* Exact Mono+0x56c8fc trigger: default CW masks invalid-operation, so
+     * empty-stack FSTP records IE|SF, stores indefinite, and still pops. */
+    const uint8_t code[] = {0xdd, 0xd8, 0xdd, 0xd9};
+    const hb_backend_t backends[] = {HB_BACKEND_INTERP, HB_BACKEND_JIT};
+    const uint64_t base = (uint64_t)(uintptr_t)code;
+    hb_decoder_t* dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    hb_ir_func_t* func = NULL;
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+
+    for (size_t b = 0; b < sizeof(backends) / sizeof(backends[0]); b++) {
+        hb_context_t* ctx = hb_context_create(HB_ARCH_X64, backends[b]);
+        hb_x87_state_t* x87;
+        hb_exec_result_t out;
+        double st0 = 0.0;
+        ASSERT(ctx != NULL);
+        ctx->memory = hb_memory_create(0);
+        ASSERT(ctx->memory != NULL);
+        ASSERT(hb_memory_map(ctx->memory, base, sizeof(code),
+                             HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+        ctx->pc = base;
+        ctx->regs.x64.rip = base;
+        x87 = hb_context_x87(ctx);
+
+        ASSERT(hb_runtime_run(ctx, func, backends[b], &out) == HB_OK);
+        if (out.result != HB_OK) {
+            fprintf(stderr, "x87 masked-empty backend=%d out=%s last=%s top=%u sw=%04x tag=%04x\n",
+                    (int)backends[b], hb_result_string(out.result),
+                    hb_result_string(ctx->last_result), x87->top,
+                    x87->status_word, x87->tag_word);
+        }
+        ASSERT(out.result == HB_OK);
+        ASSERT(x87->top == 2);
+        ASSERT((x87->status_word & 0x7a41u) == 0x1041u);
+        ASSERT(((x87->tag_word >> 4) & 3u) == 2u);
+        ASSERT(hb_x87_st_f64(x87, 0, &st0) == HB_OK);
+        ASSERT(isnan(st0) && signbit(st0));
+        hb_context_destroy(ctx);
+    }
+
     hb_ir_func_destroy(func);
     tests_passed++;
 }
@@ -24646,6 +24821,9 @@ int main(int argc, char** argv) {
             test_decode_x64_x87_environment_control_family();
             test_interp_x64_x87_environment_control_family();
             test_interp_x64_x87_fld_tbyte_memory_form();
+            test_x64_x87_state_isolated_interp_jit_fld_fstp();
+            test_x64_x87_fst_fstp_register_family_interp_jit();
+            test_x64_x87_fstp_masked_empty_stack_interp_jit();
             test_interp_x86_fcomi_fcomip_fucomi_fucomip_writes_eflags();
             test_interp_x86_sha_ni_family_semantics();
             test_interp_x86_x87_load_store_control_conversion_core();
@@ -24804,6 +24982,9 @@ int main(int argc, char** argv) {
     test_interp_x86_fcomi_fcomip_fucomi_fucomip_writes_eflags();
     test_interp_x86_sha_ni_family_semantics();
     test_interp_x64_x87_fld_tbyte_memory_form();
+    test_x64_x87_state_isolated_interp_jit_fld_fstp();
+    test_x64_x87_fst_fstp_register_family_interp_jit();
+    test_x64_x87_fstp_masked_empty_stack_interp_jit();
     test_decode_interp_x86_x87_frndint_helper();
     test_decode_x86_x87_environment_control_family();
     test_decode_x64_x87_environment_control_family();

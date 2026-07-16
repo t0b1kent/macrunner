@@ -7,6 +7,10 @@
 #define HB_X87_EMPTY_TAG  0x3
 #define HB_X87_STATUS_EXCEPTION_MASK 0x00ffu
 #define HB_X87_STATUS_BUSY_MASK      0x8000u
+#define HB_X87_CONTROL_INVALID_MASK  0x0001u
+#define HB_X87_STATUS_INVALID        0x0001u
+#define HB_X87_STATUS_STACK_FAULT    0x0040u
+#define HB_X87_STATUS_C1             0x0200u
 
 static unsigned phys_st(const hb_x87_state_t* x87, unsigned index) {
     return (x87->top + index) & 7u;
@@ -153,6 +157,15 @@ hb_result_t hb_x87_pop(hb_x87_state_t* x87) {
     return HB_OK;
 }
 
+/* Once FSTP has completed its destination store, the architectural pop occurs
+ * even when the masked source underflow left the old TOP slot empty. */
+hb_result_t hb_x87_fstp_pop(hb_x87_state_t* x87) {
+    if (!x87) return HB_ERR_INVALID_ARG;
+    set_tag(x87, x87->top, HB_X87_EMPTY_TAG);
+    set_top(x87, (x87->top + 1u) & 7u);
+    return HB_OK;
+}
+
 hb_result_t hb_x87_st_f64(const hb_x87_state_t* x87, unsigned index, double* out) {
     unsigned phys;
 
@@ -171,6 +184,32 @@ hb_result_t hb_x87_set_st_f64(hb_x87_state_t* x87, unsigned index, double value)
     if (tag_is_empty(x87, phys)) return HB_ERR_EXEC_FAULT;
     x87->st[phys] = value;
     set_tag(x87, phys, tag_from_f64(value));
+    return HB_OK;
+}
+
+/* FST/FSTP may write an empty destination register.  This differs from
+ * arithmetic result replacement, where an empty ST(i) is itself underflow. */
+hb_result_t hb_x87_store_st_f64(hb_x87_state_t* x87, unsigned index, double value) {
+    unsigned phys;
+
+    if (!x87 || index >= 8) return HB_ERR_INVALID_ARG;
+    phys = phys_st(x87, index);
+    x87->st[phys] = value;
+    set_tag(x87, phys, tag_from_f64(value));
+    return HB_OK;
+}
+
+/* Materialize the masked-invalid response for an empty x87 source.  The
+ * instruction owns any subsequent destination write/pop so memory faults
+ * still suppress the pop.  With IM clear, preserve the synchronous fault. */
+hb_result_t hb_x87_stack_underflow(hb_x87_state_t* x87, double* indefinite) {
+    const uint64_t indefinite_bits = UINT64_C(0xfff8000000000000);
+
+    if (!x87 || !indefinite) return HB_ERR_INVALID_ARG;
+    x87->status_word = (uint16_t)((x87->status_word |
+        HB_X87_STATUS_INVALID | HB_X87_STATUS_STACK_FAULT) & ~HB_X87_STATUS_C1);
+    if (!(x87->control_word & HB_X87_CONTROL_INVALID_MASK)) return HB_ERR_EXEC_FAULT;
+    memcpy(indefinite, &indefinite_bits, sizeof(*indefinite));
     return HB_OK;
 }
 

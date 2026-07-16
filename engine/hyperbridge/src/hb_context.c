@@ -45,7 +45,7 @@ hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend) {
     ctx->block_limit = (arch == HB_ARCH_X64) ? read_x64_block_limit_env() : 0;
     ctx->exit_code = 0;
     ctx->last_result = HB_OK;
-    if (arch == HB_ARCH_X86) hb_x87_reset(&ctx->regs.x86.x87);
+    hb_x87_reset(hb_context_x87(ctx));
     return ctx;
 }
 
@@ -61,7 +61,7 @@ void hb_context_destroy(hb_context_t* ctx) {
 hb_result_t hb_context_reset(hb_context_t* ctx) {
     if (!ctx) return HB_ERR_INVALID_ARG;
     memset(&ctx->regs, 0, sizeof(ctx->regs));
-    if (ctx->arch == HB_ARCH_X86) hb_x87_reset(&ctx->regs.x86.x87);
+    hb_x87_reset(hb_context_x87(ctx));
     memset(ctx->ymm_hi, 0, sizeof(ctx->ymm_hi));
     memset(ctx->zmm_hi, 0, sizeof(ctx->zmm_hi));
     memset(ctx->k, 0, sizeof(ctx->k));

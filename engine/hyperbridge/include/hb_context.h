@@ -223,7 +223,22 @@ struct hb_context {
      * generated code does not read this field. Zero when the current block has no
      * module classification. */
     uint64_t codegen_module_base;
+
+    /* x87 state for x64 guests.  The legacy x86 register file embeds its x87
+     * state, but the x64 register file historically did not.  Keep this field
+     * appended so every established hb_context_t/JIT offset remains stable. */
+    hb_x87_state_t x87_64;
 };
+
+static inline hb_x87_state_t* hb_context_x87(hb_context_t* ctx) {
+    if (!ctx) return NULL;
+    return ctx->mode == HB_MODE_64BIT ? &ctx->x87_64 : &ctx->regs.x86.x87;
+}
+
+static inline const hb_x87_state_t* hb_context_x87_const(const hb_context_t* ctx) {
+    if (!ctx) return NULL;
+    return ctx->mode == HB_MODE_64BIT ? &ctx->x87_64 : &ctx->regs.x86.x87;
+}
 
 hb_context_t* hb_context_create(hb_arch_t arch, hb_backend_t backend);
 void hb_context_destroy(hb_context_t* ctx);

@@ -23280,6 +23280,13 @@ static int macrunner_hb_work_object_probe_enabled(void)
     return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_WORK_OBJECT_PROBE" );
 }
 
+static int macrunner_hb_gfx_owner_vtable_688_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag(
+        &cache, "MACRUNNER_HB_GFX_OWNER_VTABLE_688_PROBE" );
+}
+
 static int macrunner_hb_trace_waitaddr_mach_enabled(void)
 {
     static int cache = -1;
@@ -23345,6 +23352,9 @@ static unsigned int macrunner_hb_work_object_probe_sequence;
 static uint64_t macrunner_hb_work_object_unity_base;
 static uint64_t macrunner_hb_work_object_descriptor;
 static uint64_t macrunner_hb_work_object_coordinator;
+static unsigned int macrunner_hb_gfx_owner_vtable_688_probe_emitted;
+static unsigned int macrunner_hb_gfx_owner_vtable_688_probe_sequence;
+static uint64_t macrunner_hb_gfx_owner_vtable_688_unity_base;
 
 struct macrunner_hb_ring_pop_probe_tls
 {
@@ -23444,6 +23454,41 @@ struct macrunner_hb_work_object_probe_tls
 
 static __thread struct macrunner_hb_work_object_probe_tls
     macrunner_hb_work_object_probe_tls;
+
+struct macrunner_hb_gfx_owner_vtable_688_probe_tls
+{
+    BOOL call_active;
+    BOOL target_entry_logged;
+    BOOL gate_logged;
+    uint64_t sequence;
+    uint64_t coordinator;
+    uint64_t receiver;
+    uint64_t vtable;
+    uint64_t target;
+    uint64_t queue;
+    uint64_t item;
+    uint64_t arg1;
+    uint64_t arg2;
+    uint64_t return_pc;
+};
+
+static __thread struct macrunner_hb_gfx_owner_vtable_688_probe_tls
+    macrunner_hb_gfx_owner_vtable_688_probe_tls;
+
+struct macrunner_hb_gfx_owner_vtable_688_snapshot
+{
+    uint64_t vtable;
+    uint64_t slot_680;
+    uint64_t slot_688;
+    uint64_t slot_690;
+    uint64_t slot_698;
+    BOOL known_factory;
+    BOOL known_swapchain;
+    unsigned int object_valid;
+    unsigned int target_valid;
+    unsigned char object_bytes[64];
+    unsigned char target_bytes[32];
+};
 
 struct macrunner_hb_work_object_snapshot
 {
@@ -24790,6 +24835,319 @@ static void macrunner_hb_work_object_probe_block( hb_context_t *ctx,
     }
 }
 
+static int macrunner_hb_gfx_owner_vtable_688_probe_take_slot(void)
+{
+    const char *value;
+    unsigned int limit, slot;
+
+    if (!macrunner_hb_gfx_owner_vtable_688_probe_enabled()) return 0;
+    value = getenv( "MACRUNNER_HB_GFX_OWNER_VTABLE_688_PROBE_BUDGET" );
+    limit = value && value[0] ? strtoul( value, NULL, 0 ) : 3000;
+    if (!limit) return 1;
+    slot = __atomic_fetch_add( &macrunner_hb_gfx_owner_vtable_688_probe_emitted, 1,
+                               __ATOMIC_RELAXED );
+    if (slot < limit) return 1;
+    if (slot == limit)
+    {
+        fprintf( stderr,
+                 "macrunner-hb-gfx-owner-vtable-688: stage=budget-exhausted limit=%u\n",
+                 limit );
+        fflush( stderr );
+    }
+    return 0;
+}
+
+static void macrunner_hb_gfx_owner_vtable_688_probe_capture(
+    hb_context_t *ctx, uint64_t receiver,
+    struct macrunner_hb_gfx_owner_vtable_688_snapshot *snap )
+{
+    unsigned int i;
+
+    memset( snap, 0, sizeof(*snap) );
+    if (!ctx || !ctx->memory || !receiver) return;
+    (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)receiver, &snap->vtable );
+    if (snap->vtable)
+    {
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)snap->vtable + 0x680,
+                                  &snap->slot_680 );
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)snap->vtable + 0x688,
+                                  &snap->slot_688 );
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)snap->vtable + 0x690,
+                                  &snap->slot_690 );
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)snap->vtable + 0x698,
+                                  &snap->slot_698 );
+    }
+    for (i = 0; i < sizeof(snap->object_bytes); i++)
+    {
+        if (hb_memory_read_u8( ctx->memory, (hb_gva_t)receiver + i,
+                               &snap->object_bytes[i] ) != HB_OK) break;
+        snap->object_valid++;
+    }
+    if (snap->slot_688)
+    {
+        for (i = 0; i < sizeof(snap->target_bytes); i++)
+        {
+            if (hb_memory_read_u8( ctx->memory, (hb_gva_t)snap->slot_688 + i,
+                                   &snap->target_bytes[i] ) != HB_OK) break;
+            snap->target_valid++;
+        }
+    }
+    pthread_mutex_lock( &macrunner_hb_dxgi_swapchain_mutex );
+    snap->known_factory = macrunner_hb_dxgi_factory_known_locked( receiver );
+    snap->known_swapchain = macrunner_hb_dxgi_swapchain_known_locked( receiver );
+    pthread_mutex_unlock( &macrunner_hb_dxgi_swapchain_mutex );
+}
+
+static void macrunner_hb_gfx_owner_vtable_688_probe_log(
+    const char *stage, hb_context_t *ctx, uint64_t block_pc,
+    const struct macrunner_hb_gfx_owner_vtable_688_probe_tls *tls )
+{
+    struct macrunner_hb_gfx_owner_vtable_688_snapshot snap;
+    char object_hex[sizeof(snap.object_bytes) * 2 + 1];
+    char target_hex[sizeof(snap.target_bytes) * 2 + 1];
+    char block_module[64], next_module[64], target_module[64];
+    uint64_t unity_base, block_rva = 0, next_rva = 0, target_rva = 0;
+
+    if (!macrunner_hb_gfx_owner_vtable_688_probe_take_slot()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_gfx_owner_vtable_688_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    macrunner_hb_gfx_owner_vtable_688_probe_capture( ctx, tls ? tls->receiver : 0,
+                                                     &snap );
+    macrunner_hb_work_object_probe_hex( snap.object_bytes, snap.object_valid,
+                                         object_hex, sizeof(object_hex) );
+    macrunner_hb_work_object_probe_hex( snap.target_bytes, snap.target_valid,
+                                         target_hex, sizeof(target_hex) );
+    macrunner_hb_wait_wake_trace_module( block_pc, block_module,
+                                          sizeof(block_module), &block_rva );
+    macrunner_hb_wait_wake_trace_module( ctx ? ctx->pc : 0, next_module,
+                                          sizeof(next_module), &next_rva );
+    macrunner_hb_wait_wake_trace_module( snap.slot_688, target_module,
+                                          sizeof(target_module), &target_rva );
+    if (unity_base && block_pc >= unity_base && block_pc < unity_base + 0x2200000)
+        block_rva = block_pc - unity_base;
+    if (ctx && unity_base && ctx->pc >= unity_base &&
+        ctx->pc < unity_base + 0x2200000)
+        next_rva = ctx->pc - unity_base;
+    if (unity_base && snap.slot_688 >= unity_base &&
+        snap.slot_688 < unity_base + 0x2200000)
+        target_rva = snap.slot_688 - unity_base;
+    fprintf( stderr,
+             "macrunner-hb-gfx-owner-vtable-688: stage=%s seq=%llu tid=%04lx "
+             "block=%p block_module=%s block_rva=0x%llx next=%p next_module=%s "
+             "next_rva=0x%llx coordinator=%p receiver=%p object_type=%s "
+             "vtable=%p slot_680=%p slot_688=%p slot_688_module=%s "
+             "slot_688_rva=0x%llx slot_690=%p slot_698=%p queue=%p item=%p "
+             "arg1=%p arg2=%p "
+             "return=%p object_valid=%u object_bytes=%s target_valid=%u "
+             "target_bytes=%s rax=%p rcx=%p rdx=%p r8=%p r9=%p r14=%p\n",
+             stage ? stage : "event",
+             (unsigned long long)(tls ? tls->sequence : 0),
+             (unsigned long)GetCurrentThreadId(), (void *)(uintptr_t)block_pc,
+             block_module[0] ? block_module : "?", (unsigned long long)block_rva,
+             (void *)(uintptr_t)(ctx ? ctx->pc : 0),
+             next_module[0] ? next_module : "?", (unsigned long long)next_rva,
+             (void *)(uintptr_t)(tls ? tls->coordinator : 0),
+             (void *)(uintptr_t)(tls ? tls->receiver : 0),
+             snap.known_swapchain ? "dxgi-swapchain" :
+             (snap.known_factory ? "dxgi-factory" : "unity-internal"),
+             (void *)(uintptr_t)snap.vtable, (void *)(uintptr_t)snap.slot_680,
+             (void *)(uintptr_t)snap.slot_688,
+             target_module[0] ? target_module : "?",
+             (unsigned long long)target_rva, (void *)(uintptr_t)snap.slot_690,
+             (void *)(uintptr_t)snap.slot_698,
+             (void *)(uintptr_t)(tls ? tls->queue : 0),
+             (void *)(uintptr_t)(tls ? tls->item : 0),
+             (void *)(uintptr_t)(tls ? tls->arg1 : 0),
+             (void *)(uintptr_t)(tls ? tls->arg2 : 0),
+             (void *)(uintptr_t)(tls ? tls->return_pc : 0),
+             snap.object_valid, object_hex, snap.target_valid, target_hex,
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rax : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rcx : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rdx : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r8 : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r9 : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r14 : 0) );
+    fflush( stderr );
+}
+
+static void macrunner_hb_gfx_owner_vtable_688_probe_wait(
+    const char *event, const struct macrunner_hb_wait_addr_entry *entry )
+{
+    static LONG armed_logged;
+    uint64_t unity_base;
+
+    if (!entry || !macrunner_hb_gfx_owner_vtable_688_probe_enabled()) return;
+    if (strcmp( event, "dequeue-ready" ) && strcmp( event, "dequeue-immediate" )) return;
+    if (entry->caller_rva != 0x2aee71 || !entry->caller || !entry->parent_return) return;
+    unity_base = entry->caller - entry->caller_rva;
+    if (entry->parent_return != unity_base + 0x62b199) return;
+    __atomic_store_n( &macrunner_hb_gfx_owner_vtable_688_unity_base, unity_base,
+                      __ATOMIC_RELEASE );
+    if (!InterlockedCompareExchange( &armed_logged, 1, 0 ) &&
+        macrunner_hb_gfx_owner_vtable_688_probe_take_slot())
+    {
+        fprintf( stderr,
+                 "macrunner-hb-gfx-owner-vtable-688: stage=armed tid=%04lx "
+                 "unity_base=%p caller=%p parent=%p\n",
+                 (unsigned long)entry->tid, (void *)(uintptr_t)unity_base,
+                 (void *)(uintptr_t)entry->caller,
+                 (void *)(uintptr_t)entry->parent_return );
+        fflush( stderr );
+    }
+}
+
+static void macrunner_hb_gfx_owner_vtable_688_probe_pre_block(
+    hb_context_t *ctx, uint64_t image_start, uint64_t block_pc )
+{
+    struct macrunner_hb_gfx_owner_vtable_688_probe_tls *tls =
+        &macrunner_hb_gfx_owner_vtable_688_probe_tls;
+    uint64_t unity_base, queue = 0;
+
+    if (!ctx || !macrunner_hb_gfx_owner_vtable_688_probe_enabled()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_gfx_owner_vtable_688_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    if (!unity_base && image_start && block_pc >= image_start &&
+        (block_pc - image_start == 0x6cda80 ||
+         block_pc - image_start == 0x478980))
+    {
+        static LONG block_armed_logged;
+        char module[64];
+        uint64_t module_rva = 0;
+
+        macrunner_hb_wait_wake_trace_module( block_pc, module, sizeof(module),
+                                              &module_rva );
+        if (macrunner_hb_strieq( module, "UnityPlayer.dll" ) ||
+            macrunner_hb_strieq( module, "UnityPlayer" ))
+        {
+            unity_base = image_start;
+            __atomic_store_n( &macrunner_hb_gfx_owner_vtable_688_unity_base,
+                              unity_base, __ATOMIC_RELEASE );
+            if (!InterlockedCompareExchange( &block_armed_logged, 1, 0 ) &&
+                macrunner_hb_gfx_owner_vtable_688_probe_take_slot())
+            {
+                fprintf( stderr,
+                         "macrunner-hb-gfx-owner-vtable-688: stage=armed-from-block "
+                         "tid=%04lx unity_base=%p block=%p block_rva=0x%llx\n",
+                         (unsigned long)GetCurrentThreadId(),
+                         (void *)(uintptr_t)unity_base,
+                         (void *)(uintptr_t)block_pc,
+                         (unsigned long long)module_rva );
+                fflush( stderr );
+            }
+        }
+    }
+    if (!unity_base) return;
+    if (block_pc == unity_base + 0x6cda80)
+    {
+        memset( tls, 0, sizeof(*tls) );
+        tls->sequence = __atomic_add_fetch(
+            &macrunner_hb_gfx_owner_vtable_688_probe_sequence, 1,
+            __ATOMIC_ACQ_REL );
+        tls->receiver = ctx->regs.x64.rcx;
+        macrunner_hb_gfx_owner_vtable_688_probe_log(
+            "wrapper-entry", ctx, block_pc, tls );
+    }
+    if (block_pc == unity_base + 0x478980)
+    {
+        if (!tls->sequence)
+            tls->sequence = __atomic_add_fetch(
+                &macrunner_hb_gfx_owner_vtable_688_probe_sequence, 1,
+                __ATOMIC_ACQ_REL );
+        tls->coordinator = ctx->regs.x64.rcx;
+        tls->receiver = ctx->regs.x64.rdx;
+        macrunner_hb_gfx_owner_vtable_688_probe_log(
+            "owner-entry", ctx, block_pc, tls );
+    }
+    if (block_pc == unity_base + 0x478a39 ||
+        block_pc == unity_base + 0x478a46)
+    {
+        tls->coordinator = ctx->regs.x64.rdi;
+        tls->receiver = ctx->regs.x64.r14;
+        if (tls->coordinator)
+            (void)hb_memory_read_u64( ctx->memory,
+                                      (hb_gva_t)tls->coordinator + 0x18, &queue );
+        tls->queue = queue;
+        macrunner_hb_gfx_owner_vtable_688_probe_log(
+            "queue-pop-attempt", ctx, block_pc, tls );
+    }
+    if (block_pc == unity_base + 0x478a4f ||
+        block_pc == unity_base + 0x478a52 ||
+        block_pc == unity_base + 0x478a55 ||
+        block_pc == unity_base + 0x478a57 ||
+        block_pc == unity_base + 0x478a65)
+    {
+        if (!tls->call_active && !tls->gate_logged)
+        {
+            tls->coordinator = ctx->regs.x64.rdi;
+            tls->receiver = ctx->regs.x64.r14;
+            tls->item = ctx->regs.x64.rax;
+            tls->return_pc = unity_base + 0x478a6c;
+            tls->arg1 = tls->arg2 = 0;
+            if (tls->item)
+            {
+                (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)tls->item + 8,
+                                          &tls->arg1 );
+                (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)tls->item + 0x10,
+                                          &tls->arg2 );
+            }
+            {
+                struct macrunner_hb_gfx_owner_vtable_688_snapshot snap;
+                macrunner_hb_gfx_owner_vtable_688_probe_capture(
+                    ctx, tls->receiver, &snap );
+                tls->vtable = snap.vtable;
+                tls->target = snap.slot_688;
+            }
+            tls->call_active = tls->item && tls->target;
+            tls->target_entry_logged = FALSE;
+            macrunner_hb_gfx_owner_vtable_688_probe_log(
+                tls->call_active ? "call-gate-taken" : "call-gate-empty",
+                ctx, block_pc, tls );
+            tls->gate_logged = TRUE;
+        }
+    }
+    if (tls->call_active && block_pc == tls->target &&
+        !tls->target_entry_logged)
+    {
+        tls->target_entry_logged = TRUE;
+        macrunner_hb_gfx_owner_vtable_688_probe_log(
+            "target-entry", ctx, block_pc, tls );
+    }
+    if (tls->call_active && block_pc == tls->return_pc)
+    {
+        macrunner_hb_gfx_owner_vtable_688_probe_log(
+            "target-return", ctx, block_pc, tls );
+        tls->call_active = FALSE;
+    }
+}
+
+static void macrunner_hb_gfx_owner_vtable_688_probe_block(
+    hb_context_t *ctx, uint64_t block_pc )
+{
+    struct macrunner_hb_gfx_owner_vtable_688_probe_tls *tls =
+        &macrunner_hb_gfx_owner_vtable_688_probe_tls;
+    uint64_t unity_base;
+
+    if (!ctx || !macrunner_hb_gfx_owner_vtable_688_probe_enabled()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_gfx_owner_vtable_688_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    if (!unity_base || !tls->sequence) return;
+    if ((block_pc == unity_base + 0x478a4f ||
+         block_pc == unity_base + 0x478a52 ||
+         block_pc == unity_base + 0x478a55 ||
+         block_pc == unity_base + 0x478a57 ||
+         block_pc == unity_base + 0x478a65) && tls->call_active &&
+        ctx->pc == tls->target)
+    {
+        macrunner_hb_gfx_owner_vtable_688_probe_log(
+            "call-dispatch", ctx, block_pc, tls );
+    }
+    if ((block_pc == unity_base + 0x478a4f ||
+         block_pc == unity_base + 0x478a52) && !tls->call_active &&
+        ctx->pc == unity_base + 0x478a71)
+        macrunner_hb_gfx_owner_vtable_688_probe_log(
+            "call-gate-skip-empty", ctx, block_pc, tls );
+}
+
 static void macrunner_hb_ring_pop_probe_log_snapshot( const char *stage, hb_context_t *ctx,
                                                        uint64_t block_pc )
 {
@@ -25028,7 +25386,8 @@ static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
                    !macrunner_hb_readable_range_decode_probe_enabled() &&
                    !macrunner_hb_frame_finalize_probe_enabled() &&
                    !macrunner_hb_callback_4784d0_probe_enabled() &&
-                   !macrunner_hb_work_object_probe_enabled())) return;
+                   !macrunner_hb_work_object_probe_enabled() &&
+                   !macrunner_hb_gfx_owner_vtable_688_probe_enabled())) return;
     gfx_tid = __atomic_load_n( &macrunner_hb_gfx_thread_tid, __ATOMIC_ACQUIRE );
     if (macrunner_hb_gfx_thread_name( entry->thread_name ))
     {
@@ -25062,6 +25421,7 @@ static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
     macrunner_hb_frame_finalize_probe_wait( event, entry );
     macrunner_hb_callback_4784d0_probe_wait( event, entry );
     macrunner_hb_work_object_probe_wait( event, entry );
+    macrunner_hb_gfx_owner_vtable_688_probe_wait( event, entry );
     if (!macrunner_hb_gfx_thread_event_probe_enabled()) return;
     if (!macrunner_hb_gfx_thread_event_probe_take_slot()) return;
 
@@ -36262,6 +36622,8 @@ skip_version_semantic:
         macrunner_hb_frame_finalize_probe_pre_block( ctx, block_pc );
         macrunner_hb_callback_4784d0_probe_pre_block( ctx, block_pc );
         macrunner_hb_work_object_probe_pre_block( ctx, block_pc );
+        macrunner_hb_gfx_owner_vtable_688_probe_pre_block(
+            ctx, image_start, block_pc );
         if (trace_unity_origin)
             macrunner_hb_trace_unity_origin( "before", ctx, image_start, block_pc );
         if (trace_vfunc58_scan)
@@ -36359,6 +36721,7 @@ skip_version_semantic:
         macrunner_hb_frame_finalize_probe_block( ctx, block_pc );
         macrunner_hb_callback_4784d0_probe_block( ctx, block_pc );
         macrunner_hb_work_object_probe_block( ctx, block_pc );
+        macrunner_hb_gfx_owner_vtable_688_probe_block( ctx, block_pc );
         if (trace_unity_owner_block)
             macrunner_hb_trace_unity_owner_block( "after", ctx, image_start, block_pc );
         if (trace_unity_origin)

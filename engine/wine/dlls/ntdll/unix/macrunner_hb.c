@@ -945,6 +945,7 @@ static BOOL macrunner_hb_read_local_memory( uintptr_t addr, void *buf, size_t si
 
 #define MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE 256
 #define MACRUNNER_HB_MODULE_FROM_PC_NEG_CACHE_SIZE 512
+#define MACRUNNER_HB_LDR_FROM_PC_HOT_CACHE_SIZE 4
 /* MacRunner (2026-06-17, HK first-frame perf): cap the downward PE-header scan. All
  * properly-loaded PEs are in the PEB LDR (found at macrunner_hb_ldr_entry_from_pc), so
  * this memory scan only runs for non-LDR PCs (manually-mapped PEs — rare — or Mono JIT
@@ -960,10 +961,20 @@ struct macrunner_hb_module_from_pc_cache_entry
     void *module;
 };
 
+struct macrunner_hb_ldr_from_pc_hot_cache_entry
+{
+    uintptr_t start;
+    uintptr_t end;
+    LDR_DATA_TABLE_ENTRY *ldr;
+};
+
 static __thread struct macrunner_hb_module_from_pc_cache_entry macrunner_hb_module_from_pc_cache[MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE];
 static __thread unsigned int macrunner_hb_module_from_pc_cache_next;
 static __thread uintptr_t macrunner_hb_module_from_pc_neg_cache[MACRUNNER_HB_MODULE_FROM_PC_NEG_CACHE_SIZE];
 static __thread unsigned int macrunner_hb_module_from_pc_neg_cache_next;
+static __thread struct macrunner_hb_ldr_from_pc_hot_cache_entry
+    macrunner_hb_ldr_from_pc_hot_cache[MACRUNNER_HB_LDR_FROM_PC_HOT_CACHE_SIZE];
+static __thread unsigned int macrunner_hb_ldr_from_pc_hot_cache_next;
 
 static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc );
 
@@ -1132,7 +1143,20 @@ static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc )
     PEB *peb = NtCurrentTeb()->Peb;
     LIST_ENTRY *head, *entry;
     uintptr_t addr = (uintptr_t)pc;
-    unsigned int guard = 0;
+    unsigned int guard = 0, i;
+
+    /* Module identity is stable for the lifetime of an executing x64 block.
+     * Keep the last few ranges in front of the PEB list walk: the block loop
+     * alternates mainly between Mono/Unity and import corridors, so a 4-way
+     * hot set turns module classification into bounded range comparisons. */
+    for (i = 0; i < MACRUNNER_HB_LDR_FROM_PC_HOT_CACHE_SIZE; i++)
+    {
+        struct macrunner_hb_ldr_from_pc_hot_cache_entry *cached =
+            &macrunner_hb_ldr_from_pc_hot_cache[i];
+
+        if (cached->ldr && addr >= cached->start && addr < cached->end)
+            return cached->ldr;
+    }
 
     if (!peb || !peb->LdrData) return NULL;
     head = &peb->LdrData->InMemoryOrderModuleList;
@@ -1142,9 +1166,17 @@ static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc )
         uintptr_t base = (uintptr_t)ldr->DllBase;
         uintptr_t size = ldr->SizeOfImage;
 
+        struct macrunner_hb_ldr_from_pc_hot_cache_entry *cached;
+
         if (!entry->Flink || !entry->Blink) break;
         if (!base || !size || size > UINTPTR_MAX - base) continue;
-        if (addr >= base && addr < base + size) return ldr;
+        if (addr < base || addr >= base + size) continue;
+        cached = &macrunner_hb_ldr_from_pc_hot_cache[
+            macrunner_hb_ldr_from_pc_hot_cache_next++ % MACRUNNER_HB_LDR_FROM_PC_HOT_CACHE_SIZE];
+        cached->start = base;
+        cached->end = base + size;
+        cached->ldr = ldr;
+        return ldr;
     }
     return NULL;
 }
@@ -12471,13 +12503,66 @@ static BOOL macrunner_hb_module_name_matches( const char *requested,
     return FALSE;
 }
 
-static BOOL macrunner_hb_pc_in_mono_module( uint64_t pc )
-{
-    LDR_DATA_TABLE_ENTRY *ldr = macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)pc );
+#define MACRUNNER_HB_MONO_CLASS_CACHE_SIZE 4
 
-    return ldr &&
-           (macrunner_hb_module_name_matches( "mono-2.0-bdwgc.dll", &ldr->BaseDllName ) ||
-            macrunner_hb_module_name_matches( "mono.dll", &ldr->BaseDllName ));
+struct macrunner_hb_mono_class_cache_entry
+{
+    uintptr_t start;
+    uintptr_t end;
+    uint64_t module_base;
+    BOOL is_mono;
+};
+
+static __thread struct macrunner_hb_mono_class_cache_entry
+    macrunner_hb_mono_class_cache[MACRUNNER_HB_MONO_CLASS_CACHE_SIZE];
+static __thread unsigned int macrunner_hb_mono_class_cache_next;
+
+static BOOL macrunner_hb_pc_in_mono_module( uint64_t pc, uint64_t *module_base )
+{
+    uintptr_t addr = (uintptr_t)pc;
+    LDR_DATA_TABLE_ENTRY *ldr;
+    struct macrunner_hb_mono_class_cache_entry *cached;
+    uintptr_t start, end;
+    BOOL is_mono;
+    unsigned int i;
+
+    for (i = 0; i < MACRUNNER_HB_MONO_CLASS_CACHE_SIZE; i++)
+    {
+        cached = &macrunner_hb_mono_class_cache[i];
+        if (cached->end && addr >= cached->start && addr < cached->end)
+        {
+            if (cached->is_mono && module_base) *module_base = cached->module_base;
+            return cached->is_mono;
+        }
+    }
+
+    ldr = macrunner_hb_ldr_entry_from_pc( (void *)addr );
+    if (ldr && ldr->DllBase && ldr->SizeOfImage &&
+        ldr->SizeOfImage <= UINTPTR_MAX - (uintptr_t)ldr->DllBase)
+    {
+        start = (uintptr_t)ldr->DllBase;
+        end = start + ldr->SizeOfImage;
+        is_mono = macrunner_hb_module_name_matches( "mono-2.0-bdwgc.dll", &ldr->BaseDllName ) ||
+                  macrunner_hb_module_name_matches( "mono.dll", &ldr->BaseDllName );
+    }
+    else
+    {
+        /* Non-LDR JIT/import corridors dominate Mono init as well.  Cache one
+         * page as non-Mono so they do not rescan the PEB module list per block. */
+        start = addr & ~(uintptr_t)0xfff;
+        end = start <= UINTPTR_MAX - 0x1000 ? start + 0x1000 : UINTPTR_MAX;
+        is_mono = FALSE;
+    }
+
+    cached = &macrunner_hb_mono_class_cache[
+        macrunner_hb_mono_class_cache_next++ % MACRUNNER_HB_MONO_CLASS_CACHE_SIZE];
+    cached->start = start;
+    cached->end = end;
+    cached->module_base = ldr ? (uint64_t)(uintptr_t)ldr->DllBase : 0;
+    cached->is_mono = is_mono;
+
+    if (is_mono && module_base) *module_base = cached->module_base;
+    return is_mono;
 }
 
 static BOOL macrunner_hb_ascii_module_names_match( const char *requested, const char *candidate )
@@ -14529,6 +14614,13 @@ static void macrunner_hb_sync_virtual_region( hb_context_t *ctx, void *base, SIZ
         else
             result = hb_memory_sync_live_range( ctx->memory, (hb_gva_t)(uintptr_t)base, size, perm );
     }
+    else if (existing && !existing->allocated && !existing->is_guest32 &&
+             existing->base == (hb_gva_t)(uintptr_t)base &&
+             existing->size == (size_t)size && existing->perm == perm)
+        /* hb_memory_protect() would rediscover this same Wine-owned live
+         * region and return without changing host protection.  Preserve the
+         * commit-coherence Mach check below, but skip the duplicate tree walk. */
+        result = HB_OK;
     else if (existing)
         result = hb_memory_protect( ctx->memory, (hb_gva_t)(uintptr_t)base, size, perm );
     else if (perm)
@@ -35582,6 +35674,13 @@ static BOOL macrunner_hb_aa_mono_site( uint64_t pc, uintptr_t *module_out, size_
     return TRUE;
 }
 
+static int macrunner_hb_aa_rbp_probe_enabled(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_AA_RBP_PROBE" );
+}
+
 static void macrunner_hb_aa_rbp_probe( const char *phase, hb_context_t *ctx,
                                        uint64_t block_pc )
 {
@@ -35590,7 +35689,7 @@ static void macrunner_hb_aa_rbp_probe( const char *phase, hb_context_t *ctx,
     size_t rva;
     BOOL in_guest_stack, expected_in_guest_stack, checkpoint, mismatch;
 
-    if (!ctx || !macrunner_hb_env_enabled( "MACRUNNER_HB_AA_RBP_PROBE" ) ||
+    if (!ctx || !macrunner_hb_aa_rbp_probe_enabled() ||
         !macrunner_hb_aa_mono_site( block_pc, &module, &rva )) return;
     if (rva == 0x425870 && !strcmp( phase, "before" ))
     {
@@ -35646,6 +35745,13 @@ struct macrunner_hb_aa_patch_state
 
 static __thread struct macrunner_hb_aa_patch_state macrunner_hb_aa_patch;
 
+static int macrunner_hb_aa_mono_patch_probe_enabled(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_AA_MONO_PATCH_PROBE" );
+}
+
 static void macrunner_hb_aa_mono_patch_probe( hb_context_t *ctx, uint64_t block_pc )
 {
     static unsigned int reports;
@@ -35655,7 +35761,7 @@ static void macrunner_hb_aa_mono_patch_probe( hb_context_t *ctx, uint64_t block_
     uint32_t valid = 0;
     uint64_t code, target;
 
-    if (!ctx || !macrunner_hb_env_enabled( "MACRUNNER_HB_AA_MONO_PATCH_PROBE" ) ||
+    if (!ctx || !macrunner_hb_aa_mono_patch_probe_enabled() ||
         !macrunner_hb_aa_mono_site( block_pc, &module, &rva )) return;
     if (rva == 0x4260b0 || rva == 0x426890)
     {
@@ -35783,6 +35889,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     int trace_render_time_align = macrunner_hb_trace_render_time_align_enabled();
     int trace_post_ready_consumer_follow = macrunner_hb_post_ready_consumer_follow_enabled();
     int trace_main_gate = macrunner_hb_trace_main_gate_enabled();
+    int aa_rbp_probe = macrunner_hb_aa_rbp_probe_enabled();
+    int aa_mono_patch_probe = macrunner_hb_aa_mono_patch_probe_enabled();
     int trace_low_stack = macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_LOW_STACK" );
     int trace_thread_run = label && !strcmp( label, "thread" ) &&
                            macrunner_hb_trace_thread_lifecycle_enabled();
@@ -37005,18 +37113,14 @@ skip_version_semantic:
         if (trace_calc_object) macrunner_hb_trace_calc_probe( ctx, image_start, "before-block" );
         if (trace_npp_open_pack) macrunner_hb_trace_npp_open_pack( ctx, image_start, "before-block" );
         block_pc = ctx->pc;
-        macrunner_hb_aa_rbp_probe( "before", ctx, block_pc );
-        macrunner_hb_aa_mono_patch_probe( ctx, block_pc );
+        if (aa_rbp_probe) macrunner_hb_aa_rbp_probe( "before", ctx, block_pc );
+        if (aa_mono_patch_probe) macrunner_hb_aa_mono_patch_probe( ctx, block_pc );
         macrunner_hb_exit_origin_before_block( ctx, block_pc, image_start, label, blocks, steps );
         ctx->codegen_flags &= ~HB_CONTEXT_CODEGEN_MONO_MODULE;
         ctx->codegen_module_base = 0;
-        if (macrunner_hb_pc_in_mono_module( block_pc ))
+        if (macrunner_hb_pc_in_mono_module( block_pc, &ctx->codegen_module_base ))
         {
-            LDR_DATA_TABLE_ENTRY *codegen_ldr =
-                macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)block_pc );
             ctx->codegen_flags |= HB_CONTEXT_CODEGEN_MONO_MODULE;
-            if (codegen_ldr)
-                ctx->codegen_module_base = (uint64_t)(uintptr_t)codegen_ldr->DllBase;
         }
         if (trace_direct_native) macrunner_hb_trace_winemetal_resume_point( "before-block", ctx );
         last_block_pc = block_pc;
@@ -37878,7 +37982,7 @@ skip_version_semantic:
         else
             ret = hb_runtime_run( ctx, func, HB_BACKEND_INTERP, &out );
         macrunner_hb_update_current_x64_context( ctx, label );
-        macrunner_hb_aa_rbp_probe( "after", ctx, block_pc );
+        if (aa_rbp_probe) macrunner_hb_aa_rbp_probe( "after", ctx, block_pc );
         macrunner_hb_exit_origin_after_block( ctx, ret, &out );
         macrunner_hb_main_009c_probe_block( label, ctx, image_start, block_pc, blocks,
                                             steps, ret, &out );

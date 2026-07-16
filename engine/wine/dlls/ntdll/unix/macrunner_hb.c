@@ -23274,6 +23274,12 @@ static int macrunner_hb_callback_4784d0_probe_enabled(void)
                                          "MACRUNNER_HB_CALLBACK_4784D0_PROBE" );
 }
 
+static int macrunner_hb_work_object_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_WORK_OBJECT_PROBE" );
+}
+
 static int macrunner_hb_trace_waitaddr_mach_enabled(void)
 {
     static int cache = -1;
@@ -23334,6 +23340,11 @@ static unsigned int macrunner_hb_callback_4784d0_probe_emitted;
 static unsigned int macrunner_hb_callback_4784d0_plan_sequence;
 static unsigned int macrunner_hb_callback_4784d0_entry_sequence;
 static uint64_t macrunner_hb_callback_4784d0_unity_base;
+static unsigned int macrunner_hb_work_object_probe_emitted;
+static unsigned int macrunner_hb_work_object_probe_sequence;
+static uint64_t macrunner_hb_work_object_unity_base;
+static uint64_t macrunner_hb_work_object_descriptor;
+static uint64_t macrunner_hb_work_object_coordinator;
 
 struct macrunner_hb_ring_pop_probe_tls
 {
@@ -23414,6 +23425,37 @@ struct macrunner_hb_callback_4784d0_snapshot
     uint32_t generation_262c;
     uint8_t pending_18e8;
     uint8_t mode_2630;
+};
+
+struct macrunner_hb_work_object_probe_tls
+{
+    BOOL allocation_active;
+    BOOL constructor_active;
+    BOOL consumer_active;
+    BOOL decision_active;
+    uint64_t sequence;
+    uint64_t unity_base;
+    uint64_t coordinator;
+    uint64_t descriptor;
+    uint64_t allocation_return;
+    uint64_t constructor_return;
+    uint64_t consumer_return;
+};
+
+static __thread struct macrunner_hb_work_object_probe_tls
+    macrunner_hb_work_object_probe_tls;
+
+struct macrunner_hb_work_object_snapshot
+{
+    uint64_t head;
+    uint64_t cursor;
+    uint64_t backing;
+    uint32_t capacity;
+    uint16_t generation;
+    unsigned int descriptor_valid;
+    unsigned int backing_valid;
+    unsigned char descriptor_bytes[32];
+    unsigned char backing_bytes[64];
 };
 
 struct macrunner_hb_ring_pop_snapshot
@@ -24315,6 +24357,439 @@ static void macrunner_hb_callback_4784d0_probe_block( hb_context_t *ctx,
     }
 }
 
+static int macrunner_hb_work_object_probe_take_slot(void)
+{
+    const char *value;
+    unsigned int limit, slot;
+
+    if (!macrunner_hb_work_object_probe_enabled()) return 0;
+    value = getenv( "MACRUNNER_HB_WORK_OBJECT_PROBE_BUDGET" );
+    limit = value && value[0] ? strtoul( value, NULL, 0 ) : 3000;
+    if (!limit) return 1;
+    slot = __atomic_fetch_add( &macrunner_hb_work_object_probe_emitted, 1,
+                               __ATOMIC_RELAXED );
+    if (slot < limit) return 1;
+    if (slot == limit)
+    {
+        fprintf( stderr, "macrunner-hb-work-object: stage=budget-exhausted limit=%u\n",
+                 limit );
+        fflush( stderr );
+    }
+    return 0;
+}
+
+static void macrunner_hb_work_object_probe_capture(
+    hb_context_t *ctx, uint64_t descriptor, struct macrunner_hb_work_object_snapshot *snap )
+{
+    uint32_t generation = 0;
+    unsigned int i;
+
+    memset( snap, 0, sizeof(*snap) );
+    if (!ctx || !ctx->memory || !descriptor) return;
+    (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)descriptor, &snap->head );
+    (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)descriptor + 8, &snap->cursor );
+    (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)descriptor + 0x10,
+                              &snap->backing );
+    (void)hb_memory_read_u32( ctx->memory, (hb_gva_t)descriptor + 0x18,
+                              &snap->capacity );
+    (void)hb_memory_read_u32( ctx->memory, (hb_gva_t)descriptor + 0x1c,
+                              &generation );
+    snap->generation = generation;
+    for (i = 0; i < sizeof(snap->descriptor_bytes); i++)
+    {
+        if (hb_memory_read_u8( ctx->memory, (hb_gva_t)descriptor + i,
+                               &snap->descriptor_bytes[i] ) != HB_OK) break;
+        snap->descriptor_valid++;
+    }
+    if (!snap->backing) return;
+    for (i = 0; i < sizeof(snap->backing_bytes); i++)
+    {
+        if (hb_memory_read_u8( ctx->memory, (hb_gva_t)snap->backing + i,
+                               &snap->backing_bytes[i] ) != HB_OK) break;
+        snap->backing_valid++;
+    }
+}
+
+static void macrunner_hb_work_object_probe_hex( const unsigned char *bytes,
+                                                 unsigned int valid, char *hex,
+                                                 size_t size )
+{
+    char *p = hex;
+    unsigned int i;
+
+    if (!hex || !size) return;
+    hex[0] = 0;
+    for (i = 0; i < valid && (size_t)(p - hex) + 3 < size; i++)
+        p += snprintf( p, size - (p - hex), "%02x", bytes[i] );
+    if (!valid) snprintf( hex, size, "<unreadable>" );
+}
+
+static void macrunner_hb_work_object_probe_log(
+    const char *stage, hb_context_t *ctx, uint64_t block_pc, uint64_t sequence,
+    uint64_t coordinator, uint64_t descriptor )
+{
+    struct macrunner_hb_work_object_snapshot snap;
+    struct macrunner_hb_callback_4784d0_snapshot coordinator_snap;
+    char descriptor_hex[sizeof(snap.descriptor_bytes) * 2 + 1];
+    char backing_hex[sizeof(snap.backing_bytes) * 2 + 1];
+    char block_module[64], next_module[64];
+    uint64_t unity_base, block_rva = 0, next_rva = 0;
+
+    if (!macrunner_hb_work_object_probe_take_slot()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_work_object_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    macrunner_hb_work_object_probe_capture( ctx, descriptor, &snap );
+    macrunner_hb_callback_4784d0_probe_capture( ctx, coordinator, &coordinator_snap );
+    macrunner_hb_work_object_probe_hex( snap.descriptor_bytes, snap.descriptor_valid,
+                                         descriptor_hex, sizeof(descriptor_hex) );
+    macrunner_hb_work_object_probe_hex( snap.backing_bytes, snap.backing_valid,
+                                         backing_hex, sizeof(backing_hex) );
+    macrunner_hb_wait_wake_trace_module( block_pc, block_module, sizeof(block_module),
+                                         &block_rva );
+    macrunner_hb_wait_wake_trace_module( ctx ? ctx->pc : 0, next_module,
+                                         sizeof(next_module), &next_rva );
+    if (unity_base && block_pc >= unity_base && block_pc < unity_base + 0x2200000)
+        block_rva = block_pc - unity_base;
+    if (ctx && unity_base && ctx->pc >= unity_base &&
+        ctx->pc < unity_base + 0x2200000)
+        next_rva = ctx->pc - unity_base;
+    fprintf( stderr, "macrunner-hb-work-object: stage=%s seq=%llu tid=%04lx "
+             "block=%p block_module=%s block_rva=0x%llx next=%p next_module=%s "
+             "next_rva=0x%llx coordinator=%p current_18d0=%p pending_18e8=%u "
+             "expected_18ec=0x%x coordinator_generation_262c=%u mode_2630=%u "
+             "descriptor=%p head=%p cursor=%p backing=%p capacity=0x%x "
+             "generation=%u descriptor_valid=%u descriptor_bytes=%s "
+             "backing_valid=%u backing_bytes=%s rsp=%p rax=%p rcx=%p rdx=%p "
+             "r8=%p r9=%p\n", stage ? stage : "event",
+             (unsigned long long)sequence, (unsigned long)GetCurrentThreadId(),
+             (void *)(uintptr_t)block_pc, block_module[0] ? block_module : "?",
+             (unsigned long long)block_rva, (void *)(uintptr_t)(ctx ? ctx->pc : 0),
+             next_module[0] ? next_module : "?", (unsigned long long)next_rva,
+             (void *)(uintptr_t)coordinator,
+             (void *)(uintptr_t)coordinator_snap.work_18d0,
+             coordinator_snap.pending_18e8, coordinator_snap.tag_18ec,
+             coordinator_snap.generation_262c, coordinator_snap.mode_2630,
+             (void *)(uintptr_t)descriptor, (void *)(uintptr_t)snap.head,
+             (void *)(uintptr_t)snap.cursor, (void *)(uintptr_t)snap.backing,
+             snap.capacity, snap.generation, snap.descriptor_valid, descriptor_hex,
+             snap.backing_valid, backing_hex,
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rsp : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rax : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rcx : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rdx : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r8 : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r9 : 0) );
+    fflush( stderr );
+}
+
+static void macrunner_hb_work_object_probe_wait(
+    const char *event, const struct macrunner_hb_wait_addr_entry *entry )
+{
+    static LONG armed_logged;
+    uint64_t unity_base;
+
+    if (!entry || !macrunner_hb_work_object_probe_enabled()) return;
+    if (strcmp( event, "dequeue-ready" ) && strcmp( event, "dequeue-immediate" )) return;
+    if (entry->caller_rva != 0x2aee71 || !entry->caller || !entry->parent_return) return;
+    unity_base = entry->caller - entry->caller_rva;
+    if (entry->parent_return != unity_base + 0x62b199) return;
+    __atomic_store_n( &macrunner_hb_work_object_unity_base, unity_base,
+                      __ATOMIC_RELEASE );
+    if (!InterlockedCompareExchange( &armed_logged, 1, 0 ) &&
+        macrunner_hb_work_object_probe_take_slot())
+    {
+        fprintf( stderr, "macrunner-hb-work-object: stage=armed tid=%04lx "
+                 "unity_base=%p caller=%p parent=%p\n", (unsigned long)entry->tid,
+                 (void *)(uintptr_t)unity_base, (void *)(uintptr_t)entry->caller,
+                 (void *)(uintptr_t)entry->parent_return );
+        fflush( stderr );
+    }
+}
+
+static void macrunner_hb_work_object_probe_pre_block( hb_context_t *ctx,
+                                                       uint64_t block_pc )
+{
+    struct macrunner_hb_work_object_probe_tls *tls =
+        &macrunner_hb_work_object_probe_tls;
+    uint64_t unity_base, return_pc = 0, descriptor, coordinator, stack20 = 0;
+    uint64_t stack28 = 0, stack30 = 0;
+
+    if (!ctx || !macrunner_hb_work_object_probe_enabled()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_work_object_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    if (!unity_base) return;
+
+    if (block_pc == unity_base + 0x6cda80)
+    {
+        if (macrunner_hb_work_object_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-work-object: stage=gfx-owner-wrapper "
+                     "tid=%04lx rcx=%p rdx=%p r8=%p r9=%p\n",
+                     (unsigned long)GetCurrentThreadId(),
+                     (void *)(uintptr_t)ctx->regs.x64.rcx,
+                     (void *)(uintptr_t)ctx->regs.x64.rdx,
+                     (void *)(uintptr_t)ctx->regs.x64.r8,
+                     (void *)(uintptr_t)ctx->regs.x64.r9 );
+            fflush( stderr );
+        }
+    }
+    if (block_pc == unity_base + 0x478980)
+    {
+        coordinator = ctx->regs.x64.rcx;
+        __atomic_store_n( &macrunner_hb_work_object_coordinator, coordinator,
+                          __ATOMIC_RELEASE );
+        descriptor = 0;
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)coordinator + 0x18d0,
+                                  &descriptor );
+        macrunner_hb_work_object_probe_log( "gfx-owner-entry", ctx, block_pc, 0,
+                                             coordinator, descriptor );
+    }
+    if (block_pc == unity_base + 0x478be1)
+    {
+        coordinator = ctx->regs.x64.rdi;
+        descriptor = 0;
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)coordinator + 0x18d0,
+                                  &descriptor );
+        macrunner_hb_work_object_probe_log( "gfx-owner-tail-pre", ctx, block_pc, 0,
+                                             coordinator, descriptor );
+    }
+
+    if (block_pc == unity_base + 0x2b3a60)
+    {
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp,
+                                  &return_pc );
+        if (return_pc == unity_base + 0x47860e && (uint32_t)ctx->regs.x64.rdx == 0x20)
+        {
+            memset( tls, 0, sizeof(*tls) );
+            tls->allocation_active = TRUE;
+            tls->sequence = __atomic_add_fetch( &macrunner_hb_work_object_probe_sequence,
+                                                 1, __ATOMIC_RELAXED );
+            tls->unity_base = unity_base;
+            tls->coordinator = ctx->regs.x64.rsi;
+            tls->allocation_return = return_pc;
+            __atomic_store_n( &macrunner_hb_work_object_coordinator, tls->coordinator,
+                              __ATOMIC_RELEASE );
+            (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 0x28,
+                                      &stack20 );
+            (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 0x30,
+                                      &stack28 );
+            (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 0x38,
+                                      &stack30 );
+            if (macrunner_hb_work_object_probe_take_slot())
+            {
+                fprintf( stderr, "macrunner-hb-work-object: stage=descriptor-alloc-entry "
+                         "seq=%llu tid=%04lx coordinator=%p allocator=%p size=0x%x "
+                         "alignment=0x%x generation=%u stack20=%p stack28=%p "
+                         "stack30=%p return=%p\n", (unsigned long long)tls->sequence,
+                         (unsigned long)GetCurrentThreadId(),
+                         (void *)(uintptr_t)tls->coordinator,
+                         (void *)(uintptr_t)ctx->regs.x64.rcx,
+                         (unsigned int)ctx->regs.x64.rdx,
+                         (unsigned int)ctx->regs.x64.r8,
+                         (unsigned int)ctx->regs.x64.r9,
+                         (void *)(uintptr_t)stack20, (void *)(uintptr_t)stack28,
+                         (void *)(uintptr_t)stack30, (void *)(uintptr_t)return_pc );
+                fflush( stderr );
+            }
+        }
+        else if (return_pc == unity_base + 0x2b6fac && tls->constructor_active)
+        {
+            if (macrunner_hb_work_object_probe_take_slot())
+            {
+                fprintf( stderr, "macrunner-hb-work-object: stage=backing-alloc-entry "
+                         "seq=%llu tid=%04lx descriptor=%p allocator=%p size=0x%x "
+                         "alignment=0x%x generation=%u return=%p\n",
+                         (unsigned long long)tls->sequence,
+                         (unsigned long)GetCurrentThreadId(),
+                         (void *)(uintptr_t)tls->descriptor,
+                         (void *)(uintptr_t)ctx->regs.x64.rcx,
+                         (unsigned int)ctx->regs.x64.rdx,
+                         (unsigned int)ctx->regs.x64.r8,
+                         (unsigned int)ctx->regs.x64.r9,
+                         (void *)(uintptr_t)return_pc );
+                fflush( stderr );
+            }
+        }
+    }
+    if (tls->allocation_active && block_pc == unity_base + 0x47860e)
+    {
+        tls->descriptor = ctx->regs.x64.rax;
+        __atomic_store_n( &macrunner_hb_work_object_descriptor, tls->descriptor,
+                          __ATOMIC_RELEASE );
+        macrunner_hb_work_object_probe_log( "descriptor-alloc-return", ctx, block_pc,
+                                             tls->sequence, tls->coordinator,
+                                             tls->descriptor );
+        tls->allocation_active = FALSE;
+    }
+    if (block_pc == unity_base + 0x2b6f60)
+    {
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp,
+                                  &return_pc );
+        if (return_pc == unity_base + 0x478629)
+        {
+            tls->constructor_active = TRUE;
+            tls->constructor_return = return_pc;
+            tls->descriptor = ctx->regs.x64.rcx;
+            if (!tls->sequence)
+                tls->sequence = __atomic_add_fetch( &macrunner_hb_work_object_probe_sequence,
+                                                     1, __ATOMIC_RELAXED );
+            if (!tls->coordinator)
+                tls->coordinator = __atomic_load_n( &macrunner_hb_work_object_coordinator,
+                                                     __ATOMIC_ACQUIRE );
+            __atomic_store_n( &macrunner_hb_work_object_descriptor, tls->descriptor,
+                              __ATOMIC_RELEASE );
+            if (macrunner_hb_work_object_probe_take_slot())
+            {
+                fprintf( stderr, "macrunner-hb-work-object: stage=descriptor-ctor-entry "
+                         "seq=%llu tid=%04lx coordinator=%p descriptor=%p "
+                         "capacity_arg=0x%x generation_arg=%u return=%p\n",
+                         (unsigned long long)tls->sequence,
+                         (unsigned long)GetCurrentThreadId(),
+                         (void *)(uintptr_t)tls->coordinator,
+                         (void *)(uintptr_t)tls->descriptor,
+                         (unsigned int)ctx->regs.x64.rdx,
+                         (unsigned int)ctx->regs.x64.r8,
+                         (void *)(uintptr_t)return_pc );
+                fflush( stderr );
+            }
+        }
+    }
+    if (tls->constructor_active && block_pc == unity_base + 0x2b6fac)
+    {
+        if (macrunner_hb_work_object_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-work-object: stage=backing-alloc-return "
+                     "seq=%llu tid=%04lx descriptor=%p backing=%p\n",
+                     (unsigned long long)tls->sequence,
+                     (unsigned long)GetCurrentThreadId(),
+                     (void *)(uintptr_t)tls->descriptor,
+                     (void *)(uintptr_t)ctx->regs.x64.rax );
+            fflush( stderr );
+        }
+    }
+    if (tls->constructor_active && block_pc == unity_base + 0x478629)
+        macrunner_hb_work_object_probe_log( "descriptor-constructed", ctx, block_pc,
+                                             tls->sequence, tls->coordinator,
+                                             tls->descriptor );
+
+    if (block_pc == unity_base + 0x2b6fc0)
+    {
+        descriptor = __atomic_load_n( &macrunner_hb_work_object_descriptor,
+                                       __ATOMIC_ACQUIRE );
+        coordinator = __atomic_load_n( &macrunner_hb_work_object_coordinator,
+                                        __ATOMIC_ACQUIRE );
+        if (descriptor && ctx->regs.x64.rcx == descriptor)
+        {
+            tls->consumer_active = TRUE;
+            tls->decision_active = FALSE;
+            tls->descriptor = descriptor;
+            tls->coordinator = coordinator;
+            (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp,
+                                      &tls->consumer_return );
+            macrunner_hb_work_object_probe_log( "consumer-entry", ctx, block_pc,
+                                                 tls->sequence, coordinator,
+                                                 descriptor );
+        }
+    }
+    if (tls->consumer_active && block_pc == tls->consumer_return)
+    {
+        if (macrunner_hb_work_object_probe_take_slot())
+        {
+            fprintf( stderr, "macrunner-hb-work-object: stage=consumer-return "
+                     "seq=%llu tid=%04lx descriptor=%p al=%u return=%p\n",
+                     (unsigned long long)tls->sequence,
+                     (unsigned long)GetCurrentThreadId(),
+                     (void *)(uintptr_t)tls->descriptor,
+                     (unsigned int)(ctx->regs.x64.rax & 0xff),
+                     (void *)(uintptr_t)tls->consumer_return );
+            fflush( stderr );
+        }
+        macrunner_hb_work_object_probe_log( "consumer-return-state", ctx, block_pc,
+                                             tls->sequence, tls->coordinator,
+                                             tls->descriptor );
+        tls->consumer_active = FALSE;
+        tls->decision_active = (ctx->regs.x64.rax & 0xff) != 0;
+    }
+    if (tls->decision_active && block_pc == unity_base + 0x478458)
+        macrunner_hb_work_object_probe_log( "consumer-decision-pre", ctx, block_pc,
+                                             tls->sequence, tls->coordinator,
+                                             tls->descriptor );
+    if (tls->decision_active && block_pc == unity_base + 0x47846a)
+        macrunner_hb_work_object_probe_log( "capacity-compare-pre", ctx, block_pc,
+                                             tls->sequence, tls->coordinator,
+                                             tls->descriptor );
+    if (block_pc == unity_base + 0x4784ba)
+    {
+        descriptor = __atomic_load_n( &macrunner_hb_work_object_descriptor,
+                                       __ATOMIC_ACQUIRE );
+        coordinator = __atomic_load_n( &macrunner_hb_work_object_coordinator,
+                                        __ATOMIC_ACQUIRE );
+        if (descriptor)
+            macrunner_hb_work_object_probe_log( "callback-return-state", ctx, block_pc,
+                                                 tls->sequence, coordinator,
+                                                 descriptor );
+    }
+    if (block_pc == unity_base + 0x4784d0)
+    {
+        coordinator = ctx->regs.x64.rcx;
+        descriptor = 0;
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)coordinator + 0x18d0,
+                                  &descriptor );
+        if (descriptor && descriptor == __atomic_load_n(
+                &macrunner_hb_work_object_descriptor, __ATOMIC_ACQUIRE ))
+            macrunner_hb_work_object_probe_log( "later-callback-consumer", ctx,
+                                                 block_pc, tls->sequence,
+                                                 coordinator, descriptor );
+    }
+}
+
+static void macrunner_hb_work_object_probe_block( hb_context_t *ctx,
+                                                   uint64_t block_pc )
+{
+    struct macrunner_hb_work_object_probe_tls *tls =
+        &macrunner_hb_work_object_probe_tls;
+    uint64_t unity_base;
+
+    if (!ctx || !macrunner_hb_work_object_probe_enabled()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_work_object_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    if (!unity_base) return;
+    if (tls->constructor_active && block_pc == unity_base + 0x478629)
+    {
+        macrunner_hb_work_object_probe_log( "descriptor-published", ctx, block_pc,
+                                             tls->sequence, tls->coordinator,
+                                             tls->descriptor );
+        tls->constructor_active = FALSE;
+    }
+    if (tls->decision_active && block_pc == unity_base + 0x478458)
+    {
+        macrunner_hb_work_object_probe_log(
+            ctx->pc == unity_base + 0x478476 ? "decision-schedule" :
+            "decision-capacity-check", ctx, block_pc, tls->sequence,
+            tls->coordinator, tls->descriptor );
+        if (ctx->pc == unity_base + 0x478476) tls->decision_active = FALSE;
+    }
+    if (tls->decision_active && block_pc == unity_base + 0x47846a)
+    {
+        macrunner_hb_work_object_probe_log(
+            ctx->pc == unity_base + 0x4784a4 ? "decision-capacity-equal-skip" :
+            "decision-capacity-different-schedule", ctx, block_pc, tls->sequence,
+            tls->coordinator, tls->descriptor );
+        tls->decision_active = FALSE;
+    }
+    if (block_pc == unity_base + 0x478be1)
+    {
+        uint64_t coordinator = __atomic_load_n( &macrunner_hb_work_object_coordinator,
+                                                 __ATOMIC_ACQUIRE );
+        uint64_t descriptor = 0;
+        if (coordinator)
+            (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)coordinator + 0x18d0,
+                                      &descriptor );
+        macrunner_hb_work_object_probe_log( "gfx-owner-tail", ctx, block_pc, 0,
+                                             coordinator, descriptor );
+    }
+}
+
 static void macrunner_hb_ring_pop_probe_log_snapshot( const char *stage, hb_context_t *ctx,
                                                        uint64_t block_pc )
 {
@@ -24552,7 +25027,8 @@ static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
                    !macrunner_hb_ring_pop_probe_enabled() &&
                    !macrunner_hb_readable_range_decode_probe_enabled() &&
                    !macrunner_hb_frame_finalize_probe_enabled() &&
-                   !macrunner_hb_callback_4784d0_probe_enabled())) return;
+                   !macrunner_hb_callback_4784d0_probe_enabled() &&
+                   !macrunner_hb_work_object_probe_enabled())) return;
     gfx_tid = __atomic_load_n( &macrunner_hb_gfx_thread_tid, __ATOMIC_ACQUIRE );
     if (macrunner_hb_gfx_thread_name( entry->thread_name ))
     {
@@ -24585,6 +25061,7 @@ static void macrunner_hb_gfx_thread_event_probe_wait( const char *event,
     macrunner_hb_readable_range_decode_probe_wait( event, entry );
     macrunner_hb_frame_finalize_probe_wait( event, entry );
     macrunner_hb_callback_4784d0_probe_wait( event, entry );
+    macrunner_hb_work_object_probe_wait( event, entry );
     if (!macrunner_hb_gfx_thread_event_probe_enabled()) return;
     if (!macrunner_hb_gfx_thread_event_probe_take_slot()) return;
 
@@ -35784,6 +36261,7 @@ skip_version_semantic:
         macrunner_hb_readable_range_decode_probe_pre_block( ctx, block_pc );
         macrunner_hb_frame_finalize_probe_pre_block( ctx, block_pc );
         macrunner_hb_callback_4784d0_probe_pre_block( ctx, block_pc );
+        macrunner_hb_work_object_probe_pre_block( ctx, block_pc );
         if (trace_unity_origin)
             macrunner_hb_trace_unity_origin( "before", ctx, image_start, block_pc );
         if (trace_vfunc58_scan)
@@ -35880,6 +36358,7 @@ skip_version_semantic:
         macrunner_hb_readable_range_decode_probe_block( ctx, block_pc );
         macrunner_hb_frame_finalize_probe_block( ctx, block_pc );
         macrunner_hb_callback_4784d0_probe_block( ctx, block_pc );
+        macrunner_hb_work_object_probe_block( ctx, block_pc );
         if (trace_unity_owner_block)
             macrunner_hb_trace_unity_owner_block( "after", ctx, image_start, block_pc );
         if (trace_unity_origin)

@@ -117,6 +117,12 @@ int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int sig
 int hb_jit_runtime_handle_owned_sigill(uint64_t pc, uint32_t native_word,
                                        int native_word_valid,
                                        const void* host_context);
+/* Resolve an address inside the owning thread's live JIT block cache.  This is
+ * read-only diagnostic metadata: callers must use the runtime on its owner
+ * thread and must not retain the result across hb_jit_runtime_reset(). */
+int hb_jit_runtime_native_block_info(hb_jit_runtime_t* rt, uint64_t native_pc,
+                                     uint64_t* guest_addr, uint64_t* native_start,
+                                     size_t* native_size);
 
 /* Unified runtime entry */
 hb_result_t hb_runtime_run(hb_context_t* ctx, const hb_ir_func_t* func, hb_backend_t backend, hb_exec_result_t* out);

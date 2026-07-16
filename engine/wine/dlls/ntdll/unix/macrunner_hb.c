@@ -23301,6 +23301,13 @@ static int macrunner_hb_producer_publish_probe_enabled(void)
         &cache, "MACRUNNER_HB_PRODUCER_PUBLISH_PROBE" );
 }
 
+static int macrunner_hb_present_item_creation_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag(
+        &cache, "MACRUNNER_HB_PRESENT_ITEM_CREATION_PROBE" );
+}
+
 static int macrunner_hb_trace_waitaddr_mach_enabled(void)
 {
     static int cache = -1;
@@ -23375,6 +23382,30 @@ static uint64_t macrunner_hb_alternate_queue_478abf_unity_base;
 static unsigned int macrunner_hb_producer_publish_probe_emitted;
 static unsigned int macrunner_hb_producer_publish_probe_sequence;
 static uint64_t macrunner_hb_producer_publish_unity_base;
+static unsigned int macrunner_hb_present_item_creation_probe_emitted;
+static unsigned int macrunner_hb_present_item_creation_probe_sequence;
+static LONG macrunner_hb_present_item_creation_snapshot_done;
+static uint64_t macrunner_hb_present_item_creation_unity_base;
+static uint64_t macrunner_hb_present_item_creation_playerloop_table;
+static uint64_t macrunner_hb_present_item_creation_present_before_update;
+static uint64_t macrunner_hb_present_item_creation_post_present;
+static uint64_t macrunner_hb_present_item_creation_frame_started;
+static uint64_t macrunner_hb_present_item_creation_present_after_draw;
+static uint64_t macrunner_hb_present_item_creation_present_before_update_guest;
+static uint64_t macrunner_hb_present_item_creation_post_present_guest;
+static uint64_t macrunner_hb_present_item_creation_frame_started_guest;
+static uint64_t macrunner_hb_present_item_creation_present_after_draw_guest;
+
+struct macrunner_hb_present_item_creation_probe_tls
+{
+    BOOL flow_active;
+    uint64_t sequence;
+    uint64_t blocks;
+    uint64_t return_pc;
+};
+
+static __thread struct macrunner_hb_present_item_creation_probe_tls
+    macrunner_hb_present_item_creation_probe_tls;
 
 struct macrunner_hb_ring_pop_probe_tls
 {
@@ -25930,6 +25961,296 @@ static void macrunner_hb_producer_publish_probe_block(
          ctx->pc == unity_base + 0x478966))
         macrunner_hb_producer_publish_probe_log(
             "publish-path-exit", ctx, block_pc, tls );
+}
+
+static int macrunner_hb_present_item_creation_probe_take_slot(void)
+{
+    const char *value;
+    unsigned int limit, slot;
+
+    if (!macrunner_hb_present_item_creation_probe_enabled()) return 0;
+    value = getenv( "MACRUNNER_HB_PRESENT_ITEM_CREATION_PROBE_BUDGET" );
+    limit = value && value[0] ? strtoul( value, NULL, 0 ) : 4000;
+    if (!limit) return 1;
+    slot = __atomic_fetch_add( &macrunner_hb_present_item_creation_probe_emitted, 1,
+                               __ATOMIC_RELAXED );
+    if (slot < limit) return 1;
+    if (slot == limit)
+    {
+        fprintf( stderr,
+                 "macrunner-hb-present-item-creation: stage=budget-exhausted limit=%u\n",
+                 limit );
+        fflush( stderr );
+    }
+    return 0;
+}
+
+static uint64_t macrunner_hb_present_item_creation_read_u64(
+    hb_context_t *ctx, uint64_t address )
+{
+    uint64_t value = 0;
+
+    if (!address) return 0;
+    if (ctx && ctx->memory &&
+        hb_memory_read_u64( ctx->memory, (hb_gva_t)address, &value ) == HB_OK)
+        return value;
+    if (macrunner_hb_read_local_memory( (uintptr_t)address, &value, sizeof(value) ))
+        return value;
+    return 0;
+}
+
+static uint64_t macrunner_hb_present_item_creation_map_callback(
+    const char *label, uint64_t callback )
+{
+    mach_vm_address_t region = (mach_vm_address_t)callback;
+    mach_vm_size_t region_size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    uint64_t guest = 0, native_start = 0;
+    size_t native_size = 0;
+    uint32_t words[4] = {0};
+    kern_return_t kr = KERN_INVALID_ADDRESS;
+    int mapped = 0, bytes_valid = 0;
+
+    if (callback)
+    {
+        mapped = hb_jit_runtime_native_block_info(
+            macrunner_hb_tls_jit_rt, callback, &guest, &native_start, &native_size );
+        bytes_valid = macrunner_hb_read_local_memory(
+            (uintptr_t)callback, words, sizeof(words) );
+        kr = mach_vm_region( mach_task_self(), &region, &region_size,
+                             VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info,
+                             &count, &object );
+    }
+    if (macrunner_hb_present_item_creation_probe_take_slot())
+    {
+        fprintf( stderr,
+                 "macrunner-hb-present-item-creation: stage=table-value-map "
+                 "label=%s callback=%p mapped=%d guest=%p native_start=%p "
+                 "native_size=0x%zx vm_kr=%d region=%p region_size=0x%llx "
+                 "cur=%c%c%c max=%c%c%c bytes_valid=%d "
+                 "words=%08x,%08x,%08x,%08x\n",
+                 label ? label : "callback", (void *)(uintptr_t)callback, mapped,
+                 (void *)(uintptr_t)guest, (void *)(uintptr_t)native_start, native_size,
+                 kr, (void *)(uintptr_t)region, (unsigned long long)region_size,
+                 kr == KERN_SUCCESS && (info.protection & VM_PROT_READ) ? 'r' : '-',
+                 kr == KERN_SUCCESS && (info.protection & VM_PROT_WRITE) ? 'w' : '-',
+                 kr == KERN_SUCCESS && (info.protection & VM_PROT_EXECUTE) ? 'x' : '-',
+                 kr == KERN_SUCCESS && (info.max_protection & VM_PROT_READ) ? 'r' : '-',
+                 kr == KERN_SUCCESS && (info.max_protection & VM_PROT_WRITE) ? 'w' : '-',
+                 kr == KERN_SUCCESS && (info.max_protection & VM_PROT_EXECUTE) ? 'x' : '-',
+                 bytes_valid, words[0], words[1], words[2], words[3] );
+        fflush( stderr );
+    }
+    return guest;
+}
+
+static void macrunner_hb_present_item_creation_probe_log(
+    const char *stage, hb_context_t *ctx, uint64_t block_pc,
+    struct macrunner_hb_present_item_creation_probe_tls *tls )
+{
+    char block_module[64] = "", next_module[64] = "", stack_module[64] = "";
+    uint64_t block_rva = 0, next_rva = 0, stack_rva = 0, stack0 = 0;
+    uint64_t unity_base, table, before_update, post_present, frame_started;
+    uint64_t after_draw, before_update_guest, post_present_guest, frame_started_guest;
+    uint64_t after_draw_guest, swapchain, swap_vtable = 0, present_slot = 0;
+
+    if (!ctx || !macrunner_hb_present_item_creation_probe_take_slot()) return;
+    macrunner_hb_post_signal_probe_module_rva(
+        block_pc, block_module, sizeof(block_module), &block_rva );
+    macrunner_hb_post_signal_probe_module_rva(
+        ctx->pc, next_module, sizeof(next_module), &next_rva );
+    stack0 = macrunner_hb_present_item_creation_read_u64(
+        ctx, ctx->regs.x64.rsp );
+    macrunner_hb_post_signal_probe_module_rva(
+        stack0, stack_module, sizeof(stack_module), &stack_rva );
+
+    unity_base = __atomic_load_n( &macrunner_hb_present_item_creation_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    table = __atomic_load_n( &macrunner_hb_present_item_creation_playerloop_table,
+                             __ATOMIC_ACQUIRE );
+    before_update = __atomic_load_n(
+        &macrunner_hb_present_item_creation_present_before_update, __ATOMIC_ACQUIRE );
+    post_present = __atomic_load_n(
+        &macrunner_hb_present_item_creation_post_present, __ATOMIC_ACQUIRE );
+    frame_started = __atomic_load_n(
+        &macrunner_hb_present_item_creation_frame_started, __ATOMIC_ACQUIRE );
+    after_draw = __atomic_load_n(
+        &macrunner_hb_present_item_creation_present_after_draw, __ATOMIC_ACQUIRE );
+    before_update_guest = __atomic_load_n(
+        &macrunner_hb_present_item_creation_present_before_update_guest, __ATOMIC_ACQUIRE );
+    post_present_guest = __atomic_load_n(
+        &macrunner_hb_present_item_creation_post_present_guest, __ATOMIC_ACQUIRE );
+    frame_started_guest = __atomic_load_n(
+        &macrunner_hb_present_item_creation_frame_started_guest, __ATOMIC_ACQUIRE );
+    after_draw_guest = __atomic_load_n(
+        &macrunner_hb_present_item_creation_present_after_draw_guest, __ATOMIC_ACQUIRE );
+    swapchain = __atomic_load_n( &macrunner_hb_dxgi_swapchain_creator_object,
+                                 __ATOMIC_ACQUIRE );
+    swap_vtable = macrunner_hb_present_item_creation_read_u64( ctx, swapchain );
+    present_slot = macrunner_hb_present_item_creation_read_u64(
+        ctx, swap_vtable ? swap_vtable + 8 * sizeof(uint64_t) : 0 );
+
+    fprintf( stderr,
+             "macrunner-hb-present-item-creation: stage=%s seq=%llu tid=%04lx "
+             "block=%p block_module=%s block_rva=0x%llx next=%p next_module=%s "
+             "next_rva=0x%llx stack0=%p stack_module=%s stack_rva=0x%llx "
+             "unity_base=%p playerloop_table=%p table_value_728=%p "
+             "table_value_918=%p table_value_920=%p table_value_930=%p "
+             "table_value_728_guest=%p table_value_918_guest=%p "
+             "table_value_920_guest=%p table_value_930_guest=%p "
+             "swapchain=%p swap_vtable=%p present_slot8=%p "
+             "flow=%u flow_blocks=%llu return_pc=%p "
+             "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p r8=%p r9=%p rsp=%p\n",
+             stage ? stage : "event",
+             (unsigned long long)(tls ? tls->sequence : 0),
+             (unsigned long)GetCurrentThreadId(),
+             (void *)(uintptr_t)block_pc,
+             block_module[0] ? block_module : "?", (unsigned long long)block_rva,
+             (void *)(uintptr_t)ctx->pc,
+             next_module[0] ? next_module : "?", (unsigned long long)next_rva,
+             (void *)(uintptr_t)stack0,
+             stack_module[0] ? stack_module : "?", (unsigned long long)stack_rva,
+             (void *)(uintptr_t)unity_base, (void *)(uintptr_t)table,
+             (void *)(uintptr_t)before_update, (void *)(uintptr_t)post_present,
+             (void *)(uintptr_t)frame_started, (void *)(uintptr_t)after_draw,
+             (void *)(uintptr_t)before_update_guest,
+             (void *)(uintptr_t)post_present_guest,
+             (void *)(uintptr_t)frame_started_guest,
+             (void *)(uintptr_t)after_draw_guest,
+             (void *)(uintptr_t)swapchain, (void *)(uintptr_t)swap_vtable,
+             (void *)(uintptr_t)present_slot,
+             tls ? tls->flow_active : 0,
+             (unsigned long long)(tls ? tls->blocks : 0),
+             (void *)(uintptr_t)(tls ? tls->return_pc : 0),
+             (void *)(uintptr_t)ctx->regs.x64.rax,
+             (void *)(uintptr_t)ctx->regs.x64.rbx,
+             (void *)(uintptr_t)ctx->regs.x64.rcx,
+             (void *)(uintptr_t)ctx->regs.x64.rdx,
+             (void *)(uintptr_t)ctx->regs.x64.rsi,
+             (void *)(uintptr_t)ctx->regs.x64.rdi,
+             (void *)(uintptr_t)ctx->regs.x64.r8,
+             (void *)(uintptr_t)ctx->regs.x64.r9,
+             (void *)(uintptr_t)ctx->regs.x64.rsp );
+    fflush( stderr );
+}
+
+static void macrunner_hb_present_item_creation_probe_snapshot(
+    hb_context_t *ctx, uint64_t block_pc )
+{
+    char module[64] = "";
+    uint64_t rva = 0, unity_base, table, before_update, post_present;
+    uint64_t frame_started, after_draw;
+    struct macrunner_hb_present_item_creation_probe_tls event;
+
+    if (InterlockedCompareExchange(
+            &macrunner_hb_present_item_creation_snapshot_done, 0, 0 )) return;
+    if (!__atomic_load_n( &macrunner_hb_dxgi_swapchain_create_seen,
+                          __ATOMIC_ACQUIRE )) return;
+    macrunner_hb_post_signal_probe_module_rva(
+        block_pc, module, sizeof(module), &rva );
+    if (!macrunner_hb_strieq( module, "UnityPlayer.dll" ) &&
+        !macrunner_hb_strieq( module, "UnityPlayer" )) return;
+    unity_base = block_pc - rva;
+    table = macrunner_hb_present_item_creation_read_u64(
+        ctx, unity_base + 0x1f4a680 );
+    if (!table) return;
+    before_update = macrunner_hb_present_item_creation_read_u64( ctx, table + 0x728 );
+    post_present = macrunner_hb_present_item_creation_read_u64( ctx, table + 0x918 );
+    frame_started = macrunner_hb_present_item_creation_read_u64( ctx, table + 0x920 );
+    after_draw = macrunner_hb_present_item_creation_read_u64( ctx, table + 0x930 );
+    if (!before_update && !post_present && !frame_started && !after_draw) return;
+    if (InterlockedCompareExchange(
+            &macrunner_hb_present_item_creation_snapshot_done, 1, 0 )) return;
+
+    __atomic_store_n( &macrunner_hb_present_item_creation_unity_base,
+                      unity_base, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_item_creation_playerloop_table,
+                      table, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_item_creation_present_before_update,
+                      before_update, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_item_creation_post_present,
+                      post_present, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_item_creation_frame_started,
+                      frame_started, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_item_creation_present_after_draw,
+                      after_draw, __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_item_creation_present_before_update_guest,
+                      macrunner_hb_present_item_creation_map_callback(
+                          "table-plus-728", before_update ), __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_item_creation_post_present_guest,
+                      macrunner_hb_present_item_creation_map_callback(
+                          "table-plus-918", post_present ), __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_item_creation_frame_started_guest,
+                      macrunner_hb_present_item_creation_map_callback(
+                          "table-plus-920", frame_started ), __ATOMIC_RELEASE );
+    __atomic_store_n( &macrunner_hb_present_item_creation_present_after_draw_guest,
+                      macrunner_hb_present_item_creation_map_callback(
+                          "table-plus-930", after_draw ), __ATOMIC_RELEASE );
+
+    memset( &event, 0, sizeof(event) );
+    event.sequence = __atomic_add_fetch(
+        &macrunner_hb_present_item_creation_probe_sequence, 1, __ATOMIC_RELAXED );
+    macrunner_hb_present_item_creation_probe_log(
+        "playerloop-table-values-and-present-vtable-snapshot", ctx, block_pc, &event );
+}
+
+static void macrunner_hb_present_item_creation_probe_pre_block(
+    hb_context_t *ctx, uint64_t block_pc )
+{
+    struct macrunner_hb_present_item_creation_probe_tls *tls =
+        &macrunner_hb_present_item_creation_probe_tls;
+    uint64_t unity_base, rva = ~0ull;
+    const char *stage = NULL;
+
+    if (!ctx || !macrunner_hb_present_item_creation_probe_enabled()) return;
+    macrunner_hb_present_item_creation_probe_snapshot( ctx, block_pc );
+
+    unity_base = __atomic_load_n( &macrunner_hb_present_item_creation_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    if (unity_base && block_pc >= unity_base && block_pc < unity_base + 0x2200000)
+    {
+        rva = block_pc - unity_base;
+        if (rva == 0x8f42b0) stage = "profiler-counter-helper-8f42b0-entry";
+        else if (rva == 0x8f4510) stage = "profiler-counter-helper-8f4510-entry";
+        else if (rva == 0x45b949) stage = "generic-scheduler-callsite-478de0";
+        else if (rva == 0x478de0) stage = "generic-scheduler-producer-entry";
+        else if (rva == 0x4787a0) stage = "scheduler-item-producer-entry";
+        else if (rva == 0x478861) stage = "scheduler-item-allocation-complete";
+    }
+    if (!stage) return;
+
+    if (!tls->sequence)
+        tls->sequence = __atomic_add_fetch(
+            &macrunner_hb_present_item_creation_probe_sequence, 1, __ATOMIC_RELAXED );
+    macrunner_hb_present_item_creation_probe_log( stage, ctx, block_pc, tls );
+}
+
+static void macrunner_hb_present_item_creation_probe_block(
+    hb_context_t *ctx, uint64_t block_pc )
+{
+    const char *value;
+    struct macrunner_hb_present_item_creation_probe_tls *tls =
+        &macrunner_hb_present_item_creation_probe_tls;
+    unsigned int limit;
+
+    if (!ctx || !macrunner_hb_present_item_creation_probe_enabled() ||
+        !tls->flow_active) return;
+    value = getenv( "MACRUNNER_HB_PRESENT_ITEM_CREATION_PROBE_FLOW_BLOCKS" );
+    limit = value && value[0] ? strtoul( value, NULL, 0 ) : 1024;
+    tls->blocks++;
+    macrunner_hb_present_item_creation_probe_log(
+        "present-after-draw-flow", ctx, block_pc, tls );
+    if ((tls->return_pc && ctx->pc == tls->return_pc) ||
+        (limit && tls->blocks >= limit))
+    {
+        macrunner_hb_present_item_creation_probe_log(
+            tls->return_pc && ctx->pc == tls->return_pc ?
+                "present-after-draw-return" : "present-after-draw-flow-limit",
+            ctx, block_pc, tls );
+        tls->flow_active = FALSE;
+    }
 }
 
 static void macrunner_hb_ring_pop_probe_log_snapshot( const char *stage, hb_context_t *ctx,
@@ -37412,6 +37733,7 @@ skip_version_semantic:
             ctx, image_start, block_pc );
         macrunner_hb_producer_publish_probe_pre_block(
             ctx, image_start, block_pc );
+        macrunner_hb_present_item_creation_probe_pre_block( ctx, block_pc );
         if (trace_unity_origin)
             macrunner_hb_trace_unity_origin( "before", ctx, image_start, block_pc );
         if (trace_vfunc58_scan)
@@ -37512,6 +37834,7 @@ skip_version_semantic:
         macrunner_hb_gfx_owner_vtable_688_probe_block( ctx, block_pc );
         macrunner_hb_alternate_queue_478abf_probe_block( ctx, block_pc );
         macrunner_hb_producer_publish_probe_block( ctx, block_pc );
+        macrunner_hb_present_item_creation_probe_block( ctx, block_pc );
         if (trace_unity_owner_block)
             macrunner_hb_trace_unity_owner_block( "after", ctx, image_start, block_pc );
         if (trace_unity_origin)

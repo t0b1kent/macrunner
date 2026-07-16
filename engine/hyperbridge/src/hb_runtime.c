@@ -486,6 +486,23 @@ static hb_block_cache_entry_t* block_cache_find_native_pc(hb_block_cache_t* cach
     return NULL;
 }
 
+int hb_jit_runtime_native_block_info(hb_jit_runtime_t* rt, uint64_t native_pc,
+                                     uint64_t* guest_addr, uint64_t* native_start,
+                                     size_t* native_size) {
+    hb_block_cache_entry_t* entry;
+
+    if (guest_addr) *guest_addr = 0;
+    if (native_start) *native_start = 0;
+    if (native_size) *native_size = 0;
+    if (!rt || !native_pc) return 0;
+    entry = block_cache_find_native_pc(rt->block_cache, native_pc);
+    if (!entry) return 0;
+    if (guest_addr) *guest_addr = entry->guest_addr;
+    if (native_start) *native_start = (uint64_t)(uintptr_t)entry->native_code;
+    if (native_size) *native_size = entry->native_size;
+    return 1;
+}
+
 static bool block_cache_is_full(const hb_block_cache_t* cache) {
     return cache && cache->count >= HB_BLOCK_CACHE_SIZE;
 }

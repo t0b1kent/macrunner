@@ -23294,6 +23294,13 @@ static int macrunner_hb_alternate_queue_478abf_probe_enabled(void)
         &cache, "MACRUNNER_HB_ALTERNATE_QUEUE_478ABF_PROBE" );
 }
 
+static int macrunner_hb_producer_publish_probe_enabled(void)
+{
+    static int cache = -1;
+    return macrunner_hb_cached_env_flag(
+        &cache, "MACRUNNER_HB_PRODUCER_PUBLISH_PROBE" );
+}
+
 static int macrunner_hb_trace_waitaddr_mach_enabled(void)
 {
     static int cache = -1;
@@ -23365,6 +23372,9 @@ static uint64_t macrunner_hb_gfx_owner_vtable_688_unity_base;
 static unsigned int macrunner_hb_alternate_queue_478abf_probe_emitted;
 static unsigned int macrunner_hb_alternate_queue_478abf_probe_sequence;
 static uint64_t macrunner_hb_alternate_queue_478abf_unity_base;
+static unsigned int macrunner_hb_producer_publish_probe_emitted;
+static unsigned int macrunner_hb_producer_publish_probe_sequence;
+static uint64_t macrunner_hb_producer_publish_unity_base;
 
 struct macrunner_hb_ring_pop_probe_tls
 {
@@ -23506,6 +23516,27 @@ struct macrunner_hb_alternate_queue_478abf_probe_tls
 
 static __thread struct macrunner_hb_alternate_queue_478abf_probe_tls
     macrunner_hb_alternate_queue_478abf_probe_tls;
+
+struct macrunner_hb_producer_publish_probe_tls
+{
+    BOOL producer_active;
+    BOOL scheduler_active;
+    BOOL scheduled_callback_active;
+    BOOL direct_publish_active;
+    uint64_t sequence;
+    uint64_t coordinator;
+    uint64_t payload;
+    uint64_t item;
+    uint64_t queue;
+    uint64_t queue_10;
+    uint64_t queue_18;
+    uint64_t queue_20;
+    uint64_t old_tail;
+    uint64_t caller;
+};
+
+static __thread struct macrunner_hb_producer_publish_probe_tls
+    macrunner_hb_producer_publish_probe_tls;
 
 struct macrunner_hb_gfx_owner_vtable_688_snapshot
 {
@@ -25514,6 +25545,391 @@ static void macrunner_hb_alternate_queue_478abf_probe_block(
         ctx->pc == unity_base + 0x478b88)
         macrunner_hb_alternate_queue_478abf_probe_log(
             "alternate-empty-skip", ctx, block_pc, tls );
+}
+
+static int macrunner_hb_producer_publish_probe_take_slot(void)
+{
+    const char *value;
+    unsigned int limit, slot;
+
+    if (!macrunner_hb_producer_publish_probe_enabled()) return 0;
+    value = getenv( "MACRUNNER_HB_PRODUCER_PUBLISH_PROBE_BUDGET" );
+    limit = value && value[0] ? strtoul( value, NULL, 0 ) : 3000;
+    if (!limit) return 1;
+    slot = __atomic_fetch_add( &macrunner_hb_producer_publish_probe_emitted, 1,
+                               __ATOMIC_RELAXED );
+    if (slot < limit) return 1;
+    if (slot == limit)
+    {
+        fprintf( stderr,
+                 "macrunner-hb-producer-publish: stage=budget-exhausted limit=%u\n",
+                 limit );
+        fflush( stderr );
+    }
+    return 0;
+}
+
+static uint64_t macrunner_hb_producer_publish_read_u64(
+    hb_context_t *ctx, uint64_t address )
+{
+    uint64_t value = 0;
+
+    if (ctx && ctx->memory && address)
+        (void)hb_memory_read_u64( ctx->memory, (hb_gva_t)address, &value );
+    return value;
+}
+
+static void macrunner_hb_producer_publish_refresh(
+    hb_context_t *ctx, struct macrunner_hb_producer_publish_probe_tls *tls )
+{
+    if (!ctx || !tls) return;
+    if (tls->item)
+    {
+        uint64_t item_payload = macrunner_hb_producer_publish_read_u64(
+            ctx, tls->item + 8 );
+        uint64_t item_queue = macrunner_hb_producer_publish_read_u64(
+            ctx, tls->item + 0x10 );
+        uint64_t item_coordinator = macrunner_hb_producer_publish_read_u64(
+            ctx, tls->item + 0x18 );
+
+        if (item_payload) tls->payload = item_payload;
+        if (item_queue) tls->queue = item_queue;
+        if (item_coordinator) tls->coordinator = item_coordinator;
+    }
+    if (tls->coordinator)
+    {
+        tls->queue_10 = macrunner_hb_producer_publish_read_u64(
+            ctx, tls->coordinator + 0x10 );
+        tls->queue_18 = macrunner_hb_producer_publish_read_u64(
+            ctx, tls->coordinator + 0x18 );
+        tls->queue_20 = macrunner_hb_producer_publish_read_u64(
+            ctx, tls->coordinator + 0x20 );
+    }
+}
+
+static const char *macrunner_hb_producer_publish_queue_name(
+    const struct macrunner_hb_producer_publish_probe_tls *tls )
+{
+    if (!tls || !tls->queue) return "unknown";
+    if (tls->queue == tls->queue_10) return "coordinator+0x10";
+    if (tls->queue == tls->queue_18) return "coordinator+0x18";
+    if (tls->queue == tls->queue_20) return "coordinator+0x20";
+    return "external";
+}
+
+static void macrunner_hb_producer_publish_probe_log(
+    const char *stage, hb_context_t *ctx, uint64_t block_pc,
+    struct macrunner_hb_producer_publish_probe_tls *tls )
+{
+    unsigned char item_bytes[96], payload_bytes[128];
+    char item_hex[sizeof(item_bytes) * 2 + 1];
+    char payload_hex[sizeof(payload_bytes) * 2 + 1];
+    char block_module[64], next_module[64], caller_module[64];
+    uint64_t unity_base, block_rva = 0, next_rva = 0, caller_rva = 0;
+    uint64_t q10_head, q10_tag, q10_tail, q18_head, q18_tag, q18_tail;
+    uint64_t q20_head, q20_tag, q20_tail, item_next, item_payload;
+    uint64_t item_queue, item_coordinator, payload_target;
+    unsigned int item_valid, payload_valid;
+
+    if (!macrunner_hb_producer_publish_probe_take_slot()) return;
+    macrunner_hb_producer_publish_refresh( ctx, tls );
+    memset( item_bytes, 0, sizeof(item_bytes) );
+    memset( payload_bytes, 0, sizeof(payload_bytes) );
+    item_valid = macrunner_hb_alternate_queue_478abf_probe_read_bytes(
+        ctx, tls ? tls->item : 0, item_bytes, sizeof(item_bytes) );
+    payload_valid = macrunner_hb_alternate_queue_478abf_probe_read_bytes(
+        ctx, tls ? tls->payload : 0, payload_bytes, sizeof(payload_bytes) );
+    macrunner_hb_work_object_probe_hex( item_bytes, item_valid,
+                                         item_hex, sizeof(item_hex) );
+    macrunner_hb_work_object_probe_hex( payload_bytes, payload_valid,
+                                         payload_hex, sizeof(payload_hex) );
+    q10_head = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->queue_10 + 0x40 : 0 );
+    q10_tag = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->queue_10 + 0x48 : 0 );
+    q10_tail = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->queue_10 + 0x80 : 0 );
+    q18_head = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->queue_18 + 0x40 : 0 );
+    q18_tag = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->queue_18 + 0x48 : 0 );
+    q18_tail = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->queue_18 + 0x80 : 0 );
+    q20_head = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->queue_20 + 0x40 : 0 );
+    q20_tag = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->queue_20 + 0x48 : 0 );
+    q20_tail = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->queue_20 + 0x80 : 0 );
+    item_next = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->item : 0 );
+    item_payload = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->item + 8 : 0 );
+    item_queue = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->item + 0x10 : 0 );
+    item_coordinator = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->item + 0x18 : 0 );
+    payload_target = macrunner_hb_producer_publish_read_u64(
+        ctx, tls ? tls->payload + 0x68 : 0 );
+    unity_base = __atomic_load_n( &macrunner_hb_producer_publish_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    macrunner_hb_wait_wake_trace_module( block_pc, block_module,
+                                          sizeof(block_module), &block_rva );
+    macrunner_hb_wait_wake_trace_module( ctx ? ctx->pc : 0, next_module,
+                                          sizeof(next_module), &next_rva );
+    macrunner_hb_wait_wake_trace_module( tls ? tls->caller : 0, caller_module,
+                                          sizeof(caller_module), &caller_rva );
+    if (unity_base && block_pc >= unity_base && block_pc < unity_base + 0x2200000)
+        block_rva = block_pc - unity_base;
+    if (ctx && unity_base && ctx->pc >= unity_base &&
+        ctx->pc < unity_base + 0x2200000)
+        next_rva = ctx->pc - unity_base;
+    if (tls && unity_base && tls->caller >= unity_base &&
+        tls->caller < unity_base + 0x2200000)
+        caller_rva = tls->caller - unity_base;
+    fprintf( stderr,
+             "macrunner-hb-producer-publish: stage=%s seq=%llu tid=%04lx "
+             "block=%p block_module=%s block_rva=0x%llx next=%p next_module=%s "
+             "next_rva=0x%llx caller=%p caller_module=%s caller_rva=0x%llx "
+             "coordinator=%p payload=%p item=%p queue=%p queue_name=%s old_tail=%p "
+             "q10=%p q10_head=%p q10_tag=0x%llx q10_tail=%p "
+             "q18=%p q18_head=%p q18_tag=0x%llx q18_tail=%p "
+             "q20=%p q20_head=%p q20_tag=0x%llx q20_tail=%p "
+             "item_next=%p item_payload=%p item_queue=%p item_coordinator=%p "
+             "payload_target=%p item_valid=%u item_bytes=%s payload_valid=%u "
+             "payload_bytes=%s rax=%p rcx=%p rdx=%p r8=%p r9=%p r10=%p r11=%p\n",
+             stage ? stage : "event",
+             (unsigned long long)(tls ? tls->sequence : 0),
+             (unsigned long)GetCurrentThreadId(), (void *)(uintptr_t)block_pc,
+             block_module[0] ? block_module : "?", (unsigned long long)block_rva,
+             (void *)(uintptr_t)(ctx ? ctx->pc : 0),
+             next_module[0] ? next_module : "?", (unsigned long long)next_rva,
+             (void *)(uintptr_t)(tls ? tls->caller : 0),
+             caller_module[0] ? caller_module : "?", (unsigned long long)caller_rva,
+             (void *)(uintptr_t)(tls ? tls->coordinator : 0),
+             (void *)(uintptr_t)(tls ? tls->payload : 0),
+             (void *)(uintptr_t)(tls ? tls->item : 0),
+             (void *)(uintptr_t)(tls ? tls->queue : 0),
+             macrunner_hb_producer_publish_queue_name( tls ),
+             (void *)(uintptr_t)(tls ? tls->old_tail : 0),
+             (void *)(uintptr_t)(tls ? tls->queue_10 : 0),
+             (void *)(uintptr_t)q10_head, (unsigned long long)q10_tag,
+             (void *)(uintptr_t)q10_tail,
+             (void *)(uintptr_t)(tls ? tls->queue_18 : 0),
+             (void *)(uintptr_t)q18_head, (unsigned long long)q18_tag,
+             (void *)(uintptr_t)q18_tail,
+             (void *)(uintptr_t)(tls ? tls->queue_20 : 0),
+             (void *)(uintptr_t)q20_head, (unsigned long long)q20_tag,
+             (void *)(uintptr_t)q20_tail, (void *)(uintptr_t)item_next,
+             (void *)(uintptr_t)item_payload, (void *)(uintptr_t)item_queue,
+             (void *)(uintptr_t)item_coordinator, (void *)(uintptr_t)payload_target,
+             item_valid, item_hex, payload_valid, payload_hex,
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rax : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rcx : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.rdx : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r8 : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r9 : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r10 : 0),
+             (void *)(uintptr_t)(ctx ? ctx->regs.x64.r11 : 0) );
+    fflush( stderr );
+}
+
+static void macrunner_hb_producer_publish_probe_begin(
+    hb_context_t *ctx, uint64_t block_pc,
+    struct macrunner_hb_producer_publish_probe_tls *tls,
+    const char *stage )
+{
+    memset( tls, 0, sizeof(*tls) );
+    tls->sequence = __atomic_add_fetch( &macrunner_hb_producer_publish_probe_sequence,
+                                        1, __ATOMIC_RELAXED );
+    tls->coordinator = ctx->regs.x64.rcx;
+    tls->payload = ctx->regs.x64.rdx;
+    tls->caller = macrunner_hb_producer_publish_read_u64(
+        ctx, ctx->regs.x64.rsp );
+    tls->producer_active = TRUE;
+    macrunner_hb_producer_publish_probe_log( stage, ctx, block_pc, tls );
+}
+
+static void macrunner_hb_producer_publish_probe_pre_block(
+    hb_context_t *ctx, uint64_t image_start, uint64_t block_pc )
+{
+    struct macrunner_hb_producer_publish_probe_tls *tls =
+        &macrunner_hb_producer_publish_probe_tls;
+    uint64_t unity_base, rva;
+
+    if (!ctx || !macrunner_hb_producer_publish_probe_enabled()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_producer_publish_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    rva = image_start && block_pc >= image_start ? block_pc - image_start : ~0ull;
+    if (!unity_base && image_start &&
+        (rva == 0x47840f || rva == 0x478650 || rva == 0x478718 ||
+         rva == 0x4787a0 || rva == 0x478980 || rva == 0x478c00 ||
+         rva == 0x478de0 || rva == 0x6cda80 || rva == 0x6cdaa0 ||
+         rva == 0x45b949))
+    {
+        char module[64];
+        uint64_t module_rva = 0;
+
+        macrunner_hb_wait_wake_trace_module( block_pc, module, sizeof(module),
+                                              &module_rva );
+        if (macrunner_hb_strieq( module, "UnityPlayer.dll" ) ||
+            macrunner_hb_strieq( module, "UnityPlayer" ))
+        {
+            static LONG armed_logged;
+
+            unity_base = image_start;
+            __atomic_store_n( &macrunner_hb_producer_publish_unity_base,
+                              unity_base, __ATOMIC_RELEASE );
+            if (!InterlockedCompareExchange( &armed_logged, 1, 0 ) &&
+                macrunner_hb_producer_publish_probe_take_slot())
+            {
+                fprintf( stderr,
+                         "macrunner-hb-producer-publish: stage=armed tid=%04lx "
+                         "unity_base=%p block=%p block_rva=0x%llx\n",
+                         (unsigned long)GetCurrentThreadId(),
+                         (void *)(uintptr_t)unity_base, (void *)(uintptr_t)block_pc,
+                         (unsigned long long)module_rva );
+                fflush( stderr );
+            }
+        }
+    }
+    if (!unity_base || block_pc < unity_base ||
+        block_pc >= unity_base + 0x2200000) return;
+    rva = block_pc - unity_base;
+    if (rva == 0x47840f || rva == 0x478718 || rva == 0x4787a0)
+    {
+        macrunner_hb_producer_publish_probe_begin(
+            ctx, block_pc, tls,
+            rva == 0x4787a0 ? "producer-entry" : "producer-callsite" );
+        return;
+    }
+    if (rva == 0x478650)
+    {
+        memset( tls, 0, sizeof(*tls) );
+        tls->sequence = __atomic_add_fetch(
+            &macrunner_hb_producer_publish_probe_sequence, 1, __ATOMIC_RELAXED );
+        tls->item = ctx->regs.x64.rcx;
+        tls->caller = macrunner_hb_producer_publish_read_u64(
+            ctx, ctx->regs.x64.rsp );
+        tls->scheduled_callback_active = TRUE;
+        macrunner_hb_producer_publish_refresh( ctx, tls );
+        macrunner_hb_producer_publish_probe_log(
+            "scheduled-publisher-entry", ctx, block_pc, tls );
+        return;
+    }
+    if (rva == 0x45b949 || rva == 0x478de0 || rva == 0x6cdaa0 ||
+        rva == 0x478c00)
+    {
+        struct macrunner_hb_producer_publish_probe_tls event;
+
+        memset( &event, 0, sizeof(event) );
+        event.sequence = __atomic_add_fetch(
+            &macrunner_hb_producer_publish_probe_sequence, 1, __ATOMIC_RELAXED );
+        event.coordinator = ctx->regs.x64.rcx;
+        event.payload = ctx->regs.x64.rdx;
+        event.caller = macrunner_hb_producer_publish_read_u64(
+            ctx, ctx->regs.x64.rsp );
+        macrunner_hb_producer_publish_probe_log(
+            rva == 0x45b949 ? "frame-path-call-478de0" :
+            rva == 0x478de0 ? "frame-path-478de0-entry" :
+            rva == 0x6cdaa0 ? "owner-drain-wrapper-entry" :
+                              "owner-drain-entry",
+            ctx, block_pc, &event );
+        return;
+    }
+    if (tls->producer_active && rva == 0x478861)
+    {
+        tls->item = ctx->regs.x64.r10;
+        tls->coordinator = ctx->regs.x64.rdi;
+        tls->payload = ctx->regs.x64.rbx;
+        macrunner_hb_producer_publish_probe_log(
+            "item-allocation-complete", ctx, block_pc, tls );
+    }
+    if (tls->producer_active && (rva == 0x478878 || rva == 0x478881))
+        macrunner_hb_producer_publish_probe_log(
+            "item-constructed", ctx, block_pc, tls );
+    if (tls->producer_active && (rva == 0x4788f2 || rva == 0x478933))
+    {
+        tls->scheduler_active = TRUE;
+        macrunner_hb_producer_publish_probe_log(
+            rva == 0x4788f2 ? "scheduler-publisher-planned" :
+                              "scheduler-submit-call",
+            ctx, block_pc, tls );
+    }
+    if (tls->producer_active && rva == 0x47893a)
+    {
+        tls->item = ctx->regs.x64.r10;
+        tls->queue = macrunner_hb_producer_publish_read_u64(
+            ctx, tls->item + 0x10 );
+        tls->direct_publish_active = TRUE;
+        macrunner_hb_producer_publish_probe_log(
+            "direct-publish-entry", ctx, block_pc, tls );
+    }
+    if ((tls->direct_publish_active || tls->scheduled_callback_active) &&
+        (rva == 0x478650 || rva == 0x478662 || rva == 0x478950 ||
+         rva == 0x478955 || rva == 0x478959 || rva == 0x476b00))
+        macrunner_hb_producer_publish_probe_log(
+            rva == 0x478662 ? "publish-before-xchg" :
+            rva == 0x478950 ? "publish-link-old-tail" :
+            rva == 0x478955 ? "publish-install-head" :
+            rva == 0x478959 ? "publish-wake-planned" :
+            rva == 0x476b00 ? "publish-wake-entry" : "publish-entry",
+            ctx, block_pc, tls );
+    if (rva == 0x478aea || rva == 0x478bc8)
+    {
+        struct macrunner_hb_producer_publish_probe_tls event = *tls;
+
+        event.sequence = __atomic_add_fetch(
+            &macrunner_hb_producer_publish_probe_sequence, 1, __ATOMIC_RELAXED );
+        event.item = ctx->regs.x64.rbx;
+        event.queue = ctx->regs.x64.rcx;
+        macrunner_hb_producer_publish_probe_log(
+            rva == 0x478aea ? "consumer-result-requeue" :
+                              "consumer-deferred-recycle",
+            ctx, block_pc, &event );
+    }
+}
+
+static void macrunner_hb_producer_publish_probe_block(
+    hb_context_t *ctx, uint64_t block_pc )
+{
+    struct macrunner_hb_producer_publish_probe_tls *tls =
+        &macrunner_hb_producer_publish_probe_tls;
+    uint64_t unity_base, rva;
+
+    if (!ctx || !macrunner_hb_producer_publish_probe_enabled()) return;
+    unity_base = __atomic_load_n( &macrunner_hb_producer_publish_unity_base,
+                                  __ATOMIC_ACQUIRE );
+    if (!unity_base || block_pc < unity_base ||
+        block_pc >= unity_base + 0x2200000) return;
+    rva = block_pc - unity_base;
+    if (tls->producer_active && rva == 0x478861)
+        macrunner_hb_producer_publish_probe_log(
+            "item-construction-block-exit", ctx, block_pc, tls );
+    if (tls->producer_active && rva >= 0x4788d4 && rva <= 0x478933 &&
+        ctx->pc == unity_base + 0x478938)
+    {
+        tls->scheduler_active = FALSE;
+        macrunner_hb_producer_publish_probe_log(
+            "scheduler-submit-return", ctx, block_pc, tls );
+    }
+    if ((tls->direct_publish_active || tls->scheduled_callback_active) &&
+        ((rva == 0x47893a &&
+          (ctx->pc == unity_base + 0x478950 ||
+           ctx->pc == unity_base + 0x478955)) ||
+         (rva == 0x478650 &&
+          (ctx->pc == unity_base + 0x47866e ||
+           ctx->pc == unity_base + 0x47867e))))
+    {
+        tls->old_tail = ctx->regs.x64.rax;
+        macrunner_hb_producer_publish_probe_log(
+            "publish-after-xchg", ctx, block_pc, tls );
+    }
+    if ((tls->direct_publish_active || tls->scheduled_callback_active) &&
+        (ctx->pc == unity_base + 0x476b00 ||
+         ctx->pc == unity_base + 0x478966))
+        macrunner_hb_producer_publish_probe_log(
+            "publish-path-exit", ctx, block_pc, tls );
 }
 
 static void macrunner_hb_ring_pop_probe_log_snapshot( const char *stage, hb_context_t *ctx,
@@ -36994,6 +37410,8 @@ skip_version_semantic:
             ctx, image_start, block_pc );
         macrunner_hb_alternate_queue_478abf_probe_pre_block(
             ctx, image_start, block_pc );
+        macrunner_hb_producer_publish_probe_pre_block(
+            ctx, image_start, block_pc );
         if (trace_unity_origin)
             macrunner_hb_trace_unity_origin( "before", ctx, image_start, block_pc );
         if (trace_vfunc58_scan)
@@ -37093,6 +37511,7 @@ skip_version_semantic:
         macrunner_hb_work_object_probe_block( ctx, block_pc );
         macrunner_hb_gfx_owner_vtable_688_probe_block( ctx, block_pc );
         macrunner_hb_alternate_queue_478abf_probe_block( ctx, block_pc );
+        macrunner_hb_producer_publish_probe_block( ctx, block_pc );
         if (trace_unity_owner_block)
             macrunner_hb_trace_unity_owner_block( "after", ctx, image_start, block_pc );
         if (trace_unity_origin)

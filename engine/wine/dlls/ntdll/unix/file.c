@@ -157,6 +157,102 @@ static BOOL macrunner_trace_file_name_interesting( const UNICODE_STRING *name )
     return FALSE;
 }
 
+#define MACRUNNER_SCENE_LOADING_PROBE_DEFAULT_MAX 4096
+
+static BOOL macrunner_scene_loading_probe_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *value = getenv( "MACRUNNER_HB_SCENE_LOADING_PROBE" );
+        enabled = value && value[0] && value[0] != '0';
+    }
+    return enabled;
+}
+
+static unsigned int macrunner_scene_loading_probe_max(void)
+{
+    static unsigned int limit;
+
+    if (!limit)
+    {
+        const char *value = getenv( "MACRUNNER_HB_SCENE_LOADING_PROBE_MAX" );
+        unsigned long parsed = value ? strtoul( value, NULL, 10 ) : 0;
+
+        limit = parsed && parsed <= UINT_MAX ? parsed : MACRUNNER_SCENE_LOADING_PROBE_DEFAULT_MAX;
+    }
+    return limit;
+}
+
+static WCHAR macrunner_scene_loading_ascii_tolower( WCHAR ch )
+{
+    if (ch >= 'A' && ch <= 'Z') return ch + ('a' - 'A');
+    return ch;
+}
+
+static BOOL macrunner_scene_loading_name_contains( const UNICODE_STRING *name, const char *needle )
+{
+    unsigned int i, j, name_len, needle_len = strlen( needle );
+
+    if (!name || !name->Buffer || !needle_len) return FALSE;
+    name_len = name->Length / sizeof(WCHAR);
+    if (needle_len > name_len) return FALSE;
+
+    for (i = 0; i <= name_len - needle_len; i++)
+    {
+        for (j = 0; j < needle_len; j++)
+            if (macrunner_scene_loading_ascii_tolower( name->Buffer[i + j] ) !=
+                macrunner_scene_loading_ascii_tolower( (unsigned char)needle[j] )) break;
+        if (j == needle_len) return TRUE;
+    }
+    return FALSE;
+}
+
+static const char *macrunner_scene_loading_probe_kind( const UNICODE_STRING *name )
+{
+    if (macrunner_scene_loading_name_contains( name, "\\level" ) ||
+        macrunner_scene_loading_name_contains( name, "/level" )) return "scene-serialized";
+    if (macrunner_scene_loading_name_contains( name, "globalgamemanagers" )) return "global-managers";
+    if (macrunner_scene_loading_name_contains( name, "resources.assets" ) ||
+        macrunner_scene_loading_name_contains( name, "sharedassets" )) return "resource-asset";
+    if (macrunner_scene_loading_name_contains( name, "assembly-csharp.dll" ) ||
+        macrunner_scene_loading_name_contains( name, "monobleedingedge" )) return "managed-runtime";
+    if (macrunner_scene_loading_name_contains( name, "galaxy" ) ||
+        macrunner_scene_loading_name_contains( name, "gog" )) return "online-subsystem";
+    return NULL;
+}
+
+static void macrunner_scene_loading_probe_log( const char *api, const UNICODE_STRING *name,
+                                                const char *unix_name, ACCESS_MASK access,
+                                                ULONG disposition, ULONG options, NTSTATUS status )
+{
+    static unsigned int count;
+    const char *kind;
+    unsigned int ordinal, limit;
+
+    if (!macrunner_scene_loading_probe_enabled()) return;
+    if (!(kind = macrunner_scene_loading_probe_kind( name ))) return;
+
+    limit = macrunner_scene_loading_probe_max();
+    ordinal = __atomic_add_fetch( &count, 1, __ATOMIC_RELAXED );
+    if (ordinal > limit)
+    {
+        if (ordinal == limit + 1)
+        {
+            fprintf( stderr, "macrunner-hb-scene-loading: phase=budget-exhausted limit=%u\n", limit );
+            fflush( stderr );
+        }
+        return;
+    }
+
+    fprintf( stderr, "macrunner-hb-scene-loading: phase=file-api ordinal=%u api=%s kind=%s "
+             "status=%08x access=%08x disposition=%u options=%08x nt=%s unix=\"%s\"\n",
+             ordinal, api, kind, (unsigned int)status, access, disposition, options,
+             debugstr_us(name), unix_name ? unix_name : "(unresolved)" );
+    fflush( stderr );
+}
+
 /* MacRunner 2026-06-22: per-thread recent-read ring. Each FD_TYPE_FILE read records (name, offset,
  * length, first 16 bytes). At the c000007b the HB run-exit calls macrunner_dump_read_ring() to dump
  * the crashing thread's last reads = what the gate READ just before crashing (the wrong-data source).
@@ -4766,6 +4862,8 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
     }
 
  done:
+    macrunner_scene_loading_probe_log( "NtCreateFile", attr ? attr->ObjectName : NULL,
+                                       unix_name, access, disposition, options, status );
     free( unix_name );
     free( nt_name.Buffer );
     return io->Status = status;
@@ -4938,6 +5036,8 @@ NTSTATUS WINAPI NtQueryFullAttributesFile( const OBJECT_ATTRIBUTES *attr,
             fill_file_info( &st, attributes, info, FileNetworkOpenInformation );
     }
     else WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
+    macrunner_scene_loading_probe_log( "NtQueryFullAttributesFile", attr->ObjectName,
+                                       unix_name, 0, FILE_OPEN, 0, status );
     free( unix_name );
     free( nt_name.Buffer );
     return status;
@@ -4967,6 +5067,8 @@ NTSTATUS WINAPI NtQueryAttributesFile( const OBJECT_ATTRIBUTES *attr, FILE_BASIC
             status = fill_file_info( &st, attributes, info, FileBasicInformation );
     }
     else WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
+    macrunner_scene_loading_probe_log( "NtQueryAttributesFile", attr->ObjectName,
+                                       unix_name, 0, FILE_OPEN, 0, status );
     free( unix_name );
     free( nt_name.Buffer );
     return status;

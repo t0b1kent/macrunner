@@ -540,6 +540,14 @@ static BOOL macrunner_hb_trace_bootstrap(void)
            value[0] && value[0] != '0';
 }
 
+static BOOL macrunner_hb_language_observer_enabled(void)
+{
+    WCHAR value[8] = {0};
+
+    return get_env( L"MACRUNNER_HB_LANGUAGE_FLOW_OBSERVER", value, sizeof(value) ) &&
+           value[0] && value[0] != '0';
+}
+
 static BOOL macrunner_trace_process_exit_enabled(void)
 {
     WCHAR value[8] = {0};
@@ -5291,6 +5299,329 @@ static BOOL macrunner_hb_call_x64_tls_callback( HMODULE module, PIMAGE_TLS_CALLB
     return TRUE;
 }
 
+static BOOL macrunner_hb_call_x64_cdecl_one_arg( HMODULE module, void *entry, void *arg,
+                                                  NTSTATUS *status, ULONG *ret )
+{
+    IMAGE_NT_HEADERS *nt;
+    struct macrunner_hb_x64_dll_entry_params params;
+
+    if (!macrunner_hb_amd64_main_on_arm64) return FALSE;
+    if (!(nt = RtlImageNtHeader( module )) || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
+        return FALSE;
+
+    memset( &params, 0, sizeof(params) );
+    params.entry = entry;
+    params.module = module;
+    params.arg0 = arg;
+    *status = WINE_UNIX_CALL( unix_macrunner_hb_x64_dll_entry, &params );
+    if (ret) *ret = params.ret;
+    return TRUE;
+}
+
+#define MACRUNNER_HB_LANGUAGE_OBSERVER_BOOTSTRAP_VERSION 0x484b4c32u
+
+struct macrunner_hb_language_observer_bootstrap
+{
+    ULONG version;
+    ULONG introspection_enabled;
+    HMODULE mono_module;
+    const char *description;
+};
+
+typedef void (CDECL *macrunner_hb_language_observer_init_fn)(
+    const struct macrunner_hb_language_observer_bootstrap *bootstrap );
+
+struct macrunner_hb_language_observer_context
+{
+    HMODULE volatile mono_module;
+    HMODULE profiler_module;
+    macrunner_hb_language_observer_init_fn profiler_init;
+    LONG armed;
+    LONG cancelled;
+};
+
+static struct macrunner_hb_language_observer_context macrunner_hb_language_observer_context;
+static LONG macrunner_hb_language_observer_started;
+
+static BOOL macrunner_hb_prepare_language_observer(
+    HMODULE *profiler_module, macrunner_hb_language_observer_init_fn *profiler_init )
+{
+    static const UNICODE_STRING profiler_name =
+        RTL_CONSTANT_STRING( L"mono-profiler-hk_language.dll" );
+    static const char export_name[] = "macrunner_hb_profiler_init_hk_language";
+    ANSI_STRING name = { sizeof(export_name) - 1, sizeof(export_name), (char *)export_name };
+    NTSTATUS status;
+
+    status = LdrLoadDll( NULL, 0, &profiler_name, profiler_module );
+    if (status)
+    {
+        ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+             "stage=observer-dll-load\n", status );
+        return FALSE;
+    }
+    status = LdrGetProcedureAddress( *profiler_module, &name, 0, (void **)profiler_init );
+    if (status)
+    {
+        ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+             "stage=observer-init-export\n", status );
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static void macrunner_hb_initialize_language_observer(
+    const struct macrunner_hb_language_observer_context *context )
+{
+    static const char description[] = "hk_language";
+    struct macrunner_hb_language_observer_bootstrap bootstrap;
+    NTSTATUS status;
+
+    bootstrap.version = MACRUNNER_HB_LANGUAGE_OBSERVER_BOOTSTRAP_VERSION;
+    bootstrap.introspection_enabled = 1;
+    bootstrap.mono_module = context->mono_module;
+    bootstrap.description = description;
+
+    if (macrunner_hb_call_x64_cdecl_one_arg( context->profiler_module,
+                                              context->profiler_init, &bootstrap, &status, NULL ))
+    {
+        if (status)
+            ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+                 "stage=observer-init-call\n", status );
+        return;
+    }
+    context->profiler_init( &bootstrap );
+}
+
+static void *macrunner_hb_mono_rel32_target( HMODULE module, const BYTE *next,
+                                              const BYTE *disp_ptr, SIZE_T size )
+{
+    ULONG_PTR address = (ULONG_PTR)next;
+    LONGLONG delta;
+    LONG disp;
+
+    memcpy( &disp, disp_ptr, sizeof(disp) );
+    delta = disp;
+    if (delta < 0)
+    {
+        delta = -delta;
+        if (address < (ULONG_PTR)delta) return NULL;
+        address -= delta;
+    }
+    else
+    {
+        if (address > ~(ULONG_PTR)0 - (ULONG_PTR)delta) return NULL;
+        address += delta;
+    }
+    if (!image_contains_range( module, (const void *)address, size )) return NULL;
+    return (void *)address;
+}
+
+static void WINAPI macrunner_hb_language_observer_worker( void *arg )
+{
+    static const char export_name[] = "mono_profiler_enable_call_context_introspection";
+    void *enable_introspection;
+    void *hook;
+    void *volatile *introspection_hook;
+    volatile LONG *call_contexts;
+    volatile LONG *startup_done;
+    const BYTE *code;
+    struct macrunner_hb_language_observer_context *context = arg;
+    HMODULE mono_module = NULL;
+    LARGE_INTEGER counter, delay, frequency, spin_until;
+    ULONG i;
+    NTSTATUS status;
+
+    if (InterlockedCompareExchange( &context->cancelled, 0, 0 ))
+    {
+        InterlockedExchange( &context->armed, -1 );
+        return;
+    }
+
+    InterlockedExchange( &context->armed, 1 );
+    delay.QuadPart = -10000;
+    for (i = 0; i < 5000; i++)
+    {
+        if (InterlockedCompareExchange( &context->cancelled, 0, 0 ))
+        {
+            InterlockedExchange( &context->armed, -1 );
+            return;
+        }
+        mono_module = InterlockedCompareExchangePointer( (void *volatile *)&context->mono_module,
+                                                          NULL, NULL );
+        if (mono_module) break;
+        NtDelayExecution( FALSE, &delay );
+    }
+    if (!mono_module)
+    {
+        ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+             "stage=mono-module-publish-timeout\n", STATUS_TIMEOUT );
+        InterlockedExchange( &context->armed, -1 );
+        return;
+    }
+
+    enable_introspection = RtlFindExportedRoutineByName( mono_module, export_name );
+    if (!enable_introspection)
+    {
+        ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+             "stage=mono-introspection-export\n", STATUS_PROCEDURE_NOT_FOUND );
+        InterlockedExchange( &context->armed, -1 );
+        return;
+    }
+
+    code = (const BYTE *)enable_introspection;
+    if (!image_contains_range( mono_module, code, 46 ) ||
+        code[0] != 0x48 || code[1] != 0x83 || code[2] != 0xec || code[3] != 0x28 ||
+        code[4] != 0x83 || code[5] != 0x3d || code[10] != 0x00 ||
+        code[11] != 0x74 || code[12] != 0x07 || code[20] != 0xff || code[21] != 0x15 ||
+        code[26] != 0xb8 || code[27] != 0x01 || code[28] != 0x00 ||
+        code[29] != 0x00 || code[30] != 0x00 || code[31] != 0xc7 || code[32] != 0x05 ||
+        code[37] != 0x01 || code[38] != 0x00 || code[39] != 0x00 || code[40] != 0x00 ||
+        code[41] != 0x48 || code[42] != 0x83 || code[43] != 0xc4 ||
+        code[44] != 0x28 || code[45] != 0xc3 ||
+        !(startup_done = macrunner_hb_mono_rel32_target( mono_module, code + 11,
+                                                         code + 6, sizeof(*startup_done) )) ||
+        !(introspection_hook = macrunner_hb_mono_rel32_target( mono_module, code + 26,
+                                                               code + 22, sizeof(*introspection_hook) )) ||
+        !(call_contexts = macrunner_hb_mono_rel32_target( mono_module, code + 41,
+                                                          code + 33, sizeof(*call_contexts) )))
+    {
+        ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+             "stage=mono-introspection-export-shape\n", STATUS_INVALID_IMAGE_FORMAT );
+        InterlockedExchange( &context->armed, -1 );
+        return;
+    }
+
+    NtQueryPerformanceCounter( &counter, &frequency );
+    spin_until.QuadPart = counter.QuadPart + 2 * frequency.QuadPart;
+    InterlockedExchange( &context->armed, 2 );
+    i = 0;
+    for (;;)
+    {
+        if (InterlockedCompareExchange( &context->cancelled, 0, 0 )) return;
+        hook = InterlockedCompareExchangePointer( introspection_hook, NULL, NULL );
+        if (hook)
+        {
+            if (!image_contains_range( mono_module, hook, 1 ))
+            {
+                ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+                     "stage=mono-introspection-hook-target\n", STATUS_INVALID_IMAGE_FORMAT );
+                return;
+            }
+            if (macrunner_hb_call_x64_cdecl_one_arg( mono_module, hook, NULL,
+                                                      &status, NULL ))
+            {
+                if (status)
+                {
+                    ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+                         "stage=mono-introspection-hook-call\n", status );
+                    return;
+                }
+            }
+            else ((void (CDECL *)(void))hook)();
+            InterlockedExchange( call_contexts, 1 );
+            macrunner_hb_initialize_language_observer( context );
+            return;
+        }
+        if (InterlockedCompareExchange( startup_done, 0, 0 ))
+        {
+            ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+                 "stage=mono-introspection-startup-done\n", STATUS_INVALID_DEVICE_STATE );
+            return;
+        }
+        NtQueryPerformanceCounter( &counter, NULL );
+        if (counter.QuadPart < spin_until.QuadPart)
+        {
+            YieldProcessor();
+            continue;
+        }
+        if (i++ == 120000) break;
+        NtDelayExecution( FALSE, &delay );
+    }
+
+    ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+         "stage=mono-introspection-ready-timeout\n", STATUS_TIMEOUT );
+}
+
+static BOOL macrunner_hb_start_language_observer(
+    HMODULE profiler_module, macrunner_hb_language_observer_init_fn profiler_init )
+{
+    struct macrunner_hb_language_observer_context *context =
+        &macrunner_hb_language_observer_context;
+    HANDLE thread;
+    NTSTATUS status;
+
+    if (InterlockedCompareExchange( &macrunner_hb_language_observer_started, 1, 0 )) return FALSE;
+    InterlockedExchangePointer( (void *volatile *)&context->mono_module, NULL );
+    context->profiler_module = profiler_module;
+    context->profiler_init = profiler_init;
+    InterlockedExchange( &context->armed, 0 );
+    InterlockedExchange( &context->cancelled, 0 );
+    status = RtlCreateUserThread( GetCurrentProcess(), NULL, FALSE, 0, 0, 0,
+                                  macrunner_hb_language_observer_worker, context,
+                                  &thread, NULL );
+    if (status)
+    {
+        InterlockedExchange( &context->armed, -1 );
+        InterlockedExchange( &macrunner_hb_language_observer_started, 0 );
+        ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+             "stage=observer-worker-create\n", status );
+        return FALSE;
+    }
+    NtClose( thread );
+    return TRUE;
+}
+
+static BOOL macrunner_hb_wait_language_observer_state( LONG expected, const char *timeout_stage )
+{
+    struct macrunner_hb_language_observer_context *context =
+        &macrunner_hb_language_observer_context;
+    LARGE_INTEGER delay;
+    LONG state;
+    ULONG i;
+
+    delay.QuadPart = -10000;
+    for (i = 0; i < 5000; i++)
+    {
+        state = InterlockedCompareExchange( &context->armed, 0, 0 );
+        if (state >= expected) return TRUE;
+        if (state < 0) return FALSE;
+        NtDelayExecution( FALSE, &delay );
+    }
+    InterlockedExchange( &context->cancelled, 1 );
+    ERR( "macrunner-hb-language-flow: event=bootstrap-failed status=%08lx "
+         "stage=%s\n", STATUS_TIMEOUT, timeout_stage );
+    return FALSE;
+}
+
+static BOOL macrunner_hb_publish_language_observer_mono( HMODULE mono_module )
+{
+    InterlockedExchangePointer(
+        (void *volatile *)&macrunner_hb_language_observer_context.mono_module, mono_module );
+    return macrunner_hb_wait_language_observer_state( 2, "observer-worker-arm-timeout" );
+}
+
+static void macrunner_hb_cancel_language_observer(void)
+{
+    if (!InterlockedCompareExchange( &macrunner_hb_language_observer_started, 0, 0 )) return;
+    InterlockedExchange( &macrunner_hb_language_observer_context.cancelled, 1 );
+}
+
+static BOOL macrunner_hb_is_exact_mono_name( const UNICODE_STRING *name )
+{
+    static const UNICODE_STRING mono_name = RTL_CONSTANT_STRING( L"mono-2.0-bdwgc.dll" );
+    UNICODE_STRING basename;
+    USHORT chars, i, start = 0;
+
+    if (!name || !name->Buffer || name->Length % sizeof(WCHAR)) return FALSE;
+    chars = name->Length / sizeof(WCHAR);
+    for (i = 0; i < chars; i++)
+        if (name->Buffer[i] == '/' || name->Buffer[i] == '\\') start = i + 1;
+    basename.Buffer = name->Buffer + start;
+    basename.Length = (chars - start) * sizeof(WCHAR);
+    basename.MaximumLength = basename.Length;
+    return RtlEqualUnicodeString( &basename, &mono_name, TRUE );
+}
+
 static void call_tls_callbacks( HMODULE module, UINT reason )
 {
     const IMAGE_TLS_DIRECTORY *dir;
@@ -8153,19 +8484,45 @@ NTSTATUS CDECL wine_server_handle_to_fd( HANDLE handle, unsigned int access, int
 NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR path_name, DWORD flags,
                                              const UNICODE_STRING *libname, HMODULE* hModule)
 {
+    macrunner_hb_language_observer_init_fn language_observer_init = NULL;
+    HMODULE language_observer_module = NULL;
     WINE_MODREF *wm;
+    BOOL language_observer_candidate = macrunner_hb_language_observer_enabled() &&
+                                       macrunner_hb_is_exact_mono_name( libname );
+    BOOL load_language_observer = FALSE;
     NTSTATUS nts;
     WCHAR *dllname = append_dll_ext( libname->Buffer );
+
+    if (language_observer_candidate &&
+        macrunner_hb_prepare_language_observer( &language_observer_module,
+                                                 &language_observer_init ) &&
+        macrunner_hb_start_language_observer( language_observer_module,
+                                               language_observer_init ) &&
+        macrunner_hb_wait_language_observer_state( 1, "observer-worker-start-timeout" ))
+        load_language_observer = TRUE;
 
     RtlEnterCriticalSection( &loader_section );
 
     nts = load_dll( path_name, dllname ? dllname : libname->Buffer, flags, &wm, FALSE );
+
+    if (load_language_observer)
+    {
+        if (!nts && wm && macrunner_hb_is_exact_mono_name( &wm->ldr.BaseDllName ))
+            load_language_observer = macrunner_hb_publish_language_observer_mono(
+                wm->ldr.DllBase );
+        else
+        {
+            macrunner_hb_cancel_language_observer();
+            load_language_observer = FALSE;
+        }
+    }
 
     if (nts == STATUS_SUCCESS)
     {
         nts = process_attach( wm->ldr.DdagNode, NULL );
         if (nts != STATUS_SUCCESS)
         {
+            if (load_language_observer) macrunner_hb_cancel_language_observer();
             LdrUnloadDll(wm->ldr.DllBase);
             wm = NULL;
         }

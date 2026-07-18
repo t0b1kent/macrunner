@@ -386,6 +386,18 @@ struct macrunner_hb_x64_original_exec_range
 static struct macrunner_hb_x64_original_exec_range
     macrunner_hb_x64_original_exec_ranges[MACRUNNER_HB_X64_ORIGINAL_EXEC_RANGE_MAX];
 static unsigned int macrunner_hb_x64_original_exec_range_count;
+#define MACRUNNER_HB_X64_ORIGINAL_EXEC_CACHE_MAX 8
+struct macrunner_hb_x64_original_exec_cache_entry
+{
+    unsigned int index;
+    void *module;
+    uint64_t start;
+    uint64_t end;
+};
+static __thread struct macrunner_hb_x64_original_exec_cache_entry
+    macrunner_hb_x64_original_exec_cache[MACRUNNER_HB_X64_ORIGINAL_EXEC_CACHE_MAX];
+static __thread unsigned int macrunner_hb_x64_original_exec_cache_next;
+static __thread unsigned int macrunner_hb_x64_original_exec_cache_count;
 static __thread void *macrunner_hb_bridge_stack_limit;
 static __thread void *macrunner_hb_bridge_stack_base;
 static __thread size_t macrunner_hb_bridge_stack_size;
@@ -400,8 +412,90 @@ static void macrunner_hb_drop_x64_original_exec_sections( void *module )
     for (i = 0; i < count; i++)
     {
         if (macrunner_hb_x64_original_exec_ranges[i].module == module)
-            macrunner_hb_x64_original_exec_ranges[i].module = NULL;
+            __atomic_store_n( &macrunner_hb_x64_original_exec_ranges[i].module, NULL,
+                              __ATOMIC_RELEASE );
     }
+}
+
+/* Builtin PE images may be nested inside a broader dynamic-builtin LDR range.
+ * Preserve the exact AMD64 PE identity captured before Wine rewrites its section
+ * table, and prefer the narrowest executable section if registered ranges overlap. */
+static void *macrunner_hb_x64_original_exec_module_from_pc( uint64_t pc )
+{
+    unsigned int count = __atomic_load_n( &macrunner_hb_x64_original_exec_range_count,
+                                          __ATOMIC_ACQUIRE );
+    uint64_t best_size = UINT64_MAX;
+    void *best_module = NULL;
+    unsigned int best_index = 0, i;
+
+    if (!pc) return NULL;
+    if (macrunner_hb_x64_original_exec_cache_count == count)
+    {
+        for (i = 0; i < ARRAY_SIZE(macrunner_hb_x64_original_exec_cache); i++)
+        {
+            const struct macrunner_hb_x64_original_exec_cache_entry *cached =
+                &macrunner_hb_x64_original_exec_cache[i];
+            void *module;
+
+            if (!cached->module || pc < cached->start || pc >= cached->end) continue;
+            module = __atomic_load_n(
+                &macrunner_hb_x64_original_exec_ranges[cached->index].module,
+                __ATOMIC_ACQUIRE );
+            if (module == cached->module) return module;
+        }
+    }
+    else
+    {
+        for (i = 0; i < ARRAY_SIZE(macrunner_hb_x64_original_exec_cache); i++)
+            macrunner_hb_x64_original_exec_cache[i].module = NULL;
+    }
+
+    for (i = 0; i < count; i++)
+    {
+        const struct macrunner_hb_x64_original_exec_range *range =
+            &macrunner_hb_x64_original_exec_ranges[i];
+        void *module = __atomic_load_n( &range->module, __ATOMIC_ACQUIRE );
+        uint64_t size;
+
+        if (!module || range->end <= range->start || pc < range->start || pc >= range->end)
+            continue;
+        size = range->end - range->start;
+        if (size >= best_size) continue;
+        best_size = size;
+        best_module = module;
+        best_index = i;
+    }
+    macrunner_hb_x64_original_exec_cache_count = count;
+    if (best_module)
+    {
+        struct macrunner_hb_x64_original_exec_cache_entry *cached =
+            &macrunner_hb_x64_original_exec_cache[
+                macrunner_hb_x64_original_exec_cache_next++ %
+                ARRAY_SIZE(macrunner_hb_x64_original_exec_cache)];
+        uint64_t safe_start = macrunner_hb_x64_original_exec_ranges[best_index].start;
+        uint64_t safe_end = macrunner_hb_x64_original_exec_ranges[best_index].end;
+
+        /* Do not let a cached broad winner cover a nested, narrower PE section. */
+        for (i = 0; i < count; i++)
+        {
+            const struct macrunner_hb_x64_original_exec_range *range =
+                &macrunner_hb_x64_original_exec_ranges[i];
+            void *module = __atomic_load_n( &range->module, __ATOMIC_ACQUIRE );
+            uint64_t size;
+
+            if (!module || range->end <= range->start || i == best_index) continue;
+            size = range->end - range->start;
+            if (size >= best_size) continue;
+            if (range->end <= pc && range->end > safe_start) safe_start = range->end;
+            if (range->start > pc && range->start < safe_end) safe_end = range->start;
+        }
+
+        cached->index = best_index;
+        cached->module = best_module;
+        cached->start = safe_start;
+        cached->end = safe_end;
+    }
+    return best_module;
 }
 static __thread void *macrunner_hb_original_stack_limit;
 static __thread void *macrunner_hb_original_stack_base;
@@ -1015,8 +1109,11 @@ static void *macrunner_hb_module_from_pc( void *pc )
     uintptr_t page = (uintptr_t)pc & ~(uintptr_t)0xfff;
     uintptr_t p = page;
     LDR_DATA_TABLE_ENTRY *ldr;
+    void *original_module;
     unsigned int i;
 
+    if ((original_module = macrunner_hb_x64_original_exec_module_from_pc( addr )))
+        return original_module;
     for (i = 0; i < MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE; i++)
     {
         const struct macrunner_hb_module_from_pc_cache_entry *entry = &macrunner_hb_module_from_pc_cache[i];
@@ -15885,6 +15982,7 @@ int macrunner_hb_pc_is_x64_guest_code( void *pc )
      * so routing must use PE section metadata rather than mutable page execute
      * state.  The registered range path covers x64 DLLs and relocated high
      * images; the PEB fallback keeps the main image available during bootstrap. */
+    if (macrunner_hb_x64_original_exec_module_from_pc( (uint64_t)(uintptr_t)pc )) return TRUE;
     if (macrunner_hb_is_current_x64_guest_exec_address( pc )) return TRUE;
     if (macrunner_hb_is_registered_x64_guest_address( (void *)(uintptr_t)pc ) &&
         (module = macrunner_hb_module_from_pc( pc )) &&
@@ -15921,6 +16019,7 @@ int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc )
 
     if (!pc) return FALSE;
     if (macrunner_hb_pc_in_graphics_arm64x_x64_range( pc )) return TRUE;
+    if (macrunner_hb_x64_original_exec_module_from_pc( p )) return TRUE;
     for (i = 0; i < MR_MODCACHE_N; i++)
         if (cache[i].end && p >= cache[i].base && p < cache[i].end)
         {
@@ -15953,8 +16052,11 @@ int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc )
 void *macrunner_hb_pe_module_from_pc_no_lock( void *pc )
 {
     LDR_DATA_TABLE_ENTRY *ldr;
+    void *module;
 
     if (!pc) return NULL;
+    if ((module = macrunner_hb_x64_original_exec_module_from_pc( (uint64_t)(uintptr_t)pc )))
+        return module;
     if ((ldr = macrunner_hb_ldr_entry_from_pc( pc ))) return ldr->DllBase;
     return macrunner_hb_module_from_pc( pc );
 }
@@ -15970,6 +16072,7 @@ int macrunner_hb_pc_is_pe_code_module_no_lock( void *pc )
 int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc )
 {
     if (!pc) return FALSE;
+    if (macrunner_hb_x64_original_exec_module_from_pc( (uint64_t)(uintptr_t)pc )) return TRUE;
     if (macrunner_hb_x64_dynamic_exec_contains_no_lock( pc )) return TRUE;
     /* GUEST GRAPHICS ARM64X x64-CHPE (dxgi/d3d11) — not in the registered-x64
      * set; name-allowlisted so host modules are never matched (regression). */
@@ -38778,6 +38881,7 @@ NTSTATUS macrunner_hb_x64_dll_entry( void *args )
 {
     struct macrunner_hb_x64_dll_entry_params *params = args;
     hb_abi_x64_call_t call;
+    IMAGE_NT_HEADERS *nt;
     uint64_t stack_args[1] = { 0 };
     USHORT module_machine;
     ULONG64 ret_value = 0;
@@ -38795,9 +38899,11 @@ NTSTATUS macrunner_hb_x64_dll_entry( void *args )
              params->entry, params->module, module_machine, IMAGE_FILE_MACHINE_AMD64 );
         return STATUS_INVALID_IMAGE_FORMAT;
     }
+    if ((nt = macrunner_hb_image_nt_header( params->module )))
+        macrunner_hb_register_x64_original_exec_sections( params->module, nt );
 
     memset( &call, 0, sizeof(call) );
-    call.rcx = (uint64_t)(uintptr_t)params->module;
+    call.rcx = (uint64_t)(uintptr_t)(params->arg0 ? params->arg0 : params->module);
     call.rdx = params->reason;
     call.r8  = (uint64_t)(uintptr_t)params->reserved;
     call.stack_args = stack_args;

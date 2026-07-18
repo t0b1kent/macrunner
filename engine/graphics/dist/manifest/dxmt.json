@@ -1,6 +1,6 @@
 {
   "component": "dxmt",
   "details": "built DXMT arm64 Windows DLLs + winemetal.so and x86_64 PE DLLs; x86_64 unix link waits for Phase G Wine unix libs",
-  "generated_at": "2026-07-06T07:31:47.759152+00:00",
+  "generated_at": "2026-07-18T05:20:05.111272+00:00",
   "status": "PASS"
 }

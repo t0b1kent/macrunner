@@ -27,19 +27,24 @@ function Get-Sha256 {
 function Get-PayloadEntries {
     param([Parameter(Mandatory = $true)][string]$PayloadRoot)
 
-    $resolvedRoot = (Resolve-Path -LiteralPath $PayloadRoot).Path.TrimEnd('\')
-    $rootPrefix = $resolvedRoot + '\'
     $entries = @()
-    foreach ($file in Get-ChildItem -LiteralPath $PayloadRoot -Force -Recurse -File | Sort-Object FullName) {
-        if (-not $file.FullName.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Payload file escaped its root: $($file.FullName)"
+    Push-Location -LiteralPath $PayloadRoot
+    try {
+        foreach ($file in Get-ChildItem -LiteralPath $PayloadRoot -Force -Recurse -File | Sort-Object FullName) {
+            $relative = Resolve-Path -LiteralPath $file.FullName -Relative
+            if (-not $relative.StartsWith('.\')) {
+                throw "Payload file escaped its root: $($file.FullName)"
+            }
+            $relative = $relative.Substring(2).Replace('\', '/')
+            $entries += [ordered]@{
+                path = $relative
+                size = [int64]$file.Length
+                sha256 = Get-Sha256 -Path $file.FullName
+            }
         }
-        $relative = $file.FullName.Substring($rootPrefix.Length).Replace('\', '/')
-        $entries += [ordered]@{
-            path = $relative
-            size = [int64]$file.Length
-            sha256 = Get-Sha256 -Path $file.FullName
-        }
+    }
+    finally {
+        Pop-Location
     }
     return @($entries)
 }

@@ -1,0 +1,86 @@
+{
+  "argv": [
+    "/usr/bin/lldb",
+    "--batch",
+    "--attach-pid",
+    "47528",
+    "-o",
+    "command script import /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104/dry-run/hk_lldb_capture.py",
+    "-o",
+    "thread list",
+    "-o",
+    "process handle SIGSEGV --stop false --notify false --pass true",
+    "-o",
+    "process handle SIGBUS  --stop false --notify false --pass true",
+    "-o",
+    "process handle SIGILL  --stop false --notify false --pass true",
+    "-o",
+    "process handle SIGUSR1 --stop false --notify false --pass true",
+    "-o",
+    "process handle SIGUSR2 --stop false --notify false --pass true",
+    "-o",
+    "process handle SIGINT  --stop true  --notify true  --pass false",
+    "-o",
+    "process handle -t",
+    "-o",
+    "breakpoint set --name hb_jit_helper_exec_two_block_loop --one-shot true --thread-id 0x525545",
+    "-o",
+    "continue",
+    "-o",
+    "thread info",
+    "-o",
+    "thread list",
+    "-o",
+    "hk-capture /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104/lldb-post-scene-marker",
+    "-o",
+    "process detach",
+    "-o",
+    "quit"
+  ],
+  "capture_function": "hb_jit_helper_exec_two_block_loop",
+  "capture_script_sha256": "c2c0bab9af56885602ed98e227d409902f1f3d9ce41a5e98c3286145ce3192af",
+  "capture_status": "PASS",
+  "capture_stop_reason": "one-shot breakpoint 1",
+  "capture_thread_id": 5395781,
+  "capture_tid_match": true,
+  "expect": "hit",
+  "finished_epoch": 1784720229,
+  "lldb_returncode": 0,
+  "passed": true,
+  "pid": 47528,
+  "schema": "macrunner.hk.lldb-capture-supervisor.v1",
+  "signal_policy_ok": true,
+  "signal_policy_rows": {
+    "SIGBUS": [
+      "true",
+      "false",
+      "false"
+    ],
+    "SIGILL": [
+      "true",
+      "false",
+      "false"
+    ],
+    "SIGSEGV": [
+      "true",
+      "false",
+      "false"
+    ],
+    "SIGUSR1": [
+      "true",
+      "false",
+      "false"
+    ],
+    "SIGUSR2": [
+      "true",
+      "false",
+      "false"
+    ]
+  },
+  "started_epoch": 1784720223,
+  "target_alive_after": true,
+  "tid": 5395781,
+  "timed_out": false,
+  "timeout_detach_probe": null,
+  "timeout_seconds": 30
+}

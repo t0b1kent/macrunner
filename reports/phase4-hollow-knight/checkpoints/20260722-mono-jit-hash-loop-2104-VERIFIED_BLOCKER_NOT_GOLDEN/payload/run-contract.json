@@ -1,0 +1,764 @@
+{
+  "application": {
+    "argv": [],
+    "argv_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "config_manifest_sha256": {
+      "bytes": 681990,
+      "file_count": 18,
+      "inventory_sha256": "c556b839ebde41f2c7ace8b5f63e6b5ae283640272e532e22c477b00cdd7bc18",
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/MonoBleedingEdge/etc",
+      "state": "PRESENT"
+    },
+    "data_manifest_sha256": {
+      "bytes": 5196290140,
+      "file_count": 1761,
+      "inventory_sha256": "0b1199e84ff61381873e98011651b4f5c13fc6ba28e6f58b3fdb80fc2486e848",
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/Hollow Knight_Data",
+      "state": "PRESENT"
+    },
+    "executable": {
+      "mtime_ns": 1774600906000000000,
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/Hollow Knight.exe",
+      "sha256": "7961bba7243ce322163ad6b0ddfd6ef701413020b92ad0d98502526a396171b0",
+      "size": 672256,
+      "state": "PRESENT"
+    },
+    "prefix_seed": {
+      "bytes": 922927306,
+      "file_count": 1238,
+      "inventory_sha256": "766c55cf7d3784cc835097b8ef1751fa4f103ac44c96579215c8f590975309e5",
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run-aa-hk-post-scene-guest-loop-capture-hash-retraction-20260722-2104",
+      "state": "PRESENT"
+    },
+    "prefix_template": {
+      "bytes": 1993419,
+      "file_count": 11,
+      "inventory_sha256": "b746d8bb42ddf9d45f564b0cc6d9f3aa706a3bf2ef857c44bc4a66f55626e5cf",
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/hk-windows-oracle-prefix-template-20260721-225722-v3",
+      "state": "PRESENT"
+    },
+    "save_snapshot_manifest_sha256": {
+      "bytes": 11121,
+      "file_count": 5,
+      "inventory_sha256": "442d9b2310ccc6b88ab24a554a4b70c9747607f52469f275a0bbc2c88dcac919",
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run-aa-hk-post-scene-guest-loop-capture-hash-retraction-20260722-2104/drive_c/users/crossover/AppData/LocalLow/Team Cherry/Hollow Knight",
+      "state": "PRESENT"
+    }
+  },
+  "blockers": [],
+  "contract_sha256": "abeb11edbc65f8fcff843feb412f67bee3e56ac2304c8d7cfe447c13ee5b89a0",
+  "environment": {
+    "caller_explicit_sha256": "aa00ca311f268087e9829d102dbec25878631c67d74247fcf615dc4f8d48c02a",
+    "domains": {
+      "guest_peb": {
+        "reason": "out-of-scope-this-task",
+        "state": "ABSENT_OPTIONAL"
+      },
+      "host_getenv": "captured_preexec"
+    },
+    "entry_count": 116,
+    "final_child_sha256": "a4dffe5a12b42d12182bf2349a6fd2f9b9131f2b9e09c16fe870eb09f3269e25",
+    "final_child_sorted_lines": [
+      {
+        "entry_sha256": "11ae2a140683816b6636a5098c38b3652029531b418210c59b1c4dd83c537abb",
+        "name": "BISON",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "32be3b9cdb799f6991feaa25cd7a81e0fe3c21bf07bdfa09d76ed31baf44efe3",
+        "name": "BUN_INSTALL",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "5d51d925cc851ae1b5413c006664f581c63caafcd875e32a57fce0825c39ddef",
+        "name": "CC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "cd2c0d17e916e0730b3eb4ec3008213a3762190af5c6e0e143298d2bb2ae04aa",
+        "name": "CCACHE_BASEDIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "6054b98c6408a27495d0964957f19d1adb4aba91cfb9774f209646d6034345a0",
+        "name": "CCACHE_DIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "bc2b4d0e6fcd9a5b1a209a72a0c528b1dce4ac03f998fbc7752e299cc4a0d08b",
+        "name": "COLORTERM",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "69e9d478ef16f7f777551acd1fda2c7128bec6926f04fd50aeded974fd0aff7e",
+        "name": "CXX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "467567d0fdcc44be9d85302c7d572d75833a0234c9b62d4e3bc52601f409e697",
+        "name": "DXMT_LOG_LEVEL",
+        "value": "info"
+      },
+      {
+        "entry_sha256": "c925ff3c9a50ecde0d33379c248d87346ca98419b4c32d372974896fbe329641",
+        "name": "DXMT_LOG_PATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104"
+      },
+      {
+        "entry_sha256": "d94b338786bb773b272f085c4a39837dc0878d653ee60a2ef4796938fd67e90b",
+        "name": "DYLD_FALLBACK_LIBRARY_PATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-passive-stack-20260722-143030/staged-dist/lib/wine/aarch64-unix:/opt/homebrew/lib:/opt/homebrew/opt/freetype/lib:/usr/local/lib:/usr/lib"
+      },
+      {
+        "entry_sha256": "28d5d7adae01ac70141773d55ccdf2a75b848fe98f826151915861d287b60467",
+        "name": "DYLD_LIBRARY_PATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-passive-stack-20260722-143030/staged-dist/lib/wine/aarch64-unix:/opt/homebrew/lib:/opt/homebrew/opt/freetype/lib"
+      },
+      {
+        "entry_sha256": "9677241063d635795c4c73cbcabdea60f2754d679e55eaf5aa599f9f3e1c6f14",
+        "name": "FLEX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "806b78bc92d0443e69a69fe728aa72bc6e5e8e113528b8497fa7085a31135251",
+        "name": "FPATH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "293f4ce1cd3f7eec7cdbf4235c9321a501570c09520e7c12d9c633e359165b44",
+        "name": "GIT_TERMINAL_PROMPT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "5792f2b99eccb36d2c7433c536965217e809cfd55284c97709bf53e68ee18826",
+        "name": "HOME",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "3571643e554a0567b66273adc4983410ecc0420e176cbc2eb516342a4906ac28",
+        "name": "HOMEBREW_CELLAR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b7e978c0b5c62049c1a5c88fbd0a14164447be87c2a824b89937b0c6ea94ae69",
+        "name": "HOMEBREW_PREFIX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "7cd7669f9ed66ed9b37d8c9f3aefb17e16608d6767dcf269642ddce9ecae1d50",
+        "name": "HOMEBREW_REPOSITORY",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "a176ce58cb228465e458220b5bb8961018fcabb6fd43e23e7ede2d28f5c7728d",
+        "name": "INFOPATH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "63e4dfad89c42ce6e17990127223ca78c9dda3f1ed096e813c2c7c1722e96383",
+        "name": "LANG",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "11ec1a78b3c95f43dbcfb60fdb62bf6e334c6a4fb2d2086571a07e2e5c6e55b5",
+        "name": "LC_CTYPE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "f9d59d3eb34e85b30958b05789bffa6be62a22615ef39b662a2ba49258409156",
+        "name": "LEX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "68d51b4ad921876479c52efd934e39f3082f2cd80a06cdb2b37c7cb95e19790b",
+        "name": "LOGNAME",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b1b5fa38c7edf8f7ee38d8b46ec50d38bc1374fa17447b123a0ba1d2a8a62ebb",
+        "name": "MACRUNNER_ARTIFACTS_ROOT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "2843e650743b051f2b8938562f74dc8f4e70fcc6aec30ab1db9609ebeb03e89e",
+        "name": "MACRUNNER_BOTTLES_ROOT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "7b8dec87d1173ea7e19d9fcee33f63e62720a9634491c83708674fb140a343fc",
+        "name": "MACRUNNER_CCACHE_DIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "af0456b474be5478518c593d827fa0ec96c77a8960085a6bbcbbcb6ecf10a868",
+        "name": "MACRUNNER_DXMT_ROOT",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/checkpoints/20260722-present-capability-02b4-VERIFIED_NOT_GOLDEN/payload/runtime/dxmt-builtin-overlay"
+      },
+      {
+        "entry_sha256": "a1f2c76dc2c36af2ba67e46ed8e267fbf7a7fb713cf24b33f2f0a6b17f97c970",
+        "name": "MACRUNNER_DXMT_SWAPCHAIN_TRACE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "eee97fa31d8f58f09018b03dbcd2823771e8c16b8537474f6dcff6c5e4cd4fb9",
+        "name": "MACRUNNER_FLIGHT_PATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104/flight.jsonl"
+      },
+      {
+        "entry_sha256": "f58687c9033d406300bd54716b5cf6b4974e8775faccb88bf47d75a173279dfc",
+        "name": "MACRUNNER_FLIGHT_RECORDER",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "4a3a2e30dfe869cfbb5eaba0b45f2d990802a9cde36c31fcd87c8cf70f5cb8a0",
+        "name": "MACRUNNER_FLIGHT_RECORDER_FILE",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104/flight.jsonl"
+      },
+      {
+        "entry_sha256": "8d620fff88ef78635abcc482fed4b6094b2f8cb4f17cd1d4850d1d55b0e2e7e0",
+        "name": "MACRUNNER_FLIGHT_RECORDER_PATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104/flight.jsonl"
+      },
+      {
+        "entry_sha256": "38179aa0e470738da6ed12ad3c5b334681d450a2028e1a68ca32347bc547dea3",
+        "name": "MACRUNNER_GRAPHICS_BACKEND",
+        "value": "dxmt"
+      },
+      {
+        "entry_sha256": "6892cf9760ccf5929778027f8193136681d131bf653337f2401662f53f2e7b38",
+        "name": "MACRUNNER_HB_BACKEND",
+        "value": "jit"
+      },
+      {
+        "entry_sha256": "ff05536c81d65648011e5cb8f6811978f9a61aaf9f7f5c222bc8f73e4e0d4dfd",
+        "name": "MACRUNNER_HB_CAUSAL_CONTROL",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "309b710ade0176bfb475cce912cb52298306bd2e203626204accb6e4dfb8aeb0",
+        "name": "MACRUNNER_HB_DIRECT_MEM",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "0447b06d8be08bd52718fff4e55d4ffbfe8fc0161a253aad2e5dd852e4018197",
+        "name": "MACRUNNER_HB_FORCE_FRAGMENT_MAGENTA",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "eeaaaa8e76a1bac992c11743a70f99a53fa7bafebd91852f04a366c75c6c67e0",
+        "name": "MACRUNNER_HB_FORCE_MAGENTA_FRAGMENT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "1b273f7c75d81dee4d7da27018f215745bcba68356003a5e936acda2115f104e",
+        "name": "MACRUNNER_HB_FRAGMENT_OUTPUT_PROBE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "8f9990f6eed2aa81c1c55bbf77da7b57c9bf2b300b5fff3ce71477ab637d7a22",
+        "name": "MACRUNNER_HB_FRAGMENT_SHADER_TRANSLATION_PROBE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "2526534cfd4ef365741fbed8025071ec81a5216bd96523f364999a6caf37f1d4",
+        "name": "MACRUNNER_HB_FRAGMENT_SHADER_TRANSLATION_PROBE_MAX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "10f2007be1daf4be02097101a9c04dfa1308dc237c83e720f56ea16ac13a4659",
+        "name": "MACRUNNER_HB_GPU_READBACK_PROBE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "6fb9fcb7873ca1c96c0f7aa930899e3bfdb93666a3f313d45c7c3da732cf092a",
+        "name": "MACRUNNER_HB_JIT_DIRECT_MEM",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "68cae803c2b92c4c5347bc598619603cec3910ff0ef717c42fb4b49152bd59d0",
+        "name": "MACRUNNER_HB_JIT_DIRECT_SCALAR_MEM",
+        "value": "0"
+      },
+      {
+        "entry_sha256": "51072b51c1f6a073e457ec5b2a8568f4802d5aba7bf7c851714cc296fb9dac92",
+        "name": "MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "674625a6db0d6effa85d7463df6f14da8943b1c04315b1cb887416e2af8344d1",
+        "name": "MACRUNNER_HB_JIT_DIRECT_STACK",
+        "value": "0"
+      },
+      {
+        "entry_sha256": "197aa91df8890be73654b504cc36efdb380192851af17ec16852db3213a4dc29",
+        "name": "MACRUNNER_HB_LANGUAGE_FLOW_OBSERVER",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "f56839887b731b9384e490f13cd9264988689fdd360cf8a612b74029b71a1d30",
+        "name": "MACRUNNER_HB_LANGUAGE_ONESHOT_SEQUENCE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "180399fc11ecc968249619a5cf6b4c676c895c2aee426f44771ae56e82d91ec7",
+        "name": "MACRUNNER_HB_RENDER_PIPELINE_PROBE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "855dc489ff803fca5c24991fc6e5fca79234ed17a71c442a12d9296301b1a95b",
+        "name": "MACRUNNER_HB_SHADER_INPUTS_PROBE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b452a9837967e5d00f536eb43bf58d644779efe233ac617c61a3ccd76e353b73",
+        "name": "MACRUNNER_HB_SINGLE_LOOKUP",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "eef2f162688e7768c870d71d496357e5364d37f018ba833dca36a5acda7f5257",
+        "name": "MACRUNNER_HB_TRACE_D3D_BOUNDARY",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "0d70535af54dd5fc62b7b0738077207d1f279c8681af78ce9d6df1dd7f112943",
+        "name": "MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "1cba0fc496b18e1294485a45b607a3a8bb810c6e13351d976afc9fa175678cc0",
+        "name": "MACRUNNER_HB_TRACE_TRANSLATION_CACHE",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "37a07a86aa6e026dab8edbef413e87cedfde754e32287680df178d373aa5faea",
+        "name": "MACRUNNER_HB_TRANSLATION_CACHE",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "7704ab75d88bea0791ba62b1a3e5bf9f1151093ca770ad4c7a49106cb57d0b9e",
+        "name": "MACRUNNER_HB_TRANSLATION_CACHE_ROOT",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/windows-oracle-direct-20260722-NOT_GOLDEN/cache/translation-cache-preimage"
+      },
+      {
+        "entry_sha256": "07a90fc4fa91d374838a0306e3a545a7ba303912779467c87df1de8849f520e2",
+        "name": "MACRUNNER_HB_X64_LOADER",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "4bc95dabb966a5d4ba7feb33a61e9276d3456d16d9baff640ad5b8e42a73eb01",
+        "name": "MACRUNNER_HOMEBREW_LIBRARY_PATHS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "dbc38fc451cb4895a927ef5b124b06db720ca747b9f6635ffb5b2b66e74174f2",
+        "name": "MACRUNNER_HOMEBREW_PREFIX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "5f94816ca3670c366e86c7c1fb1188c7714e66a8788c33cada7b14334eba5a52",
+        "name": "MACRUNNER_LANEA_WINE_DIST",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "66a231055172c7ae2bd007be00415ca27a0c19f0521aa02b7432e758f8c80303",
+        "name": "MACRUNNER_LLVM_MINGW_BIN",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "236fc3f74fcdb9400f9998bea61f98d8adceb1aab68c94348231ccd8af540ddb",
+        "name": "MACRUNNER_MR_RUN_ACTXPRXY",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "8948a5c599cc334af8894cf9fb84526ad848c76bd66c1d371379e353c91a4fb4",
+        "name": "MACRUNNER_MR_RUN_CRT_CASE_FUSION",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "a3acce39b537895a867277f139fac785c5bd11a11c81e3fbc8e05216473aa66f",
+        "name": "MACRUNNER_MR_RUN_PREFIX_PATH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "4eea2ba34b4110d07bdc672683ad3c5c889ac0de8b1920e753ceddeb513f7df7",
+        "name": "MACRUNNER_MR_RUN_PREFIX_TEMPLATE",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/hk-windows-oracle-prefix-template-20260721-225722-v3"
+      },
+      {
+        "entry_sha256": "17752d9ba89870f97a1b2de98959b30323a1f53259e10611a6e8df202e4f8dcc",
+        "name": "MACRUNNER_MR_RUN_START_SERVICES",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "bdd546683aef3623c2cb349f9df2b5f3750002778d0c2bc1ff56efc92be18865",
+        "name": "MACRUNNER_MR_RUN_WWISE_OBSERVER",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "9a576da767d3adfc4386e5b4af77c7bfd9ca2cd7398357a2ae69d64e8c62e9c7",
+        "name": "MACRUNNER_NO_AUTOTRIAGE",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "189c476cc9678814b49b136fc9a2e6ee663d4cd9628593562e963b9778b6721f",
+        "name": "MACRUNNER_NPP_AFTER_LAUNCH_READY_SECS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "c4c2a95bc9549b19480b40f0990b7feb6237b2d5008e79acb80c9af7ffcac68f",
+        "name": "MACRUNNER_NPP_X64_APP",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "a8944b88cc763b32b2d4cb5c8b0faec605cf530e7c0341565b07a8747115090d",
+        "name": "MACRUNNER_NPP_X64_DIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b1ef1bbd0c2c64da1069fe2a60ef896b70125eaeff0000af01b0b48c90713138",
+        "name": "MACRUNNER_PREFIX_SYSTEM32_ARCH",
+        "value": "x86_64-windows"
+      },
+      {
+        "entry_sha256": "3bbb3706a599e8f5d63a58f6cd0f4f8bc218a8b24478ec3b1fcf3956740302fa",
+        "name": "MACRUNNER_REPORTS_ROOT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "5e891b47df4d4f5a43a508410929bd0376cf4a836243475c3ef2d7bbe796ada9",
+        "name": "MACRUNNER_ROOT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "30c1a2106893d61ad52bd49b80d8a37c8bc9927ab9a3ce4ae77d8ca5c9e35bb9",
+        "name": "MACRUNNER_RUN_DIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "176ad46df7be371fa925b83d06107f840b33280bb4ff0624719d29d54f537c05",
+        "name": "MACRUNNER_WINEBOOT_WAIT_SECS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "afb1a311ae13c787c301955ab917db5ce6ab03afd9066d873efc7749bea3f96e",
+        "name": "MACRUNNER_WINESERVER_WAIT_SECS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "f18335d9dd3bac56088e1f6184ae7b95fe20c0990172b9cfe4f1380022fd8cbb",
+        "name": "MACRUNNER_WINE_BIN",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b5b8651bbe2e4989fbc759b3988e253539147d252c8794e539ad7742b3bcb8ac",
+        "name": "MACRUNNER_WINE_BUILD_ARM64",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "54a04b3c62d6e2f8dde0cd38b1925ce3e2d50ada9e9c45e6814c671aed880c27",
+        "name": "MACRUNNER_WINE_CCACHE_PREFIX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "f48aa421f4f1afdfb896baf00b36a85885202b3cf0869c1b6062b98e7526e265",
+        "name": "MACRUNNER_WINE_DIST",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "3985e874dfa89b3b77a3c48e0802dc20c37162c274591e603a3b7ab6f43cc435",
+        "name": "MACRUNNER_WINE_DIST_ARM64",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "e37bb836d897bd2fec434a49e26d785628bd02f13a28a412cd588f5d42b529ba",
+        "name": "MONO_ENV_OPTIONS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "05aff6f06284ad3f6dbd7bfb7737e82c158c1e1f62438c239c2f47b46783bde9",
+        "name": "NO_COLOR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "21aafc5320deb136f1676da5e6138eeb01ce9de8f5b42b06ba14f24f2f9e9b36",
+        "name": "OSLogRateLimit",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "5335a0bd527ac309ff9c4e1c511fa465f1c495c6a79075a95a20b635284a8d19",
+        "name": "PATH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "237f420b8fcab30d5d81c1854d54e2161928c56ce4e9978e29076659318c4560",
+        "name": "PWD",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "cfb92fa3a86e0714de20c4072336bccd46e79ef035eb25dd4e77c1d898724458",
+        "name": "SHELL",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "e66fd9c87dbfc5dc2469aa11ffc02ed637372688d547148910e4ca1880698032",
+        "name": "SHLVL",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "3517298fec68fa461026b229805df3fc0c5454187740fecd9f4d9993c2e9a038",
+        "name": "TERM",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "340b0c8c18cfe5cd96fcd84b1a2df104c4bb5b6617fa9d77aafcbb4732f4cc8b",
+        "name": "TERM_PROGRAM",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "54f83c947923b48b3f24d20ef39cfda78fa82cd34e1e1e2785795a1a0cf041a2",
+        "name": "TERM_PROGRAM_VERSION",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "9b77151e5a885b9f804b22b5215413b7e93593210b487b9553d4c8fdeff36140",
+        "name": "TERM_SESSION_ID",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "1c88374ea79705c66553c854a8b5ce74c356428c940ec1b9ae7e7597557d28a9",
+        "name": "TMPDIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "006e170b2aa0d47a5dab11962c5e83aa7769fa0de475a856754af9714cbdc476",
+        "name": "USER",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "8a7f4f7a9a3cd451604c450592567582535e43bd06eb93f85862a041856c5324",
+        "name": "WINEDEBUG",
+        "value": "-all"
+      },
+      {
+        "entry_sha256": "702e5c3cc7964a84893da2961436c62aa90f69caf38dc799f448f7b6f6e2b7cd",
+        "name": "WINEDLLOVERRIDES",
+        "value": "mono-profiler-hk_language=n;d3d9=n,b;d3d11,dxgi,d3d10core,winemetal=n,b"
+      },
+      {
+        "entry_sha256": "4bf00bb80ca541266de9255b320c4fab294ed6df4b4b28c9a7395122153411a9",
+        "name": "WINEDLLPATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/checkpoints/20260722-present-capability-02b4-VERIFIED_NOT_GOLDEN/payload/runtime/dxmt-builtin-overlay:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/checkpoints/20260722-present-capability-02b4-VERIFIED_NOT_GOLDEN/payload/runtime/dxmt-builtin-overlay/x86_64-windows:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/checkpoints/20260722-present-capability-02b4-VERIFIED_NOT_GOLDEN/payload/runtime/dxmt-builtin-overlay/x86_64-unix:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-passive-stack-20260722-143030/staged-dist/lib/wine/x86_64-windows:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-passive-stack-20260722-143030/staged-dist/lib/wine/x86_64-unix"
+      },
+      {
+        "entry_sha256": "209d90a4c42be23f3a744c81e2d0767d97344d69bc7a41d824b0f18ca8e6bbd5",
+        "name": "WINELOADERNOEXEC",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "fab3a7a2e8789a1fe4b59ac54d5a5f0c4a4c4b039d71de4efb3fe4410e656ad4",
+        "name": "WINEMSYNC",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "1b1958dd01a3a11040b419c9dc42f509b4e3701be1927afa6ee7297e52ff9dc3",
+        "name": "WINEPREFIX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "59b7aac3ddd5b598611a9fb2d94fba7f4660dfcd81a8815f825407d68f6854a2",
+        "name": "WINESYSTEMDLLPATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/checkpoints/20260722-present-capability-02b4-VERIFIED_NOT_GOLDEN/payload/runtime/dxmt-builtin-overlay/x86_64-windows"
+      },
+      {
+        "entry_sha256": "dc8f0d8ab0221c2f15045e75cab81c5b05306054ed01fd0dd9afeb055f15d83d",
+        "name": "XPC_FLAGS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "2b298963e4e41d00e12cdfb80d8c8d60401a4693d6731b2002ee19f9c392824d",
+        "name": "XPC_SERVICE_NAME",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "42711c82c8ae296625644f7f359a688abe6fe0330c89a07e871c909adc2db39b",
+        "name": "YACC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "49d9bd4c99991ce4e96ed444185bcb4568ba374e30c860d674a0917f4d19266f",
+        "name": "_",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "bec4c49a7834448094ad8831ea7487e7079962a6d5bb236bf2f60098a2b9ade2",
+        "name": "__CFBundleIdentifier",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "7bcbc1b0496dcc0bf2ad6e52f7ee5945fbd3cb06b6e56e535153c495b4cfea4a",
+        "name": "__CF_USER_TEXT_ENCODING",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "e6450efe41297d26794e6bd7efef4456296a06e9356df1ddd9781bad833bf0cd",
+        "name": "aarch64_CC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "32dfbc593997b0313174c7bb1fad1e30fabd5ccc4e1f56076de0e9212f823e99",
+        "name": "aarch64_CXX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "ee8edbea0a6685748f2e5b5f0501c83e03f95d3af315787ed615945ed43bfe92",
+        "name": "arm64ec_CC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "085efa28623165ff4c554449d3053200e310eee924bbbe6be8b2ce4d3d0e6afd",
+        "name": "arm64ec_CXX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "6671d840aa3698609d0c32727125159b108a13b75a825c552ce911c5a7d9328d",
+        "name": "i386_CC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "fc041b492051006b7fe3683c7517dc223cebaa669bf456a27ef323c2c4e7390a",
+        "name": "i386_CXX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "a02e3e246ac4715712e65ba1f77a3c080ed632f0e6c89713df4c26880d39bf03",
+        "name": "x86_64_CC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "38d57e990ba1d5d02bfed97c3d7bcf8a67f977d2228dc41e1535543c50b9acd1",
+        "name": "x86_64_CXX",
+        "value_redacted": true
+      }
+    ],
+    "inheritance": "captured",
+    "normalized_sha256": "aae20b984d2d8a70d0a822ac13b52dfa709e3a62f28aa77454c8c9697d497a9d"
+  },
+  "experiment": {
+    "max_attempts": 1,
+    "measurement_traces": [
+      "MACRUNNER_HB_TRACE_TRANSLATION_CACHE"
+    ],
+    "requested_timeout_s": 2400,
+    "role": "A",
+    "semantic_discriminator": "NONE"
+  },
+  "runner": {
+    "branch_map": {
+      "actxprxy": {
+        "state": "PRESENT",
+        "value": "0",
+        "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "backend": {
+        "state": "PRESENT",
+        "value": "jit",
+        "value_sha256": "ec03a0a8851d9cf0aa2320035b8699d6d3bbb4a8a8c160b0dd41c5c5ed086f9c"
+      },
+      "com_rpcss_seed": {
+        "state": "PRESENT",
+        "value": "start_services=1",
+        "value_sha256": "7aacb754964e511f7056ea3774ac5bab45f65178eae1a6778a936c97aa9f462b"
+      },
+      "crt_case_fusion": {
+        "state": "PRESENT",
+        "value": "0",
+        "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "graphics": {
+        "state": "PRESENT",
+        "value": "dxmt",
+        "value_sha256": "637323f65b6919e0cc1943a46587235db635574aa91c2a2993328733f2b072e1"
+      },
+      "prefix_template": {
+        "state": "PRESENT",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/hk-windows-oracle-prefix-template-20260721-225722-v3",
+        "value_sha256": "cdb69959b67109710c9071266b3710c8c610b743a24b9b024b9c93682184f5b4"
+      },
+      "stage_or_active_dist": {
+        "state": "PRESENT",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-passive-stack-20260722-143030/staged-dist",
+        "value_sha256": "265eff23db9b34fe824f43caec11772d416b28b99442f89253032a2eea1e563d"
+      },
+      "standalone_services_rpcss": {
+        "state": "PRESENT",
+        "value": "start_services=1",
+        "value_sha256": "7aacb754964e511f7056ea3774ac5bab45f65178eae1a6778a936c97aa9f462b"
+      },
+      "system32_sync_arch": {
+        "state": "PRESENT",
+        "value": "x86_64-windows",
+        "value_sha256": "3060165cd184bb84b8a8fffd9b27ca0aa54646ae2a09e1d1afd93d26ebc90899"
+      },
+      "vulkan_icd_wiring": {
+        "state": "PRESENT",
+        "value": "none",
+        "value_sha256": "140bedbf9c3f6d56a9846d2ba7088798683f4da0c248231336e6a05679e4fdfe"
+      },
+      "wineboot": {
+        "state": "PRESENT",
+        "value": "dxmt_skip_wineboot=1",
+        "value_sha256": "6eeb518e7f17f705d3449c5bd3ec03cc997e134f283335f40c846fb0162e21c8"
+      },
+      "wwise_observer": {
+        "state": "PRESENT",
+        "value": "0",
+        "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "x64_loader": {
+        "state": "PRESENT",
+        "value": "1",
+        "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+      }
+    },
+    "files": [
+      {
+        "mtime_ns": 1784071016211867183,
+        "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/mr-run.sh",
+        "sha256": "4b23ba831e926d5475b5e13ea22846ad7c73b3b8b926264d5a88ae854a4213a9",
+        "size": 30043,
+        "state": "PRESENT"
+      },
+      {
+        "mtime_ns": 1782883781844774264,
+        "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/sync-prefix-from-dist.sh",
+        "sha256": "492d392db11f104ef41bd533c8f6f7b8fd869eb2606a362889caee4adab8fb3a",
+        "size": 8048,
+        "state": "PRESENT"
+      }
+    ],
+    "wine_sha256": {
+      "mtime_ns": 1783664761171541237,
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-passive-stack-20260722-143030/staged-dist/bin/wine",
+      "sha256": "00145dabeee2cd6f2903cc61a73e58b87c2186a3fd67c0fb2580eab5a80e0085",
+      "size": 34424,
+      "state": "PRESENT"
+    },
+    "wineserver_sha256": {
+      "mtime_ns": 1784421151813886487,
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-passive-stack-20260722-143030/staged-dist/bin/wineserver",
+      "sha256": "7d759baf76280bfa91d05029f21f4421bdcb52141338b0ca6eb29090f911f04b",
+      "size": 684248,
+      "state": "PRESENT"
+    },
+    "wrapper_prelaunch_capture_hook": {
+      "mtime_ns": 1783993205585616472,
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/tools/run_contract_identity_ledger.py",
+      "sha256": "7b34e98a593126111b69d2a690c516f8ccf187cd564a86a12046413956661a2a",
+      "size": 57993,
+      "state": "PRESENT"
+    }
+  },
+  "schema": "macrunner-run-contract/v1",
+  "status": "READY",
+  "title": "hollow-knight"
+}

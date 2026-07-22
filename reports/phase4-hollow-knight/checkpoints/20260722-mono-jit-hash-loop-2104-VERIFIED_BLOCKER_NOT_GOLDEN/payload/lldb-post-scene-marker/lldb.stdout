@@ -1,0 +1,183 @@
+(lldb) process attach --pid 47528
+Process 47528 stopped
+* thread #1, queue = 'com.apple.main-thread', stop reason = signal SIGSTOP
+    frame #0: 0x00000001832e9c34 libsystem_kernel.dylib`mach_msg2_trap + 8
+libsystem_kernel.dylib`mach_msg2_trap:
+->  0x1832e9c34 <+8>: ret    
+
+libsystem_kernel.dylib`macx_swapon:
+    0x1832e9c38 <+0>: mov    x16, #-0x30               ; =-48 
+    0x1832e9c3c <+4>: svc    #0x80
+    0x1832e9c40 <+8>: ret    
+Target 0: (wine) stopped.
+Executable binary set to "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-passive-stack-20260722-143030/staged-dist/bin/wine".
+Architecture set to: arm64-apple-macosx-.
+(lldb) command script import /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104/dry-run/hk_lldb_capture.py
+(lldb) thread list
+Process 47528 stopped
+* thread #1: tid = 0x52553e, 0x00000001832e9c34 libsystem_kernel.dylib`mach_msg2_trap + 8, queue = 'com.apple.main-thread', stop reason = signal SIGSTOP
+  thread #2: tid = 0x525545, 0x000000010984f9c4 ntdll.so`macrunner_hb_run_x64 + 13260
+  thread #3: tid = 0x525610, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #4: tid = 0x525611, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #5: tid = 0x525612, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #6: tid = 0x525615, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #7: tid = 0x525618, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #8: tid = 0x52561d, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #9: tid = 0x52561e, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #10: tid = 0x525676, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Finalizer'
+  thread #11: tid = 0x5256cb, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 0'
+  thread #12: tid = 0x5256cc, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 1'
+  thread #13: tid = 0x5256cd, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 2'
+  thread #14: tid = 0x5256ce, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 3'
+  thread #15: tid = 0x5256cf, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 4'
+  thread #16: tid = 0x5256d0, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 5'
+  thread #17: tid = 0x5256d1, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 6'
+  thread #18: tid = 0x5256d5, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 0'
+  thread #19: tid = 0x5256d7, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 1'
+  thread #20: tid = 0x5256d8, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 2'
+  thread #21: tid = 0x5256d9, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 3'
+  thread #22: tid = 0x5256da, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 4'
+  thread #23: tid = 0x5256db, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 5'
+  thread #24: tid = 0x5256dc, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 6'
+  thread #25: tid = 0x5256dd, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 7'
+  thread #26: tid = 0x5256de, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 8'
+  thread #27: tid = 0x5256df, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 9'
+  thread #28: tid = 0x5256e0, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 10'
+  thread #29: tid = 0x5256e1, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 11'
+  thread #30: tid = 0x5256e2, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 12'
+  thread #31: tid = 0x5256e3, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 13'
+  thread #32: tid = 0x5256e4, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 14'
+  thread #33: tid = 0x5256e5, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 15'
+  thread #34: tid = 0x5256e6, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'BatchDeleteObjects'
+  thread #35: tid = 0x5256e7, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Loading.AsyncRead'
+  thread #36: tid = 0x52571a, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'dxmt-encode-thr'
+  thread #37: tid = 0x52571d, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'dxmt-finish-thr'
+  thread #38: tid = 0x52571f, 0x00000001832e9c34 libsystem_kernel.dylib`mach_msg2_trap + 8
+  thread #39: tid = 0x525720, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #40: tid = 0x525721, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #41: tid = 0x525724, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'UnityGfxDeviceWorker'
+  thread #42: tid = 0x525736, 0x0000000109920a38 ntdll.so`resolve_addr + 700
+  thread #43: tid = 0x525750, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #44: tid = 0x525a31, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'dxmt-encode-thr'
+  thread #45: tid = 0x525a32, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'dxmt-finish-thr'
+  thread #46: tid = 0x525a33, 0x00000001832e9c34 libsystem_kernel.dylib`mach_msg2_trap + 8
+  thread #47: tid = 0x525a34, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #48: tid = 0x525a35, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #49: tid = 0x525c78, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'wine_xinput_hid_update'
+  thread #50: tid = 0x525c86, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'HIDInput'
+  thread #51: tid = 0x525ca1, 0x00000001832e9c34 libsystem_kernel.dylib`mach_msg2_trap + 8, name = 'com.apple.NSEventThread'
+  thread #52: tid = 0x525ca3, 0x00000001832eb9f0 libsystem_kernel.dylib`__workq_kernreturn + 8
+  thread #53: tid = 0x5261f9, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Loading.PreloadManager'
+  thread #54: tid = 0x52659e, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #55: tid = 0x5270e5, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #56: tid = 0x5282d4, 0x00000001832eb9f0 libsystem_kernel.dylib`__workq_kernreturn + 8
+  thread #57: tid = 0x5282d6, 0x0000000000000000
+  thread #58: tid = 0x529b6d, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+(lldb) process handle SIGSEGV --stop false --notify false --pass true
+NAME         PASS   STOP   NOTIFY
+===========  =====  =====  ======
+SIGSEGV      true   false  false
+(lldb) process handle SIGBUS  --stop false --notify false --pass true
+NAME         PASS   STOP   NOTIFY
+===========  =====  =====  ======
+SIGBUS       true   false  false
+(lldb) process handle SIGILL  --stop false --notify false --pass true
+NAME         PASS   STOP   NOTIFY
+===========  =====  =====  ======
+SIGILL       true   false  false
+(lldb) process handle SIGUSR1 --stop false --notify false --pass true
+NAME         PASS   STOP   NOTIFY
+===========  =====  =====  ======
+SIGUSR1      true   false  false
+(lldb) process handle SIGUSR2 --stop false --notify false --pass true
+NAME         PASS   STOP   NOTIFY
+===========  =====  =====  ======
+SIGUSR2      true   false  false
+(lldb) process handle SIGINT  --stop true  --notify true  --pass false
+NAME         PASS   STOP   NOTIFY
+===========  =====  =====  ======
+SIGINT       false  true   true 
+(lldb) process handle -t
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+(lldb) breakpoint set --name hb_jit_helper_exec_two_block_loop --one-shot true --thread-id 0x525545
+Breakpoint 1: 2 locations.
+(lldb) continue
+Process 47528 resuming
+Process 47528 stopped
+* thread #2, stop reason = one-shot breakpoint 1
+    frame #0: 0x000000010992cd58 ntdll.so`hb_jit_helper_exec_two_block_loop
+ntdll.so`hb_jit_helper_exec_two_block_loop:
+->  0x10992cd58 <+0>:  sub    sp, sp, #0xd0
+    0x10992cd5c <+4>:  stp    x28, x27, [sp, #0x70]
+    0x10992cd60 <+8>:  stp    x26, x25, [sp, #0x80]
+    0x10992cd64 <+12>: stp    x24, x23, [sp, #0x90]
+Target 0: (wine) stopped.
+(lldb) thread info
+thread #2: tid = 0x525545, 0x000000010992cd58 ntdll.so`hb_jit_helper_exec_two_block_loop, stop reason = one-shot breakpoint 1
+
+(lldb) thread list
+Process 47528 stopped
+  thread #1: tid = 0x52553e, 0x00000001832e9c34 libsystem_kernel.dylib`mach_msg2_trap + 8, queue = 'com.apple.main-thread'
+* thread #2: tid = 0x525545, 0x000000010992cd58 ntdll.so`hb_jit_helper_exec_two_block_loop, stop reason = one-shot breakpoint 1
+  thread #3: tid = 0x525610, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #4: tid = 0x525611, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #5: tid = 0x525612, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #6: tid = 0x525615, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #7: tid = 0x525618, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #8: tid = 0x52561d, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #9: tid = 0x52561e, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'AssetGarbageCollectorHelper'
+  thread #10: tid = 0x525676, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Finalizer'
+  thread #11: tid = 0x5256cb, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 0'
+  thread #12: tid = 0x5256cc, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 1'
+  thread #13: tid = 0x5256cd, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 2'
+  thread #14: tid = 0x5256ce, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 3'
+  thread #15: tid = 0x5256cf, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 4'
+  thread #16: tid = 0x5256d0, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 5'
+  thread #17: tid = 0x5256d1, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Job.Worker 6'
+  thread #18: tid = 0x5256d5, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 0'
+  thread #19: tid = 0x5256d7, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 1'
+  thread #20: tid = 0x5256d8, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 2'
+  thread #21: tid = 0x5256d9, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 3'
+  thread #22: tid = 0x5256da, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 4'
+  thread #23: tid = 0x5256db, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 5'
+  thread #24: tid = 0x5256dc, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 6'
+  thread #25: tid = 0x5256dd, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 7'
+  thread #26: tid = 0x5256de, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 8'
+  thread #27: tid = 0x5256df, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 9'
+  thread #28: tid = 0x5256e0, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 10'
+  thread #29: tid = 0x5256e1, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 11'
+  thread #30: tid = 0x5256e2, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 12'
+  thread #31: tid = 0x5256e3, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 13'
+  thread #32: tid = 0x5256e4, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 14'
+  thread #33: tid = 0x5256e5, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Background Job.Worker 15'
+  thread #34: tid = 0x5256e6, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'BatchDeleteObjects'
+  thread #35: tid = 0x5256e7, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Loading.AsyncRead'
+  thread #36: tid = 0x52571a, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'dxmt-encode-thr'
+  thread #37: tid = 0x52571d, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'dxmt-finish-thr'
+  thread #38: tid = 0x52571f, 0x00000001832e9c34 libsystem_kernel.dylib`mach_msg2_trap + 8
+  thread #39: tid = 0x525720, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #40: tid = 0x525721, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #41: tid = 0x525724, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'UnityGfxDeviceWorker'
+  thread #42: tid = 0x525736, 0x000000010992cd58 ntdll.so`hb_jit_helper_exec_two_block_loop
+  thread #43: tid = 0x525750, 0x000000010992cd58 ntdll.so`hb_jit_helper_exec_two_block_loop
+  thread #44: tid = 0x525a31, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'dxmt-encode-thr'
+  thread #45: tid = 0x525a32, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'dxmt-finish-thr'
+  thread #46: tid = 0x525a33, 0x00000001832e9c34 libsystem_kernel.dylib`mach_msg2_trap + 8
+  thread #47: tid = 0x525a34, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #48: tid = 0x525a35, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #49: tid = 0x525c78, 0x000000010992cd58 ntdll.so`hb_jit_helper_exec_two_block_loop, name = 'wine_xinput_hid_update'
+  thread #50: tid = 0x525c86, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'HIDInput'
+  thread #51: tid = 0x525ca1, 0x00000001832e9c34 libsystem_kernel.dylib`mach_msg2_trap + 8, name = 'com.apple.NSEventThread'
+  thread #52: tid = 0x525ca3, 0x00000001832eb9f0 libsystem_kernel.dylib`__workq_kernreturn + 8
+  thread #53: tid = 0x5261f9, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8, name = 'Loading.PreloadManager'
+  thread #54: tid = 0x52659e, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #55: tid = 0x5270e5, 0x00000001832f7c98 libsystem_kernel.dylib`__ulock_wait2 + 8
+  thread #56: tid = 0x5282d4, 0x00000001832eb9f0 libsystem_kernel.dylib`__workq_kernreturn + 8
+  thread #57: tid = 0x5282d6, 0x0000000000000000
+  thread #58: tid = 0x529b6d, 0x000000010992cd58 ntdll.so`hb_jit_helper_exec_two_block_loop
+(lldb) hk-capture /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104/lldb-post-scene-marker
+hk-capture status=PASS path=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104/lldb-post-scene-marker/capture.json
+(lldb) process detach
+Process 47528 detached
+(lldb) quit

@@ -1,0 +1,96 @@
+{
+  "schema": "hk-post-scene-guest-loop-capture-adjudication/v1",
+  "classification": "CAPTURE_PASS_STABLE_GUEST_LOOP_NOT_GOLDEN",
+  "product_measured": true,
+  "source_patch_applied": false,
+  "validation_runtime_executed": false,
+  "snapshot_created": false,
+  "commit_created": false,
+  "reason": "Valid post-scene LLDB capture reached the exact thread-restricted hb_jit_helper_exec_two_block_loop breakpoint. Captured guest bytes and IR agree for the two-block loop; no decoder or execution-family defect is proven.",
+  "runtime": {
+    "run_root": "reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104",
+    "final_child_sha256": "3034ead4e12823c62219c48d43bdd4cf528c9d88e0147ccfde1bdf631551179d",
+    "run_contract_sha256": "b284001013975508ab16f4d97fffccdf55ec5b42354434a7e3bb16fffc551dbf",
+    "run_log_sha256": "408258f4aa709ec3b86f060401e977650539b3bc228d9d632b696ec7a0574b12",
+    "automatic_level_marker_count": 1,
+    "pre_marker": {
+      "present_lines": 48,
+      "getbuffer_lines": 1,
+      "draw_lines": 0,
+      "encoder_lines": 1
+    },
+    "post_marker": {
+      "present_lines": 0,
+      "getbuffer_lines": 0,
+      "draw_lines": 0,
+      "encoder_lines": 0
+    },
+    "faults": {
+      "unsupported": 0,
+      "memory_fault": 0,
+      "reject": 0
+    }
+  },
+  "lldb": {
+    "pid": 47528,
+    "sample_sha256": "0d440d4476165ea3f225fdd58c22bfd08567e43126dd1a6e4563b82e12bd3694",
+    "selected_tid": 5395781,
+    "sample_tid_selection": {
+      "hb_jit_helper_exec_two_block_loop_hits": 133,
+      "mem_read_hits": 40
+    },
+    "supervisor_sha256": "f1194d6591360cdb7a588dc2d14cec4ce6d19b1653f5e1c6e5edadecef666334",
+    "capture_sha256": "15b2e492137387ef1fd87a5f06a6a8114f46cf6d7ccd96ebef801cf49de14030",
+    "capture_status": "PASS",
+    "capture_tid_match": true,
+    "capture_function": "hb_jit_helper_exec_two_block_loop",
+    "stop_reason": "one-shot breakpoint 1",
+    "signal_policy_ok": true,
+    "required_read_errors": []
+  },
+  "guest_loop": {
+    "ctx_pc": "0x87ef2470d79",
+    "x0_ctx": "0xa14a94000",
+    "x1_first_block": "0xa210775c0",
+    "x2_second_block": "0xa2109ad00",
+    "first_block": {
+      "guest_addr": "0x87ef2470d79",
+      "instr_count": 2,
+      "guest_bytes_sha256": "e35dfa86e11642a700c84563c6dfaf8c15c01fe356434dbd073abe84030ff87e",
+      "ir_sha256": "a8e7596aa6535024656aad48b81284c876926b26c721575f8386280626b05772",
+      "instructions": [
+        "0x87ef2470d79: 48 3b c6    cmp rax, rsi",
+        "0x87ef2470d7c: 74 20       je 0x87ef2470d9e"
+      ],
+      "ir": [
+        "CMP src1=RAX/64 src2=RSI/64 guest=0x87ef2470d79 len=3",
+        "Jcc cc=E target=0x87ef2470d9e guest=0x87ef2470d7c len=2"
+      ]
+    },
+    "second_block": {
+      "guest_addr": "0x87ef2470d7e",
+      "instr_count": 2,
+      "guest_bytes_sha256": "9e0f25a492c6db416642fe5240bda48b7447d07a337a7dbab7d422d8c28e2c06",
+      "ir_sha256": "e44c04e0bdeb8427aac682adc16ed53b3910293e94f50e440a2968c0d48aaff3",
+      "instructions": [
+        "0x87ef2470d7e: 48 8b cb    mov rcx, rbx",
+        "0x87ef2470d81: ff 57 10    call qword ptr [rdi + 0x10]"
+      ],
+      "ir": [
+        "MOV dst=RCX/64 src1=RBX/64 guest=0x87ef2470d7e len=3",
+        "CALL src1=mem64[RDI+0x10] guest=0x87ef2470d81 len=3"
+      ]
+    },
+    "containing_guest_window_after_second_block": [
+      "0x87ef2470d84: 48 8b 18    mov rbx, qword ptr [rax]",
+      "0x87ef2470d87: 48 85 db    test rbx, rbx",
+      "0x87ef2470d8a: 75 e7       jne 0x87ef2470d73"
+    ],
+    "remaining_boundary": "The stable loop exits only through the cmp equality branch at 0x87ef2470d7c or by the downstream callback/list state transition after call [rdi+0x10]. The capture names a missing/unchanged Unity bootstrap state transition, not a proven HyperBridge instruction-family defect."
+  },
+  "cleanup": {
+    "scoped_wineserver_k_rc": 0,
+    "prefix_auto_removed": true,
+    "translation_cache_preserved": true
+  }
+}

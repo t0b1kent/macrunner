@@ -1,0 +1,36 @@
+{
+  "schema": "hk-post-scene-guest-loop-hash-retraction-pre-run/v1",
+  "status": "PASS",
+  "run_root": "reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104",
+  "prefix": "artifacts/_mr-run-aa-hk-post-scene-guest-loop-capture-hash-retraction-20260722-2104",
+  "timeout_seconds": 2400,
+  "phase0_proof_sha256": "e23f71799a8e41885c9765db5fa5c366e5be1cca93834963708bffd79b854941",
+  "launcher_sha256": "df877d9b39ee1d4a79f755fec14170d23aa7017b6f21fbb3921399c109e9f2e5",
+  "accepted_lldb_scripts": {
+    "hk_lldb_capture.py": "c2c0bab9af56885602ed98e227d409902f1f3d9ce41a5e98c3286145ce3192af",
+    "lldb_capture_supervisor.py": "0bea31fe7a8e2b72a5c089d78699f2591bcf59c0dae73b81db968d0bda523154"
+  },
+  "runner": {
+    "mr-run.sh": "4b23ba831e926d5475b5e13ea22846ad7c73b3b8b926264d5a88ae854a4213a9",
+    "sync-prefix-from-dist.sh": "492d392db11f104ef41bd533c8f6f7b8fd869eb2606a362889caee4adab8fb3a"
+  },
+  "product_hashes": {
+    "ntdll.so": "9a3f20b426adeeb86d70c06d0b7cfc9e687838e6eace5e43c282a19eb0363fc7",
+    "arm64x_ntdll.dll": "3863660ac0b5f57c106d610d6a88d897a89a6c0ab626f890e66b4d572f02de4d",
+    "x86_64_ntdll.dll": "b08516ba28c2d0d884b22673301bfc6eb3b5b48ee7458cd1248303289e431b78",
+    "winemac.so": "02b4d94ecb5827ea331decccb846f1bf6ff97df632ea28f6b40951794f8c9604",
+    "mono-profiler-hk_language.dll": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b"
+  },
+  "translation_cache": {
+    "policy": "preserved_current_warmed_state_no_reset",
+    "translation_cache_bin_sha256": "067447b2557a38dec128f4d149fd14859078631582248930bd1b596a39cdf942",
+    "translation_cache_bin_bytes": 62846004
+  },
+  "preflight": {
+    "prefix_absent": true,
+    "run_log_absent": true,
+    "hk_wine_abzu_collisions": 0,
+    "disk_headroom": "54Gi"
+  },
+  "runtime_authorized": true
+}

@@ -1,0 +1,145 @@
+{
+  "classification": "VERIFIED_BLOCKER_NOT_GOLDEN",
+  "created_utc": "2026-07-22T12:26:03.346666Z",
+  "excluded": [
+    "translation caches",
+    "full run.log",
+    "full process sample",
+    "fragment translation payloads",
+    "disposable prefixes"
+  ],
+  "files": [
+    {
+      "bytes": 3946,
+      "path": "payload/GUEST-LOOP-CAPTURE-ADJUDICATION.json",
+      "sha256": "e4cb11d98a4439e1dff0d2cac55b9922fe456e79f050f2f4e8a6dae9c1bedf09",
+      "type": "file"
+    },
+    {
+      "bytes": 1925,
+      "path": "payload/PHASE0-HASH-RETRACTION-PROOF.json",
+      "sha256": "e23f71799a8e41885c9765db5fa5c366e5be1cca93834963708bffd79b854941",
+      "type": "file"
+    },
+    {
+      "bytes": 1831,
+      "path": "payload/PRE-RUN-IDENTITY.json",
+      "sha256": "7fb621fb34cbfa201bf53c585da27aec2d2d1b8206b9405282baebc4ee83f69d",
+      "type": "file"
+    },
+    {
+      "bytes": 11447,
+      "path": "payload/dry-run/hk_lldb_capture.py",
+      "sha256": "c2c0bab9af56885602ed98e227d409902f1f3d9ce41a5e98c3286145ce3192af",
+      "type": "file"
+    },
+    {
+      "bytes": 6535,
+      "path": "payload/dry-run/lldb_capture_supervisor.py",
+      "sha256": "0bea31fe7a8e2b72a5c089d78699f2591bcf59c0dae73b81db968d0bda523154",
+      "type": "file"
+    },
+    {
+      "bytes": 41598,
+      "path": "payload/final-child.json",
+      "sha256": "3034ead4e12823c62219c48d43bdd4cf528c9d88e0147ccfde1bdf631551179d",
+      "type": "file"
+    },
+    {
+      "bytes": 2708,
+      "path": "payload/launch_hash_retraction_mapping.py",
+      "sha256": "df877d9b39ee1d4a79f755fec14170d23aa7017b6f21fbb3921399c109e9f2e5",
+      "type": "file"
+    },
+    {
+      "bytes": 156746,
+      "path": "payload/lldb-post-scene-marker/capture.json",
+      "sha256": "15b2e492137387ef1fd87a5f06a6a8114f46cf6d7ccd96ebef801cf49de14030",
+      "type": "file"
+    },
+    {
+      "bytes": 640,
+      "path": "payload/lldb-post-scene-marker/ctx-prefix.bin",
+      "sha256": "23e97b307fe92b923805d364e9ffdef723e463fc8ba8ed82ce0cbccd9581e839",
+      "type": "file"
+    },
+    {
+      "bytes": 32,
+      "path": "payload/lldb-post-scene-marker/first-block-header.bin",
+      "sha256": "2baa4690fecda080f03c7b3730806a53c3d282d203703b0d7c129ccf21e34e09",
+      "type": "file"
+    },
+    {
+      "bytes": 64,
+      "path": "payload/lldb-post-scene-marker/first-guest-bytes.bin",
+      "sha256": "e35dfa86e11642a700c84563c6dfaf8c15c01fe356434dbd073abe84030ff87e",
+      "type": "file"
+    },
+    {
+      "bytes": 368,
+      "path": "payload/lldb-post-scene-marker/first-ir.bin",
+      "sha256": "a8e7596aa6535024656aad48b81284c876926b26c721575f8386280626b05772",
+      "type": "file"
+    },
+    {
+      "bytes": 0,
+      "path": "payload/lldb-post-scene-marker/lldb.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "type": "file"
+    },
+    {
+      "bytes": 16395,
+      "path": "payload/lldb-post-scene-marker/lldb.stdout",
+      "sha256": "8f0849dc7dd5721fec2440a0235b496408d2b01ff9222277cc283fe4facafa4f",
+      "type": "file"
+    },
+    {
+      "bytes": 32,
+      "path": "payload/lldb-post-scene-marker/second-block-header.bin",
+      "sha256": "355f0454d0a20f5040782d4497c2e2189d401e50b11433d10bf2c90bf8495d1b",
+      "type": "file"
+    },
+    {
+      "bytes": 64,
+      "path": "payload/lldb-post-scene-marker/second-guest-bytes.bin",
+      "sha256": "9e0f25a492c6db416642fe5240bda48b7447d07a337a7dbab7d422d8c28e2c06",
+      "type": "file"
+    },
+    {
+      "bytes": 368,
+      "path": "payload/lldb-post-scene-marker/second-ir.bin",
+      "sha256": "e44c04e0bdeb8427aac682adc16ed53b3910293e94f50e440a2968c0d48aaff3",
+      "type": "file"
+    },
+    {
+      "bytes": 2298,
+      "path": "payload/lldb-post-scene-marker/supervisor.json",
+      "sha256": "f1194d6591360cdb7a588dc2d14cec4ce6d19b1653f5e1c6e5edadecef666334",
+      "type": "file"
+    },
+    {
+      "bytes": 3281,
+      "path": "payload/reports/HK-MONO-JIT-CODE-HASH-STATIC-MAP.md",
+      "sha256": "6b23c113eeb94f52863f8356bbca646501643cdfff6e05b5d7c8252844676650",
+      "type": "file"
+    },
+    {
+      "bytes": 13691,
+      "path": "payload/reports/PIXEL-FIRST-POST-SCENE-GUEST-LOOP-CAPTURE-CORRECTED-RESULT.md",
+      "sha256": "116694ed3f36580b2f90ea3d0ab5827ef490cb2f31dcbd7604a821447deaac16",
+      "type": "file"
+    },
+    {
+      "bytes": 30796,
+      "path": "payload/run-contract.json",
+      "sha256": "b284001013975508ab16f4d97fffccdf55ec5b42354434a7e3bb16fffc551dbf",
+      "type": "file"
+    }
+  ],
+  "guest_pc": "0x87ef2470d79",
+  "guest_rva": "0x70d79",
+  "mono_pe_sha256": "c9c3d552f0e2abaa19d7233e9595290ae10812642a13486a94bcf3d8f7a6e365",
+  "purpose": "Preserve the accepted exact guest-loop capture and static MonoDomain::jit_code_hash mapping before the causal memory-chain run.",
+  "schema": "hk-verified-blocker-checkpoint/v1",
+  "source_run": "reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-hash-retraction-20260722-2104"
+}

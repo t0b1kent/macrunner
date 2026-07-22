@@ -1,0 +1,47 @@
+{
+  "schema": "hk-post-scene-guest-loop-hash-retraction-phase0/v1",
+  "status": "PASS",
+  "classification": "STATIC_ONLY_NO_GAME",
+  "task_sha256": "a82e1fc3d7c98115cd86e8b7923cff8716a082249bcaf25eb0e68559f3585574",
+  "live_final_child": "reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-env-clean-20260722-1900/final-child.json",
+  "baseline_final_child": "reports/phase4-hollow-knight/laneA-post-scene-guest-loop-map-20260722-162042/final-child.json",
+  "winedllpath_raw_value": {
+    "actual_equals_baseline": true,
+    "utf8_bytes": 900,
+    "raw_utf8_sha256": "cce9f264e671dcf4d6cf22894a40879802eb6ba1b8b941d1b9a8a78f6cc74432",
+    "colon_entry_count": 5,
+    "colon_unique_count": 5,
+    "noncanonical_joined_newline_sha256": "6ae1e2285c346316c822b24c8c45afb2cdc1e76ad2a519a0b5b53dd0bc0449d1",
+    "noncanonical_digest_retracted": true
+  },
+  "environment_names": {
+    "count": 116,
+    "sorted_newline_delimited_sha256": "9793680dfb7541b522811065ad2f1a6693cb0b6d64147366288bfbe6014ef532",
+    "forbidden_13_present": []
+  },
+  "run_contract_1900": {
+    "path": "reports/phase4-hollow-knight/laneA-post-scene-guest-loop-capture-env-clean-20260722-1900/run-contract.json",
+    "status": "READY",
+    "blockers": 0,
+    "save_snapshot_manifest": {
+      "state": "PRESENT",
+      "file_count": 5,
+      "bytes": 11121,
+      "inventory_sha256": "442d9b2310ccc6b88ab24a554a4b70c9747607f52469f275a0bbc2c88dcac919"
+    },
+    "config_manifest": {
+      "state": "PRESENT",
+      "file_count": 18,
+      "bytes": 681990,
+      "inventory_sha256": "c556b839ebde41f2c7ace8b5f63e6b5ae283640272e532e22c477b00cdd7bc18"
+    },
+    "data_manifest": {
+      "state": "PRESENT",
+      "file_count": 1761,
+      "bytes": 5196290140,
+      "inventory_sha256": "0b1199e84ff61381873e98011651b4f5c13fc6ba28e6f58b3fdb80fc2486e848"
+    }
+  },
+  "runtime_authorized_after_phase0": true,
+  "game_executed_in_phase0": false
+}

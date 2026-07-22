@@ -25,6 +25,89 @@
 Это не опционально — это причина и скорости, и выживания сессии. Gemini/agy: у тебя ctx_* тулы
 есть (`~/.gemini/config/mcp_config.json`) — ВЫЗЫВАЙ их, не дефолти на ListDir/Read/Bash/Search.
 
+## MANDATORY: КОНТЕКСТ-ДИСЦИПЛИНА — byte truth без тихой потери
+
+Context-mode экономит окно, но НЕ является разрешением незаметно сжимать load-bearing evidence:
+
+- **Сначала flag discipline:** `git status -s`, `git log --oneline`, `rg -l`, нерекурсивный `ls`.
+  Сборки/тесты можно фильтровать точечно (`tail`, `ERROR|WARN`), но итог обязан отдельно сообщать
+  `install skipped`, если такая строка была; глотать её запрещено.
+- **Большой обзор — через distillation:** субагент или `ctx_*` возвращает выводы вместе с путями к
+  источникам, точными запросами/командами и явными неизвестными. Summary без provenance не доказательство.
+- **Targeted reads:** читай только нужный файл/диапазон/символ. Большой сырой артефакт не копируй в
+  чат целиком; оставляй его неизменным на диске и ссылайся на путь, SHA и точные line/grep windows.
+- **Всегда сохраняй byte-exact сырьё:** LLDB, дизасм/hex, crash-адреса и stack frames, code diff,
+  JSONL run reports. Их можно индексировать и выбирать точечно, но нельзя заменять пересказом.
+- Любая производная выборка должна быть воспроизводима указанной командой/запросом. Если инструмент
+  усёк или отфильтровал вывод, скажи это явно и НЕ делай claim об отсутствии события.
+
+## MANDATORY: PRODUCT-WALL FIRST — результат важнее аппарата
+
+Главный deliverable — работающий продукт: реальный probe-off pixel, пройденная native boundary,
+устранённый crash или запущенный application flow. Harness, observer, verifier, admission/preflight,
+authorization, nonce-ledger, provenance и snapshot сами по себе прогрессом НЕ являются.
+
+- Сначала назови последнюю доказанную продуктовую стену и самый короткий эксперимент, который
+  выбирает следующий конкретный fix. Если существующий probe уже отвечает на вопрос — запускай его,
+  не строй новый.
+- Новый инструмент допустим только когда без него нельзя различить текущие causal alternatives,
+  он узко привязан к этой стене и будет использован в том же work cycle для выбора/проверки fix.
+- Запрещено превращать safety-проверку в самостоятельный проект: никаких цепочек v2/v3/v4/v5
+  гейткиперов, если пользователь явно не заказал саму инфраструктуру.
+- `RUN-CONTRACT` ниже — дешёвый guardrail, а не отдельная цель. Переиспользуй существующий launcher,
+  manifest и probes. Не блокируй диагностический run строительством нового contract framework.
+- Для абсолютной локализации разрешён bounded `DIAGNOSTIC_ONLY`/`NOT_GOLDEN` run с минимальными
+  guards. Для causal A/B сохрани одну переменную и сравнимое состояние, но делай это простейшим
+  существующим способом.
+- Если инструмент начал порождать собственные blockers или требует второго поколения инструмента,
+  STOP: зафиксируй находку и вернись к product boundary.
+- Минимальная безопасность остаётся обязательной: один title/Wine одновременно, serial bounded runs,
+  отсутствие конфликтующих процессов, никакого destructive cleanup и сохранение failed evidence.
+
+Активный HK-приоритет: checkpoint
+`20260722-post-scene-submission-stall-125405-VERIFIED_BLOCKER_NOT_GOLDEN` доказал
+`Performing automatic level start.`, pre-boundary `Present/Present1=48/48` и затем 352 секунды
+`GetBuffer/Present/Present1/draw/encoder=0` при живом процессе без fault/reject/HUP. Следующий шаг —
+два пассивных native stack sample после scene boundary и fix точной wait/spin/deadlock границы.
+Shader/C0-C3 work, V5 admission и language/focus ветки заморожены до доказанного post-scene Present
+или явной смены направления пользователем.
+
+## MANDATORY: HANDOFF DRY-RUN — prompt тоже исполняемый артефакт
+
+Перед передачей любого runtime-handoff координатор обязан проверить его против **реального** launcher
+и wrapper-кода. Нельзя считать текстовый prompt корректным только потому, что его intent корректен.
+
+- Всегда разделяй `parent env`, преобразования launcher/runner и фактический `child env`.
+  Запрещено подавать запечатанный child env обратно как parent без статического проигрывания всех
+  prepend/default/normalization операций. До запуска вычисли ожидаемый child, проверь count/order/
+  uniqueness и точный hash; после exec сравни его с `final-child.json`.
+- Перед handoff прочитай конкретные строки запускающего скрипта. Не угадывай load order, env merge,
+  prefix sync, overlay precedence, timeout propagation или cleanup semantics по старому отчёту.
+- Deploy должен завершиться и быть byte-verified **до** child/Mono init. Никаких polling-race замен
+  после старта. Проверяй не только staged SHA, но и фактически загруженный путь/маркер.
+- Долгий runtime запускай detached, non-PTY, stdin `DEVNULL`, с отдельной session/process group.
+  Monitor не должен владеть жизнью child через PTY/HUP.
+- Все нулевые счётчики должны быть zero-safe. `grep` с отсутствующим match под fatal `pipefail`
+  не имеет права завершать monitor или product process.
+- Если pre-product попытка упала из-за orchestration, исправляй только доказанную трансформацию.
+  Не строй новый verifier/apparatus и не называй такой запуск продуктовым результатом.
+
+## MANDATORY: RUN-CONTRACT — один сравнительный эксперимент = одна переменная
+
+- Любой ран, который потом сравнивается с другим, до запуска получает immutable-манифест. Запини и
+  захешируй HEAD + dirty scope, source/object/build/selected/dist/graphics, stage/overlay, wrapper и
+  branch-map, полный child env, executable/argv/save/config/prefix, host/locale/timezone, timeout и
+  byte-exact pre-run cache inventory + runtime telemetry.
+- Для causal regress/progress claim обязательны zero `UNKNOWN` и ровно одна заранее названная
+  независимая переменная. Нельзя молча подставлять “same”, “default”, “warm”, “cold” или ноль.
+- Сначала докажи воспроизводимость двумя идентичными A/A ранами. Только прошедшая A/A-пара разрешает
+  следующий A/B; диагностическая проба должна быть одинаковой в A и B либо сама быть единственной
+  переменной.
+- Ран без полного контракта остаётся легитимным `DIAGNOSTIC_ONLY`/`NOT_GOLDEN`, но из него разрешены
+  только абсолютные факты (“fault X = 0”, “boundary Y reached”), не regress/progress и не причинность.
+- Collision, retry, cleanup failure, drift или потеря обязательной telemetry закрывают сравнение
+  fail-closed. Сначала проверь стенд (cache/dist/env), затем подозревай код.
+
 ## 🟢 MANDATORY: ACTIVITY HEARTBEAT — пиши что делаешь в файл КАЖДЫЙ шаг
 
 Координатор мониторит лайны **через файлы, а не процессы.** Поэтому каждый агент ОБЯЗАН вести

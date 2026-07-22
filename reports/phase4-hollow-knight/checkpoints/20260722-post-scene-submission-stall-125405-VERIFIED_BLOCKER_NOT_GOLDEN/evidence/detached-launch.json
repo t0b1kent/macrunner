@@ -1,0 +1,15 @@
+{
+  "dist": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405/staged-dist",
+  "environment_entry_count": 116,
+  "environment_names_sha256": "9793680dfb7541b522811065ad2f1a6693cb0b6d64147366288bfbe6014ef532",
+  "launcher_pid": 27527,
+  "output": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405/run.log",
+  "pgid": 27528,
+  "pid": 27528,
+  "pty": false,
+  "schema": "hk-detached-launch/v1",
+  "sid": 27528,
+  "start_epoch": 1784689169,
+  "start_new_session": true,
+  "stdin": "DEVNULL"
+}

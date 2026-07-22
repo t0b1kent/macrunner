@@ -1,0 +1,90 @@
+{
+  "boundary_detection_epoch": 1784690846,
+  "captures": [
+    {
+      "colorful_px": 0,
+      "delta_from_detection_s": 20,
+      "gate_rc": 3,
+      "label_s": 10,
+      "non_black_px": 0,
+      "png": "reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405/captures/post-scene-plus-010/20260722T032746Z-65941/window-9562.png",
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "trigger_epoch": 1784690866,
+      "verdict": "BLACK",
+      "window_id": 9562,
+      "window_pid": 33925
+    },
+    {
+      "colorful_px": 0,
+      "delta_from_detection_s": 39,
+      "gate_rc": 3,
+      "label_s": 30,
+      "non_black_px": 0,
+      "png": "reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405/captures/post-scene-plus-030/20260722T032805Z-66527/window-9562.png",
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "trigger_epoch": 1784690885,
+      "verdict": "BLACK",
+      "window_id": 9562,
+      "window_pid": 33925
+    },
+    {
+      "colorful_px": 0,
+      "delta_from_detection_s": 60,
+      "gate_rc": 3,
+      "label_s": 60,
+      "non_black_px": 0,
+      "png": "reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405/captures/post-scene-plus-060/20260722T032826Z-67138/window-9562.png",
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "trigger_epoch": 1784690906,
+      "verdict": "BLACK",
+      "window_id": 9562,
+      "window_pid": 33925
+    },
+    {
+      "colorful_px": 0,
+      "delta_from_detection_s": 180,
+      "gate_rc": 3,
+      "label_s": 180,
+      "non_black_px": 0,
+      "png": "reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405/captures/post-scene-plus-180/20260722T033026Z-68860/window-9562.png",
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "trigger_epoch": 1784691026,
+      "verdict": "BLACK",
+      "window_id": 9562,
+      "window_pid": 33925
+    },
+    {
+      "colorful_px": 0,
+      "delta_from_detection_s": 300,
+      "gate_rc": 3,
+      "label_s": 300,
+      "non_black_px": 0,
+      "png": "reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405/captures/post-scene-plus-300/20260722T033226Z-71148/window-9562.png",
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "trigger_epoch": 1784691146,
+      "verdict": "BLACK",
+      "window_id": 9562,
+      "window_pid": 33925
+    }
+  ],
+  "cutoff_delta_from_detection_s": 352,
+  "cutoff_epoch": 1784691198,
+  "post_counts": {
+    "Draw": 0,
+    "GetBuffer": 0,
+    "MEMORY_FAULT": 0,
+    "Present": 0,
+    "Present1": 0,
+    "SIGHUP": 0,
+    "UNSUPPORTED": 0,
+    "encoder": 0,
+    "reject": 0
+  },
+  "post_slice_bytes": 129,
+  "post_slice_sha256": "3cb373a40f0ad6a612f71f7575e76eaad3b639e393d1252fc44d03407c888424",
+  "runner_pid": 27528,
+  "same_runner_alive_at_cutoff": true,
+  "same_window_process_alive_at_cutoff": true,
+  "schema": "macrunner.hk.post-scene-300s.v1",
+  "window_pid": 33925
+}

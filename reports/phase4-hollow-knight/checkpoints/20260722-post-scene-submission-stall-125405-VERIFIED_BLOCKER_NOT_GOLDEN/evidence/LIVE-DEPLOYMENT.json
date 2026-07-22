@@ -1,0 +1,13 @@
+{
+  "schema": "hk-live-staged-deployment/v1",
+  "status": "PASS",
+  "target": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run-aa-hk-post-scene-first-frame-staged-20260722-125405/drive_c/windows/system32/mono-profiler-hk_language.dll",
+  "type": "regular",
+  "size": 34304,
+  "sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+  "verified_epoch": 1784689222,
+  "source": "normal-prefix-sync",
+  "post_launch_deployment": false,
+  "final_child_present": true,
+  "observer_allocations_excluded": true
+}

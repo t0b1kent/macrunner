@@ -1,0 +1,22 @@
+{
+  "boundary_prefix_sha256": "01144dc0951e90f17dd1c8b6f56e53990f89f4e7ff3ee97364a3461e0752a0fd",
+  "cumulative_counts_through_marker": {
+    "Draw": 0,
+    "GetBuffer": 1,
+    "MEMORY_FAULT": 0,
+    "Present": 48,
+    "Present1": 48,
+    "SIGHUP": 0,
+    "UNSUPPORTED": 0,
+    "encoder": 1,
+    "reject": 0
+  },
+  "detection_elapsed_s": 1677,
+  "detection_epoch": 1784690846,
+  "marker": "Performing automatic level start.",
+  "marker_end": 467508,
+  "marker_occurrences": 1,
+  "marker_offset": 467475,
+  "run_start_epoch": 1784689169,
+  "schema": "macrunner.hk.post-scene-boundary.v1"
+}

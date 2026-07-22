@@ -1,0 +1,78 @@
+{
+  "classification": "NOT_GOLDEN",
+  "evidence": {
+    "LIVE-DEPLOYMENT.json": {
+      "sha256": "577577e6e7f301ce6d39ebd01ef14fdc8b8da28c8e800c88a7620207811226d6",
+      "size": 550
+    },
+    "POST-SCENE-300S-SUMMARY.json": {
+      "sha256": "c40feefa45731679a577d2fdf9544b892e5811e1692a8d78e596193bbeb04f5d",
+      "size": 3148
+    },
+    "PRE-RUN-IDENTITY.json": {
+      "sha256": "ef2512ddaba5c2a10e3645aec0b5d2ba55bc48a570c1dde2829b1e7fd6b3707c",
+      "size": 3248
+    },
+    "STAGED-DIFF.json": {
+      "sha256": "2b4ae8bd02cecf9d31802b054154e905f370221845eb7a44d23a7683913ce32f",
+      "size": 1473
+    },
+    "automatic-level-start-boundary.json": {
+      "sha256": "f9e3c4524d75335dce8f5413f61ba83657b9bea7df6f3094defc95fb5eebbcd3",
+      "size": 589
+    },
+    "final-child.json": {
+      "sha256": "9fcbaf039e3c2aeee9548f1fbe90e6b38783e5cc26385b0fcf948a60334f255c",
+      "size": 41535
+    },
+    "post-scene-300s.log": {
+      "sha256": "3cb373a40f0ad6a612f71f7575e76eaad3b639e393d1252fc44d03407c888424",
+      "size": 129
+    },
+    "run-contract.json": {
+      "sha256": "302733883329a562c701d80fd931023acf4b38eacc24c82c76cfd4a90857fa6a",
+      "size": 30747
+    },
+    "run.log": {
+      "sha256": "1642b263817d1a4f51ae395618117f7becef8c246e636476756b7d6b9fb1d3c5",
+      "size": 467685
+    }
+  },
+  "full_run_counts": {
+    "ConfirmLanguage_return_ok": 1,
+    "CreateSwapChainForHwnd_rc0": 2,
+    "GameCameras_created": 1,
+    "GameManager_created": 1,
+    "GetBuffer": 1,
+    "MEMORY_FAULT": 0,
+    "Present": 48,
+    "Present1": 48,
+    "SIGHUP": 0,
+    "SetLanguage_return_ok": 1,
+    "UIManager_created": 1,
+    "UNSUPPORTED": 0,
+    "automatic_level_start": 1,
+    "mr_run_exit_124": 1,
+    "observer_allocations_excluded": 1,
+    "oneshot_exact_one": 1,
+    "reject": 0,
+    "retained_process_handle": 1
+  },
+  "generated_epoch": 1784692145,
+  "prefix_absent": true,
+  "runtime_process_collisions": 0,
+  "schema": "macrunner.hk.post-scene-staged-deploy-post-run.v1",
+  "staged_tree": {
+    "diff_count": 0,
+    "different_paths": [],
+    "entry_count": 4732,
+    "identity_sha256": "9bb2d5f863ab6261a60b756adb98b11cdd1c02c062cdbaca58c2598a41871546",
+    "sealed_identity_sha256": "9bb2d5f863ab6261a60b756adb98b11cdd1c02c062cdbaca58c2598a41871546"
+  },
+  "translation_cache": {
+    "path": "reports/phase4-hollow-knight/windows-oracle-direct-20260722-NOT_GOLDEN/cache/translation-cache-preimage/translation-cache.bin",
+    "preserved": true,
+    "sha256": "2e5a3a174094cf88a1d650a8652692c3b2afda3891ac6e610b1b4e830a639715",
+    "size": 53021152
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "schema": "macrunner.hk.verified-blocker-checkpoint.v1",
+  "checkpoint_id": "20260722-post-scene-submission-stall-125405-VERIFIED_BLOCKER_NOT_GOLDEN",
+  "classification": "VERIFIED_BLOCKER_NOT_GOLDEN",
+  "machine_verdict": "POST_SCENE_SUBMISSION_STALL",
+  "created_utc": "2026-07-22T04:00:15Z",
+  "git_head": "78e1b3c4381104559ee3d7fa8e3cb23b889f1283",
+  "source_run": "reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405",
+  "source_report": "reports/phase4-hollow-knight/PIXEL-FIRST-POST-SCENE-FRAME-RESULT.md",
+  "basis_checkpoint": "reports/phase4-hollow-knight/checkpoints/20260722-oracle-managed-actuator-105203-VERIFIED_CAPABILITY_NOT_GOLDEN",
+  "task_chain": [
+    {
+      "path": "docs/CODEX-TASK-hk-post-scene-first-frame.md",
+      "sha256": "3f21440d0f1a56b5dca188424c5698b1b931a30b2fb9246fd35f2f3aa4877565"
+    },
+    {
+      "path": "docs/CODEX-TASK-hk-post-scene-first-frame-corrected.md",
+      "sha256": "4fab6d1afe65b1be9b8a84ecaeaa23ab691006c8044d5dab047d8978c92848f8"
+    },
+    {
+      "path": "docs/CODEX-TASK-hk-post-scene-first-frame-staged-deploy.md",
+      "sha256": "d83824ff0adcc22ee4550271212eadfe1b44efe4aa89f774e0b0241afdfe3007"
+    }
+  ],
+  "identity": {
+    "child_environment_fields": 116,
+    "child_environment_missing": 0,
+    "child_environment_unexpected": 0,
+    "child_environment_forbidden": 0,
+    "child_environment_names_sha256": "9793680dfb7541b522811065ad2f1a6693cb0b6d64147366288bfbe6014ef532",
+    "staged_diff_count": 1,
+    "actuator_pe_sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+    "observer_allocations_excluded": true,
+    "run_contract_status": "READY",
+    "collisions": 0
+  },
+  "pre_boundary": {
+    "automatic_level_start_count": 1,
+    "game_manager_created": 1,
+    "ui_manager_created": 1,
+    "game_cameras_created": 1,
+    "setlanguage_ok": 1,
+    "confirmlanguage_ok": 1,
+    "get_buffer": 1,
+    "present": 48,
+    "present1": 48,
+    "encoder": 1
+  },
+  "post_boundary": {
+    "observation_seconds": 352,
+    "same_runner_alive_at_cutoff": true,
+    "same_window_process_alive_at_cutoff": true,
+    "get_buffer": 0,
+    "present": 0,
+    "present1": 0,
+    "draw": 0,
+    "encoder": 0,
+    "unsupported": 0,
+    "memory_fault": 0,
+    "reject": 0,
+    "sighup": 0
+  },
+  "captures": {
+    "count": 5,
+    "actual_offsets_seconds": [20, 39, 60, 180, 300],
+    "all_black": true,
+    "non_black_px_each": 0,
+    "png_sha256_each": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6"
+  },
+  "termination": {
+    "kind": "nominal_timeout",
+    "returncode": 124
+  },
+  "cleanup": {
+    "prefix_exists_after_cleanup": false,
+    "staged_clone_exists_after_cleanup": false,
+    "hk_wine_abzu_process_residue_count": 0,
+    "translation_cache_preserved": true,
+    "disk_free_after": "60 GiB"
+  },
+  "evidence": {
+    "file_count_excluding_manifest_and_sha256sums": 59,
+    "report_sha256": "c31eaeac3015ffe286c4e3ba103f73243df0f4eb9fc06df4fe69a32a44282e5d",
+    "post_scene_summary_sha256": "c40feefa45731679a577d2fdf9544b892e5811e1692a8d78e596193bbeb04f5d",
+    "automatic_boundary_sha256": "f9e3c4524d75335dce8f5413f61ba83657b9bea7df6f3094defc95fb5eebbcd3"
+  },
+  "excluded": [
+    "full run.log",
+    "raw final-child.json",
+    "shader translation dumps",
+    "staged runtime tree",
+    "disposable prefix",
+    "translation cache bytes"
+  ]
+}

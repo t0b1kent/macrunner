@@ -1,0 +1,12 @@
+{
+  "baseline_entry_count": 4732,
+  "baseline_identity_sha256": "a0d78de3457ba291527b5816c947b1508a1292769ad2e82b48c183940ff2bd62",
+  "baseline_root": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/checkpoints/20260722-present-capability-02b4-VERIFIED_NOT_GOLDEN/payload/runtime/dist-arm64ec-spike",
+  "copy_mode": "cp -ac",
+  "diff": [],
+  "diff_count": 0,
+  "schema": "hk-staged-clone-identity/v1",
+  "staged_entry_count": 4732,
+  "staged_identity_sha256": "a0d78de3457ba291527b5816c947b1508a1292769ad2e82b48c183940ff2bd62",
+  "staged_root": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405/staged-dist"
+}

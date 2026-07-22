@@ -1,0 +1,58 @@
+{
+  "baseline_tree_identity_sha256": "a0d78de3457ba291527b5816c947b1508a1292769ad2e82b48c183940ff2bd62",
+  "checkpoint_dist": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/checkpoints/20260722-present-capability-02b4-VERIFIED_NOT_GOLDEN/payload/runtime/dist-arm64ec-spike",
+  "classification": "NOT_GOLDEN",
+  "collisions": 0,
+  "dxmt_root": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/checkpoints/20260722-present-capability-02b4-VERIFIED_NOT_GOLDEN/payload/runtime/dxmt-builtin-overlay",
+  "environment": {
+    "expected_child_shlvl": "5",
+    "forbidden_present": [],
+    "names_sha256": "9793680dfb7541b522811065ad2f1a6693cb0b6d64147366288bfbe6014ef532",
+    "original_dist_references": 0,
+    "parent_canonical_sha256": "e7d40a724797d08e3dc1fa26e087ca2faf2e9f947791b6092d337e62b0e87d95",
+    "parent_entry_count": 116,
+    "shlvl_parent": "4",
+    "source": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-oracle-managed-actuator-20260722-try1-105203/final-child.json",
+    "source_entry_count": 116,
+    "staged_dist_reference_names": [
+      "DYLD_FALLBACK_LIBRARY_PATH",
+      "DYLD_LIBRARY_PATH",
+      "MACRUNNER_LANEA_WINE_DIST",
+      "WINEDLLPATH",
+      "_"
+    ],
+    "values_sealed_but_not_recorded": true
+  },
+  "head": "78e1b3c4381104559ee3d7fa8e3cb23b889f1283",
+  "launch": {
+    "post_launch_deployment": false,
+    "pty": false,
+    "start_new_session": true,
+    "stdin": "DEVNULL",
+    "stdout_stderr": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405/run.log"
+  },
+  "prefix": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run-aa-hk-post-scene-first-frame-staged-20260722-125405",
+  "run_dir": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405",
+  "schema": "hk-post-scene-staged-deploy-pre-run/v1",
+  "staged_diff_count": 1,
+  "staged_diff_manifest_sha256": "2b4ae8bd02cecf9d31802b054154e905f370221845eb7a44d23a7683913ce32f",
+  "staged_dist": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-first-frame-staged-20260722-125405/staged-dist",
+  "staged_target": {
+    "path": "lib/wine/x86_64-windows/mono-profiler-hk_language.dll",
+    "sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+    "size": 34304
+  },
+  "staged_tree_identity_sha256": "9bb2d5f863ab6261a60b756adb98b11cdd1c02c062cdbaca58c2598a41871546",
+  "start_epoch": 1784689169,
+  "start_utc": "2026-07-22T02:59:29Z",
+  "task": {
+    "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/docs/CODEX-TASK-hk-post-scene-first-frame-staged-deploy.md",
+    "sha256": "d83824ff0adcc22ee4550271212eadfe1b44efe4aa89f774e0b0241afdfe3007"
+  },
+  "timeout_seconds": 2700,
+  "translation_cache": {
+    "pre_sha256": "03d85117a0292d1be2f90f7a4daddbe21084b7a12a3043adfb5caf4779a15d49",
+    "pre_size": 48734884,
+    "root": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/windows-oracle-direct-20260722-NOT_GOLDEN/cache/translation-cache-preimage"
+  }
+}

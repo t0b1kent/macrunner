@@ -1,0 +1,31 @@
+{
+  "baseline_entry_count": 4732,
+  "baseline_identity_sha256": "a0d78de3457ba291527b5816c947b1508a1292769ad2e82b48c183940ff2bd62",
+  "baseline_root": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/checkpoints/20260722-present-capability-02b4-VERIFIED_NOT_GOLDEN/payload/runtime/dist-arm64ec-spike",
+  "diff": [
+    {
+      "baseline": {
+        "mode": 365,
+        "path": "lib/wine/x86_64-windows/mono-profiler-hk_language.dll",
+        "sha256": "ca5a6e2259fe3875c58eebdebc0ccdae922c5621e6782f84ae11870fb111bb69",
+        "size": 23040,
+        "type": "regular"
+      },
+      "path": "lib/wine/x86_64-windows/mono-profiler-hk_language.dll",
+      "staged": {
+        "mode": 365,
+        "path": "lib/wine/x86_64-windows/mono-profiler-hk_language.dll",
+        "sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+        "size": 34304,
+        "type": "regular"
+      }
+    }
+  ],
+  "diff_count": 1,
+  "expected_path": "lib/wine/x86_64-windows/mono-profiler-hk_language.dll",
+  "required_staged_sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+  "schema": "hk-staged-one-file-diff/v1",
+  "staged_entry_count": 4732,
+  "staged_identity_sha256": "9bb2d5f863ab6261a60b756adb98b11cdd1c02c062cdbaca58c2598a41871546",
+  "staged_root": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-post-scene-passive-stack-20260722-143030/staged-dist"
+}

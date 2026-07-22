@@ -1,0 +1,29 @@
+{
+  "contract_blockers": [],
+  "contract_status": "READY",
+  "environment": {
+    "actual_count": 116,
+    "actual_stream_sha256": "f26a897669f69f6ec16b7603023941f5a9ff616cf56cb623744e4ea345337b98",
+    "expected_count": 116,
+    "expected_stream_sha256": "f26a897669f69f6ec16b7603023941f5a9ff616cf56cb623744e4ea345337b98",
+    "extra": [],
+    "forbidden_present": [],
+    "missing": [],
+    "value_hash_drift": [],
+    "winedllpath_entry_count": 5,
+    "winedllpath_unique_count": 5,
+    "winedllpath_value_sha256": "cce9f264e671dcf4d6cf22894a40879802eb6ba1b8b941d1b9a8a78f6cc74432"
+  },
+  "live_actuator": {
+    "exists": true,
+    "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run-aa-hk-post-scene-passive-stack-corrected-20260722-145129/drive_c/windows/system32/mono-profiler-hk_language.dll",
+    "sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+    "size": 34304,
+    "source": "normal-prefix-sync"
+  },
+  "observer_allocations_excluded": true,
+  "post_launch_deployment": false,
+  "schema": "hk-passive-stack-corrected-live-admission/v1",
+  "verified_epoch": 1784696220,
+  "wine_child_pid": 38952
+}

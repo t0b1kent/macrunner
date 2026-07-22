@@ -1,0 +1,86 @@
+{
+  "schema": "macrunner.hk.verified-blocker-checkpoint.v1",
+  "checkpoint_id": "20260722-post-scene-jit-spin-145129-VERIFIED_BLOCKER_NOT_GOLDEN",
+  "classification": "VERIFIED_BLOCKER_NOT_GOLDEN",
+  "machine_verdict": "STACK_CLASSIFIED_PASS",
+  "created_utc": "2026-07-22T05:55:42Z",
+  "git_head": "beb53d302c40ef7fd8e382885c21eed6356ad306",
+  "source_run": "reports/phase4-hollow-knight/laneA-post-scene-passive-stack-corrected-20260722-145129",
+  "source_report": "reports/phase4-hollow-knight/PIXEL-FIRST-POST-SCENE-STACK-CLASSIFICATION.md",
+  "basis_checkpoint": "reports/phase4-hollow-knight/checkpoints/20260722-post-scene-submission-stall-125405-VERIFIED_BLOCKER_NOT_GOLDEN",
+  "task": {
+    "path": "docs/CODEX-TASK-hk-post-scene-passive-stack-classification-corrected.md",
+    "sha256": "6b4aabcde420907aa8c18d209d1d3d75a4053294b253e9f240b174597abd673c"
+  },
+  "runtime_identity": {
+    "run_contract_status": "READY",
+    "run_contract_sha256": "d972170ec60d8fa14aea0d0b713ddb97d917c78e5dd5a4d7cecae6d1f5340efa",
+    "pre_run_identity_sha256": "d821c1b4fb9b0fe59b13cc5cb5f865654405ac00e0fe1fb54bbbdf27a9cf83b2",
+    "post_run_identity_sha256": "c6f75b8b00a803e459a5a29963aa9ff49c00bff48943023ccfc736024e213e40",
+    "staged_diff_sha256": "af98c0e07a37ca9f9820c97d4abd23bfe2c1259252739296c48064925634efbf",
+    "live_admission_sha256": "9eb2f79d03c99df964e312ea8dfce986c1dabba744741dfb4fc973fa54e5b5fa"
+  },
+  "scene_boundary": {
+    "marker": "Performing automatic level start.",
+    "occurrences": 1,
+    "boundary_sha256": "7e900ae89c4cc4de0415a9ffdb5f402cff86bacd53733eca04ef8741a4e9a724",
+    "pre_boundary_get_buffer": 1,
+    "pre_boundary_present": 48,
+    "pre_boundary_present1": 48
+  },
+  "post_boundary": {
+    "get_buffer": 0,
+    "present": 0,
+    "present1": 0,
+    "draw": 0,
+    "encoder": 0,
+    "unsupported": 0,
+    "memory_fault": 0,
+    "reject": 0,
+    "sighup": 0
+  },
+  "stable_threads": {
+    "macos_main": {
+      "native_thread_id": 4704947,
+      "classification": "normal Cocoa run-loop wait"
+    },
+    "unity_guest_producer": {
+      "native_thread_id": 4704952,
+      "native_thread_id_hex": "0x47cab8",
+      "matches_swapchain_thread": true,
+      "classification": "HyperBridge/JIT spin or guest-PC loop",
+      "run_local_generated_host_pc": "0x11d397e38"
+    }
+  },
+  "samples": [
+    {
+      "slot": "plus-030",
+      "observed_offset_seconds": 58,
+      "process_cpu_percent": 184.8,
+      "sample_sha256": "63f9dd0450102553137818a64a6460727ae5fc135ce2e35c750451bed3ce01ec",
+      "pixel": "BLACK"
+    },
+    {
+      "slot": "plus-120",
+      "observed_offset_seconds": 140,
+      "process_cpu_percent": 183.4,
+      "sample_sha256": "f31827798f790cd81eed87be984eb6c219ba286b0ddd1f48d697c404e97e70c8",
+      "pixel": "BLACK"
+    }
+  ],
+  "evidence": {
+    "file_count_excluding_manifest_and_sha256sums": 22,
+    "report_sha256": "a0d245d863b3e309357ecd16859ac845d4f8c29a51c160ee0525562f572fb909",
+    "sample_adjudication_sha256": "eff6cf9e7d168513f781d13e37da75735c65f618fe97d7a2f3e403e6866c0e05",
+    "black_png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6"
+  },
+  "next_boundary": "Identify the live guest first/second block pair and bounded IR/memory condition in hb_jit_helper_exec_two_block_loop; never reuse the run-local host PC as a future selector.",
+  "excluded": [
+    "full run.log and boundary-prefix.log",
+    "raw final-child.json and expected child environment values",
+    "staged runtime trees and shader translation dumps",
+    "disposable prefix",
+    "translation cache bytes",
+    "invalid first-attempt evidence"
+  ]
+}

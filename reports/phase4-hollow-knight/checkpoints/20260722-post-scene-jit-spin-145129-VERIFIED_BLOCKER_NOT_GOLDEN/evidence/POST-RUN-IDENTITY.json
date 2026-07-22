@@ -1,0 +1,55 @@
+{
+  "schema": "macrunner.hk.post-scene-passive-stack-corrected-post-run.v1",
+  "classification": "NOT_GOLDEN",
+  "verified_epoch": 1784698576,
+  "launch_head": "85587ab23eae215b3a77d1813c193b55c7940e45",
+  "verification_head": "beb53d302c40ef7fd8e382885c21eed6356ad306",
+  "control_plane_head_changed_after_launch": true,
+  "pinned_inputs_unchanged": {
+    "task_sha256": "6b4aabcde420907aa8c18d209d1d3d75a4053294b253e9f240b174597abd673c",
+    "mr_run_sha256": "4b23ba831e926d5475b5e13ea22846ad7c73b3b8b926264d5a88ae854a4213a9",
+    "sync_prefix_sha256": "492d392db11f104ef41bd533c8f6f7b8fd869eb2606a362889caee4adab8fb3a"
+  },
+  "runtime": {
+    "requested_timeout_seconds": 2400,
+    "mr_run_exit_kind": "timeout",
+    "mr_run_exit_code": 124,
+    "run_log_exit_record_count": 1,
+    "wine_child_pid": 38952,
+    "wine_child_alive_after": false,
+    "runner_pid": 29746,
+    "runner_alive_after": false
+  },
+  "post_boundary_counts": {
+    "GetBuffer": 0,
+    "Present": 0,
+    "Present1": 0,
+    "Draw": 0,
+    "encoder": 0,
+    "UNSUPPORTED": 0,
+    "MEMORY_FAULT": 0,
+    "reject": 0,
+    "SIGHUP": 0
+  },
+  "staged_tree": {
+    "entry_count_before": 4732,
+    "entry_count_after": 4732,
+    "identity_sha256_before": "9bb2d5f863ab6261a60b756adb98b11cdd1c02c062cdbaca58c2598a41871546",
+    "identity_sha256_after": "9bb2d5f863ab6261a60b756adb98b11cdd1c02c062cdbaca58c2598a41871546",
+    "match": true
+  },
+  "translation_cache": {
+    "preserved": true,
+    "pre_size": 53789332,
+    "pre_sha256": "0306b24a96390bf48ce0459c88b71346274ab95746e41441eea9f3ffc800fea1",
+    "post_size": 58285128,
+    "post_sha256": "ef8d5deb90403272b297107e7f8420c1be2520c57909045be8c0892b1119fd63"
+  },
+  "cleanup": {
+    "disposable_prefix_present": false,
+    "staged_clone_present_after_cleanup": false,
+    "live_hk_wine_abzu_collision_count": 0,
+    "staged_clone_verified_before_removal": true,
+    "scoped_cleanup_status": "PASS"
+  }
+}

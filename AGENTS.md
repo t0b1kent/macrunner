@@ -65,10 +65,14 @@ authorization, nonce-ledger, provenance и snapshot сами по себе пр�
   отсутствие конфликтующих процессов, никакого destructive cleanup и сохранение failed evidence.
 
 Активный HK-приоритет: checkpoint
-`20260722-post-scene-submission-stall-125405-VERIFIED_BLOCKER_NOT_GOLDEN` доказал
-`Performing automatic level start.`, pre-boundary `Present/Present1=48/48` и затем 352 секунды
-`GetBuffer/Present/Present1/draw/encoder=0` при живом процессе без fault/reject/HUP. Следующий шаг —
-два пассивных native stack sample после scene boundary и fix точной wait/spin/deadlock границы.
+`20260722-post-scene-jit-spin-145129-VERIFIED_BLOCKER_NOT_GOLDEN` доказал устойчивую
+post-scene границу на Unity producer thread: `hb_jit_runtime_run -> generated ARM64 ->
+hb_jit_helper_exec_two_block_loop -> exec_instr -> mem_read`, при этом macOS main thread находится
+в нормальном Cocoa run loop, а post-boundary `GetBuffer/Present/Present1/draw/encoder=0` без
+fault/reject/HUP. Следующий шаг — получить живую пару guest block addresses и два IR-блока, затем
+исправить конкретное условие loop/memory. Run-local host PC `0x11d397e38` нельзя переносить между
+запусками: JIT native addresses эфемерны. Штатный `MACRUNNER_HB_TRACE_HELPER_LOOP_TOP` нельзя
+включать без rate-limit исправления: сейчас `budget_hit` печатает top-table при каждом hit.
 Shader/C0-C3 work, V5 admission и language/focus ветки заморожены до доказанного post-scene Present
 или явной смены направления пользователем.
 

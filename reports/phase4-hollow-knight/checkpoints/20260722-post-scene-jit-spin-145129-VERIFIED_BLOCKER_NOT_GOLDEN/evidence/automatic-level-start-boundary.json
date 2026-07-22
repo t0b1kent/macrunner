@@ -1,0 +1,27 @@
+{
+  "boundary_prefix_sha256": "073231576fd1c530073da6538716e1d139de16b0dfd75b19428e76f93891c9fc",
+  "cumulative_counts_through_marker": {
+    "Draw": 0,
+    "GetBuffer": 1,
+    "MEMORY_FAULT": 0,
+    "Present": 48,
+    "Present1": 48,
+    "SIGHUP": 0,
+    "UNSUPPORTED": 0,
+    "encoder": 1,
+    "reject": 0
+  },
+  "detection_elapsed_s": 1739,
+  "detection_epoch": 1784697784,
+  "marker": "Performing automatic level start.",
+  "marker_end": 469207,
+  "marker_occurrences": 1,
+  "marker_offset": 469174,
+  "run_start_epoch": 1784696045,
+  "sample_targets_epoch": {
+    "plus_030": 1784697814,
+    "plus_120": 1784697904
+  },
+  "schema": "macrunner.hk.passive-stack-boundary.v1",
+  "wine_child_pid": 38952
+}

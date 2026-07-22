@@ -1,0 +1,29 @@
+{
+  "deploy_epoch": 1784681545,
+  "final_child_existed_before_deploy": false,
+  "final_child_exists": true,
+  "overlay_d3d9_line_count": 1,
+  "overlay_or_ledger_seen_before_deploy": true,
+  "schema": "hk-actuator-prefix-deploy/v1",
+  "source": {
+    "exists": true,
+    "mtime_epoch": 1784616172,
+    "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/gchandle-lifetime-20260721-1629-NOT_GOLDEN/product/mono-profiler-hk_language.dll",
+    "sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+    "size": 34304,
+    "type": "regular"
+  },
+  "status": "PASS",
+  "sync_prefix_line_count": 1,
+  "sync_seen_before_deploy": true,
+  "target": {
+    "exists": true,
+    "mtime_epoch": 1784616172,
+    "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run-aa-hk-oracle-managed-actuator-20260722-try1-105203/drive_c/windows/system32/mono-profiler-hk_language.dll",
+    "sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+    "size": 34304,
+    "type": "regular"
+  },
+  "wine_child_pid_existed_before_deploy": false,
+  "wine_child_pid_exists": true
+}

@@ -1,0 +1,158 @@
+{
+  "cache_post_run": {
+    "exists": true,
+    "mtime_epoch": 1784683300,
+    "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/windows-oracle-direct-20260722-NOT_GOLDEN/cache/translation-cache-preimage/translation-cache.bin",
+    "sha256": "a826da4083068182061ff9d360df3f9d27df4606b10ac5008e238be3dfeabf46",
+    "size": 42647644,
+    "type": "regular"
+  },
+  "captures": {
+    "first-present": {
+      "epoch": 1784682510,
+      "non_black_px": 0,
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "rc": 3,
+      "verdict": "BLACK"
+    },
+    "post-confirm-plus10": {
+      "epoch": 1784682984,
+      "non_black_px": 0,
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "rc": 3,
+      "verdict": "BLACK"
+    },
+    "post-confirm-plus240": {
+      "epoch": 1784683214,
+      "non_black_px": 0,
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "rc": 3,
+      "verdict": "BLACK"
+    },
+    "post-confirm-plus60": {
+      "epoch": 1784683034,
+      "non_black_px": 0,
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "rc": 3,
+      "verdict": "BLACK"
+    },
+    "pre-managed-sequence": {
+      "epoch": 1784682523,
+      "non_black_px": 0,
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "rc": 3,
+      "verdict": "BLACK"
+    }
+  },
+  "classification": "NOT_GOLDEN",
+  "deploy": {
+    "deploy_epoch": 1784681545,
+    "final_child_existed_before_deploy": false,
+    "final_child_exists": true,
+    "overlay_d3d9_line_count": 1,
+    "overlay_or_ledger_seen_before_deploy": true,
+    "schema": "hk-actuator-prefix-deploy/v1",
+    "source": {
+      "exists": true,
+      "mtime_epoch": 1784616172,
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/gchandle-lifetime-20260721-1629-NOT_GOLDEN/product/mono-profiler-hk_language.dll",
+      "sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+      "size": 34304,
+      "type": "regular"
+    },
+    "status": "PASS",
+    "sync_prefix_line_count": 1,
+    "sync_seen_before_deploy": true,
+    "target": {
+      "exists": true,
+      "mtime_epoch": 1784616172,
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run-aa-hk-oracle-managed-actuator-20260722-try1-105203/drive_c/windows/system32/mono-profiler-hk_language.dll",
+      "sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+      "size": 34304,
+      "type": "regular"
+    },
+    "wine_child_pid_existed_before_deploy": false,
+    "wine_child_pid_exists": true
+  },
+  "elapsed_seconds": 1850,
+  "end_epoch": 1784683376,
+  "final_child": {
+    "exists": true,
+    "mtime_epoch": 1784681557,
+    "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-oracle-managed-actuator-20260722-try1-105203/final-child.json",
+    "sha256": "03e1321b03fac8a47806392b41a8c86488d756cc1e9a03de7e8177ae9effb1c9",
+    "size": 41780,
+    "type": "regular"
+  },
+  "flight": {
+    "exists": true,
+    "mtime_epoch": 1784683372,
+    "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-oracle-managed-actuator-20260722-try1-105203/flight.jsonl",
+    "sha256": "443ffeacd75b1f0b02b45f2730193ac9c48a8d5a2bd6b6d72a847a7d99cb6fe3",
+    "size": 182,
+    "type": "regular"
+  },
+  "hk_wine_abzu_process_residue": [],
+  "hk_wine_abzu_process_residue_count": 0,
+  "log_summary": {
+    "allow_scene_activation": 11,
+    "confirm_language_enter": 2,
+    "confirmlanguage_ok": 1,
+    "create_swapchain_rc0": 2,
+    "first_post_confirm_wall": null,
+    "game_cameras_awake": 1,
+    "game_manager_awake": 1,
+    "getbuffer": 1,
+    "init_failed": 0,
+    "memory_fault": 0,
+    "menu_title": 0,
+    "missing_game_cameras": 2,
+    "missing_game_manager": 4,
+    "missing_ui_manager": 13,
+    "observer_init_allocations_excluded": true,
+    "oneshot_lookup": 1,
+    "oneshot_lookup_exact_one": 1,
+    "oneshot_sequence": 7,
+    "opening_sequence": 0,
+    "present": 48,
+    "present1": 48,
+    "reject": 0,
+    "retained_handle": 1,
+    "scene_progress": 0,
+    "setlanguage_ok": 1,
+    "size": 510693,
+    "ui_manager_awake": 1,
+    "unity_ui_callback_setlanguage": 1,
+    "unsupported": 0
+  },
+  "machine_verdict": "SCENE_CAPABILITY_PASS_RENDER_BLACK",
+  "mr_run_rc": 124,
+  "observer_armed": true,
+  "player_log_current": {
+    "exists": true,
+    "mtime_epoch": 1784681583,
+    "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-oracle-managed-actuator-20260722-try1-105203/live-logs/Player.log.current-run",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0,
+    "type": "regular"
+  },
+  "prefix_exists_after_cleanup": false,
+  "run_contract": {
+    "exists": true,
+    "mtime_epoch": 1784681557,
+    "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-oracle-managed-actuator-20260722-try1-105203/run-contract.json",
+    "sha256": "28c0b3076ed3d3b908fc73ca6ca869d8b28c8e978e67590d59dcc0196f656a3e",
+    "size": 30993,
+    "type": "regular"
+  },
+  "run_log": {
+    "exists": true,
+    "mtime_epoch": 1784683372,
+    "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-oracle-managed-actuator-20260722-try1-105203/run.log",
+    "sha256": "ce2d2607538ee596109f0cb25a093fb16b051a4dabcac49d516ed9713c1b4f8e",
+    "size": 510933,
+    "type": "regular"
+  },
+  "schema": "hk-oracle-managed-actuator-post-run/v1",
+  "start_epoch": 1784681526
+}

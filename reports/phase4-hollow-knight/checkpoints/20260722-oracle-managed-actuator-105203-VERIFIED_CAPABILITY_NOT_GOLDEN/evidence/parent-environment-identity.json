@@ -1,0 +1,487 @@
+{
+  "actuator_deltas": [
+    "MONO_ENV_OPTIONS",
+    "MACRUNNER_HB_LANGUAGE_FLOW_OBSERVER",
+    "MACRUNNER_HB_LANGUAGE_ONESHOT_SEQUENCE",
+    "WINEDLLOVERRIDES"
+  ],
+  "canonical_name_value_sha256": "a0d5f8b6fe4ebc7da638f92c1f31ce2927edaa0245615d1052536c1cdcfe208c",
+  "entries": [
+    {
+      "name": "BISON",
+      "value_sha256": "d50b1a00b138b9c86f646322e104aacc5c1617ef6b011b80fd8113bfc056ed62"
+    },
+    {
+      "name": "BUN_INSTALL",
+      "value_sha256": "0b7c1dfc88268a93339f8679f7ef85c9385ae418b23da8b7f658b7ccef36068f"
+    },
+    {
+      "name": "CC",
+      "value_sha256": "bac5109d2db5b07ad2fa96f042c02c049acb9b315d049ce12a9208e4b9b81d3c"
+    },
+    {
+      "name": "CCACHE_BASEDIR",
+      "value_sha256": "ebb9b3b98f0824d60f973ed6b95d0095bc72ad0efd1cd366b09e058a7382f2e5"
+    },
+    {
+      "name": "CCACHE_DIR",
+      "value_sha256": "ade705aafa3182f4e2cde954170aec109fc81e8b7e6147805cb740bfc8b0c1b2"
+    },
+    {
+      "name": "COLORTERM",
+      "value_sha256": "4a5e83365abe1ee0eeab886f5545aa9bb5f43a06b183e773a342bd6f00ae74b0"
+    },
+    {
+      "name": "CXX",
+      "value_sha256": "6111a3ef4b8ab2c5b51180cfbc3fcf0b0fd0f1eca317283e15da1033ba3f30cb"
+    },
+    {
+      "name": "DXMT_LOG_LEVEL",
+      "value_sha256": "06271baf49532c879aa3c58b48671884bcc858f09197412d682750496c33e1e1"
+    },
+    {
+      "name": "DXMT_LOG_PATH",
+      "value_sha256": "932953a43b7def23a1b3bfbc279d508c4b7718a6a46f561f85ff300b00772264"
+    },
+    {
+      "name": "DYLD_FALLBACK_LIBRARY_PATH",
+      "value_sha256": "56594b511498b4f1c09e24226f57b356194174a6a5a0a810717bdfb9061b268f"
+    },
+    {
+      "name": "DYLD_LIBRARY_PATH",
+      "value_sha256": "f1da59bdb12dd2281f463244601e67a4ca4ec698930eeb7a09c24e4ce75b8482"
+    },
+    {
+      "name": "FLEX",
+      "value_sha256": "7fecdc2bc2a05bdd5802bcdf19a71687c89d9205c5415c33970f820661dee256"
+    },
+    {
+      "name": "FPATH",
+      "value_sha256": "e5bd4ff7017a80baa1fbe59d58c95a7ef58386d630394cf3d29395e0f08e9dae"
+    },
+    {
+      "name": "GIT_TERMINAL_PROMPT",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "HOME",
+      "value_sha256": "5d200420b2819fd41094b2ce64db513b2fe33b274bd54ad4cbb781f56e550dd1"
+    },
+    {
+      "name": "HOMEBREW_CELLAR",
+      "value_sha256": "9b0178a3af8351dc130cfa3e4e278b52bf11db7306ee1eb7f8a667b6437dd53d"
+    },
+    {
+      "name": "HOMEBREW_PREFIX",
+      "value_sha256": "b4cc5e569366a1f289b0200f475b2135192fc3df536fe715e55a0ad1ed2119fd"
+    },
+    {
+      "name": "HOMEBREW_REPOSITORY",
+      "value_sha256": "b4cc5e569366a1f289b0200f475b2135192fc3df536fe715e55a0ad1ed2119fd"
+    },
+    {
+      "name": "INFOPATH",
+      "value_sha256": "ad0dac74cba9d3ee63ea49e572b9b997dfc5ffe329754b8eb4314eb0ebffd112"
+    },
+    {
+      "name": "LANG",
+      "value_sha256": "99fed2d548c2eb1022f4067f97fe838a2c3ea60ee0e0f53086788505c3ababad"
+    },
+    {
+      "name": "LC_CTYPE",
+      "value_sha256": "3ad3031f5503a4404af825262ee8232cc04d4ea6683d42c5dd0a2f2a27ac9824"
+    },
+    {
+      "name": "LEX",
+      "value_sha256": "7fecdc2bc2a05bdd5802bcdf19a71687c89d9205c5415c33970f820661dee256"
+    },
+    {
+      "name": "LOGNAME",
+      "value_sha256": "8b839ee09ba63f5864b5755f872b23b32d088c9a919b1364c8a926bc6c70e514"
+    },
+    {
+      "name": "MACRUNNER_ARTIFACTS_ROOT",
+      "value_sha256": "6a216836fb3841bcfac02d0efd4d79b900699667dd37613b195080cd83610cc6"
+    },
+    {
+      "name": "MACRUNNER_BOTTLES_ROOT",
+      "value_sha256": "b5eb4b941e8865071778338c66b5492aeb25ce55d08a7b0df8fe153bfd34ea82"
+    },
+    {
+      "name": "MACRUNNER_CCACHE_DIR",
+      "value_sha256": "ade705aafa3182f4e2cde954170aec109fc81e8b7e6147805cb740bfc8b0c1b2"
+    },
+    {
+      "name": "MACRUNNER_DXMT_ROOT",
+      "value_sha256": "a76fdadc615fa4b0f48b306205445d2ae993c6e39a1a0ff47b1e8d20f482676a"
+    },
+    {
+      "name": "MACRUNNER_DXMT_SWAPCHAIN_TRACE",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_FLIGHT_PATH",
+      "value_sha256": "7bed298fc1adbee4c499873516082ca44f163d92693c1e92b38c7cb823961737"
+    },
+    {
+      "name": "MACRUNNER_FLIGHT_RECORDER",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_FLIGHT_RECORDER_FILE",
+      "value_sha256": "7bed298fc1adbee4c499873516082ca44f163d92693c1e92b38c7cb823961737"
+    },
+    {
+      "name": "MACRUNNER_FLIGHT_RECORDER_PATH",
+      "value_sha256": "7bed298fc1adbee4c499873516082ca44f163d92693c1e92b38c7cb823961737"
+    },
+    {
+      "name": "MACRUNNER_GRAPHICS_BACKEND",
+      "value_sha256": "637323f65b6919e0cc1943a46587235db635574aa91c2a2993328733f2b072e1"
+    },
+    {
+      "name": "MACRUNNER_HB_BACKEND",
+      "value_sha256": "ec03a0a8851d9cf0aa2320035b8699d6d3bbb4a8a8c160b0dd41c5c5ed086f9c"
+    },
+    {
+      "name": "MACRUNNER_HB_CAUSAL_CONTROL",
+      "value_sha256": "c899b3d71c1f520db816563ec9d7d0c4f15a47776d1e52e83bddfec13a440e7b"
+    },
+    {
+      "name": "MACRUNNER_HB_DIRECT_MEM",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HB_FORCE_FRAGMENT_MAGENTA",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_HB_FORCE_MAGENTA_FRAGMENT",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_HB_FRAGMENT_OUTPUT_PROBE",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_HB_FRAGMENT_SHADER_TRANSLATION_PROBE",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_HB_FRAGMENT_SHADER_TRANSLATION_PROBE_MAX",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_HB_GPU_READBACK_PROBE",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_HB_JIT_DIRECT_MEM",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HB_JIT_DIRECT_SCALAR_MEM",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HB_JIT_DIRECT_STACK",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_HB_LANGUAGE_FLOW_OBSERVER",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HB_LANGUAGE_ONESHOT_SEQUENCE",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HB_RENDER_PIPELINE_PROBE",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_HB_SHADER_INPUTS_PROBE",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_HB_SINGLE_LOOKUP",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HB_TRACE_D3D_BOUNDARY",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HB_TRACE_TRANSLATION_CACHE",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HB_TRANSLATION_CACHE",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HB_TRANSLATION_CACHE_ROOT",
+      "value_sha256": "57e6bf6bb91a3425a2261fbe091b772399f593680da1088fb5ffeb54607802bf"
+    },
+    {
+      "name": "MACRUNNER_HB_X64_LOADER",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_HOMEBREW_LIBRARY_PATHS",
+      "value_sha256": "04b8f7e18e8f59cc8d4833a076a6e546b4c3d949ce8239a01b23a3d76ed3bffd"
+    },
+    {
+      "name": "MACRUNNER_HOMEBREW_PREFIX",
+      "value_sha256": "b4cc5e569366a1f289b0200f475b2135192fc3df536fe715e55a0ad1ed2119fd"
+    },
+    {
+      "name": "MACRUNNER_LANEA_WINE_DIST",
+      "value_sha256": "6ec6fc1568c31f3f32b0bf902c6617451296783b8cbd65929b78a2a90862afe7"
+    },
+    {
+      "name": "MACRUNNER_LLVM_MINGW_BIN",
+      "value_sha256": "913cd0b549caee463a81064a9bf2f53d577daff6aa5dd574b30beccd2da07b70"
+    },
+    {
+      "name": "MACRUNNER_MR_RUN_ACTXPRXY",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_MR_RUN_CRT_CASE_FUSION",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_MR_RUN_PREFIX_PATH",
+      "value_sha256": "2b89803a02c114fcf3e6a0e66d61d90bf3e53eff7f7983af275e8bab59f8a06b"
+    },
+    {
+      "name": "MACRUNNER_MR_RUN_PREFIX_TEMPLATE",
+      "value_sha256": "cdb69959b67109710c9071266b3710c8c610b743a24b9b024b9c93682184f5b4"
+    },
+    {
+      "name": "MACRUNNER_MR_RUN_START_SERVICES",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_MR_RUN_WWISE_OBSERVER",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "MACRUNNER_NO_AUTOTRIAGE",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "MACRUNNER_NPP_AFTER_LAUNCH_READY_SECS",
+      "value_sha256": "6af1f692e9496c6d0b668316eccb93276ae6b6774fa728aac31ff40a38318760"
+    },
+    {
+      "name": "MACRUNNER_NPP_X64_APP",
+      "value_sha256": "7d74a7d6c7cb1b564bfe86f8eea59a1264f3397e9c8433b0b2d232295f7133ed"
+    },
+    {
+      "name": "MACRUNNER_NPP_X64_DIR",
+      "value_sha256": "11d52b9197d663dc1d7994b0394865321319759526ad81ac4f454c2dab0f951c"
+    },
+    {
+      "name": "MACRUNNER_PREFIX_SYSTEM32_ARCH",
+      "value_sha256": "3060165cd184bb84b8a8fffd9b27ca0aa54646ae2a09e1d1afd93d26ebc90899"
+    },
+    {
+      "name": "MACRUNNER_REPORTS_ROOT",
+      "value_sha256": "9ef439dd774011ac39a9be69f78e0911d85bc55e4c30bf1dfc982c3ae5fa3079"
+    },
+    {
+      "name": "MACRUNNER_ROOT",
+      "value_sha256": "ebb9b3b98f0824d60f973ed6b95d0095bc72ad0efd1cd366b09e058a7382f2e5"
+    },
+    {
+      "name": "MACRUNNER_RUN_DIR",
+      "value_sha256": "932953a43b7def23a1b3bfbc279d508c4b7718a6a46f561f85ff300b00772264"
+    },
+    {
+      "name": "MACRUNNER_WINEBOOT_WAIT_SECS",
+      "value_sha256": "7b69759630f869f2723875f873935fed29d2d12b10ef763c1c33b8e0004cb405"
+    },
+    {
+      "name": "MACRUNNER_WINESERVER_WAIT_SECS",
+      "value_sha256": "2abaca4911e68fa9bfbf3482ee797fd5b9045b841fdff7253557c5fe15de6477"
+    },
+    {
+      "name": "MACRUNNER_WINE_BIN",
+      "value_sha256": "b41e350c25b1db49d7acbd349f6dac6ea7c89e583010f62bb7df3f5b657d061a"
+    },
+    {
+      "name": "MACRUNNER_WINE_BUILD_ARM64",
+      "value_sha256": "0d356843ba502deea4a7cbdf3abbf78ee481c4883c1704eea7bec30559118fcd"
+    },
+    {
+      "name": "MACRUNNER_WINE_CCACHE_PREFIX",
+      "value_sha256": "c4a3e670ce3714c8bfcf33c64f71450e57a1cf6945e9097e973a768a727d342b"
+    },
+    {
+      "name": "MACRUNNER_WINE_DIST",
+      "value_sha256": "14f194efbd094c5e7a07b61856df616b16bfd3537e0491cc5689c8040c6983a4"
+    },
+    {
+      "name": "MACRUNNER_WINE_DIST_ARM64",
+      "value_sha256": "7fd4014258631914ebdcebb46a594d260532f14d83f487f009d48103f4d83518"
+    },
+    {
+      "name": "MONO_ENV_OPTIONS",
+      "value_sha256": "0eb386a961b23f977cd75976f07e8e9729fdb4c311eda33789ab2749ed26181c"
+    },
+    {
+      "name": "NO_COLOR",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "OSLogRateLimit",
+      "value_sha256": "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b"
+    },
+    {
+      "name": "PATH",
+      "value_sha256": "4fef4f19ef225b5010ad7fd6786a0916373a9f809b3ea626f0b3338304ace3ea"
+    },
+    {
+      "name": "PWD",
+      "value_sha256": "ebb9b3b98f0824d60f973ed6b95d0095bc72ad0efd1cd366b09e058a7382f2e5"
+    },
+    {
+      "name": "SHELL",
+      "value_sha256": "b1fd29aea4dad2af84fad34e1f3c7fc8e2b7844731f14944381baeb581c333b6"
+    },
+    {
+      "name": "SHLVL",
+      "value_sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a"
+    },
+    {
+      "name": "TERM",
+      "value_sha256": "ac996ae492f9a987c84f109f2118d3f6632e2259455d30c455a9ecd66c3c4959"
+    },
+    {
+      "name": "TERM_PROGRAM",
+      "value_sha256": "df32ab4430708c84df8941e0683c59382298264e85dd74558b35ca16cb9c22de"
+    },
+    {
+      "name": "TERM_PROGRAM_VERSION",
+      "value_sha256": "b70ed556444784a6c5b67ae902b4210784f1d65dde5af7383770373bca4ae3b0"
+    },
+    {
+      "name": "TERM_SESSION_ID",
+      "value_sha256": "6effe20ec64c332b26fc8bf3a7415c3ae7926cb91864b18caa072d316a77a949"
+    },
+    {
+      "name": "TMPDIR",
+      "value_sha256": "2e4e3fbb99b12d15e60d88f0da12d037ee226d77106e2701d8bbe4779af98e7a"
+    },
+    {
+      "name": "USER",
+      "value_sha256": "8b839ee09ba63f5864b5755f872b23b32d088c9a919b1364c8a926bc6c70e514"
+    },
+    {
+      "name": "WINEDEBUG",
+      "value_sha256": "642446997cf07691cfcdd160844805b3b8371f5b523bd1964cbeea4d61ffbf2b"
+    },
+    {
+      "name": "WINEDLLOVERRIDES",
+      "value_sha256": "60542aba8e772db68b2ef25bca519b2c1b36144b4264cba86ae05f4d72ccd028"
+    },
+    {
+      "name": "WINEDLLPATH",
+      "value_sha256": "89edf8ce2249ec2d56248f30515a0ceb4f86db44927f6e8f612de1e501ee37d9"
+    },
+    {
+      "name": "WINELOADERNOEXEC",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "WINEMSYNC",
+      "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "WINEPREFIX",
+      "value_sha256": "2b89803a02c114fcf3e6a0e66d61d90bf3e53eff7f7983af275e8bab59f8a06b"
+    },
+    {
+      "name": "WINESYSTEMDLLPATH",
+      "value_sha256": "3bb5a86578de0b9816bd72925fa6f5ed0bd80f384999147f2b0f3e5e8746208f"
+    },
+    {
+      "name": "XPC_FLAGS",
+      "value_sha256": "b8ad1bd2ff50021ff6a1239585cc9ccde31e70072299c3cc910da54f9e791f7c"
+    },
+    {
+      "name": "XPC_SERVICE_NAME",
+      "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "YACC",
+      "value_sha256": "21e9d19631d88db77b1a091b01e6fd0280ffc13e897cbea05c50dfa857776c79"
+    },
+    {
+      "name": "_",
+      "value_sha256": "6ee0c0a12f94e233d96b66cf13c337bd6ffbabbd991405db78c933c73dcbac41"
+    },
+    {
+      "name": "__CFBundleIdentifier",
+      "value_sha256": "29cc372c34959742f5b6564d4786dde02c8c49a1c98abd34bc1692bd2a777bc2"
+    },
+    {
+      "name": "__CF_USER_TEXT_ENCODING",
+      "value_sha256": "bfea86ae0b123713ac5b1af20b2dd4ead4f0bb81822ed654e80347e6fa420f3b"
+    },
+    {
+      "name": "aarch64_CC",
+      "value_sha256": "cc72c13a2006cec2d5ca21a02e8c703d84644570c269e7ec71e07276d8c69472"
+    },
+    {
+      "name": "aarch64_CXX",
+      "value_sha256": "de263fcc897bc5680ab6bdf929fd70d934d98822a2be1f241a769b1c0e7bbcae"
+    },
+    {
+      "name": "arm64ec_CC",
+      "value_sha256": "084eca9c1de575fb53890c872d608cfca7a8920d1692df6e89f5e0b357ae626c"
+    },
+    {
+      "name": "arm64ec_CXX",
+      "value_sha256": "66c3f7396bfbe214182c5f03365e47c688fbb48d6bb2d7c7c1db44c4a0043e99"
+    },
+    {
+      "name": "i386_CC",
+      "value_sha256": "c1f4762cd003b8d8cb15a9788c1b04346ef0c35958fbc70721388724c8378fa9"
+    },
+    {
+      "name": "i386_CXX",
+      "value_sha256": "ea7574ede8c7e9fc4d3cca99a7971961b3fee19371bf058f56107070f67a8f4d"
+    },
+    {
+      "name": "x86_64_CC",
+      "value_sha256": "30c7d17d891031ffc531c301ed0e8f9d32d37b48d0499c4156ae33ebcf33f759"
+    },
+    {
+      "name": "x86_64_CXX",
+      "value_sha256": "9f26f333984ca4baa13dca2d83046e71f7de717f7d880821a356c090184bbbb4"
+    }
+  ],
+  "entry_count": 116,
+  "identity_deltas_from_source_child": [
+    "MACRUNNER_RUN_DIR",
+    "MACRUNNER_MR_RUN_PREFIX_PATH",
+    "WINEPREFIX",
+    "DXMT_LOG_PATH",
+    "MACRUNNER_FLIGHT_RECORDER_PATH",
+    "MACRUNNER_FLIGHT_RECORDER_FILE",
+    "MACRUNNER_FLIGHT_PATH",
+    "WINEDLLPATH(parent-dedup-for-runner-prepend)"
+  ],
+  "name_set_sha256": "0ac63255bcd568c79d06a3a94644832af4d95f252a1332cd360f971dd9be7ccf"
+}

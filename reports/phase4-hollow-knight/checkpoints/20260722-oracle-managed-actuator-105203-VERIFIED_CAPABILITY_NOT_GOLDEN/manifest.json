@@ -1,0 +1,107 @@
+{
+  "capability": {
+    "actuator_deploy": "PASS",
+    "blocker_count": 0,
+    "confirmlanguage_ok": 1,
+    "create_swapchain_for_hwnd_rc0": 2,
+    "environment_entry_count": 116,
+    "get_buffer": 1,
+    "init_failed": 0,
+    "manager_created": {
+      "GameCameras": 1,
+      "GameManager": 1,
+      "UIManager": 1
+    },
+    "memory_fault": 0,
+    "menu_title": 0,
+    "non_black_px_all_captures": 0,
+    "observer_init_allocations_excluded": 1,
+    "oneshot_exact_one": 1,
+    "opening_sequence": 0,
+    "pixel_verdict": "BLACK",
+    "present": 48,
+    "present1": 48,
+    "reject": 0,
+    "retained_gchandle": 1,
+    "run_contract_status": "READY",
+    "scene_load_markers": 0,
+    "setlanguage_ok": 1,
+    "unsupported": 0
+  },
+  "captures": {
+    "first-present": {
+      "epoch": 1784682510,
+      "non_black_px": 0,
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "rc": 3,
+      "verdict": "BLACK"
+    },
+    "post-confirm-plus10": {
+      "epoch": 1784682984,
+      "non_black_px": 0,
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "rc": 3,
+      "verdict": "BLACK"
+    },
+    "post-confirm-plus240": {
+      "epoch": 1784683214,
+      "non_black_px": 0,
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "rc": 3,
+      "verdict": "BLACK"
+    },
+    "post-confirm-plus60": {
+      "epoch": 1784683034,
+      "non_black_px": 0,
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "rc": 3,
+      "verdict": "BLACK"
+    },
+    "pre-managed-sequence": {
+      "epoch": 1784682523,
+      "non_black_px": 0,
+      "png_sha256": "63373382cfa36078355ba24feb69e5e94474e40ec28f26bb01c8bfd7f4ed18e6",
+      "rc": 3,
+      "verdict": "BLACK"
+    }
+  },
+  "checkpoint_id": "20260722-oracle-managed-actuator-105203-VERIFIED_CAPABILITY_NOT_GOLDEN",
+  "classification": "VERIFIED_CAPABILITY_NOT_GOLDEN",
+  "cleanup": {
+    "disk_free_after": "60 GiB",
+    "hk_wine_abzu_process_residue_count": 0,
+    "prefix_exists_after_cleanup": false
+  },
+  "created_utc": "2026-07-22T01:27:33Z",
+  "git_head": "5eea7028ad67986bbfc1a0c6d88894e503d89024",
+  "hashes": {
+    "actuator_deploy_final_sha256": "028d002efa4b696420ecbc6671eabb8f4039b7fc996219ed9b20093d33e177b5",
+    "actuator_pe_sha256": "7c62033f7315aaf14f31783c32b0ddb46a14757a3fb4e0e248c291c47b4a570b",
+    "cache_post_run_sha256": "a826da4083068182061ff9d360df3f9d27df4606b10ac5008e238be3dfeabf46",
+    "cache_pre_run_sha256": "22c8ff0f6cd791bfd32e02c945756a2ce2c1bd1ba66ed974cef492e7db94c048",
+    "final_child_sha256": "03e1321b03fac8a47806392b41a8c86488d756cc1e9a03de7e8177ae9effb1c9",
+    "player_log_current_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "post_run_summary_sha256": "8cb7a0cd62e1f1640f6140d893a790e1eca9197f901907ede490cbd4b469f204",
+    "pre_run_identity_sha256": "8722bfb2342dd12260503d6d9ac5117a36080d5169d7a2d170e1761b0c70c2d9",
+    "report_sha256": "92d77264eccaa8d9b4afa4508d32044b09ed4334e5a765ba65c48e9c67a11c57",
+    "run_contract_sha256": "28c0b3076ed3d3b908fc73ca6ca869d8b28c8e978e67590d59dcc0196f656a3e",
+    "run_log_sha256": "ce2d2607538ee596109f0cb25a093fb16b051a4dabcac49d516ed9713c1b4f8e",
+    "task_file_sha256": "6fa9629f4c8b4e41611f4241b957efd1261398b3721b07219e27a5975aca6434"
+  },
+  "machine_verdict": "SCENE_CAPABILITY_PASS_RENDER_BLACK",
+  "qualification": {
+    "golden": false,
+    "historical_return_artifact_causality": "UNKNOWN",
+    "next_boundary": "shader value production; scene/managers and Present are live but pixels remain black",
+    "pixel_pass": false
+  },
+  "schema": 1,
+  "security": {
+    "full_run_log_included": false,
+    "raw_final_child_included": false,
+    "sanitized_environment_hashes_only": true,
+    "translation_cache_included": false
+  },
+  "source_report": "reports/phase4-hollow-knight/PIXEL-FIRST-ORACLE-MANAGED-ACTUATOR-RESULT.md",
+  "source_run": "reports/phase4-hollow-knight/laneA-oracle-managed-actuator-20260722-try1-105203"
+}

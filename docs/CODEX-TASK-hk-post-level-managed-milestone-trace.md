@@ -1,5 +1,11 @@
 # TASK: HK post-level managed milestone trace
 
+> Revision 2026-07-23: the first pre-build attempt correctly stopped because
+> `GameManager.LevelActivated` has arity `2`, not `0`. Token and RVA matched.
+> The verified parameters are `sceneFrom` and `sceneTo`. This revision changes
+> only that classifier expectation; it does not authorize argument decoding,
+> invocation, or a second runtime for the failed pre-build attempt.
+
 ## Objective
 
 The latest valid capture removes the current generic HyperBridge/JIT-loop
@@ -24,11 +30,11 @@ Before changing the observer, independently verify and record the class,
 method, arity, metadata token, and RVA for each target from the same managed
 assembly used by the staged game:
 
-| Class | Method | Arity | Expected token | Expected RVA |
-| --- | --- | ---: | --- | --- |
-| `GameManager` | `LevelActivated` | 0 | `0x06000D53` | `0x4C870` |
-| `UIManager` | `MakeMenuLean` | 0 | `0x06000F17` | `0x52560` |
-| `OpeningSequence` | `OnChangingSequences` | 0 | `0x06000355` | `0x194A4` |
+| Class | Method | Arity | Parameters | Expected token | Expected RVA |
+| --- | --- | ---: | --- | --- | --- |
+| `GameManager` | `LevelActivated` | 2 | `sceneFrom`, `sceneTo` | `0x06000D53` | `0x4C870` |
+| `UIManager` | `MakeMenuLean` | 0 | none | `0x06000F17` | `0x52560` |
+| `OpeningSequence` | `OnChangingSequences` | 0 | none | `0x06000355` | `0x194A4` |
 
 If the assembly identity or any static identity differs, stop before build and
 report `TRACE_STATIC_IDENTITY_MISMATCH`. Do not substitute a similar method.
@@ -44,8 +50,10 @@ tests/build inputs as required.
 2. Extend the exact method classifier/filter so this flag instruments only the
    three identities above. Request enter and leave callbacks for these three
    methods only; keep all other methods at `NONE` through this new path.
+   `LevelActivated` must match arity `2` but its arguments must not be decoded,
+   retained, or written.
 3. Emit one bounded, allocation-free record per entry and normal leave:
-   `post-level-milestone phase=enter|leave class=<...> method=<...> arity=0
+   `post-level-milestone phase=enter|leave class=<...> method=<...> arity=<...>
    managed_tid=<...> sequence=<...>`.
    Include the static token/RVA in the startup/arming record, not a guessed
    runtime value.
@@ -68,7 +76,8 @@ Run focused tests before any game process exists:
 1. Default-off fixture: the three methods receive no callback requests and no
    post-level records.
 2. Exact-identity fixture: only the three class/method/arity pairs above are
-   accepted; wrong class, arity, or similarly named method is rejected.
+   accepted; `LevelActivated` arity `0` and `1`, any wrong class/arity, and a
+   similarly named method are rejected.
 3. Callback fixture: each accepted method requests enter plus leave; no other
    method is broadened by the new flag.
 4. No-allocation/no-actuation fixture: the new flag path cannot reach

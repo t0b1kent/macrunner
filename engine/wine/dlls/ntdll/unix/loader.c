@@ -95,6 +95,8 @@
 #include "wine/list.h"
 #include "ntsyscalls.h"
 #include "wine/debug.h"
+#include "../../../../hyperbridge/include/hb_memory.h"
+#include "../../../../hyperbridge/include/hb_runtime.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(module);
 WINE_DECLARE_DEBUG_CHANNEL(syscall);
@@ -116,6 +118,7 @@ SYSTEM_DLL_INIT_BLOCK *pLdrSystemDllInitBlock = NULL;
 
 extern typeof(NtReadFile) __wine_rpc_NtReadFile;
 extern void macrunner_hb_register_x64_original_exec_sections( void *module, const IMAGE_NT_HEADERS *nt );
+extern void macrunner_hb_init_environment( void );
 
 static void stub_syscall( const char *name )
 {
@@ -426,6 +429,9 @@ static BOOL macrunner_hb_is_wow64_host_builtin( const UNICODE_STRING *nt_name, c
 
 static void macrunner_hb_init_flags(void)
 {
+    macrunner_hb_init_environment();
+    hb_memory_init_environment();
+    hb_runtime_init_environment();
     macrunner_hb_x64_loader = macrunner_hb_x64_loader_enabled();
 }
 

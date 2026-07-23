@@ -641,6 +641,12 @@ static uint8_t runtime_jit_flags(void) {
     return flags;
 }
 
+static uint8_t macrunner_hb_runtime_persistent_cache_flags;
+
+void hb_runtime_init_environment(void) {
+    macrunner_hb_runtime_persistent_cache_flags = runtime_jit_flags();
+}
+
 static bool native_blob_has_helper_call(const uint8_t* code, size_t size) {
     if (!code) return true;
     for (size_t i = 0; i + sizeof(uint32_t) <= size; i += sizeof(uint32_t)) {
@@ -905,7 +911,7 @@ static hb_result_t persistent_cache_key_for_block(hb_jit_runtime_t* rt,
     key->guest_addr = block->guest_addr;
     key->mode = (uint8_t)rt->ctx->mode;
     key->backend = (uint8_t)HB_BACKEND_JIT;
-    key->flags = runtime_jit_flags();
+    key->flags = rt->persistent_cache_flags;
     return HB_OK;
 }
 
@@ -1415,7 +1421,9 @@ hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
     const char* size_env;
     size_t jit_size = 128u * 1024u * 1024u;
     if (!rt) return NULL;
+    hb_runtime_init_environment();
     rt->ctx = ctx;
+    rt->persistent_cache_flags = macrunner_hb_runtime_persistent_cache_flags;
     size_env = getenv("MACRUNNER_HB_JIT_BUFFER_SIZE");
     if (size_env && *size_env) {
         unsigned long long parsed = strtoull(size_env, NULL, 0);

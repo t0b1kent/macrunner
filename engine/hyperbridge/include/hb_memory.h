@@ -73,6 +73,7 @@ typedef struct hb_memory {
 } hb_memory_t;
 
 hb_memory_t* hb_memory_create(size_t max_size);
+void hb_memory_init_environment(void);
 void hb_memory_destroy(hb_memory_t* mem);
 
 hb_result_t hb_memory_map(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);

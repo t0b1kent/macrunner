@@ -13824,6 +13824,246 @@ TEST(jit_x64_native_xmm_move_family) {
     tests_passed++;
 }
 
+TEST(decode_x64_legacy_movnt_packed_store_family) {
+    const uint64_t base = 0x180e1028dULL;
+    uint8_t movntps[] = {0x0f, 0x2b, 0x00};                 /* movntps [rax], xmm0 */
+    uint8_t movntpd[] = {0x66, 0x0f, 0x2b, 0x4c, 0x8b, 0x10}; /* movntpd [rbx+rcx*4+0x10], xmm1 */
+    uint8_t movntdq[] = {0x66, 0x0f, 0xe7, 0x14, 0x07};     /* movntdq [rdi+rax], xmm2 */
+    uint8_t movntdq_xmm8[] = {0x66, 0x44, 0x0f, 0xe7, 0x44, 0x24, 0x20};
+    uint8_t invalid_reg[] = {0x66, 0x0f, 0xe7, 0xc2};
+    hb_decoded_t d;
+
+    ASSERT(hb_decode_x64(movntps, sizeof(movntps), base, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_mem && d.op1.size == 16 && d.op1.mem.base == HB_REG_RAX);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM0 && d.op2.size == 16);
+
+    ASSERT(hb_decode_x64(movntpd, sizeof(movntpd), base, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_mem && d.op1.size == 16 && d.op1.mem.base == HB_REG_RBX);
+    ASSERT(d.op1.mem.index == HB_REG_RCX && d.op1.mem.scale == 4 && d.op1.mem.disp == 0x10);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM1 && d.op2.size == 16);
+
+    ASSERT(hb_decode_x64(movntdq, sizeof(movntdq), base, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_mem && d.op1.size == 16 && d.op1.mem.base == HB_REG_RDI);
+    ASSERT(d.op1.mem.index == HB_REG_RAX && d.op1.mem.scale == 1);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM2 && d.op2.size == 16);
+
+    ASSERT(hb_decode_x64(movntdq_xmm8, sizeof(movntdq_xmm8), base, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_mem && d.op1.mem.base == HB_REG_RSP && d.op1.mem.disp == 0x20);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM8 && d.op2.size == 16);
+
+    ASSERT(hb_decode_x64(invalid_reg, sizeof(invalid_reg), base, &d) == HB_ERR_UNSUPPORTED_OPCODE);
+    tests_passed++;
+}
+
+TEST(decode_x86_legacy_movnt_packed_store_family) {
+    uint8_t movntps[] = {0x0f, 0x2b, 0x00};                 /* movntps [eax], xmm0 */
+    uint8_t movntpd[] = {0x66, 0x0f, 0x2b, 0x4c, 0x8b, 0x10}; /* movntpd [ebx+ecx*4+0x10], xmm1 */
+    uint8_t movntdq[] = {0x66, 0x0f, 0xe7, 0x14, 0x07};     /* movntdq [edi+eax], xmm2 */
+    uint8_t invalid_reg[] = {0x66, 0x0f, 0xe7, 0xc2};
+    hb_decoded_t d;
+
+    ASSERT(hb_decode_x86(movntps, sizeof(movntps), 0x401000, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_mem && d.op1.size == 16 && d.op1.mem.base == HB_REG_RAX);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM0 && d.op2.size == 16);
+
+    ASSERT(hb_decode_x86(movntpd, sizeof(movntpd), 0x401000, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_mem && d.op1.size == 16 && d.op1.mem.base == HB_REG_RBX);
+    ASSERT(d.op1.mem.index == HB_REG_RCX && d.op1.mem.scale == 4 && d.op1.mem.disp == 0x10);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM1 && d.op2.size == 16);
+
+    ASSERT(hb_decode_x86(movntdq, sizeof(movntdq), 0x401000, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_mem && d.op1.size == 16 && d.op1.mem.base == HB_REG_RDI);
+    ASSERT(d.op1.mem.index == HB_REG_RAX && d.op1.mem.scale == 1);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM2 && d.op2.size == 16);
+
+    ASSERT(hb_decode_x86(invalid_reg, sizeof(invalid_reg), 0x401000, &d) == HB_ERR_UNSUPPORTED_OPCODE);
+    tests_passed++;
+}
+
+TEST(jit_x64_legacy_movnt_packed_store_family) {
+    uint8_t code[] = {
+        0x0f, 0x2b, 0x00,                   /* movntps [rax], xmm0 */
+        0x66, 0x0f, 0x2b, 0x4c, 0x8b, 0x10, /* movntpd [rbx+rcx*4+0x10], xmm1 */
+        0x66, 0x44, 0x0f, 0xe7, 0x44, 0x24, 0x20 /* movntdq [rsp+0x20], xmm8 */
+    };
+    __attribute__((aligned(16))) uint64_t dst_interp[12];
+    __attribute__((aligned(16))) uint64_t dst_jit[12];
+    const uint64_t base = (uint64_t)(uintptr_t)code;
+    hb_decoder_t* dec;
+    hb_ir_func_t* func = NULL;
+    hb_exec_result_t out;
+
+    memset(dst_interp, 0, sizeof(dst_interp));
+    memset(dst_jit, 0, sizeof(dst_jit));
+
+    dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), base);
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL);
+    ASSERT(func->cfg && func->cfg->entry && func->cfg->entry->instr_count == 3);
+    for (size_t i = 0; i < func->cfg->entry->instr_count; i++) {
+        ASSERT(func->cfg->entry->instrs[i].op == HB_IR_STORE);
+        ASSERT(func->cfg->entry->instrs[i].src1.size == 16);
+    }
+
+    {
+        hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_INTERP);
+        ASSERT(ctx != NULL);
+        ctx->memory = hb_memory_create(0);
+        ASSERT(ctx->memory != NULL);
+        ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                             HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+        ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)dst_interp, sizeof(dst_interp),
+                             HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+        ctx->pc = base;
+        ctx->regs.x64.rax = (uint64_t)(uintptr_t)&dst_interp[0];
+        ctx->regs.x64.rbx = (uint64_t)(uintptr_t)&dst_interp[0];
+        ctx->regs.x64.rcx = 4;
+        ctx->regs.x64.rsp = (uint64_t)(uintptr_t)&dst_interp[6];
+        ctx->regs.x64.xmm[0][0] = 0x0011223344556677ULL;
+        ctx->regs.x64.xmm[0][1] = 0x8899aabbccddeeffULL;
+        ctx->regs.x64.xmm[1][0] = 0x1021324354657687ULL;
+        ctx->regs.x64.xmm[1][1] = 0x98a9bacbdcedfe0fULL;
+        ctx->regs.x64.xmm[8][0] = 0xfedcba9876543210ULL;
+        ctx->regs.x64.xmm[8][1] = 0x0123456789abcdefULL;
+        ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_INTERP, &out) == HB_OK);
+        ASSERT(out.result == HB_OK);
+        hb_context_destroy(ctx);
+    }
+
+    {
+        hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+        char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+        ASSERT(ctx != NULL);
+        ctx->memory = hb_memory_create(0);
+        ASSERT(ctx->memory != NULL);
+        ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)code, sizeof(code),
+                             HB_PERM_READ | HB_PERM_EXEC) == HB_OK);
+        ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)dst_jit, sizeof(dst_jit),
+                             HB_PERM_READ | HB_PERM_WRITE) == HB_OK);
+        ctx->pc = base;
+        ctx->regs.x64.rax = (uint64_t)(uintptr_t)&dst_jit[0];
+        ctx->regs.x64.rbx = (uint64_t)(uintptr_t)&dst_jit[0];
+        ctx->regs.x64.rcx = 4;
+        ctx->regs.x64.rsp = (uint64_t)(uintptr_t)&dst_jit[6];
+        ctx->regs.x64.xmm[0][0] = 0x0011223344556677ULL;
+        ctx->regs.x64.xmm[0][1] = 0x8899aabbccddeeffULL;
+        ctx->regs.x64.xmm[1][0] = 0x1021324354657687ULL;
+        ctx->regs.x64.xmm[1][1] = 0x98a9bacbdcedfe0fULL;
+        ctx->regs.x64.xmm[8][0] = 0xfedcba9876543210ULL;
+        ctx->regs.x64.xmm[8][1] = 0x0123456789abcdefULL;
+        setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+        ASSERT(hb_runtime_run(ctx, func, HB_BACKEND_JIT, &out) == HB_OK);
+        restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+        ASSERT(out.result == HB_OK);
+        hb_context_destroy(ctx);
+    }
+
+    ASSERT(memcmp(dst_interp, dst_jit, sizeof(dst_interp)) == 0);
+    ASSERT(dst_jit[0] == 0x0011223344556677ULL && dst_jit[1] == 0x8899aabbccddeeffULL);
+    ASSERT(dst_jit[4] == 0x1021324354657687ULL && dst_jit[5] == 0x98a9bacbdcedfe0fULL);
+    ASSERT(dst_jit[10] == 0xfedcba9876543210ULL && dst_jit[11] == 0x0123456789abcdefULL);
+
+    {
+        hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+        hb_codegen_buffer_t* code_buf = hb_codegen_buffer_create(512);
+        hb_arm64_codegen_t* cg = hb_arm64_codegen_create(ctx);
+        char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+        ASSERT(ctx != NULL && code_buf != NULL && cg != NULL);
+        setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+        ASSERT(hb_arm64_codegen_block(cg, func->cfg->entry, code_buf) == HB_OK);
+        restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+        hb_arm64_codegen_destroy(cg);
+        hb_codegen_buffer_destroy(code_buf);
+        hb_context_destroy(ctx);
+    }
+
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
+TEST(jit_x64_unity_movntdq_corridor_compile) {
+    const uint64_t image_base = 0x180000000ULL;
+    const uint64_t guest = image_base + 0xe10256ULL;
+    uint8_t code[] = {
+        0x66, 0x0f, 0x6f, 0x05, 0x62, 0x40, 0xee, 0x00,
+        0x66, 0x0f, 0x72, 0xd1, 0x08,
+        0x0f, 0x57, 0xca,
+        0xf3, 0x0f, 0x6f, 0x56, 0x30,
+        0x66, 0x0f, 0x72, 0xd2, 0x13,
+        0x0f, 0x57, 0x56, 0x30,
+        0x0f, 0x57, 0xd1,
+        0xf3, 0x0f, 0x7f, 0x56, 0x30,
+        0x66, 0x0f, 0xfe, 0xc2,
+        0x48, 0x8b, 0x83, 0x80, 0x03, 0x00, 0x00,
+        0x66, 0x0f, 0x7f, 0x44, 0x24, 0x30,
+        0x66, 0x0f, 0xe7, 0x14, 0x07,
+        0xe8, 0x29, 0x72, 0xfc, 0xff
+    };
+    hb_decoded_t d;
+    hb_decoder_t* dec;
+    hb_ir_func_t* func = NULL;
+    hb_ir_block_t* blk;
+    bool saw_movntdq = false;
+    hb_context_t* ctx;
+    hb_codegen_buffer_t* code_buf;
+    hb_arm64_codegen_t* cg;
+    char* saved;
+
+    ASSERT(hb_decode_x64(code, sizeof(code), guest, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV);
+    ASSERT(d.op1.is_reg && d.op1.reg == HB_REG_XMM0 && d.op1.size == 16);
+    ASSERT(d.op2.is_mem && d.op2.size == 16);
+    ASSERT(d.op2.mem.base == HB_REG_RIP);
+    ASSERT((uint64_t)(guest + d.len + d.op2.mem.disp) == image_base + 0x1cf42c0ULL);
+
+    ASSERT(hb_decode_x64(code + 55, sizeof(code) - 55, guest + 55, &d) == HB_OK);
+    ASSERT(d.opcode == HB_INS_SSE_MOV && d.len == 5);
+    ASSERT(d.op1.is_mem && d.op1.size == 16);
+    ASSERT(d.op1.mem.base == HB_REG_RDI && d.op1.mem.index == HB_REG_RAX && d.op1.mem.scale == 1);
+    ASSERT(d.op2.is_reg && d.op2.reg == HB_REG_XMM2 && d.op2.size == 16);
+
+    dec = hb_decoder_create(HB_ARCH_X64, code, sizeof(code), guest);
+    ASSERT(dec != NULL);
+    ASSERT(hb_lift_func_x64(dec, &func) == HB_OK);
+    hb_decoder_destroy(dec);
+    ASSERT(func != NULL && func->cfg && func->cfg->entry);
+    blk = func->cfg->entry;
+    for (size_t i = 0; i < blk->instr_count; i++) {
+        hb_ir_instr_t* instr = &blk->instrs[i];
+        ASSERT(instr->op != HB_IR_UNSUPPORTED);
+        if (instr->guest_addr == guest + 55) {
+            saw_movntdq = true;
+            ASSERT(instr->op == HB_IR_STORE);
+            ASSERT(instr->src1.type == HB_OP_MEM && instr->src1.size == 16);
+            ASSERT(instr->src2.type == HB_OP_REG && instr->src2.reg == HB_REG_XMM2);
+        }
+    }
+    ASSERT(saw_movntdq);
+
+    ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
+    code_buf = hb_codegen_buffer_create(4096);
+    cg = hb_arm64_codegen_create(ctx);
+    saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
+    ASSERT(ctx != NULL && code_buf != NULL && cg != NULL);
+    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "1", 1);
+    ASSERT(hb_arm64_codegen_block(cg, blk, code_buf) == HB_OK);
+    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
+    hb_arm64_codegen_destroy(cg);
+    hb_codegen_buffer_destroy(code_buf);
+    hb_context_destroy(ctx);
+    hb_ir_func_destroy(func);
+    tests_passed++;
+}
+
 TEST(jit_neg_al_sbb_mask_notepadpp_mode_parser) {
     for (int input = 0; input <= 1; input++) {
         hb_ir_func_t* func = hb_ir_func_create(0x1000, 0);
@@ -24763,6 +25003,14 @@ int main(int argc, char** argv) {
             printf("%d passed, %d failed\n", tests_passed, tests_failed);
             return tests_failed ? 1 : 0;
         }
+        if (!strcmp(argv[2], "unity_movnt_store")) {
+            test_decode_x64_legacy_movnt_packed_store_family();
+            test_decode_x86_legacy_movnt_packed_store_family();
+            test_jit_x64_legacy_movnt_packed_store_family();
+            test_jit_x64_unity_movntdq_corridor_compile();
+            printf("%d passed, %d failed\n", tests_passed, tests_failed);
+            return tests_failed ? 1 : 0;
+        }
         if (!strcmp(argv[2], "rep_movs") || !strcmp(argv[2], "string_ops")) {
             printf("rep_movs_enter\n");
             printf("df=0\n");
@@ -24871,6 +25119,9 @@ int main(int argc, char** argv) {
             test_interp_x64_vex_scalar_mov_arith_and_upper_zero_semantics();
             test_interp_x64_vex128_upper_zero_audit();
             test_interp_x64_vex_bitwise_pd_family_semantics();
+            test_decode_x64_legacy_movnt_packed_store_family();
+            test_jit_x64_legacy_movnt_packed_store_family();
+            test_jit_x64_unity_movntdq_corridor_compile();
             test_interp_x64_avx2_0f38_compare_minmax_mul_family_semantics();
             test_interp_x64_avx2_broadcast_family_semantics();
             test_interp_x64_avx2_lane_control_family_semantics();
@@ -25036,6 +25287,8 @@ int main(int argc, char** argv) {
     test_decode_x86_xmm_logical_family();
     test_interp_x86_xorps_zeroes_xmm0();
     test_decode_x86_sse_mov_packed_family();
+    test_decode_x64_legacy_movnt_packed_store_family();
+    test_decode_x86_legacy_movnt_packed_store_family();
     test_interp_x86_xorps_movups_stack_store();
     test_decode_x86_accumulator_imm_family();
     test_interp_x86_and_eax_imm32_accumulator();
@@ -25242,6 +25495,8 @@ int main(int argc, char** argv) {
     test_jit_x64_native_store_imm_compact_family();
     test_jit_x64_native_extend_family();
     test_jit_x64_native_xmm_move_family();
+    test_jit_x64_legacy_movnt_packed_store_family();
+    test_jit_x64_unity_movntdq_corridor_compile();
     test_jit_neg_al_sbb_mask_notepadpp_mode_parser();
     test_jit_lahf_sahf_roundtrip();
     test_jit_setcc_cmovcc_memory_operands();

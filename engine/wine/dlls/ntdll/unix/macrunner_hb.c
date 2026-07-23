@@ -1383,6 +1383,14 @@ static int macrunner_hb_env_flag( const char *name )
     return val && val[0] && val[0] != '0';
 }
 
+static int macrunner_hb_sync_import_barrier;
+
+void macrunner_hb_init_environment( void )
+{
+    macrunner_hb_sync_import_barrier =
+        getenv( "MACRUNNER_HB_SYNC_IMPORT_BARRIER" ) ? 1 : 0;
+}
+
 static int macrunner_hb_cached_env_flag( int *cache, const char *name )
 {
     int value = __atomic_load_n( cache, __ATOMIC_RELAXED );
@@ -31951,12 +31959,7 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
      * the store buffer when the coordinator reads it, so the coordinator selects the stale (+4
      * partner) handle and the wake is lost. Draining here at the import boundary restores the
      * x86 ordering at exactly the synchronization points, without a per-store DMB. */
-    {
-        static int sync_import_barrier = -1;
-        if (sync_import_barrier < 0)
-            sync_import_barrier = getenv("MACRUNNER_HB_SYNC_IMPORT_BARRIER") ? 1 : 0;
-        if (sync_import_barrier) __sync_synchronize();
-    }
+    if (macrunner_hb_sync_import_barrier) __sync_synchronize();
 
     macrunner_hb_import_fault_probe_state.stack_status =
         hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &ret_addr );
@@ -32126,18 +32129,6 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
            thunk->target, (void *)(uintptr_t)ret_addr );
 
     macrunner_hb_trace_image_api( ctx, "before", thunk, ret_addr, 0, args );
-    {
-        /* HK spin diag: name the hot import + its guest return address (the poll-loop site). */
-        static unsigned long long _hi_cnt;
-        if (getenv( "MACRUNNER_HB_TRACE_HOTIMPORT" ) && (++_hi_cnt % 2000000ULL) == 0)
-        {
-            fprintf( stderr, "macrunner-hb-hotimport: #%llu %s!%s ret=%p arg0=%p arg1=%p\n",
-                     _hi_cnt, thunk->dll_name, thunk->import_name,
-                     (void *)(uintptr_t)ret_addr, (void *)(uintptr_t)args[0],
-                     (void *)(uintptr_t)args[1] );
-            fflush( stderr );
-        }
-    }
     macrunner_hb_trace_geometry_api( "before", thunk, ret_addr, 0, args );
     macrunner_hb_trace_d3d_boundary( "before", ctx, thunk, ret_addr, 0, args, arg_count, FALSE );
     macrunner_hb_trace_abi_stack( ctx, "before-native", thunk, ret_addr, args );

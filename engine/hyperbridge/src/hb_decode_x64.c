@@ -4595,6 +4595,24 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
             }
             return HB_OK;
         }
+        if (((op2 == 0x2B) && !prefix_f2 && !prefix_f3) ||
+            ((op2 == 0xE7) && operand16 && !prefix_f2 && !prefix_f3)) {
+            /* MOVNTPS/MOVNTPD/MOVNTDQ: non-temporal packed stores are still
+             * architecturally visible 128-bit stores.  Treat them as the same
+             * STORE IR used by MOVUPS/MOVAPS/MOVDQA/MOVDQU; the cache hint is
+             * not observable by guest state.  Register-destination ModRM forms
+             * are invalid for this memory-store family. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+            out->opcode = HB_INS_SSE_MOV;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, false, rex_r, rex_x, rex_b,
+                                        16, out, 1, 2, true);
+            if (r != HB_OK) return r;
+            mark_xmm_operands(out);
+            return HB_OK;
+        }
         if (op2 == 0xC0 || op2 == 0xC1) {
             /* XADD r/m, r. LOCK is valid for memory operands and is consumed
              * as a prefix; the interpreter executes this as one atomic IR op.

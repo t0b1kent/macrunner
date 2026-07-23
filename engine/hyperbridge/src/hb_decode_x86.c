@@ -1232,6 +1232,21 @@ static hb_result_t decode_one(hb_dec_t* d, hb_decoded_t* out) {
     if (opcode == 0x0F) {
         if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
         uint8_t op2 = read_u8(d);
+        if (((op2 == 0x2B) && !prefix_f2 && !prefix_f3) ||
+            ((op2 == 0xE7) && operand16 && !prefix_f2 && !prefix_f3)) {
+            /* MOVNTPS/MOVNTPD/MOVNTDQ: decode as the same 128-bit store IR as
+             * regular packed SSE moves.  The non-temporal cache hint does not
+             * change guest-visible state; register ModRM forms are invalid. */
+            if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
+            uint8_t modrm = read_u8(d);
+            if ((modrm >> 6) == 3) return HB_ERR_UNSUPPORTED_OPCODE;
+            out->opcode = HB_INS_SSE_MOV;
+            out->writes_flags = false;
+            hb_result_t r = parse_modrm(d, modrm, 16, out, 1, 2, true);
+            if (r != HB_OK) return r;
+            mark_xmm_operands(out);
+            return HB_OK;
+        }
         if (op2 == 0x1F) {
             if (!can_read(d, 1)) return HB_ERR_DECODE_FAILED;
             uint8_t modrm = read_u8(d);

@@ -87,6 +87,7 @@ typedef struct {
     uint64_t hot_trace_next;
     uint64_t code_cache_full_reports;
     hb_cache_t* persistent_cache;
+    uint8_t persistent_cache_flags;
     bool code_cache_full;
     /* Default-off native-signal recovery quarantine, shared by the SIGBUS
      * invalidation and SIGILL ownership paths. This deliberately survives
@@ -99,6 +100,7 @@ typedef struct {
 } hb_jit_runtime_t;
 
 hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx);
+void hb_runtime_init_environment(void);
 void hb_jit_runtime_destroy(hb_jit_runtime_t* rt);
 /* MacRunner: reset a runtime for reuse by another callback on the same thread
  * (per-thread pool) instead of destroy+recreate per callback. Eagerly frees the

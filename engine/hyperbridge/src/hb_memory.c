@@ -51,15 +51,76 @@ static void install_sig_handlers(void) {
  * the SAME guest RVA resolve to DIFFERENT host addresses. Env-gated. */
 #define MACRUNNER_HB_DATADIVERGE_LO  0x142941000ULL
 #define MACRUNNER_HB_DATADIVERGE_HI  0x142942000ULL
-static int macrunner_hb_trace_datadiverge_enabled(void) {
-    static int cache = -1;
-    int v = __atomic_load_n(&cache, __ATOMIC_RELAXED);
-    if (v < 0) {
-        const char* e = getenv("MACRUNNER_HB_TRACE_DATADIVERGE");
-        v = e && e[0] && e[0] != '0';
-        __atomic_store_n(&cache, v, __ATOMIC_RELAXED);
+typedef struct hb_memory_environment {
+    int trace_datadiverge;
+    int disable_hot_cache;
+    int trace_guest32_alias;
+    int trace_native_writes;
+    int trace_live_vm_access_fail;
+    int live_vm_write_mach;
+    int trace_store80;
+    int trace_memcpy_len;
+    int trace_jit_helper_fail;
+    unsigned long long trace_guest_write_start;
+    unsigned long long trace_guest_write_stop;
+} hb_memory_environment_t;
+
+static hb_memory_environment_t macrunner_hb_memory_environment;
+static int macrunner_hb_memory_environment_initialized;
+
+static int hb_memory_env_enabled(const char* name) {
+    const char* value = getenv(name);
+    return value && value[0] && value[0] != '0';
+}
+
+void hb_memory_init_environment(void) {
+    const char* live_fail;
+    const char* live_mach;
+    const char* guest_write;
+    const char* trace_memcpy_len;
+    char* endp = NULL;
+    unsigned long long start = 0, stop = 0;
+
+    if (__atomic_load_n(&macrunner_hb_memory_environment_initialized, __ATOMIC_ACQUIRE)) return;
+
+    macrunner_hb_memory_environment.trace_datadiverge =
+        hb_memory_env_enabled("MACRUNNER_HB_TRACE_DATADIVERGE");
+    macrunner_hb_memory_environment.disable_hot_cache =
+        hb_memory_env_enabled("MACRUNNER_HB_DISABLE_HOT_CACHE");
+    macrunner_hb_memory_environment.trace_guest32_alias =
+        hb_memory_env_enabled("MACRUNNER_HB_TRACE_GUEST32_ALIAS");
+    macrunner_hb_memory_environment.trace_native_writes =
+        hb_memory_env_enabled("MACRUNNER_HB_TRACE_NATIVE_WRITES");
+    live_fail = getenv("MACRUNNER_HB_TRACE_LIVE_VM_ACCESS_FAIL");
+    if (!live_fail || !live_fail[0]) live_fail = getenv("MACRUNNER_HB_TRACE_LIVE_VM_WRITE_FAIL");
+    macrunner_hb_memory_environment.trace_live_vm_access_fail =
+        live_fail && live_fail[0] && live_fail[0] != '0';
+    live_mach = getenv("MACRUNNER_HB_LIVE_VM_WRITE_MACH");
+    macrunner_hb_memory_environment.live_vm_write_mach =
+        live_mach && live_mach[0] && atoi(live_mach) != 0;
+    macrunner_hb_memory_environment.trace_store80 =
+        getenv("MACRUNNER_HB_TRACE_STORE80") != NULL;
+    trace_memcpy_len = getenv("MACRUNNER_HB_TRACE_MEMCPY_LEN");
+    macrunner_hb_memory_environment.trace_memcpy_len =
+        trace_memcpy_len && trace_memcpy_len[0];
+    macrunner_hb_memory_environment.trace_jit_helper_fail =
+        getenv("MACRUNNER_HB_TRACE_JIT_HELPER_FAIL") != NULL;
+
+    guest_write = getenv("MACRUNNER_HB_TRACE_GUEST_WRITE");
+    if (guest_write && guest_write[0]) {
+        start = strtoull(guest_write, &endp, 0);
+        if (endp != guest_write)
+            stop = (*endp == '-' || *endp == ':') ? strtoull(endp + 1, NULL, 0) : start + 1;
+        else
+            start = 0;
     }
-    return v;
+    macrunner_hb_memory_environment.trace_guest_write_start = start;
+    macrunner_hb_memory_environment.trace_guest_write_stop = stop;
+    __atomic_store_n(&macrunner_hb_memory_environment_initialized, 1, __ATOMIC_RELEASE);
+}
+
+static int macrunner_hb_trace_datadiverge_enabled(void) {
+    return macrunner_hb_memory_environment.trace_datadiverge;
 }
 static int macrunner_hb_datadiverge_hit(uint64_t addr, size_t size) {
     if (!macrunner_hb_trace_datadiverge_enabled()) return 0;
@@ -68,14 +129,7 @@ static int macrunner_hb_datadiverge_hit(uint64_t addr, size_t size) {
 }
 
 static int macrunner_hb_disable_hot_cache_enabled(void) {
-    static int cache = -1;
-    int v = __atomic_load_n(&cache, __ATOMIC_RELAXED);
-    if (v < 0) {
-        const char* e = getenv("MACRUNNER_HB_DISABLE_HOT_CACHE");
-        v = e && e[0] && e[0] != '0';
-        __atomic_store_n(&cache, v, __ATOMIC_RELAXED);
-    }
-    return v;
+    return macrunner_hb_memory_environment.disable_hot_cache;
 }
 
 typedef struct hb_hot_cache_tls {
@@ -173,15 +227,7 @@ static bool range_overflows(hb_gva_t base, size_t size) {
 }
 
 static bool trace_guest32_alias_enabled(void) {
-    static int cache = -1;
-    int value = __atomic_load_n(&cache, __ATOMIC_RELAXED);
-
-    if (value < 0) {
-        const char* val = getenv("MACRUNNER_HB_TRACE_GUEST32_ALIAS");
-        value = val && val[0] && val[0] != '0';
-        __atomic_store_n(&cache, value, __ATOMIC_RELAXED);
-    }
-    return value;
+    return macrunner_hb_memory_environment.trace_guest32_alias;
 }
 
 static void trace_guest32_alias(const char* reason, const hb_memory_t* mem,
@@ -448,31 +494,14 @@ static bool guest32_range_fully_mapped(hb_memory_t* mem, hb_gva_t start, hb_gva_
 }
 
 static bool trace_bad_native_write_enabled(void) {
-    static int cache = -1;
-    int value = __atomic_load_n(&cache, __ATOMIC_RELAXED);
-
-    if (value < 0) {
-        const char* val = getenv("MACRUNNER_HB_TRACE_NATIVE_WRITES");
-        value = val && val[0] && val[0] != '0';
-        __atomic_store_n(&cache, value, __ATOMIC_RELAXED);
-    }
-    return value;
+    return macrunner_hb_memory_environment.trace_native_writes;
 }
 
 
 
 #ifdef __APPLE__
 static bool trace_live_vm_access_fail_enabled(void) {
-    static int cache = -1;
-    int value = __atomic_load_n(&cache, __ATOMIC_RELAXED);
-
-    if (value < 0) {
-        const char* val = getenv("MACRUNNER_HB_TRACE_LIVE_VM_ACCESS_FAIL");
-        if (!val || !val[0]) val = getenv("MACRUNNER_HB_TRACE_LIVE_VM_WRITE_FAIL");
-        value = val && val[0] && val[0] != '0';
-        __atomic_store_n(&cache, value, __ATOMIC_RELAXED);
-    }
-    return value;
+    return macrunner_hb_memory_environment.trace_live_vm_access_fail;
 }
 
 static void trace_live_vm_access_fail(const char* op, hb_gva_t addr, size_t size,
@@ -561,13 +590,7 @@ static hb_result_t write_live_vm_region(hb_memory_t* mem, hb_gva_t addr, const v
 #endif
 
 static bool live_vm_write_mach_enabled(void) {
-    static int cached = -1;
-    const char* spec;
-
-    if (cached >= 0) return cached != 0;
-    spec = getenv("MACRUNNER_HB_LIVE_VM_WRITE_MACH");
-    cached = (spec && *spec && atoi(spec) != 0) ? 1 : 0;
-    return cached != 0;
+    return macrunner_hb_memory_environment.live_vm_write_mach;
 }
 
 static void trace_bad_native_write(const char* path, hb_gva_t addr, const void* in, size_t size) {
@@ -583,33 +606,13 @@ static void trace_bad_native_write(const char* path, hb_gva_t addr, const void* 
 }
 
 static bool trace_guest_write_match(hb_gva_t addr, size_t size) {
-    static unsigned long long cached_start = 0, cached_stop = 0;
-    static int cache_valid = 0;
     unsigned long long start, stop;
     hb_gva_t top;
 
-    if (!__atomic_load_n(&cache_valid, __ATOMIC_RELAXED)) {
-        const char* spec = getenv("MACRUNNER_HB_TRACE_GUEST_WRITE");
-        char* endp = NULL;
-        if (!spec || !*spec) {
-            __atomic_store_n(&cached_start, 0, __ATOMIC_RELAXED);
-            __atomic_store_n(&cached_stop, 0, __ATOMIC_RELAXED);
-        } else {
-            start = strtoull(spec, &endp, 0);
-            if (endp == spec) {
-                __atomic_store_n(&cached_start, 0, __ATOMIC_RELAXED);
-                __atomic_store_n(&cached_stop, 0, __ATOMIC_RELAXED);
-            } else {
-                stop = (*endp == '-' || *endp == ':') ? strtoull(endp + 1, NULL, 0) : start + 1;
-                __atomic_store_n(&cached_start, start, __ATOMIC_RELAXED);
-                __atomic_store_n(&cached_stop, stop, __ATOMIC_RELAXED);
-            }
-        }
-        __atomic_store_n(&cache_valid, 1, __ATOMIC_RELAXED);
-    }
-
-    start = __atomic_load_n(&cached_start, __ATOMIC_RELAXED);
-    stop  = __atomic_load_n(&cached_stop,  __ATOMIC_RELAXED);
+    start = __atomic_load_n(&macrunner_hb_memory_environment.trace_guest_write_start,
+                            __ATOMIC_RELAXED);
+    stop  = __atomic_load_n(&macrunner_hb_memory_environment.trace_guest_write_stop,
+                            __ATOMIC_RELAXED);
     if (start == stop) return false;
     top = addr + size;
     if (top < addr) top = UINT64_MAX;
@@ -633,6 +636,7 @@ static bool check_perm_region(hb_memory_t* mem, hb_gva_t addr, size_t size, hb_p
 hb_memory_t* hb_memory_create(size_t max_size) {
     hb_memory_t* mem = calloc(1, sizeof(hb_memory_t));
     if (!mem) return NULL;
+    hb_memory_init_environment();
     mem->max_size = max_size;
     return mem;
 }
@@ -1219,7 +1223,7 @@ hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, siz
      * the r13=0x11 insert window (g_hk_tg), with the guest instruction rva — catches GPR AND SSE. */
     {
         extern int g_hk_tg; extern uint64_t g_hk_cur_ga;
-        if (g_hk_tg && size >= 8 && getenv("MACRUNNER_HB_TRACE_STORE80")) {
+        if (g_hk_tg && size >= 8 && macrunner_hb_memory_environment.trace_store80) {
             const uint8_t* b8 = (const uint8_t*)in;
             for (size_t o = 0; o + 8 <= size; o += 8) {
                 uint64_t v; memcpy(&v, b8 + o, 8);
@@ -1240,9 +1244,8 @@ hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, siz
      * of 16-byte writes in the high guest-heap slab range: max_run*0x10 = largest contiguous
      * memcpy.  ~16 MB => bounded per-slab (legit); ~3.5 GB => one unbounded copy (runaway). */
     {
-        static int wparsed; static int wen;
-        if (!wparsed) { const char* e = getenv("MACRUNNER_HB_TRACE_MEMCPY_LEN"); wen = (e && e[0]) ? 1 : 0; wparsed = 1; }
-        if (wen && size && size <= 64 && addr >= 0x300000000ull && addr < 0x400000000ull) {
+        if (macrunner_hb_memory_environment.trace_memcpy_len &&
+            size && size <= 64 && addr >= 0x300000000ull && addr < 0x400000000ull) {
             /* longest CONTIGUOUS forward byte-run (any stride <=0x40): a "run" continues while
              * each write starts within 0x40 of the previous. max_bytes = largest single memcpy. */
             static unsigned long long n, max_bytes, max_at;
@@ -1280,7 +1283,7 @@ grow_retry:
                 (unsigned long long)(size==8?*(const uint64_t*)in:0));
     }
 #ifdef __APPLE__
-    if ((addr & 0xfff) >= 0xfe0 && getenv("MACRUNNER_HB_TRACE_JIT_HELPER_FAIL")) {
+    if ((addr & 0xfff) >= 0xfe0 && macrunner_hb_memory_environment.trace_jit_helper_fail) {
         static int t;
         if (t++ < 12) {
             int branch = (!region || addr + size > region->base + region->size || !(region->perm & HB_PERM_WRITE)) ? 0

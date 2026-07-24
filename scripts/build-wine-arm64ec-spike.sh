@@ -27,6 +27,15 @@ export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfi
 mkdir -p "$WINE_BUILD" "$WINE_INSTALL" "$MACRUNNER_REPORTS_ROOT/build"
 cd "$WINE_BUILD"
 
+if [ -f Makefile ] && command -v pkg-config >/dev/null 2>&1; then
+    pkg_glib_cflags=$("${PKG_CONFIG:-pkg-config}" --cflags glib-2.0 2>/dev/null || true)
+    pkg_glib_include=$(printf '%s\n' "$pkg_glib_cflags" | tr ' ' '\n' | awk '$0 ~ /^-I/ && $0 ~ /\/glib\/[0-9]/ {sub(/^-I/, "", $0); print; exit}')
+    if [ -n "$pkg_glib_include" ] && ! grep -Fq -- "$pkg_glib_include" Makefile; then
+        echo "♻️ Обнаружен изменившийся путь glib от pkg-config, пересоздаю конфиг..."
+        rm -f Makefile config.status
+    fi
+fi
+
 if [ "${FORCE_RECONFIGURE:-0}" = "1" ]; then rm -f Makefile; fi
 
 if [ ! -f Makefile ]; then

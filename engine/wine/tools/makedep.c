@@ -2213,7 +2213,11 @@ static struct strarray add_unix_libraries( const struct makefile *make, struct s
             strarray_add( deps, lib );
             strarray_add( &ret, lib );
         }
-        else strarray_add( &ret, file );
+        else
+        {
+            strarray_add( &ret, file );
+            if (strendswith( file, ".a" ) || strendswith( file, ".dylib" )) strarray_add( deps, file );
+        }
     }
 
     strarray_addall( &ret, libs );

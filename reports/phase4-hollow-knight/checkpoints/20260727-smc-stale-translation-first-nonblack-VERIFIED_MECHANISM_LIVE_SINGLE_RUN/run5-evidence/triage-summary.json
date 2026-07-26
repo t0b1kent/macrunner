@@ -1,0 +1,190 @@
+{
+  "final_verdict": "BLOCKED",
+  "final_owner": "Lane A",
+  "final_class": "GENERIC_GRAPHICS_FAULT",
+  "final_confidence": 0.45,
+  "final_next_action": "Graphics API translation or pipeline issue. Identify the failing Metal/D3D11 call and check the DXMT/winemetal translation layer. Enable MACRUNNER_HB_TRACE_D3D=1.",
+  "why_primary_won": "Primary class 'GENERIC_GRAPHICS_FAULT' (priority 30) outranked secondary classes: WAIT_TRACE_INSUFFICIENT, WINDOW_TRACE_INSUFFICIENT, ARM64EC_CALLBACK_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, D3D_TRACE_INSUFFICIENT, PE32_HANDOFF_TRACE_INSUFFICIENT.",
+  "ladder_rung": {
+    "idx": 11,
+    "name": "swapchain"
+  },
+  "ladder_best": {
+    "idx": 11,
+    "name": "swapchain",
+    "run": "laneA-eh-x64domain-floor-present-try1-113845"
+  },
+  "ladder_regression": false,
+  "time_to_swapchain_sec": 154.502,
+  "pixel_truth": {
+    "confirmed": false,
+    "artifact": null,
+    "verdict": null
+  },
+  "pixel_moment_reached": false,
+  "secondary_classes": [
+    "WAIT_TRACE_INSUFFICIENT",
+    "WINDOW_TRACE_INSUFFICIENT",
+    "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+    "SMC_TRACE_INSUFFICIENT",
+    "D3D_TRACE_INSUFFICIENT",
+    "PE32_HANDOFF_TRACE_INSUFFICIENT"
+  ],
+  "missing_markers": {
+    "critical": [],
+    "secondary": []
+  },
+  "next_run_env": {},
+  "analyzers": {
+    "analyze_dll_load.py": {
+      "verdict": "PASS",
+      "owner": "Lane C",
+      "class": "DLL_LOAD_OK",
+      "confidence": 0.5,
+      "evidence": [],
+      "next_action": "No DLL load/init blocker detected.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    },
+    "analyze_waits.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "WAIT_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with synchronization object tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "WAIT_OBJECT",
+          "SET_EVENT"
+        ],
+        "secondary": [
+          "RELEASE_SEMAPHORE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SYNCHRONIZATION": "1"
+      }
+    },
+    "analyze_window_gate.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "WINDOW_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with window and message gate logging active.",
+      "missing_markers": {
+        "critical": [
+          "WM_NCCREATE_RETURN",
+          "THREAD_DESKTOP"
+        ],
+        "secondary": [
+          "CREATESTRUCT_VALID",
+          "REGISTER_CLASS_HINSTANCE",
+          "CREATE_WINDOW_HINSTANCE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_NCCREATE": "1",
+        "MACRUNNER_HB_TRACE_CREATEWINDOW": "1"
+      }
+    },
+    "analyze_arm64ec_callbacks.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with ARM64EC callback tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "ARM64EC_CALLBACK",
+          "ARM64EC_CALLBACK_RETURN"
+        ],
+        "secondary": []
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_CALLBACKS": "1"
+      }
+    },
+    "analyze_smc.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "SMC_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with self-modifying code (SMC) tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "TB_GENERATE",
+          "TB_INVALIDATE"
+        ],
+        "secondary": [
+          "SMC_WRITE",
+          "FLUSH_ICACHE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SMC": "1"
+      }
+    },
+    "analyze_d3d_gate.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane C",
+      "class": "D3D_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with D3D and graphics gate logging enabled.",
+      "missing_markers": {
+        "critical": [
+          "D3D_ENTRY",
+          "MODULE_MAP"
+        ],
+        "secondary": []
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_D3D": "1"
+      }
+    },
+    "analyze_pe32_wow64_handoff.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "PE32_HANDOFF_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with WOW64 and BTCPU handoff tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "PE32_HANDOFF",
+          "WOW64_INIT"
+        ],
+        "secondary": [
+          "MODULE_MAP"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_WOW64": "1"
+      }
+    },
+    "analyze_generic_fallback.py": {
+      "verdict": "BLOCKED",
+      "owner": "Lane D",
+      "class": "GENERIC_GRAPHICS_FAULT",
+      "confidence": 0.45,
+      "evidence": [
+        "[lanea-ts epoch=1785094510.218 +4.966s] synced artifacts/_mr-run.taepmm/drive_c/windows/system32/vulkan-1.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/vulkan-1.dll",
+        "[lanea-ts epoch=1785094517.446 +12.194s] synced artifacts/_mr-run.taepmm/drive_c/windows/system32/winemetal.dll <= engine/graphics/dist/dxmt/x86_64-windows/winemetal.dll",
+        "[lanea-ts epoch=1785094510.631 +5.379s] synced artifacts/_mr-run.taepmm/drive_c/windows/system32/wined3d.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/wined3d.dll"
+      ],
+      "next_action": "Graphics API translation or pipeline issue. Identify the failing Metal/D3D11 call and check the DXMT/winemetal translation layer. Enable MACRUNNER_HB_TRACE_D3D=1.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    }
+  }
+}

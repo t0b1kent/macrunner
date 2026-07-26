@@ -1,0 +1,2 @@
+{"schema":"macrunner-flight/v1","event":"mr-run-prelaunch","pid":10908,"epoch_s":1785094505}
+{"schema":"macrunner-flight/v1","event":"mr-run-exit","status":124,"epoch_s":1785097560}

@@ -165,3 +165,28 @@ Exit 2 = меньше 30 GB после чистки → STOP, сказать ю�
 ## VERDICT DISCIPLINE
 Evidence (pasted log line / exported symbol / pixels), NOT agent status. "blocked at X" with the
 exact blocker named is a valid, useful result — do not fake forward progress.
+
+## ★ CHECK TERMINAL BUSY BEFORE EVERY PROMPT (operator flagged 4+ times, 2026-07-25/26)
+**Before writing ANY prompt for a terminal, verify what that terminal is doing RIGHT NOW.**
+Handing a prompt to a busy terminal either interrupts real work or the prompt sits unused
+while status gets reported from a false assumption.
+
+1. **Read the `LANE ACTIVITY` hook block** that arrives with every message — it is the
+   designed source of truth (`scripts/lane-activity.sh` builds it from Claude.app/Codex
+   session `.jsonl`). `cx 0м` / `main 0м` = working now; `cx 40м+` = idle.
+   Do **NOT** use `LANE-*PROGRESS.md` for busy/idle — the script says they aren't updated by GUI lanes.
+2. **Live run:** `ps -Ao pid,%cpu,etime,args | grep -iE 'mr-run|winetemp|extracted-hollow|wineserver'`.
+   ⚠️ Never grep `'hollow knight'` with a space — the real path is `game-hollow.knight-(89718)`
+   **with a dot**, so that pattern silently misses a running game.
+3. **Writing a report = BUSY** even with no game process:
+   `find reports -type f -newermt '<8 min ago>' | grep -v jsonl`.
+4. **A report FILE appearing ≠ terminal finished** — it keeps working after writing the `.md`.
+   The operator's terminal shows `Working (Nm Ns)`; a posted chat report or an idle hook entry
+   means free.
+5. **Verify staged artifacts actually landed** before telling anyone to run: a publish-monitor
+   can die silently, leaving the old SHA in the live dist (happened 2026-07-26 with
+   winemetal.so cf093248).
+
+Only after these checks: name the specific free terminal and give it the prompt. If everything
+is busy, say "all busy" — inventing filler analysis is worse than waiting (we already carry
+30+ offline reports; the bottleneck is experiments, not hypotheses).

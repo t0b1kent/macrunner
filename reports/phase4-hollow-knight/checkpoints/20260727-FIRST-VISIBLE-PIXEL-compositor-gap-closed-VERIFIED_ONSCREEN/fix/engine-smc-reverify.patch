@@ -1,0 +1,865 @@
+diff --git a/engine/hyperbridge/include/hb_runtime.h b/engine/hyperbridge/include/hb_runtime.h
+index a157226d..d61801f0 100644
+--- a/engine/hyperbridge/include/hb_runtime.h
++++ b/engine/hyperbridge/include/hb_runtime.h
+@@ -41,6 +41,13 @@ typedef struct {
+     bool owns_block;
+     bool fused;
+     bool valid;
++    /* MacRunner 2026-07-27 (HK Mono/JIT stale-translation fix): FNV-1a over the
++     * guest byte span captured at translation time.  Only tracked for spans in
++     * writable+executable regions (JIT-on-JIT / Mono code heaps); 0 = untracked.
++     * Re-verified on every cache hit; mismatch evicts and retranslates. */
++    uint64_t smc_span_start;
++    uint64_t smc_hash;
++    uint32_t smc_span_len;
+ } hb_block_cache_entry_t;
+ 
+ typedef struct {
+@@ -126,6 +133,11 @@ int hb_jit_runtime_native_block_info(hb_jit_runtime_t* rt, uint64_t native_pc,
+                                      uint64_t* guest_addr, uint64_t* native_start,
+                                      size_t* native_size);
+ 
++/* SMC reverify diagnostics (2026-07-27): process-wide counters.  Any pointer
++ * may be NULL.  Read-only; values are best-effort under multithreading. */
++void hb_jit_smc_reverify_stats(uint64_t* tracked, uint64_t* reverified,
++                               uint64_t* evicted, uint64_t* unreadable);
++
+ /* Unified runtime entry */
+ hb_result_t hb_runtime_run(hb_context_t* ctx, const hb_ir_func_t* func, hb_backend_t backend, hb_exec_result_t* out);
+ 
+diff --git a/engine/hyperbridge/src/hb_arm64_codegen.c b/engine/hyperbridge/src/hb_arm64_codegen.c
+index 745bcca6..874ddf63 100644
+--- a/engine/hyperbridge/src/hb_arm64_codegen.c
++++ b/engine/hyperbridge/src/hb_arm64_codegen.c
+@@ -7469,7 +7469,11 @@ static void hb_jit_helper_trace_loop_top_record(const hb_ir_block_t* first,
+         if (budget_hit) entries[slot].budget_hits++;
+     }
+     uint64_t interval = hb_jit_helper_trace_loop_top_interval();
+-    if (total_calls <= 16 || (interval && (total_calls % interval) == 0) || budget_hit)
++    /* A budget hit is a useful aggregate counter, but dumping the full table
++     * on every hot-loop yield makes the diagnostic itself unbounded.  Keep
++     * the count and use the same bounded first-N/periodic cadence for every
++     * record type. */
++    if (total_calls <= 16 || (interval && (total_calls % interval) == 0))
+         hb_jit_helper_trace_loop_top_dump_locked(entries,
+                                                  sizeof(entries) / sizeof(entries[0]),
+                                                  total_calls);
+diff --git a/engine/hyperbridge/src/hb_interpreter.c b/engine/hyperbridge/src/hb_interpreter.c
+index 319a8c9b..e275c797 100644
+--- a/engine/hyperbridge/src/hb_interpreter.c
++++ b/engine/hyperbridge/src/hb_interpreter.c
+@@ -3242,7 +3242,55 @@ static void trace_simd_data_exec(hb_context_t* ctx, const hb_ir_instr_t* instr,
+     fprintf(stderr, "\n");
+ }
+ 
++static hb_result_t exec_instr_unlocked(hb_context_t* ctx, const hb_ir_instr_t* instr);
++
++/* MacRunner HK Mono lane (2026-07-27): mirror codegen's DMB bracket for x86 LOCK-prefixed
++ * RMW on the interpreter path. Codegen wraps every is_locked instr with DMB ISH before+after
++ * (hb_arm64_codegen.c hb_arm64_codegen_instr); the interpreter consulted is_locked nowhere,
++ * so a generic locked RMW (`lock or [rsp],r` — Mono's hazard-pointer fence idiom) ran with
++ * NO barrier through exec_instr (live path: hb_jit_helper_exec_block_instr_for_jit →
++ * hb_interpreter_exec_one_for_jit). Locked atomics (CMPXCHG/XCHG/XADD/CMPXCHG8B) were already
++ * fenced (hb_jit_helper_exec_atomic_ir + per-op SEQ_CST fences below); this closes the
++ * generic-op gap. Diagnostics: MACRUNNER_HB_TRACE_INTERP_LOCK=1 — one-time armed line
++ * (positive liveness) + bounded aggregate (first 8, then every 2^20). */
++static uint64_t g_hb_interp_lock_fenced_count;
++
++static int hb_interp_lock_trace_enabled(void) {
++    static int cached = -1;
++    if (cached < 0) {
++        const char* v = getenv("MACRUNNER_HB_TRACE_INTERP_LOCK");
++        cached = (v && v[0] && strcmp(v, "0")) ? 1 : 0;
++    }
++    return cached;
++}
++
+ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
++    if (hb_interp_lock_trace_enabled()) {
++        static int armed_printed = 0;
++        if (!armed_printed) {
++            armed_printed = 1;
++            fprintf(stderr, "macrunner-hb-interp-lock: armed=1 hook=exec_instr\n");
++            fflush(stderr);
++        }
++    }
++    if (!instr->is_locked)
++        return exec_instr_unlocked(ctx, instr);
++    uint64_t n = __atomic_add_fetch(&g_hb_interp_lock_fenced_count, 1, __ATOMIC_RELAXED);
++    if (hb_interp_lock_trace_enabled() && (n <= 8 || (n & 0xFFFFFu) == 0)) {
++        fprintf(stderr,
++                "macrunner-hb-interp-lock: count=%llu op=%d pc=0x%llx instr=0x%llx\n",
++                (unsigned long long)n, (int)instr->op,
++                (unsigned long long)(ctx ? ctx->pc : 0),
++                (unsigned long long)instr->guest_addr);
++        fflush(stderr);
++    }
++    __atomic_thread_fence(__ATOMIC_SEQ_CST);
++    hb_result_t r = exec_instr_unlocked(ctx, instr);
++    __atomic_thread_fence(__ATOMIC_SEQ_CST);
++    return r;
++}
++
++static hb_result_t exec_instr_unlocked(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+     hb_result_t r;
+     switch (instr->op) {
+         case HB_IR_NOP:
+diff --git a/engine/hyperbridge/src/hb_runtime.c b/engine/hyperbridge/src/hb_runtime.c
+index a2ac3eae..a6a1f33d 100644
+--- a/engine/hyperbridge/src/hb_runtime.c
++++ b/engine/hyperbridge/src/hb_runtime.c
+@@ -108,6 +108,11 @@ typedef struct hb_jit_signal_fault_frame {
+ 
+ static __thread hb_jit_signal_fault_frame_t* g_jit_signal_fault_frame;
+ static unsigned int g_jit_signal_fault_reports;
++
++/* Defined next to block_guest_span below; block_cache_put tracks every newly
++ * cached translation for SMC reverify (HK Mono/JIT stale-translation fix). */
++static void smc_track_entry(hb_jit_runtime_t* rt, hb_block_cache_entry_t* entry,
++                            const hb_ir_block_t* block);
+ static unsigned int g_jit_aa_sigbus_reports;
+ static unsigned int g_jit_sigill_ownership_reports;
+ 
+@@ -541,6 +546,7 @@ static hb_block_cache_entry_t* block_cache_put(hb_jit_runtime_t* rt, hb_block_ca
+                 cache->used_slots[cache->used_count++] = (uint32_t)probe;
+             else
+                 cache->used_overflow = true;  /* tracking full -> reset does the safe full memset */
++            smc_track_entry(rt, &cache->entries[probe], block);
+             hb_contract_telemetry_record_translation(true);
+             return &cache->entries[probe];
+         }
+@@ -559,6 +565,7 @@ static hb_block_cache_entry_t* block_cache_put(hb_jit_runtime_t* rt, hb_block_ca
+             cache->entries[probe].block = block;
+             cache->entries[probe].owns_block = owns_block || keep_existing_owner;
+             cache->entries[probe].fused = fused;
++            smc_track_entry(rt, &cache->entries[probe], block);
+             hb_contract_telemetry_record_translation(false);
+             return &cache->entries[probe];
+         }
+@@ -895,6 +902,129 @@ static bool block_guest_span(const hb_ir_block_t* block, uint64_t* start, size_t
+     return true;
+ }
+ 
++/* ---- SMC (self-modifying code) translation reverify ----------------------
++ * MacRunner 2026-07-27 — HK Mono/JIT stale-translation fix.
++ * The in-memory block cache was keyed purely by guest address: a cached
++ * translation kept executing even after the guest (Mono's JIT) rewrote the
++ * underlying bytes, because no path — guest write, NtProtectVirtualMemory,
++ * NtFlushInstructionCache — ever invalidated it (see
++ * reports/phase4-hollow-knight/MONO-SMC-STALE-TRANSLATION-MECHANISM-20260727.md).
++ * Fix: for blocks whose guest span is writable+executable (the only spans
++ * that CAN change — Mono/JIT code heaps are RWX), hash the guest bytes at
++ * translation time and re-verify on every cache hit; a mismatch evicts the
++ * entry so the dispatch loop retranslates from current bytes.  Static RX
++ * code stays untracked and pays nothing.  Default ON; kill switch
++ * MACRUNNER_HB_SMC_REVERIFY=0; diagnostics MACRUNNER_HB_TRACE_SMC_REVERIFY=1. */
++
++static int smc_reverify_enabled(void) {
++    static int cached = -1;
++    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_SMC_REVERIFY", 1);
++}
++
++static int smc_trace_enabled(void) {
++    static int cached = -1;
++    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_TRACE_SMC_REVERIFY", 0);
++}
++
++static uint64_t smc_fnv1a(const uint8_t* p, size_t n) {
++    uint64_t h = 1469598103934665603ULL;
++    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ULL; }
++    return h;
++}
++
++static uint64_t g_smc_tracked, g_smc_reverified, g_smc_evicted, g_smc_unreadable;
++
++void hb_jit_smc_reverify_stats(uint64_t* tracked, uint64_t* reverified,
++                               uint64_t* evicted, uint64_t* unreadable) {
++    if (tracked) *tracked = g_smc_tracked;
++    if (reverified) *reverified = g_smc_reverified;
++    if (evicted) *evicted = g_smc_evicted;
++    if (unreadable) *unreadable = g_smc_unreadable;
++}
++
++/* Hash the CURRENT guest bytes of [start, start+len).  Returns 0 when the
++ * span is unreadable — treated as unverifiable, never evicts blind. */
++static uint64_t smc_hash_current(hb_jit_runtime_t* rt, uint64_t start, size_t len) {
++    uint8_t bytes[4096];
++    if (!rt || !rt->ctx || !rt->ctx->memory || !len || len > sizeof(bytes)) return 0;
++    if (hb_memory_read(rt->ctx->memory, start, bytes, len) != HB_OK) return 0;
++    return smc_fnv1a(bytes, len);
++}
++
++static void smc_track_entry(hb_jit_runtime_t* rt, hb_block_cache_entry_t* entry,
++                            const hb_ir_block_t* block) {
++    uint64_t start = 0;
++    size_t len = 0;
++    hb_region_t* region;
++    uint64_t h;
++    if (!entry) return;
++    entry->smc_hash = 0;
++    entry->smc_span_start = 0;
++    entry->smc_span_len = 0;
++    if (!smc_reverify_enabled() || !rt || !rt->ctx || !rt->ctx->memory || !block)
++        return;
++    if (!block_guest_span(block, &start, &len)) return;
++    region = hb_memory_find_region(rt->ctx->memory, start);
++    if (!region || start + len > region->base + region->size) return;
++    if ((region->perm & (HB_PERM_WRITE | HB_PERM_EXEC)) != (HB_PERM_WRITE | HB_PERM_EXEC))
++        return;  /* static RX code cannot change under us: leave untracked */
++    h = smc_hash_current(rt, start, len);
++    if (!h) { g_smc_unreadable++; return; }
++    entry->smc_span_start = start;
++    entry->smc_span_len = (uint32_t)len;
++    entry->smc_hash = h;
++    g_smc_tracked++;
++}
++
++static void block_cache_evict_entry(hb_jit_runtime_t* rt, hb_block_cache_t* cache,
++                                    hb_block_cache_entry_t* entry) {
++    size_t idx;
++    if (!cache || !entry || !entry->valid) return;
++    idx = block_cache_entry_index(cache, entry);
++    if (runtime_block_chain_enabled())
++        block_cache_prepare_replace_entry(rt, cache, entry);
++    block_cache_release_owned_block(entry, NULL);
++    memset(entry, 0, sizeof(*entry));
++    if (cache->chain_meta && idx != SIZE_MAX)
++        memset(&cache->chain_meta[idx], 0, sizeof(cache->chain_meta[idx]));
++    if (cache->count) cache->count--;
++}
++
++/* Returns the entry to dispatch, or NULL when the cached translation no
++ * longer matches the current guest bytes (entry evicted; caller falls
++ * through to the translate path). */
++static hb_block_cache_entry_t* smc_reverify_entry(hb_jit_runtime_t* rt,
++                                                  hb_block_cache_entry_t* entry) {
++    uint64_t now;
++    if (!entry || !entry->smc_hash) return entry;
++    g_smc_reverified++;
++    /* Positive-liveness aggregate: proves the instrument is executing even when
++     * nothing is ever evicted ("not logged" != "did not happen").  Bounded:
++     * first track, 1000th track, then every 2^24 reverifications. */
++    if (smc_trace_enabled() &&
++        (g_smc_reverified == 1 || g_smc_reverified == 1000 ||
++         (g_smc_reverified & 0xffffffu) == 0))
++        fprintf(stderr,
++                "macrunner-hb-smc-reverify: progress tracked=%llu reverified=%llu "
++                "evicted=%llu unreadable=%llu\n",
++                (unsigned long long)g_smc_tracked, (unsigned long long)g_smc_reverified,
++                (unsigned long long)g_smc_evicted, (unsigned long long)g_smc_unreadable);
++    now = smc_hash_current(rt, entry->smc_span_start, entry->smc_span_len);
++    if (!now) { g_smc_unreadable++; return entry; }
++    if (now == entry->smc_hash) return entry;
++    g_smc_evicted++;
++    if (smc_trace_enabled() &&
++        (g_smc_evicted <= 16 || (g_smc_evicted & 0xffffu) == 0))
++        fprintf(stderr,
++                "macrunner-hb-smc-reverify: evict guest=0x%llx span=%u old=%016llx "
++                "new=%016llx evicted=%llu reverified=%llu\n",
++                (unsigned long long)entry->guest_addr, entry->smc_span_len,
++                (unsigned long long)entry->smc_hash, (unsigned long long)now,
++                (unsigned long long)g_smc_evicted, (unsigned long long)g_smc_reverified);
++    block_cache_evict_entry(rt, rt->block_cache, entry);
++    return NULL;
++}
++
+ static hb_result_t persistent_cache_key_for_block(hb_jit_runtime_t* rt,
+                                                   const hb_ir_block_t* block,
+                                                   hb_cache_key_t* key) {
+@@ -1461,6 +1591,12 @@ hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
+ void hb_jit_runtime_destroy(hb_jit_runtime_t* rt) {
+     if (!rt) return;
+     if (rt->persistent_cache) translation_cache_trace_summary();
++    if (smc_trace_enabled() && (g_smc_tracked || g_smc_evicted || g_smc_unreadable))
++        fprintf(stderr,
++                "macrunner-hb-smc-reverify: summary tracked=%llu reverified=%llu "
++                "evicted=%llu unreadable=%llu\n",
++                (unsigned long long)g_smc_tracked, (unsigned long long)g_smc_reverified,
++                (unsigned long long)g_smc_evicted, (unsigned long long)g_smc_unreadable);
+     hb_cache_close(rt->persistent_cache);
+     hb_jit_buffer_destroy(rt->jit_mem);
+     block_cache_destroy(rt->block_cache);
+@@ -3816,6 +3952,7 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
+ 
+         /* Check in-memory block cache */
+         hb_block_cache_entry_t* cached = block_cache_find(rt->block_cache, ctx->pc);
++        cached = smc_reverify_entry(rt, cached);
+         if (cached) {
+             if (trace_jit_block_contains_guest(block, trace_jit_guest_addr())) {
+                 trace_unity_sort_promote("cache-hit-watch", block, NULL, NULL, NULL,
+@@ -3884,7 +4021,7 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
+                                                        load_block, &load_code,
+                                                        &owned_load_code) &&
+                         (r = jit_commit_blob(rt, load_code, emitted_size, &dest)) == HB_OK) {
+-                        cached = block_cache_put(NULL, rt->block_cache, ctx->pc, dest, emitted_size,
++                        cached = block_cache_put(rt, rt->block_cache, ctx->pc, dest, emitted_size,
+                                                  disk_entry->steps ? disk_entry->steps
+                                                                     : jit_block_step_count(load_block),
+                                                  load_block, false, true);
+@@ -3969,7 +4106,7 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
+                 hb_codegen_buffer_destroy(code_buf);
+ 
+                 /* Store in block cache */
+-                cached = block_cache_put(NULL, rt->block_cache, ctx->pc, dest, emitted_size,
++                cached = block_cache_put(rt, rt->block_cache, ctx->pc, dest, emitted_size,
+                                          jit_block_step_count(compile_block), compile_block,
+                                          false, true);
+                 if (!cached) {
+@@ -4186,6 +4323,9 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
+         hb_ir_block_t* block = NULL;
+         if (dispatch_fastpath) {
+             cached = block_cache_find(rt->block_cache, ctx->pc);
++            /* SMC reverify BEFORE borrowing cached->block: an eviction destroys
++             * the owned block, so borrowing must happen after (or not at all). */
++            cached = smc_reverify_entry(rt, cached);
+             if (cached && cached->block)
+                 block = (hb_ir_block_t*)cached->block;
+         }
+@@ -4208,6 +4348,10 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
+         /* Check in-memory block cache */
+         if (!cached)
+             cached = block_cache_find(rt->block_cache, ctx->pc);
++        /* Non-fastpath resolves block from the CFG (not the entry), so reverify
++         * here is borrow-safe; fastpath already reverified above. */
++        if (!dispatch_fastpath)
++            cached = smc_reverify_entry(rt, cached);
+         uint64_t run_block_delta = 1;
+         if (cached) {
+             if (trace_jit_block_contains_guest(block, trace_jit_guest_addr())) {
+diff --git a/engine/hyperbridge/tests/hb_test_runner.c b/engine/hyperbridge/tests/hb_test_runner.c
+index 96e2ce3d..19a2c090 100644
+--- a/engine/hyperbridge/tests/hb_test_runner.c
++++ b/engine/hyperbridge/tests/hb_test_runner.c
+@@ -15791,6 +15791,97 @@ TEST(jit_x64_helper_byte_compare_loop_promotes_cache_pair) {
+     tests_passed++;
+ }
+ 
++/* The loop helper may yield at a deliberately tiny block budget and then be
++ * re-entered from its cached JIT block.  This is the deterministic control for
++ * the HK trace: with MACRUNNER_HB_JIT_HELPER_LOOP_BLOCK_BUDGET=1 it produces
++ * many budget hits, yet must still consume the full equal byte sequence. */
++TEST(jit_x64_helper_byte_compare_loop_budget_yield) {
++    uint8_t lhs_text[40], rhs_text[40];
++    const uint64_t cmp_pc = 0x3e00;
++    const uint64_t back_pc = 0x3e0c;
++    const uint64_t exit_pc = 0x3e13;
++    hb_ir_func_t* cmp_func = hb_ir_func_create(cmp_pc, 0);
++    hb_ir_func_t* back_func = hb_ir_func_create(back_pc, 0);
++    ASSERT(cmp_func && back_func);
++    hb_ir_block_t* cmp_block = hb_ir_block_create(0, cmp_pc);
++    hb_ir_block_t* back_block = hb_ir_block_create(0, back_pc);
++    ASSERT(cmp_block && back_block);
++    hb_ir_cfg_add_block(cmp_func->cfg, cmp_block);
++    hb_ir_cfg_add_block(back_func->cfg, back_block);
++    cmp_func->cfg->entry = cmp_block;
++    back_func->cfg->entry = back_block;
++
++    for (size_t i = 0; i < sizeof(lhs_text); i++) lhs_text[i] = rhs_text[i] = (uint8_t)(i + 1);
++    lhs_text[32] = rhs_text[32] = 0;
++
++    hb_ir_builder_t* b = hb_ir_builder_create(cmp_func);
++    ASSERT(b != NULL);
++    hb_ir_builder_set_block(b, cmp_block);
++    hb_ir_instr_t* lhs = hb_ir_emit_unop(b, HB_IR_ZERO_EXTEND, hb_ir_reg(HB_REG_RDX, HB_SIZE_32),
++                                         hb_ir_mem(HB_REG_RAX, HB_REG_COUNT, 1, 0, HB_SIZE_8));
++    hb_ir_instr_t* rhs = hb_ir_emit_unop(b, HB_IR_ZERO_EXTEND, hb_ir_reg(HB_REG_RCX, HB_SIZE_32),
++                                         hb_ir_mem(HB_REG_RAX, HB_REG_R8, 1, 0, HB_SIZE_8));
++    hb_ir_instr_t* sub = hb_ir_emit_binop(b, HB_IR_SUB, hb_ir_reg(HB_REG_RDX, HB_SIZE_32),
++                                          hb_ir_reg(HB_REG_RDX, HB_SIZE_32),
++                                          hb_ir_reg(HB_REG_RCX, HB_SIZE_32));
++    hb_ir_instr_t* cmp_jcc = hb_ir_emit_jcc(b, HB_CC_NE, cmp_pc + 0x30);
++    ASSERT(lhs && rhs && sub && cmp_jcc);
++    lhs->guest_addr = cmp_pc;       lhs->guest_len = 3;
++    rhs->guest_addr = cmp_pc + 3;   rhs->guest_len = 5;
++    sub->guest_addr = cmp_pc + 8;   sub->guest_len = 2;
++    cmp_jcc->guest_addr = cmp_pc + 10; cmp_jcc->guest_len = 2;
++    hb_ir_builder_destroy(b);
++
++    b = hb_ir_builder_create(back_func);
++    ASSERT(b != NULL);
++    hb_ir_builder_set_block(b, back_block);
++    hb_ir_instr_t* inc = hb_ir_emit_binop(b, HB_IR_ADD, hb_ir_reg(HB_REG_RAX, HB_SIZE_64),
++                                          hb_ir_reg(HB_REG_RAX, HB_SIZE_64),
++                                          hb_ir_imm(1, HB_SIZE_64));
++    hb_ir_instr_t* test = hb_ir_emit_test(b, hb_ir_reg(HB_REG_RCX, HB_SIZE_32),
++                                          hb_ir_reg(HB_REG_RCX, HB_SIZE_32));
++    hb_ir_instr_t* back_jcc = hb_ir_emit_jcc(b, HB_CC_NE, cmp_pc);
++    ASSERT(inc && test && back_jcc);
++    inc->guest_addr = back_pc;      inc->guest_len = 3;
++    test->guest_addr = back_pc + 3; test->guest_len = 2;
++    back_jcc->guest_addr = back_pc + 5; back_jcc->guest_len = 2;
++    hb_ir_builder_destroy(b);
++
++    hb_context_t* ctx = hb_context_create(HB_ARCH_X64, HB_BACKEND_JIT);
++    ASSERT(ctx != NULL);
++    ctx->memory = hb_memory_create(0);
++    ASSERT(ctx->memory != NULL);
++    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)lhs_text, sizeof(lhs_text), HB_PERM_READ) == HB_OK);
++    ASSERT(hb_memory_map(ctx->memory, (hb_gva_t)(uintptr_t)rhs_text, sizeof(rhs_text), HB_PERM_READ) == HB_OK);
++    ctx->pc = cmp_pc;
++    ctx->regs.x64.rax = (uint64_t)(uintptr_t)lhs_text;
++    ctx->regs.x64.r8 = (uint64_t)(uintptr_t)rhs_text - (uint64_t)(uintptr_t)lhs_text;
++
++    hb_jit_runtime_t* rt = hb_jit_runtime_create(ctx);
++    ASSERT(rt != NULL);
++    char* saved = save_env_var("MACRUNNER_HB_JIT_DIRECT_MEM");
++    setenv("MACRUNNER_HB_JIT_DIRECT_MEM", "0", 1);
++
++    hb_exec_result_t out;
++    ASSERT(hb_jit_runtime_run(rt, cmp_func, &out) == HB_OK);
++    ASSERT(out.result == HB_OK && ctx->pc == back_pc);
++    ASSERT(hb_jit_runtime_run(rt, back_func, &out) == HB_OK);
++    ASSERT(out.result == HB_OK && ctx->pc == cmp_pc);
++    ASSERT(hb_jit_runtime_run(rt, cmp_func, &out) == HB_OK);
++    restore_env_var("MACRUNNER_HB_JIT_DIRECT_MEM", saved);
++    ASSERT(out.result == HB_OK);
++    ASSERT_EQ(out.blocks_executed, 1);
++    ASSERT(ctx->regs.x64.rax == (uint64_t)(uintptr_t)(lhs_text + 33));
++    ASSERT(ctx->regs.x64.rcx == 0 && ctx->regs.x64.rdx == 0);
++    ASSERT(ctx->pc == exit_pc);
++
++    hb_jit_runtime_destroy(rt);
++    hb_context_destroy(ctx);
++    hb_ir_func_destroy(cmp_func);
++    hb_ir_func_destroy(back_func);
++    tests_passed++;
++}
++
+ TEST(jit_x64_helper_unity_string_bsearch_loop_promotes_block) {
+     uint8_t ant[] = "ant";
+     uint8_t bee[] = "bee";
+@@ -25530,6 +25621,7 @@ int main(int argc, char** argv) {
+     test_jit_x64_native_copy_scan_counted_loop_promotes_cache_pair();
+     test_jit_x64_helper_copy_scan_counted_loop_promotes_cache_pair();
+     test_jit_x64_helper_byte_compare_loop_promotes_cache_pair();
++    test_jit_x64_helper_byte_compare_loop_budget_yield();
+     test_jit_x64_helper_unity_string_bsearch_loop_promotes_block();
+     test_jit_x64_helper_load_cmp_jcc_block();
+     test_jit_x64_helper_cmp_setcc_ret_block();
+diff --git a/engine/wine/dlls/ntdll/unix/macrunner_hb.c b/engine/wine/dlls/ntdll/unix/macrunner_hb.c
+index f53243c2..e648e883 100644
+--- a/engine/wine/dlls/ntdll/unix/macrunner_hb.c
++++ b/engine/wine/dlls/ntdll/unix/macrunner_hb.c
+@@ -1416,6 +1416,13 @@ static int macrunner_hb_cached_env_flag_default_on( int *cache, const char *name
+     return value;
+ }
+ 
++static int macrunner_hb_gfx_ring_ledger_enabled(void)
++{
++    static int cache = -1;
++
++    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_GFX_RING_LEDGER" );
++}
++
+ static int macrunner_hb_trace_abi_enabled(void)
+ {
+     static int cache = -1;
+@@ -26512,6 +26519,360 @@ static void macrunner_hb_present_item_creation_probe_block(
+     }
+ }
+ 
++/* UnityPlayer's unknown-Gfx-command fallback is the only guest-visible hook
++ * point for this ledger.  It is observational: first four fallback hits,
++ * with no guest writes, Mach calls, or ring-ordering operations. */
++#define MACRUNNER_HB_GFX_RING_LEDGER_HANDLER_RVA   0x11cd520u
++#define MACRUNNER_HB_GFX_RING_LEDGER_RETURN_RVA    0x11cd634u
++#define MACRUNNER_HB_GFX_RING_LEDGER_DISPATCH_RVA  0x11bf045u
++#define MACRUNNER_HB_GFX_RING_LEDGER_MAX_SAMPLES   4
++
++struct macrunner_hb_gfx_ring_ledger_dispatch
++{
++    uint64_t consumer;
++    uint64_t ring;
++    uint64_t payload_base;
++    uint64_t command_address;
++    uint32_t command;
++    uint32_t cursor_before;
++    uint32_t cursor_after_complete;
++    int valid;
++    int payload_ok;
++    int command_ok;
++    int complete;
++};
++
++struct macrunner_hb_gfx_ring_ledger_tls
++{
++    unsigned int sequence;
++    uint64_t unity_base;
++    uint64_t consumer;
++    uint64_t ring;
++    uint64_t payload_base;
++    uint64_t command_address;
++    uint32_t cursor_before;
++    uint32_t cursor_after_dispatch;
++    uint32_t publication_before;
++    int active;
++    struct macrunner_hb_gfx_ring_ledger_dispatch previous_dispatch;
++    struct macrunner_hb_gfx_ring_ledger_dispatch current_dispatch;
++};
++
++static LONG macrunner_hb_gfx_ring_ledger_samples;
++static LONG macrunner_hb_gfx_ring_ledger_skipped_fallbacks;
++static LONG macrunner_hb_gfx_ring_ledger_armed_logged;
++static __thread struct macrunner_hb_gfx_ring_ledger_tls macrunner_hb_gfx_ring_ledger_tls;
++
++static int macrunner_hb_gfx_ring_ledger_watchlist_contains( uint32_t command )
++{
++    switch (command)
++    {
++    case 10007:
++    case 10028:
++    case 10035:
++    case 10057:
++    case 10123:
++        return TRUE;
++    default:
++        return FALSE;
++    }
++}
++
++static void macrunner_hb_gfx_ring_ledger_compiler_barrier(void)
++{
++#if defined(__clang__) || defined(__GNUC__)
++    __asm__ __volatile__( "" ::: "memory" );
++#endif
++}
++
++static int macrunner_hb_gfx_ring_ledger_read_u32( hb_context_t *ctx,
++                                                   uint64_t address, uint32_t *value )
++{
++    if (value) *value = 0;
++    return ctx && ctx->memory && address && value &&
++           hb_memory_read_u32( ctx->memory, (hb_gva_t)address, value ) == HB_OK;
++}
++
++static int macrunner_hb_gfx_ring_ledger_read_u64( hb_context_t *ctx,
++                                                   uint64_t address, uint64_t *value )
++{
++    if (value) *value = 0;
++    return ctx && ctx->memory && address && value &&
++           hb_memory_read_u64( ctx->memory, (hb_gva_t)address, value ) == HB_OK;
++}
++
++/* Capture dispatcher state without logging or modifying guest state.  At this
++ * block r14 is the stream, r15 the dispatcher and ecx the pre-dispatch cursor.
++ * The next dispatcher pass completes the previous command's consumed range. */
++static void macrunner_hb_gfx_ring_ledger_capture_dispatch(
++    hb_context_t *ctx, struct macrunner_hb_gfx_ring_ledger_tls *tls )
++{
++    struct macrunner_hb_gfx_ring_ledger_dispatch *current = &tls->current_dispatch;
++    uint64_t ring = ctx->regs.x64.r14, consumer = ctx->regs.x64.r15;
++    uint64_t payload_base = 0, command_address = 0;
++    uint32_t cursor_before = (uint32_t)ctx->regs.x64.rcx, command = 0;
++    int payload_ok = 0, command_ok = 0;
++
++    if (current->valid)
++    {
++        current->cursor_after_complete = cursor_before;
++        current->complete = TRUE;
++        tls->previous_dispatch = *current;
++    }
++    memset( current, 0, sizeof(*current) );
++
++    if (ring <= UINT64_MAX - 0x100)
++        payload_ok = macrunner_hb_gfx_ring_ledger_read_u64( ctx, ring + 0x100, &payload_base );
++    if (payload_ok && payload_base <= UINT64_MAX - cursor_before)
++    {
++        command_address = payload_base + cursor_before;
++        command_ok = macrunner_hb_gfx_ring_ledger_read_u32( ctx, command_address, &command );
++    }
++
++    current->consumer = consumer;
++    current->ring = ring;
++    current->payload_base = payload_base;
++    current->command_address = command_address;
++    current->command = command;
++    current->cursor_before = cursor_before;
++    current->valid = TRUE;
++    current->payload_ok = payload_ok;
++    current->command_ok = command_ok;
++}
++
++static void macrunner_hb_gfx_ring_ledger_log_return( hb_context_t *ctx,
++                                                      uint64_t block_pc )
++{
++    struct macrunner_hb_gfx_ring_ledger_tls *tls = &macrunner_hb_gfx_ring_ledger_tls;
++    uint32_t cursor_after_handler = 0, publication_after_handler = 0;
++    uint32_t consumed_bytes = 0;
++    int cursor_ok, publication_ok;
++
++    if (!tls->active || block_pc != tls->unity_base + MACRUNNER_HB_GFX_RING_LEDGER_RETURN_RVA)
++        return;
++
++    cursor_ok = macrunner_hb_gfx_ring_ledger_read_u32(
++        ctx, tls->ring + 0x108, &cursor_after_handler );
++    publication_ok = macrunner_hb_gfx_ring_ledger_read_u32(
++        ctx, tls->ring + 0x10c, &publication_after_handler );
++    if (cursor_ok) consumed_bytes = cursor_after_handler - tls->cursor_before;
++
++    fprintf( stderr,
++             "macrunner-hb-gfx-ring-ledger: stage=handler-return seq=%u tid=%04lx "
++             "ring=%p cursor_after_handler=0x%x cursor_after_handler_ok=%d "
++             "consumed_bytes=0x%x publication_after_handler=0x%x "
++             "publication_after_handler_ok=%d entry_publication=0x%x\\n",
++             tls->sequence, (unsigned long)GetCurrentThreadId(),
++             (void *)(uintptr_t)tls->ring, cursor_after_handler, cursor_ok,
++             consumed_bytes, publication_after_handler, publication_ok,
++             tls->publication_before );
++    fflush( stderr );
++    tls->active = FALSE;
++}
++
++static void macrunner_hb_gfx_ring_ledger_pre_block(
++    hb_context_t *ctx, uint64_t image_start, uint64_t block_pc )
++{
++    struct macrunner_hb_gfx_ring_ledger_tls *tls = &macrunner_hb_gfx_ring_ledger_tls;
++    const struct macrunner_hb_gfx_ring_ledger_dispatch *previous = &tls->previous_dispatch;
++    const struct macrunner_hb_gfx_ring_ledger_dispatch *current = &tls->current_dispatch;
++    uint64_t rva, ring, consumer, payload_base = 0, command_address = 0, last_address = 0;
++    uint32_t command, last_command = 0, cursor_after_dispatch = 0, cursor_before = 0;
++    uint32_t publication_before = 0, publication_after = 0, command_word = 0, next_word = 0;
++    uint32_t next_words[3] = {0};
++    uint32_t next_words_valid = 0;
++    uint32_t consumed_before_handler = 0;
++    uint64_t publication_address = 0, cursor_address = 0;
++    unsigned int sequence;
++    int payload_ok, cursor_ok, publication_before_ok, publication_after_ok;
++    int command_ok = 0, next_ok = 0, last_ok = 0, edx_matches_stream_word, sample_valid;
++    char module[64];
++    uint64_t module_rva = 0;
++
++    if (!ctx || !macrunner_hb_gfx_ring_ledger_enabled()) return;
++
++    if (InterlockedCompareExchange( &macrunner_hb_gfx_ring_ledger_armed_logged, 1, 0 ) == 0)
++    {
++        fprintf( stderr,
++                 "macrunner-hb-gfx-ring-ledger: stage=armed target=UnityPlayer.dll+0x%x "
++                 "dispatch=UnityPlayer.dll+0x%x max_samples=%u\\n",
++                 MACRUNNER_HB_GFX_RING_LEDGER_HANDLER_RVA,
++                 MACRUNNER_HB_GFX_RING_LEDGER_DISPATCH_RVA,
++                 MACRUNNER_HB_GFX_RING_LEDGER_MAX_SAMPLES );
++        fflush( stderr );
++    }
++
++    macrunner_hb_gfx_ring_ledger_log_return( ctx, block_pc );
++
++    if (!image_start || block_pc < image_start) return;
++    rva = block_pc - image_start;
++    if (rva == MACRUNNER_HB_GFX_RING_LEDGER_DISPATCH_RVA)
++    {
++        macrunner_hb_post_signal_probe_module_rva( block_pc, module, sizeof(module), &module_rva );
++        if ((macrunner_hb_strieq( module, "UnityPlayer.dll" ) ||
++             macrunner_hb_strieq( module, "UnityPlayer" )) &&
++            module_rva == MACRUNNER_HB_GFX_RING_LEDGER_DISPATCH_RVA)
++            macrunner_hb_gfx_ring_ledger_capture_dispatch( ctx, tls );
++        return;
++    }
++    command = (uint32_t)ctx->regs.x64.rdx;
++    if (rva != MACRUNNER_HB_GFX_RING_LEDGER_HANDLER_RVA)
++        return;
++
++    macrunner_hb_post_signal_probe_module_rva( block_pc, module, sizeof(module), &module_rva );
++    if ((!macrunner_hb_strieq( module, "UnityPlayer.dll" ) &&
++         !macrunner_hb_strieq( module, "UnityPlayer" )) ||
++        module_rva != MACRUNNER_HB_GFX_RING_LEDGER_HANDLER_RVA)
++        return;
++
++    /* The direct dispatcher preserves stream in r14. R8 is merely the
++     * formatter's third argument and is not accepted as stream provenance. */
++    ring = ctx->regs.x64.r14;
++    consumer = ctx->regs.x64.rcx;
++    if (consumer <= UINT64_MAX - 0x48) last_address = consumer + 0x48;
++    if (ring <= UINT64_MAX - 0x100) payload_ok =
++        macrunner_hb_gfx_ring_ledger_read_u64( ctx, ring + 0x100, &payload_base );
++    else payload_ok = 0;
++    if (ring <= UINT64_MAX - 0x108) cursor_address = ring + 0x108;
++    if (ring <= UINT64_MAX - 0x10c) publication_address = ring + 0x10c;
++    cursor_ok = macrunner_hb_gfx_ring_ledger_read_u32(
++        ctx, cursor_address, &cursor_after_dispatch );
++    publication_before_ok = macrunner_hb_gfx_ring_ledger_read_u32(
++        ctx, publication_address, &publication_before );
++    macrunner_hb_gfx_ring_ledger_compiler_barrier();
++    publication_after_ok = macrunner_hb_gfx_ring_ledger_read_u32(
++        ctx, publication_address, &publication_after );
++    last_ok = macrunner_hb_gfx_ring_ledger_read_u32( ctx, last_address, &last_command );
++
++    if (!macrunner_hb_gfx_ring_ledger_watchlist_contains( command ) &&
++        (!last_ok || !macrunner_hb_gfx_ring_ledger_watchlist_contains( last_command )))
++    {
++        InterlockedIncrement( &macrunner_hb_gfx_ring_ledger_skipped_fallbacks );
++        return;
++    }
++
++    sequence = (unsigned int)InterlockedIncrement( &macrunner_hb_gfx_ring_ledger_samples );
++    if (sequence > MACRUNNER_HB_GFX_RING_LEDGER_MAX_SAMPLES) return;
++
++    fprintf( stderr,
++             "macrunner-hb-gfx-ring-ledger: stage=watchlist seq=%u cmd_edx=%u last_command=%u "
++             "skipped_fallbacks=%ld\n",
++             sequence, command, last_command,
++             InterlockedCompareExchange( &macrunner_hb_gfx_ring_ledger_skipped_fallbacks, 0, 0 ) );
++    fflush( stderr );
++
++    /* Prefer the generic dispatcher snapshot for provenance, but always read
++     * the V4 witness from stream base+cursor instead of reusing its command. */
++    if (current->valid && current->ring == ring && current->command_ok &&
++        current->command == command)
++    {
++        payload_base = current->payload_base;
++        cursor_before = current->cursor_before;
++        payload_ok = current->payload_ok;
++        if (cursor_ok) consumed_before_handler = cursor_after_dispatch - cursor_before;
++    }
++    else if (cursor_ok && cursor_after_dispatch >= sizeof(uint32_t))
++    {
++        cursor_before = cursor_after_dispatch - sizeof(uint32_t);
++        consumed_before_handler = sizeof(uint32_t);
++    }
++
++    if (payload_ok && cursor_ok && publication_before_ok &&
++        cursor_after_dispatch >= sizeof(uint32_t) &&
++        cursor_after_dispatch <= publication_before &&
++        payload_base <= UINT64_MAX - cursor_before)
++    {
++        command_address = payload_base + cursor_before;
++        command_ok = macrunner_hb_gfx_ring_ledger_read_u32(
++            ctx, command_address, &command_word );
++    }
++    if (payload_ok && cursor_ok && publication_before_ok &&
++        cursor_after_dispatch <= publication_before &&
++        publication_before - cursor_after_dispatch >= sizeof(uint32_t) &&
++        payload_base <= UINT64_MAX - cursor_after_dispatch)
++    {
++        next_ok = macrunner_hb_gfx_ring_ledger_read_u32(
++            ctx, payload_base + cursor_after_dispatch, &next_word );
++        for (unsigned int i = 0; i < ARRAY_SIZE(next_words); ++i)
++        {
++            uint32_t offset;
++            uint64_t address;
++
++            if (cursor_after_dispatch > UINT32_MAX - i * sizeof(uint32_t))
++                continue;
++            offset = cursor_after_dispatch + i * sizeof(uint32_t);
++            if (offset > publication_before ||
++                publication_before - offset < sizeof(uint32_t))
++                continue;
++            address = payload_base + offset;
++            if (address < payload_base ||
++                !macrunner_hb_gfx_ring_ledger_read_u32( ctx, address, &next_words[i] ))
++                continue;
++            next_words_valid |= 1u << i;
++        }
++    }
++    edx_matches_stream_word = command_ok && command_word == command;
++    sample_valid = payload_ok && cursor_ok && publication_before_ok && publication_after_ok &&
++                   publication_before == publication_after && edx_matches_stream_word;
++
++    fprintf( stderr,
++             "macrunner-hb-gfx-ring-ledger: stage=layout-v4 seq=%u dispatcher=%p stream=%p "
++             "stream_source=r14 fallback_r8=%p base=%p base_ok=%d cursor=0x%x cursor_after=0x%x "
++             "cursor_ok=%d limit_addr=%p limit_before=0x%x limit_before_ok=%d "
++             "limit_after=0x%x limit_after_ok=%d limit_stable=%d opcode_addr=%p cmd_edx=%u "
++             "stream_word=%u stream_word_ok=%d edx_matches_stream_word=%d "
++             "next_words=%08x,%08x next_words_valid=0x%x\n",
++             sequence, (void *)(uintptr_t)consumer, (void *)(uintptr_t)ring,
++             (void *)(uintptr_t)ctx->regs.x64.r8, (void *)(uintptr_t)payload_base, payload_ok,
++             cursor_before, cursor_after_dispatch, cursor_ok, (void *)(uintptr_t)publication_address,
++             publication_before, publication_before_ok, publication_after, publication_after_ok,
++             publication_before_ok && publication_after_ok && publication_before == publication_after,
++             (void *)(uintptr_t)command_address, command, command_word, command_ok,
++             edx_matches_stream_word, next_words[0], next_words[1], next_words_valid & 0x3 );
++    fflush( stderr );
++
++    fprintf( stderr,
++             "macrunner-hb-gfx-ring-ledger: stage=handler-entry seq=%u valid=%d tid=%04lx "
++             "unity_base=%p handler_rva=0x%x consumer=%p cmd_edx=%u last_addr=%p last_command=%u last_ok=%d "
++             "ring=%p payload_base=%p payload_base_ok=%d cursor_addr=%p cursor_before=0x%x "
++             "cursor_after_dispatch=0x%x cursor_ok=%d command_addr=%p command_word=%u command_ok=%d "
++             "consumed_before_handler=%u "
++             "next_addr=%p next_word=%u next_ok=%d published_cursor_addr=%p "
++             "published_cursor_before=0x%x published_cursor_before_ok=%d "
++             "published_cursor_after=0x%x published_cursor_after_ok=%d publication_stable=%d "
++             "next_words=%08x,%08x,%08x next_words_valid=0x%x "
++             "previous_cmd=%u previous_ring=%p previous_cursor_before=0x%x previous_cursor_after=0x%x "
++             "previous_consumed=%u previous_complete=%d previous_matches_last=%d\\n",
++             sequence, sample_valid, (unsigned long)GetCurrentThreadId(),
++             (void *)(uintptr_t)image_start, MACRUNNER_HB_GFX_RING_LEDGER_HANDLER_RVA,
++             (void *)(uintptr_t)consumer, command, (void *)(uintptr_t)last_address, last_command, last_ok,
++             (void *)(uintptr_t)ring, (void *)(uintptr_t)payload_base, payload_ok,
++             (void *)(uintptr_t)cursor_address, cursor_before, cursor_after_dispatch, cursor_ok,
++             (void *)(uintptr_t)command_address, command_word, command_ok, consumed_before_handler,
++             payload_ok && payload_base <= UINT64_MAX - cursor_after_dispatch ?
++                 (void *)(uintptr_t)(payload_base + cursor_after_dispatch) : NULL,
++             next_word, next_ok, (void *)(uintptr_t)publication_address,
++             publication_before, publication_before_ok, publication_after, publication_after_ok,
++             publication_before_ok && publication_after_ok && publication_before == publication_after,
++             next_words[0], next_words[1], next_words[2], next_words_valid,
++             previous->command, (void *)(uintptr_t)previous->ring,
++             previous->cursor_before, previous->cursor_after_complete,
++             previous->complete ? previous->cursor_after_complete - previous->cursor_before : 0,
++             previous->complete, previous->valid && last_ok && previous->command == last_command );
++    fflush( stderr );
++
++    tls->sequence = sequence;
++    tls->unity_base = image_start;
++    tls->consumer = consumer;
++    tls->ring = ring;
++    tls->payload_base = payload_base;
++    tls->command_address = command_address;
++    tls->cursor_before = cursor_before;
++    tls->cursor_after_dispatch = cursor_after_dispatch;
++    tls->publication_before = publication_before;
++    tls->active = TRUE;
++}
++
+ static void macrunner_hb_ring_pop_probe_log_snapshot( const char *stage, hb_context_t *ctx,
+                                                        uint64_t block_pc )
+ {
+@@ -37194,12 +37555,16 @@ skip_version_semantic:
+         {
+             fprintf( stderr, "macrunner-hb-runtime-fail: label=%s block_pc=%p next_pc=%p "
+                      "ret=%s out=%s reason=cfg-dispatch-fast-path blocks=%s steps=%s "
+-                     "rax=%p rsp=%p r10=%p\n",
++                     "rax=%p rsp=%p r10=%p r12=%p r13=%p r14=%p r15=%p\n",
+                      label ? label : "entry", (void *)(uintptr_t)ctx->pc,
+                      (void *)(uintptr_t)ctx->pc, hb_result_string(ret),
+                      hb_result_string(ctx->last_result), wine_dbgstr_longlong(blocks),
+                      wine_dbgstr_longlong(steps), (void *)(uintptr_t)ctx->regs.x64.rax,
+-                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)ctx->regs.x64.r10 );
++                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)ctx->regs.x64.r10,
++                     (void *)(uintptr_t)ctx->regs.x64.r12,
++                     (void *)(uintptr_t)ctx->regs.x64.r13,
++                     (void *)(uintptr_t)ctx->regs.x64.r14,
++                     (void *)(uintptr_t)ctx->regs.x64.r15 );
+             status = STATUS_INVALID_IMAGE_FORMAT;
+             status_reason = "cfg-dispatch-fast-path";
+             break;
+@@ -37987,6 +38352,7 @@ skip_version_semantic:
+             ctx, image_start, block_pc );
+         macrunner_hb_producer_publish_probe_pre_block(
+             ctx, image_start, block_pc );
++        macrunner_hb_gfx_ring_ledger_pre_block( ctx, image_start, block_pc );
+         macrunner_hb_present_item_creation_probe_pre_block( ctx, block_pc );
+         if (trace_unity_origin)
+             macrunner_hb_trace_unity_origin( "before", ctx, image_start, block_pc );
+@@ -38423,7 +38789,7 @@ skip_version_semantic:
+             fprintf( stderr, "macrunner-hb-runtime-fail: label=%s block_pc=%p next_pc=%p "
+                      "module=%s rva=%p bytes=%s ret=%s out=%s reason=%s blocks=%s steps=%s out_steps=%s "
+                      "rax=%p rcx=%p rdx=%p rsi=%p rdi=%p rsp=%p "
+-                     "r8=%p r9=%p r10=%p r11=%p full=%s\n",
++                     "r8=%p r9=%p r10=%p r11=%p r12=%p r13=%p r14=%p r15=%p full=%s\n",
+                      label ? label : "entry", (void *)(uintptr_t)block_pc,
+                      (void *)(uintptr_t)ctx->pc,
+                      fault_base[0] ? fault_base : "(unknown)", (void *)fault_rva,
+@@ -38441,6 +38807,10 @@ skip_version_semantic:
+                        (void *)(uintptr_t)ctx->regs.x64.r9,
+                        (void *)(uintptr_t)ctx->regs.x64.r10,
+                        (void *)(uintptr_t)ctx->regs.x64.r11,
++                       (void *)(uintptr_t)ctx->regs.x64.r12,
++                       (void *)(uintptr_t)ctx->regs.x64.r13,
++                       (void *)(uintptr_t)ctx->regs.x64.r14,
++                       (void *)(uintptr_t)ctx->regs.x64.r15,
+                         fault_full[0] ? fault_full : "(unknown)" );
+             {
+                 static int galaxy_eh_probe_enabled = -1;

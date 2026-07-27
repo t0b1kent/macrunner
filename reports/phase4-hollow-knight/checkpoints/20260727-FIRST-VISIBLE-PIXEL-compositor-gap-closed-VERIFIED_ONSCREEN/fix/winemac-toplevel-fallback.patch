@@ -1,0 +1,41 @@
+diff --git a/engine/wine/dlls/winemac.drv/macdrv.h b/engine/wine/dlls/winemac.drv/macdrv.h
+index 34939dcc..1e173878 100644
+--- a/engine/wine/dlls/winemac.drv/macdrv.h
++++ b/engine/wine/dlls/winemac.drv/macdrv.h
+@@ -224,6 +224,9 @@ extern BOOL macdrv_SystemParametersInfo(UINT action, UINT int_param, void *ptr_p
+ extern void activate_on_following_focus(void);
+ 
+ extern void macdrv_handle_event(const macdrv_event *event);
++extern void macdrv_return_route_observe(const char *stage, void *hwnd, macdrv_window window,
++                                        unsigned int keycode, unsigned int vkey, int pressed,
++                                        unsigned int flags, unsigned int event_time);
+ 
+ extern void macdrv_window_close_requested(HWND hwnd);
+ extern void macdrv_window_frame_changed(HWND hwnd, const macdrv_event *event);
+diff --git a/engine/wine/dlls/winemac.drv/window.c b/engine/wine/dlls/winemac.drv/window.c
+index 8f74ac31..d8018834 100644
+--- a/engine/wine/dlls/winemac.drv/window.c
++++ b/engine/wine/dlls/winemac.drv/window.c
+@@ -1405,6 +1405,22 @@ static void macdrv_client_surface_update(struct client_surface *client)
+ 
+     TRACE("%s\n", debugstr_client_surface(client));
+ 
++    /* MacRunner 2026-07-27 (HK run8/run9 compositor gap): when a DXGI swapchain is
++     * created while the win32 window is still being realized, GA_ROOT returns NULL
++     * (observed live: "macrunner-get-win-data: hwnd=0x2002e ... root=0x0"). The
++     * get_win_data(toplevel) below then fails and this update silently no-ops, so
++     * the client surface's Cocoa view is NEVER parented into the window while
++     * macdrv_client_surface_present still unhides it (probe: superview=nil,
++     * hidden=NO, window=nil). Every Present renders into the detached view and the
++     * visible window stays black forever. Fall back to the hwnd's own win_data —
++     * for a top-level window toplevel==hwnd anyway. */
++    if (!toplevel)
++    {
++        fprintf(stderr, "macrunner-winrealize: client_surface_update toplevel_fallback "
++                "hwnd=%p reason=GA_ROOT_null\n", hwnd);
++        toplevel = hwnd;
++    }
++
+     NtUserGetClientRect(hwnd, &rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
+     NtUserMapWindowPoints(hwnd, toplevel, (POINT *)&rect, 2, NtUserGetWinMonitorDpi(toplevel, MDT_RAW_DPI));
+ 

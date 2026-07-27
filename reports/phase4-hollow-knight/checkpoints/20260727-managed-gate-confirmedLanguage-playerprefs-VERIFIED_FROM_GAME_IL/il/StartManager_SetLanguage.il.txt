@@ -1,0 +1,115 @@
+StartManager::SetLanguage
+  .method SetLanguage  (token 0x06000e66, RVA 0x50be8)
+    IL_000c: ldarg.0      
+    IL_000d: call         token(0x0A0000A2)  // TeamCherry.Localization.Language::CurrentLanguage
+    IL_0012: stloc.0      
+    IL_0013: ldloca.s     local(0x0000)
+    IL_0015: constrained. token(0x01000014)  // TeamCherry.Localization.LanguageCode
+    IL_001b: callvirt     token(0x0A000088)  // System.Object::ToString
+    IL_0020: stfld        token(0x04000DD8)  // field oldLanguage
+    IL_0025: ldarg.0      
+    IL_0026: ldarg.1      
+    IL_0027: stfld        token(0x04000DD7)  // field selectedLanguage
+    IL_002c: ldarg.0      
+    IL_002d: ldfld        token(0x04000DD7)  // field selectedLanguage
+    IL_0032: call         token(0x0A00066F)  // TeamCherry.Localization.Language::SwitchLanguage
+    IL_0037: pop          
+    IL_0038: ldarg.0      
+    IL_0039: ldfld        token(0x04000DD8)  // field oldLanguage
+    IL_003e: ldarg.1      
+    IL_003f: call         token(0x0A000153)  // System.String::op_Inequality
+    IL_0044: brfalse.s    167
+    IL_0046: call         token(0x0A00063A)  // TeamCherry.Localization.Language::LoadLanguage
+    IL_004b: ldc.i4.0     
+    IL_004c: call         token(0x2B000123)  // spec FindObjectsByType
+    IL_0051: stloc.1      
+    IL_0052: ldc.i4.0     
+    IL_0053: stloc.2      
+    IL_0054: br.s         98
+    IL_0056: ldloc.1      
+    IL_0057: ldloc.2      
+    IL_0058: ldelem.ref   
+    IL_0059: callvirt     token(0x06000029)  // ChangeFontByLanguage::SetFont
+    IL_005e: ldloc.2      
+    IL_005f: ldc.i4.1     
+    IL_0060: add          
+    IL_0061: stloc.2      
+    IL_0062: ldloc.2      
+    IL_0063: ldloc.1      
+    IL_0064: ldlen        
+    IL_0065: conv.i4      
+    IL_0066: blt.s        86
+    IL_0068: ldarg.0      
+    IL_0069: ldc.i4.1     
+    IL_006a: call         token(0x2B000124)  // spec GetComponentsInChildren
+    IL_006f: stloc.3      
+    IL_0070: ldc.i4.0     
+    IL_0071: stloc.2      
+    IL_0072: br.s         128
+    IL_0074: ldloc.3      
+    IL_0075: ldloc.2      
+    IL_0076: ldelem.ref   
+    IL_0077: callvirt     token(0x06001601)  // SetTextMeshProGameText::UpdateText
+    IL_007c: ldloc.2      
+    IL_007d: ldc.i4.1     
+    IL_007e: add          
+    IL_007f: stloc.2      
+    IL_0080: ldloc.2      
+    IL_0081: ldloc.3      
+    IL_0082: ldlen        
+    IL_0083: conv.i4      
+    IL_0084: blt.s        116
+    IL_0086: ldarg.0      
+    IL_0087: ldc.i4.1     
+    IL_0088: call         token(0x2B000125)  // spec GetComponentsInChildren
+    IL_008d: stloc.s      local(0x0004)
+    IL_008f: ldc.i4.0     
+    IL_0090: stloc.2      
+    IL_0091: br.s         160
+    IL_0093: ldloc.s      local(0x0004)
+    IL_0095: ldloc.2      
+    IL_0096: ldelem.ref   
+    IL_0097: callvirt     token(0x06000151)  // LogoLanguage::SetSprite
+    IL_009c: ldloc.2      
+    IL_009d: ldc.i4.1     
+    IL_009e: add          
+    IL_009f: stloc.2      
+    IL_00a0: ldloc.2      
+    IL_00a1: ldloc.s      local(0x0004)
+    IL_00a3: ldlen        
+    IL_00a4: conv.i4      
+    IL_00a5: blt.s        147
+    IL_00a7: ldarg.0      
+    IL_00a8: ldfld        token(0x04000DD6)  // field languageConfirm
+    IL_00ad: callvirt     token(0x0A0000B5)  // UnityEngine.Component::get_gameObject
+    IL_00b2: ldc.i4.1     
+    IL_00b3: callvirt     token(0x0A0000BF)  // UnityEngine.GameObject::SetActive
+    IL_00b8: ldarg.0      
+    IL_00b9: ldarg.0      
+    IL_00ba: ldarg.0      
+    IL_00bb: ldfld        token(0x04000DD6)  // field languageConfirm
+    IL_00c0: ldc.r4       0.25
+    IL_00c5: call         token(0x06000E67)  // StartManager::FadeIn
+    IL_00ca: call         token(0x0A000177)  // UnityEngine.MonoBehaviour::StartCoroutine
+    IL_00cf: pop          
+    IL_00d0: ldarg.0      
+    IL_00d1: ldfld        token(0x04000DD6)  // field languageConfirm
+    IL_00d6: callvirt     token(0x2B000126)  // spec GetComponentsInChildren
+    IL_00db: stloc.s      local(0x0005)
+    IL_00dd: ldc.i4.0     
+    IL_00de: stloc.2      
+    IL_00df: br.s         238
+    IL_00e1: ldloc.s      local(0x0005)
+    IL_00e3: ldloc.2      
+    IL_00e4: ldelem.ref   
+    IL_00e5: callvirt     token(0x06000CEB)  // AutoLocalizeTextUI::RefreshTextFromLocalization
+    IL_00ea: ldloc.2      
+    IL_00eb: ldc.i4.1     
+    IL_00ec: add          
+    IL_00ed: stloc.2      
+    IL_00ee: ldloc.2      
+    IL_00ef: ldloc.s      local(0x0005)
+    IL_00f1: ldlen        
+    IL_00f2: conv.i4      
+    IL_00f3: blt.s        225
+    IL_00f5: ret          

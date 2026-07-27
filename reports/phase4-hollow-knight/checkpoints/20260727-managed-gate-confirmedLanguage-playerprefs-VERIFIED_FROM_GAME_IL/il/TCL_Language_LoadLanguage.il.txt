@@ -1,0 +1,16 @@
+TeamCherry.Localization.Language::LoadLanguage
+  .method LoadLanguage  (token 0x06000008, RVA 0x2160)
+    IL_000c: call         token(0x06000009)  // TeamCherry.Localization.LanguageCode::RestoreLanguageSelection
+    IL_0011: stloc.0      
+    IL_0012: ldstr        string token(0x7000009E)  // "Restored language code '{0}'"
+    IL_0017: ldc.i4.1     
+    IL_0018: newarr       token(0x0100000A)  // System.Object
+    IL_001d: dup          
+    IL_001e: ldc.i4.0     
+    IL_001f: ldloc.0      
+    IL_0020: stelem.ref   
+    IL_0021: call         token(0x0A000016)  // UnityEngine.Debug::LogFormat
+    IL_0026: ldloc.0      
+    IL_0027: call         token(0x0600000C)  // TeamCherry.Localization.LanguageCode::SwitchLanguage
+    IL_002c: pop          
+    IL_002d: ret          

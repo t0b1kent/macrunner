@@ -1,0 +1,28 @@
+StartManager::ConfirmLanguage
+  .method ConfirmLanguage  (token 0x06000e6c, RVA 0x50d70)
+    IL_000c: call         token(0x06001073)  // Platform::get_Current
+    IL_0011: callvirt     token(0x06001015)  // Platform::get_LocalSharedData
+    IL_0016: ldstr        string token(0x7000952C)  // "GameLangSet"
+    IL_001b: ldc.i4.1     
+    IL_001c: callvirt     token(0x06004355)  // ISharedData::SetInt
+    IL_0021: call         token(0x06001073)  // Platform::get_Current
+    IL_0026: callvirt     token(0x06001015)  // Platform::get_LocalSharedData
+    IL_002b: callvirt     token(0x0600435A)  // ISharedData::Save
+    IL_0030: ldarg.0      
+    IL_0031: ldfld        token(0x04000DD2)  // field controllerNoticeText
+    IL_0036: callvirt     token(0x06001601)  // SetTextMeshProGameText::UpdateText
+    IL_003b: ldarg.0      
+    IL_003c: call         token(0x06000E6B)  // StartManager::CancelFade
+    IL_0041: ldarg.0      
+    IL_0042: ldarg.0      
+    IL_0043: ldarg.0      
+    IL_0044: ldarg.0      
+    IL_0045: ldfld        token(0x04000DD6)  // field languageConfirm
+    IL_004a: ldc.r4       0.25
+    IL_004f: call         token(0x06000E68)  // StartManager::FadeOut
+    IL_0054: call         token(0x0A000177)  // UnityEngine.MonoBehaviour::StartCoroutine
+    IL_0059: stfld        token(0x04000DE3)  // field fadeRoutine
+    IL_005e: ldarg.0      
+    IL_005f: ldc.i4.1     
+    IL_0060: stfld        token(0x04000DE2)  // field confirmedLanguage
+    IL_0065: ret          

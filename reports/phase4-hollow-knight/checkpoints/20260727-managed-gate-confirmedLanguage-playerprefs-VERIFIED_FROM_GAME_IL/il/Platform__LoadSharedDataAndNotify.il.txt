@@ -1,0 +1,38 @@
+DesktopPlatform::LoadSharedDataAndNotify
+  .method LoadSharedDataAndNotify  (token 0x06000f6a, RVA 0x53794)
+    IL_000c: ldarg.0      
+    IL_000d: ldfld        token(0x04000E94)  // field onlineSubsystem
+    IL_0012: stloc.0      
+    IL_0013: ldloc.0      
+    IL_0014: brfalse.s    43
+    IL_0016: ldloc.0      
+    IL_0017: callvirt     token(0x06000FAC)  // DesktopOnlineSubsystem::get_HandleLoadSharedDataAndNotify
+    IL_001c: brfalse.s    43
+    IL_001e: ldarg.0      
+    IL_001f: ldfld        token(0x04000E94)  // field onlineSubsystem
+    IL_0024: ldarg.1      
+    IL_0025: callvirt     token(0x06000FAD)  // DesktopOnlineSubsystem::LoadSharedDataAndNotify
+    IL_002a: ret          
+    IL_002b: ldarg.0      
+    IL_002c: ldarg.1      
+    IL_002d: call         token(0x0600100A)  // Platform::LoadSharedDataAndNotify
+    IL_0032: ret          
+Platform::LoadSharedDataAndNotify
+  .method LoadSharedDataAndNotify  (token 0x0600100a, RVA 0x54d2e)
+    IL_0001: ldarg.0      
+    IL_0002: ldarg.1      
+    IL_0003: call         token(0x06001009)  // Platform::NotifySaveMountStateChanged
+    IL_0008: ret          
+XBoxConsolePlatform::LoadSharedDataAndNotify
+  .method LoadSharedDataAndNotify  (token 0x06001102, RVA 0x562f4)
+    IL_0001: newobj       token(0x0600436C)  // <>c__DisplayClass11_0::.ctor
+    IL_0006: dup          
+    IL_0007: ldarg.0      
+    IL_0008: stfld        token(0x0400451F)  // field <>4__this
+    IL_000d: dup          
+    IL_000e: ldarg.1      
+    IL_000f: stfld        token(0x04004520)  // field mounted
+    IL_0014: ldftn        token(0x0600436D)  // <>c__DisplayClass11_0::<LoadSharedDataAndNotify>b__0
+    IL_001a: newobj       token(0x0A000395)  // System.Action::.ctor
+    IL_001f: call         token(0x06000F3D)  // CoreLoop::InvokeSafe
+    IL_0024: ret          

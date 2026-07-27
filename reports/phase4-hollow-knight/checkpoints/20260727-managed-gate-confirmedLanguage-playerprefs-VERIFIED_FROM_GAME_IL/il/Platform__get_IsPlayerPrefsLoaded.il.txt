@@ -1,0 +1,9 @@
+Platform::get_IsPlayerPrefsLoaded
+  .method get_IsPlayerPrefsLoaded  (token 0x06001071, RVA 0x553ba)
+    IL_0001: ldc.i4.1     
+    IL_0002: ret          
+XBoxConsolePlatform::get_IsPlayerPrefsLoaded
+  .method get_IsPlayerPrefsLoaded  (token 0x06001142, RVA 0x56689)
+    IL_0001: ldarg.0      
+    IL_0002: ldfld        token(0x04000EEB)  // field isPlayerPrefsLoaded
+    IL_0007: ret          

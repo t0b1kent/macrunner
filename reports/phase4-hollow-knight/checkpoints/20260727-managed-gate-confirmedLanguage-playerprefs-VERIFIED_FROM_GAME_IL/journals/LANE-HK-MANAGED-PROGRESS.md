@@ -1,0 +1,10 @@
+# LANE HK-MANAGED — progress journal
+
+12:35 · session start · dnfile+dncil present; building IL reader; target strings located next
+12:52 · IL reader working (tools/hk_managed_il/hk_il.py) · all boot strings located in Assembly-CSharp.dll + TeamCherry.Localization.dll · dump gates next
+13:05 · Q1 decoded · <Start>d__25.MoveNext (0x060041d2) = 4 sequential poll gates; IsPlayerPrefsLoaded hardcoded true on desktop (0x06001071: ldc.i4.1;ret) · park = while(!confirmedLanguage) yield null
+13:12 · Q2 decoded · GameLangSet written only by ConfirmLanguage (0x06000e6c), read only by CheckIsLanguageSet (0x06000e69); saved/system branch (RestoreLanguageSelection) is cosmetic — zero gate influence, explains run15
+13:18 · Q3 resolved · menu shows iff PlayerPrefs.GetInt("GameLangSet",0)==0; run10 menu + "Loaded system language" (saved=0 in run6/8/10/12) prove PlayerPrefs reads miss template registry values · boundary = native PlayerPrefs→registry read
+13:24 · Q4 answered · release = public void StartManager::ConfirmLanguage() (0x06000e6c), zero IL callers = UI-event-only; mono_runtime_invoke from HighlightDefault is the actionable path
+13:26 · 4 reports written · reports/phase4-hollow-knight/HK-MANAGED-Q{1,2,3,4}-*-20260727.md + IL dumps in managed-decompile/
+LOOP-STATUS: GOAL — Hollow Knight is waiting on `StartManager.confirmedLanguage` (field 0x04000DE2), polled per-frame by `<Start>d__25.MoveNext` (token 0x060041d2, IL_00da: `while(!confirmedLanguage) yield return null;`); satisfied only by `public void StartManager::ConfirmLanguage()` (token 0x06000e6c, zero IL callers = UI-click-only, so mono_runtime_invoke from the HighlightDefault trigger is the path). The menu appears because `PlayerPrefs.GetInt("GameLangSet",0)` returns 0 despite the template registry carrying the value — "Loaded system language" (not "saved") in run6/8/10/12 proves PlayerPrefs.HasKey misses too; the native PlayerPrefs→registry read is the boundary for the engine lane. Reports: reports/phase4-hollow-knight/HK-MANAGED-Q1-PLAYERPREFS-WAIT-PATH-20260727.md, -Q2-LANGUAGE-GATE-MAP-, -Q3-MENU-CONTRADICTION-, -Q4-SATISFY-THE-WAIT-.

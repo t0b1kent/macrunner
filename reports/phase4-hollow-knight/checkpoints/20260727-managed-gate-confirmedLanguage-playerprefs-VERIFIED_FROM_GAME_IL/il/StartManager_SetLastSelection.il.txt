@@ -1,0 +1,14 @@
+StartManager::SetLastSelection
+  .method SetLastSelection  (token 0x06000e6a, RVA 0x50d2f)
+    IL_0001: ldarg.0      
+    IL_0002: ldfld        token(0x04000DD5)  // field preselector
+    IL_0007: call         token(0x0A0000A0)  // UnityEngine.Object::op_Implicit
+    IL_000c: brfalse.s    34
+    IL_000e: ldarg.1      
+    IL_000f: call         token(0x0A0000A0)  // UnityEngine.Object::op_Implicit
+    IL_0014: brfalse.s    34
+    IL_0016: ldarg.0      
+    IL_0017: ldfld        token(0x04000DD5)  // field preselector
+    IL_001c: ldarg.1      
+    IL_001d: stfld        token(0x04001A7E)  // field itemToHighlight
+    IL_0022: ret          

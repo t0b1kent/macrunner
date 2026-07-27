@@ -1,0 +1,8 @@
+StartManager::ShowLanguageSelect
+  .method ShowLanguageSelect  (token 0x06000e6e, RVA 0x50e2d)
+    IL_0001: ldc.i4.0     
+    IL_0002: newobj       token(0x060041CA)  // <ShowLanguageSelect>d__37::.ctor
+    IL_0007: dup          
+    IL_0008: ldarg.0      
+    IL_0009: stfld        token(0x040043F6)  // field <>4__this
+    IL_000e: ret          

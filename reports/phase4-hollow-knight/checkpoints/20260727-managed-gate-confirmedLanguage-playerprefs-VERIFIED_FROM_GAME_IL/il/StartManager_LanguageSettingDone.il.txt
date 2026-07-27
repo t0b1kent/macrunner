@@ -1,0 +1,8 @@
+StartManager::LanguageSettingDone
+  .method LanguageSettingDone  (token 0x06000e6f, RVA 0x50e3c)
+    IL_0001: ldc.i4.0     
+    IL_0002: newobj       token(0x060041C4)  // <LanguageSettingDone>d__38::.ctor
+    IL_0007: dup          
+    IL_0008: ldarg.0      
+    IL_0009: stfld        token(0x040043F3)  // field <>4__this
+    IL_000e: ret          

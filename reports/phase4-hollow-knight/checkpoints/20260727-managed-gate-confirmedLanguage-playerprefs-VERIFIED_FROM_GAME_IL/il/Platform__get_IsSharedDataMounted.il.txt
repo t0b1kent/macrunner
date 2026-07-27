@@ -1,0 +1,20 @@
+DesktopPlatform::get_IsSharedDataMounted
+  .method get_IsSharedDataMounted  (token 0x06000f6d, RVA 0x537ea)
+    IL_0001: ldarg.0      
+    IL_0002: ldfld        token(0x04000E94)  // field onlineSubsystem
+    IL_0007: brfalse.s    21
+    IL_0009: ldarg.0      
+    IL_000a: ldfld        token(0x04000E94)  // field onlineSubsystem
+    IL_000f: callvirt     token(0x06000FAB)  // DesktopOnlineSubsystem::get_IsSharedDataMounted
+    IL_0014: ret          
+    IL_0015: ldarg.0      
+    IL_0016: call         token(0x06001006)  // Platform::get_IsSharedDataMounted
+    IL_001b: ret          
+Platform::get_IsSharedDataMounted
+  .method get_IsSharedDataMounted  (token 0x06001006, RVA 0x54c8e)
+    IL_0001: ldc.i4.1     
+    IL_0002: ret          
+XBoxConsolePlatform::get_IsSharedDataMounted
+  .method get_IsSharedDataMounted  (token 0x0600110c, RVA 0x5636a)
+    IL_0001: ldc.i4.1     
+    IL_0002: ret          

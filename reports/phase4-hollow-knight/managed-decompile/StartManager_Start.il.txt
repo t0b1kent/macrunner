@@ -1,0 +1,8 @@
+StartManager::Start
+  .method Start  (token 0x06000e63, RVA 0x50b8b)
+    IL_0001: ldc.i4.0     
+    IL_0002: newobj       token(0x060041D0)  // <Start>d__25::.ctor
+    IL_0007: dup          
+    IL_0008: ldarg.0      
+    IL_0009: stfld        token(0x040043F9)  // field <>4__this
+    IL_000e: ret          

@@ -1,0 +1,12 @@
+StartManager::SwitchToMenuScene
+  .method SwitchToMenuScene  (token 0x06000e65, RVA 0x50bc7)
+    IL_0001: ldarg.0      
+    IL_0002: ldfld        token(0x04000DCB)  // field verboseMode
+    IL_0007: brfalse.s    19
+    IL_0009: ldstr        string token(0x7000A346)  // "Switching Scenes"
+    IL_000e: call         token(0x0A00018A)  // UnityEngine.Debug::Log
+    IL_0013: ldarg.0      
+    IL_0014: ldfld        token(0x04000DDC)  // field loadop
+    IL_0019: ldc.i4.1     
+    IL_001a: callvirt     token(0x0A000386)  // UnityEngine.AsyncOperation::set_allowSceneActivation
+    IL_001f: ret          

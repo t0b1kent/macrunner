@@ -1,0 +1,87 @@
+TeamCherry.Localization.Language::RestoreLanguageSelection
+  .method RestoreLanguageSelection  (token 0x06000009, RVA 0x2190)
+    IL_000c: ldloca.s     local(0x0000)
+    IL_000e: call         token(0x06000038)  // TeamCherry.Localization.LocalizationProjectSettings::TryGetSavedLanguageCode
+    IL_0013: brfalse.s    76
+    IL_0015: ldstr        string token(0x700000D8)  // "Loaded saved language code '{0}'"
+    IL_001a: ldc.i4.1     
+    IL_001b: newarr       token(0x0100000A)  // System.Object
+    IL_0020: dup          
+    IL_0021: ldc.i4.0     
+    IL_0022: ldloc.0      
+    IL_0023: stelem.ref   
+    IL_0024: call         token(0x0A000016)  // UnityEngine.Debug::LogFormat
+    IL_0029: ldsfld       token(0x04000005)  // field _availableLanguages
+    IL_002e: ldloc.0      
+    IL_002f: callvirt     token(0x0A000017)  // TypeSpec:?::Contains
+    IL_0034: brfalse.s    56
+    IL_0036: ldloc.0      
+    IL_0037: ret          
+    IL_0038: ldstr        string token(0x7000011A)  // "Loaded saved language code '{0}' is not an available language"
+    IL_003d: ldc.i4.1     
+    IL_003e: newarr       token(0x0100000A)  // System.Object
+    IL_0043: dup          
+    IL_0044: ldc.i4.0     
+    IL_0045: ldloc.0      
+    IL_0046: stelem.ref   
+    IL_0047: call         token(0x0A000018)  // UnityEngine.Debug::LogErrorFormat
+    IL_004c: call         token(0x06000006)  // TeamCherry.Localization.LanguageCode::get_Settings
+    IL_0051: ldfld        token(0x040000DD)  // field useSystemLanguagePerDefault
+    IL_0056: brfalse.s    195
+    IL_0058: call         token(0x06000039)  // TeamCherry.Localization.LocalizationProjectSettings::GetSystemLanguage
+    IL_005d: stloc.1      
+    IL_005e: ldstr        string token(0x70000196)  // "Loaded system language '{0}'"
+    IL_0063: ldc.i4.1     
+    IL_0064: newarr       token(0x0100000A)  // System.Object
+    IL_0069: dup          
+    IL_006a: ldc.i4.0     
+    IL_006b: ldloc.1      
+    IL_006c: box          token(0x01000013)  // UnityEngine.SystemLanguage
+    IL_0071: stelem.ref   
+    IL_0072: call         token(0x0A000016)  // UnityEngine.Debug::LogFormat
+    IL_0077: ldloc.1      
+    IL_0078: call         token(0x0600001B)  // TeamCherry.Localization.LanguageCode::LanguageNameToCode
+    IL_007d: stloc.3      
+    IL_007e: ldloca.s     local(0x0003)
+    IL_0080: constrained. token(0x02000005)  // TeamCherry.Localization.LanguageCode
+    IL_0086: callvirt     token(0x0A000019)  // System.Object::ToString
+    IL_008b: stloc.2      
+    IL_008c: ldstr        string token(0x700001D0)  // "Loaded system language code '{0}'"
+    IL_0091: ldc.i4.1     
+    IL_0092: newarr       token(0x0100000A)  // System.Object
+    IL_0097: dup          
+    IL_0098: ldc.i4.0     
+    IL_0099: ldloc.2      
+    IL_009a: stelem.ref   
+    IL_009b: call         token(0x0A000016)  // UnityEngine.Debug::LogFormat
+    IL_00a0: ldsfld       token(0x04000005)  // field _availableLanguages
+    IL_00a5: ldloc.2      
+    IL_00a6: callvirt     token(0x0A000017)  // TypeSpec:?::Contains
+    IL_00ab: brfalse.s    175
+    IL_00ad: ldloc.2      
+    IL_00ae: ret          
+    IL_00af: ldstr        string token(0x70000214)  // "System language code '{0}' is not an available language"
+    IL_00b4: ldc.i4.1     
+    IL_00b5: newarr       token(0x0100000A)  // System.Object
+    IL_00ba: dup          
+    IL_00bb: ldc.i4.0     
+    IL_00bc: ldloc.2      
+    IL_00bd: stelem.ref   
+    IL_00be: call         token(0x0A000018)  // UnityEngine.Debug::LogErrorFormat
+    IL_00c3: ldstr        string token(0x70000284)  // "Falling back to default language code '{0}'"
+    IL_00c8: ldc.i4.1     
+    IL_00c9: newarr       token(0x0100000A)  // System.Object
+    IL_00ce: dup          
+    IL_00cf: ldc.i4.0     
+    IL_00d0: call         token(0x06000006)  // TeamCherry.Localization.LanguageCode::get_Settings
+    IL_00d5: ldfld        token(0x040000DE)  // field defaultLangCode
+    IL_00da: stelem.ref   
+    IL_00db: call         token(0x0A000016)  // UnityEngine.Debug::LogFormat
+    IL_00e0: call         token(0x06000006)  // TeamCherry.Localization.LanguageCode::get_Settings
+    IL_00e5: ldfld        token(0x040000DE)  // field defaultLangCode
+    IL_00ea: call         token(0x0600003F)  // TeamCherry.Localization.LocalizationSettings::GetLanguageEnum
+    IL_00ef: stloc.3      
+    IL_00f0: ldloca.s     local(0x0003)
+    IL_00f2: constrained. token(0x02000005)  // TeamCherry.Localization.LanguageCode
+    IL_00f8: callvirt     token(0x0A000019)  // System.Object::ToString
+    IL_00fd: ret          

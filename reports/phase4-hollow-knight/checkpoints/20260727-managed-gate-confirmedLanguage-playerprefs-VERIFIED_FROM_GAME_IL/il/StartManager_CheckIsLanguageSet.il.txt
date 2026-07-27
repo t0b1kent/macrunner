@@ -1,0 +1,13 @@
+StartManager::CheckIsLanguageSet
+  .method CheckIsLanguageSet  (token 0x06000e69, RVA 0x50d0a)
+    IL_0001: call         token(0x06001073)  // Platform::get_Current
+    IL_0006: callvirt     token(0x06001071)  // Platform::get_IsPlayerPrefsLoaded
+    IL_000b: brfalse.s    35
+    IL_000d: call         token(0x06001073)  // Platform::get_Current
+    IL_0012: callvirt     token(0x06001015)  // Platform::get_LocalSharedData
+    IL_0017: ldstr        string token(0x7000952C)  // "GameLangSet"
+    IL_001c: ldc.i4.0     
+    IL_001d: callvirt     token(0x06004352)  // ISharedData::GetBool
+    IL_0022: ret          
+    IL_0023: ldc.i4.0     
+    IL_0024: ret          

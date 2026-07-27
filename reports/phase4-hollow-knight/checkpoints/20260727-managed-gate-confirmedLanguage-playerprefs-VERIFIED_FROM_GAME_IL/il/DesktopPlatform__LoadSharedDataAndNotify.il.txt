@@ -1,0 +1,19 @@
+DesktopPlatform::LoadSharedDataAndNotify
+  .method LoadSharedDataAndNotify  (token 0x06000f6a, RVA 0x53794)
+    IL_000c: ldarg.0      
+    IL_000d: ldfld        token(0x04000E94)  // field onlineSubsystem
+    IL_0012: stloc.0      
+    IL_0013: ldloc.0      
+    IL_0014: brfalse.s    43
+    IL_0016: ldloc.0      
+    IL_0017: callvirt     token(0x06000FAC)  // DesktopOnlineSubsystem::get_HandleLoadSharedDataAndNotify
+    IL_001c: brfalse.s    43
+    IL_001e: ldarg.0      
+    IL_001f: ldfld        token(0x04000E94)  // field onlineSubsystem
+    IL_0024: ldarg.1      
+    IL_0025: callvirt     token(0x06000FAD)  // DesktopOnlineSubsystem::LoadSharedDataAndNotify
+    IL_002a: ret          
+    IL_002b: ldarg.0      
+    IL_002c: ldarg.1      
+    IL_002d: call         token(0x0600100A)  // Platform::LoadSharedDataAndNotify
+    IL_0032: ret          

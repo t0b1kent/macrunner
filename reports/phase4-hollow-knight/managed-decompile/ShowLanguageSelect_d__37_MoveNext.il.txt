@@ -1,0 +1,81 @@
+<ShowLanguageSelect>d__37::MoveNext
+  .method MoveNext  (token 0x060041cc, RVA 0x16c254)
+    IL_000c: ldarg.0      
+    IL_000d: ldfld        token(0x040043F4)  // field <>1__state
+    IL_0012: stloc.0      
+    IL_0013: ldarg.0      
+    IL_0014: ldfld        token(0x040043F6)  // field <>4__this
+    IL_0019: stloc.1      
+    IL_001a: ldloc.0      
+    IL_001b: switch       [46, 173, 237]
+    IL_002c: ldc.i4.0     
+    IL_002d: ret          
+    IL_002e: ldarg.0      
+    IL_002f: ldc.i4.m1    
+    IL_0030: stfld        token(0x040043F4)  // field <>1__state
+    IL_0035: ldloc.1      
+    IL_0036: ldfld        token(0x04000DD3)  // field languageSelect
+    IL_003b: ldc.r4       0.0
+    IL_0040: callvirt     token(0x0A0005F7)  // UnityEngine.CanvasGroup::set_alpha
+    IL_0045: ldloc.1      
+    IL_0046: ldfld        token(0x04000DD3)  // field languageSelect
+    IL_004b: callvirt     token(0x0A0000B5)  // UnityEngine.Component::get_gameObject
+    IL_0050: ldc.i4.1     
+    IL_0051: callvirt     token(0x0A0000BF)  // UnityEngine.GameObject::SetActive
+    IL_0056: br.s         180
+    IL_0058: ldloc.1      
+    IL_0059: ldfld        token(0x04000DD3)  // field languageSelect
+    IL_005e: dup          
+    IL_005f: callvirt     token(0x0A0007B5)  // UnityEngine.CanvasGroup::get_alpha
+    IL_0064: call         token(0x0A000F54)  // UnityEngine.Time::get_smoothDeltaTime
+    IL_0069: ldloc.1      
+    IL_006a: ldfld        token(0x04000DE1)  // field fadeSpeed
+    IL_006f: mul          
+    IL_0070: add          
+    IL_0071: callvirt     token(0x0A0005F7)  // UnityEngine.CanvasGroup::set_alpha
+    IL_0076: ldloc.1      
+    IL_0077: ldfld        token(0x04000DD3)  // field languageSelect
+    IL_007c: callvirt     token(0x0A0007B5)  // UnityEngine.CanvasGroup::get_alpha
+    IL_0081: conv.r8      
+    IL_0082: ldc.r8       0.99
+    IL_008b: ble.un.s     157
+    IL_008d: ldloc.1      
+    IL_008e: ldfld        token(0x04000DD3)  // field languageSelect
+    IL_0093: ldc.r4       1.0
+    IL_0098: callvirt     token(0x0A0005F7)  // UnityEngine.CanvasGroup::set_alpha
+    IL_009d: ldarg.0      
+    IL_009e: ldnull       
+    IL_009f: stfld        token(0x040043F5)  // field <>2__current
+    IL_00a4: ldarg.0      
+    IL_00a5: ldc.i4.1     
+    IL_00a6: stfld        token(0x040043F4)  // field <>1__state
+    IL_00ab: ldc.i4.1     
+    IL_00ac: ret          
+    IL_00ad: ldarg.0      
+    IL_00ae: ldc.i4.m1    
+    IL_00af: stfld        token(0x040043F4)  // field <>1__state
+    IL_00b4: ldloc.1      
+    IL_00b5: ldfld        token(0x04000DD3)  // field languageSelect
+    IL_00ba: callvirt     token(0x0A0007B5)  // UnityEngine.CanvasGroup::get_alpha
+    IL_00bf: conv.r8      
+    IL_00c0: ldc.r8       0.99
+    IL_00c9: blt.s        88
+    IL_00cb: ldc.i4.0     
+    IL_00cc: call         token(0x0A000606)  // UnityEngine.Cursor::set_lockState
+    IL_00d1: ldloc.1      
+    IL_00d2: ldfld        token(0x04000DD5)  // field preselector
+    IL_00d7: ldc.i4.0     
+    IL_00d8: callvirt     token(0x060015D5)  // PreselectOption::HighlightDefault
+    IL_00dd: ldarg.0      
+    IL_00de: ldnull       
+    IL_00df: stfld        token(0x040043F5)  // field <>2__current
+    IL_00e4: ldarg.0      
+    IL_00e5: ldc.i4.2     
+    IL_00e6: stfld        token(0x040043F4)  // field <>1__state
+    IL_00eb: ldc.i4.1     
+    IL_00ec: ret          
+    IL_00ed: ldarg.0      
+    IL_00ee: ldc.i4.m1    
+    IL_00ef: stfld        token(0x040043F4)  // field <>1__state
+    IL_00f4: ldc.i4.0     
+    IL_00f5: ret          

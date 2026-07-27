@@ -1,0 +1,36 @@
+DesktopPlatform::Awake
+  .method Awake  (token 0x06000f63, RVA 0x534e8)
+    IL_000c: ldarg.0      
+    IL_000d: call         token(0x06001074)  // Platform::Awake
+    IL_0012: ldarg.0      
+    IL_0013: call         token(0x0A000056)  // UnityEngine.Application::get_persistentDataPath
+    IL_0018: stfld        token(0x04000E91)  // field saveDirPath
+    IL_001d: ldarg.0      
+    IL_001e: call         token(0x06000F65)  // DesktopPlatform::CreateOnlineSubsystem
+    IL_0023: ldarg.0      
+    IL_0024: ldc.i4.0     
+    IL_0025: newobj       token(0x06001085)  // PlayerPrefsSharedData::.ctor
+    IL_002a: stfld        token(0x04000E92)  // field localSharedData
+    IL_002f: ldc.i4.1     
+    IL_0030: newobj       token(0x06001085)  // PlayerPrefsSharedData::.ctor
+    IL_0035: stloc.0      
+    IL_0036: ldarg.0      
+    IL_0037: ldfld        token(0x04000E91)  // field saveDirPath
+    IL_003c: ldstr        string token(0x7000A55C)  // "shared.dat"
+    IL_0041: ldc.i4.1     
+    IL_0042: newobj       token(0x06000FEB)  // JsonSharedData::.ctor
+    IL_0047: stloc.1      
+    IL_0048: ldarg.0      
+    IL_0049: ldloc.1      
+    IL_004a: ldloc.0      
+    IL_004b: call         token(0x06000F64)  // DesktopPlatform::CreateUpgradedSharedData
+    IL_0050: stfld        token(0x04000E93)  // field roamingSharedData
+    IL_0055: ldarg.0      
+    IL_0056: ldfld        token(0x04000E94)  // field onlineSubsystem
+    IL_005b: brtrue.s     99
+    IL_005d: ldarg.0      
+    IL_005e: call         token(0x06000F80)  // DesktopPlatform::OnOnlineSubsystemAchievementsFetched
+    IL_0063: ldarg.0      
+    IL_0064: newobj       token(0x0600107F)  // PlatformVibrationHelper::.ctor
+    IL_0069: stfld        token(0x04000E95)  // field vibrationHelper
+    IL_006e: ret          

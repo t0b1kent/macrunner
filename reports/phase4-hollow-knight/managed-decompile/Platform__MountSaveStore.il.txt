@@ -1,0 +1,8 @@
+Platform::MountSaveStore
+  .method MountSaveStore  (token 0x0600100b, RVA 0x54d37)
+    IL_0001: ret          
+XBoxConsolePlatform::MountSaveStore
+  .method MountSaveStore  (token 0x0600110d, RVA 0x5636d)
+    IL_0001: ldarg.0      
+    IL_0002: call         token(0x0600100B)  // Platform::MountSaveStore
+    IL_0007: ret          

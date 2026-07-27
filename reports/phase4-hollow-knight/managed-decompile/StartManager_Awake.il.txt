@@ -1,0 +1,6 @@
+StartManager::Awake
+  .method Awake  (token 0x06000e62, RVA 0x50b7e)
+    IL_0001: ldarg.0      
+    IL_0002: call         token(0x0A000615)  // UnityEngine.Application::get_platform
+    IL_0007: stfld        token(0x04000DDD)  // field platform
+    IL_000c: ret          

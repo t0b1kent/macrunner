@@ -1,0 +1,26 @@
+StartManager::CancelLanguage
+  .method CancelLanguage  (token 0x06000e6d, RVA 0x50dd8)
+    IL_000c: ldarg.0      
+    IL_000d: ldfld        token(0x04000DD8)  // field oldLanguage
+    IL_0012: call         token(0x0A00066F)  // TeamCherry.Localization.Language::SwitchLanguage
+    IL_0017: pop          
+    IL_0018: ldarg.0      
+    IL_0019: call         token(0x06000E6B)  // StartManager::CancelFade
+    IL_001e: ldarg.0      
+    IL_001f: ldarg.0      
+    IL_0020: ldarg.0      
+    IL_0021: ldarg.0      
+    IL_0022: ldfld        token(0x04000DD6)  // field languageConfirm
+    IL_0027: ldc.r4       0.25
+    IL_002c: call         token(0x06000E68)  // StartManager::FadeOut
+    IL_0031: call         token(0x0A000177)  // UnityEngine.MonoBehaviour::StartCoroutine
+    IL_0036: stfld        token(0x04000DE3)  // field fadeRoutine
+    IL_003b: ldarg.0      
+    IL_003c: ldfld        token(0x04000DD5)  // field preselector
+    IL_0041: call         token(0x0A0000A0)  // UnityEngine.Object::op_Implicit
+    IL_0046: brfalse.s    84
+    IL_0048: ldarg.0      
+    IL_0049: ldfld        token(0x04000DD5)  // field preselector
+    IL_004e: ldc.i4.1     
+    IL_004f: callvirt     token(0x060015D5)  // PreselectOption::HighlightDefault
+    IL_0054: ret          

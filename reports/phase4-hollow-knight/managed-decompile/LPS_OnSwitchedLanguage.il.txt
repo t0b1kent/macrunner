@@ -1,0 +1,21 @@
+LocalizationProjectSettings::OnSwitchedLanguage
+  .method OnSwitchedLanguage  (token 0x0600014d, RVA 0xe150)
+    IL_000c: call         token(0x06001073)  // Platform::get_Current
+    IL_0011: call         token(0x0A0000A0)  // UnityEngine.Object::op_Implicit
+    IL_0016: brtrue.s     25
+    IL_0018: ret          
+    IL_0019: call         token(0x06001073)  // Platform::get_Current
+    IL_001e: callvirt     token(0x06001015)  // Platform::get_LocalSharedData
+    IL_0023: ldstr        string token(0x70000FA7)  // "M2H_lastLanguage"
+    IL_0028: ldarga.s     argument(0x0001)
+    IL_002a: constrained. token(0x01000014)  // TeamCherry.Localization.LanguageCode
+    IL_0030: callvirt     token(0x0A000088)  // System.Object::ToString
+    IL_0035: dup          
+    IL_0036: brtrue.s     62
+    IL_0038: pop          
+    IL_0039: ldstr        string token(0x70000001)  // ""
+    IL_003e: callvirt     token(0x06004359)  // ISharedData::SetString
+    IL_0043: call         token(0x06001073)  // Platform::get_Current
+    IL_0048: callvirt     token(0x06001015)  // Platform::get_LocalSharedData
+    IL_004d: callvirt     token(0x0600435A)  // ISharedData::Save
+    IL_0052: ret          

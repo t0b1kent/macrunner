@@ -1,0 +1,283 @@
+<Start>d__25::MoveNext
+  .method MoveNext  (token 0x060041d2, RVA 0x16c374)
+    IL_000c: ldarg.0      
+    IL_000d: ldfld        token(0x040043F7)  // field <>1__state
+    IL_0012: stloc.0      
+    IL_0013: ldarg.0      
+    IL_0014: ldfld        token(0x040043F9)  // field <>4__this
+    IL_0019: stloc.1      
+    IL_001a: ldloc.0      
+    IL_001b: switch       [66, 186, 211, 253, 289, 571, 652, 756]
+    IL_0040: ldc.i4.0     
+    IL_0041: ret          
+    IL_0042: ldarg.0      
+    IL_0043: ldc.i4.m1    
+    IL_0044: stfld        token(0x040043F7)  // field <>1__state
+    IL_0049: ldloc.1      
+    IL_004a: ldfld        token(0x04000DCF)  // field controllerImage
+    IL_004f: ldloc.1      
+    IL_0050: ldloc.1      
+    IL_0051: ldfld        token(0x04000DDD)  // field platform
+    IL_0056: call         token(0x06000E64)  // Comparison::GetControllerSpriteForPlatform
+    IL_005b: callvirt     token(0x0A000166)  // UnityEngine.SpriteRenderer::set_sprite
+    IL_0060: ldarg.0      
+    IL_0061: ldstr        string token(0x70009744)  // "Menu_Title"
+    IL_0066: call         token(0x0A001069)  // UnityEngine.SceneManagement.SceneManager::LoadSceneAsync
+    IL_006b: stfld        token(0x040043FA)  // field <loadOperation>5__2
+    IL_0070: ldarg.0      
+    IL_0071: ldfld        token(0x040043FA)  // field <loadOperation>5__2
+    IL_0076: ldc.i4.0     
+    IL_0077: callvirt     token(0x0A000386)  // UnityEngine.AsyncOperation::set_allowSceneActivation
+    IL_007c: call         token(0x06001073)  // Comparison::get_Current
+    IL_0081: ldc.i4.1     
+    IL_0082: ldc.i4.0     
+    IL_0083: callvirt     token(0x0600105C)  // Comparison::SetSceneLoadState
+    IL_0088: ldloc.1      
+    IL_0089: call         token(0x06000E69)  // Comparison::CheckIsLanguageSet
+    IL_008e: ldc.i4.0     
+    IL_008f: ceq          
+    IL_0091: brfalse.s    260
+    IL_0093: call         token(0x06001073)  // Comparison::get_Current
+    IL_0098: callvirt     token(0x06000FF5)  // Comparison::get_ShowLanguageSelect
+    IL_009d: brfalse.s    260
+    IL_009f: ldarg.0      
+    IL_00a0: ldloc.1      
+    IL_00a1: ldloc.1      
+    IL_00a2: call         token(0x06000E6E)  // Comparison::ShowLanguageSelect
+    IL_00a7: call         token(0x0A000177)  // UnityEngine.MonoBehaviour::StartCoroutine
+    IL_00ac: stfld        token(0x040043F8)  // field <>2__current
+    IL_00b1: ldarg.0      
+    IL_00b2: ldc.i4.1     
+    IL_00b3: stfld        token(0x040043F7)  // field <>1__state
+    IL_00b8: ldc.i4.1     
+    IL_00b9: ret          
+    IL_00ba: ldarg.0      
+    IL_00bb: ldc.i4.m1    
+    IL_00bc: stfld        token(0x040043F7)  // field <>1__state
+    IL_00c1: br.s         218
+    IL_00c3: ldarg.0      
+    IL_00c4: ldnull       
+    IL_00c5: stfld        token(0x040043F8)  // field <>2__current
+    IL_00ca: ldarg.0      
+    IL_00cb: ldc.i4.2     
+    IL_00cc: stfld        token(0x040043F7)  // field <>1__state
+    IL_00d1: ldc.i4.1     
+    IL_00d2: ret          
+    IL_00d3: ldarg.0      
+    IL_00d4: ldc.i4.m1    
+    IL_00d5: stfld        token(0x040043F7)  // field <>1__state
+    IL_00da: ldloc.1      
+    IL_00db: ldfld        token(0x04000DE2)  // field confirmedLanguage
+    IL_00e0: brfalse.s    195
+    IL_00e2: ldarg.0      
+    IL_00e3: ldloc.1      
+    IL_00e4: ldloc.1      
+    IL_00e5: call         token(0x06000E6F)  // Comparison::LanguageSettingDone
+    IL_00ea: call         token(0x0A000177)  // UnityEngine.MonoBehaviour::StartCoroutine
+    IL_00ef: stfld        token(0x040043F8)  // field <>2__current
+    IL_00f4: ldarg.0      
+    IL_00f5: ldc.i4.3     
+    IL_00f6: stfld        token(0x040043F7)  // field <>1__state
+    IL_00fb: ldc.i4.1     
+    IL_00fc: ret          
+    IL_00fd: ldarg.0      
+    IL_00fe: ldc.i4.m1    
+    IL_00ff: stfld        token(0x040043F7)  // field <>1__state
+    IL_0104: ldarg.0      
+    IL_0105: call         token(0x0A0000A2)  // TeamCherry.Localization.Language::CurrentLanguage
+    IL_010a: stfld        token(0x040043FB)  // field <currentLanguage>5__3
+    IL_010f: br.s         296
+    IL_0111: ldarg.0      
+    IL_0112: ldnull       
+    IL_0113: stfld        token(0x040043F8)  // field <>2__current
+    IL_0118: ldarg.0      
+    IL_0119: ldc.i4.4     
+    IL_011a: stfld        token(0x040043F7)  // field <>1__state
+    IL_011f: ldc.i4.1     
+    IL_0120: ret          
+    IL_0121: ldarg.0      
+    IL_0122: ldc.i4.m1    
+    IL_0123: stfld        token(0x040043F7)  // field <>1__state
+    IL_0128: call         token(0x06001073)  // Comparison::get_Current
+    IL_012d: callvirt     token(0x06001006)  // Comparison::get_IsSharedDataMounted
+    IL_0132: brfalse.s    273
+    IL_0134: ldc.i4.0     
+    IL_0135: stloc.2      
+    IL_0136: ldloca.s     local(0x0003)
+    IL_0138: call         token(0x0A00106A)  // TeamCherry.Localization.LocalizationProjectSettings::TryGetSavedLanguageCode
+    IL_013d: brfalse.s    339
+    IL_013f: ldloc.3      
+    IL_0140: call         token(0x0A00106B)  // TeamCherry.Localization.LocalizationSettings::GetLanguageEnum
+    IL_0145: stloc.s      local(0x0004)
+    IL_0147: ldarg.0      
+    IL_0148: ldfld        token(0x040043FB)  // field <currentLanguage>5__3
+    IL_014d: ldloc.s      local(0x0004)
+    IL_014f: beq.s        339
+    IL_0151: ldc.i4.1     
+    IL_0152: stloc.2      
+    IL_0153: ldloc.2      
+    IL_0154: brfalse.s    460
+    IL_0156: call         token(0x0A00063A)  // TeamCherry.Localization.Language::LoadLanguage
+    IL_015b: ldc.i4.0     
+    IL_015c: call         token(0x2B000123)  // spec FindObjectsByType
+    IL_0161: stloc.s      local(0x0005)
+    IL_0163: ldc.i4.0     
+    IL_0164: stloc.s      local(0x0006)
+    IL_0166: br.s         376
+    IL_0168: ldloc.s      local(0x0005)
+    IL_016a: ldloc.s      local(0x0006)
+    IL_016c: ldelem.ref   
+    IL_016d: callvirt     token(0x06000029)  // Comparison::SetFont
+    IL_0172: ldloc.s      local(0x0006)
+    IL_0174: ldc.i4.1     
+    IL_0175: add          
+    IL_0176: stloc.s      local(0x0006)
+    IL_0178: ldloc.s      local(0x0006)
+    IL_017a: ldloc.s      local(0x0005)
+    IL_017c: ldlen        
+    IL_017d: conv.i4      
+    IL_017e: blt.s        360
+    IL_0180: ldloc.1      
+    IL_0181: ldc.i4.1     
+    IL_0182: call         token(0x2B000124)  // spec GetComponentsInChildren
+    IL_0187: stloc.s      local(0x0007)
+    IL_0189: ldc.i4.0     
+    IL_018a: stloc.s      local(0x0006)
+    IL_018c: br.s         414
+    IL_018e: ldloc.s      local(0x0007)
+    IL_0190: ldloc.s      local(0x0006)
+    IL_0192: ldelem.ref   
+    IL_0193: callvirt     token(0x06001601)  // Comparison::UpdateText
+    IL_0198: ldloc.s      local(0x0006)
+    IL_019a: ldc.i4.1     
+    IL_019b: add          
+    IL_019c: stloc.s      local(0x0006)
+    IL_019e: ldloc.s      local(0x0006)
+    IL_01a0: ldloc.s      local(0x0007)
+    IL_01a2: ldlen        
+    IL_01a3: conv.i4      
+    IL_01a4: blt.s        398
+    IL_01a6: ldloc.1      
+    IL_01a7: ldc.i4.1     
+    IL_01a8: call         token(0x2B000125)  // spec GetComponentsInChildren
+    IL_01ad: stloc.s      local(0x0008)
+    IL_01af: ldc.i4.0     
+    IL_01b0: stloc.s      local(0x0006)
+    IL_01b2: br.s         452
+    IL_01b4: ldloc.s      local(0x0008)
+    IL_01b6: ldloc.s      local(0x0006)
+    IL_01b8: ldelem.ref   
+    IL_01b9: callvirt     token(0x06000151)  // Comparison::SetSprite
+    IL_01be: ldloc.s      local(0x0006)
+    IL_01c0: ldc.i4.1     
+    IL_01c1: add          
+    IL_01c2: stloc.s      local(0x0006)
+    IL_01c4: ldloc.s      local(0x0006)
+    IL_01c6: ldloc.s      local(0x0008)
+    IL_01c8: ldlen        
+    IL_01c9: conv.i4      
+    IL_01ca: blt.s        436
+    IL_01cc: ldloc.1      
+    IL_01cd: ldfld        token(0x04000DCC)  // field startManagerAnimator
+    IL_01d2: ldstr        string token(0x7003C2E8)  // "WillShowControllerNotice"
+    IL_01d7: ldc.i4.0     
+    IL_01d8: callvirt     token(0x0A0004BC)  // UnityEngine.Animator::SetBool
+    IL_01dd: ldloc.1      
+    IL_01de: ldfld        token(0x04000DCC)  // field startManagerAnimator
+    IL_01e3: ldstr        string token(0x7003C31A)  // "WillShowQuote"
+    IL_01e8: ldc.i4.1     
+    IL_01e9: callvirt     token(0x0A0004BC)  // UnityEngine.Animator::SetBool
+    IL_01ee: ldloc.1      
+    IL_01ef: ldfld        token(0x04000DCC)  // field startManagerAnimator
+    IL_01f4: ldstr        string token(0x7002BD04)  // "Start"
+    IL_01f9: callvirt     token(0x0A000366)  // UnityEngine.Animator::SetTrigger
+    IL_01fe: ldarg.0      
+    IL_01ff: ldstr        string token(0x7003C336)  // "LoadingIcon"
+    IL_0204: call         token(0x0A0001BB)  // UnityEngine.Animator::StringToHash
+    IL_0209: stfld        token(0x040043FC)  // field <loadingIconNameHash>5__4
+    IL_020e: ldloc.1      
+    IL_020f: ldfld        token(0x04000DCC)  // field startManagerAnimator
+    IL_0214: ldc.i4.0     
+    IL_0215: callvirt     token(0x0A0001C6)  // UnityEngine.Animator::GetCurrentAnimatorStateInfo
+    IL_021a: stloc.s      local(0x0009)
+    IL_021c: ldloca.s     local(0x0009)
+    IL_021e: call         token(0x0A00106C)  // UnityEngine.AnimatorStateInfo::get_shortNameHash
+    IL_0223: ldarg.0      
+    IL_0224: ldfld        token(0x040043FC)  // field <loadingIconNameHash>5__4
+    IL_0229: beq.s        580
+    IL_022b: ldarg.0      
+    IL_022c: ldnull       
+    IL_022d: stfld        token(0x040043F8)  // field <>2__current
+    IL_0232: ldarg.0      
+    IL_0233: ldc.i4.5     
+    IL_0234: stfld        token(0x040043F7)  // field <>1__state
+    IL_0239: ldc.i4.1     
+    IL_023a: ret          
+    IL_023b: ldarg.0      
+    IL_023c: ldc.i4.m1    
+    IL_023d: stfld        token(0x040043F7)  // field <>1__state
+    IL_0242: br.s         526
+    IL_0244: ldloc.1      
+    IL_0245: ldfld        token(0x04000DCE)  // field loadSpinnerPrefab
+    IL_024a: call         token(0x2B000121)  // spec Instantiate
+    IL_024f: ldnull       
+    IL_0250: callvirt     token(0x06001634)  // Comparison::Setup
+    IL_0255: ldarg.0      
+    IL_0256: ldc.i4.0     
+    IL_0257: stfld        token(0x040043FD)  // field <didWaitForPlayerPrefs>5__5
+    IL_025c: br.s         659
+    IL_025e: ldarg.0      
+    IL_025f: ldfld        token(0x040043FD)  // field <didWaitForPlayerPrefs>5__5
+    IL_0264: brtrue.s     636
+    IL_0266: ldarg.0      
+    IL_0267: ldc.i4.1     
+    IL_0268: stfld        token(0x040043FD)  // field <didWaitForPlayerPrefs>5__5
+    IL_026d: ldstr        string token(0x7003C34E)  // "Waiting for PlayerPrefs load..."
+    IL_0272: call         token(0x2B00003F)  // spec Empty
+    IL_0277: call         token(0x0A000384)  // UnityEngine.Debug::LogFormat
+    IL_027c: ldarg.0      
+    IL_027d: ldnull       
+    IL_027e: stfld        token(0x040043F8)  // field <>2__current
+    IL_0283: ldarg.0      
+    IL_0284: ldc.i4.6     
+    IL_0285: stfld        token(0x040043F7)  // field <>1__state
+    IL_028a: ldc.i4.1     
+    IL_028b: ret          
+    IL_028c: ldarg.0      
+    IL_028d: ldc.i4.m1    
+    IL_028e: stfld        token(0x040043F7)  // field <>1__state
+    IL_0293: call         token(0x06001073)  // Comparison::get_Current
+    IL_0298: callvirt     token(0x06001071)  // Comparison::get_IsPlayerPrefsLoaded
+    IL_029d: brfalse.s    606
+    IL_029f: ldarg.0      
+    IL_02a0: ldfld        token(0x040043FD)  // field <didWaitForPlayerPrefs>5__5
+    IL_02a5: brtrue.s     696
+    IL_02a7: ldstr        string token(0x7003C38E)  // "Didn't need to wait for PlayerPrefs load."
+    IL_02ac: call         token(0x2B00003F)  // spec Empty
+    IL_02b1: call         token(0x0A000384)  // UnityEngine.Debug::LogFormat
+    IL_02b6: br.s         711
+    IL_02b8: ldstr        string token(0x7003C3E2)  // "Finished waiting for PlayerPrefs load."
+    IL_02bd: call         token(0x2B00003F)  // spec Empty
+    IL_02c2: call         token(0x0A000384)  // UnityEngine.Debug::LogFormat
+    IL_02c7: call         token(0x06001073)  // Comparison::get_Current
+    IL_02cc: ldc.i4.1     
+    IL_02cd: ldc.i4.1     
+    IL_02ce: callvirt     token(0x0600105C)  // Comparison::SetSceneLoadState
+    IL_02d3: ldarg.0      
+    IL_02d4: ldfld        token(0x040043FA)  // field <loadOperation>5__2
+    IL_02d9: ldc.i4.1     
+    IL_02da: callvirt     token(0x0A000386)  // UnityEngine.AsyncOperation::set_allowSceneActivation
+    IL_02df: ldarg.0      
+    IL_02e0: ldarg.0      
+    IL_02e1: ldfld        token(0x040043FA)  // field <loadOperation>5__2
+    IL_02e6: stfld        token(0x040043F8)  // field <>2__current
+    IL_02eb: ldarg.0      
+    IL_02ec: ldc.i4.7     
+    IL_02ed: stfld        token(0x040043F7)  // field <>1__state
+    IL_02f2: ldc.i4.1     
+    IL_02f3: ret          
+    IL_02f4: ldarg.0      
+    IL_02f5: ldc.i4.m1    
+    IL_02f6: stfld        token(0x040043F7)  // field <>1__state
+    IL_02fb: ldc.i4.0     
+    IL_02fc: ret          

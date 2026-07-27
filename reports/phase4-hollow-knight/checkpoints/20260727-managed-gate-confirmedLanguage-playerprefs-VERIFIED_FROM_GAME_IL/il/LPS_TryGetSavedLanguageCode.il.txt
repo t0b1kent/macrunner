@@ -1,0 +1,24 @@
+LocalizationProjectSettings::TryGetSavedLanguageCode
+  .method TryGetSavedLanguageCode  (token 0x0600014b, RVA 0xe0e4)
+    IL_000c: call         token(0x06001073)  // Platform::get_Current
+    IL_0011: call         token(0x0A0000A0)  // UnityEngine.Object::op_Implicit
+    IL_0016: brfalse.s    75
+    IL_0018: call         token(0x06001073)  // Platform::get_Current
+    IL_001d: callvirt     token(0x06001015)  // Platform::get_LocalSharedData
+    IL_0022: ldstr        string token(0x70000FA7)  // "M2H_lastLanguage"
+    IL_0027: callvirt     token(0x0600434E)  // ISharedData::HasKey
+    IL_002c: brfalse.s    75
+    IL_002e: ldarg.1      
+    IL_002f: call         token(0x06001073)  // Platform::get_Current
+    IL_0034: callvirt     token(0x06001015)  // Platform::get_LocalSharedData
+    IL_0039: ldstr        string token(0x70000FA7)  // "M2H_lastLanguage"
+    IL_003e: ldstr        string token(0x70000001)  // ""
+    IL_0043: callvirt     token(0x06004358)  // ISharedData::GetString
+    IL_0048: stind.ref    
+    IL_0049: ldc.i4.1     
+    IL_004a: ret          
+    IL_004b: ldarg.1      
+    IL_004c: ldstr        string token(0x70000FC9)  // "EN"
+    IL_0051: stind.ref    
+    IL_0052: ldc.i4.0     
+    IL_0053: ret          

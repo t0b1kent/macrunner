@@ -1,0 +1,849 @@
+{
+  "application": {
+    "argv": [],
+    "argv_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "config_manifest_sha256": {
+      "bytes": 681990,
+      "file_count": 18,
+      "inventory_sha256": "c556b839ebde41f2c7ace8b5f63e6b5ae283640272e532e22c477b00cdd7bc18",
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/../game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/MonoBleedingEdge/etc",
+      "state": "PRESENT"
+    },
+    "data_manifest_sha256": {
+      "bytes": 5196290140,
+      "file_count": 1761,
+      "inventory_sha256": "0b1199e84ff61381873e98011651b4f5c13fc6ba28e6f58b3fdb80fc2486e848",
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/../game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/Hollow Knight_Data",
+      "state": "PRESENT"
+    },
+    "executable": {
+      "mtime_ns": 1774600906000000000,
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/../game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/Hollow Knight.exe",
+      "sha256": "7961bba7243ce322163ad6b0ddfd6ef701413020b92ad0d98502526a396171b0",
+      "size": 672256,
+      "state": "PRESENT"
+    },
+    "prefix_seed": {
+      "bytes": 923020490,
+      "file_count": 1238,
+      "inventory_sha256": "105b8ae9329b48741ad1ada4acedbd1d84812aec217d735749b6f5b736ae503e",
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run.IMSESR",
+      "state": "PRESENT"
+    },
+    "prefix_template": {
+      "bytes": 1993419,
+      "file_count": 11,
+      "inventory_sha256": "b746d8bb42ddf9d45f564b0cc6d9f3aa706a3bf2ef857c44bc4a66f55626e5cf",
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/hk-windows-oracle-prefix-template-20260721-225722-v3",
+      "state": "PRESENT"
+    },
+    "save_snapshot_manifest_sha256": {
+      "bytes": 11121,
+      "file_count": 5,
+      "inventory_sha256": "442d9b2310ccc6b88ab24a554a4b70c9747607f52469f275a0bbc2c88dcac919",
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run.IMSESR/drive_c/users/crossover/AppData/LocalLow/Team Cherry/Hollow Knight",
+      "state": "PRESENT"
+    }
+  },
+  "blockers": [],
+  "contract_sha256": "a2cfb64c90d62f5a9068c7f8a0db05f2e7a79782aed2598c3e5b079931feca17",
+  "environment": {
+    "caller_explicit_sha256": "a1ed70980cb35007c7aa8969458e36d9472a1cf7ebc2d807904b798adc852ae5",
+    "domains": {
+      "guest_peb": {
+        "reason": "out-of-scope-this-task",
+        "state": "ABSENT_OPTIONAL"
+      },
+      "host_getenv": "captured_preexec"
+    },
+    "entry_count": 133,
+    "final_child_sha256": "5463c1855c33adf1de2b9754d048c2756ba6db3c765d6a3ba2e3d55b9164940e",
+    "final_child_sorted_lines": [
+      {
+        "entry_sha256": "3c049e2633ad994101218615a68b97fe32f90a18fb212897779a19668519f382",
+        "name": "AI_AGENT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "9087506da66ba75eb7d329dbccad34800fc7b24bb894cafed9cf657e8329bbae",
+        "name": "ANTHROPIC_BASE_URL",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "100fd73bdccf57e38a7481e48b2b2285ebb8e714000ff50cef92c6d79914a177",
+        "name": "API_TIMEOUT_MS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "2128692db6af6f5111e7c17e7925a9476d8309260aabfddc36a6c4dedad47bc9",
+        "name": "BAGGAGE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "11ae2a140683816b6636a5098c38b3652029531b418210c59b1c4dd83c537abb",
+        "name": "BISON",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "5d51d925cc851ae1b5413c006664f581c63caafcd875e32a57fce0825c39ddef",
+        "name": "CC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "cd2c0d17e916e0730b3eb4ec3008213a3762190af5c6e0e143298d2bb2ae04aa",
+        "name": "CCACHE_BASEDIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "6054b98c6408a27495d0964957f19d1adb4aba91cfb9774f209646d6034345a0",
+        "name": "CCACHE_DIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b1ca867c6bb0e49079b7ba53f66337ee735ee05841f6e204a226a4e7061a5010",
+        "name": "CLAUDECODE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "9cae5dd38cec6e35473a0ffd5a9e2a0cfcc25b862ad681eb2c4431a807a0a2bc",
+        "name": "CLAUDE_AGENT_SDK_VERSION",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "1889e2f859845a7778a373cc720a41234180247ee518f4b672b952793e5a9c90",
+        "name": "CLAUDE_CODE_CHILD_SESSION",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "3647c388da062a0c1534d580f34cb022ccf5221780469621b21696cf1e53d57d",
+        "name": "CLAUDE_CODE_DISABLE_CRON",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "1ae0529143144a0cb70ca12a4e2738bc37584a62c8ecd51e4cb2ab43fb0aad1d",
+        "name": "CLAUDE_CODE_EAGER_FLUSH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "83552390b13746def58d1165c8c554c02602524ede82e4760e9f0ffcd9646802",
+        "name": "CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "1a172710962fca52b7e5ed025b5e96aeb5a8a332f62bbbb6aaa642946bee1bf6",
+        "name": "CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "fc0b6c1c9380ca517d977712d6bfed4a076f5a65816b710471f4a2b1b00741fe",
+        "name": "CLAUDE_CODE_ENTRYPOINT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "8bbc8bc2e4890d0f443afabfee7ac9731c72801b7e24fab71f697c5acf7fddb0",
+        "name": "CLAUDE_CODE_EXECPATH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "cd1c6df73e42bc8f58b20f37a20edb072821d57a4c3a30f7fcd0a6a809b020f9",
+        "name": "CLAUDE_CODE_HOST_SESSION_ID",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "fa603340a18c8981e275183f8a66d69146a9e2f23e7a36c230ecdfc3091137ed",
+        "name": "CLAUDE_CODE_OAUTH_SCOPES",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "093861a2f916964b4a918c8aed798340e7d3e3598fdec2ca7cd56e41a27400df",
+        "name": "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "7a08cc8b00f7aa0e0c6880b70dd3cd04f7a7561da411af6b0b781c6abb4a1b6a",
+        "name": "CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "21f57d8df17553a5f612a5f9ecc7e4e61937d7fb0a678ff249475ff7e8794d5c",
+        "name": "CLAUDE_CODE_SESSION_ID",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "4dab5a083fe19e5417f65df93c345211e321bed5b49595d400d8103a093b1f80",
+        "name": "CLAUDE_EFFORT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "9d45898bc484af2394115c4acf52bf4040c88677f49390fc8cbfe110d2178c86",
+        "name": "CLAUDE_PID",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "48a7829bd4752395d9742709b767fc66e25a7e53f045246b3511932cd3fbd24b",
+        "name": "CLAUDE_PREVIEW_CLASSIFIER_FLOOR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "9d5b98acfce97fa21b9dacea6c6c68c0f66f0c45d044d2cddb1fec51fb9d0a29",
+        "name": "COMMAND_MODE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "74c7d93fb0d5190230e5d968a32660fad628639f58fb5e16fbcd79a22473ae6e",
+        "name": "COREPACK_ENABLE_AUTO_PIN",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "69e9d478ef16f7f777551acd1fda2c7128bec6926f04fd50aeded974fd0aff7e",
+        "name": "CXX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "39dde144b4fe607bf8676823fa13d814369f0b5df9cab1c180aa2a560592e6d3",
+        "name": "DISABLE_AUTOUPDATER",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "ca676128140942fbf1817fe749f80221a91666004fe086ae37532095e4229fa8",
+        "name": "DISABLE_MICROCOMPACT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "467567d0fdcc44be9d85302c7d572d75833a0234c9b62d4e3bc52601f409e697",
+        "name": "DXMT_LOG_LEVEL",
+        "value": "info"
+      },
+      {
+        "entry_sha256": "ae15b0c81966f7664cc8d2be75f2cb4289facbb8ddf5b6c789cf524e3088e05c",
+        "name": "DXMT_LOG_PATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-registryfix-verify-30-try1-042607"
+      },
+      {
+        "entry_sha256": "2204a6587df57f6f2a2ffd5b958987507d075e948fdd393e5e09d4789bfbe4ba",
+        "name": "DYLD_FALLBACK_LIBRARY_PATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix:/opt/homebrew/lib:/opt/homebrew/opt/freetype/lib:/usr/local/lib:/usr/lib"
+      },
+      {
+        "entry_sha256": "ed2f276aa1b9ca42dd19c943145cf35c431be3af94027d8a818ddcea65aa364e",
+        "name": "DYLD_LIBRARY_PATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix:/opt/homebrew/lib:/opt/homebrew/opt/freetype/lib"
+      },
+      {
+        "entry_sha256": "9677241063d635795c4c73cbcabdea60f2754d679e55eaf5aa599f9f3e1c6f14",
+        "name": "FLEX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "0a187b38670c40b4750c0acf884e7d08028a66f76c386a24e4aab46fa714baaa",
+        "name": "GIT_EDITOR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "5792f2b99eccb36d2c7433c536965217e809cfd55284c97709bf53e68ee18826",
+        "name": "HOME",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "e9a1ef298d538c4aecc3e3bf768850e96bbcf8b46024b64fa2c32c7ab1797cd6",
+        "name": "LC_CTYPE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "f9d59d3eb34e85b30958b05789bffa6be62a22615ef39b662a2ba49258409156",
+        "name": "LEX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "68d51b4ad921876479c52efd934e39f3082f2cd80a06cdb2b37c7cb95e19790b",
+        "name": "LOGNAME",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b1b5fa38c7edf8f7ee38d8b46ec50d38bc1374fa17447b123a0ba1d2a8a62ebb",
+        "name": "MACRUNNER_ARTIFACTS_ROOT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "2843e650743b051f2b8938562f74dc8f4e70fcc6aec30ab1db9609ebeb03e89e",
+        "name": "MACRUNNER_BOTTLES_ROOT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "7b8dec87d1173ea7e19d9fcee33f63e62720a9634491c83708674fb140a343fc",
+        "name": "MACRUNNER_CCACHE_DIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "dc8a32562fef7e8b36c23ff0fda78fb6b7ce56621343a0364123aa1401c87977",
+        "name": "MACRUNNER_DXMT_FRAME_DUMP",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "e2d6883e02fcb8bed0f0cec5f847ca172b12dbe0d2a3b2dfdf933820be5b4324",
+        "name": "MACRUNNER_DXMT_ROOT",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-registryfix-verify-30-try1-042607/dxmt-builtin-overlay"
+      },
+      {
+        "entry_sha256": "c618332d055b0d63122e838e434c1558b6ded5389067955850989ae8a2b760aa",
+        "name": "MACRUNNER_FLIGHT_PATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-registryfix-verify-30-try1-042607/flight.jsonl"
+      },
+      {
+        "entry_sha256": "f58687c9033d406300bd54716b5cf6b4974e8775faccb88bf47d75a173279dfc",
+        "name": "MACRUNNER_FLIGHT_RECORDER",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "367917c57596dcfe871c253db04d72e904d7e3856ed7f7f19cac3af9b211cc55",
+        "name": "MACRUNNER_FLIGHT_RECORDER_FILE",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-registryfix-verify-30-try1-042607/flight.jsonl"
+      },
+      {
+        "entry_sha256": "f2ef6d7ff249e1abf4b41ba77d6c22bebe9bb82003a4a127bd9981a737154c06",
+        "name": "MACRUNNER_FLIGHT_RECORDER_PATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-registryfix-verify-30-try1-042607/flight.jsonl"
+      },
+      {
+        "entry_sha256": "38179aa0e470738da6ed12ad3c5b334681d450a2028e1a68ca32347bc547dea3",
+        "name": "MACRUNNER_GRAPHICS_BACKEND",
+        "value": "dxmt"
+      },
+      {
+        "entry_sha256": "6892cf9760ccf5929778027f8193136681d131bf653337f2401662f53f2e7b38",
+        "name": "MACRUNNER_HB_BACKEND",
+        "value": "jit"
+      },
+      {
+        "entry_sha256": "40e96ef75cfc4452374fe6e75a868a1dd53565b65204b9780cccbcf6344c13e4",
+        "name": "MACRUNNER_HB_CAMERA_PROBE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b9afba1fa72f69d87344fe97093678aa95b76e9304b5332bfc05d04e0e35a4b2",
+        "name": "MACRUNNER_HB_CAMERA_PROBE_MAX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "ccfa5b422c71b6d06fb3368e5ea71660f7f2fdcfe3d8206969e50bd00d6b56fb",
+        "name": "MACRUNNER_HB_CAMERA_PROBE_STRIDE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "309b710ade0176bfb475cce912cb52298306bd2e203626204accb6e4dfb8aeb0",
+        "name": "MACRUNNER_HB_DIRECT_MEM",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "f438c3e44ccb9aa4918c8f3f9ea24ba2ef3c22d533b72528f361ccf4fc845667",
+        "name": "MACRUNNER_HB_JIT_DIRECT_MEM",
+        "value": "0"
+      },
+      {
+        "entry_sha256": "68cae803c2b92c4c5347bc598619603cec3910ff0ef717c42fb4b49152bd59d0",
+        "name": "MACRUNNER_HB_JIT_DIRECT_SCALAR_MEM",
+        "value": "0"
+      },
+      {
+        "entry_sha256": "51072b51c1f6a073e457ec5b2a8568f4802d5aba7bf7c851714cc296fb9dac92",
+        "name": "MACRUNNER_HB_JIT_DIRECT_SCALAR_SCAN",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "674625a6db0d6effa85d7463df6f14da8943b1c04315b1cb887416e2af8344d1",
+        "name": "MACRUNNER_HB_JIT_DIRECT_STACK",
+        "value": "0"
+      },
+      {
+        "entry_sha256": "ceadc966e7a99bfff30384e7c923a8a17426e508d3b5c5c412812bc825bdb617",
+        "name": "MACRUNNER_HB_JIT_DIRECT_XMM_MEM",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "197aa91df8890be73654b504cc36efdb380192851af17ec16852db3213a4dc29",
+        "name": "MACRUNNER_HB_LANGUAGE_FLOW_OBSERVER",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "6ed8f0c48458231fab2b8f5f4a396b4b19ac6873ce5d296d82f438871885f046",
+        "name": "MACRUNNER_HB_LANGUAGE_FLOW_OBSERVER_MAX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "f56839887b731b9384e490f13cd9264988689fdd360cf8a612b74029b71a1d30",
+        "name": "MACRUNNER_HB_LANGUAGE_ONESHOT_SEQUENCE",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "e451bb9da023940815e660cc3ad9dcfd32fa12bff27e760d76c7b0b7296c8083",
+        "name": "MACRUNNER_HB_PRESENT_SURFACE_READBACK",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "af0972235bd171a56793177d96dc304c5bb2df28d678049705ee7b7159dfff2f",
+        "name": "MACRUNNER_HB_PRESENT_SURFACE_READBACK_ORDINAL",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b452a9837967e5d00f536eb43bf58d644779efe233ac617c61a3ccd76e353b73",
+        "name": "MACRUNNER_HB_SINGLE_LOOKUP",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "ee56de361fed1360e436fc9d2b3d4ca3738facf719586db9c3eae781892bf5cc",
+        "name": "MACRUNNER_HB_START_GAME_ACTUATOR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "56bfc1ff35d84ed961fab283fed7f922f826026383d48df4c7438f005c1b1135",
+        "name": "MACRUNNER_HB_START_GAME_ACTUATOR_MAX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "eef2f162688e7768c870d71d496357e5364d37f018ba833dca36a5acda7f5257",
+        "name": "MACRUNNER_HB_TRACE_D3D_BOUNDARY",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "0d70535af54dd5fc62b7b0738077207d1f279c8681af78ce9d6df1dd7f112943",
+        "name": "MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "1cba0fc496b18e1294485a45b607a3a8bb810c6e13351d976afc9fa175678cc0",
+        "name": "MACRUNNER_HB_TRACE_TRANSLATION_CACHE",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "37a07a86aa6e026dab8edbef413e87cedfde754e32287680df178d373aa5faea",
+        "name": "MACRUNNER_HB_TRANSLATION_CACHE",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "56171f5fdadbff0b97779677b4bb3c7913cd43f333b827b45ad21c2064bbe5d4",
+        "name": "MACRUNNER_HB_TRANSLATION_CACHE_ROOT",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/hb-translation-cache/ntdll-5385710288b50361"
+      },
+      {
+        "entry_sha256": "07a90fc4fa91d374838a0306e3a545a7ba303912779467c87df1de8849f520e2",
+        "name": "MACRUNNER_HB_X64_LOADER",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "4bc95dabb966a5d4ba7feb33a61e9276d3456d16d9baff640ad5b8e42a73eb01",
+        "name": "MACRUNNER_HOMEBREW_LIBRARY_PATHS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "dbc38fc451cb4895a927ef5b124b06db720ca747b9f6635ffb5b2b66e74174f2",
+        "name": "MACRUNNER_HOMEBREW_PREFIX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "66a231055172c7ae2bd007be00415ca27a0c19f0521aa02b7432e758f8c80303",
+        "name": "MACRUNNER_LLVM_MINGW_BIN",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "236fc3f74fcdb9400f9998bea61f98d8adceb1aab68c94348231ccd8af540ddb",
+        "name": "MACRUNNER_MR_RUN_ACTXPRXY",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "8948a5c599cc334af8894cf9fb84526ad848c76bd66c1d371379e353c91a4fb4",
+        "name": "MACRUNNER_MR_RUN_CRT_CASE_FUSION",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "4eea2ba34b4110d07bdc672683ad3c5c889ac0de8b1920e753ceddeb513f7df7",
+        "name": "MACRUNNER_MR_RUN_PREFIX_TEMPLATE",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/hk-windows-oracle-prefix-template-20260721-225722-v3"
+      },
+      {
+        "entry_sha256": "5dfc0433387fee27ef5b709a2820894f034a532235d9410c2db18bf5b6e8896f",
+        "name": "MACRUNNER_MR_RUN_SKIP_WINEBOOT",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "17752d9ba89870f97a1b2de98959b30323a1f53259e10611a6e8df202e4f8dcc",
+        "name": "MACRUNNER_MR_RUN_START_SERVICES",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "bdd546683aef3623c2cb349f9df2b5f3750002778d0c2bc1ff56efc92be18865",
+        "name": "MACRUNNER_MR_RUN_WWISE_OBSERVER",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "189c476cc9678814b49b136fc9a2e6ee663d4cd9628593562e963b9778b6721f",
+        "name": "MACRUNNER_NPP_AFTER_LAUNCH_READY_SECS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "c4c2a95bc9549b19480b40f0990b7feb6237b2d5008e79acb80c9af7ffcac68f",
+        "name": "MACRUNNER_NPP_X64_APP",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "a8944b88cc763b32b2d4cb5c8b0faec605cf530e7c0341565b07a8747115090d",
+        "name": "MACRUNNER_NPP_X64_DIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b1ef1bbd0c2c64da1069fe2a60ef896b70125eaeff0000af01b0b48c90713138",
+        "name": "MACRUNNER_PREFIX_SYSTEM32_ARCH",
+        "value": "x86_64-windows"
+      },
+      {
+        "entry_sha256": "3bbb3706a599e8f5d63a58f6cd0f4f8bc218a8b24478ec3b1fcf3956740302fa",
+        "name": "MACRUNNER_REPORTS_ROOT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "5e891b47df4d4f5a43a508410929bd0376cf4a836243475c3ef2d7bbe796ada9",
+        "name": "MACRUNNER_ROOT",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "df2472f6df3180a5760f8b3bfe2b5e10dd5c3665521da624deabc62f8ebe07ec",
+        "name": "MACRUNNER_RUN_DIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "176ad46df7be371fa925b83d06107f840b33280bb4ff0624719d29d54f537c05",
+        "name": "MACRUNNER_WINEBOOT_WAIT_SECS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "afb1a311ae13c787c301955ab917db5ce6ab03afd9066d873efc7749bea3f96e",
+        "name": "MACRUNNER_WINESERVER_WAIT_SECS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "f18335d9dd3bac56088e1f6184ae7b95fe20c0990172b9cfe4f1380022fd8cbb",
+        "name": "MACRUNNER_WINE_BIN",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "b5b8651bbe2e4989fbc759b3988e253539147d252c8794e539ad7742b3bcb8ac",
+        "name": "MACRUNNER_WINE_BUILD_ARM64",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "54a04b3c62d6e2f8dde0cd38b1925ce3e2d50ada9e9c45e6814c671aed880c27",
+        "name": "MACRUNNER_WINE_CCACHE_PREFIX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "f48aa421f4f1afdfb896baf00b36a85885202b3cf0869c1b6062b98e7526e265",
+        "name": "MACRUNNER_WINE_DIST",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "3985e874dfa89b3b77a3c48e0802dc20c37162c274591e603a3b7ab6f43cc435",
+        "name": "MACRUNNER_WINE_DIST_ARM64",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "581871054fb2ff9c7fa7ae79aba20eea2d43d40d0e58b5d9fcc36f0729a138c6",
+        "name": "MCP_CONNECTION_NONBLOCKING",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "e37bb836d897bd2fec434a49e26d785628bd02f13a28a412cd588f5d42b529ba",
+        "name": "MONO_ENV_OPTIONS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "ad7a7dcd24760486c7195f2ecf646f66a487c2a55c350b7921f5a9cac775c742",
+        "name": "MallocNanoZone",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "012791a6babb8fa3af3f0307f92563eaf27eeab8a41756b3dc3db687e2d6bd4d",
+        "name": "NODE_USE_SYSTEM_CA",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "109cc0d977f7de46c99f4d0e3752d74349368aefa88b8e5f78854cd71db3eb2b",
+        "name": "NoDefaultCurrentDirectoryInExePath",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "21aafc5320deb136f1676da5e6138eeb01ce9de8f5b42b06ba14f24f2f9e9b36",
+        "name": "OSLogRateLimit",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "c6519b8707848791f5e1492a68ab44b26ed216e34d13c0aefcd0273198822524",
+        "name": "PATH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "237f420b8fcab30d5d81c1854d54e2161928c56ce4e9978e29076659318c4560",
+        "name": "PWD",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "703d1284e05a04077617a22c2ad8b3cd0eac33637088fae4229a994b95695b4a",
+        "name": "SHELL",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "95591db2adfa14ab657d204a25b4801a4e9655bc6c0c21be4b0d0353fcfa5df5",
+        "name": "SHLVL",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "68f46ac0148c03eca986381dc7744d2521d804cf21beedd50e805cd7b44d90e3",
+        "name": "SSH_AUTH_SOCK",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "1c88374ea79705c66553c854a8b5ce74c356428c940ec1b9ae7e7597557d28a9",
+        "name": "TMPDIR",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "006e170b2aa0d47a5dab11962c5e83aa7769fa0de475a856754af9714cbdc476",
+        "name": "USER",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "00e928eacb93b39836d85fe8e177b98516883793536573c2207525dcae79b0b6",
+        "name": "USE_LOCAL_OAUTH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "4c901b0461c8877340a8a59162c680ad3608485b738ae74e86c6ea10035fdb17",
+        "name": "USE_STAGING_OAUTH",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "8a7f4f7a9a3cd451604c450592567582535e43bd06eb93f85862a041856c5324",
+        "name": "WINEDEBUG",
+        "value": "-all"
+      },
+      {
+        "entry_sha256": "702e5c3cc7964a84893da2961436c62aa90f69caf38dc799f448f7b6f6e2b7cd",
+        "name": "WINEDLLOVERRIDES",
+        "value": "mono-profiler-hk_language=n;d3d9=n,b;d3d11,dxgi,d3d10core,winemetal=n,b"
+      },
+      {
+        "entry_sha256": "96d65b247e86e744795012efec20d722c41458312428d29b0ad1e45128af1efe",
+        "name": "WINEDLLPATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-registryfix-verify-30-try1-042607/dxmt-builtin-overlay:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-registryfix-verify-30-try1-042607/dxmt-builtin-overlay/x86_64-windows:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-registryfix-verify-30-try1-042607/dxmt-builtin-overlay/x86_64-unix:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows:/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike/lib/wine/x86_64-unix"
+      },
+      {
+        "entry_sha256": "209d90a4c42be23f3a744c81e2d0767d97344d69bc7a41d824b0f18ca8e6bbd5",
+        "name": "WINELOADERNOEXEC",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "fab3a7a2e8789a1fe4b59ac54d5a5f0c4a4c4b039d71de4efb3fe4410e656ad4",
+        "name": "WINEMSYNC",
+        "value": "1"
+      },
+      {
+        "entry_sha256": "1af08f5bbc23ea8c86e852d7ab26a67136fdd05402bf91f038e59e79c3dac977",
+        "name": "WINEPREFIX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "aefed69357a27d850d4c687f453a4ffd75ec475d58aba332478d15dfa6d3ba3e",
+        "name": "WINESYSTEMDLLPATH",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-registryfix-verify-30-try1-042607/dxmt-builtin-overlay/x86_64-windows"
+      },
+      {
+        "entry_sha256": "dc8f0d8ab0221c2f15045e75cab81c5b05306054ed01fd0dd9afeb055f15d83d",
+        "name": "XPC_FLAGS",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "2b298963e4e41d00e12cdfb80d8c8d60401a4693d6731b2002ee19f9c392824d",
+        "name": "XPC_SERVICE_NAME",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "42711c82c8ae296625644f7f359a688abe6fe0330c89a07e871c909adc2db39b",
+        "name": "YACC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "36353d2eeb2127a2319c68b1e026280950c8b3c12ddd168bf67742448a9e8feb",
+        "name": "_",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "cb72dad9624cce731bc9a7a4c572b4cf3ccd5505d35b7cdf56477c3dda4cd0f4",
+        "name": "__CFBundleIdentifier",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "7bcbc1b0496dcc0bf2ad6e52f7ee5945fbd3cb06b6e56e535153c495b4cfea4a",
+        "name": "__CF_USER_TEXT_ENCODING",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "e6450efe41297d26794e6bd7efef4456296a06e9356df1ddd9781bad833bf0cd",
+        "name": "aarch64_CC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "32dfbc593997b0313174c7bb1fad1e30fabd5ccc4e1f56076de0e9212f823e99",
+        "name": "aarch64_CXX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "ee8edbea0a6685748f2e5b5f0501c83e03f95d3af315787ed615945ed43bfe92",
+        "name": "arm64ec_CC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "085efa28623165ff4c554449d3053200e310eee924bbbe6be8b2ce4d3d0e6afd",
+        "name": "arm64ec_CXX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "6671d840aa3698609d0c32727125159b108a13b75a825c552ce911c5a7d9328d",
+        "name": "i386_CC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "fc041b492051006b7fe3683c7517dc223cebaa669bf456a27ef323c2c4e7390a",
+        "name": "i386_CXX",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "a02e3e246ac4715712e65ba1f77a3c080ed632f0e6c89713df4c26880d39bf03",
+        "name": "x86_64_CC",
+        "value_redacted": true
+      },
+      {
+        "entry_sha256": "38d57e990ba1d5d02bfed97c3d7bcf8a67f977d2228dc41e1535543c50b9acd1",
+        "name": "x86_64_CXX",
+        "value_redacted": true
+      }
+    ],
+    "inheritance": "captured",
+    "normalized_sha256": "366cf2720037aedf99377a8baf19e29d1aae1ceea011f0f77ad423aa730d6501"
+  },
+  "experiment": {
+    "max_attempts": 1,
+    "measurement_traces": [
+      "MACRUNNER_HB_TRACE_TRANSLATION_CACHE"
+    ],
+    "requested_timeout_s": 3000,
+    "role": "A",
+    "semantic_discriminator": "NONE"
+  },
+  "runner": {
+    "branch_map": {
+      "actxprxy": {
+        "state": "PRESENT",
+        "value": "0",
+        "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "backend": {
+        "state": "PRESENT",
+        "value": "jit",
+        "value_sha256": "ec03a0a8851d9cf0aa2320035b8699d6d3bbb4a8a8c160b0dd41c5c5ed086f9c"
+      },
+      "com_rpcss_seed": {
+        "state": "PRESENT",
+        "value": "start_services=1",
+        "value_sha256": "7aacb754964e511f7056ea3774ac5bab45f65178eae1a6778a936c97aa9f462b"
+      },
+      "crt_case_fusion": {
+        "state": "PRESENT",
+        "value": "0",
+        "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "graphics": {
+        "state": "PRESENT",
+        "value": "dxmt",
+        "value_sha256": "637323f65b6919e0cc1943a46587235db635574aa91c2a2993328733f2b072e1"
+      },
+      "prefix_template": {
+        "state": "PRESENT",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/hk-windows-oracle-prefix-template-20260721-225722-v3",
+        "value_sha256": "cdb69959b67109710c9071266b3710c8c610b743a24b9b024b9c93682184f5b4"
+      },
+      "stage_or_active_dist": {
+        "state": "PRESENT",
+        "value": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike",
+        "value_sha256": "9cfc0846a5f9c92f476f9310111dcf8ce982675b4ed490852b50ce6fa27bbeea"
+      },
+      "standalone_services_rpcss": {
+        "state": "PRESENT",
+        "value": "start_services=1",
+        "value_sha256": "7aacb754964e511f7056ea3774ac5bab45f65178eae1a6778a936c97aa9f462b"
+      },
+      "system32_sync_arch": {
+        "state": "PRESENT",
+        "value": "x86_64-windows",
+        "value_sha256": "3060165cd184bb84b8a8fffd9b27ca0aa54646ae2a09e1d1afd93d26ebc90899"
+      },
+      "vulkan_icd_wiring": {
+        "state": "PRESENT",
+        "value": "none",
+        "value_sha256": "140bedbf9c3f6d56a9846d2ba7088798683f4da0c248231336e6a05679e4fdfe"
+      },
+      "wineboot": {
+        "state": "PRESENT",
+        "value": "dxmt_skip_wineboot=1",
+        "value_sha256": "6eeb518e7f17f705d3449c5bd3ec03cc997e134f283335f40c846fb0162e21c8"
+      },
+      "wwise_observer": {
+        "state": "PRESENT",
+        "value": "0",
+        "value_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+      },
+      "x64_loader": {
+        "state": "PRESENT",
+        "value": "1",
+        "value_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+      }
+    },
+    "files": [
+      {
+        "mtime_ns": 1785115318163410554,
+        "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/mr-run.sh",
+        "sha256": "1385eb7dc003ce9a6f560dbd075e692274a27616f9b807994589dd68a7901b30",
+        "size": 30802,
+        "state": "PRESENT"
+      },
+      {
+        "mtime_ns": 1782883781844774264,
+        "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/sync-prefix-from-dist.sh",
+        "sha256": "492d392db11f104ef41bd533c8f6f7b8fd869eb2606a362889caee4adab8fb3a",
+        "size": 8048,
+        "state": "PRESENT"
+      }
+    ],
+    "wine_sha256": {
+      "mtime_ns": 1785175217813999844,
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike/bin/wine",
+      "sha256": "00145dabeee2cd6f2903cc61a73e58b87c2186a3fd67c0fb2580eab5a80e0085",
+      "size": 34424,
+      "state": "PRESENT"
+    },
+    "wineserver_sha256": {
+      "mtime_ns": 1785175217813609093,
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike/bin/wineserver",
+      "sha256": "7d759baf76280bfa91d05029f21f4421bdcb52141338b0ca6eb29090f911f04b",
+      "size": 684248,
+      "state": "PRESENT"
+    },
+    "wrapper_prelaunch_capture_hook": {
+      "mtime_ns": 1783993205585616472,
+      "path": "/Users/timurtoby/Documents/MacRunner/Main/MacRunner/tools/run_contract_identity_ledger.py",
+      "sha256": "7b34e98a593126111b69d2a690c516f8ccf187cd564a86a12046413956661a2a",
+      "size": 57993,
+      "state": "PRESENT"
+    }
+  },
+  "schema": "macrunner-run-contract/v1",
+  "status": "READY",
+  "title": "hollow-knight"
+}

@@ -1,0 +1,17 @@
+OWNER: Lane A
+CLASS: GENERIC_GRAPHICS_FAULT
+CONFIDENCE: 0.45
+LADDER_RUNG: 11 (swapchain)
+LADDER_BEST: 11 (swapchain) run=laneA-eh-x64domain-floor-present-try1-113845
+LADDER_REGRESSION: no
+time_to_swapchain=UNKNOWN
+PIXEL_TRUTH: NO_ARTIFACT verdict=None artifact=None
+PIXEL_MOMENT_REACHED: no
+WHY_PRIMARY_WON: Primary class 'GENERIC_GRAPHICS_FAULT' (priority 30) outranked secondary classes: WAIT_TRACE_INSUFFICIENT, WINDOW_TRACE_INSUFFICIENT, ARM64EC_CALLBACK_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, D3D_TRACE_INSUFFICIENT, PE32_HANDOFF_TRACE_INSUFFICIENT.
+EVIDENCE:
+  synced artifacts/_mr-run.imsesr/drive_c/windows/system32/vulkan-1.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/vulkan-1.dll
+  winedlloverrides=mono-profiler-hk_language=n;d3d9=n,b;d3d11,dxgi,d3d10core,winemetal=n,b
+  synced artifacts/_mr-run.imsesr/drive_c/windows/system32/wined3d.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/wined3d.dll
+  [classify_run] Owner corrected to Lane A: ARM64EC/dispatch/ldr-init boundary markers present.
+NEXT_ACTION: Graphics API translation or pipeline issue. Identify the failing Metal/D3D11 call and check the DXMT/winemetal translation layer. Enable MACRUNNER_HB_TRACE_D3D=1.
+SECONDARY_CLASSES: WAIT_TRACE_INSUFFICIENT, WINDOW_TRACE_INSUFFICIENT, ARM64EC_CALLBACK_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, D3D_TRACE_INSUFFICIENT, PE32_HANDOFF_TRACE_INSUFFICIENT

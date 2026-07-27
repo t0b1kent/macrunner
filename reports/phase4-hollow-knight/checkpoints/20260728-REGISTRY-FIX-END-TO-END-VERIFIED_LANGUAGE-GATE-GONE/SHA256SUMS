@@ -1,0 +1,13 @@
+9062ceda784ad723b325d8ba4e9289ce4f421ea010dd43a27766ab28416dd361  ./CHECKPOINT.md
+743f7d7902f066a951a1cde8d36a0f15b8c0c381c546d3b5bdbf31b3fc2c36e7  ./engine-tree-at-verification.patch
+6e0a97d72c8ae30a7d37714d4ed246f7a3122563d096fa18d0b9207004fdc351  ./run30-verdict-watcher.sh
+a32e8e0a052784d9b01fe46aaee7f7d102353865a2d8c3b47e5d90c17a83df9e  ./run30-registryfix-verify.sh
+b0c4ce88c7d063fb1d5b8afe1b39b3b5a6c15a8b85c8578d1d00eecd92a46f0b  ./evidence/triage-summary.json
+759ece6b851f0060d7c98f3e8783c95400bc696ace7ca799e04ee5a671add3c3  ./evidence/run.log
+143818a18e2ee9948c665c34a73956117543b3658dea531b23cc54cab4cf6c6e  ./evidence/flight.jsonl
+a0b93e4d255009a6a3c0f1a04f8c3a37329fa96ad189c7884855dad90e821155  ./evidence/run-contract.json
+1dfeac15348e3b518d5052328643fe2f9f0f22be86da41455ac2d9fa3cfb0120  ./evidence/triage-summary.txt
+8a179e7558ecda9c6a593a67453c38478d2d7c211ac167a85a66905c73a281a6  ./evidence/registry-probe-20260728-040351/probe-A-seed-before-server.stderr
+2a61528b442b9ec7cf454fe3923173b2d556aea05b196bd3d6b7f15208936ecf  ./evidence/registry-probe-20260728-040351/dist-artifacts.sha256
+25cdd503d499e418e148a2ce195d75c67affbc18d5123199c681992e8ac77cf2  ./evidence/registry-probe-20260728-040351/seed-userreg.sha256
+55865517e2e538d1ea29641daf16c6bf160fc24c492294e3f3dadc03a811f96a  ./evidence/registry-probe-20260728-040351/probe-A-seed-before-server.stdout

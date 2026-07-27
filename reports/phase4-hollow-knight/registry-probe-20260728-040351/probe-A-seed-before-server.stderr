@@ -1,0 +1,415 @@
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140016408 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF770000 image_base=00006FFFFED10000 delta=FFFF988000A60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF100000 image_base=00006FFFFE690000 delta=FFFF988000A70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEBB0000 image_base=00006FFFFE130000 delta=FFFF988000A80000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEAC0000 image_base=00006FFFFE030000 delta=FFFF988000A90000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=00000001055E747C native_ctype_idx=00000001055E77EE ec_ctypes=00000001055E747C ec_ctype_idx=00000001055E77EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000020 ec_intl=0000000000000020 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-kernelbase-dllmain: init_locale done
+macrunner-kernelbase-tlsset: entry index=1 value=000007FFD024B2D0 teb=000007FFD01E0000 x18=000000010D9CF618
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-kernelbase-tlsset: entry index=2 value=000007FFD024F8E0 teb=000007FFD01E0000 x18=000000010D9CF6A8
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 entry=0000000140016408 arg=000007FFD01F0000
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140018AD4 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF460000 image_base=00006FFFFDC50000 delta=FFFF988001810000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF3A0000 image_base=00006FFFFED10000 delta=FFFF988000690000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFED30000 image_base=00006FFFFE690000 delta=FFFF9880006A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE7E0000 image_base=00006FFFFE130000 delta=FFFF9880006B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE500000 image_base=00006FFFFD8D0000 delta=FFFF988000C30000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=00000001055B747C native_ctype_idx=00000001055B77EE ec_ctypes=00000001055B747C ec_ctype_idx=00000001055B77EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000024 ec_intl=0000000000000024 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-kernelbase-dllmain: init_locale done
+macrunner-kernelbase-tlsset: entry index=1 value=000007FFD0248850 teb=000007FFD01E0000 x18=000000010D9CF588
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-kernelbase-tlsset: entry index=2 value=000007FFD024AAB0 teb=000007FFD01E0000 x18=000000010D9CF618
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 entry=0000000140018AD4 arg=000007FFD01F0000
+macrunner-hb-ldr-init: phase=before index=1 ctx=000000010F9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010F9D0000 x0=0000087FFF495D74 x1=000007FFD024B620 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024B620/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=1 ctx=000000010F9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010F9D0000 entry=0000087FFF495D74 arg=000007FFD024B620
+macrunner-hb-ldr-init: phase=before index=2 ctx=00000001119CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=00000001119D0000 x0=000000014001712C x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=2 ctx=00000001119CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=00000001119D0000 entry=000000014001712C arg=0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFE2F0000 image_base=00006FFFFD0F0000 delta=FFFF988001200000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDF20000 image_base=00006FFFFCD10000 delta=FFFF988001210000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDE60000 image_base=00006FFFFCC40000 delta=FFFF988001220000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDDA0000 image_base=00006FFFFCB70000 delta=FFFF988001230000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140002800 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF060000 image_base=00006FFFFD0F0000 delta=FFFF988001F70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEC90000 image_base=00006FFFFCD10000 delta=FFFF988001F80000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEBD0000 image_base=00006FFFFED10000 delta=FFFF987FFFEC0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE560000 image_base=00006FFFFE690000 delta=FFFF987FFFED0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE010000 image_base=00006FFFFE130000 delta=FFFF987FFFEE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDF50000 image_base=00006FFFFCC40000 delta=FFFF988001310000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=000000010DB4747C native_ctype_idx=000000010DB477EE ec_ctypes=000000010DB4747C ec_ctype_idx=000000010DB477EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000028 ec_intl=0000000000000028 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-kernelbase-dllmain: init_locale done
+macrunner-kernelbase-tlsset: entry index=1 value=000007FFD0248870 teb=000007FFD01E0000 x18=000000010D9CF4F8
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-kernelbase-tlsset: entry index=2 value=000007FFD024B110 teb=000007FFD01E0000 x18=000000010D9CF588
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-hb-pe-relocate: module=0000087FFDE90000 image_base=00006FFFFCB70000 delta=FFFF988001320000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 entry=0000000140002800 arg=000007FFD01F0000
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=000000014001D478 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF460000 image_base=00006FFFFDC50000 delta=FFFF988001810000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF3A0000 image_base=00006FFFFED10000 delta=FFFF988000690000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFED30000 image_base=00006FFFFE690000 delta=FFFF9880006A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE7E0000 image_base=00006FFFFE130000 delta=FFFF9880006B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE010000 image_base=00006FFFFD0F0000 delta=FFFF988000F20000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDC40000 image_base=00006FFFFCD10000 delta=FFFF988000F30000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDB80000 image_base=00006FFFFCC40000 delta=FFFF988000F40000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=00000001055B747C native_ctype_idx=00000001055B77EE ec_ctypes=00000001055B747C ec_ctype_idx=00000001055B77EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000028 ec_intl=0000000000000028 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-kernelbase-dllmain: init_locale done
+macrunner-kernelbase-tlsset: entry index=1 value=000007FFD024C3C0 teb=000007FFD01E0000 x18=000000010D9CF588
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-kernelbase-tlsset: entry index=2 value=000007FFD024F210 teb=000007FFD01E0000 x18=000000010D9CF618
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-hb-pe-relocate: module=0000087FFDAC0000 image_base=00006FFFFCB70000 delta=FFFF988000F50000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 entry=000000014001D478 arg=000007FFD01F0000
+macrunner-hb-pe-relocate: module=0000087FFDA90000 image_base=00006FFFFCB30000 delta=FFFF988000F60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD970000 image_base=00006FFFFCA00000 delta=FFFF988000F70000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=1 ctx=000000011378FC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000113790000 x0=0000000140012690 x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=1 ctx=000000011378FC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000113790000 entry=0000000140012690 arg=0000000000000000
+macrunner-kernelbase-tlsset: entry index=1 value=000000010D9D5990 teb=000007FFD01D0000 x18=000000011378F8B8
+macrunner-kernelbase-tlsset: success teb=000007FFD01D0000 last_error=0
+macrunner-hb-ldr-init: phase=before index=2 ctx=000000011578FC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000115790000 x0=0000000140012C2C x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=2 ctx=000000011578FC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000115790000 entry=0000000140012C2C arg=0000000000000000
+macrunner-kernelbase-tlsset: entry index=1 value=000000010D9D6B10 teb=0000000000000000 x18=000000011578FA58
+macrunner-kernelbase-tlsset: success teb=000007FFD01C0000 last_error=0
+macrunner-hb-pe-relocate: module=0000087FFDD70000 image_base=00006FFFFCA00000 delta=FFFF988001370000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCA60000 image_base=00006FFFFBAF0000 delta=FFFF988000F70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC8B0000 image_base=00006FFFFB930000 delta=FFFF988000F80000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC830000 image_base=00006FFFFB8A0000 delta=FFFF988000F90000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC2B0000 image_base=00006FFFFB310000 delta=FFFF988000FA0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC070000 image_base=00006FFFFB0C0000 delta=FFFF988000FB0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBFD0000 image_base=00006FFFFB010000 delta=FFFF988000FC0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDE60000 image_base=00006FFFFCB30000 delta=FFFF988001330000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDB80000 image_base=00006FFFFD8D0000 delta=FFFF9880002B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD7B0000 image_base=00006FFFFDC50000 delta=FFFF987FFFB60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD780000 image_base=00006FFFFDC10000 delta=FFFF987FFFB70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD200000 image_base=00006FFFFB310000 delta=FFFF988001EF0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCFC0000 image_base=00006FFFFB0C0000 delta=FFFF988001F00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCF20000 image_base=00006FFFFB010000 delta=FFFF988001F10000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=3 ctx=00000001139CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=00000001139D0000 x0=0000087FFF4920BC x1=000007FFD024D460 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024D460/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=3 ctx=00000001139CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=00000001139D0000 entry=0000087FFF4920BC arg=000007FFD024D460
+macrunner-hb-ldr-init: phase=before index=4 ctx=00000001159CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=00000001159D0000 x0=000007FFD07DB2E4 x1=000007FFD024F2F0 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024F2F0/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=4 ctx=00000001159CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=00000001159D0000 entry=000007FFD07DB2E4 arg=000007FFD024F2F0
+macrunner-kernelbase-tlsset: entry index=1 value=00000001159D1270 teb=000007FFD01A0000 x18=00000001159CEF58
+macrunner-kernelbase-tlsset: success teb=000007FFD01A0000 last_error=0
+macrunner-kernelbase-tlsset: entry index=2 value=00000001159D1BF0 teb=000007FFD01A0000 x18=00000001159BE7C8
+macrunner-kernelbase-tlsset: success teb=000007FFD01A0000 last_error=0
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140011288 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF770000 image_base=00006FFFFED10000 delta=FFFF988000A60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF100000 image_base=00006FFFFE690000 delta=FFFF988000A70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEBB0000 image_base=00006FFFFE130000 delta=FFFF988000A80000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE9B0000 image_base=00006FFFFAE00000 delta=FFFF988003BB0000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=000000010559747C native_ctype_idx=00000001055977EE ec_ctypes=000000010559747C ec_ctype_idx=00000001055977EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000020 ec_intl=0000000000000020 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-kernelbase-dllmain: init_locale done
+macrunner-kernelbase-tlsset: entry index=1 value=000007FFD0246B20 teb=000007FFD01E0000 x18=000000010D9CF618
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-kernelbase-tlsset: entry index=2 value=000007FFD0249390 teb=000007FFD01E0000 x18=000000010D9CF6A8
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 entry=0000000140011288 arg=000007FFD01F0000
+macrunner-hb-pe-relocate: module=0000087FFE5E0000 image_base=00006FFFFDC50000 delta=FFFF988000990000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=5 ctx=0000000117ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000117AD0000 x0=0000087FFF4920BC x1=00000001159D1880 x2=0000000000000000 x3=0000000000000000 unk=00000001159D1880/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=5 ctx=0000000117ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000117AD0000 entry=0000087FFF4920BC arg=00000001159D1880
+macrunner-hb-ldr-init: phase=before index=6 ctx=0000000119ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000119AD0000 x0=000007FFD07DB2E4 x1=000007FFD024F2F0 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024F2F0/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=6 ctx=0000000119ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000119AD0000 entry=000007FFD07DB2E4 arg=000007FFD024F2F0
+macrunner-hb-ldr-init: phase=before index=1 ctx=000000010F9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010F9D0000 x0=0000087FFF77AC50 x1=000007FFD0246590 x2=0000000000000000 x3=0000000000000000 unk=000007FFD0246590/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=1 ctx=000000010F9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010F9D0000 entry=0000087FFF77AC50 arg=000007FFD0246590
+macrunner-kernelbase-tlsset: entry index=1 value=00000001159D65B0 teb=000007FFD0180000 x18=0000000119ACF258
+macrunner-kernelbase-tlsset: success teb=000007FFD0180000 last_error=0
+macrunner-hb-ldr-init: phase=before index=2 ctx=00000001119CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=00000001119D0000 x0=0000087FFF77B53C x1=000007FFD0249D90 x2=0000000000000000 x3=0000000000000000 unk=000007FFD0249D90/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=2 ctx=00000001119CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=00000001119D0000 entry=0000087FFF77B53C arg=000007FFD0249D90
+macrunner-hb-ldr-init: phase=before index=3 ctx=00000001139CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=00000001139D0000 x0=0000087FFE9D8140 x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=3 ctx=00000001139CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=00000001139D0000 entry=0000087FFE9D8140 arg=0000000000000000
+macrunner-kernelbase-tlsset: entry index=2 value=00000001139D0E60 teb=000007FFD01D0000 x18=000000010F9CFA68
+macrunner-kernelbase-tlsset: success teb=000007FFD01D0000 last_error=0
+macrunner-hb-pe-relocate: module=0000087FFE560000 image_base=00006FFFFAD70000 delta=FFFF9880037F0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=4 ctx=0000000115ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000115AD0000 x0=0000087FFE566F50 x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=4 ctx=0000000115ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000115AD0000 entry=0000087FFE566F50 arg=0000000000000000
+macrunner-hb-ldr-init: phase=before index=5 ctx=0000000117ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000117AD0000 x0=0000087FFE567004 x1=0000000000000050 x2=0000000000000000 x3=0000000000000000 unk=0000000000000050/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=5 ctx=0000000117ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000117AD0000 entry=0000087FFE567004 arg=0000000000000050
+macrunner-hb-pe-relocate: module=0000087FFE280000 image_base=00006FFFFD8D0000 delta=FFFF9880009B0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140002800 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF060000 image_base=00006FFFFD0F0000 delta=FFFF988001F70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEC90000 image_base=00006FFFFCD10000 delta=FFFF988001F80000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEBD0000 image_base=00006FFFFED10000 delta=FFFF987FFFEC0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE560000 image_base=00006FFFFE690000 delta=FFFF987FFFED0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE010000 image_base=00006FFFFE130000 delta=FFFF987FFFEE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDF50000 image_base=00006FFFFCC40000 delta=FFFF988001310000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDAB0000 image_base=00006FFFFD0F0000 delta=FFFF9880009C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD6E0000 image_base=00006FFFFCD10000 delta=FFFF9880009D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD620000 image_base=00006FFFFCC40000 delta=FFFF9880009E0000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=000000010556747C native_ctype_idx=00000001055677EE ec_ctypes=000000010556747C ec_ctype_idx=00000001055677EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000028 ec_intl=0000000000000028 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-kernelbase-dllmain: init_locale done
+macrunner-kernelbase-tlsset: entry index=1 value=000007FFD0248880 teb=000007FFD01E0000 x18=000000010D9CF4F8
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-kernelbase-tlsset: entry index=2 value=000007FFD024B150 teb=000007FFD01E0000 x18=000000010D9CF588
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-hb-pe-relocate: module=0000087FFDE90000 image_base=00006FFFFCB70000 delta=FFFF988001320000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD560000 image_base=00006FFFFCB70000 delta=FFFF9880009F0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 entry=0000000140002800 arg=000007FFD01F0000
+macrunner-hb-pe-relocate: module=0000087FFDD70000 image_base=00006FFFFAC40000 delta=FFFF988003130000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDE60000 image_base=00006FFFFCB30000 delta=FFFF988001330000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDB80000 image_base=00006FFFFD8D0000 delta=FFFF9880002B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD7B0000 image_base=00006FFFFDC50000 delta=FFFF987FFFB60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD780000 image_base=00006FFFFDC10000 delta=FFFF987FFFB70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD200000 image_base=00006FFFFB310000 delta=FFFF988001EF0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCFC0000 image_base=00006FFFFB0C0000 delta=FFFF988001F00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCF20000 image_base=00006FFFFB010000 delta=FFFF988001F10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBEF0000 image_base=00006FFFFBAF0000 delta=FFFF988000400000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBD40000 image_base=00006FFFFB930000 delta=FFFF988000410000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBCC0000 image_base=00006FFFFB8A0000 delta=FFFF988000420000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBBC0000 image_base=00006FFFFAC60000 delta=FFFF988000F60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB660000 image_base=00006FFFFA6F0000 delta=FFFF988000F70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB1E0000 image_base=00006FFFFA260000 delta=FFFF988000F80000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAFB0000 image_base=00006FFFFA020000 delta=FFFF988000F90000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAF00000 image_base=00006FFFF9F60000 delta=FFFF988000FA0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFACD0000 image_base=00006FFFF9D20000 delta=FFFF988000FB0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAC40000 image_base=00006FFFF9C80000 delta=FFFF988000FC0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA5E0000 image_base=00006FFFF9610000 delta=FFFF988000FD0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA5B0000 image_base=00006FFFF95D0000 delta=FFFF988000FE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA5B0000 image_base=00006FFFF95D0000 delta=FFFF988000FE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA5B0000 image_base=00006FFFF95D0000 delta=FFFF988000FE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA3D0000 image_base=00006FFFF93F0000 delta=FFFF988000FE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA570000 image_base=00006FFFF9590000 delta=FFFF988000FE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA4E0000 image_base=00006FFFF9500000 delta=FFFF988000FE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA4B0000 image_base=00006FFFF94C0000 delta=FFFF988000FF0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA410000 image_base=00006FFFF9410000 delta=FFFF988001000000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA360000 image_base=00006FFFF9350000 delta=FFFF988001010000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA010000 image_base=00006FFFF8FF0000 delta=FFFF988001020000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9F10000 image_base=00006FFFF8EE0000 delta=FFFF988001030000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9EB0000 image_base=00006FFFF8E70000 delta=FFFF988001040000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9E60000 image_base=00006FFFF8E10000 delta=FFFF988001050000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9C50000 image_base=00006FFFF8BF0000 delta=FFFF988001060000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9750000 image_base=00006FFFF86E0000 delta=FFFF988001070000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF96A0000 image_base=00006FFFF8620000 delta=FFFF988001080000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9390000 image_base=00006FFFF8300000 delta=FFFF988001090000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9280000 image_base=00006FFFF81E0000 delta=FFFF9880010A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9200000 image_base=00006FFFF8150000 delta=FFFF9880010B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9160000 image_base=00006FFFF80A0000 delta=FFFF9880010C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9060000 image_base=00006FFFF7F90000 delta=FFFF9880010D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF9010000 image_base=00006FFFF7F30000 delta=FFFF9880010E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF8F70000 image_base=00006FFFF7E80000 delta=FFFF9880010F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF8E60000 image_base=00006FFFF7D60000 delta=FFFF988001100000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF8BB0000 image_base=00006FFFF7AA0000 delta=FFFF988001110000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF8B10000 image_base=00006FFFF79F0000 delta=FFFF988001120000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF8990000 image_base=00006FFFF7860000 delta=FFFF988001130000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF8430000 image_base=00006FFFF72F0000 delta=FFFF988001140000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=00000001400101C0 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE800000 image_base=00006FFFFBAF0000 delta=FFFF988002D10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE780000 image_base=00006FFFFB8A0000 delta=FFFF988002EE0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE610000 image_base=00006FFFFEDE0000 delta=FFFF987FFF830000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE550000 image_base=00006FFFFED10000 delta=FFFF987FFF840000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDEE0000 image_base=00006FFFFE690000 delta=FFFF987FFF850000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD990000 image_base=00006FFFFE130000 delta=FFFF987FFF860000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD1C0000 image_base=00006FFFFD0F0000 delta=FFFF9880000D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCDF0000 image_base=00006FFFFCD10000 delta=FFFF9880000E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCD30000 image_base=00006FFFFCC40000 delta=FFFF9880000F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC6D0000 image_base=00006FFFF9610000 delta=FFFF9880030C0000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=000000010559747C native_ctype_idx=00000001055977EE ec_ctypes=000000010559747C ec_ctype_idx=00000001055977EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000028 ec_intl=0000000000000028 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-hb-pe-relocate: module=0000087FF5AD0000 image_base=00006FFFF4980000 delta=FFFF988001150000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF5700000 image_base=00006FFFF45A0000 delta=FFFF988001160000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF5440000 image_base=00006FFFF42D0000 delta=FFFF988001170000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF53B0000 image_base=00006FFFF4230000 delta=FFFF988001180000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF52C0000 image_base=00006FFFFE030000 delta=FFFF987FF7290000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF5240000 image_base=00006FFFF41A0000 delta=FFFF9880010A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF5210000 image_base=00006FFFF4160000 delta=FFFF9880010B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF5290000 image_base=00006FFFF41F0000 delta=FFFF9880010A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF51F0000 image_base=00006FFFF4140000 delta=FFFF9880010B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF5190000 image_base=00006FFFF40D0000 delta=FFFF9880010C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF50F0000 image_base=00006FFFF4020000 delta=FFFF9880010D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF4EF0000 image_base=00006FFFF3E10000 delta=FFFF9880010E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF4D20000 image_base=00006FFFF3C30000 delta=FFFF9880010F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF4C70000 image_base=00006FFFF3B70000 delta=FFFF988001100000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF4BF0000 image_base=00006FFFF3AE0000 delta=FFFF988001110000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF4BC0000 image_base=00006FFFF3AA0000 delta=FFFF988001120000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF4B60000 image_base=00006FFFF3A30000 delta=FFFF988001130000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF3ED0000 image_base=00006FFFF2D90000 delta=FFFF988001140000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF3A80000 image_base=00006FFFF2930000 delta=FFFF988001150000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF3820000 image_base=00006FFFF26C0000 delta=FFFF988001160000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF3720000 image_base=00006FFFF25B0000 delta=FFFF988001170000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF36D0000 image_base=00006FFFF2550000 delta=FFFF988001180000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF3620000 image_base=00006FFFF2490000 delta=FFFF988001190000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF35E0000 image_base=00006FFFF2440000 delta=FFFF9880011A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF3330000 image_base=00006FFFF2180000 delta=FFFF9880011B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF3300000 image_base=00006FFFF2140000 delta=FFFF9880011C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF3100000 image_base=00006FFFF1F30000 delta=FFFF9880011D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF3250000 image_base=00006FFFF2080000 delta=FFFF9880011D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FF3190000 image_base=00006FFFF1FB0000 delta=FFFF9880011E0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140010D88 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF330000 image_base=00006FFFF1AA0000 delta=FFFF98800D890000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEF60000 image_base=00006FFFF45A0000 delta=FFFF98800A9C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE9E0000 image_base=00006FFFFB310000 delta=FFFF9880036D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE920000 image_base=00006FFFFED10000 delta=FFFF987FFFC10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE2B0000 image_base=00006FFFFE690000 delta=FFFF987FFFC20000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDD60000 image_base=00006FFFFE130000 delta=FFFF987FFFC30000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD590000 image_base=00006FFFFD0F0000 delta=FFFF9880004A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD1C0000 image_base=00006FFFFCD10000 delta=FFFF9880004B0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD100000 image_base=00006FFFFCC40000 delta=FFFF9880004C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCEC0000 image_base=00006FFFFB0C0000 delta=FFFF988001E00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCAF0000 image_base=00006FFFFDC50000 delta=FFFF987FFEEA0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCA50000 image_base=00006FFFFB010000 delta=FFFF988001A40000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFC4F0000 image_base=00006FFFFA6F0000 delta=FFFF988001E00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB4C0000 image_base=00006FFFFBAF0000 delta=FFFF987FFF9D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB310000 image_base=00006FFFFB930000 delta=FFFF987FFF9E0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFB290000 image_base=00006FFFFB8A0000 delta=FFFF987FFF9F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAFD0000 image_base=00006FFFF42D0000 delta=FFFF988006D00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAF40000 image_base=00006FFFF4230000 delta=FFFF988006D10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFAE50000 image_base=00006FFFFE030000 delta=FFFF987FFCE20000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFA7F0000 image_base=00006FFFF9610000 delta=FFFF9880011E0000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=000000010556747C native_ctype_idx=00000001055677EE ec_ctypes=000000010556747C ec_ctype_idx=00000001055677EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000028 ec_intl=0000000000000028 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-hb-ldr-init: phase=before index=7 ctx=0000000118ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000118AD0000 x0=0000087FFF4920BC x1=000007FFD024D460 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024D460/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=7 ctx=0000000118ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000118AD0000 entry=0000087FFF4920BC arg=000007FFD024D460
+macrunner-hb-ldr-init: phase=before index=8 ctx=0000000119ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000119AD0000 x0=000007FFD07DB2E4 x1=000007FFD024F2F0 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024F2F0/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=8 ctx=0000000119ACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=0000000119AD0000 entry=000007FFD07DB2E4 arg=000007FFD024F2F0
+macrunner-kernelbase-tlsset: entry index=1 value=00000001159D65B0 teb=000007FFD01B0000 x18=0000000119ACF1B8
+macrunner-kernelbase-tlsset: success teb=000007FFD01B0000 last_error=0
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140011874 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF770000 image_base=00006FFFFED10000 delta=FFFF988000A60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF100000 image_base=00006FFFFE690000 delta=FFFF988000A70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEBB0000 image_base=00006FFFFE130000 delta=FFFF988000A80000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=00000001055A747C native_ctype_idx=00000001055A77EE ec_ctypes=00000001055A747C ec_ctype_idx=00000001055A77EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000020 ec_intl=0000000000000020 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=00000001400112B4 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF770000 image_base=00006FFFFED10000 delta=FFFF988000A60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF100000 image_base=00006FFFFE690000 delta=FFFF988000A70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEBB0000 image_base=00006FFFFE130000 delta=FFFF988000A80000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE7E0000 image_base=00006FFFFDC50000 delta=FFFF988000B90000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE010000 image_base=00006FFFFD0F0000 delta=FFFF988000F20000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDC40000 image_base=00006FFFFCD10000 delta=FFFF988000F30000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFDB80000 image_base=00006FFFFCC40000 delta=FFFF988000F40000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=000000010561747C native_ctype_idx=00000001056177EE ec_ctypes=000000010561747C ec_ctype_idx=00000001056177EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000020 ec_intl=0000000000000020 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-hb-ldr-init: phase=before index=9 ctx=000000011BACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000011BAD0000 x0=000007FFD07DB2E4 x1=000007FFD024F2F0 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024F2F0/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=9 ctx=000000011BACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000011BAD0000 entry=000007FFD07DB2E4 arg=000007FFD024F2F0
+macrunner-kernelbase-tlsset: entry index=1 value=00000001159D9DD0 teb=000007FFD0170000 x18=000000011BACF258
+macrunner-kernelbase-tlsset: success teb=000007FFD0170000 last_error=0
+macrunner-hb-pe-relocate: module=0000087FFD510000 image_base=00006FFFF93B0000 delta=FFFF988004160000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD400000 image_base=00006FFFF9290000 delta=FFFF988004170000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD380000 image_base=00006FFFF9200000 delta=FFFF988004180000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD350000 image_base=00006FFFF91C0000 delta=FFFF988004190000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD260000 image_base=00006FFFFE030000 delta=FFFF987FFF230000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD220000 image_base=00006FFFF9170000 delta=FFFF9880040B0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=6 ctx=000000011A0EFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000011A0F0000 x0=0000087FFD221ACC x1=0000000000000000 x2=0000000000000000 x3=0000000000000000 unk=0000000000000000/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=6 ctx=000000011A0EFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000011A0F0000 entry=0000087FFD221ACC arg=0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFDAC0000 image_base=00006FFFFD8D0000 delta=FFFF9880001F0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD6F0000 image_base=00006FFFFDC50000 delta=FFFF987FFFAA0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD6C0000 image_base=00006FFFFDC10000 delta=FFFF987FFFAB0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD690000 image_base=00006FFFFAD30000 delta=FFFF988002960000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFD110000 image_base=00006FFFFB310000 delta=FFFF988001E00000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCED0000 image_base=00006FFFFB0C0000 delta=FFFF988001E10000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCE30000 image_base=00006FFFFB010000 delta=FFFF988001E20000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCD10000 image_base=00006FFFFAC00000 delta=FFFF988002110000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFCCE0000 image_base=00006FFFFCB30000 delta=FFFF9880001B0000 machine=0xaa64
+macrunner-hb-ldr-init: phase=before index=10 ctx=000000011CACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000011CAD0000 x0=0000087FFF4920BC x1=000007FFD024D460 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024D460/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=10 ctx=000000011CACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000011CAD0000 entry=0000087FFF4920BC arg=000007FFD024D460
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140011288 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF770000 image_base=00006FFFFED10000 delta=FFFF988000A60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF100000 image_base=00006FFFFE690000 delta=FFFF988000A70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEBB0000 image_base=00006FFFFE130000 delta=FFFF988000A80000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE9B0000 image_base=00006FFFFAE00000 delta=FFFF988003BB0000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=00000001055E747C native_ctype_idx=00000001055E77EE ec_ctypes=00000001055E747C ec_ctype_idx=00000001055E77EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000020 ec_intl=0000000000000020 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140011288 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF770000 image_base=00006FFFFED10000 delta=FFFF988000A60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF100000 image_base=00006FFFFE690000 delta=FFFF988000A70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEBB0000 image_base=00006FFFFE130000 delta=FFFF988000A80000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE9B0000 image_base=00006FFFFAE00000 delta=FFFF988003BB0000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=000000010556747C native_ctype_idx=00000001055677EE ec_ctypes=000000010556747C ec_ctype_idx=00000001055677EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000020 ec_intl=0000000000000020 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140011288 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF770000 image_base=00006FFFFED10000 delta=FFFF988000A60000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF100000 image_base=00006FFFFE690000 delta=FFFF988000A70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFEBB0000 image_base=00006FFFFE130000 delta=FFFF988000A80000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE9B0000 image_base=00006FFFFAE00000 delta=FFFF988003BB0000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=000000010555747C native_ctype_idx=00000001055577EE ec_ctypes=000000010555747C ec_ctype_idx=00000001055577EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000020 ec_intl=0000000000000020 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFBCB0000 image_base=00006FFFFBAF0000 delta=FFFF9880001C0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBB00000 image_base=00006FFFFB930000 delta=FFFF9880001D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFBA80000 image_base=00006FFFFB8A0000 delta=FFFF9880001E0000 machine=0xaa64
+macrunner-hb-signal-init: pid=84195 stage=x64-image-map-start trace=0
+macrunner-hb-signal-init: pid=84195 stage=x64-image-map-primary-installed rc=0/0/0
+macrunner-hb-pe-relocate: module=0000087EFB7A0000 image_base=00006FFFFA930000 delta=FFFF987F00E70000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087EFB710000 image_base=00006FFFFA890000 delta=FFFF987F00E80000 machine=0xaa64
+macrunner-kernelbase-tlsset: entry index=4 value=000000010DA0B930 teb=000007FFD01E0000 x18=000000010D9CEE88
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0
+macrunner-hb-signal-init: pid=84180 stage=x64-image-map-start trace=0
+macrunner-hb-signal-init: pid=84180 stage=x64-image-map-primary-installed rc=0/0/0
+macrunner-hb-signal-init: pid=84180 stage=wine-process-start trace=0
+macrunner-hb-signal-init: pid=84180 stage=wine-process-primary-installed rc=0/0/0
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=00000001400013D0 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-xtajit64: ProcessInit status=00000000
+macrunner-xtajit64: ThreadInit status=00000000
+macrunner-xtajit64: loader ProcessInit/ThreadInit completed module=000007FFD03D0000
+macrunner-hb-arm64x-native-import-prefix: module=L"kernelbase.dll" dll=ntdll.dll import=RtlOpenCrossProcessEmulatorWorkConnection slot=0000087EFF71D000 target=000007FFD07B77F8 native=000007FFD0760000
+macrunner-hb-arm64x-native-import-prefix: module=L"kernelbase.dll" dll=ntdll.dll import=RtlWow64PopCrossProcessWorkFromFreeList slot=0000087EFF71D008 target=000007FFD07B7A04 native=000007FFD0760000
+macrunner-hb-arm64x-native-import-prefix: module=L"kernelbase.dll" dll=ntdll.dll import=RtlWow64PushCrossProcessWorkOntoWorkList slot=0000087EFF71D010 target=000007FFD07B7AD4 native=000007FFD0760000
+macrunner-hb-arm64x-native-import-prefix: module=L"kernelbase.dll" dll=ntdll.dll import=__chkstk slot=0000087EFF71D018 target=000007FFD07C8DF0 native=000007FFD0760000
+macrunner-hb-arm64x-native-import-prefix: module=L"kernel32.dll" dll=kernelbase.dll import=__chkstk slot=0000087EFFE58000 target=000007FFD07C8DF0 native=0000087EFF630000
+macrunner-hb-ldr-init: phase=before index=11 ctx=000000011AACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000011AAD0000 x0=0000087FFF4920BC x1=000007FFD024D460 x2=0000000000000000 x3=0000000000000000 unk=000007FFD024D460/0000000000000000/0000000000000000
+macrunner-hb-ldr-init: phase=after-loader index=11 ctx=000000011AACFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000011AAD0000 entry=0000087FFF4920BC arg=000007FFD024D460
+macrunner-hb-ldr-init: phase=before index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 x0=0000000140012854 x1=000007FFD01F0000 x2=0000000000000000 x3=0000000000000000 unk=000007FFD01F0000/0000000000000000/0000000000000000
+macrunner-hb-pe-relocate: module=0000087FFF830000 image_base=00006FFFFEF60000 delta=FFFF9880008D0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF460000 image_base=00006FFFFDC50000 delta=FFFF988001810000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFF3A0000 image_base=00006FFFFED10000 delta=FFFF988000690000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFED30000 image_base=00006FFFFE690000 delta=FFFF9880006A0000 machine=0xaa64
+macrunner-hb-pe-relocate: module=0000087FFE7E0000 image_base=00006FFFFE130000 delta=FFFF9880006B0000 machine=0xaa64
+macrunner-kernelbase-dllmain: process-attach hinst=0000087FFF830000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087FFF830000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087FFF982AD8 ec_sort=0000087FFF9802F0 native_ctypes=000000010554747C native_ctype_idx=00000001055477EE ec_ctypes=000000010554747C ec_ctype_idx=00000001055477EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000024 ec_intl=0000000000000024 native_sintl_value=0000000000000000 native_sintl_subkey=0000000000000000 ec_sintl_value=0000000000000000 ec_sintl_subkey=0000000000000000
+macrunner-kernelbase-dllmain: process-attach hinst=0000087EFF630000
+macrunner-hb-sync-locale-ec: mirroring handle=0000087EFF630000 core_delta=0x27e8 entry_delta=0x1b00
+macrunner-hb-sync-locale-ec: verify native_sort=0000087EFF7852C0 ec_sort=0000087EFF782AD8 native_ctypes=00000001055E747C native_ctype_idx=00000001055E77EE ec_ctypes=00000001055E747C ec_ctype_idx=00000001055E77EE
+macrunner-hb-sync-locale-ec: verify registry native_intl=0000000000000030 ec_intl=0000000000000030 native_sintl_value=0000087EFF732EF8 native_sintl_subkey=0000087EFF732F0E ec_sintl_value=0000087EFF732EF8 ec_sintl_subkey=0000087EFF732F0E
+macrunner-kernelbase-dllmain: init_locale done
+macrunner-hb-arm64x-native-import-prefix: module=L"ucrtbase.dll" dll=ntdll.dll import=__chkstk slot=0000087EFEEBA000 target=000007FFD07C8DF0 native=000007FFD0760000
+macrunner-hb-arm64x-native-import-prefix: module=L"msvcrt.dll" dll=ntdll.dll import=__chkstk slot=0000087EFE92C000 target=000007FFD07C8DF0 native=000007FFD0760000
+macrunner-hb-ldr-init: phase=after-loader index=0 ctx=000000010D9CFC70 pc=000007FFD07C9100 lr=0000000000000000 sp=000000010D9D0000 entry=00000001400013D0 arg=000007FFD01F0000
+macrunner-kernelbase-tlsset: entry index=0 value=000007FFD0245530 teb=000007FFD01E0000 x18=00000001169DAA38
+macrunner-kernelbase-tlsset: success teb=000007FFD01E0000 last_error=0

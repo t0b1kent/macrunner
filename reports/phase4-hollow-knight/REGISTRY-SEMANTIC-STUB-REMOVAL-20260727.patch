@@ -1,0 +1,101 @@
+From: HK-REGISTRY lane <noreply@anthropic.com>
+Date: Mon, 27 Jul 2026 20:55:00 +1000
+Subject: [PATCH] hb: remove registry import-semantic stub (fixes PlayerPrefs
+ reads / HK language gate)
+
+macrunner_hb_try_registry_semantic short-circuited every advapi32 W-registry
+import from translated x64 guests: RegOpenKeyExW/RegOpenKeyW/RegCreateKeyExW
+returned fabricated sequential handles (0x6f00f0000000++) without touching the
+registry, RegQueryValueExW always returned ERROR_FILE_NOT_FOUND, and
+RegSetValueExW/RegDeleteValueW/RegCloseKey pretended success.
+
+Hollow Knight PlayerPrefs opens HKCU\Software\Team Cherry\Hollow Knight with
+RegOpenKeyExW and queries with RegQueryValueExA (UnityPlayer.dll+0x7cb4d4 et
+al.): the fake handle made every query fail with ERROR_INVALID_HANDLE, so
+GetInt("GameLangSet") read 0 and HasKey("M2H_lastLanguage") missed although
+both values are present in the prefix registry -> language-select park.
+
+Removing the stub lets W calls fall through to
+macrunner_hb_call_arm64_pe_import12_for_ctx (the real ARM64 advapi32), the same
+path the ANSI variants already take successfully.
+
+Probe (tools/hk_registry_probe, run under dist-arm64ec-spike, seeded prefix):
+ - before: RegOpenKeyExW -> hkey=0x6f00f0000000, queries -> 2/6
+ - real path (RegOpenKeyExA / NtOpenKeyEx): GameLangSet=1, M2H_lastLanguage="EN"
+
+Evidence: reports/phase4-hollow-knight/REGISTRY-READ-PATH-ROOT-CAUSE-20260727.md
+
+Family: advapi32 W-registry thunk semantics (RegOpenKeyW, RegOpenKeyExW,
+RegCreateKeyExW, RegQueryValueExW, RegSetValueExW, RegDeleteValueW, RegCloseKey)
+— all members removed together; no partial coverage. ANSI variants were never
+stubbed. Note: macrunner_hb_try_security_token_semantic fakes OpenProcessToken/
+OpenThreadToken success — same-class risk, separate audit (not touched here).
+---
+diff --git a/engine/wine/dlls/ntdll/unix/macrunner_hb.c b/engine/wine/dlls/ntdll/unix/macrunner_hb.c
+index 790096e8..1b75f3ec 100644
+--- a/engine/wine/dlls/ntdll/unix/macrunner_hb.c
++++ b/engine/wine/dlls/ntdll/unix/macrunner_hb.c
+@@ -30791,55 +30791,6 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
+     return FALSE;
+ }
+ 
+-static BOOL macrunner_hb_try_registry_semantic( hb_context_t *ctx,
+-                                                const struct macrunner_hb_import_thunk *thunk,
+-                                                const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+-                                                uint64_t *ret )
+-{
+-    static uint64_t next_handle = 0x00006f00f0000000ULL;
+-    const char *name;
+-
+-    if (!ctx || !ctx->memory || !thunk || !args || !ret) return FALSE;
+-    if (!macrunner_hb_strieq( thunk->dll_name, "advapi32.dll" )) return FALSE;
+-    name = thunk->import_name;
+-
+-    if (macrunner_hb_strieq( name, "RegCloseKey" ) ||
+-        macrunner_hb_strieq( name, "RegSetValueExW" ) ||
+-        macrunner_hb_strieq( name, "RegDeleteValueW" ))
+-    {
+-        *ret = ERROR_SUCCESS;
+-        return TRUE;
+-    }
+-    if (macrunner_hb_strieq( name, "RegOpenKeyW" ))
+-    {
+-        if (args[2]) hb_memory_write_u64( ctx->memory, (hb_gva_t)args[2], next_handle++ );
+-        *ret = ERROR_SUCCESS;
+-        return TRUE;
+-    }
+-    if (macrunner_hb_strieq( name, "RegOpenKeyExW" ))
+-    {
+-        if (args[4]) hb_memory_write_u64( ctx->memory, (hb_gva_t)args[4], next_handle++ );
+-        *ret = ERROR_SUCCESS;
+-        return TRUE;
+-    }
+-    if (macrunner_hb_strieq( name, "RegCreateKeyExW" ))
+-    {
+-        if (args[7]) hb_memory_write_u64( ctx->memory, (hb_gva_t)args[7], next_handle++ );
+-        if (args[8]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[8], REG_CREATED_NEW_KEY );
+-        *ret = ERROR_SUCCESS;
+-        return TRUE;
+-    }
+-    if (macrunner_hb_strieq( name, "RegQueryValueExW" ))
+-    {
+-        if (args[4]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[4], REG_SZ );
+-        if (args[5]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[5], 0 );
+-        *ret = ERROR_FILE_NOT_FOUND;
+-        return TRUE;
+-    }
+-
+-    return FALSE;
+-}
+-
+ static BOOL macrunner_hb_try_security_token_semantic( hb_context_t *ctx,
+                                                       const struct macrunner_hb_import_thunk *thunk,
+                                                       const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+@@ -32601,7 +32552,6 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
+         macrunner_hb_try_user32_semantic( ctx, thunk, args, &rc ) ||
+         macrunner_hb_try_winrt_semantic( ctx, thunk, args, &rc ) ||
+         macrunner_hb_try_kernel32_handle_semantic( ctx, thunk, args, &rc ) ||
+-        macrunner_hb_try_registry_semantic( ctx, thunk, args, &rc ) ||
+         macrunner_hb_try_security_token_semantic( ctx, thunk, args, &rc ) ||
+         macrunner_hb_try_bcrypt_semantic( ctx, thunk, args, &rc ) ||
+         macrunner_hb_try_vectored_exception_semantic( ctx, thunk, args, ret_addr, &rc,

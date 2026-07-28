@@ -8,19 +8,88 @@
 # Output (stdout/stderr of the run) goes to the terminal; redirect yourself if you want a log.
 # Keeps NO prefix afterwards: copy any evidence you need out during the run.
 set -u
+RUN_ARTIFACT_DIR="${MACRUNNER_RUN_DIR:-}"
+RUN_ARTIFACTS_REQUIRED=0
+WINE_CHILD_PID_PATH=""
+if [ -n "$RUN_ARTIFACT_DIR" ]; then
+  mkdir -p "$RUN_ARTIFACT_DIR"
+  chmod 700 "$RUN_ARTIFACT_DIR" || {
+    echo "[mr-run] cannot make mandatory run artifact directory private: $RUN_ARTIFACT_DIR" >&2
+    exit 125
+  }
+  RUN_ARTIFACTS_REQUIRED=1
+  if [ -z "${MACRUNNER_RUN_CONTRACT_LEDGER_PATH:-}" ]; then
+    if [ "${MACRUNNER_RUN_CONTRACT_LEDGER_PREFLIGHT_ONLY:-0}" = "1" ]; then
+      export MACRUNNER_RUN_CONTRACT_LEDGER_PATH="$RUN_ARTIFACT_DIR/preflight-run-contract.json"
+    else
+      export MACRUNNER_RUN_CONTRACT_LEDGER_PATH="$RUN_ARTIFACT_DIR/run-contract.json"
+    fi
+  fi
+  export MACRUNNER_FINAL_CHILD_CAPTURE_PATH="$RUN_ARTIFACT_DIR/final-child.json"
+  export MACRUNNER_FLIGHT_RECORDER=1
+  export MACRUNNER_FLIGHT_RECORDER_PATH="$RUN_ARTIFACT_DIR/flight.jsonl"
+  WINE_CHILD_PID_PATH="$RUN_ARTIFACT_DIR/wine-child.pid"
+  rm -f "$WINE_CHILD_PID_PATH"
+fi
+FINAL_CHILD_CAPTURE_ENABLED=0
+FINAL_CHILD_CAPTURE_PATH=""
+if [ "${MACRUNNER_FINAL_CHILD_CAPTURE_PATH+x}" = "x" ]; then
+  FINAL_CHILD_CAPTURE_ENABLED=1
+  FINAL_CHILD_CAPTURE_PATH="$MACRUNNER_FINAL_CHILD_CAPTURE_PATH"
+fi
+unset MACRUNNER_FINAL_CHILD_CAPTURE_PATH
+if [ -n "${MACRUNNER_RUN_CONTRACT_LEDGER_PATH:-}" ]; then
+  RUN_CONTRACT_CALLER_EXPLICIT_SHA256="$(
+    python3 "$(cd "$(dirname "$0")/.." && pwd)/tools/run_contract_identity_ledger.py" \
+      --capture-caller-explicit-sha256
+  )" || {
+    echo "[mr-run] caller-explicit environment capture failed" >&2
+    exit 125
+  }
+  unset MACRUNNER_RUN_CONTRACT_CALLER_EXPLICIT_SHA256
+fi
 DIST="${1:?need dist dir}"; EXE="${2:?need exe path}"; TMO="${3:-120}"
 shift 3 2>/dev/null || shift $#
 [ "${1:-}" = "--" ] && shift
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/config/env.sh"
-# /tmp rejects prefixes on this host (ownership) — use artifacts scratch.
-PREFIX="$(mktemp -d "$ROOT/artifacts/_mr-run.XXXXXX")"
-WINE="$DIST/bin/wine"
+# MacRunner 2026-07-28 (HK input): allow launching through an .app bundle.
+# macOS refuses to ACTIVATE a bundle-less process: with $DIST/bin/wine the game gets a Dock
+# icon (TransformProcessType succeeds) but never appears in Cmd+Tab, never receives
+# APP_ACTIVATED, and therefore never receives a single KEY_PRESS or MOUSE_BUTTON — measured
+# on HK with the Cocoa loop up and 2346 frames presented. cocoa_window.m already records the
+# same wall: "an explicit NSRunningApplication activation request was accepted but not
+# honored" and the controller's foreground-transform helper throws on a bundle-less process.
+# Point this at <bundle>.app/Contents/MacOS/wine to get a real CFBundleIdentifier.
+WINE="${MACRUNNER_WINE_BIN:-$DIST/bin/wine}"
 WSRV="$DIST/bin/wineserver"
 WINE_UNIX_LIB="$DIST/lib/wine/aarch64-unix"
 RUN_DYLD_LIBRARY_PATH="${DYLD_LIBRARY_PATH:-}"
 RUN_DYLD_FALLBACK_LIBRARY_PATH="${DYLD_FALLBACK_LIBRARY_PATH:-}"
+RUN_CONTRACT_LEDGER_PATH="${MACRUNNER_RUN_CONTRACT_LEDGER_PATH:-}"
+if [ "${MACRUNNER_RUN_CONTRACT_LEDGER_PREFLIGHT_ONLY+x}" = "x" ]; then
+  RUN_CONTRACT_PREFLIGHT_ONLY="$MACRUNNER_RUN_CONTRACT_LEDGER_PREFLIGHT_ONLY"
+else
+  RUN_CONTRACT_PREFLIGHT_ONLY="0"
+fi
+
+case "$RUN_CONTRACT_PREFLIGHT_ONLY" in
+  0|1) ;;
+  *)
+    echo "[mr-run] malformed MACRUNNER_RUN_CONTRACT_LEDGER_PREFLIGHT_ONLY=$RUN_CONTRACT_PREFLIGHT_ONLY" >&2
+    exit 125
+    ;;
+esac
+if [ "${MACRUNNER_MR_RUN_IDENTITY_LEDGER+x}" = "x" ] || \
+   [ "${MACRUNNER_MR_RUN_IDENTITY_PREFLIGHT_ONLY+x}" = "x" ]; then
+  echo "[mr-run] legacy MACRUNNER_MR_RUN_IDENTITY_* controls are not accepted" >&2
+  exit 125
+fi
+if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" = "1" ] && [ -z "$RUN_CONTRACT_LEDGER_PATH" ]; then
+  echo "[mr-run] run-contract ledger path required when preflight-only is enabled" >&2
+  exit 125
+fi
 
 if [ "$(uname -s)" = "Darwin" ]; then
   # macOS msync is the in-process synchronization fast path.  Leaving it unset
@@ -47,8 +116,84 @@ if [ "$(basename "$DIST")" = "dist-arm64ec-spike" ]; then
   export MACRUNNER_HB_TRANSLATION_CACHE="${MACRUNNER_HB_TRANSLATION_CACHE:-1}"
   export MACRUNNER_HB_TRANSLATION_CACHE_ROOT="${MACRUNNER_HB_TRANSLATION_CACHE_ROOT:-$ROOT/engine/hyperbridge/build/hyperbridge-cache}"
   export MACRUNNER_HB_TRACE_TRANSLATION_CACHE="${MACRUNNER_HB_TRACE_TRANSLATION_CACHE:-1}"
-  mkdir -p "$MACRUNNER_HB_TRANSLATION_CACHE_ROOT"
+  if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" != "1" ]; then
+    mkdir -p "$MACRUNNER_HB_TRANSLATION_CACHE_ROOT"
+  fi
   export WINELOADERNOEXEC="${WINELOADERNOEXEC:-1}"
+fi
+
+if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" = "1" ]; then
+  if ! mkdir -p "$(dirname "$RUN_CONTRACT_LEDGER_PATH")"; then
+    echo "[mr-run] run-contract ledger parent creation failed" >&2
+    exit 125
+  fi
+  RUN_CONTRACT_PREFLIGHT_PREFIX="${MACRUNNER_MR_RUN_PREFIX_TEMPLATE:-}"
+  WINEPREFIX="$RUN_CONTRACT_PREFLIGHT_PREFIX" WINEDEBUG="${WINEDEBUG:--all}" \
+    DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+    DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+    MACRUNNER_RUN_CONTRACT_CALLER_EXPLICIT_SHA256="$RUN_CONTRACT_CALLER_EXPLICIT_SHA256" \
+    python3 "$ROOT/tools/run_contract_identity_ledger.py" \
+      --output "$RUN_CONTRACT_LEDGER_PATH" \
+      --root "$ROOT" \
+      --dist "$DIST" \
+      --wine "$WINE" \
+      --wineserver "$WSRV" \
+      --exe "$EXE" \
+      --exec-underscore-value "$WINE" \
+      --timeout "$TMO" \
+      --prefix "$RUN_CONTRACT_PREFLIGHT_PREFIX" \
+      --prefix-template "$RUN_CONTRACT_PREFLIGHT_PREFIX" \
+      --data-path "${MACRUNNER_RUN_CONTRACT_DATA_PATH:-}" \
+      --save-path "${MACRUNNER_RUN_CONTRACT_SAVE_PATH:-}" \
+      --config-path "${MACRUNNER_RUN_CONTRACT_CONFIG_PATH:-}" \
+      --title "${MACRUNNER_RUN_CONTRACT_TITLE:-hollow-knight}" \
+      --runner-file "$ROOT/scripts/mr-run.sh" \
+      --runner-file "$ROOT/scripts/sync-prefix-from-dist.sh" \
+      --branch "graphics=${MACRUNNER_GRAPHICS_BACKEND:-default}" \
+      --branch "prefix_template=${RUN_CONTRACT_PREFLIGHT_PREFIX:-none}" \
+      --branch "wineboot=preflight_only_suppressed" \
+      --branch "system32_sync_arch=${MACRUNNER_PREFIX_SYSTEM32_ARCH:-not_applicable}" \
+      --branch "com_rpcss_seed=preflight_only_suppressed" \
+      --branch "actxprxy=${MACRUNNER_MR_RUN_ACTXPRXY:-not_requested}" \
+      --branch "standalone_services_rpcss=preflight_only_suppressed" \
+      --branch "vulkan_icd_wiring=${VK_ICD_FILENAMES:-none}" \
+      --branch "backend=${MACRUNNER_HB_BACKEND:-not_requested}" \
+      --branch "crt_case_fusion=${MACRUNNER_MR_RUN_CRT_CASE_FUSION:-not_requested}" \
+      --branch "wwise_observer=${MACRUNNER_MR_RUN_WWISE_OBSERVER:-not_requested}" \
+      --branch "stage_or_active_dist=$DIST" \
+      --branch "x64_loader=${MACRUNNER_HB_X64_LOADER:-not_requested}" \
+      -- "$@"
+  RUN_CONTRACT_LEDGER_RC=$?
+  if [ "$RUN_CONTRACT_LEDGER_RC" -eq 0 ]; then
+    echo "[mr-run] run-contract-ledger=$RUN_CONTRACT_LEDGER_PATH" >&2
+    echo "[mr-run] run-contract-ledger preflight-only exit before wine" >&2
+    exit 0
+  fi
+  if [ "$RUN_CONTRACT_LEDGER_RC" -eq 2 ]; then
+    echo "[mr-run] run-contract-ledger=$RUN_CONTRACT_LEDGER_PATH" >&2
+    echo "[mr-run] run-contract-ledger status=BLOCKED exit before wine" >&2
+    exit 2
+  fi
+  echo "[mr-run] run-contract ledger capture failed" >&2
+  exit 125
+fi
+
+# /tmp rejects prefixes on this host (ownership) — use artifacts scratch.
+# A/A diagnostics may pin the pathname as part of the child environment.  The
+# caller must provide a fresh path below artifacts; cleanup remains scoped to it.
+if [ -n "${MACRUNNER_MR_RUN_PREFIX_PATH:-}" ]; then
+  case "$MACRUNNER_MR_RUN_PREFIX_PATH" in
+    "$ROOT"/artifacts/_mr-run-aa-*) ;;
+    *) echo "[mr-run] refusing fixed prefix outside artifacts/_mr-run-aa-*" >&2; exit 125 ;;
+  esac
+  if [ -e "$MACRUNNER_MR_RUN_PREFIX_PATH" ]; then
+    echo "[mr-run] fixed prefix already exists: $MACRUNNER_MR_RUN_PREFIX_PATH" >&2
+    exit 125
+  fi
+  mkdir -m 700 "$MACRUNNER_MR_RUN_PREFIX_PATH" || exit 125
+  PREFIX="$MACRUNNER_MR_RUN_PREFIX_PATH"
+else
+  PREFIX="$(mktemp -d "$ROOT/artifacts/_mr-run.XXXXXX")"
 fi
 
 if [ "${MACRUNNER_FLIGHT_RECORDER:-0}" != "0" ]; then
@@ -64,6 +209,11 @@ if [ "${MACRUNNER_FLIGHT_RECORDER:-0}" != "0" ]; then
     fi
   fi
   mkdir -p "$(dirname "$FLIGHT_PATH")"
+  printf '{"schema":"macrunner-flight/v1","event":"mr-run-prelaunch","pid":%d,"epoch_s":%s}\n' \
+    "$$" "$(date +%s)" >"$FLIGHT_PATH" || {
+    echo "[mr-run] cannot seed mandatory flight recorder: $FLIGHT_PATH" >&2
+    exit 125
+  }
   export MACRUNNER_FLIGHT_RECORDER_PATH="$FLIGHT_PATH"
   export MACRUNNER_FLIGHT_RECORDER_FILE="$FLIGHT_PATH"
   export MACRUNNER_FLIGHT_PATH="$FLIGHT_PATH"
@@ -76,10 +226,12 @@ rpcss_bg_pid=""
 cleanup() {
   [ -n "$services_bg_pid" ] && kill "$services_bg_pid" 2>/dev/null || true
   [ -n "$rpcss_bg_pid" ] && kill "$rpcss_bg_pid" 2>/dev/null || true
-  WINEPREFIX="$PREFIX" DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
-    DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
-    "$WSRV" -k >/dev/null 2>&1 || true
-  pkill -f "$PREFIX" 2>/dev/null || true
+  if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" != "1" ]; then
+    WINEPREFIX="$PREFIX" DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+      DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+      "$WSRV" -k >/dev/null 2>&1 || true
+    pkill -f "$PREFIX" 2>/dev/null || true
+  fi
   sleep 1
   if [ "${MACRUNNER_MR_RUN_KEEP_PREFIX:-0}" = "1" ]; then
     echo "[mr-run] keep-prefix=$PREFIX" >&2
@@ -130,6 +282,48 @@ with open(sys.argv[2], "w", encoding="ascii") as f:
 PY
 }
 
+register_dxmt_windowscodecs() {
+  local payload_arch="${MACRUNNER_PREFIX_SYSTEM32_ARCH:-x86_64-windows}"
+  local regsvr32_exe="$DIST/lib/wine/aarch64-windows/regsvr32.exe"
+  local windowscodecs_dll="C:\\windows\\system32\\windowscodecs.dll"
+  local reg_tmo="${MACRUNNER_MR_RUN_REGSVR32_TIMEOUT:-30}"
+  local reg_rc
+
+  if [ ! -f "$PREFIX/drive_c/windows/system32/windowscodecs.dll" ]; then
+    echo "[mr-run] dxmt regsvr32-windowscodecs blocked: System32 payload missing" >&2
+    return 2
+  fi
+  if [ ! -f "$regsvr32_exe" ]; then
+    regsvr32_exe="regsvr32.exe"
+  fi
+
+  echo "[mr-run] dxmt regsvr32-windowscodecs launcher_arch=aarch64-windows payload_arch=$payload_arch timeout=${reg_tmo}s dll=$windowscodecs_dll" >&2
+  if command -v timeout >/dev/null 2>&1; then
+    WINEPREFIX="$PREFIX" WINEDEBUG=-all \
+      DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+      DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+      timeout "$reg_tmo" "$WINE" "$regsvr32_exe" /s "$windowscodecs_dll" >&2
+    reg_rc=$?
+  elif command -v gtimeout >/dev/null 2>&1; then
+    WINEPREFIX="$PREFIX" WINEDEBUG=-all \
+      DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+      DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+      gtimeout "$reg_tmo" "$WINE" "$regsvr32_exe" /s "$windowscodecs_dll" >&2
+    reg_rc=$?
+  else
+    WINEPREFIX="$PREFIX" WINEDEBUG=-all \
+      DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+      DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+      "$WINE" "$regsvr32_exe" /s "$windowscodecs_dll" >&2
+    reg_rc=$?
+  fi
+  if [ "$reg_rc" -ne 0 ]; then
+    echo "[mr-run] dxmt regsvr32-windowscodecs failed exit=$reg_rc" >&2
+    return "$reg_rc"
+  fi
+  echo "[mr-run] dxmt regsvr32-windowscodecs done" >&2
+}
+
 if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" = "dxmt" ]; then
   DXMT_ROOT="${MACRUNNER_DXMT_ROOT:-$ROOT/engine/graphics/dist/dxmt}"
   SYSTEM32_ARCH="${MACRUNNER_PREFIX_SYSTEM32_ARCH:-x86_64-windows}"
@@ -156,7 +350,9 @@ if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" = "dxmt" ]; then
     echo "[mr-run] graphics=dxmt seed-prefix template=none" >&2
   fi
 
-  if [ "${MACRUNNER_MR_RUN_SKIP_WINEBOOT:-1}" = "1" ]; then
+  if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" = "1" ]; then
+    echo "[mr-run] run-contract preflight skips dxmt wineboot" >&2
+  elif [ "${MACRUNNER_MR_RUN_SKIP_WINEBOOT:-1}" = "1" ]; then
     echo "[mr-run] graphics=dxmt init-prefix skipped (MACRUNNER_MR_RUN_SKIP_WINEBOOT=1)" >&2
   else
     echo "[mr-run] graphics=dxmt init-prefix timeout=${BOOT_TIMEOUT}s" >&2
@@ -235,12 +431,21 @@ if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" = "dxmt" ]; then
   fi
   export DXMT_LOG_LEVEL="${DXMT_LOG_LEVEL:-info}"
 
+  if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" != "1" ] && \
+     [ "${MACRUNNER_MR_RUN_REGSVR32_WINCODECS:-0}" = "1" ]; then
+    if ! register_dxmt_windowscodecs; then
+      echo "[mr-run] dxmt windowscodecs regsvr32 failed" >&2
+      exit 2
+    fi
+  fi
+
 fi
 
 # Non-DXMT prefix seeding from a pre-warmed template (e.g. bottles/generic-x86).
 # Faster than wineboot -u; provides registry so rpcss/services.exe work → fixes 0x6ba.
 # Opt-in: MACRUNNER_MR_RUN_PREFIX_TEMPLATE=<path> (path to a valid WINEPREFIX dir).
-if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" != "dxmt" ] && \
+if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" != "1" ] && \
+   [ "${MACRUNNER_GRAPHICS_BACKEND:-}" != "dxmt" ] && \
    [ -n "${MACRUNNER_MR_RUN_PREFIX_TEMPLATE:-}" ]; then
   echo "[mr-run] seed-prefix template=$MACRUNNER_MR_RUN_PREFIX_TEMPLATE" >&2
   if ! copy_prefix_template "$MACRUNNER_MR_RUN_PREFIX_TEMPLATE"; then
@@ -299,7 +504,8 @@ fi
 # Start services.exe (Wine SCM) → auto-starts rpcss.exe → creates \pipe\epmapper.
 # Required for COM/RPC calls (CoInitialize, RPC) for any game that hits 0x6ba.
 # Opt-in: set MACRUNNER_MR_RUN_START_SERVICES=1 (works for dxmt, PE32, HK — any dist).
-if [ "${MACRUNNER_MR_RUN_START_SERVICES:-0}" = "1" ]; then
+if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" != "1" ] && \
+   [ "${MACRUNNER_MR_RUN_START_SERVICES:-0}" = "1" ]; then
   echo "[mr-run] starting services.exe + rpcss.exe (standalone) → epmapper + ncalrpc:[irpcss]" >&2
   WINEPREFIX="$PREFIX" WINEDEBUG=-all \
     DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
@@ -330,44 +536,177 @@ if [ "${MACRUNNER_MR_RUN_START_SERVICES:-0}" = "1" ]; then
   echo "[mr-run] services.exe pid=$services_bg_pid rpcss.exe pid=$rpcss_bg_pid started" >&2
 fi
 
-echo "[mr-run] prefix=$PREFIX timeout=${TMO}s exe=$EXE" >&2
-if command -v timeout >/dev/null 2>&1; then
-  WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" \
-    DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
-    DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
-    timeout "$TMO" "$WINE" "$EXE" "$@"
-  rc=$?
-elif command -v gtimeout >/dev/null 2>&1; then
-  WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" \
-    DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
-    DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
-    gtimeout "$TMO" "$WINE" "$EXE" "$@"
-  rc=$?
-else
-  WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" \
-    DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
-    DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
-    "$WINE" "$EXE" "$@" &
-  child=$!
-  rc=124
-  elapsed=0
-  while kill -0 "$child" 2>/dev/null; do
-    if [ "$elapsed" -ge "$TMO" ]; then
-      kill "$child" 2>/dev/null || true
-      sleep 1
-      kill -9 "$child" 2>/dev/null || true
-      wait "$child" 2>/dev/null || true
-      break
+if [ -n "$RUN_CONTRACT_LEDGER_PATH" ] || [ "$RUN_CONTRACT_PREFLIGHT_ONLY" = "1" ]; then
+  if [ -z "$RUN_CONTRACT_LEDGER_PATH" ]; then
+    echo "[mr-run] run-contract ledger path required when preflight-only is enabled" >&2
+    exit 125
+  fi
+  mkdir -p "$(dirname "$RUN_CONTRACT_LEDGER_PATH")"
+  RUN_CONTRACT_PREFIX_TEMPLATE="${PREFIX_TEMPLATE:-${MACRUNNER_MR_RUN_PREFIX_TEMPLATE:-}}"
+  RUN_CONTRACT_WINEBOOT_BRANCH="non_dxmt_wineboot=${MACRUNNER_MR_RUN_WINEBOOT:-0}"
+  RUN_CONTRACT_SERVICES_BRANCH="start_services=${MACRUNNER_MR_RUN_START_SERVICES:-0}"
+  RUN_CONTRACT_SYSTEM32_ARCH="${SYSTEM32_ARCH:-not_applicable}"
+  if [ "${MACRUNNER_GRAPHICS_BACKEND:-}" = "dxmt" ]; then
+    RUN_CONTRACT_WINEBOOT_BRANCH="dxmt_skip_wineboot=${MACRUNNER_MR_RUN_SKIP_WINEBOOT:-1}"
+    RUN_CONTRACT_SYSTEM32_ARCH="${SYSTEM32_ARCH:-${MACRUNNER_PREFIX_SYSTEM32_ARCH:-x86_64-windows}}"
+  fi
+  if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" = "1" ]; then
+    RUN_CONTRACT_WINEBOOT_BRANCH="preflight_only_suppressed"
+    if [ "${MACRUNNER_MR_RUN_START_SERVICES:-0}" = "1" ]; then
+      RUN_CONTRACT_SERVICES_BRANCH="preflight_only_suppressed"
     fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
-  if ! kill -0 "$child" 2>/dev/null; then
-    wait "$child"
-    rc=$?
+  fi
+  WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" \
+    DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+    DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+    MACRUNNER_RUN_CONTRACT_CALLER_EXPLICIT_SHA256="$RUN_CONTRACT_CALLER_EXPLICIT_SHA256" \
+    python3 "$ROOT/tools/run_contract_identity_ledger.py" \
+      --output "$RUN_CONTRACT_LEDGER_PATH" \
+      --root "$ROOT" \
+      --dist "$DIST" \
+      --wine "$WINE" \
+      --wineserver "$WSRV" \
+      --exe "$EXE" \
+      --exec-underscore-value "$WINE" \
+      --timeout "$TMO" \
+      --prefix "$PREFIX" \
+      --prefix-template "$RUN_CONTRACT_PREFIX_TEMPLATE" \
+      --data-path "${MACRUNNER_RUN_CONTRACT_DATA_PATH:-}" \
+      --save-path "${MACRUNNER_RUN_CONTRACT_SAVE_PATH:-}" \
+      --config-path "${MACRUNNER_RUN_CONTRACT_CONFIG_PATH:-}" \
+      --title "${MACRUNNER_RUN_CONTRACT_TITLE:-hollow-knight}" \
+      --runner-file "$ROOT/scripts/mr-run.sh" \
+      --runner-file "$ROOT/scripts/sync-prefix-from-dist.sh" \
+      --branch "graphics=${MACRUNNER_GRAPHICS_BACKEND:-default}" \
+      --branch "prefix_template=${RUN_CONTRACT_PREFIX_TEMPLATE:-none}" \
+      --branch "wineboot=$RUN_CONTRACT_WINEBOOT_BRANCH" \
+      --branch "system32_sync_arch=$RUN_CONTRACT_SYSTEM32_ARCH" \
+      --branch "com_rpcss_seed=$RUN_CONTRACT_SERVICES_BRANCH" \
+      --branch "actxprxy=${MACRUNNER_MR_RUN_ACTXPRXY:-}" \
+      --branch "standalone_services_rpcss=$RUN_CONTRACT_SERVICES_BRANCH" \
+      --branch "vulkan_icd_wiring=${VK_ICD_FILENAMES:-none}" \
+      --branch "backend=${MACRUNNER_HB_BACKEND:-}" \
+      --branch "crt_case_fusion=${MACRUNNER_MR_RUN_CRT_CASE_FUSION:-}" \
+      --branch "wwise_observer=${MACRUNNER_MR_RUN_WWISE_OBSERVER:-}" \
+      --branch "stage_or_active_dist=$DIST" \
+      --branch "x64_loader=${MACRUNNER_HB_X64_LOADER:-}" \
+      -- "$@"
+  RUN_CONTRACT_LEDGER_RC=$?
+  if [ "$RUN_CONTRACT_LEDGER_RC" -ne 0 ] && [ "$RUN_CONTRACT_LEDGER_RC" -ne 2 ]; then
+    echo "[mr-run] run-contract ledger capture failed" >&2
+    exit 125
+  fi
+  echo "[mr-run] run-contract-ledger=$RUN_CONTRACT_LEDGER_PATH" >&2
+  if [ "$RUN_CONTRACT_LEDGER_RC" -eq 2 ]; then
+    echo "[mr-run] run-contract-ledger status=BLOCKED exit before wine" >&2
+    exit 2
+  fi
+  if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" = "1" ]; then
+    echo "[mr-run] run-contract-ledger preflight-only exit before wine" >&2
+    exit 0
   fi
 fi
+
+unset MACRUNNER_RUN_CONTRACT_CONFIG_PATH \
+  MACRUNNER_RUN_CONTRACT_DATA_PATH \
+  MACRUNNER_RUN_CONTRACT_LEDGER \
+  MACRUNNER_RUN_CONTRACT_LEDGER_PATH \
+  MACRUNNER_RUN_CONTRACT_LEDGER_PREFLIGHT_ONLY \
+  MACRUNNER_RUN_CONTRACT_SAVE_PATH \
+  MACRUNNER_RUN_CONTRACT_TITLE \
+  MACRUNNER_RUN_CONTRACT_TITLE_DATA_PATH
+
+# Launch Wine directly.  A shell/timeout intermediary both hides the exact Wine
+# PID and, on macOS, strips DYLD_* while rewriting `_`, invalidating the sealed
+# final-child environment.  The bounded wait below owns timeout enforcement.
+FINAL_CHILD_DISPATCH="direct"
+FINAL_CHILD_DISPATCH_COMMAND="$WINE"
+
+if [ "$FINAL_CHILD_CAPTURE_ENABLED" = "1" ]; then
+  WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" \
+    DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+    DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+    python3 "$ROOT/tools/run_contract_final_child_capture.py" \
+      --output "$FINAL_CHILD_CAPTURE_PATH" \
+      --exec-underscore-value "$FINAL_CHILD_DISPATCH_COMMAND" \
+      --environment-from-process \
+      -- "$WINE" "$EXE" "$@"
+  FINAL_CHILD_CAPTURE_STATUS=$?
+  if [ "$FINAL_CHILD_CAPTURE_STATUS" -ne 0 ]; then
+    echo "[mr-run] final child capture failed; exit before wine" >&2
+    exit 125
+  fi
+  echo "[mr-run] final-child-capture=$FINAL_CHILD_CAPTURE_PATH" >&2
+fi
+
+echo "[mr-run] prefix=$PREFIX timeout=${TMO}s exe=$EXE" >&2
+# MacRunner HK lane (2026-07-27): dyld strips DYLD_INSERT_LIBRARIES from the env of
+# every intermediate exec, so passing it from the caller never reaches the game.
+# Set it fresh here when the lane requests an in-process dylib (e.g. NSEvent
+# auto-injection for the HK language picker).
+if [ -n "${MACRUNNER_MR_RUN_DYLD_INSERT:-}" ]; then
+  echo "[mr-run] dyld-insert=$MACRUNNER_MR_RUN_DYLD_INSERT" >&2
+fi
+WINEPREFIX="$PREFIX" WINEDEBUG="${WINEDEBUG:--all}" \
+  DYLD_LIBRARY_PATH="$RUN_DYLD_LIBRARY_PATH" \
+  DYLD_FALLBACK_LIBRARY_PATH="$RUN_DYLD_FALLBACK_LIBRARY_PATH" \
+  env ${MACRUNNER_MR_RUN_DYLD_INSERT:+DYLD_INSERT_LIBRARIES="$MACRUNNER_MR_RUN_DYLD_INSERT"} \
+  "$WINE" "$EXE" "$@" &
+child=$!
+if [ -n "$WINE_CHILD_PID_PATH" ]; then
+  pid_tmp="${WINE_CHILD_PID_PATH}.tmp.$$"
+  if ! printf '%s\n' "$child" >"$pid_tmp" || ! mv "$pid_tmp" "$WINE_CHILD_PID_PATH"; then
+    rm -f "$pid_tmp"
+    kill "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+    echo "[mr-run] exact Wine child PID capture failed" >&2
+    exit 125
+  fi
+fi
+
+rc=124
+elapsed=0
+timed_out=0
+while kill -0 "$child" 2>/dev/null; do
+  if [ "$elapsed" -ge "$TMO" ]; then
+    timed_out=1
+    kill "$child" 2>/dev/null || true
+    sleep 1
+    kill -9 "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+    break
+  fi
+  sleep 1
+  elapsed=$((elapsed + 1))
+done
+if [ "$timed_out" = "0" ]; then
+  wait "$child"
+  rc=$?
+fi
 echo "[mr-run] exit=$rc (prefix auto-removed on exit)" >&2
+
+if [ -n "${FLIGHT_PATH:-}" ]; then
+  printf '{"schema":"macrunner-flight/v1","event":"mr-run-exit","status":%d,"epoch_s":%s}\n' \
+    "$rc" "$(date +%s)" >>"$FLIGHT_PATH" || rc=125
+fi
+
+if [ "$RUN_ARTIFACTS_REQUIRED" = "1" ]; then
+  RUN_ARTIFACT_FAILURE=0
+  for required in "$RUN_ARTIFACT_DIR/run-contract.json" "$RUN_ARTIFACT_DIR/final-child.json" \
+                  "$RUN_ARTIFACT_DIR/flight.jsonl" "$WINE_CHILD_PID_PATH"; do
+    if [ ! -s "$required" ]; then
+      echo "[mr-run] mandatory run artifact missing or empty: $required" >&2
+      RUN_ARTIFACT_FAILURE=1
+    fi
+  done
+  if [ -s "$WINE_CHILD_PID_PATH" ] && ! grep -Eq '^[0-9]+$' "$WINE_CHILD_PID_PATH"; then
+    echo "[mr-run] malformed Wine child PID: $WINE_CHILD_PID_PATH" >&2
+    RUN_ARTIFACT_FAILURE=1
+  fi
+  if [ "$RUN_ARTIFACT_FAILURE" = "1" ]; then
+    rc=125
+  fi
+fi
 
 # Auto-triage: when the caller exports MACRUNNER_RUN_DIR (the dir it captured run.log into), classify
 # the run so EVERY lane gets a triage-summary (OWNER/CLASS/CONFIDENCE/NEXT_ACTION) without invoking

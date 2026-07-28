@@ -244,3 +244,24 @@ contract records the FINAL child env, so those values are outputs, not inputs. R
 and then a Mono thread dies — `macrunner-hb-run-exit status=c000007b` (STATUS_INVALID_IMAGE_FORMAT) at
 `mono-2.0-bdwgc.dll+0x4ea08f`, alongside `virtualalloc_ok=130 virtualalloc_fail=12`. That is the managed/engine frontier,
 not input. try19 is in flight with 6 retries.
+
+19:00 · COORDINATOR — ★★★ **A 30-SECOND REPRODUCTION, AND IT IS NOT HOLLOW KNIGHT.** `winecfg`, launched through the plain
+`dist/bin/wine` with `MACRUNNER_TRACE_WINEMAC_INPUT=1`, shows the IDENTICAL signature to HK: `macdrv_init_entry`=6,
+`run_cocoa_app_entry`=6, `queue_get`=62 (the Cocoa loop IS up) and `APP_ACTIVATED`(0)=0, `WINDOW_GOT_FOCUS`(29)=0,
+`KEY_PRESS`(8)=0, `MOUSE_BUTTON`(12)=0; frontmost stayed Finder. **Stop debugging input with 45-minute title runs.**
+**Event decode on HK try20, operator pressing keys throughout:** 2346 x type3 CLIENT_SURFACE_PRESENTED (frames ARE being
+presented), 4 x 28 WINDOW_FRAME_CHANGED, 2 x 29 WINDOW_GOT_FOCUS, and ZERO of types 8/9/12/13/14. The window takes focus
+when clicked; the PROCESS never becomes the active macOS application, and macOS delivers keys only to the active app.
+**Named cause, already in the tree.** cocoa_window.m ~3788 carries a prior lane's comment: "an explicit
+NSRunningApplication activation request was accepted but not honored" and "The controller foreground-transform helper is
+NOT usable here: its NSMenu initWithTitle: throws on a bundle-less process (bundleName == nil)".
+`tryToActivateIgnoringOtherApps:` (cocoa_app.m:2276) bottoms out in `activateIgnoringOtherApps:`, which modern macOS
+cooperative activation ignores.
+**Bundle experiment — DEAD END, do not repeat.** Built `artifacts/MacRunnerWine.app` (real binary copy +
+Contents/{lib,share,bin} symlinks; `wine --version` works from it) and added `WINE="${MACRUNNER_WINE_BIN:-...}"` at
+mr-run.sh:57 so it can be selected. It cannot help alone: `loader.c:678 create_tempdir` re-execs the loader from
+$TMPDIR/winetemp-<inode>-<size>-<mtime>/<exename>, so the final process image is outside any bundle no matter what was
+launched. A bundle would have to be built INSIDE that tempdir. The override is kept because it is additive.
+NEXT: iterate on the winecfg harness, not the game. Narrow question: what makes a Wine process become the ACTIVE macOS
+app on this OS version. `System Events` cannot even see the process ("Can't get process whose unix id = ..."), which is
+itself a measurement worth explaining before any more activation code gets written.

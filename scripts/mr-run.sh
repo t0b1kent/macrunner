@@ -53,16 +53,18 @@ shift 3 2>/dev/null || shift $#
 [ "${1:-}" = "--" ] && shift
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Capture an EXPLICIT caller override BEFORE sourcing env.sh. env.sh:93 assigns
+# MACRUNNER_WINE_BIN with `:=`, so after sourcing it is ALWAYS set (to
+# $MACRUNNER_WINE_DIST/bin/wine) and a `${MACRUNNER_WINE_BIN:-$DIST/bin/wine}` fallback placed
+# after the source can never fire. Writing it that way on 2026-07-28 silently pointed every run
+# at engine/wine/dist instead of the dist passed as $1 — measured on HK as ladder rung 1 vs
+# rung 8 for the correct binary. The whole point of $1 is to choose the dist, so the ARGUMENT
+# must win over env.sh's default, and only a value the caller set explicitly may override it.
+MR_WINE_BIN_OVERRIDE="${MACRUNNER_WINE_BIN:-}"
 . "$ROOT/config/env.sh"
-# MacRunner 2026-07-28 (HK input): allow launching through an .app bundle.
-# macOS refuses to ACTIVATE a bundle-less process: with $DIST/bin/wine the game gets a Dock
-# icon (TransformProcessType succeeds) but never appears in Cmd+Tab, never receives
-# APP_ACTIVATED, and therefore never receives a single KEY_PRESS or MOUSE_BUTTON — measured
-# on HK with the Cocoa loop up and 2346 frames presented. cocoa_window.m already records the
-# same wall: "an explicit NSRunningApplication activation request was accepted but not
-# honored" and the controller's foreground-transform helper throws on a bundle-less process.
-# Point this at <bundle>.app/Contents/MacOS/wine to get a real CFBundleIdentifier.
-WINE="${MACRUNNER_WINE_BIN:-$DIST/bin/wine}"
+# Set MACRUNNER_WINE_BIN in the caller to launch through e.g. an .app bundle
+# (<bundle>.app/Contents/MacOS/wine); otherwise the dist argument decides.
+WINE="${MR_WINE_BIN_OVERRIDE:-$DIST/bin/wine}"
 WSRV="$DIST/bin/wineserver"
 WINE_UNIX_LIB="$DIST/lib/wine/aarch64-unix"
 RUN_DYLD_LIBRARY_PATH="${DYLD_LIBRARY_PATH:-}"

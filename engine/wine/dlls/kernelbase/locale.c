@@ -686,160 +686,25 @@ static void load_sortdefault_nls(void)
                                     locale_table->nb_lcnames * sizeof(*locale_sorts) );
 }
 
-/* MacRunner stopgap (Lane D 2026-06-15, direction corrected by the twin-sweep lane 2026-07-28):
- * the ARM64X kernelbase image carries TWO copies of every file-static, so the init-populated
- * locale globals exist twice and only the view that runs init_locale gets them filled in.  Mirror
- * each initialised global into its twin so whichever view did NOT run init still reads valid
- * locale tables instead of NULL.  Guarded to the ARM64X image (CHPE metadata) so pure
- * x86_64/i386 kernelbase builds are untouched.
- *
- * One claim in the original version of this comment was WRONG and is corrected here, because it
- * cost two separate multi-day investigations: "EC-view copies which no code ever writes" is not
- * what produced the NULLs we chased.  Verified against the shipped image (llvm-nm + byte compare
- * of all 75 .data twin pairs) that the linker emits BOTH copies fully and correctly initialised,
- * including every self-referential one.  The NULLs were written by this mirror itself, which
- * subtracted the twin delta where it had to add it — see macrunner_hb_mirror_ec_copy below for
- * the address evidence.
- *
- * TODO: replace once general ARM64X .data view-coherence lands (see
- * reports/research/arm64x-sync-stopgaps.md).  Open question for the operator, needs a run: now
- * that the mirror actually reaches the EC twins for the first time, is any of it load-bearing?
- * Until today it had never copied a single byte to a twin, and the locale path worked anyway. */
-/* MacRunner (twin-sweep lane, 2026-07-28) — THIS MIRROR SUBTRACTED THE DELTA WHERE IT HAD TO ADD
- * IT, AND THAT SIGN ERROR *WAS* THE "ARM64X TWIN" BUG CLASS.  Both casualties blamed on missing
- * EC initialisers were written by the memcpy below.
- *
- * Ground truth from the shipped image (kernelbase.dll sha b7e96fb9, llvm-nm + CHPE code map):
- * the code map has ARM64 native at RVA 0x001000..0x0775E4 (type 0) and ARM64EC at
- * 0x078000..0x0E48DC (type 1), and .data is laid out to match — the NATIVE blob is the LOWER one
- * and its EC twin sits at *+delta*:
- *     native .data 0x14F030..0x150B28   EC .data 0x150B28..0x152618   (delta 0x1B00)
- *     native .bss  0x152638..0x154D00   EC .bss  0x154E20..0x1574E8   (delta 0x27E8)
- *
- * init_locale does run in the native view, as this code assumed — a live run
- * (reports/phase4-hollow-knight/laneA-INPUT-MUIFIX-try16-172249/run.log, image at 0x87FFF830000)
- * printed &sort = 0x87FFF982AD8 = RVA 0x152AD8, the native .bss copy.  The EC twin is at
- * RVA 0x1552C0 = &sort + 0x27E8.  Subtracting the delta therefore never reached a twin:
- *   - CORE mirrors (delta 0x27E8) landed back inside .data.  MR_SYNC_CORE_EC(codepages) is a
- *     memcpy of sizeof(CPTABLEINFO[128]) = 8192 bytes out of still-zeroed .bss over
- *     RVA 0x1503F0..0x1523F0 — which covers 30 native .data statics, among them reg_mui_cache
- *     (0x150AB0), reg_mui_cs (0x150A58), reg_mui_cs_debug (0x150A80) and entry_sintlsymbol
- *     (0x150878), and then runs on into the EC .data blob.
- *   - ENTRY mirrors (delta 0x1B00) landed *below* .data entirely (&entry_sintlsymbol 0x150878 -
- *     0x1B00 = 0x14ED78, inside .buildid).  They have never mirrored anything.
- * That is the whole story of both "casualties": entry_sintlsymbol's NULL subkey at
- * kernelbase+0x59930, and native load_mui_string (RVA 0x5CBC0, code-map type 0) reading
- * reg_mui_cache as {0,0} so LIST_FOR_EACH_ENTRY dereferenced NULL at kernelbase+0x5CCC8.  The
- * run log even printed the corruption one line later as "native_sintl_value=0
- * native_sintl_subkey=0" and it was read as evidence for the missing-mirror theory.
- *
- * It is not a missing-initialiser problem at all: byte-comparing all 75 .data twin pairs in the
- * shipped image shows every pair either identical or pointer-shifted and self-consistent per
- * view, and every self-referential static (7 CRITICAL_SECTIONs, 4 critsect_debug, 2 struct lists
- * including reg_mui_cache) correctly initialised in BOTH views by the linker.
- *
- * So the direction is now derived, never assumed: classify the executing PC against the CHPE code
- * map.  Native copy is the lower one, so the twin of a native copy is at +delta and the twin of
- * an EC copy is at -delta.  If the view cannot be determined we mirror nothing — guessing is what
- * caused this.  Every write is additionally bounds-checked against .data, which alone would have
- * caught the ENTRY half of this bug.
- *
- * noinline + opaque pointer parameter so _FORTIFY_SOURCE cannot infer a sub-object (size 0)
- * destination and insert a __memcpy_chk that would abort at runtime. */
-/* Master switch — 0 = mirror nothing (default; see the rationale at the call site). */
-#define MACRUNNER_HB_LOCALE_EC_MIRROR_ENABLED 0
-/* Layout constants, STALE as of this build (measured CORE 0x2810 / ENTRY 0x1B08).  Left at their
- * historical values deliberately: they are only reachable when the switch above is 1, and the
- * point is that hand-maintained values here cannot be trusted at all. */
+/* MacRunner stopgap (Lane D 2026-06-15): the ARM64X kernelbase twin carries TWO copies of the
+ * init-populated locale globals in .data.  Native init code (load_locale_nls/load_sortdefault_nls/
+ * init_locale) writes the native-view copy, but the export-reachable native NLS functions
+ * (GetStringTypeW/LCMapString/CompareString/get_language_sort/...) read linker-layout-specific
+ * EC-view copies which no code ever writes (image DVRT has no .data entries to coalesce the two
+ * views; the x64 side is .hexpthk thunks into ARM64, so there is no x64 init that writes the EC
+ * copy).  Mirror each initialised global into its exact EC-view copy so native importers (e.g.
+ * DXMT) read valid locale tables instead of NULL.  Guarded to the ARM64X image (CHPE metadata) so
+ * pure x86_64/i386 kernelbase builds are untouched.  TODO: replace once general ARM64X .data
+ * view-coherence lands (see reports/research/arm64x-sync-stopgaps.md). */
+/* Mirror one native-view global into its EC-view copy below.  noinline + opaque pointer
+ * parameter so _FORTIFY_SOURCE cannot infer a sub-object (size 0) destination and insert a
+ * __memcpy_chk that would abort at runtime. */
 #define MACRUNNER_HB_LOCALE_CORE_EC_DELTA  0x27e8
 #define MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA 0x1b00
-
-struct macrunner_hb_chpe_range { ULONG start_offset; ULONG length; };
-struct macrunner_hb_chpe_meta  { ULONG version; ULONG code_map; ULONG code_map_count; };
-
-/* .data section bounds, plus the split between its file-backed (initialised) part and its
- * zero-fill (.bss) tail.  The tail begins at VirtualAddress + SizeOfRawData. */
-static const char *macrunner_hb_data_lo, *macrunner_hb_data_bss, *macrunner_hb_data_hi;
-static int macrunner_hb_ec_view = -1;      /* -1 undetermined, 1 = ARM64EC view, 0 = native ARM64 */
-static unsigned int macrunner_hb_mirror_done, macrunner_hb_mirror_skipped;
-
-/* A PC inside this compilation, i.e. inside whichever view is actually executing. */
-static void * __attribute__((noinline)) macrunner_hb_current_pc(void)
-{
-    return __builtin_return_address(0);
-}
-
-static void macrunner_hb_detect_view( const IMAGE_LOAD_CONFIG_DIRECTORY *cfg, const char *base )
-{
-    const struct macrunner_hb_chpe_meta *meta;
-    const struct macrunner_hb_chpe_range *map;
-    const char *pc = macrunner_hb_current_pc();
-    ULONG i;
-
-    macrunner_hb_ec_view = -1;
-    if (!cfg->CHPEMetadataPointer) return;
-    meta = (const struct macrunner_hb_chpe_meta *)(ULONG_PTR)cfg->CHPEMetadataPointer;
-    if (!meta->code_map || !meta->code_map_count) return;
-    map = (const struct macrunner_hb_chpe_range *)(base + meta->code_map);
-    for (i = 0; i < meta->code_map_count; i++)
-    {
-        const char *start = base + (map[i].start_offset & ~(ULONG)3);
-        if (pc >= start && pc < start + map[i].length)
-        {
-            macrunner_hb_ec_view = ((map[i].start_offset & 3) == 1);
-            return;
-        }
-    }
-}
-
-static void macrunner_hb_find_data_section( const IMAGE_NT_HEADERS *nt, const char *base )
-{
-    const IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION( nt );
-    WORD i;
-
-    macrunner_hb_data_lo = macrunner_hb_data_bss = macrunner_hb_data_hi = NULL;
-    for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
-    {
-        if (memcmp( sec[i].Name, ".data", 6 )) continue;
-        macrunner_hb_data_lo  = base + sec[i].VirtualAddress;
-        macrunner_hb_data_bss = macrunner_hb_data_lo + sec[i].SizeOfRawData;
-        macrunner_hb_data_hi  = macrunner_hb_data_lo + sec[i].Misc.VirtualSize;
-        if (macrunner_hb_data_bss > macrunner_hb_data_hi) macrunner_hb_data_bss = macrunner_hb_data_hi;
-        return;
-    }
-}
-
-static void __attribute__((noinline)) macrunner_hb_mirror_ec_copy( const void *self_addr,
+static void __attribute__((noinline)) macrunner_hb_mirror_ec_copy( const void *native_addr,
                                                                   SIZE_T size, SIZE_T delta )
 {
-    char *twin;
-
-    /* Never guess the direction — an inverted guess is what corrupted .data for two months. */
-    if (macrunner_hb_ec_view < 0 || !macrunner_hb_data_lo)
-    {
-        macrunner_hb_mirror_skipped++;
-        return;
-    }
-    /* native blob is the lower one: native twin is at +delta, EC twin at -delta. */
-    twin = (char *)self_addr + (macrunner_hb_ec_view ? -(ptrdiff_t)delta : (ptrdiff_t)delta);
-
-    /* THE INVARIANT THAT WAS MISSING, AND THE ONE THAT MAKES A STALE DELTA HARMLESS.
-     * .data is laid out [native init][EC init][native bss][EC bss], so a twin always lives in
-     * the SAME half — initialised or zero-fill — as the object it mirrors, and always inside the
-     * section.  The deltas below are linker-layout constants: they shift whenever anything in
-     * kernelbase changes its static footprint, and nothing re-derives them.  With this check a
-     * stale delta degrades to "mirror nothing" instead of writing over live data, which is what
-     * the old code did for its entire existence (CORE mirrors landed back in initialised .data,
-     * ENTRY mirrors landed below the section in .buildid). */
-    if (twin < macrunner_hb_data_lo || twin + size > macrunner_hb_data_hi ||
-        ((const char *)self_addr < macrunner_hb_data_bss) != (twin < macrunner_hb_data_bss) ||
-        (twin < (const char *)self_addr + size && (const char *)self_addr < twin + size))
-    {
-        macrunner_hb_mirror_skipped++;
-        return;
-    }
-    memcpy( twin, self_addr, size );
-    macrunner_hb_mirror_done++;
+    memcpy( (void *)((uintptr_t)native_addr - delta), native_addr, size );
 }
 
 static void macrunner_hb_sync_locale_ec_copies(void)
@@ -869,59 +734,9 @@ static void macrunner_hb_sync_locale_ec_copies(void)
         MESSAGE( "macrunner-hb-sync-locale-ec: skip reason=not-arm64x handle=%p\n", kernelbase_handle );
         return; /* not ARM64X: single .data copy, nothing to mirror */
     }
-    macrunner_hb_find_data_section( nt, (const char *)kernelbase_handle );
-    macrunner_hb_detect_view( cfg, (const char *)kernelbase_handle );
-    if (macrunner_hb_ec_view < 0 || !macrunner_hb_data_lo)
-    {
-        /* Refuse rather than mirror in a guessed direction: a wrong direction writes over live
-         * .data (see the block comment on macrunner_hb_mirror_ec_copy). */
-        MESSAGE( "macrunner-hb-sync-locale-ec: skip reason=view-undetermined handle=%p view=%d data=%p..%p\n",
-                 kernelbase_handle, macrunner_hb_ec_view,
-                 macrunner_hb_data_lo, macrunner_hb_data_hi );
-        return;
-    }
-    macrunner_hb_mirror_done = macrunner_hb_mirror_skipped = 0;
-    MESSAGE( "macrunner-hb-sync-locale-ec: handle=%p view=%s core_delta=0x%x entry_delta=0x%x "
-             "twin_dir=%c data=%p..%p bss=%p enabled=%d\n",
-             kernelbase_handle, macrunner_hb_ec_view ? "ARM64EC" : "native-ARM64",
-             MACRUNNER_HB_LOCALE_CORE_EC_DELTA, MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA,
-             macrunner_hb_ec_view ? '-' : '+', macrunner_hb_data_lo, macrunner_hb_data_hi,
-             macrunner_hb_data_bss, MACRUNNER_HB_LOCALE_EC_MIRROR_ENABLED );
-
-    /* DISABLED BY DEFAULT — do not flip to 1 without first implementing runtime delta derivation.
-     *
-     * The two deltas below are linker-layout constants that nothing re-derives, and they are
-     * invalidated by ANY change to ANY kernelbase static.  Demonstrated: adding the handful of
-     * statics in this file for the view detection above moved the CORE delta from 0x27E8 to
-     * 0x2808 (llvm-nm on the shipped kernelbase.dll sha b7e96fb9 vs the rebuild sha 407e6a0d:
-     * 65 pairs at 0x27E8 became 86 pairs at 0x2808; the ENTRY delta happened to stay 0x1B00).
-     * A stale delta of that size still lands in the correct half of .data, so the region
-     * invariant in macrunner_hb_mirror_ec_copy does NOT catch it — it would just memcpy each
-     * global 0x20 bytes off its twin, which is the same corruption in a quieter form.
-     *
-     * Worse, the delta is not even uniform within one build: both images carry a second family
-     * of 5 pairs at 0x1AF8 rather than 0x1B00, because a view-specific symbol
-     * (__imp_aux_RaiseException) shifts part of the blob.  A single constant is therefore wrong
-     * for those 5 by construction, no matter how carefully it is maintained.
-     *
-     * Meanwhile the mirror has never once reached a twin in its entire existence: with the delta
-     * subtracted, CORE mirrors landed back inside initialised .data and ENTRY mirrors landed
-     * below the section in .buildid.  Everything downstream — the whole locale/NLS path — worked
-     * regardless, so nothing here is load-bearing; the only thing this code ever did was corrupt
-     * 30 statics via MR_SYNC_CORE_EC(codepages).
-     *
-     * Re-enabling therefore needs the deltas DERIVED AT RUNTIME, not typed in.  A workable
-     * derivation for the initialised half: scan 8-byte-aligned candidate deltas d and accept the
-     * first where the twin's self-referential pointer matches, i.e.
-     *     *(void **)((char *)&locale_section + d) == (char *)locale_section.DebugInfo + d
-     * The .bss half has no such anchor and needs a separate answer before it can be mirrored. */
-    if (!MACRUNNER_HB_LOCALE_EC_MIRROR_ENABLED)
-    {
-        MESSAGE( "macrunner-hb-sync-locale-ec: skip reason=disabled-deltas-not-runtime-derived "
-                 "(hardcoded deltas go stale on any kernelbase static change; this mirror never "
-                 "reached a twin and is not load-bearing)\n" );
-        return;
-    }
+    MESSAGE( "macrunner-hb-sync-locale-ec: mirroring handle=%p core_delta=0x%x entry_delta=0x%x\n",
+             kernelbase_handle, MACRUNNER_HB_LOCALE_CORE_EC_DELTA,
+             MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA );
 
     /* MacRunner (2026-07-01): confirmed via live probe that GetStringTypeW (called from
      * ucrtbase's CRT startup) reads a fixed image RVA landing in ansi_cpinfo/oem_cpinfo
@@ -999,30 +814,18 @@ static void macrunner_hb_sync_locale_ec_copies(void)
 #undef MR_SYNC_ENTRY_EC
 #undef MR_SYNC_CORE_EC
 
-    /* Labelled by which VIEW each address belongs to, not by a guess.  The old wording called
-     * `&sort` the "native" copy and `&sort - delta` the "EC" copy; on a live run those printed
-     * 0x87FFF982AD8 / 0x87FFF9802F0, i.e. RVA 0x152AD8 (the EC copy of sort) and RVA 0x1502F0
-     * (not a copy of sort at all — an address inside EC .data).  That inverted labelling is what
-     * made the corruption read as a successful mirror for two months. */
-#define MR_TWIN( g ) ((typeof(g) *)((uintptr_t)&(g) + (macrunner_hb_ec_view \
-        ? -(ptrdiff_t)MACRUNNER_HB_LOCALE_CORE_EC_DELTA : (ptrdiff_t)MACRUNNER_HB_LOCALE_CORE_EC_DELTA)))
-    MESSAGE( "macrunner-hb-sync-locale-ec: verify view=%s mirrored=%u skipped=%u self_sort=%p twin_sort=%p "
-             "self_ctypes=%p self_ctype_idx=%p twin_ctypes=%p twin_ctype_idx=%p\n",
-             macrunner_hb_ec_view ? "ARM64EC" : "native-ARM64",
-             macrunner_hb_mirror_done, macrunner_hb_mirror_skipped,
-             &sort, MR_TWIN( sort ),
+    MESSAGE( "macrunner-hb-sync-locale-ec: verify native_sort=%p ec_sort=%p "
+             "native_ctypes=%p native_ctype_idx=%p ec_ctypes=%p ec_ctype_idx=%p\n",
+             &sort, (void *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_CORE_EC_DELTA),
              sort.ctypes, sort.ctype_idx,
-             MR_TWIN( sort )->ctypes, MR_TWIN( sort )->ctype_idx );
-#define MR_TWIN_ENTRY( g ) ((typeof(g) *)((uintptr_t)&(g) + (macrunner_hb_ec_view \
-        ? -(ptrdiff_t)MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA : (ptrdiff_t)MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA)))
-    MESSAGE( "macrunner-hb-sync-locale-ec: verify registry self_intl=%p twin_intl=%p "
-             "self_sintl_value=%p self_sintl_subkey=%p twin_sintl_value=%p twin_sintl_subkey=%p\n",
-             intl_key, *(HKEY *)MR_TWIN( intl_key ),
+             ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_CORE_EC_DELTA))->ctypes,
+             ((typeof(sort) *)((uintptr_t)&sort - MACRUNNER_HB_LOCALE_CORE_EC_DELTA))->ctype_idx );
+    MESSAGE( "macrunner-hb-sync-locale-ec: verify registry native_intl=%p ec_intl=%p "
+             "native_sintl_value=%p native_sintl_subkey=%p ec_sintl_value=%p ec_sintl_subkey=%p\n",
+             intl_key, *(HKEY *)((uintptr_t)&intl_key - MACRUNNER_HB_LOCALE_CORE_EC_DELTA),
              entry_sintlsymbol.value, entry_sintlsymbol.subkey,
-             MR_TWIN_ENTRY( entry_sintlsymbol )->value,
-             MR_TWIN_ENTRY( entry_sintlsymbol )->subkey );
-#undef MR_TWIN_ENTRY
-#undef MR_TWIN
+             ((typeof(entry_sintlsymbol) *)((uintptr_t)&entry_sintlsymbol - MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA))->value,
+             ((typeof(entry_sintlsymbol) *)((uintptr_t)&entry_sintlsymbol - MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA))->subkey );
 }
 
 

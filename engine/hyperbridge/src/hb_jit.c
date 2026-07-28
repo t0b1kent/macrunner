@@ -20,6 +20,34 @@
 
 #define HB_JIT_BUFFER_MAGIC 0x48424a4954425546ull /* HBJITBUF */
 
+/* MacRunner 2026-07-28 (HK Mono crash): keep JIT arenas FAR above the guest address space.
+ *
+ * With mmap(NULL, …) the kernel picks whatever is free, which on macOS is the same low
+ * region the guest reserves for itself.  Mono's code allocator asks for 64 KB
+ * PAGE_EXECUTE_READWRITE blocks at SPECIFIC bases, and once one of our arenas sits there
+ * the request cannot be satisfied: `macrunner-hb-guest-alloc-fail: import=VirtualAlloc
+ * status=c0000018` (STATUS_CONFLICTING_ADDRESSES) at bases 0x11b150000…0x180000000 —
+ * 12 of them in a single run — after which a Mono thread dies with c000007b
+ * (STATUS_INVALID_IMAGE_FORMAT: the mapping it needed never landed).  Every observed
+ * failure had size=0x10000, type=0x3000, protect=0x40, i.e. exactly that allocator.
+ *
+ * 0x2000_0000_0000 is 32 TB — far above anything Wine hands the guest, and well inside the
+ * 47-bit user address space.  The hint is ADVISORY (no MAP_FIXED, which would let us
+ * clobber an existing mapping): if the kernel declines it we fall back to the original
+ * mmap(NULL, …).  So this can only remove collisions, never create a failure that the old
+ * code would not also have had. */
+#define HB_JIT_ARENA_HINT_BASE ((uintptr_t)0x200000000000ull)
+#define HB_JIT_ARENA_HINT_STEP ((uintptr_t)0x100000ull) /* 1 MB, so arenas never abut */
+
+static uintptr_t hb_jit_arena_hint = HB_JIT_ARENA_HINT_BASE;
+
+/* Reserve the next hint slot.  Lock-free: arenas are created from several guest threads. */
+static void* hb_jit_next_hint(size_t size) {
+    uintptr_t step = (size + HB_JIT_ARENA_HINT_STEP - 1) & ~(HB_JIT_ARENA_HINT_STEP - 1);
+    if (!step) step = HB_JIT_ARENA_HINT_STEP;
+    return (void*)__atomic_fetch_add(&hb_jit_arena_hint, step, __ATOMIC_RELAXED);
+}
+
 static bool force_jit_verify_failure(void) {
     const char* value = getenv("MACRUNNER_HB_TEST_FORCE_JIT_VERIFY_FAIL");
     return value && value[0] && value[0] != '0';
@@ -79,7 +107,10 @@ hb_jit_buffer_t* hb_jit_buffer_create(size_t size) {
     flags |= MAP_JIT;
 #endif
     buf->dirty_start = 0;
-    buf->writable = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
+    /* Advisory high hint first (see HB_JIT_ARENA_HINT_BASE above), kernel choice second. */
+    buf->writable = mmap(hb_jit_next_hint(size), size, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
+    if (buf->writable == MAP_FAILED)
+        buf->writable = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
     if (buf->writable == MAP_FAILED) {
 #ifdef __APPLE__
         /* Retry without MAP_JIT if hardened runtime lacks JIT entitlement */

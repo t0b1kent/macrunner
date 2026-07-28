@@ -83,23 +83,29 @@ static struct list reg_mui_cache = LIST_INIT(reg_mui_cache); /* MRU */
 static unsigned int reg_mui_cache_count;
 #define REG_MUI_CACHE_SIZE 8
 
-/* MacRunner 2026-07-28 (HK input): under ARM64X kernelbase carries TWO .data views and the
- * static LIST_INIT above only lands in the native one — llvm-nm shows reg_mui_cache at both
- * 0x180150ab0 and 0x1801525b0, delta 0x1b00 = MACRUNNER_HB_LOCALE_ENTRY_EC_DELTA.  Reached
- * through the EC view the head is all zeros, so LIST_FOR_EACH_ENTRY dereferences NULL at
- * kernelbase+0x5CCC8 (`ldr w8,[x25,#0x18]`, x25==0) => c0000005.  That kills DllMain's
- * init_locale(), process_attach(kernelbase) fails, and explorer.exe/services.exe die at 1s.
- * With no explorer there is no desktop, so load_desktop_driver() fails, winemac.drv never
+/* MacRunner 2026-07-28 (HK input): reg_mui_cache read back as {0,0}, so LIST_FOR_EACH_ENTRY
+ * dereferenced NULL at kernelbase+0x5CCC8 (`ldr w8,[x25,#0x18]`, x25==0) => c0000005.  That kills
+ * DllMain's init_locale(), process_attach(kernelbase) fails, and explorer.exe/services.exe die at
+ * 1s.  With no explorer there is no desktop, so load_desktop_driver() fails, winemac.drv never
  * loads, [NSApp run] is never entered, and no keyboard or mouse event can reach the guest.
  *
- * The memcpy mirror in locale.c's macrunner_hb_sync_locale_ec_copies CANNOT fix this: a list
- * head is self-referential, so copying the bytes leaves the twin's next/prev pointing at the
- * NATIVE head and the compare against the EC &head never matches.  The twin must be
- * list_init()ed at its own address — done lazily here from whichever view runs first, so it
- * is correct in both views and needs no cross-module plumbing.
+ * The original diagnosis — "under ARM64X the static LIST_INIT above only lands in the native
+ * view" — was WRONG, and the twin-sweep lane refuted it against the shipped binary the same day.
+ * The linker initialises BOTH copies correctly; in kernelbase.dll sha b7e96fb9 the two copies
+ * hold {0x1801525B0,0x1801525B0} and {0x180150AB0,0x180150AB0}, each pointing at ITSELF, exactly
+ * as LIST_INIT intends.  All 75 .data twin pairs check out that way, and the DVRT has no .data
+ * entries, so nothing rewrites them at load.
  *
- * Second casualty of this class; locale.c:751 records the first (entry_sintlsymbol).  The
- * class still wants a sweep rather than a third one-crash-at-a-time fix. */
+ * What actually zeroed this list was locale.c's own mirror.  macrunner_hb_sync_locale_ec_copies
+ * computed its destination as `&g - delta` when the native blob is the LOWER one and the twin is
+ * at `+delta`, so MR_SYNC_CORE_EC(codepages) memcpy'd 8192 bytes of zeroed .bss over
+ * RVA 0x1503F0..0x1523F0 — which contains reg_mui_cache (0x150AB0), reg_mui_cs, reg_mui_cs_debug
+ * and entry_sintlsymbol (the "first casualty").  That mirror is now disabled; see the block
+ * comment on macrunner_hb_mirror_ec_copy in locale.c for the full address evidence.
+ *
+ * So the list_init below is a repair for damage that no longer happens.  With the mirror off,
+ * reg_mui_cache.next is non-NULL from load and this is a no-op.  Kept as cheap insurance, not
+ * because the twin needs it. */
 static inline void reg_mui_cache_ensure_init(void)
 {
     if (!reg_mui_cache.next) list_init( &reg_mui_cache );

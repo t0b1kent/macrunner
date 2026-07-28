@@ -40,7 +40,10 @@ touch "$PROGRESS"
 
 # failover chain, in order. Override per lane with e.g. CHAIN="kimi claude codex" — a lane whose
 # work suits one backend should start there rather than always leading with codex.
-read -r -a BACKENDS <<< "${CHAIN:-codex kimi claude}"
+# 2026-07-28: kimi hit its billing-cycle quota (403) and codex came back, so the default
+# order is codex -> claude -> kimi. A dead backend at the head costs every lane STRIKES_MAX
+# wasted iterations before failover, which is why the order is worth maintaining.
+read -r -a BACKENDS <<< "${CHAIN:-codex claude kimi}"
 BE_IDX=0
 STRIKES=0
 

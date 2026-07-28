@@ -802,8 +802,18 @@ extern BOOL macrunner_hb_present_signal_probe_enabled_for_current_thread(void);
 static BOOL macrunner_hb_x64_loader_enabled(void);
 static BOOL macrunner_hb_trace_callback_route_enabled(void)
 {
-    const char *value = getenv( "MACRUNNER_HB_TRACE_CALLBACK_ROUTE" );
-    return value && value[0] && value[0] != '0';
+    /* Cached: this runs on the per-fault path (inlined into
+     * macrunner_hb_route_x64_callback_fault), where getenv() is an O(n)
+     * __findenv_locked scan.  Same idiom as
+     * macrunner_hb_jit_sigill_ownership_enabled() below. */
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *value = getenv( "MACRUNNER_HB_TRACE_CALLBACK_ROUTE" );
+        enabled = value && value[0] && value[0] != '0';
+    }
+    return enabled != 0;
 }
 
 static BOOL macrunner_hb_jit_sigill_ownership_enabled(void)
@@ -833,9 +843,60 @@ static BOOL macrunner_hb_x64_fault_routing_enabled(void)
 static BOOL macrunner_hb_trace_stack_setup_enabled(void)
 {
     static int count;
-    const char *value = getenv( "MACRUNNER_HB_TRACE_STACK_SETUP" );
+    static int enabled = -1;
 
-    return value && value[0] && value[0] != '0' && count++ < 64;
+    /* Cached: the 64-sample budget below used to sit BEHIND the getenv(), so an
+     * exhausted budget still paid a full environment scan on every call. */
+    if (enabled < 0)
+    {
+        const char *value = getenv( "MACRUNNER_HB_TRACE_STACK_SETUP" );
+        enabled = value && value[0] && value[0] != '0';
+    }
+    if (!enabled) return FALSE;
+    return count++ < 64;
+}
+
+/* Both of these are consulted from inside signal/fault handlers (segv_handler,
+ * bus_handler, macrunner_hb_primary_signal_handler, macrunner_hb_route_x64_callback_fault)
+ * and were previously raw getenv() calls, i.e. an O(n) __findenv_locked scan on EVERY
+ * fault.  run23 measured getenv at 22.1% of the faulting thread's wall time.  Caching also
+ * shrinks the libc-recursion hazard noted above trace_apple_x18_heal(): the environment is
+ * scanned at most once per knob instead of once per fault. */
+static BOOL macrunner_hb_diag_faultvm_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0) enabled = getenv( "MACRUNNER_DIAG_FAULTVM" ) ? 1 : 0;
+    return enabled != 0;
+}
+
+static BOOL macrunner_hb_trace_nullcall_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *nv = getenv( "MACRUNNER_HB_TRACE_NULLCALL" );
+        enabled = nv && nv[0] && nv[0] != '0';
+    }
+    return enabled != 0;
+}
+
+/* Presence-based, exactly as the original call sites were. */
+static BOOL macrunner_hb_trace_bus_fault_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0) enabled = getenv( "MACRUNNER_HB_TRACE_BUS_FAULT" ) ? 1 : 0;
+    return enabled != 0;
+}
+
+static BOOL macrunner_hb_trace_signal_chain_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0) enabled = getenv( "MACRUNNER_HB_TRACE_SIGNAL_CHAIN" ) ? 1 : 0;
+    return enabled != 0;
 }
 
 static void macrunner_hb_trace_callback_target_module( const char *source, ULONG_PTR pc );
@@ -1390,15 +1451,90 @@ __ASM_GLOBAL_FUNC( macrunner_hb_x64_callback_trampoline,
 
 static BOOL macrunner_hb_redirect_arm64x_hexpthk_sigill( ucontext_t *context );
 
+/* MacRunner 2026-07-29 (HK input): ALWAYS-ON re-entrancy guard for the fault router.
+ *
+ * Two unrelated guest hangs were sampled to the same endpoint on 2026-07-29 — a Return key
+ * delivered on the Cocoa main thread, and winemac.drv's x86_64 DllMain — each pinned at
+ * 413/413 and 894/895 samples inside this router's PC-classification helpers
+ * (`macrunner_hb_route_x64_callback_fault` -> `…pc_is_x64_guest_code…` ->
+ * `macrunner_hb_ldr_entry_from_pc`), burning a core forever while the process stayed alive
+ * and its log simply stopped. That signature has cost these lanes six iterations, because a
+ * silent 100 %-CPU process reads like a livelock in the guest rather than a fault loop in us.
+ *
+ * The mechanism: `macrunner_hb_ldr_entry_from_pc` opens with `NtCurrentTeb()->Peb`. On a
+ * thread with no Wine TEB — a Cocoa callback thread is exactly that — the read itself faults,
+ * and the fault handler calls this router, which calls the classifier again. Every fault
+ * begets the next one. The PEB walk is already bounded (`guard++ < 4096`), so the loop is NOT
+ * inside the walk and no amount of bounding it would have helped.
+ *
+ * `macrunner_hb_callback_loop_route_enter` does maintain a depth counter, but it early-returns
+ * on `!macrunner_hb_callback_loop_trace_enabled()`, so in an ordinary run nothing counts and
+ * nothing breaks the cycle; and even when tracing is on it only EMITS the depth.
+ *
+ * This guard is deliberately independent of that machinery and of every env gate: recursion
+ * has to be stopped in production, not only under trace. On re-entry we return FALSE, which
+ * lets the fault fall through to normal handling — a real, diagnosable crash instead of a
+ * hang. Set MACRUNNER_HB_FAULT_REENTRY_LIMIT_OFF=1 to restore the old (hanging) behaviour for
+ * an A/B. */
+#define MACRUNNER_HB_FAULT_REENTRY_LIMIT 2
+
+struct macrunner_hb_fault_reentry_guard { int engaged; };
+static __thread int macrunner_hb_fault_reentry_depth;
+
+static void macrunner_hb_fault_reentry_leave( struct macrunner_hb_fault_reentry_guard *guard )
+{
+    if (guard->engaged) macrunner_hb_fault_reentry_depth--;
+}
+
+static BOOL macrunner_hb_fault_reentry_disabled(void)
+{
+    static int cached = -1;
+    const char *value;
+
+    if (cached < 0)
+    {
+        value = getenv( "MACRUNNER_HB_FAULT_REENTRY_LIMIT_OFF" );
+        cached = (value && value[0] && value[0] != '0') ? 1 : 0;
+    }
+    return cached != 0;
+}
+
 static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PTR fault_addr,
                                                    const char *source )
 {
     ULONG_PTR pc, raw_pc, x4_target, x16_target;
     BOOL raw_is_guest, fault_is_guest, x4_is_guest, x16_is_guest, sigill_source;
     static int rejected_trace_count;
+    struct macrunner_hb_fault_reentry_guard reentry_guard
+        __attribute__((cleanup(macrunner_hb_fault_reentry_leave))) = {0};
     struct macrunner_hb_callback_loop_route_scope callback_loop_scope
         __attribute__((cleanup(macrunner_hb_callback_loop_route_leave))) =
         macrunner_hb_callback_loop_route_enter( context, fault_addr, source );
+
+    if (!macrunner_hb_fault_reentry_disabled())
+    {
+        if (macrunner_hb_fault_reentry_depth >= MACRUNNER_HB_FAULT_REENTRY_LIMIT)
+        {
+            static int announced;
+
+            /* Async-signal-safe writer, and announced once so a storm cannot become the
+             * new hang. Print the PC so the offending classification site is identifiable
+             * without a live sample. */
+            if (!announced)
+            {
+                announced = 1;
+                macrunner_signal_writef(
+                    "macrunner-hb-fault-reentry-break: depth=%d source=%s pc=%p fault=%p "
+                    "— recursive fault inside the router, refusing to recurse\n",
+                    macrunner_hb_fault_reentry_depth, source ? source : "(none)",
+                    (void *)PC_sig(context), (void *)fault_addr );
+            }
+            callback_loop_scope.disposition = "reentry-break";
+            return FALSE;
+        }
+        macrunner_hb_fault_reentry_depth++;
+        reentry_guard.engaged = 1;
+    }
 
     /* A native ARM64 indirect call can land on an imported ARM64X x64 entry thunk
      * (optionally still carrying the CodeMap type tag in the low 2 bits).  Redirect
@@ -1436,8 +1572,7 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
     if (raw_pc == 0 || fault_addr < 0x1000)
     {
         static int nullcall_diag_count;
-        const char *nv = getenv( "MACRUNNER_HB_TRACE_NULLCALL" );
-        if (nv && nv[0] && nv[0] != '0' && nullcall_diag_count++ < 64)
+        if (macrunner_hb_trace_nullcall_enabled() && nullcall_diag_count++ < 64)
             macrunner_hb_trace_nullcall_site( source, raw_pc, fault_addr );
     }
 
@@ -2393,8 +2528,15 @@ static void trace_apple_x18_heal( const char *kind, ucontext_t *context, ULONG_P
 
 static BOOL macrunner_hb_trace_native_faults_enabled(void)
 {
-    const char *val = getenv( "MACRUNNER_HB_TRACE_FAULTS" );
-    return val && val[0] && val[0] != '0';
+    /* Cached: called per native fault. */
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *val = getenv( "MACRUNNER_HB_TRACE_FAULTS" );
+        enabled = val && val[0] && val[0] != '0';
+    }
+    return enabled != 0;
 }
 
 static IMAGE_NT_HEADERS *macrunner_hb_native_fault_nt_header( void *module )
@@ -2976,7 +3118,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
      * reading UnityPlayer .data (host ~0x87efe45xxxx) that the load-time probe showed RW-committed.
      * Dump the ACTUAL fault-time Mach region+protection for faults landing in the x64-guest high
      * window, to pin whether the page was reprotected (prot=0) / decommitted (region gap) at runtime. */
-    if (getenv( "MACRUNNER_DIAG_FAULTVM" ))
+    if (macrunner_hb_diag_faultvm_enabled())
     {
         ULONG_PTR fa = rec.ExceptionInformation[1];
         if (fa >= 0x87ef0000000ULL && fa < 0x87f00000000ULL)
@@ -3022,8 +3164,7 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         (rec.ExceptionInformation[1] < 0x1000 || PC_sig(context) == 0))
     {
         static int nullcall_segv_n;
-        const char *nv = getenv( "MACRUNNER_HB_TRACE_NULLCALL" );
-        if (nv && nv[0] && nv[0] != '0' && nullcall_segv_n++ < 16)
+        if (macrunner_hb_trace_nullcall_enabled() && nullcall_segv_n++ < 16)
             macrunner_hb_trace_nullcall_site( "segv-exec0", PC_sig(context),
                                               rec.ExceptionInformation[1] );
     }
@@ -3320,7 +3461,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     else
         rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
-    if (getenv("MACRUNNER_HB_TRACE_BUS_FAULT"))
+    if (macrunner_hb_trace_bus_fault_enabled())
     {
         static int bfc = 0;
         if (bfc < 24)
@@ -3387,7 +3528,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
      * reading UnityPlayer .data (host ~0x87efe45xxxx) that the load-time probe showed RW-committed.
      * Dump the ACTUAL fault-time Mach region+protection for faults landing in the x64-guest high
      * window, to pin whether the page was reprotected (prot=0) / decommitted (region gap) at runtime. */
-    if (getenv( "MACRUNNER_DIAG_FAULTVM" ))
+    if (macrunner_hb_diag_faultvm_enabled())
     {
         ULONG_PTR fa = rec.ExceptionInformation[1];
         if (fa >= 0x87ef0000000ULL && fa < 0x87f00000000ULL)
@@ -3841,9 +3982,8 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
         ULONG_PTR pcv = PC_sig( (ucontext_t *)sigcontext );
         if ((pcv < 0x10000 || fault_addr < 0x10000) && pcv != fault_addr)
         {
-            const char *nv = getenv( "MACRUNNER_HB_TRACE_NULLCALL" );
             static int prim_n;
-            if (nv && nv[0] && nv[0] != '0' && prim_n++ < 16)
+            if (macrunner_hb_trace_nullcall_enabled() && prim_n++ < 16)
                 fprintf( stderr, "macrunner-hb-primary-sig: sig=%d pc=%p fault=%p lr=%p\n",
                          sig, (void *)pcv, (void *)fault_addr,
                          (void *)(ULONG_PTR)LR_sig( (ucontext_t *)sigcontext ) ), fflush( stderr );
@@ -3854,7 +3994,7 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
                                                macrunner_hb_signal_source( sig ) ))
         return;
 
-    if (macrunner_hb_primary_signal_trace && getenv( "MACRUNNER_HB_TRACE_SIGNAL_CHAIN" ))
+    if (macrunner_hb_primary_signal_trace && macrunner_hb_trace_signal_chain_enabled())
         fprintf( stderr, "macrunner-hb-signal-chain: pid=%d sig=%d pc=%p fault=%p\n",
                  getpid(), sig, (void *)(ULONG_PTR)PC_sig((ucontext_t *)sigcontext),
                  (void *)(ULONG_PTR)fault_addr );

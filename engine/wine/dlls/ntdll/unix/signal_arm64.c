@@ -4045,6 +4045,47 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
     ULONG_PTR fault_addr = (sig == SIGILL) ? 0 : (ULONG_PTR)siginfo->si_addr;
     ucontext_t *context = sigcontext;
 
+    /* MacRunner 2026-07-30 — FAULT RATE. The one number this project has never measured, and the
+     * only one that can explain the shape of its startup cost.
+     *
+     * Measured: 749.9 s to "Restored language" against under 45 s for Rosetta, and the gap is
+     * DIFFUSE — the eight largest stalls in a 930 s run sum to 29 s, and the timestamped marks are
+     * spread evenly across the whole run. A diffuse 16x is the signature of a constant per-operation
+     * overhead, not of a hotspot, which is why every lever pulled so far (cache retention 38->96 %,
+     * the fault-safe header probe, the multi-helper path) moved the wall clock by less than the
+     * ±6 s our time metric can even resolve. Profiling said 100 % of samples sit inside this
+     * handler, but with no count of how often it is ENTERED that is unreadable: it is equally
+     * consistent with a few pinned threads and with every guest block transition costing a kernel
+     * trap. Those two possibilities call for completely different work, and nothing here
+     * distinguishes them.
+     *
+     * So count entries and report a rate. If this is thousands per second, dispatch is fault-driven
+     * and that is the 16x — Rosetta chains translated blocks directly and pays no trap per
+     * transition. If it is tens per second, the handler is a red herring and the cost is elsewhere.
+     *
+     * Deliberately not gated behind an env var: a relaxed atomic increment on a path that is
+     * already doing signal delivery is unmeasurable, and a gate is how this measurement would end
+     * up never taken. The REPORT is throttled to once per 4096 entries. */
+    {
+        static ULONG64 macrunner_hb_fault_entries;
+        static ULONG64 macrunner_hb_fault_first_ns;
+        ULONG64 n = __atomic_add_fetch( &macrunner_hb_fault_entries, 1, __ATOMIC_RELAXED );
+
+        if (n == 1)
+            __atomic_store_n( &macrunner_hb_fault_first_ns, macrunner_hb_callback_loop_now_ns(),
+                              __ATOMIC_RELAXED );
+        else if (!(n & 0xfff))
+        {
+            ULONG64 t0 = __atomic_load_n( &macrunner_hb_fault_first_ns, __ATOMIC_RELAXED );
+            ULONG64 now = macrunner_hb_callback_loop_now_ns();  /* CLOCK_MONOTONIC, ns */
+            ULONG64 ms = t0 && now > t0 ? (now - t0) / 1000000ull : 0;
+
+            macrunner_signal_writef( "macrunner-hb-faultrate: entries=%llu elapsed_ms=%llu rate=%llu/s\n",
+                                     (unsigned long long)n, (unsigned long long)ms,
+                                     (unsigned long long)(ms ? (n * 1000ull) / ms : 0) );
+        }
+    }
+
     if (macrunner_hb_present_signal_probe_enabled_for_current_thread())
     {
         static __thread unsigned int signal_count;

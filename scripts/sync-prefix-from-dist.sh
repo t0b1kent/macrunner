@@ -57,6 +57,20 @@ CORE_SYSTEM32_MODULES=(
     comctl32.dll
     explorerframe.dll
     winemac.drv
+    # MacRunner 2026-07-29: every `.drv` MUST be listed here explicitly. copy_arch_set()'s bulk
+    # loop globs `"$WINE_LIB/$arch"/*.dll`, so a driver is invisible to it purely because of the
+    # extension — and the omission is silent, since nothing checks that a driver arrived.
+    #
+    # winecoreaudio.drv was missing, and that is why Hollow Knight has no sound: the prefix gets
+    # dsound / mmdevapi / winmm / the whole xaudio2 row (they are .dll, so the glob takes them)
+    # but never the CoreAudio backend they all sit on top of. With no backend mmdevapi enumerates
+    # zero endpoints, and HK's FMOD reports it verbatim at +55.7 s of the menu-reaching run:
+    # "FMOD failed to initialize any audio devices, running on emulated software output with no
+    # sound." Same shape as the GraphicsDriver gap: the whole stack present, the one module that
+    # talks to the host absent.
+    winecoreaudio.drv
+    msacm32.drv          # ACM codec driver — winmm's format conversion depends on it
+    winspool.drv         # printing; harmless here, but it is the same silent-omission class
 )
 CORE_SYSTEM32_PROGRAMS=(
     wineboot.exe
@@ -152,6 +166,33 @@ done
 
 if [[ -f "$WINE_LIB/aarch64-windows/xtajit64.dll" ]]; then
     copy_dll "$WINE_LIB/aarch64-windows/xtajit64.dll" "$SYSTEM32/xtajit64.dll"
+fi
+
+# winemac.drv must be the NATIVE build in system32, same reasoning as xtajit64.dll above.
+#
+# Measured 2026-07-29 (HK-E2E-09, WINEDEBUG=-all,+loaddll).  In Hollow Knight's ARM64EC
+# process every working wine builtin is loaded TWICE -- once as the x86_64 guest copy from
+# C:\windows\system32\<dll> and once as a NATIVE aarch64 twin out of the dist (or, for
+# dxgi/d3d11, out of laneA's per-run DXMT overlay).  37 modules get that twin, including
+# win32u, user32, gdi32, dxgi, d3d11, winemetal.  winemac.drv gets ONLY the system32 x86_64
+# copy and no twin:
+#     0024: build_module Loaded L"c:\windows\system32\winemac.drv" at 0000087EF2E50000: builtin
+# and no dllmain_attach ever follows for that wine pid, so macdrv_init never runs, the process
+# keeps the re-entrancy placeholder as its user driver for life, nothing pumps AppKit, and
+# injected keys measure macdrv_key_event = 0.
+#
+# The reason it is the odd one out is visible in user32/user_main.c:130 -- User32LoadDriver
+# calls LdrLoadDll( L"c:\\windows\\system32", ... ), PINNING the search path, so the normal
+# builtin-twin resolution that every other module goes through never happens for the display
+# driver.  Putting the native build at that pinned path is the same shape of fix as the
+# already-proven name-gated builtin-twin redirect used for the DXMT twins.
+#
+# Gated for a clean A/B (default OFF) because this lane's standing rule is that an offline
+# proof is not a runtime proof -- MACRUNNER_WIN32U_PLACEHOLDER_REPAIR looked equally correct
+# offline and regressed the guest.
+if [[ -n "${MACRUNNER_PREFIX_WINEMAC_NATIVE:-}" && -f "$WINE_LIB/aarch64-windows/winemac.drv" ]]; then
+    copy_dll "$WINE_LIB/aarch64-windows/winemac.drv" "$SYSTEM32/winemac.drv"
+    echo "prefix_sync: winemac.drv <= aarch64-windows (native twin forced into system32)"
 fi
 
 # WOW64 backend modules required by 32-bit bottles:

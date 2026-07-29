@@ -530,6 +530,62 @@ static NTSTATUS msync_wait_multiple( const int *objs, void **objs_shm, int alert
      * the server, which is the only correct answer until the server has acknowledged. */
     if (ipw) msync_ipw_register_all( objs, alert_obj, count, tid );
 
+    /* MacRunner 2026-07-30 — THE ACKNOWLEDGEMENT LEG (2 -> 1).
+     *
+     * Measured: the in-process wake registered 256388 waits and fired exactly ONCE, because it may
+     * only take a thread out of state 1 and the thread is almost never there. That localises the
+     * cost to this leg instead: the spin below, waiting for the single-threaded wineserver to
+     * acknowledge a registration it was sent microseconds ago. 128000 of 130449 waits in a run take
+     * this path, so at even 1 ms each it is minutes of aggregate blocking.
+     *
+     * This is a documented property of the design rather than a defect of ours: upstream wine-msync
+     * "registers the objects now associated with this semaphore to wineserver, and starts waiting",
+     * and the wineserver round trip per synchronisation is the exact bottleneck esync, fsync and
+     * finally NTSYNC were each built to remove. What is NOT known is its size HERE, and everything
+     * about what to do next depends on that: a large number justifies rebuilding this wait on a Mach
+     * PORT SET (mach_msg can receive from several ports at once, which is how one waits on the
+     * object and the APC alert together without a server, and why upstream chose Mach semaphores),
+     * a small one takes synchronisation off the list of suspects entirely, as the translation cache,
+     * the fault storm and our own tracing already came off it.
+     *
+     * Measures the leg only, not the block that follows: the clock stops when the word leaves 2. */
+    {
+        static int mr_ack_en = -1;
+        if (mr_ack_en < 0) mr_ack_en = getenv("MACRUNNER_HB_TRACE_SYNCMETER") ? 1 : 0;
+        if (mr_ack_en)
+        {
+            static uint64_t ack_calls, ack_total_ns, ack_spins;
+            struct timespec t0, t1;
+            uint64_t spins = 0, n;
+
+            clock_gettime( CLOCK_MONOTONIC, &t0 );
+            while (__atomic_load_n( addr, __ATOMIC_ACQUIRE ) == 2)
+            {
+                spins++;
+                if (check_shm_contention( objs_shm, alert_obj_shm, count, tid )) break;
+            }
+            clock_gettime( CLOCK_MONOTONIC, &t1 );
+
+            n = __atomic_add_fetch( &ack_calls, 1, __ATOMIC_RELAXED );
+            __atomic_add_fetch( &ack_total_ns,
+                                (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull
+                                    + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec,
+                                __ATOMIC_RELAXED );
+            __atomic_add_fetch( &ack_spins, spins, __ATOMIC_RELAXED );
+
+            if (!(n % 4000))
+            {
+                uint64_t tot = __atomic_load_n( &ack_total_ns, __ATOMIC_RELAXED );
+                fprintf( stderr, "macrunner-msync-ack: waits=%llu avg_us=%llu total_ms=%llu"
+                                 " avg_spins=%llu\n",
+                         (unsigned long long)n, (unsigned long long)(tot / n / 1000ull),
+                         (unsigned long long)(tot / 1000000ull),
+                         (unsigned long long)(__atomic_load_n( &ack_spins, __ATOMIC_RELAXED ) / n) );
+                fflush( stderr );
+            }
+        }
+    }
+
     while (__atomic_load_n( addr, __ATOMIC_ACQUIRE ) == 2)
     {
         if (check_shm_contention( objs_shm, alert_obj_shm, count, tid ))

@@ -225,7 +225,56 @@ fi
 services_bg_pid=""
 rpcss_bg_pid=""
 
+# ── Title-slot mutex ───────────────────────────────────────────────────────────────────────
+# MacRunner 2026-07-29: every launcher used to do `ps | grep; then launch`, which is
+# check-then-act with a gap. On 2026-07-29 12:14 that gap put THREE Hollow Knight processes on
+# one machine at once (11:41:23, 11:42:37, 12:10:13) — each stuck near 76 % CPU, starving the
+# others, and the newest froze at +66 s having measured nothing. Two launchers can both see a
+# free slot in the same second and both be right at the time they looked.
+#
+# `mkdir` is atomic on every filesystem we run on, so it is the lock. It lives here, in the one
+# place every launcher funnels through, rather than in each wrapper — a lock only some callers
+# take is not a lock.
+#
+# Stale locks are broken by PID liveness, not by age: a run legitimately lasts 45+ minutes, so
+# any timeout long enough to be safe would be too long to be useful. Opt out with
+# MACRUNNER_MR_RUN_NO_SLOT_LOCK=1 for a deliberately concurrent experiment.
+MR_SLOT_LOCK="${TMPDIR:-/tmp}/macrunner-title-slot.lock"
+MR_SLOT_LOCK_HELD=0
+
+acquire_title_slot() {
+  local waited=0 owner
+  [ "${MACRUNNER_MR_RUN_NO_SLOT_LOCK:-0}" = "1" ] && return 0
+  while :; do
+    if mkdir "$MR_SLOT_LOCK" 2>/dev/null; then
+      echo $$ > "$MR_SLOT_LOCK/pid"
+      MR_SLOT_LOCK_HELD=1
+      [ "$waited" -gt 0 ] && echo "[mr-run] title slot acquired after ${waited}s" >&2
+      return 0
+    fi
+    owner="$(cat "$MR_SLOT_LOCK/pid" 2>/dev/null)"
+    if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
+      echo "[mr-run] breaking stale title-slot lock (owner=${owner:-unknown} not alive)" >&2
+      rm -rf "$MR_SLOT_LOCK" 2>/dev/null || true
+      continue
+    fi
+    [ $((waited % 300)) -eq 0 ] && echo "[mr-run] waiting for title slot (owner=$owner, ${waited}s)" >&2
+    sleep 15; waited=$((waited+15))
+    if [ "$waited" -ge "${MACRUNNER_MR_RUN_SLOT_WAIT_MAX:-5400}" ]; then
+      echo "[mr-run] giving up on the title slot after ${waited}s (owner=$owner)" >&2
+      return 1
+    fi
+  done
+}
+
+release_title_slot() {
+  [ "$MR_SLOT_LOCK_HELD" = "1" ] || return 0
+  rm -rf "$MR_SLOT_LOCK" 2>/dev/null || true
+  MR_SLOT_LOCK_HELD=0
+}
+
 cleanup() {
+  release_title_slot
   [ -n "$services_bg_pid" ] && kill "$services_bg_pid" 2>/dev/null || true
   [ -n "$rpcss_bg_pid" ] && kill "$rpcss_bg_pid" 2>/dev/null || true
   if [ "$RUN_CONTRACT_PREFLIGHT_ONLY" != "1" ]; then
@@ -242,6 +291,13 @@ cleanup() {
   fi
 }
 trap cleanup EXIT INT TERM
+
+# Taken AFTER the trap is installed so cleanup() always releases it, and before anything
+# touches the prefix. A caller that cannot get the slot exits rather than piling on.
+if ! acquire_title_slot; then
+  echo "[mr-run] ABORT: another run holds the title slot" >&2
+  exit 75
+fi
 
 find_warm_prefix_template() {
   local dir candidate best=""

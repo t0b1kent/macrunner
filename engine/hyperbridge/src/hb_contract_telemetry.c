@@ -18,6 +18,18 @@ static uint64_t g_mh_arg_shape;
 static uint64_t g_reloc_blocks;
 static uint64_t g_reloc_sites;
 static uint64_t g_reloc_overflow;
+static uint64_t g_rl_stores;
+static uint64_t g_rl_literal_sites;
+static uint64_t g_rl_highhalf_sites;
+static uint64_t g_rl_patched_sites;
+static uint64_t g_rl_x23_value;
+static uint64_t g_promo_compiles;
+static uint64_t g_rl_hostptr;
+static uint64_t g_rl_unknown_helper;
+static uint64_t g_rl_overflow;
+static uint64_t g_rl_desync;
+static uint64_t g_rl_collision;
+static uint64_t g_rl_roundtrip;
 static uint64_t g_bytes_loaded;
 static uint64_t g_bytes_stored;
 static uint64_t g_compile_count;
@@ -98,6 +110,38 @@ void hb_contract_telemetry_record_reloc(unsigned long sites, int overflow) {
     if (overflow) telemetry_add(&g_reloc_overflow, 1);
 }
 
+void hb_contract_telemetry_record_reloc_store(unsigned long patched, unsigned long literal) {
+    telemetry_add(&g_rl_stores, 1);
+    telemetry_add(&g_rl_patched_sites, (uint64_t)patched);
+    telemetry_add(&g_rl_literal_sites, (uint64_t)literal);
+}
+
+void hb_contract_telemetry_record_reloc_highhalf(unsigned long sites) {
+    telemetry_add(&g_rl_highhalf_sites, (uint64_t)sites);
+}
+
+void hb_contract_telemetry_record_reloc_x23_value(unsigned long sites) {
+    telemetry_add(&g_rl_x23_value, (uint64_t)sites);
+}
+
+void hb_contract_telemetry_record_promote_compile(void) {
+    telemetry_add(&g_promo_compiles, 1);
+}
+
+/* Reasons mirror hb_reloc_decline_t in hb_runtime.c. Kept as an int across the boundary so the
+ * telemetry header does not have to know the runtime's private enum. */
+void hb_contract_telemetry_record_reloc_decline(int reason) {
+    switch (reason) {
+        case 1: telemetry_add(&g_rl_overflow, 1); break;
+        case 2: telemetry_add(&g_rl_unknown_helper, 1); break;
+        case 3: telemetry_add(&g_rl_hostptr, 1); break;
+        case 4: telemetry_add(&g_rl_collision, 1); break;
+        case 5: telemetry_add(&g_rl_desync, 1); break;
+        case 6: telemetry_add(&g_rl_roundtrip, 1); break;
+        default: break;
+    }
+}
+
 void hb_contract_telemetry_record_compile(void) {
     telemetry_add(&g_compile_count, 1);
     hb_contract_telemetry_maybe_emit_progress();
@@ -131,6 +175,18 @@ void hb_contract_telemetry_snapshot(hb_contract_telemetry_counts_t* out) {
     out->reloc_blocks = telemetry_load(&g_reloc_blocks);
     out->reloc_sites = telemetry_load(&g_reloc_sites);
     out->reloc_overflow = telemetry_load(&g_reloc_overflow);
+    out->rl_stores = telemetry_load(&g_rl_stores);
+    out->rl_literal_sites = telemetry_load(&g_rl_literal_sites);
+    out->rl_highhalf_sites = telemetry_load(&g_rl_highhalf_sites);
+    out->rl_patched_sites = telemetry_load(&g_rl_patched_sites);
+    out->rl_x23_value = telemetry_load(&g_rl_x23_value);
+    out->promo_compiles = telemetry_load(&g_promo_compiles);
+    out->rl_hostptr = telemetry_load(&g_rl_hostptr);
+    out->rl_unknown_helper = telemetry_load(&g_rl_unknown_helper);
+    out->rl_overflow = telemetry_load(&g_rl_overflow);
+    out->rl_desync = telemetry_load(&g_rl_desync);
+    out->rl_collision = telemetry_load(&g_rl_collision);
+    out->rl_roundtrip = telemetry_load(&g_rl_roundtrip);
     out->store_skips = telemetry_load(&g_store_skips);
     out->bytes_loaded = telemetry_load(&g_bytes_loaded);
     out->bytes_stored = telemetry_load(&g_bytes_stored);
@@ -151,6 +207,10 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     "store_skips=%llu store_skip_multi=%llu store_skip_unmatched=%llu "
                     "mh_toomany=%llu mh_widearg=%llu mh_unkhelper=%llu mh_argshape=%llu "
                     "reloc_blocks=%llu reloc_sites=%llu reloc_overflow=%llu "
+                    "rl_stores=%llu rl_patched=%llu rl_literal=%llu rl_highhalf=%llu "
+                    "rl_x23val=%llu promo_compiles=%llu "
+                    "rl_hostptr=%llu rl_unkhelper=%llu rl_overflow=%llu "
+                    "rl_desync=%llu rl_collision=%llu rl_roundtrip=%llu "
                     "bytes_loaded=%llu bytes_stored=%llu "
                     "compile_count=%llu translation_count=%llu "
                     "distinct_translation_count=%llu dispatches=%llu blocks=%llu steps=%llu\n",
@@ -169,6 +229,18 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     (unsigned long long)counts->reloc_blocks,
                     (unsigned long long)counts->reloc_sites,
                     (unsigned long long)counts->reloc_overflow,
+                    (unsigned long long)counts->rl_stores,
+                    (unsigned long long)counts->rl_patched_sites,
+                    (unsigned long long)counts->rl_literal_sites,
+                    (unsigned long long)counts->rl_highhalf_sites,
+                    (unsigned long long)counts->rl_x23_value,
+                    (unsigned long long)counts->promo_compiles,
+                    (unsigned long long)counts->rl_hostptr,
+                    (unsigned long long)counts->rl_unknown_helper,
+                    (unsigned long long)counts->rl_overflow,
+                    (unsigned long long)counts->rl_desync,
+                    (unsigned long long)counts->rl_collision,
+                    (unsigned long long)counts->rl_roundtrip,
                     (unsigned long long)counts->bytes_loaded,
                     (unsigned long long)counts->bytes_stored,
                     (unsigned long long)counts->compile_count,
@@ -181,11 +253,15 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
 
 int hb_contract_telemetry_emit_summary(FILE* stream) {
     hb_contract_telemetry_counts_t counts;
-    /* 1024, not 512: the line now carries 20 %llu fields, each up to 20 digits, and the
-     * overflow branch below RETURNS SILENTLY — a buffer one field too small would make the
-     * whole measurement vanish with no error, which is the failure mode this file exists to
-     * prevent. */
-    char line[1024];
+    /* 4096, not 1024: the line now carries 32 %llu fields, each up to 20 digits plus a label.
+     * The old 1024 was sized for 20 fields and the nine rl_* counters would have overrun it.
+     *
+     * That mattered more than arithmetic usually does here, because the overflow branch below
+     * used to `return 0` — the whole measurement vanished with no error, which is precisely the
+     * failure this file exists to prevent, and it had already cost two A/Bs. It now says so on
+     * stderr instead of disappearing. A truncation is a bug in this file, not a run condition,
+     * so it should be impossible to read the log and not notice. */
+    char line[4096];
     int expected = 0;
     int n;
 
@@ -195,7 +271,14 @@ int hb_contract_telemetry_emit_summary(FILE* stream) {
         return 0;
     hb_contract_telemetry_snapshot(&counts);
     n = hb_contract_telemetry_format_summary(line, sizeof(line), &counts);
-    if (n < 0 || (size_t)n >= sizeof(line)) return 0;
+    if (n < 0 || (size_t)n >= sizeof(line)) {
+        fprintf(stream,
+                "macrunner-hb-translation-cache-summary-TRUNCATED: need=%d have=%zu"
+                " (raise the buffer in hb_contract_telemetry.c)\n",
+                n, sizeof(line));
+        fflush(stream);
+        return 0;
+    }
     fputs(line, stream);
     fflush(stream);
     return 1;
@@ -214,7 +297,7 @@ int hb_contract_telemetry_emit_summary(FILE* stream) {
 static void hb_contract_telemetry_maybe_emit_progress(void) {
     static uint64_t next_at = HB_TELEMETRY_PROGRESS_EVERY;
     hb_contract_telemetry_counts_t counts;
-    char line[1024];  /* see the note in emit_summary: too small means silent nothing */
+    char line[4096];  /* see the note in emit_summary: too small means silent nothing */
     uint64_t compiles;
     int n;
 
@@ -225,7 +308,12 @@ static void hb_contract_telemetry_maybe_emit_progress(void) {
 
     hb_contract_telemetry_snapshot(&counts);
     n = hb_contract_telemetry_format_summary(line, sizeof(line), &counts);
-    if (n < 0 || (size_t)n >= sizeof(line)) return;
+    if (n < 0 || (size_t)n >= sizeof(line)) {
+        fprintf(stderr, "macrunner-hb-translation-cache-progress-TRUNCATED: need=%d have=%zu\n",
+                n, sizeof(line));
+        fflush(stderr);
+        return;
+    }
     /* Same fields, different marker, so a partial reading can never be mistaken for the final
      * one — today's worst hours came from reading numbers that meant something else. */
     fputs("macrunner-hb-translation-cache-progress: ", stderr);
@@ -253,6 +341,29 @@ void hb_contract_telemetry_reset_for_test(void) {
     __atomic_store_n(&g_misses, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_stores, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_store_skips, 0, __ATOMIC_RELAXED);
+    /* These were missing, so a test that reset and re-ran saw the previous case's rejection
+     * counts added to its own. Every counter this file owns belongs here. */
+    __atomic_store_n(&g_store_skip_multi, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_store_skip_unmatched, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_mh_too_many, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_mh_wide_arg, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_mh_unknown_helper, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_mh_arg_shape, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_reloc_blocks, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_reloc_sites, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_reloc_overflow, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_stores, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_literal_sites, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_highhalf_sites, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_patched_sites, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_x23_value, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_promo_compiles, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_hostptr, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_unknown_helper, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_overflow, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_desync, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_collision, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_rl_roundtrip, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_bytes_loaded, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_bytes_stored, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_compile_count, 0, __ATOMIC_RELAXED);

@@ -33,9 +33,32 @@ extern "C" {
  * the cap is set well clear of the measured distribution and overflow stays counted. */
 #define HB_CODEGEN_MAX_RELOCS 256
 
+/* What the recorded value MEANS, stated by the emitter rather than guessed from the register.
+ *
+ * The store path used to read `reg == 23` as "this is a helper address", because emit_call_helper()
+ * is the obvious producer of x23. It is not the only one. emit_mask_x_reg_to_size() uses x23 as its
+ * scratch register at 22 of its 25 call sites, and for a 32-bit operand it emits
+ * `mov x23, 0xffffffff` — the zero-extension every 32-bit x86 operation needs. A plain 32-bit ADD
+ * produces exactly one relocation, and it is that. The store path looked 0xffffffff up in the
+ * helper id table, found nothing, and declined the whole block: 53 655 of them on Hollow Knight,
+ * 90 % of all declines and 24.6 % of every block that reached the cache.
+ *
+ * It is also why registering the 24 missing helpers (05f3f3f9) moved retention by nothing — the
+ * old matcher only ever inspected the real `blr x23` target, while the table sees every x23 write.
+ * (A large `mem.disp` is parked in x23 too, at hb_arm64_codegen.c:993, but only when direct-mem is
+ * enabled, which it is not on Hollow Knight. The mask is the one that fires.)
+ *
+ * That is the same mistake `mh_widearg` was: matching the register instead of the value. Codegen
+ * knows which one it is emitting, so it says so here and nothing downstream has to infer it. */
+typedef enum {
+    HB_RELOC_KIND_VALUE = 0,  /* an ordinary immediate — classified by value at store time */
+    HB_RELOC_KIND_HELPER = 1  /* a C helper entry address — only ever from emit_call_helper() */
+} hb_codegen_reloc_kind_t;
+
 typedef struct {
     size_t off;      /* byte offset of the 4-instruction MOVZ/MOVK sequence */
-    uint8_t reg;     /* destination register: 1 (argument) or 23 (helper target) */
+    uint8_t reg;     /* destination register: 1/2/3/4 (arguments) or 23 (helper target, scratch) */
+    uint8_t kind;    /* hb_codegen_reloc_kind_t — fits in existing padding, so the table is free */
     uint64_t value;  /* absolute value written, resolved against the block at store time */
 } hb_codegen_reloc_t;
 

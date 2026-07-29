@@ -80,6 +80,11 @@ void hb_cache_entry_free(hb_cache_entry_t* entry);
 
 hb_result_t hb_cache_key_compute(const uint8_t* code, size_t len, hb_arch_t arch, uint32_t version, hb_cache_key_t* out);
 
+/* Process-wide sharing (MACRUNNER_HB_CACHE_SHARED=1): how many distinct handles were actually
+ * loaded vs how many opens were satisfied by reusing the existing one. Reported so an arm can be
+ * proven to have taken the shared path rather than assumed to have. */
+void hb_cache_shared_stats(unsigned long long* opens, unsigned long long* reuses);
+
 #ifdef __cplusplus
 }
 #endif

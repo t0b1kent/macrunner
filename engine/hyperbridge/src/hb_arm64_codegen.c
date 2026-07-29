@@ -226,32 +226,57 @@ static void emit_stlr_from_reg(hb_codegen_buffer_t* buf, int rt, int rn, hb_size
     }
 }
 
-/* MacRunner 2026-07-29: record x1/x23 immediates for the relocation table (hb_codegen.h).
+/* MacRunner 2026-07-29: record x1/x2/x3/x4/x23 immediates for the relocation table (hb_codegen.h).
  *
- * These are the only two registers the persistent cache has to rewrite: x23 carries the helper
- * address, x1 the block or instruction pointer. Recording here rather than at the 99 call sites
- * keeps the change to one function and cannot drift out of sync with them.
+ * Recording here rather than at the 103 call sites keeps the change to one function and cannot
+ * drift out of sync with them.
+ *
+ * WHY THESE FIVE REGISTERS, AND WHY THAT IS THE WHOLE SET.  A value has to be rewritten when the
+ * persistent cache reloads a block only if it differs between the run that stored it and the run
+ * that loads it — in practice, a host pointer.  Grepping every `(uint64_t)(uintptr_t)` argument
+ * to this function gives 46 sites: x1=38 (`instr`, `block`, and pointers to OTHER blocks —
+ * `first`/`sort`/`entry`/`call`), x2=5, x3=2, x4=1, and x23 by construction (helper addresses).
+ * Nothing else.  The other 33 imm64 sites — x5, x6, x20, x21, x22 — carry only guest-derived
+ * values (`src1.imm`, `target`, `guest_addr`, `mem.disp`, `dst.size`), which the cache key
+ * already covers.  So a table over these five registers sees EVERY value that can go stale, and
+ * the store path can stop guessing at the shape of the code.
+ *
+ * x2/x3/x4 were previously not recorded, and the store path vetoed any block that moved an
+ * imm64 into one of them (`mh_widearg`, 22 % of all rejections).  It vetoed on the instruction
+ * PATTERN without ever looking at the value, so blocks whose x2 held `instr->dst.reg` — a small
+ * integer needing no relocation whatsoever — were thrown away with the rest.
  *
  * Recorded unconditionally, including values that turn out not to be pointers — resolution
  * happens at store time against the block, where the answer is knowable. Over-recording costs a
  * table slot; under-recording would silently produce a block that cannot be restored. */
-static void codegen_note_reloc(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
+static void codegen_note_reloc(hb_codegen_buffer_t* buf, int rd, uint64_t val, int kind) {
     if (!buf) return;
-    if (rd != 1 && rd != 23) return;
+    if (rd != 1 && rd != 2 && rd != 3 && rd != 4 && rd != 23) return;
     if (buf->reloc_count >= HB_CODEGEN_MAX_RELOCS) { buf->reloc_overflow = true; return; }
     buf->relocs[buf->reloc_count].off = buf->size;  /* before the first MOVZ is emitted */
     buf->relocs[buf->reloc_count].reg = (uint8_t)rd;
+    buf->relocs[buf->reloc_count].kind = (uint8_t)kind;
     buf->relocs[buf->reloc_count].value = val;
     buf->reloc_count++;
 }
 
-static void emit_mov_imm64(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
-    codegen_note_reloc(buf, rd, val);
+/* Only emit_call_helper() passes HELPER. Every other emitter goes through emit_mov_imm64() below
+ * and is classified by value at store time — which is what x23's OTHER producers need and never
+ * got while the kind was inferred from the register: emit_mask_x_reg_to_size()'s
+ * `mov x23, 0xffffffff` (the 32-bit zero-extension, on a quarter of all blocks) and a large
+ * `mem.disp` parked in x23 as scratch. */
+static void emit_mov_imm64_kind(hb_codegen_buffer_t* buf, int rd, uint64_t val, int kind) {
+    codegen_note_reloc(buf, rd, val, kind);
     /* MOVZ + up to 3 MOVK */
     emit_u32(buf, 0xd2800000 | ((val & 0xFFFF) << 5) | rd);
     emit_u32(buf, 0xf2a00000 | (((val >> 16) & 0xFFFF) << 5) | rd);
     emit_u32(buf, 0xf2c00000 | (((val >> 32) & 0xFFFF) << 5) | rd);
     emit_u32(buf, 0xf2e00000 | (((val >> 48) & 0xFFFF) << 5) | rd);
+}
+
+/* The form all 103 call sites use, so none of them had to change. */
+static void emit_mov_imm64(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
+    emit_mov_imm64_kind(buf, rd, val, HB_RELOC_KIND_VALUE);
 }
 
 static void emit_mov_imm64_compact(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
@@ -3372,9 +3397,14 @@ static bool block_has_atomic_ir(const hb_ir_block_t* block) {
     return false;
 }
 
-/* Emit a call to a C helper via BLR */
+/* Emit a call to a C helper via BLR.
+ *
+ * The ONLY producer of HB_RELOC_KIND_HELPER. Keeping that true is what lets the store path name
+ * these addresses by helper id and classify every other x23 write by value; if a second helper
+ * emitter ever appears it must tag itself here too, and scripts/hb-check-reloc-invariant.sh
+ * fails the build if one shows up untagged. */
 static void emit_call_helper(hb_codegen_buffer_t* buf, void* fn) {
-    emit_mov_imm64(buf, 23, (uint64_t)fn);
+    emit_mov_imm64_kind(buf, 23, (uint64_t)fn, HB_RELOC_KIND_HELPER);
     emit_blr(buf, 23);
 }
 

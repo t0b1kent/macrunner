@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #define HB_AOT_MAGIC   "HBTC"
 #define HB_AOT_VERSION 2u
@@ -61,9 +62,40 @@ struct hb_cache {
     size_t* hash_index;   /* slot -> entry position, or HB_CACHE_INDEX_EMPTY */
     size_t  hash_cap;     /* power-of-two slot count (0 = none) */
     bool    index_valid;  /* false -> rebuild on next lookup */
+
+    /* MacRunner 2026-07-29 (HK speed lane, iter 7): process-wide sharing, gated by
+     * MACRUNNER_HB_CACHE_SHARED. hb_jit_runtime_create() runs once per GUEST THREAD and each
+     * one called hb_cache_open() -> load_entries(), i.e. a full read of the whole cache file
+     * into a PRIVATE copy. Measured on Hollow Knight: 77 opens per process, 99.9% of all
+     * runtime-creation time, growing 34x as the file fills (4.4 ms -> 151 ms, max 229 ms), and
+     * 77 x 42 MB of duplicated blobs.
+     *
+     * Sharing is safe because no pointer into `entries` ever escapes the handle: hb_cache_get()
+     * returns a freshly malloc'd COPY including native_code (:372-384) which the caller frees
+     * with hb_cache_entry_free(). So the only requirement is mutual exclusion on the handle,
+     * which `lock` provides. It is taken ONLY when shared, so the unshared path stays
+     * byte-for-byte the code it was and an A/B's control arm is uncontaminated. */
+    pthread_mutex_t lock;
+    bool     shared;    /* participating in the process-wide singleton */
+    unsigned refcount;  /* shared only: opens outstanding; the last close writes back */
 };
 
 #define HB_CACHE_INDEX_EMPTY ((size_t)-1)
+
+/* The process-wide handle and the lock that guards *its lifetime* (distinct from c->lock, which
+ * guards the handle's contents). Keyed by resolved path + versions: a second root in the same
+ * process legitimately gets its own unshared handle rather than silently aliasing the first. */
+static pthread_mutex_t g_shared_mu = PTHREAD_MUTEX_INITIALIZER;
+static hb_cache_t*     g_shared_cache;
+static unsigned long long g_shared_opens, g_shared_reuses;
+
+static bool cache_sharing_enabled(void) {
+    const char* v = getenv("MACRUNNER_HB_CACHE_SHARED");
+    return v && v[0] && v[0] != '0';
+}
+
+static void cache_lock(hb_cache_t* c)   { if (c->shared) pthread_mutex_lock(&c->lock); }
+static void cache_unlock(hb_cache_t* c) { if (c->shared) pthread_mutex_unlock(&c->lock); }
 
 static void free_entries(hb_disk_entry_t* entries, size_t count) {
     if (!entries) return;
@@ -243,20 +275,87 @@ static hb_result_t append_entry(hb_cache_t* c, const hb_disk_entry_t* entry) {
 }
 
 hb_cache_t* hb_cache_open(const char* root, const hb_cache_options_t* options) {
-    hb_cache_t* c = calloc(1, sizeof(hb_cache_t));
+    hb_cache_t* c;
+    char want_root[512], want_path[512];
+    uint32_t fv = options && options->format_version ? options->format_version : HB_AOT_VERSION;
+    uint32_t av = options && options->abi_version ? options->abi_version : HB_AOT_ABI;
+    bool share = cache_sharing_enabled();
+
+    memset(want_root, 0, sizeof(want_root));
+    if (root && root[0]) strncpy(want_root, root, sizeof(want_root) - 1);
+    else strncpy(want_root, "build/hyperbridge-cache", sizeof(want_root) - 1);
+    snprintf(want_path, sizeof(want_path), "%s/translation-cache.bin", want_root);
+
+    /* Fast path: an identical handle already exists in this process. Same file AND same
+     * versions -- a version mismatch means a different on-disk format, so aliasing would hand
+     * back entries the caller cannot read. */
+    if (share) {
+        pthread_mutex_lock(&g_shared_mu);
+        if (g_shared_cache && g_shared_cache->format_version == fv &&
+            g_shared_cache->abi_version == av &&
+            strcmp(g_shared_cache->path, want_path) == 0) {
+            g_shared_cache->refcount++;
+            g_shared_reuses++;
+            c = g_shared_cache;
+            pthread_mutex_unlock(&g_shared_mu);
+            return c;
+        }
+        pthread_mutex_unlock(&g_shared_mu);
+    }
+
+    c = calloc(1, sizeof(hb_cache_t));
     if (!c) return NULL;
-    c->format_version = options && options->format_version ? options->format_version : HB_AOT_VERSION;
-    c->abi_version = options && options->abi_version ? options->abi_version : HB_AOT_ABI;
-    if (root && root[0]) strncpy(c->root, root, sizeof(c->root) - 1);
-    else strncpy(c->root, "build/hyperbridge-cache", sizeof(c->root) - 1);
+    c->format_version = fv;
+    c->abi_version = av;
+    memcpy(c->root, want_root, sizeof(c->root));
     mkdir(c->root, 0755);
-    snprintf(c->path, sizeof(c->path), "%s/translation-cache.bin", c->root);
+    snprintf(c->path, sizeof(c->path), "%s", want_path);
     if (ensure_file(c) != 0) { free(c); return NULL; }
     if (load_entries(c, &c->entries, &c->count) != HB_OK) { free(c); return NULL; }
     c->stats.entries_loaded = c->count;
     c->stats.entries_current = c->count;
     c->cap = c->count ? c->count : 16;
+
+    if (share) {
+        pthread_mutex_lock(&g_shared_mu);
+        if (g_shared_cache && g_shared_cache->format_version == fv &&
+            g_shared_cache->abi_version == av &&
+            strcmp(g_shared_cache->path, want_path) == 0) {
+            /* Lost a race: another thread published an identical handle while this one was
+             * loading. Drop ours and join theirs -- two live handles on one file is exactly the
+             * lost-update hazard this change exists to remove. */
+            g_shared_cache->refcount++;
+            g_shared_reuses++;
+            hb_cache_t* winner = g_shared_cache;
+            pthread_mutex_unlock(&g_shared_mu);
+            free_entries(c->entries, c->count);
+            free(c->hash_index);
+            free(c);
+            return winner;
+        }
+        if (!g_shared_cache) {
+            if (pthread_mutex_init(&c->lock, NULL) == 0) {
+                c->shared = true;
+                c->refcount = 1;
+                g_shared_cache = c;
+                g_shared_opens++;
+                fprintf(stderr, "macrunner-hb-cache-shared: mode=shared path=%s entries=%zu\n",
+                        c->path, c->count);
+                fflush(stderr);
+            }
+            /* mutex_init failure -> stays unshared; correct, just not shared. */
+        }
+        pthread_mutex_unlock(&g_shared_mu);
+    }
     return c;
+}
+
+/* Reuse counters, for proving the shared path was actually taken rather than assumed. */
+void hb_cache_shared_stats(unsigned long long* opens, unsigned long long* reuses) {
+    pthread_mutex_lock(&g_shared_mu);
+    if (opens) *opens = g_shared_opens;
+    if (reuses) *reuses = g_shared_reuses;
+    pthread_mutex_unlock(&g_shared_mu);
 }
 
 hb_cache_t* hb_cache_create(const char* path) {
@@ -276,12 +375,33 @@ hb_cache_t* hb_cache_create(const char* path) {
 
 void hb_cache_destroy(hb_cache_t* cache) {
     if (!cache) return;
+    if (cache->shared) {
+        pthread_mutex_lock(&g_shared_mu);
+        if (g_shared_cache == cache) g_shared_cache = NULL;
+        pthread_mutex_unlock(&g_shared_mu);
+        pthread_mutex_destroy(&cache->lock);
+    }
     free_entries(cache->entries, cache->count);
     free(cache->hash_index);
     free(cache);
 }
 void hb_cache_close(hb_cache_t* cache) {
     if (!cache) return;
+    if (cache->shared) {
+        /* Only the LAST close writes back and frees. This also removes the lost-update hazard
+         * the unshared path carries: 77 handles on one file, each rewriting it wholesale from a
+         * private snapshot through rename(), is last-close-wins. (Not observed in timeout-killed
+         * runs, which never destroy a runtime at all -- but a clean exit is exactly what a user
+         * quitting the game produces.) */
+        pthread_mutex_lock(&g_shared_mu);
+        if (cache->refcount > 1) {
+            cache->refcount--;
+            pthread_mutex_unlock(&g_shared_mu);
+            return;
+        }
+        cache->refcount = 0;
+        pthread_mutex_unlock(&g_shared_mu);
+    }
     if (cache->dirty) (void)write_entries_atomic(cache, cache->entries, cache->count);
     hb_cache_destroy(cache);
 }
@@ -362,7 +482,13 @@ static size_t hb_cache_find_pos(hb_cache_t* c, const hb_cache_key_t* key) {
     return HB_CACHE_INDEX_EMPTY;
 }
 
-hb_result_t hb_cache_get(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t** out) {
+/* ── Locked internals ──────────────────────────────────────────────────────────────────────
+ * Every public entry point below takes c->lock (a no-op unless the handle is shared) and calls
+ * exactly one of these. The split exists so no public function can call another public function
+ * and self-deadlock -- hb_cache_lookup->hb_cache_get, hb_cache_store->hb_cache_put and
+ * hb_cache_prune->hb_cache_clear were all doing precisely that before sharing existed.
+ * INVARIANT: a *_locked function never calls a public hb_cache_* function. */
+static hb_result_t cache_get_locked(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t** out) {
     size_t pos;
     if (!cache || !key || !out) return HB_ERR_INVALID_ARG;
     *out = NULL;
@@ -389,11 +515,7 @@ hb_result_t hb_cache_get(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_
     return HB_ERR_NOT_FOUND;
 }
 
-hb_result_t hb_cache_lookup(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t** out) {
-    return hb_cache_get(cache, key, out);
-}
-
-hb_result_t hb_cache_put(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t* entry) {
+static hb_result_t cache_put_locked(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t* entry) {
     size_t pos;
     bool replacing;
     if (!cache || !key || !entry) return HB_ERR_INVALID_ARG;
@@ -437,19 +559,7 @@ hb_result_t hb_cache_put(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_
     return append_entry(cache, &cache->entries[pos]);
 }
 
-hb_result_t hb_cache_store(hb_cache_t* cache, const hb_cache_key_t* key, const uint8_t* native_blob, size_t native_size, const hb_cache_entry_t* metadata) {
-    hb_cache_entry_t entry;
-    if (!cache || !key) return HB_ERR_INVALID_ARG;
-    memset(&entry, 0, sizeof(entry));
-    if (metadata) entry = *metadata;
-    entry.key = *key;
-    entry.native_code = (uint8_t*)native_blob;
-    entry.native_size = native_size;
-    entry.valid = true;
-    return hb_cache_put(cache, key, &entry);
-}
-
-hb_result_t hb_cache_invalidate(hb_cache_t* cache, uint32_t version) {
+static hb_result_t cache_invalidate_locked(hb_cache_t* cache, uint32_t version) {
     size_t count, keep = 0;
     hb_result_t r;
     if (!cache) return HB_ERR_INVALID_ARG;
@@ -470,7 +580,7 @@ hb_result_t hb_cache_invalidate(hb_cache_t* cache, uint32_t version) {
     return r;
 }
 
-hb_result_t hb_cache_invalidate_module(hb_cache_t* cache, uint64_t module_id) {
+static hb_result_t cache_invalidate_module_locked(hb_cache_t* cache, uint64_t module_id) {
     size_t count, keep = 0;
     hb_result_t r;
     if (!cache) return HB_ERR_INVALID_ARG;
@@ -491,15 +601,7 @@ hb_result_t hb_cache_invalidate_module(hb_cache_t* cache, uint64_t module_id) {
     return r;
 }
 
-hb_result_t hb_cache_prune(hb_cache_t* cache, uint64_t max_bytes) {
-    struct stat st;
-    if (!cache) return HB_ERR_INVALID_ARG;
-    if (stat(cache->path, &st) != 0) return HB_OK;
-    if ((uint64_t)st.st_size <= max_bytes) return HB_OK;
-    return hb_cache_clear(cache);
-}
-
-hb_result_t hb_cache_clear(hb_cache_t* cache) {
+static hb_result_t cache_clear_locked(hb_cache_t* cache) {
     if (!cache) return HB_ERR_INVALID_ARG;
     free_entries(cache->entries, cache->count);
     cache->entries = NULL;
@@ -511,10 +613,93 @@ hb_result_t hb_cache_clear(hb_cache_t* cache) {
     return write_entries_atomic(cache, NULL, 0);
 }
 
+/* ── Public entry points: take the handle lock, delegate to exactly one *_locked ──────────── */
+
+hb_result_t hb_cache_get(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t** out) {
+    hb_result_t r;
+    if (!cache) return HB_ERR_INVALID_ARG;
+    cache_lock(cache);
+    r = cache_get_locked(cache, key, out);
+    cache_unlock(cache);
+    return r;
+}
+
+hb_result_t hb_cache_lookup(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t** out) {
+    return hb_cache_get(cache, key, out);
+}
+
+hb_result_t hb_cache_put(hb_cache_t* cache, const hb_cache_key_t* key, hb_cache_entry_t* entry) {
+    hb_result_t r;
+    if (!cache) return HB_ERR_INVALID_ARG;
+    cache_lock(cache);
+    r = cache_put_locked(cache, key, entry);
+    cache_unlock(cache);
+    return r;
+}
+
+hb_result_t hb_cache_store(hb_cache_t* cache, const hb_cache_key_t* key, const uint8_t* native_blob, size_t native_size, const hb_cache_entry_t* metadata) {
+    hb_cache_entry_t entry;
+    hb_result_t r;
+    if (!cache || !key) return HB_ERR_INVALID_ARG;
+    memset(&entry, 0, sizeof(entry));
+    if (metadata) entry = *metadata;
+    entry.key = *key;
+    entry.native_code = (uint8_t*)native_blob;
+    entry.native_size = native_size;
+    entry.valid = true;
+    cache_lock(cache);
+    r = cache_put_locked(cache, key, &entry);
+    cache_unlock(cache);
+    return r;
+}
+
+hb_result_t hb_cache_invalidate(hb_cache_t* cache, uint32_t version) {
+    hb_result_t r;
+    if (!cache) return HB_ERR_INVALID_ARG;
+    cache_lock(cache);
+    r = cache_invalidate_locked(cache, version);
+    cache_unlock(cache);
+    return r;
+}
+
+hb_result_t hb_cache_invalidate_module(hb_cache_t* cache, uint64_t module_id) {
+    hb_result_t r;
+    if (!cache) return HB_ERR_INVALID_ARG;
+    cache_lock(cache);
+    r = cache_invalidate_module_locked(cache, module_id);
+    cache_unlock(cache);
+    return r;
+}
+
+hb_result_t hb_cache_clear(hb_cache_t* cache) {
+    hb_result_t r;
+    if (!cache) return HB_ERR_INVALID_ARG;
+    cache_lock(cache);
+    r = cache_clear_locked(cache);
+    cache_unlock(cache);
+    return r;
+}
+
+hb_result_t hb_cache_prune(hb_cache_t* cache, uint64_t max_bytes) {
+    struct stat st;
+    hb_result_t r;
+    if (!cache) return HB_ERR_INVALID_ARG;
+    cache_lock(cache);
+    if (stat(cache->path, &st) != 0 || (uint64_t)st.st_size <= max_bytes) {
+        cache_unlock(cache);
+        return HB_OK;
+    }
+    r = cache_clear_locked(cache);
+    cache_unlock(cache);
+    return r;
+}
+
 hb_result_t hb_cache_stats(hb_cache_t* cache, hb_cache_stats_t* out) {
     if (!cache || !out) return HB_ERR_INVALID_ARG;
+    cache_lock(cache);
     *out = cache->stats;
     out->entries_current = cache->count;
+    cache_unlock(cache);
     return HB_OK;
 }
 

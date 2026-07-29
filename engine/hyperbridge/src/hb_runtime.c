@@ -27,6 +27,8 @@
 #define HB_RUNTIME_CACHE_HELPER_MASK     0xfffffffffffff000ull
 #define HB_RUNTIME_CACHE_INSTR_SENTINEL  0x48425254494e0000ull /* HBRTIN + index */
 #define HB_RUNTIME_CACHE_INSTR_MASK      0xffffffffffff0000ull
+/* Key bit distinguishing entries written by the table-driven store path from the legacy one. */
+#define HB_PERSIST_FLAG_RELOC            0x80u
 
 extern void hb_jit_helper_exec_interp_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void hb_jit_helper_exec_load_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr);
@@ -1077,7 +1079,342 @@ static bool native_blob_helper_stubs(const uint8_t* code, size_t size,
     return true;
 }
 
-static bool native_blob_prepare_cache_store(const uint8_t* code, size_t size,
+/* ---- persistence driven by the relocation table ---------------------------
+ * MacRunner 2026-07-29.
+ *
+ * Everything above this line tries to RECOGNISE the emitted code: find the `blr x23`, walk
+ * backwards 16 bytes for the helper mov, scan a window for an arg1 mov, insist there is exactly
+ * one, and veto the block if anything moved an imm64 into x2/x3/x4. Measured on Hollow Knight,
+ * that matcher rejects 62 % of everything the JIT compiles, and the attribution says the
+ * rejections are its own artefacts rather than properties of the code:
+ *
+ *   mh_argshape  24585 (46 %)  — the lazy-flag and setcc paths put `instr->cc`, an integer, in
+ *                                x1 and the pointer in x2, so "exactly one recognised arg1"
+ *                                comes out zero. These are the densest paths in Mono output.
+ *   mh_widearg   11759 (22 %)  — the veto matches the mov PATTERN and never looks at the value.
+ *                                Ten of the eighteen x2/x3/x4 sites move a small constant
+ *                                (`instr->dst.reg`, `dst.size`, a 0/1 flag) that needs no
+ *                                relocation at all.
+ *   mh_toomany    3202 (6 %)   — a 16-site cap in the matcher, against a 256-entry table.
+ *
+ * Codegen already records every one of these sites as it emits them (hb_codegen.h), so none of
+ * this recognition is necessary. Reading the table instead:
+ *
+ *   store — classify each recorded site BY VALUE, register-agnostic: this block, one of its
+ *           instructions, a registered helper, a value provably too small to be a host pointer
+ *           (leave it), or an unresolvable host pointer (decline the block, and only this last
+ *           case describes the guest code rather than this implementation).
+ *   load  — scan for the 4-instruction form whose immediate is one of the sentinels and patch it
+ *           back, taking the destination register from the encoded instruction. No windows, no
+ *           pairing, no site cap, nothing to recognise.
+ *
+ * SOUNDNESS. This is only complete if the table sees every value that can differ between the run
+ * that stores a block and the run that loads it. It does: a whole-file grep of the 103
+ * emit_mov_imm64() call sites for `(uint64_t)(uintptr_t)` gives 46 hits, at x1 (38), x2 (5),
+ * x3 (2), x4 (1), plus x23 for helper addresses — and codegen_note_reloc() records exactly those
+ * five registers. The other 33 sites (x5, x6, x20, x21, x22) carry only guest-derived values
+ * (`src1.imm`, `target`, `guest_addr`, `mem.disp`, `dst.size`), which the cache key already
+ * covers. If that grep ever stops holding, the reloc_desync counter below is what will say so.
+ *
+ * DEFAULT OFF behind MACRUNNER_HB_CACHE_RELOC=1, like the multi-helper path before it: this
+ * rewrites emitted machine code, where a mistake executes wrong instructions instead of failing
+ * loudly. The round-trip self-check is kept and now exercises the new load path. */
+
+/* macOS arm64 maps __PAGEZERO over the low 4 GB, so no host pointer can live below it. A value
+ * under this floor is provably not a pointer into anything that moves between runs. */
+#define HB_RELOC_HOST_PTR_FLOOR 0x100000000ull
+/* ...and user virtual addresses are 47-bit, so nothing at or above 2^48 is one either. That
+ * second half is not pedantry: `emit_mov_imm64(buf, 1, (uint64_t)instr->src1.imm)` and the
+ * mem.disp sites pass SIGNED guest values through a uint64_t cast, so a displacement of -8 —
+ * about as common as x86 gets — arrives here as 0xfffffffffffffff8. Testing only the low floor
+ * would class every negative immediate as an unresolvable host pointer and decline the block.
+ * Sign-extended constants are stable across runs and need no relocation at all. */
+#define HB_RELOC_HOST_PTR_CEIL  0x0001000000000000ull
+
+/* x23 is the helper-call target register AND codegen's scratch for a large `mem.disp`. Named so
+ * the one remaining mention of it is visibly a counter and not a classifier. */
+#define HB_RELOC_SCRATCH_REG_X23 23
+
+/* Sound in the direction that matters: it may call a genuine pointer "maybe", never a provable
+ * non-pointer. Everything it returns true for is declined rather than mis-restored. */
+static bool reloc_value_may_be_host_pointer(uint64_t v) {
+    return v >= HB_RELOC_HOST_PTR_FLOOR && v < HB_RELOC_HOST_PTR_CEIL;
+}
+
+/* Mirrors the switch in hb_contract_telemetry_record_reloc_decline(). */
+typedef enum {
+    HB_RELOC_OK = 0,
+    HB_RELOC_DECLINE_OVERFLOW = 1,      /* table overflowed — not trustworthy for this block */
+    HB_RELOC_DECLINE_UNKNOWN_HELPER = 2,/* x23 value is not a registered helper */
+    HB_RELOC_DECLINE_HOSTPTR = 3,       /* host pointer that is not this block or its instrs */
+    HB_RELOC_DECLINE_COLLISION = 4,     /* a literal already looks like a sentinel */
+    HB_RELOC_DECLINE_DESYNC = 5,        /* table offset does not decode as the recorded mov */
+    HB_RELOC_DECLINE_ROUNDTRIP = 6      /* store->load did not reproduce the original bytes */
+} hb_reloc_decline_t;
+
+static bool native_blob_reloc_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_CACHE_RELOC");
+        cached = (v && v[0] && v[0] != '0') ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+/* Decode a 4-instruction MOVZ/MOVK immediate without being told which register to expect —
+ * the load path has only the bytes. The destination comes out of the MOVZ and is then verified
+ * against the remaining three by the existing decoder, so a coincidental byte pattern that is
+ * not a well-formed sequence is still rejected. */
+static bool arm64_mov_imm64_any_at(const uint8_t* code, size_t size, size_t off,
+                                   int* rd_out, uint64_t* value) {
+    uint32_t first;
+    int rd;
+    if (!code || off + 16 > size) return false;
+    memcpy(&first, code + off, sizeof(first));
+    rd = (int)(first & 0x1fu);
+    if (!arm64_mov_imm64_at(code, size, off, rd, value)) return false;
+    if (rd_out) *rd_out = rd;
+    return true;
+}
+
+static bool reloc_value_is_sentinel(uint64_t v) {
+    return v == HB_RUNTIME_CACHE_BLOCK_SENTINEL ||
+           (v & HB_RUNTIME_CACHE_INSTR_MASK) == HB_RUNTIME_CACHE_INSTR_SENTINEL ||
+           (v & HB_RUNTIME_CACHE_HELPER_MASK) == HB_RUNTIME_CACHE_HELPER_SENTINEL;
+}
+
+typedef enum {
+    HB_RELOC_VAL_LITERAL,   /* not a sentinel — leave it alone */
+    HB_RELOC_VAL_RESOLVED,  /* a sentinel, restored against this block */
+    HB_RELOC_VAL_CORRUPT    /* a sentinel that does not resolve — refuse the whole blob */
+} hb_reloc_val_t;
+
+static hb_reloc_val_t reloc_sentinel_restore(uint64_t v, const hb_ir_block_t* block,
+                                             uint64_t* out) {
+    if (v == HB_RUNTIME_CACHE_BLOCK_SENTINEL) {
+        *out = (uint64_t)(uintptr_t)block;
+        return HB_RELOC_VAL_RESOLVED;
+    }
+    if ((v & HB_RUNTIME_CACHE_INSTR_MASK) == HB_RUNTIME_CACHE_INSTR_SENTINEL) {
+        uint64_t idx = v & ~HB_RUNTIME_CACHE_INSTR_MASK;
+        if (!block->instrs || idx >= block->instr_count) return HB_RELOC_VAL_CORRUPT;
+        *out = (uint64_t)(uintptr_t)&block->instrs[idx];
+        return HB_RELOC_VAL_RESOLVED;
+    }
+    if ((v & HB_RUNTIME_CACHE_HELPER_MASK) == HB_RUNTIME_CACHE_HELPER_SENTINEL) {
+        void* addr = helper_addr_for_cache_id((uint8_t)(v & 0xffu));
+        if (!addr) return HB_RELOC_VAL_CORRUPT;
+        *out = (uint64_t)(uintptr_t)addr;
+        return HB_RELOC_VAL_RESOLVED;
+    }
+    return HB_RELOC_VAL_LITERAL;
+}
+
+/* Is this value one of the block's own instruction pointers? Pointer arithmetic rather than a
+ * scan over instr_count, so the cost does not grow with block length. */
+static bool reloc_instr_index(const hb_ir_block_t* block, uint64_t value, uint64_t* idx_out) {
+    uintptr_t base, v, delta;
+    size_t stride;
+    if (!block || !block->instrs || !block->instr_count) return false;
+    base = (uintptr_t)block->instrs;
+    v = (uintptr_t)value;
+    if (v < base) return false;
+    stride = sizeof(block->instrs[0]);
+    delta = v - base;
+    if (delta % stride) return false;
+    delta /= stride;
+    if (delta >= block->instr_count || delta > UINT16_MAX) return false;
+    *idx_out = (uint64_t)delta;
+    return true;
+}
+
+/* A literal that already looks like a sentinel would be indistinguishable from one we wrote, so
+ * the load-time scan would rewrite it. Declining such a block makes that scan unambiguous by
+ * construction rather than by probability. Sentinels sit at 0x4842_5254_xxxx_xxxx, far above any
+ * plausible small constant and far from any macOS heap pointer, so this should never fire — the
+ * counter says whether "should" is true. */
+static bool reloc_blob_has_stray_sentinel(const uint8_t* code, size_t size) {
+    for (size_t off = 0; off + 16 <= size; off += 4) {
+        int rd = 0;
+        uint64_t v = 0;
+        if (arm64_mov_imm64_any_at(code, size, off, &rd, &v) && reloc_value_is_sentinel(v))
+            return true;
+    }
+    return false;
+}
+
+static bool native_blob_reloc_load(const uint8_t* code, size_t size,
+                                   const hb_ir_block_t* block,
+                                   const uint8_t** out_code,
+                                   uint8_t** owned_code) {
+    uint8_t* patched = NULL;
+    if (!code || !size || !block || !out_code || !owned_code) return false;
+    *out_code = code;
+    *owned_code = NULL;
+
+    for (size_t off = 0; off + 16 <= size; off += 4) {
+        int rd = 0;
+        uint64_t v = 0, restored = 0;
+        if (!arm64_mov_imm64_any_at(code, size, off, &rd, &v)) continue;
+        switch (reloc_sentinel_restore(v, block, &restored)) {
+            case HB_RELOC_VAL_LITERAL:
+                continue;
+            case HB_RELOC_VAL_CORRUPT:
+                /* A sentinel we cannot resolve means the entry does not belong to this block.
+                 * Fail the load so the dispatcher recompiles; never hand back code with a
+                 * sentinel still in it, which would branch to 0x4842525448... */
+                free(patched);
+                return false;
+            case HB_RELOC_VAL_RESOLVED:
+                break;
+        }
+        if (!patched) {
+            patched = malloc(size);
+            if (!patched) return false;
+            memcpy(patched, code, size);
+        }
+        arm64_patch_mov_imm64_at(patched, size, off, rd, restored);
+    }
+    if (patched) {
+        *out_code = patched;
+        *owned_code = patched;
+    }
+    return true;
+}
+
+static bool native_blob_reloc_store(const hb_codegen_buffer_t* buf,
+                                    const hb_ir_block_t* block,
+                                    const uint8_t** out_code,
+                                    uint8_t** owned_code,
+                                    hb_reloc_decline_t* why) {
+    const uint8_t* code;
+    size_t size;
+    uint8_t* patched = NULL;
+    size_t patched_sites = 0, literal_sites = 0, highhalf_sites = 0, x23_value_sites = 0;
+
+    if (why) *why = HB_RELOC_OK;
+    if (!buf || !buf->code || !buf->size || !block || !out_code || !owned_code) return false;
+    code = buf->code;
+    size = buf->size;
+    *out_code = code;
+    *owned_code = NULL;
+
+    /* An overflowed table is missing sites, and a missing site is exactly the silent failure
+     * this design exists to avoid. hb_codegen.h sets the cap at 256 against a measured 4.9 sites
+     * per block, so this is a guard, not a path. */
+    if (buf->reloc_overflow) {
+        if (why) *why = HB_RELOC_DECLINE_OVERFLOW;
+        return false;
+    }
+    if (reloc_blob_has_stray_sentinel(code, size)) {
+        if (why) *why = HB_RELOC_DECLINE_COLLISION;
+        return false;
+    }
+    if (!buf->reloc_count) {
+        /* Nothing to relocate: the blob is position-independent as emitted. */
+        hb_contract_telemetry_record_reloc_store(0, 0);
+        return true;
+    }
+
+    patched = malloc(size);
+    if (!patched) return false;
+    memcpy(patched, code, size);
+
+    for (size_t i = 0; i < buf->reloc_count; i++) {
+        const hb_codegen_reloc_t* rl = &buf->relocs[i];
+        uint64_t seen = 0, idx = 0, sentinel;
+
+        /* The table must describe the code it came from. If a later pass rewrote these bytes,
+         * or an offset drifted, this catches it here instead of at some unrelated cache hit. */
+        if (!arm64_mov_imm64_at(code, size, rl->off, (int)rl->reg, &seen) || seen != rl->value) {
+            if (why) *why = HB_RELOC_DECLINE_DESYNC;
+            goto decline;
+        }
+
+        /* By KIND, not by register. `reg == 23` used to stand in for "helper address" and was
+         * wrong: emit_mask_x_reg_to_size() uses x23 as scratch and emits `mov x23, 0xffffffff`
+         * for the zero-extension every 32-bit x86 operand needs — a plain 32-bit ADD produces
+         * exactly that one relocation. Looking 0xffffffff up in the helper table failed and
+         * declined the whole block: 53 655 on Hollow Knight, 90 % of every decline. A mask is a
+         * constant, so it now falls through to the value classification below, lands under the
+         * 4 GB floor, and is left alone — which is all it ever needed. */
+        if (rl->kind == HB_RELOC_KIND_HELPER) {
+            uint8_t id = helper_cache_id_for_addr(rl->value);
+            if (!id) {
+                if (why) *why = HB_RELOC_DECLINE_UNKNOWN_HELPER;
+                goto decline;
+            }
+            sentinel = HB_RUNTIME_CACHE_HELPER_SENTINEL | id;
+        } else if (rl->value == (uint64_t)(uintptr_t)block) {
+            sentinel = HB_RUNTIME_CACHE_BLOCK_SENTINEL;
+        } else if (reloc_instr_index(block, rl->value, &idx)) {
+            sentinel = HB_RUNTIME_CACHE_INSTR_SENTINEL | idx;
+        } else if (!reloc_value_may_be_host_pointer(rl->value)) {
+            /* Provably not a host pointer — a condition code, an opcode, a register number, a
+             * size, or a sign-extended negative guest constant. Identical in every run, so it
+             * needs no relocation. This is the case the old matcher threw whole blocks away
+             * for. Counted split by half so the next run says which rule earned the retention. */
+            literal_sites++;
+            if (rl->value >= HB_RELOC_HOST_PTR_CEIL) highhalf_sites++;
+            /* The site the register-based test used to declare an unknown helper. Counting only —
+             * the classification above is on kind, and scripts/hb-check-reloc-invariant.sh fails
+             * the build if `rl->reg == 23` ever decides anything again. */
+            if (rl->reg == HB_RELOC_SCRATCH_REG_X23) x23_value_sites++;
+            continue;
+        } else {
+            /* A host pointer this block cannot name: `first`/`second`/`sort`/`entry` point into
+             * OTHER IR blocks, which will not exist at load time. Genuinely un-persistable, and
+             * the only decline here that is about the code rather than about this matcher. */
+            if (why) *why = HB_RELOC_DECLINE_HOSTPTR;
+            goto decline;
+        }
+
+        arm64_patch_mov_imm64_at(patched, size, rl->off, (int)rl->reg, sentinel);
+        patched_sites++;
+    }
+
+    /* SELF-CHECK, kept from the multi-helper path and now covering the new load path.
+     *
+     * Patching emitted machine code is the one class of change here that fails silently: a wrong
+     * offset does not crash the patcher, it executes wrong instructions later and far from the
+     * cause. So prove the transformation is invertible before trusting it — run the actual load
+     * path over the patched form and require the result to be byte-identical to what codegen
+     * produced. One extra pass and a memcmp per stored block, paid at compile time, never on the
+     * hot path. */
+    {
+        const uint8_t* back = NULL;
+        uint8_t* owned_back = NULL;
+        bool sound;
+
+        if (!native_blob_reloc_load(patched, size, block, &back, &owned_back)) {
+            if (why) *why = HB_RELOC_DECLINE_ROUNDTRIP;
+            goto decline;
+        }
+        sound = (memcmp(back, code, size) == 0);
+        free(owned_back);
+        if (!sound) {
+            if (why) *why = HB_RELOC_DECLINE_ROUNDTRIP;
+            goto decline;
+        }
+    }
+
+    hb_contract_telemetry_record_reloc_store((unsigned long)patched_sites,
+                                             (unsigned long)literal_sites);
+    hb_contract_telemetry_record_reloc_highhalf((unsigned long)highhalf_sites);
+    hb_contract_telemetry_record_reloc_x23_value((unsigned long)x23_value_sites);
+    *out_code = patched;
+    *owned_code = patched;
+    return true;
+
+decline:
+    free(patched);
+    *out_code = code;
+    *owned_code = NULL;
+    return false;
+}
+
+static bool native_blob_prepare_cache_store(const hb_codegen_buffer_t* buf,
+                                            const uint8_t* code, size_t size,
                                             const hb_ir_block_t* block,
                                             const uint8_t** out_code,
                                             uint8_t** owned_code) {
@@ -1086,6 +1423,13 @@ static bool native_blob_prepare_cache_store(const uint8_t* code, size_t size,
     if (!code || !size || !out_code || !owned_code) return false;
     *out_code = code;
     *owned_code = NULL;
+
+    if (native_blob_reloc_enabled() && buf) {
+        hb_reloc_decline_t why = HB_RELOC_OK;
+        if (native_blob_reloc_store(buf, block, out_code, owned_code, &why)) return true;
+        hb_contract_telemetry_record_reloc_decline((int)why);
+        return false;
+    }
 
     if (native_blob_multi_helper_enabled() && native_blob_has_helper_call(code, size)) {
         hb_cached_helper_stub_t stubs[HB_MULTI_HELPER_MAX];
@@ -1176,6 +1520,14 @@ static bool native_blob_prepare_cache_load(const uint8_t* code, size_t size,
     if (!code || !size || !out_code || !owned_code) return false;
     *out_code = code;
     *owned_code = NULL;
+
+    /* The table-driven load needs nothing but the sentinels the store path wrote, so it also
+     * reads blobs the older matchers produced — they use the same encoding. The persistent key
+     * still carries a mode bit (HB_PERSIST_FLAG_RELOC) so the two arms of an A/B can never share
+     * entries in the other direction: a reloc-stored blob can hold sentinels in x2/x3/x4, which
+     * the legacy load below does not know to restore. */
+    if (native_blob_reloc_enabled())
+        return native_blob_reloc_load(code, size, block, out_code, owned_code);
 
     /* Mirror of the multi-helper store path. A block written with several sentinel-patched sites
      * can only be loaded by code that patches all of them back, so the two must agree exactly:
@@ -1434,6 +1786,10 @@ static hb_result_t persistent_cache_key_for_block(hb_jit_runtime_t* rt,
     key->mode = (uint8_t)rt->ctx->mode;
     key->backend = (uint8_t)HB_BACKEND_JIT;
     key->flags = rt->persistent_cache_flags;
+    /* Blobs written by the table-driven store can carry sentinels in registers the legacy load
+     * path never restores, so the two must not read each other's entries. Keying on the mode
+     * makes a mixed cache directory a miss rather than a wrong translation. */
+    if (native_blob_reloc_enabled()) key->flags |= HB_PERSIST_FLAG_RELOC;
     return HB_OK;
 }
 
@@ -2011,7 +2367,30 @@ static void trace_jit_hot_block_tick(hb_jit_runtime_t* rt, hb_block_cache_entry_
     fflush(stderr);
 }
 
+/* Per-thread JIT runtime construction cost.
+ *
+ * HK builds one of these per guest thread -- 115 have been counted -- and each
+ * one mmaps a 128 MB JIT buffer and opens the persistent cache.  A burst of 15
+ * was observed inside the 58.5 s PhysX-ready-to-XInput stretch, which is the
+ * largest unexplained block in the deterministic boot prefix, and nothing has
+ * ever timed this path.  One line per construction (≈115 lines/run) says whether
+ * it is seconds or microseconds, and costs nothing to leave on. */
+static unsigned long long mm_rt_created;
+static unsigned long long mm_rt_total_ns;
+
+static unsigned long long mm_rt_now_ns(void) {
+#ifdef __APPLE__
+    return (unsigned long long)clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000000000ull + (unsigned long long)ts.tv_nsec;
+#endif
+}
+
 hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
+    unsigned long long rt_t0 = mm_rt_now_ns();
+    unsigned long long rt_buf_ns = 0, rt_cache_ns = 0, rt_mark;
     hb_jit_runtime_t* rt = calloc(1, sizeof(hb_jit_runtime_t));
     const char* size_env;
     size_t jit_size = 128u * 1024u * 1024u;
@@ -2025,7 +2404,9 @@ hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
         if (parsed >= 65536ULL && parsed <= 512ULL * 1024ULL * 1024ULL)
             jit_size = (size_t)parsed;
     }
+    rt_mark = mm_rt_now_ns();
     rt->jit_mem = hb_jit_buffer_create(jit_size);
+    rt_buf_ns = mm_rt_now_ns() - rt_mark;
     if (!rt->jit_mem) { free(rt); return NULL; }
     rt->block_cache = block_cache_create();
     if (!rt->block_cache) {
@@ -2040,7 +2421,9 @@ hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
     if (cache_enabled) {
         hb_cache_options_t options;
         memset(&options, 0, sizeof(options));
+        rt_mark = mm_rt_now_ns();
         rt->persistent_cache = hb_cache_open(cache_root && *cache_root ? cache_root : NULL, &options);
+        rt_cache_ns = mm_rt_now_ns() - rt_mark;
         hb_contract_telemetry_record_open(rt->persistent_cache != NULL);
         translation_cache_register_atexit();
         if (translation_cache_trace_enabled()) {
@@ -2049,6 +2432,17 @@ hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
                     rt->persistent_cache ? "ok" : "failed");
             fflush(stderr);
         }
+    }
+    {
+        unsigned long long total = mm_rt_now_ns() - rt_t0;
+        unsigned long long n = __atomic_add_fetch(&mm_rt_created, 1, __ATOMIC_RELAXED);
+        unsigned long long sum = __atomic_add_fetch(&mm_rt_total_ns, total, __ATOMIC_RELAXED);
+        fprintf(stderr,
+                "macrunner-hb-rtmeter: n=%llu total_ms=%.2f jitbuf_ms=%.2f cacheopen_ms=%.2f "
+                "cum_total_ms=%.2f jit_size=%zu\n",
+                n, (double)total / 1e6, (double)rt_buf_ns / 1e6,
+                (double)rt_cache_ns / 1e6, (double)sum / 1e6, jit_size);
+        fflush(stderr);
     }
     return rt;
 }
@@ -3452,6 +3846,9 @@ static void try_promote_copy_scan_counted_loop(hb_jit_runtime_t* rt, hb_context_
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
     hb_contract_telemetry_record_compile();
+    /* A fused hot-family block: written straight into jit_mem, never offered to the persistent
+     * cache. Counted here so it stops looking like a cache decline. */
+    hb_contract_telemetry_record_promote_compile();
     block_cache_put(rt, rt->block_cache, body->guest_addr, dest, emitted_size,
                     (uint32_t)(body->instr_count + guard->instr_count), body, true, false);
     if (trace_jit_blocks_enabled()) {
@@ -3524,6 +3921,9 @@ static void try_promote_bounded_scan_loop(hb_jit_runtime_t* rt, hb_context_t* ct
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
     hb_contract_telemetry_record_compile();
+    /* A fused hot-family block: written straight into jit_mem, never offered to the persistent
+     * cache. Counted here so it stops looking like a cache decline. */
+    hb_contract_telemetry_record_promote_compile();
     block_cache_put(rt, rt->block_cache, guard->guest_addr, dest, emitted_size,
                     (uint32_t)(guard->instr_count + body->instr_count), guard, true, false);
     if (trace_jit_blocks_enabled()) {
@@ -3681,6 +4081,9 @@ static void try_promote_byte_compare_loop(hb_jit_runtime_t* rt, hb_context_t* ct
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
     hb_contract_telemetry_record_compile();
+    /* A fused hot-family block: written straight into jit_mem, never offered to the persistent
+     * cache. Counted here so it stops looking like a cache decline. */
+    hb_contract_telemetry_record_promote_compile();
     block_cache_put(rt, rt->block_cache, cmp_block->guest_addr, dest, emitted_size,
                     (uint32_t)(cmp_block->instr_count + backedge_block->instr_count),
                     cmp_block, true, false);
@@ -3832,6 +4235,9 @@ static void try_promote_null_qword_scan_loop(hb_jit_runtime_t* rt, hb_context_t*
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
     hb_contract_telemetry_record_compile();
+    /* A fused hot-family block: written straight into jit_mem, never offered to the persistent
+     * cache. Counted here so it stops looking like a cache decline. */
+    hb_contract_telemetry_record_promote_compile();
     block_cache_put(rt, rt->block_cache, load_block->guest_addr, dest, emitted_size,
                     (uint32_t)(load_block->instr_count + dec_block->instr_count +
                                test_block->instr_count),
@@ -3988,6 +4394,9 @@ static void try_promote_i32_less_tiebreaker_comparator(hb_jit_runtime_t* rt, hb_
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
     hb_contract_telemetry_record_compile();
+    /* A fused hot-family block: written straight into jit_mem, never offered to the persistent
+     * cache. Counted here so it stops looking like a cache decline. */
+    hb_contract_telemetry_record_promote_compile();
     block_cache_put(rt, rt->block_cache, entry_block->guest_addr, dest, emitted_size,
                     (uint32_t)(entry_block->instr_count + equal->block->instr_count +
                                (less && less->block ? less->block->instr_count : 0)),
@@ -4228,6 +4637,9 @@ static void try_promote_unity_sort_inner_loop(hb_jit_runtime_t* rt, hb_context_t
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
     hb_contract_telemetry_record_compile();
+    /* A fused hot-family block: written straight into jit_mem, never offered to the persistent
+     * cache. Counted here so it stops looking like a cache decline. */
+    hb_contract_telemetry_record_promote_compile();
     block_cache_put(rt, rt->block_cache, sort->guest_addr, dest, emitted_size,
                     (uint32_t)(sort->instr_count + cont->instr_count),
                     sort, true, false);
@@ -4312,6 +4724,9 @@ static void try_promote_self_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
 
     if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return;
     hb_contract_telemetry_record_compile();
+    /* A fused hot-family block: written straight into jit_mem, never offered to the persistent
+     * cache. Counted here so it stops looking like a cache decline. */
+    hb_contract_telemetry_record_promote_compile();
     block_cache_put(rt, rt->block_cache, block->guest_addr, dest, emitted_size,
                     (uint32_t)block->instr_count, block, true, false);
     if (trace_jit_blocks_enabled()) {
@@ -4565,7 +4980,7 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                     const uint8_t* store_code = NULL;
                     uint8_t* owned_store_code = NULL;
                     hb_cache_entry_t metadata;
-                    if (native_blob_prepare_cache_store(code_buf->code, code_buf->size,
+                    if (native_blob_prepare_cache_store(code_buf, code_buf->code, code_buf->size,
                                                         compile_block, &store_code,
                                                         &owned_store_code)) {
                         memset(&metadata, 0, sizeof(metadata));
@@ -4579,8 +4994,15 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                     } else {
                         /* Attribute the skip: >1 helper call is the structural restriction in
                          * native_blob_single_arg_helper_stub; anything else is a single stub
-                         * whose shape was not recognised. See native_blob_helper_call_count. */
-                        if (native_blob_helper_call_count(code_buf->code, code_buf->size) > 1) {
+                         * whose shape was not recognised. See native_blob_helper_call_count.
+                         *
+                         * Skipped entirely in table-driven mode: the mh_* reasons describe the
+                         * old matcher, which did not run, and re-deriving them here would both
+                         * cost a scan and put numbers in the log that mean nothing. The rl_*
+                         * counters carry the attribution instead. */
+                        if (native_blob_reloc_enabled()) {
+                            /* already attributed by native_blob_prepare_cache_store */
+                        } else if (native_blob_helper_call_count(code_buf->code, code_buf->size) > 1) {
                             hb_contract_telemetry_record_cache_store_skip_multi();
                             {   /* re-derive the reason for attribution only */
                                 hb_cached_helper_stub_t why[HB_MULTI_HELPER_MAX];
@@ -5021,7 +5443,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                     const uint8_t* store_code = NULL;
                     uint8_t* owned_store_code = NULL;
                     hb_cache_entry_t metadata;
-                    if (native_blob_prepare_cache_store(code_buf->code, code_buf->size,
+                    if (native_blob_prepare_cache_store(code_buf, code_buf->code, code_buf->size,
                                                         compile_block, &store_code,
                                                         &owned_store_code)) {
                         memset(&metadata, 0, sizeof(metadata));
@@ -5035,8 +5457,15 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                     } else {
                         /* Attribute the skip: >1 helper call is the structural restriction in
                          * native_blob_single_arg_helper_stub; anything else is a single stub
-                         * whose shape was not recognised. See native_blob_helper_call_count. */
-                        if (native_blob_helper_call_count(code_buf->code, code_buf->size) > 1) {
+                         * whose shape was not recognised. See native_blob_helper_call_count.
+                         *
+                         * Skipped entirely in table-driven mode: the mh_* reasons describe the
+                         * old matcher, which did not run, and re-deriving them here would both
+                         * cost a scan and put numbers in the log that mean nothing. The rl_*
+                         * counters carry the attribution instead. */
+                        if (native_blob_reloc_enabled()) {
+                            /* already attributed by native_blob_prepare_cache_store */
+                        } else if (native_blob_helper_call_count(code_buf->code, code_buf->size) > 1) {
                             hb_contract_telemetry_record_cache_store_skip_multi();
                             {   /* re-derive the reason for attribution only */
                                 hb_cached_helper_stub_t why[HB_MULTI_HELPER_MAX];

@@ -3278,8 +3278,12 @@ extern void     hb_jit_helper_xgetbv(hb_context_t* ctx);
 extern void     hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern hb_result_t hb_interpreter_exec_one_for_jit(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_interp_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
-static void     hb_jit_helper_exec_pushf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
-static void     hb_jit_helper_exec_popf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
+/* not static: the persistent translation cache needs this address to be
+ * resolvable across translation units (helper id table in hb_runtime.c). */
+void     hb_jit_helper_exec_pushf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
+/* not static: the persistent translation cache needs this address to be
+ * resolvable across translation units (helper id table in hb_runtime.c). */
+void     hb_jit_helper_exec_popf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_atomic_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
 extern void     hb_jit_helper_exec_two_block_loop(hb_context_t* ctx,
                                                   const hb_ir_block_t* first,
@@ -5507,7 +5511,9 @@ static hb_result_t hb_jit_pop_flags_stack(hb_context_t* ctx, hb_size_t size, uin
     }
 }
 
-static void hb_jit_helper_exec_pushf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+/* not static: the persistent translation cache needs this address to be
+ * resolvable across translation units (helper id table in hb_runtime.c). */
+void hb_jit_helper_exec_pushf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     hb_size_t size;
     uint64_t value = 0;
     hb_result_t r;
@@ -5521,7 +5527,9 @@ static void hb_jit_helper_exec_pushf_ir(hb_context_t* ctx, const hb_ir_instr_t* 
     ctx->last_result = r;
 }
 
-static void hb_jit_helper_exec_popf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+/* not static: the persistent translation cache needs this address to be
+ * resolvable across translation units (helper id table in hb_runtime.c). */
+void hb_jit_helper_exec_popf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     hb_size_t size;
     uint64_t value = 0;
     hb_result_t r;

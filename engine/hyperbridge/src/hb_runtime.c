@@ -664,6 +664,51 @@ static bool native_blob_has_helper_call(const uint8_t* code, size_t size) {
     return false;
 }
 
+/* Declarations for the 24 helpers registered below; they live in hb_arm64_codegen.c. */
+extern void     hb_jit_helper_adjust_stack(hb_context_t* ctx, uint64_t delta);
+extern void     hb_jit_helper_cpuid(hb_context_t* ctx);
+extern uint64_t hb_jit_helper_eval_cond_lazy(hb_context_t* ctx, uint64_t cc);
+extern void     hb_jit_helper_exec_atomic_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern uint64_t hb_jit_helper_exec_binop_lazy(hb_context_t* ctx, uint64_t op, uint64_t dst_reg,
+                                              uint64_t src1_reg, uint64_t src2_is_reg,
+                                              uint64_t src2_value, uint64_t size);
+extern void     hb_jit_helper_exec_cmovcc_lazy(hb_context_t* ctx, uint64_t cc,
+                                               uint64_t dst_reg, uint64_t src_is_reg,
+                                               uint64_t src_value, uint64_t size);
+extern void     hb_jit_helper_exec_cmovcc_operand_lazy(hb_context_t* ctx, uint64_t cc, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_four_block_loop(hb_context_t* ctx,
+                                                   const hb_ir_block_t* first,
+                                                   const hb_ir_block_t* second,
+                                                   const hb_ir_block_t* third,
+                                                   const hb_ir_block_t* fourth);
+extern void     hb_jit_helper_exec_i32_less_tiebreaker(hb_context_t* ctx,
+                                                       const hb_ir_block_t* entry,
+                                                       const hb_ir_block_t* equal,
+                                                       const hb_ir_block_t* less);
+extern void hb_jit_helper_exec_popf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern void hb_jit_helper_exec_pushf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_setcc_lazy(hb_context_t* ctx, uint64_t cc,
+                                              uint64_t dst_reg);
+extern void     hb_jit_helper_exec_setcc_operand_lazy(hb_context_t* ctx, uint64_t cc, const hb_ir_instr_t* instr);
+extern void     hb_jit_helper_exec_two_block_loop(hb_context_t* ctx,
+                                                  const hb_ir_block_t* first,
+                                                  const hb_ir_block_t* second);
+extern void     hb_jit_helper_exec_unity_sort_inner_loop(hb_context_t* ctx,
+                                                         const hb_ir_block_t* sort);
+extern void     hb_jit_helper_lahf(hb_context_t* ctx);
+extern void     hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr,
+                                                 uint64_t dst_reg, uint64_t dst_size,
+                                                 uint64_t dst_reg_offset);
+extern uint64_t hb_jit_helper_load_u64(hb_context_t* ctx, uint64_t addr);
+extern uint64_t hb_jit_helper_pop(hb_context_t* ctx);
+extern void     hb_jit_helper_push(hb_context_t* ctx, uint64_t val);
+extern void     hb_jit_helper_sahf(hb_context_t* ctx);
+extern void     hb_jit_helper_store_sized(hb_context_t* ctx, uint64_t addr,
+                                          uint64_t val, uint64_t size);
+extern void     hb_jit_helper_store_u128(hb_context_t* ctx, uint64_t addr,
+                                         uint64_t lo, uint64_t hi);
+extern void     hb_jit_helper_xgetbv(hb_context_t* ctx);
+
 static void* helper_addr_for_cache_id(uint8_t id) {
     switch (id) {
         case 1: return (void*)hb_jit_helper_exec_ir_block;
@@ -697,12 +742,41 @@ static void* helper_addr_for_cache_id(uint8_t id) {
         case 29: return (void*)hb_jit_helper_exec_bit_scan;
         case 30: return (void*)hb_jit_helper_exec_loop_branch;
         case 31: return (void*)hb_jit_helper_try_native_memmove;
+        /* MacRunner 2026-07-29: 24 helpers were emitted by codegen but absent here, so any
+         * block calling one could not be persisted. Measured as the single largest cause of
+         * declined stores — mh_unkhelper=3931, ahead of the x2/x3/x4 veto (2746) and the site
+         * cap (573). Registering them is a far smaller change than the patcher work that
+         * preceded it, and it was invisible until the rejection counters existed. */
+        case 32: return (void*)hb_jit_helper_adjust_stack;
+        case 33: return (void*)hb_jit_helper_cpuid;
+        case 34: return (void*)hb_jit_helper_eval_cond_lazy;
+        case 35: return (void*)hb_jit_helper_exec_atomic_ir;
+        case 36: return (void*)hb_jit_helper_exec_binop_lazy;
+        case 37: return (void*)hb_jit_helper_exec_cmovcc_lazy;
+        case 38: return (void*)hb_jit_helper_exec_cmovcc_operand_lazy;
+        case 39: return (void*)hb_jit_helper_exec_four_block_loop;
+        case 40: return (void*)hb_jit_helper_exec_i32_less_tiebreaker;
+        case 41: return (void*)hb_jit_helper_exec_popf_ir;
+        case 42: return (void*)hb_jit_helper_exec_pushf_ir;
+        case 43: return (void*)hb_jit_helper_exec_setcc_lazy;
+        case 44: return (void*)hb_jit_helper_exec_setcc_operand_lazy;
+        case 45: return (void*)hb_jit_helper_exec_two_block_loop;
+        case 46: return (void*)hb_jit_helper_exec_unity_sort_inner_loop;
+        case 47: return (void*)hb_jit_helper_lahf;
+        case 48: return (void*)hb_jit_helper_load_to_reg_sized;
+        case 49: return (void*)hb_jit_helper_load_u64;
+        case 50: return (void*)hb_jit_helper_pop;
+        case 51: return (void*)hb_jit_helper_push;
+        case 52: return (void*)hb_jit_helper_sahf;
+        case 53: return (void*)hb_jit_helper_store_sized;
+        case 54: return (void*)hb_jit_helper_store_u128;
+        case 55: return (void*)hb_jit_helper_xgetbv;
         default: return NULL;
     }
 }
 
 static uint8_t helper_cache_id_for_addr(uint64_t addr) {
-    for (uint8_t id = 1; id <= 31; id++) {
+    for (uint8_t id = 1; id <= 55; id++) {
         if ((uintptr_t)helper_addr_for_cache_id(id) == (uintptr_t)addr) return id;
     }
     return 0;

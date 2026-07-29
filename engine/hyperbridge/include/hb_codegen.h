@@ -9,11 +9,44 @@
 extern "C" {
 #endif
 
+/* MacRunner 2026-07-29 — RELOCATION TABLE.
+ *
+ * The persistent cache has to turn absolute host addresses in emitted code into something a
+ * later process can restore. Until now it did that by RE-DISCOVERING the sites afterwards:
+ * scanning for `blr x23`, matching the shape of the surrounding movs, and rejecting anything it
+ * did not recognise. That is why 89 % of unstored blocks were multi-helper ones, and why four
+ * separate rejection reasons exist at all.
+ *
+ * Codegen already knows every one of these offsets at the instant it writes them. Recording them
+ * here removes the search — and with it the site cap, the x2/x3/x4 veto, the helper-id lookup
+ * and the arg1 window matching, which are all artefacts of guessing after the fact rather than
+ * properties of the code. This is the shape the literature uses for persistent code caches:
+ * emit relocatable host code, keep the relocation list beside it.
+ *
+ * Recorded centrally in emit_mov_imm64() for x1 and x23, so none of the 62 helper-call sites or
+ * 37 pointer-mov sites needs to change — a migration that size is where mistakes hide.
+ */
+/* 256, not 64. Measured on Hollow Knight: 39434 blocks produced 194322 sites — 4.9 per block on
+ * average — and 127 blocks overflowed a 64-entry table. The old single-stub matcher handled
+ * exactly ONE site, which is why it rejected almost everything: a block with one relocation is
+ * the exception here, not the rule. A table that silently truncates is worse than no table, so
+ * the cap is set well clear of the measured distribution and overflow stays counted. */
+#define HB_CODEGEN_MAX_RELOCS 256
+
+typedef struct {
+    size_t off;      /* byte offset of the 4-instruction MOVZ/MOVK sequence */
+    uint8_t reg;     /* destination register: 1 (argument) or 23 (helper target) */
+    uint64_t value;  /* absolute value written, resolved against the block at store time */
+} hb_codegen_reloc_t;
+
 /* Code generation result */
 typedef struct {
     uint8_t* code;
     size_t size;
     size_t capacity;
+    hb_codegen_reloc_t relocs[HB_CODEGEN_MAX_RELOCS];
+    size_t reloc_count;
+    bool reloc_overflow;  /* more sites than the table holds — do not trust it for this block */
     hb_arch_t arch;  /* guest architecture — defaults to HB_ARCH_X64 (=0) */
 } hb_codegen_buffer_t;
 

@@ -15,6 +15,9 @@ static uint64_t g_mh_too_many;
 static uint64_t g_mh_wide_arg;
 static uint64_t g_mh_unknown_helper;
 static uint64_t g_mh_arg_shape;
+static uint64_t g_reloc_blocks;
+static uint64_t g_reloc_sites;
+static uint64_t g_reloc_overflow;
 static uint64_t g_bytes_loaded;
 static uint64_t g_bytes_stored;
 static uint64_t g_compile_count;
@@ -89,6 +92,12 @@ void hb_contract_telemetry_record_mh_reason(int reason) {
     }
 }
 
+void hb_contract_telemetry_record_reloc(unsigned long sites, int overflow) {
+    telemetry_add(&g_reloc_blocks, 1);
+    telemetry_add(&g_reloc_sites, (uint64_t)sites);
+    if (overflow) telemetry_add(&g_reloc_overflow, 1);
+}
+
 void hb_contract_telemetry_record_compile(void) {
     telemetry_add(&g_compile_count, 1);
     hb_contract_telemetry_maybe_emit_progress();
@@ -119,6 +128,9 @@ void hb_contract_telemetry_snapshot(hb_contract_telemetry_counts_t* out) {
     out->mh_wide_arg = telemetry_load(&g_mh_wide_arg);
     out->mh_unknown_helper = telemetry_load(&g_mh_unknown_helper);
     out->mh_arg_shape = telemetry_load(&g_mh_arg_shape);
+    out->reloc_blocks = telemetry_load(&g_reloc_blocks);
+    out->reloc_sites = telemetry_load(&g_reloc_sites);
+    out->reloc_overflow = telemetry_load(&g_reloc_overflow);
     out->store_skips = telemetry_load(&g_store_skips);
     out->bytes_loaded = telemetry_load(&g_bytes_loaded);
     out->bytes_stored = telemetry_load(&g_bytes_stored);
@@ -138,6 +150,7 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     "open_ok=%llu open_fail=%llu hits=%llu misses=%llu stores=%llu "
                     "store_skips=%llu store_skip_multi=%llu store_skip_unmatched=%llu "
                     "mh_toomany=%llu mh_widearg=%llu mh_unkhelper=%llu mh_argshape=%llu "
+                    "reloc_blocks=%llu reloc_sites=%llu reloc_overflow=%llu "
                     "bytes_loaded=%llu bytes_stored=%llu "
                     "compile_count=%llu translation_count=%llu "
                     "distinct_translation_count=%llu dispatches=%llu blocks=%llu steps=%llu\n",
@@ -153,6 +166,9 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     (unsigned long long)counts->mh_wide_arg,
                     (unsigned long long)counts->mh_unknown_helper,
                     (unsigned long long)counts->mh_arg_shape,
+                    (unsigned long long)counts->reloc_blocks,
+                    (unsigned long long)counts->reloc_sites,
+                    (unsigned long long)counts->reloc_overflow,
                     (unsigned long long)counts->bytes_loaded,
                     (unsigned long long)counts->bytes_stored,
                     (unsigned long long)counts->compile_count,

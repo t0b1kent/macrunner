@@ -33,6 +33,12 @@ typedef struct {
     uint64_t mh_wide_arg;      /* pointer moved into x2/x3/x4 somewhere in the block */
     uint64_t mh_unknown_helper;/* helper not in the cacheable set */
     uint64_t mh_arg_shape;     /* not exactly one recognised arg1 in a site's window */
+    /* 2026-07-29: the relocation table itself, measured before anything is allowed to depend
+     * on it. reloc_overflow > 0 means the 64-site cap is real and must be raised before the
+     * store path switches from scanning to the table. */
+    uint64_t reloc_blocks;     /* compiled blocks that produced a table */
+    uint64_t reloc_sites;      /* total recorded sites across those blocks */
+    uint64_t reloc_overflow;   /* blocks whose table overflowed */
     uint64_t bytes_loaded;
     uint64_t bytes_stored;
     uint64_t compile_count;
@@ -55,6 +61,7 @@ void hb_contract_telemetry_record_cache_store_skip(void);
 void hb_contract_telemetry_record_cache_store_skip_multi(void);
 void hb_contract_telemetry_record_cache_store_skip_unmatched(void);
 void hb_contract_telemetry_record_mh_reason(int reason);
+void hb_contract_telemetry_record_reloc(unsigned long sites, int overflow);
 void hb_contract_telemetry_record_compile(void);
 void hb_contract_telemetry_record_translation(bool distinct);
 void hb_contract_telemetry_record_dispatch(uint64_t dispatches, uint64_t blocks, uint64_t steps);

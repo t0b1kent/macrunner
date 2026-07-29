@@ -226,7 +226,27 @@ static void emit_stlr_from_reg(hb_codegen_buffer_t* buf, int rt, int rn, hb_size
     }
 }
 
+/* MacRunner 2026-07-29: record x1/x23 immediates for the relocation table (hb_codegen.h).
+ *
+ * These are the only two registers the persistent cache has to rewrite: x23 carries the helper
+ * address, x1 the block or instruction pointer. Recording here rather than at the 99 call sites
+ * keeps the change to one function and cannot drift out of sync with them.
+ *
+ * Recorded unconditionally, including values that turn out not to be pointers — resolution
+ * happens at store time against the block, where the answer is knowable. Over-recording costs a
+ * table slot; under-recording would silently produce a block that cannot be restored. */
+static void codegen_note_reloc(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
+    if (!buf) return;
+    if (rd != 1 && rd != 23) return;
+    if (buf->reloc_count >= HB_CODEGEN_MAX_RELOCS) { buf->reloc_overflow = true; return; }
+    buf->relocs[buf->reloc_count].off = buf->size;  /* before the first MOVZ is emitted */
+    buf->relocs[buf->reloc_count].reg = (uint8_t)rd;
+    buf->relocs[buf->reloc_count].value = val;
+    buf->reloc_count++;
+}
+
 static void emit_mov_imm64(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
+    codegen_note_reloc(buf, rd, val);
     /* MOVZ + up to 3 MOVK */
     emit_u32(buf, 0xd2800000 | ((val & 0xFFFF) << 5) | rd);
     emit_u32(buf, 0xf2a00000 | (((val >> 16) & 0xFFFF) << 5) | rd);
@@ -2328,9 +2348,18 @@ static bool emit_adjacent_mem64_pair(hb_codegen_buffer_t* buf, const hb_ir_instr
         return true;
     }
 
+    /* The pair shares ONE address, computed from first->src1.  That is only valid
+     * while second->src1 still evaluates to first->src1 + 8 -- so the first load
+     * must not overwrite the base/index the second load addresses through.  HK's
+     * mono hash-chain walk is exactly this shape (`mov rdi,[rdi+8]` followed by
+     * `mov rbx,[rdi+0x10]`): fusing it read both qwords off the STALE rdi, so rbx
+     * got outer+0x10 -- a real adjacent field of the old struct, hence a corrupt
+     * value that looked coherent and stayed byte-identical across ASLR layouts.
+     * Repro: tests/hb_adjacent_mem64_clobber_repro.c */
     if (first->op == HB_IR_LOAD && second->op == HB_IR_LOAD &&
         adjacent_mem64_operands(buf, &first->src1, &second->src1) &&
         is_plain_gpr_reg_operand(&first->dst) && first->dst.size == HB_SIZE_64 &&
+        !mem_operand_uses_reg(&second->src1, first->dst.reg) &&
         is_plain_gpr_reg_operand(&second->dst) && second->dst.size == HB_SIZE_64) {
         uint32_t off = 0;
         if (adjacent_mem64_pair_offset(buf, &first->src1, &off)) {
@@ -7469,7 +7498,11 @@ static void hb_jit_helper_trace_loop_top_record(const hb_ir_block_t* first,
         if (budget_hit) entries[slot].budget_hits++;
     }
     uint64_t interval = hb_jit_helper_trace_loop_top_interval();
-    if (total_calls <= 16 || (interval && (total_calls % interval) == 0) || budget_hit)
+    /* A budget hit is a useful aggregate counter, but dumping the full table
+     * on every hot-loop yield makes the diagnostic itself unbounded.  Keep
+     * the count and use the same bounded first-N/periodic cadence for every
+     * record type. */
+    if (total_calls <= 16 || (interval && (total_calls % interval) == 0))
         hb_jit_helper_trace_loop_top_dump_locked(entries,
                                                  sizeof(entries) / sizeof(entries[0]),
                                                  total_calls);

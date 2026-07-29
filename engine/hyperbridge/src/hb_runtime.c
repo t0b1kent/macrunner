@@ -4482,6 +4482,9 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                                                           "JIT code cache full; interpreter fallback");
                 }
                 hb_contract_telemetry_record_compile();
+                /* Measure the relocation table before anything depends on it. */
+                hb_contract_telemetry_record_reloc((unsigned long)code_buf->reloc_count,
+                                                   code_buf->reloc_overflow ? 1 : 0);
 
                 if (rt->persistent_cache && have_persistent_key &&
                     code_buf->code && code_buf->size) {
@@ -4935,6 +4938,9 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                                                           "JIT code cache full; interpreter fallback");
                 }
                 hb_contract_telemetry_record_compile();
+                /* Measure the relocation table before anything depends on it. */
+                hb_contract_telemetry_record_reloc((unsigned long)code_buf->reloc_count,
+                                                   code_buf->reloc_overflow ? 1 : 0);
 
                 if (rt->persistent_cache && have_persistent_key &&
                     code_buf->code && code_buf->size) {

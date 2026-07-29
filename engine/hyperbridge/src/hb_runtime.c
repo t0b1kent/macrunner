@@ -108,6 +108,11 @@ typedef struct hb_jit_signal_fault_frame {
 
 static __thread hb_jit_signal_fault_frame_t* g_jit_signal_fault_frame;
 static unsigned int g_jit_signal_fault_reports;
+
+/* Defined next to block_guest_span below; block_cache_put tracks every newly
+ * cached translation for SMC reverify (HK Mono/JIT stale-translation fix). */
+static void smc_track_entry(hb_jit_runtime_t* rt, hb_block_cache_entry_t* entry,
+                            const hb_ir_block_t* block);
 static unsigned int g_jit_aa_sigbus_reports;
 static unsigned int g_jit_sigill_ownership_reports;
 
@@ -541,6 +546,7 @@ static hb_block_cache_entry_t* block_cache_put(hb_jit_runtime_t* rt, hb_block_ca
                 cache->used_slots[cache->used_count++] = (uint32_t)probe;
             else
                 cache->used_overflow = true;  /* tracking full -> reset does the safe full memset */
+            smc_track_entry(rt, &cache->entries[probe], block);
             hb_contract_telemetry_record_translation(true);
             return &cache->entries[probe];
         }
@@ -559,6 +565,7 @@ static hb_block_cache_entry_t* block_cache_put(hb_jit_runtime_t* rt, hb_block_ca
             cache->entries[probe].block = block;
             cache->entries[probe].owns_block = owns_block || keep_existing_owner;
             cache->entries[probe].fused = fused;
+            smc_track_entry(rt, &cache->entries[probe], block);
             hb_contract_telemetry_record_translation(false);
             return &cache->entries[probe];
         }
@@ -741,6 +748,25 @@ static void arm64_patch_mov_imm64_at(uint8_t* code, size_t size, size_t off,
     memcpy(code + off + 12, &insn[3], 4);
 }
 
+/* MacRunner 2026-07-29: count `blr x23` sites — helper calls — in emitted code.
+ *
+ * native_blob_single_arg_helper_stub() below bails on the SECOND one, so a block with two
+ * helper calls can never be persisted. On HK that restriction shows up as stores=117 against
+ * store_skips=40495: the persistent cache retains 0.3 % of what it compiles, and a cold start
+ * therefore needs 476 s to reach the menu where Rosetta needs under 45 s. This exists purely to
+ * attribute the skips, so the decision to generalise the patcher rests on a number rather than
+ * on the assumption that multi-helper blocks are the common case. */
+static size_t native_blob_helper_call_count(const uint8_t* code, size_t size) {
+    size_t count = 0;
+    if (!code) return 0;
+    for (size_t off = 0; off + 4 <= size; off += 4) {
+        uint32_t insn;
+        memcpy(&insn, code + off, sizeof(insn));
+        if (insn == (0xd63f0000u | (23u << 5))) count++;
+    }
+    return count;
+}
+
 static bool native_blob_single_arg_helper_stub(const uint8_t* code, size_t size,
                                                const hb_ir_block_t* block,
                                                bool canonical,
@@ -895,6 +921,186 @@ static bool block_guest_span(const hb_ir_block_t* block, uint64_t* start, size_t
     return true;
 }
 
+/* ---- SMC (self-modifying code) translation reverify ----------------------
+ * MacRunner 2026-07-27 — HK Mono/JIT stale-translation fix.
+ * The in-memory block cache was keyed purely by guest address: a cached
+ * translation kept executing even after the guest (Mono's JIT) rewrote the
+ * underlying bytes, because no path — guest write, NtProtectVirtualMemory,
+ * NtFlushInstructionCache — ever invalidated it (see
+ * reports/phase4-hollow-knight/MONO-SMC-STALE-TRANSLATION-MECHANISM-20260727.md).
+ * Fix: for blocks whose guest span is writable+executable (the only spans
+ * that CAN change — Mono/JIT code heaps are RWX), hash the guest bytes at
+ * translation time and re-verify on every cache hit; a mismatch evicts the
+ * entry so the dispatch loop retranslates from current bytes.  Static RX
+ * code stays untracked and pays nothing.  Default ON; kill switch
+ * MACRUNNER_HB_SMC_REVERIFY=0; diagnostics MACRUNNER_HB_TRACE_SMC_REVERIFY=1. */
+
+static int smc_reverify_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_SMC_REVERIFY", 1);
+}
+
+static int smc_trace_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_TRACE_SMC_REVERIFY", 0);
+}
+
+static uint64_t smc_fnv1a(const uint8_t* p, size_t n) {
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+static uint64_t g_smc_tracked, g_smc_reverified, g_smc_evicted, g_smc_unreadable;
+
+void hb_jit_smc_reverify_stats(uint64_t* tracked, uint64_t* reverified,
+                               uint64_t* evicted, uint64_t* unreadable) {
+    if (tracked) *tracked = g_smc_tracked;
+    if (reverified) *reverified = g_smc_reverified;
+    if (evicted) *evicted = g_smc_evicted;
+    if (unreadable) *unreadable = g_smc_unreadable;
+}
+
+/* Hash the CURRENT guest bytes of [start, start+len).  Returns 0 when the
+ * span is unreadable — treated as unverifiable, never evicts blind. */
+static uint64_t smc_hash_current(hb_jit_runtime_t* rt, uint64_t start, size_t len) {
+    uint8_t bytes[4096];
+    if (!rt || !rt->ctx || !rt->ctx->memory || !len || len > sizeof(bytes)) return 0;
+    if (hb_memory_read(rt->ctx->memory, start, bytes, len) != HB_OK) return 0;
+    return smc_fnv1a(bytes, len);
+}
+
+static void smc_track_entry(hb_jit_runtime_t* rt, hb_block_cache_entry_t* entry,
+                            const hb_ir_block_t* block) {
+    uint64_t start = 0;
+    size_t len = 0;
+    hb_region_t* region;
+    uint64_t h;
+    if (!entry) return;
+    entry->smc_hash = 0;
+    entry->smc_span_start = 0;
+    entry->smc_span_len = 0;
+    if (!smc_reverify_enabled() || !rt || !rt->ctx || !rt->ctx->memory || !block)
+        return;
+    if (!block_guest_span(block, &start, &len)) return;
+    region = hb_memory_find_region(rt->ctx->memory, start);
+    if (!region || start + len > region->base + region->size) return;
+    if ((region->perm & (HB_PERM_WRITE | HB_PERM_EXEC)) != (HB_PERM_WRITE | HB_PERM_EXEC))
+        return;  /* static RX code cannot change under us: leave untracked */
+    h = smc_hash_current(rt, start, len);
+    if (!h) { g_smc_unreadable++; return; }
+    entry->smc_span_start = start;
+    entry->smc_span_len = (uint32_t)len;
+    entry->smc_hash = h;
+    g_smc_tracked++;
+}
+
+static void block_cache_evict_entry(hb_jit_runtime_t* rt, hb_block_cache_t* cache,
+                                    hb_block_cache_entry_t* entry) {
+    size_t idx;
+    if (!cache || !entry || !entry->valid) return;
+    idx = block_cache_entry_index(cache, entry);
+    if (runtime_block_chain_enabled())
+        block_cache_prepare_replace_entry(rt, cache, entry);
+    block_cache_release_owned_block(entry, NULL);
+    memset(entry, 0, sizeof(*entry));
+    if (cache->chain_meta && idx != SIZE_MAX)
+        memset(&cache->chain_meta[idx], 0, sizeof(cache->chain_meta[idx]));
+    if (cache->count) cache->count--;
+}
+
+/* Returns the entry to dispatch, or NULL when the cached translation no
+ * longer matches the current guest bytes (entry evicted; caller falls
+ * through to the translate path). */
+/* MacRunner 2026-07-28 — SMC re-lift gate.  Evicting the block-cache entry is only
+ * HALF the invalidation: the lifted IR that the dispatch loop falls back to
+ * (find_block(func->cfg, pc)) comes from macrunner_hb.c's address-keyed ir_cache,
+ * which has no byte validation, so retranslating in place recompiles the SAME stale
+ * IR and re-tracks it against the NEW bytes — permanently stale, silently.  See
+ * reports/phase4-hollow-knight/HK-SMC-STALE-IR-CACHE-SECOND-CACHE-GAP-20260728.md.
+ * With this gate an eviction EXITS the dispatch (like the "no block for PC" exit) so
+ * the caller re-lifts from current bytes.  Kill switch MACRUNNER_HB_SMC_RELIFT=0. */
+static int smc_relift_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_SMC_RELIFT", 1);
+}
+
+static uint64_t g_smc_relift_exits;
+static uint64_t g_smc_relift_suppressed;
+
+uint64_t hb_jit_smc_relift_exits(void) { return g_smc_relift_exits; }
+uint64_t hb_jit_smc_relift_suppressed(void) { return g_smc_relift_suppressed; }
+
+/* MacRunner 2026-07-28 — LIVELOCK GUARD on the re-lift exit.
+ * An eviction is only *believed* to mean "the guest rewrote this code".  A hash
+ * mismatch can also arise without any guest write (the span's host backing moved,
+ * an overlapping remap, an unstable read).  If such a mismatch reproduces after the
+ * re-lift, the outer loop would exit → re-lift → exit forever with ZERO steps
+ * executed: a thread that is alive, running and never advancing — precisely the bug
+ * this fix exists to remove.  NOT observed; this is insurance against an unproven
+ * failure mode, and it is deliberately cheap.  hb_test_runner cannot exercise it at
+ * all (whole-suite totals: evicted=0 relift_exits=0), so the exit path is unvalidated
+ * by unit test — see HK-SMC-RELIFT-UNIT-CONTROL-INCONCLUSIVE-20260728.md.
+ *
+ * Guard: only ZERO-PROGRESS exits accumulate a streak.  Any exit that follows real
+ * forward progress (steps > 0) resets it, so a legitimate rewrite-heavy workload —
+ * Mono patching call sites between blocks — is never throttled.  After
+ * SMC_RELIFT_MAX_CONSECUTIVE zero-progress exits we stop exiting and fall through to
+ * the pre-fix in-place retranslate: degraded (possibly stale) rather than wedged. */
+#define SMC_RELIFT_MAX_CONSECUTIVE 8
+static __thread unsigned g_smc_relift_streak;
+
+static bool smc_relift_should_exit(uint64_t steps) {
+    if (!smc_relift_enabled()) return false;
+    if (steps > 0) {              /* progress was made: this is not a livelock */
+        g_smc_relift_streak = 0;
+        g_smc_relift_exits++;
+        return true;
+    }
+    if (g_smc_relift_streak >= SMC_RELIFT_MAX_CONSECUTIVE) {
+        g_smc_relift_suppressed++;
+        return false;
+    }
+    g_smc_relift_streak++;
+    g_smc_relift_exits++;
+    return true;
+}
+
+static hb_block_cache_entry_t* smc_reverify_entry(hb_jit_runtime_t* rt,
+                                                  hb_block_cache_entry_t* entry,
+                                                  bool* evicted) {
+    uint64_t now;
+    if (evicted) *evicted = false;
+    if (!entry || !entry->smc_hash) return entry;
+    g_smc_reverified++;
+    /* Positive-liveness aggregate: proves the instrument is executing even when
+     * nothing is ever evicted ("not logged" != "did not happen").  Bounded:
+     * first track, 1000th track, then every 2^24 reverifications. */
+    if (smc_trace_enabled() &&
+        (g_smc_reverified == 1 || g_smc_reverified == 1000 ||
+         (g_smc_reverified & 0xffffffu) == 0))
+        fprintf(stderr,
+                "macrunner-hb-smc-reverify: progress tracked=%llu reverified=%llu "
+                "evicted=%llu unreadable=%llu\n",
+                (unsigned long long)g_smc_tracked, (unsigned long long)g_smc_reverified,
+                (unsigned long long)g_smc_evicted, (unsigned long long)g_smc_unreadable);
+    now = smc_hash_current(rt, entry->smc_span_start, entry->smc_span_len);
+    if (!now) { g_smc_unreadable++; return entry; }
+    if (now == entry->smc_hash) return entry;
+    g_smc_evicted++;
+    if (smc_trace_enabled() &&
+        (g_smc_evicted <= 16 || (g_smc_evicted & 0xffffu) == 0))
+        fprintf(stderr,
+                "macrunner-hb-smc-reverify: evict guest=0x%llx span=%u old=%016llx "
+                "new=%016llx evicted=%llu reverified=%llu\n",
+                (unsigned long long)entry->guest_addr, entry->smc_span_len,
+                (unsigned long long)entry->smc_hash, (unsigned long long)now,
+                (unsigned long long)g_smc_evicted, (unsigned long long)g_smc_reverified);
+    block_cache_evict_entry(rt, rt->block_cache, entry);
+    if (evicted) *evicted = true;
+    return NULL;
+}
+
 static hb_result_t persistent_cache_key_for_block(hb_jit_runtime_t* rt,
                                                   const hb_ir_block_t* block,
                                                   hb_cache_key_t* key) {
@@ -1008,6 +1214,17 @@ static uint64_t trace_jit_guest_addr(void) {
     return addr;
 }
 
+static uint64_t trace_jit_guest_addr2(void) {
+    static int parsed = 0;
+    static uint64_t addr = 0;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_JIT_GUEST_ADDR2");
+        if (env && *env) addr = strtoull(env, NULL, 0);
+        parsed = 1;
+    }
+    return addr;
+}
+
 static uint64_t trace_jit_guest_range_start(void) {
     static int parsed = 0;
     static uint64_t addr = 0;
@@ -1055,6 +1272,7 @@ static void trace_jit_block(uint64_t guest_pc, const uint8_t* native, size_t nat
     uint64_t range_start = trace_jit_native_range_start();
     uint64_t range_end = trace_jit_native_range_end();
     uint64_t guest_watch = trace_jit_guest_addr();
+    uint64_t guest_watch2 = trace_jit_guest_addr2();
     uint64_t guest_range_start = trace_jit_guest_range_start();
     uint64_t guest_range_end = trace_jit_guest_range_end();
     int matched = watch && (uintptr_t)native <= (uintptr_t)watch &&
@@ -1065,17 +1283,19 @@ static void trace_jit_block(uint64_t guest_pc, const uint8_t* native, size_t nat
     int guest_range_matched = guest_range_start && guest_range_end &&
                               guest_range_start < guest_range_end &&
                               guest_pc < guest_range_end;
-    int guest_matched = guest_watch && guest_pc == guest_watch;
+    int guest_matched = (guest_watch && guest_pc == guest_watch) ||
+                        (guest_watch2 && guest_pc == guest_watch2);
     const hb_ir_instr_t* first = (block && block->instr_count) ? &block->instrs[0] : NULL;
     const hb_ir_instr_t* last = (block && block->instr_count) ?
                                 &block->instrs[block->instr_count - 1] : NULL;
 
-    if (!guest_matched && guest_watch && block) {
+    if (!guest_matched && (guest_watch || guest_watch2) && block) {
         for (size_t i = 0; i < block->instr_count; i++) {
             const hb_ir_instr_t* instr = &block->instrs[i];
             uint64_t start = instr->guest_addr;
             uint64_t end = start + instr->guest_len;
-            if (guest_watch == start || (instr->guest_len && guest_watch >= start && guest_watch < end)) {
+            if ((guest_watch && (guest_watch == start || (instr->guest_len && guest_watch >= start && guest_watch < end))) ||
+                (guest_watch2 && (guest_watch2 == start || (instr->guest_len && guest_watch2 >= start && guest_watch2 < end)))) {
                 guest_matched = 1;
                 break;
             }
@@ -1306,16 +1526,75 @@ static bool trace_jit_block_contains_guest(const hb_ir_block_t* block, uint64_t 
     return false;
 }
 
-static void trace_jit_cached_watch_block_once(const hb_block_cache_entry_t* entry) {
+#define JIT_WATCH_RING_N 16
+typedef struct {
+    uint64_t guest, fire, rax, rcx, rdx, rsp;
+} jit_watch_ring_t;
+static jit_watch_ring_t jit_watch_ring[JIT_WATCH_RING_N];
+static uint64_t jit_watch_ring_idx;
+
+static void trace_jit_cached_watch_block_once(hb_jit_runtime_t* rt, const hb_block_cache_entry_t* entry) {
     static uint64_t dumped_guest;
+    static uint64_t fires;
     uint64_t guest = trace_jit_guest_addr();
-    if (!entry || !entry->valid || !entry->block || !trace_jit_blocks_enabled() || !guest)
+    uint64_t guest2 = trace_jit_guest_addr2();
+    uint64_t f;
+    hb_context_t* ctx = rt ? rt->ctx : NULL;
+    int matched;
+    if (!entry || !entry->valid || !entry->block || !trace_jit_blocks_enabled())
         return;
-    if (!trace_jit_block_contains_guest(entry->block, guest) ||
-        dumped_guest == entry->block->guest_addr)
+    matched = (guest && trace_jit_block_contains_guest(entry->block, guest)) ||
+              (guest2 && trace_jit_block_contains_guest(entry->block, guest2));
+    if (!matched)
+        return;
+    /* MacRunner 2026-07-28 (HK Mono/JIT [B] bisection): the watched dispatch must
+     * carry the LIVE registers — the OK-arm's rcx is the manufactured object and
+     * the wrapper post-call block's rax is the checked function's return; without
+     * values the watch can only say "reached", not "with what".  Two sinks:
+     * (1) bounded live prints (first 128 fires + power-of-ten milestones) for the
+     * boot baseline; (2) a 16-entry ring of the MOST RECENT fires, dumped at
+     * run-exit — the faulting call's dispatch is exactly what the live cap would
+     * otherwise lose (measured: ~25 fires/min at boot, invoke at ~+30 min). */
+    f = ++fires;
+    {
+        jit_watch_ring_t* slot = &jit_watch_ring[jit_watch_ring_idx % JIT_WATCH_RING_N];
+        slot->guest = entry->guest_addr;
+        slot->fire = f;
+        slot->rax = ctx ? ctx->regs.x64.rax : 0;
+        slot->rcx = ctx ? ctx->regs.x64.rcx : 0;
+        slot->rdx = ctx ? ctx->regs.x64.rdx : 0;
+        slot->rsp = ctx ? ctx->regs.x64.rsp : 0;
+        jit_watch_ring_idx++;
+    }
+    if (f > 128 && f != 1000 && f != 10000 && f != 100000 && f != 1000000)
+        return;
+    if (f > 128 && dumped_guest == entry->block->guest_addr)
         return;
     dumped_guest = entry->block->guest_addr;
+    fprintf(stderr, "macrunner-hb-jit-watch: guest=%p fire=%llu rax=%p rcx=%p rdx=%p rsp=%p\n",
+            (void*)(uintptr_t)entry->guest_addr, (unsigned long long)f,
+            ctx ? (void*)(uintptr_t)ctx->regs.x64.rax : NULL,
+            ctx ? (void*)(uintptr_t)ctx->regs.x64.rcx : NULL,
+            ctx ? (void*)(uintptr_t)ctx->regs.x64.rdx : NULL,
+            ctx ? (void*)(uintptr_t)ctx->regs.x64.rsp : NULL);
+    fflush(stderr);
     trace_jit_block(entry->guest_addr, entry->native_code, entry->native_size, entry->block);
+}
+
+void hb_jit_watch_ring_dump(void) {
+    uint64_t n = jit_watch_ring_idx < JIT_WATCH_RING_N ? jit_watch_ring_idx : JIT_WATCH_RING_N;
+    uint64_t start = jit_watch_ring_idx - n;
+    uint64_t k;
+    fprintf(stderr, "macrunner-hb-jit-watch-ring: total=%llu shown=%llu\n",
+            (unsigned long long)jit_watch_ring_idx, (unsigned long long)n);
+    for (k = 0; k < n; k++) {
+        const jit_watch_ring_t* slot = &jit_watch_ring[(start + k) % JIT_WATCH_RING_N];
+        fprintf(stderr, "macrunner-hb-jit-watch-ring: guest=%p fire=%llu rax=%p rcx=%p rdx=%p rsp=%p\n",
+                (void*)(uintptr_t)slot->guest, (unsigned long long)slot->fire,
+                (void*)(uintptr_t)slot->rax, (void*)(uintptr_t)slot->rcx,
+                (void*)(uintptr_t)slot->rdx, (void*)(uintptr_t)slot->rsp);
+    }
+    fflush(stderr);
 }
 
 static int trace_jit_hot_blocks_enabled(void) {
@@ -1461,6 +1740,14 @@ hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
 void hb_jit_runtime_destroy(hb_jit_runtime_t* rt) {
     if (!rt) return;
     if (rt->persistent_cache) translation_cache_trace_summary();
+    if (smc_trace_enabled() && (g_smc_tracked || g_smc_evicted || g_smc_unreadable))
+        fprintf(stderr,
+                "macrunner-hb-smc-reverify: summary tracked=%llu reverified=%llu "
+                "evicted=%llu unreadable=%llu relift_exits=%llu relift_suppressed=%llu\n",
+                (unsigned long long)g_smc_tracked, (unsigned long long)g_smc_reverified,
+                (unsigned long long)g_smc_evicted, (unsigned long long)g_smc_unreadable,
+                (unsigned long long)g_smc_relift_exits,
+                (unsigned long long)g_smc_relift_suppressed);
     hb_cache_close(rt->persistent_cache);
     hb_jit_buffer_destroy(rt->jit_mem);
     block_cache_destroy(rt->block_cache);
@@ -3816,6 +4103,16 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
 
         /* Check in-memory block cache */
         hb_block_cache_entry_t* cached = block_cache_find(rt->block_cache, ctx->pc);
+        bool smc_evicted = false;
+        cached = smc_reverify_entry(rt, cached, &smc_evicted);
+        if (smc_evicted && smc_relift_should_exit(steps)) {
+            /* Guest bytes changed under this translation: the caller's lifted IR is
+             * stale too.  Exit so it re-lifts from current bytes. */
+            out->result = HB_OK;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK;
+        }
         if (cached) {
             if (trace_jit_block_contains_guest(block, trace_jit_guest_addr())) {
                 trace_unity_sort_promote("cache-hit-watch", block, NULL, NULL, NULL,
@@ -3840,7 +4137,7 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                                                           "JIT block cache lost promoted entry; interpreter fallback");
                 }
             }
-            trace_jit_cached_watch_block_once(cached);
+            trace_jit_cached_watch_block_once(rt, cached);
             hb_result_t run_result = run_jit_block_with_signal_guard(rt, cached, out,
                                                                       steps, blocks_executed);
             if (run_result != HB_OK || out->faulted) return run_result;
@@ -3884,7 +4181,7 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                                                        load_block, &load_code,
                                                        &owned_load_code) &&
                         (r = jit_commit_blob(rt, load_code, emitted_size, &dest)) == HB_OK) {
-                        cached = block_cache_put(NULL, rt->block_cache, ctx->pc, dest, emitted_size,
+                        cached = block_cache_put(rt, rt->block_cache, ctx->pc, dest, emitted_size,
                                                  disk_entry->steps ? disk_entry->steps
                                                                     : jit_block_step_count(load_block),
                                                  load_block, false, true);
@@ -3961,6 +4258,13 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                         }
                         free(owned_store_code);
                     } else {
+                        /* Attribute the skip: >1 helper call is the structural restriction in
+                         * native_blob_single_arg_helper_stub; anything else is a single stub
+                         * whose shape was not recognised. See native_blob_helper_call_count. */
+                        if (native_blob_helper_call_count(code_buf->code, code_buf->size) > 1)
+                            hb_contract_telemetry_record_cache_store_skip_multi();
+                        else
+                            hb_contract_telemetry_record_cache_store_skip_unmatched();
                         hb_contract_telemetry_record_cache_store_skip();
                     }
                 } else if (rt->persistent_cache && have_persistent_key) {
@@ -3969,7 +4273,7 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                 hb_codegen_buffer_destroy(code_buf);
 
                 /* Store in block cache */
-                cached = block_cache_put(NULL, rt->block_cache, ctx->pc, dest, emitted_size,
+                cached = block_cache_put(rt, rt->block_cache, ctx->pc, dest, emitted_size,
                                          jit_block_step_count(compile_block), compile_block,
                                          false, true);
                 if (!cached) {
@@ -4015,7 +4319,7 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                                                           "JIT block cache lost promoted entry; interpreter fallback");
                 }
             }
-            trace_jit_cached_watch_block_once(cached);
+            trace_jit_cached_watch_block_once(rt, cached);
 
             /* Execute */
             hb_result_t run_result = run_jit_block_with_signal_guard(rt, cached, out,
@@ -4184,10 +4488,23 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
 
         hb_block_cache_entry_t* cached = NULL;
         hb_ir_block_t* block = NULL;
+        bool smc_evicted = false;
         if (dispatch_fastpath) {
             cached = block_cache_find(rt->block_cache, ctx->pc);
+            /* SMC reverify BEFORE borrowing cached->block: an eviction destroys
+             * the owned block, so borrowing must happen after (or not at all). */
+            cached = smc_reverify_entry(rt, cached, &smc_evicted);
             if (cached && cached->block)
                 block = (hb_ir_block_t*)cached->block;
+        }
+        if (smc_evicted && smc_relift_should_exit(steps)) {
+            /* Guest bytes changed under this translation: the caller's lifted IR is
+             * stale too.  Exit so it re-lifts from current bytes (see the SMC re-lift
+             * gate comment at smc_reverify_entry). */
+            out->result = HB_OK;
+            out->steps_executed = steps;
+            out->blocks_executed = blocks_executed;
+            return HB_OK;
         }
         if (!block)
             block = find_block(func->cfg, ctx->pc);
@@ -4208,6 +4525,17 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
         /* Check in-memory block cache */
         if (!cached)
             cached = block_cache_find(rt->block_cache, ctx->pc);
+        /* Non-fastpath resolves block from the CFG (not the entry), so reverify
+         * here is borrow-safe; fastpath already reverified above. */
+        if (!dispatch_fastpath) {
+            cached = smc_reverify_entry(rt, cached, &smc_evicted);
+            if (smc_evicted && smc_relift_should_exit(steps)) {
+                out->result = HB_OK;
+                out->steps_executed = steps;
+                out->blocks_executed = blocks_executed;
+                return HB_OK;
+            }
+        }
         uint64_t run_block_delta = 1;
         if (cached) {
             if (trace_jit_block_contains_guest(block, trace_jit_guest_addr())) {
@@ -4235,7 +4563,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             }
             if (cached->block)
                 block = (hb_ir_block_t*)cached->block;
-            trace_jit_cached_watch_block_once(cached);
+            trace_jit_cached_watch_block_once(rt, cached);
             bool native_accounting = chain_accounting && entry_has_chain_slot(cached, NULL);
             uint64_t before_steps = native_accounting ? ctx->step_count : 0;
             uint64_t before_blocks = native_accounting ? ctx->block_count : 0;
@@ -4375,6 +4703,13 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                         }
                         free(owned_store_code);
                     } else {
+                        /* Attribute the skip: >1 helper call is the structural restriction in
+                         * native_blob_single_arg_helper_stub; anything else is a single stub
+                         * whose shape was not recognised. See native_blob_helper_call_count. */
+                        if (native_blob_helper_call_count(code_buf->code, code_buf->size) > 1)
+                            hb_contract_telemetry_record_cache_store_skip_multi();
+                        else
+                            hb_contract_telemetry_record_cache_store_skip_unmatched();
                         hb_contract_telemetry_record_cache_store_skip();
                     }
                 } else if (rt->persistent_cache && have_persistent_key) {
@@ -4431,7 +4766,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             }
             if (cached->block)
                 block = (hb_ir_block_t*)cached->block;
-            trace_jit_cached_watch_block_once(cached);
+            trace_jit_cached_watch_block_once(rt, cached);
 
             /* Execute */
             bool native_accounting = chain_accounting && entry_has_chain_slot(cached, NULL);

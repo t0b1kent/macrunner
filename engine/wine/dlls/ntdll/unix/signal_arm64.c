@@ -4057,6 +4057,17 @@ static ULONG64 macrunner_hb_fault_total_ns;
 static ULONG64 macrunner_hb_fault_accerr;   /* write/permission fault on a mapped page */
 static ULONG64 macrunner_hb_fault_maperr;   /* no mapping at that address */
 static ULONG64 macrunner_hb_fault_otherkind;
+/* 2026-07-30 — SPLIT of "other", which turned out to be 7395135 of 7417856 entries over a full
+ * 409 s run. The first report was taken 12 s in and said 1711/s at 1 % busy; the full run says
+ * 18131/s at 11 %, so the early reading was not representative and the storm is NOT a red herring.
+ * accerr (write-watch) stayed at 22721, so almost none of it is the memory protection path. In an
+ * x86-on-ARM translator the obvious remaining candidate is SIGILL, which is how control lands in
+ * code that has not been translated yet -- but naming it without counting it is exactly the guess
+ * this project keeps paying for. */
+static ULONG64 macrunner_hb_fault_sigill;
+static ULONG64 macrunner_hb_fault_sigbus;
+static ULONG64 macrunner_hb_fault_sigtrap;
+static ULONG64 macrunner_hb_fault_sigsegv_other;
 
 struct macrunner_hb_faultrate_scope { ULONG64 t0; };
 
@@ -4115,7 +4126,13 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
         else if (sig == SIGSEGV && code == SEGV_MAPERR)
             __atomic_add_fetch( &macrunner_hb_fault_maperr, 1, __ATOMIC_RELAXED );
         else
+        {
             __atomic_add_fetch( &macrunner_hb_fault_otherkind, 1, __ATOMIC_RELAXED );
+            if (sig == SIGILL)       __atomic_add_fetch( &macrunner_hb_fault_sigill, 1, __ATOMIC_RELAXED );
+            else if (sig == SIGBUS)  __atomic_add_fetch( &macrunner_hb_fault_sigbus, 1, __ATOMIC_RELAXED );
+            else if (sig == SIGTRAP) __atomic_add_fetch( &macrunner_hb_fault_sigtrap, 1, __ATOMIC_RELAXED );
+            else if (sig == SIGSEGV) __atomic_add_fetch( &macrunner_hb_fault_sigsegv_other, 1, __ATOMIC_RELAXED );
+        }
 
         if (n == 1)
             __atomic_store_n( &macrunner_hb_fault_first_ns, faultrate_scope.t0, __ATOMIC_RELAXED );
@@ -4130,14 +4147,19 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
 
             macrunner_signal_writef(
                 "macrunner-hb-faultrate: entries=%llu elapsed_ms=%llu rate=%llu/s"
-                " avg_us=%llu busy_pct=%llu accerr=%llu maperr=%llu other=%llu\n",
+                " avg_us=%llu busy_pct=%llu accerr=%llu maperr=%llu other=%llu"
+                " ill=%llu bus=%llu trap=%llu segv_other=%llu\n",
                 (unsigned long long)n, (unsigned long long)ms,
                 (unsigned long long)(ms ? (n * 1000ull) / ms : 0),
                 (unsigned long long)(done ? (total / done) / 1000ull : 0),
                 (unsigned long long)(ms ? (total / 1000000ull) * 100ull / ms : 0),
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_accerr, __ATOMIC_RELAXED ),
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_maperr, __ATOMIC_RELAXED ),
-                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_otherkind, __ATOMIC_RELAXED ) );
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_otherkind, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_sigill, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_sigbus, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_sigtrap, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_sigsegv_other, __ATOMIC_RELAXED ) );
         }
     }
 

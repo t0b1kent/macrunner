@@ -849,6 +849,132 @@ static bool native_blob_single_arg_helper_stub(const uint8_t* code, size_t size,
     return true;
 }
 
+/* MacRunner 2026-07-29 — MULTI-HELPER PERSISTENCE.
+ *
+ * native_blob_single_arg_helper_stub() returns false the moment it sees a second `blr x23`, so a
+ * block containing two helper calls can never be written to the persistent cache. On Hollow
+ * Knight that shows up as stores=117 against store_skips=40495: the cache retains 0.3 % of what
+ * it compiles and has therefore reached a steady state where it can never learn the rest. A cold
+ * start needs 476 s to the menu — 232 s of it in the Mono load phase — while Rosetta, which
+ * translates once and keeps the result, gets there in under 45 s.
+ *
+ * This finds EVERY helper site instead of bailing at the second, scoping each site's `mov x1`
+ * search to the window between the previous `blr` and this one. Everything the single-stub
+ * matcher rejected for safety is preserved: a `mov` into x2/x3/x4 anywhere in the block still
+ * rejects the whole block, each site must resolve to a known helper id, and each must have
+ * exactly one arg1 in its window.
+ *
+ * DEFAULT OFF. This patches emitted machine code: a mistake here executes wrong instructions
+ * rather than failing loudly, so it ships behind MACRUNNER_HB_CACHE_MULTI_HELPER=1 and gets
+ * proven by an A/B before it becomes the default. */
+#define HB_MULTI_HELPER_MAX 16
+
+static bool native_blob_multi_helper_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_CACHE_MULTI_HELPER");
+        cached = (v && v[0] && v[0] != '0') ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+/* Collect one stub per helper call site. Returns false if any site fails to resolve, so a
+ * partially-understood block is never persisted. */
+static bool native_blob_helper_stubs(const uint8_t* code, size_t size,
+                                     const hb_ir_block_t* block, bool canonical,
+                                     hb_cached_helper_stub_t* out, size_t* out_count) {
+    size_t blrs[HB_MULTI_HELPER_MAX];
+    size_t n = 0;
+
+    if (!code || !size || !block || !out || !out_count) return false;
+
+    for (size_t off = 0; off + 4 <= size; off += 4) {
+        uint32_t insn;
+        memcpy(&insn, code + off, sizeof(insn));
+        if (insn == (0xd63f0000u | (23u << 5))) {
+            if (n >= HB_MULTI_HELPER_MAX) return false;
+            blrs[n++] = off;
+        }
+    }
+    if (!n) return false;
+
+    /* Global safety check, unchanged from the single-stub matcher: a pointer moved into any of
+     * x2/x3/x4 means an argument shape this code does not understand well enough to rewrite. */
+    for (size_t off = 0; off + 16 <= size; off += 4) {
+        uint64_t value = 0;
+        if (arm64_mov_imm64_at(code, size, off, 2, &value) ||
+            arm64_mov_imm64_at(code, size, off, 3, &value) ||
+            arm64_mov_imm64_at(code, size, off, 4, &value))
+            return false;
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        size_t blr_off = blrs[i];
+        size_t win_lo = (i == 0) ? 0 : blrs[i - 1] + 4;
+        uint64_t helper_value = 0;
+        uint8_t helper_id;
+        size_t arg1_off = SIZE_MAX;
+        size_t arg1_count = 0;
+        uint16_t instr_index = 0;
+        bool arg1_is_instr = false;
+
+        if (blr_off < 16 || blr_off - 16 < win_lo) return false;
+        if (!arm64_mov_imm64_at(code, size, blr_off - 16, 23, &helper_value)) return false;
+        if (canonical) {
+            if ((helper_value & HB_RUNTIME_CACHE_HELPER_MASK) != HB_RUNTIME_CACHE_HELPER_SENTINEL)
+                return false;
+            helper_id = (uint8_t)(helper_value & 0xffu);
+            if (!helper_addr_for_cache_id(helper_id)) return false;
+        } else {
+            helper_id = helper_cache_id_for_addr(helper_value);
+            if (!helper_id) return false;
+        }
+
+        for (size_t off = win_lo; off + 16 <= size && off < blr_off; off += 4) {
+            uint64_t value = 0;
+            if (!arm64_mov_imm64_at(code, size, off, 1, &value)) continue;
+            if (helper_cache_id_uses_instr_arg1(helper_id)) {
+                if (canonical) {
+                    if ((value & HB_RUNTIME_CACHE_INSTR_MASK) == HB_RUNTIME_CACHE_INSTR_SENTINEL) {
+                        uint64_t idx = value & ~HB_RUNTIME_CACHE_INSTR_MASK;
+                        if (idx >= block->instr_count || idx > UINT16_MAX) return false;
+                        instr_index = (uint16_t)idx;
+                        arg1_is_instr = true;
+                        arg1_off = off;
+                        arg1_count++;
+                    }
+                } else {
+                    for (uint32_t idx = 0; idx < block->instr_count; idx++) {
+                        if (value == (uint64_t)(uintptr_t)&block->instrs[idx]) {
+                            instr_index = (uint16_t)idx;
+                            arg1_is_instr = true;
+                            arg1_off = off;
+                            arg1_count++;
+                            break;
+                        }
+                    }
+                }
+            } else {
+                uint64_t expected = canonical ? HB_RUNTIME_CACHE_BLOCK_SENTINEL
+                                              : (uint64_t)(uintptr_t)block;
+                if (value == expected) {
+                    arg1_off = off;
+                    arg1_count++;
+                }
+            }
+        }
+        if (arg1_count != 1 || arg1_off == SIZE_MAX) return false;
+
+        out[i].arg1_mov_off = arg1_off;
+        out[i].helper_mov_off = blr_off - 16;
+        out[i].helper_id = helper_id;
+        out[i].instr_index = instr_index;
+        out[i].arg1_is_instr = arg1_is_instr;
+    }
+    *out_count = n;
+    return true;
+}
+
 static bool native_blob_prepare_cache_store(const uint8_t* code, size_t size,
                                             const hb_ir_block_t* block,
                                             const uint8_t** out_code,
@@ -858,6 +984,27 @@ static bool native_blob_prepare_cache_store(const uint8_t* code, size_t size,
     if (!code || !size || !out_code || !owned_code) return false;
     *out_code = code;
     *owned_code = NULL;
+
+    if (native_blob_multi_helper_enabled() && native_blob_has_helper_call(code, size)) {
+        hb_cached_helper_stub_t stubs[HB_MULTI_HELPER_MAX];
+        size_t count = 0;
+        if (native_blob_helper_stubs(code, size, block, false, stubs, &count) && count > 1) {
+            patched = malloc(size);
+            if (!patched) return false;
+            memcpy(patched, code, size);
+            for (size_t i = 0; i < count; i++) {
+                arm64_patch_mov_imm64_at(patched, size, stubs[i].arg1_mov_off, 1,
+                                         stubs[i].arg1_is_instr
+                                             ? (HB_RUNTIME_CACHE_INSTR_SENTINEL | stubs[i].instr_index)
+                                             : HB_RUNTIME_CACHE_BLOCK_SENTINEL);
+                arm64_patch_mov_imm64_at(patched, size, stubs[i].helper_mov_off, 23,
+                                         HB_RUNTIME_CACHE_HELPER_SENTINEL | stubs[i].helper_id);
+            }
+            *out_code = patched;
+            *owned_code = patched;
+            return true;
+        }
+    }
     if (!native_blob_has_helper_call(code, size)) return true;
     if (!native_blob_single_arg_helper_stub(code, size, block, false, &stub))
         return false;
@@ -884,6 +1031,30 @@ static bool native_blob_prepare_cache_load(const uint8_t* code, size_t size,
     if (!code || !size || !out_code || !owned_code) return false;
     *out_code = code;
     *owned_code = NULL;
+
+    /* Mirror of the multi-helper store path. A block written with several sentinel-patched sites
+     * can only be loaded by code that patches all of them back, so the two must agree exactly:
+     * restoring only the first would leave the rest jumping to a sentinel value. */
+    if (native_blob_multi_helper_enabled() && native_blob_has_helper_call(code, size)) {
+        hb_cached_helper_stub_t stubs[HB_MULTI_HELPER_MAX];
+        size_t count = 0;
+        if (native_blob_helper_stubs(code, size, block, true, stubs, &count) && count > 1) {
+            patched = malloc(size);
+            if (!patched) return false;
+            memcpy(patched, code, size);
+            for (size_t i = 0; i < count; i++) {
+                arm64_patch_mov_imm64_at(patched, size, stubs[i].arg1_mov_off, 1,
+                                         stubs[i].arg1_is_instr
+                                             ? (uint64_t)(uintptr_t)&block->instrs[stubs[i].instr_index]
+                                             : (uint64_t)(uintptr_t)block);
+                arm64_patch_mov_imm64_at(patched, size, stubs[i].helper_mov_off, 23,
+                                         (uint64_t)(uintptr_t)helper_addr_for_cache_id(stubs[i].helper_id));
+            }
+            *out_code = patched;
+            *owned_code = patched;
+            return true;
+        }
+    }
     if (!native_blob_has_helper_call(code, size)) return true;
     if (!native_blob_single_arg_helper_stub(code, size, block, true, &stub))
         return false;

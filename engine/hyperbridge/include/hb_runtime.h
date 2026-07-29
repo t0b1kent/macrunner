@@ -41,6 +41,13 @@ typedef struct {
     bool owns_block;
     bool fused;
     bool valid;
+    /* MacRunner 2026-07-27 (HK Mono/JIT stale-translation fix): FNV-1a over the
+     * guest byte span captured at translation time.  Only tracked for spans in
+     * writable+executable regions (JIT-on-JIT / Mono code heaps); 0 = untracked.
+     * Re-verified on every cache hit; mismatch evicts and retranslates. */
+    uint64_t smc_span_start;
+    uint64_t smc_hash;
+    uint32_t smc_span_len;
 } hb_block_cache_entry_t;
 
 typedef struct {
@@ -125,6 +132,17 @@ int hb_jit_runtime_handle_owned_sigill(uint64_t pc, uint32_t native_word,
 int hb_jit_runtime_native_block_info(hb_jit_runtime_t* rt, uint64_t native_pc,
                                      uint64_t* guest_addr, uint64_t* native_start,
                                      size_t* native_size);
+
+/* SMC reverify diagnostics (2026-07-27): process-wide counters.  Any pointer
+ * may be NULL.  Read-only; values are best-effort under multithreading. */
+void hb_jit_smc_reverify_stats(uint64_t* tracked, uint64_t* reverified,
+                               uint64_t* evicted, uint64_t* unreadable);
+
+/* SMC re-lift gate (2026-07-28): number of dispatch exits taken because a cached
+ * translation's guest bytes changed, forcing the caller to re-lift from current bytes.
+ * Kill switch MACRUNNER_HB_SMC_RELIFT=0. */
+uint64_t hb_jit_smc_relift_exits(void);
+uint64_t hb_jit_smc_relift_suppressed(void);
 
 /* Unified runtime entry */
 hb_result_t hb_runtime_run(hb_context_t* ctx, const hb_ir_func_t* func, hb_backend_t backend, hb_exec_result_t* out);

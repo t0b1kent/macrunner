@@ -3242,7 +3242,55 @@ static void trace_simd_data_exec(hb_context_t* ctx, const hb_ir_instr_t* instr,
     fprintf(stderr, "\n");
 }
 
+static hb_result_t exec_instr_unlocked(hb_context_t* ctx, const hb_ir_instr_t* instr);
+
+/* MacRunner HK Mono lane (2026-07-27): mirror codegen's DMB bracket for x86 LOCK-prefixed
+ * RMW on the interpreter path. Codegen wraps every is_locked instr with DMB ISH before+after
+ * (hb_arm64_codegen.c hb_arm64_codegen_instr); the interpreter consulted is_locked nowhere,
+ * so a generic locked RMW (`lock or [rsp],r` — Mono's hazard-pointer fence idiom) ran with
+ * NO barrier through exec_instr (live path: hb_jit_helper_exec_block_instr_for_jit →
+ * hb_interpreter_exec_one_for_jit). Locked atomics (CMPXCHG/XCHG/XADD/CMPXCHG8B) were already
+ * fenced (hb_jit_helper_exec_atomic_ir + per-op SEQ_CST fences below); this closes the
+ * generic-op gap. Diagnostics: MACRUNNER_HB_TRACE_INTERP_LOCK=1 — one-time armed line
+ * (positive liveness) + bounded aggregate (first 8, then every 2^20). */
+static uint64_t g_hb_interp_lock_fenced_count;
+
+static int hb_interp_lock_trace_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_TRACE_INTERP_LOCK");
+        cached = (v && v[0] && strcmp(v, "0")) ? 1 : 0;
+    }
+    return cached;
+}
+
 static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    if (hb_interp_lock_trace_enabled()) {
+        static int armed_printed = 0;
+        if (!armed_printed) {
+            armed_printed = 1;
+            fprintf(stderr, "macrunner-hb-interp-lock: armed=1 hook=exec_instr\n");
+            fflush(stderr);
+        }
+    }
+    if (!instr->is_locked)
+        return exec_instr_unlocked(ctx, instr);
+    uint64_t n = __atomic_add_fetch(&g_hb_interp_lock_fenced_count, 1, __ATOMIC_RELAXED);
+    if (hb_interp_lock_trace_enabled() && (n <= 8 || (n & 0xFFFFFu) == 0)) {
+        fprintf(stderr,
+                "macrunner-hb-interp-lock: count=%llu op=%d pc=0x%llx instr=0x%llx\n",
+                (unsigned long long)n, (int)instr->op,
+                (unsigned long long)(ctx ? ctx->pc : 0),
+                (unsigned long long)instr->guest_addr);
+        fflush(stderr);
+    }
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    hb_result_t r = exec_instr_unlocked(ctx, instr);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    return r;
+}
+
+static hb_result_t exec_instr_unlocked(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     hb_result_t r;
     switch (instr->op) {
         case HB_IR_NOP:

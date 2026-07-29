@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/mman.h>
+#include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <mach/mach.h>
@@ -61,6 +63,10 @@ typedef struct hb_memory_environment {
     int trace_store80;
     int trace_memcpy_len;
     int trace_jit_helper_fail;
+    /* A/B arm selector for the hb_memory_protect multi-region path, so both arms
+     * live in ONE binary: the list walk that shipped, or the treap range walk.
+     * See the memmeter block below for why this is a switch and not two builds. */
+    int memprotect_walk_list;
     unsigned long long trace_guest_write_start;
     unsigned long long trace_guest_write_stop;
 } hb_memory_environment_t;
@@ -105,6 +111,13 @@ void hb_memory_init_environment(void) {
         trace_memcpy_len && trace_memcpy_len[0];
     macrunner_hb_memory_environment.trace_jit_helper_fail =
         getenv("MACRUNNER_HB_TRACE_JIT_HELPER_FAIL") != NULL;
+    /* Default is the treap range walk.  MACRUNNER_HB_MEMPROTECT_WALK=list selects
+     * the pre-fix full-list scan, which is the control arm of the A/B. */
+    {
+        const char* walk = getenv("MACRUNNER_HB_MEMPROTECT_WALK");
+        macrunner_hb_memory_environment.memprotect_walk_list =
+            walk && walk[0] == 'l';
+    }
 
     guest_write = getenv("MACRUNNER_HB_TRACE_GUEST_WRITE");
     if (guest_write && guest_write[0]) {
@@ -117,6 +130,137 @@ void hb_memory_init_environment(void) {
     macrunner_hb_memory_environment.trace_guest_write_start = start;
     macrunner_hb_memory_environment.trace_guest_write_stop = stop;
     __atomic_store_n(&macrunner_hb_memory_environment_initialized, 1, __ATOMIC_RELEASE);
+}
+
+/* ---------------------------------------------------------------------------
+ * memmeter -- direct measurement of the region-map cost.
+ *
+ * WHY IT EXISTS.  A `sample` of a live HK run put 913 of 2795 critical-path
+ * samples inside hb_memory_protect as a childless leaf, and that was read as
+ * "the O(N) list walk is long".  That is an INFERENCE from a sample ratio: it
+ * assumes both which branch was hot and how long the list is.  Neither had been
+ * measured.  These counters measure both, so the next run settles it instead of
+ * arguing about it.
+ *
+ * DISCIPLINE, learned from this lane's own losses:
+ *  - ALWAYS ON, not env-gated.  Only one HK title slot exists and three lanes
+ *    compete for it, so every foreign lane's run must yield this data for free.
+ *    The counters are relaxed atomic adds; the clock is read on 1 call in 64.
+ *  - PERIODIC, not atexit.  A run killed by its timeout emits no atexit summary,
+ *    and two of this lane's A/Bs were already lost that way.
+ *  - fprintf, not snprintf into a fixed buffer.  The 1024-byte buffers in this
+ *    tree return SILENTLY on overflow; a report line that can vanish is worse
+ *    than none.  One fprintf is atomic under the FILE lock.
+ *  - Counts are exact and uncapped.  A zero is a real zero.
+ *
+ * The decisive ratios the line reports:
+ *    mp_visit / mp_walk   = nodes touched per multi-region protect  (walk length)
+ *    regions              = live region count N at report time
+ *    splits               = regions created by splitting, which NOTHING ever
+ *                           merges back, so N only grows.
+ */
+static unsigned long long mm_mp_calls;      /* hb_memory_protect entries          */
+static unsigned long long mm_mp_fast;       /* exact region, perm already correct */
+static unsigned long long mm_mp_reenter;    /* contained-in-one-region split path */
+static unsigned long long mm_mp_exact;      /* exact base+size region             */
+static unsigned long long mm_mp_walk;       /* reached the multi-region walk      */
+static unsigned long long mm_mp_visit;      /* nodes examined by that walk        */
+static unsigned long long mm_mp_apply;      /* regions whose perm was written     */
+static unsigned long long mm_mp_notfound;   /* walk matched nothing               */
+static unsigned long long mm_mp_ns;         /* ns in protect, sampled 1/64        */
+static unsigned long long mm_mp_ns_n;       /* how many calls that ns covers      */
+static unsigned long long mm_slr_calls;     /* hb_memory_sync_live_range entries  */
+static unsigned long long mm_slr_fast;      /* early return, map already correct  */
+static unsigned long long mm_slr_scan;      /* nodes examined by its list scans   */
+static unsigned long long mm_slr_repl;      /* took the replace+rebuild path      */
+static unsigned long long mm_slr_ns;
+static unsigned long long mm_slr_ns_n;
+static unsigned long long mm_maps;          /* hb_memory_t instances created      */
+static unsigned long long mm_ovl_calls;     /* any_overlap() calls (both map paths)*/
+static unsigned long long mm_ovl_scan;      /* list nodes it examined              */
+static unsigned long long mm_splits;        /* split_region_at allocations        */
+static unsigned long long mm_rebuilds;      /* rebuild_region_tree calls          */
+static unsigned long long mm_rebuild_nodes; /* nodes reinserted by those rebuilds */
+
+#define MM_CLOCK_MASK      0x3fULL              /* time 1 call in 64 */
+#define MM_REPORT_PERIOD_NS 5000000000ULL       /* one line per 5 s */
+#define MM_REGION_WALK_CAP 4000000ULL   /* torn-list guard; the map is never this big */
+
+/* The report cadence is TIME-based, not count-based.  A count trigger has to
+ * guess the call rate: pick 262144 and a run that calls protect 100 times a
+ * second emits its first line 45 minutes in, i.e. never, while a run calling it
+ * a million times a second drowns the log.  Both failures are silent.  Keyed on
+ * time, the line spacing is also directly usable as a time series. */
+static unsigned long long mm_last_report_ns;
+
+static bool mm_due(unsigned long long now) {
+    unsigned long long last = __atomic_load_n(&mm_last_report_ns, __ATOMIC_RELAXED);
+    if (now - last < MM_REPORT_PERIOD_NS) return false;
+    /* One winner per period; losers skip rather than pile up duplicate lines. */
+    return __atomic_compare_exchange_n(&mm_last_report_ns, &last, now, false,
+                                       __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+
+static unsigned long long mm_now_ns(void) {
+#ifdef __APPLE__
+    return (unsigned long long)clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000000000ull + (unsigned long long)ts.tv_nsec;
+#endif
+}
+
+static void mm_report(hb_memory_t* mem, const char* where) {
+    unsigned long long n = 0;
+    struct timeval tv;
+
+    /* This walk is as safe as any_overlap(), which already runs unlocked on the
+     * normal path -- but it runs once per 262144 calls, so cap it rather than
+     * risk spinning on a list observed mid-mutation. */
+    for (hb_region_t* r = mem ? mem->regions : NULL; r; r = r->next) {
+        if (++n >= MM_REGION_WALK_CAP) break;
+    }
+
+    gettimeofday(&tv, NULL);
+    /* `mem=` and `maps=` matter because the region map is PER GUEST THREAD --
+     * macrunner_hb.c assigns ctx->memory = hb_memory_create(0) on each x64
+     * context, and HK has been measured with 115 of them.  The global counters
+     * aggregate across every map (so mp_visit/mp_walk, the walk length, is
+     * map-agnostic and sound), but `regions` is one map's list length, and
+     * without an identity a growth curve would silently interleave 115 of them. */
+    fprintf(stderr,
+            "macrunner-hb-memmeter: where=%s mem=%p maps=%llu epoch=%lld.%03d regions=%llu "
+            "mp_calls=%llu mp_fast=%llu mp_reenter=%llu mp_exact=%llu mp_walk=%llu "
+            "mp_visit=%llu mp_apply=%llu mp_notfound=%llu mp_ns=%llu mp_ns_n=%llu "
+            "slr_calls=%llu slr_fast=%llu slr_scan=%llu slr_repl=%llu slr_ns=%llu slr_ns_n=%llu "
+            "ovl_calls=%llu ovl_scan=%llu "
+            "splits=%llu rebuilds=%llu rebuild_nodes=%llu walk=%s\n",
+            where, (void*)mem, __atomic_load_n(&mm_maps, __ATOMIC_RELAXED),
+            (long long)tv.tv_sec, (int)(tv.tv_usec / 1000), n,
+            __atomic_load_n(&mm_mp_calls, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_mp_fast, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_mp_reenter, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_mp_exact, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_mp_walk, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_mp_visit, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_mp_apply, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_mp_notfound, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_mp_ns, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_mp_ns_n, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_slr_calls, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_slr_fast, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_slr_scan, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_slr_repl, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_slr_ns, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_slr_ns_n, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_ovl_calls, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_ovl_scan, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_splits, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_rebuilds, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_rebuild_nodes, __ATOMIC_RELAXED),
+            macrunner_hb_memory_environment.memprotect_walk_list ? "list" : "tree");
+    fflush(stderr);
 }
 
 static int macrunner_hb_trace_datadiverge_enabled(void) {
@@ -384,8 +528,10 @@ static void clear_hot_cache(hb_memory_t* mem) {
 
 static void rebuild_region_tree(hb_memory_t* mem) {
     if (!mem) return;
+    __atomic_add_fetch(&mm_rebuilds, 1, __ATOMIC_RELAXED);
     mem->region_tree = NULL;
     for (hb_region_t* r = mem->regions; r; r = r->next) {
+        __atomic_add_fetch(&mm_rebuild_nodes, 1, __ATOMIC_RELAXED);
         r->tree_left = NULL;
         r->tree_right = NULL;
         r->tree_prio = region_prio(r->base);
@@ -415,11 +561,22 @@ static bool range_overlaps(hb_gva_t a_base, size_t a_size, hb_gva_t b_base, size
     return a_base < b_top && b_base < a_top;
 }
 
+/* The last unmeasured O(N) walk on a hot-ish path.  hb_memory_protect's walk is
+ * now measured (40 % of protect calls, ~9 500 nodes each) and sync_live_range is
+ * measured and cold (6 calls in 66 s).  This one guards both map paths, and with
+ * `regions` reaching 16 000+ inside the first minute of an HK boot it is the
+ * obvious next suspect -- so count it rather than argue about it. */
 static bool any_overlap(hb_memory_t* mem, hb_gva_t base, size_t size) {
+    unsigned long long scan = 0;
+    bool hit = false;
+
     for (hb_region_t* r = mem ? mem->regions : NULL; r; r = r->next) {
-        if (range_overlaps(base, size, r->base, r->size)) return true;
+        scan++;
+        if (range_overlaps(base, size, r->base, r->size)) { hit = true; break; }
     }
-    return false;
+    __atomic_add_fetch(&mm_ovl_calls, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&mm_ovl_scan, scan, __ATOMIC_RELAXED);
+    return hit;
 }
 
 static hb_result_t split_region_at(hb_memory_t* mem, hb_gva_t addr) {
@@ -434,6 +591,9 @@ static hb_result_t split_region_at(hb_memory_t* mem, hb_gva_t addr) {
     if (addr == r->base || addr >= top) return HB_OK;
     n = calloc(1, sizeof(*n));
     if (!n) return HB_ERR_OUT_OF_MEMORY;
+    /* Every split adds a region permanently: nothing in this file ever merges two
+     * adjacent regions back together, so N is monotonically non-decreasing. */
+    __atomic_add_fetch(&mm_splits, 1, __ATOMIC_RELAXED);
 
     *n = *r;
     n->base = addr;
@@ -637,6 +797,7 @@ hb_memory_t* hb_memory_create(size_t max_size) {
     hb_memory_t* mem = calloc(1, sizeof(hb_memory_t));
     if (!mem) return NULL;
     hb_memory_init_environment();
+    __atomic_add_fetch(&mm_maps, 1, __ATOMIC_RELAXED);
     mem->max_size = max_size;
     return mem;
 }
@@ -704,11 +865,13 @@ hb_result_t hb_memory_map_private(hb_memory_t* mem, hb_gva_t base, size_t size, 
     return HB_OK;
 }
 
-hb_result_t hb_memory_sync_live_range(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm) {
+static hb_result_t hb_memory_sync_live_range_inner(hb_memory_t* mem, hb_gva_t base, size_t size,
+                                                   hb_perm_t perm) {
     hb_region_t* replacement;
     hb_region_t** link;
     hb_gva_t top;
     hb_result_t res;
+    unsigned long long scan = 0; /* folded into mm_slr_scan once, see protect_range_t */
 
     if (!mem || !size || range_overflows(base, size)) return HB_ERR_INVALID_ARG;
     top = base + (hb_gva_t)size;
@@ -718,27 +881,38 @@ hb_result_t hb_memory_sync_live_range(hb_memory_t* mem, hb_gva_t base, size_t si
     for (hb_region_t* exact = mem->regions; exact; exact = exact->next) {
         bool other_overlap = false;
 
+        scan++;
         if (exact->allocated || exact->is_guest32 || exact->base != base ||
             exact->size != size || exact->perm != perm)
             continue;
         for (hb_region_t* other = mem->regions; other; other = other->next) {
+            scan++;
             if (other != exact && range_overlaps(base, size, other->base, other->size)) {
                 other_overlap = true;
                 break;
             }
         }
-        if (!other_overlap) return HB_OK;
+        if (!other_overlap) {
+            __atomic_add_fetch(&mm_slr_scan, scan, __ATOMIC_RELAXED);
+            __atomic_add_fetch(&mm_slr_fast, 1, __ATOMIC_RELAXED);
+            return HB_OK;
+        }
     }
 
     /* This API is deliberately limited to Wine/macOS-owned live mappings.
      * Guest32 and private HB allocations have real backing/protection semantics
      * and must continue through their dedicated map/protect paths. */
     for (hb_region_t* r = mem->regions; r; r = r->next) {
+        scan++;
         if (range_overlaps(base, size, r->base, r->size) &&
-            (r->allocated || r->is_guest32))
+            (r->allocated || r->is_guest32)) {
+            __atomic_add_fetch(&mm_slr_scan, scan, __ATOMIC_RELAXED);
             return HB_ERR_INVALID_ARG;
+        }
     }
+    __atomic_add_fetch(&mm_slr_scan, scan, __ATOMIC_RELAXED);
 
+    __atomic_add_fetch(&mm_slr_repl, 1, __ATOMIC_RELAXED);
     replacement = calloc(1, sizeof(*replacement));
     if (!replacement) return HB_ERR_OUT_OF_MEMORY;
 
@@ -784,6 +958,21 @@ hb_result_t hb_memory_sync_live_range(hb_memory_t* mem, hb_gva_t base, size_t si
     bump_generation(mem, replacement);
     rebuild_region_tree(mem);
     return HB_OK;
+}
+
+hb_result_t hb_memory_sync_live_range(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm) {
+    unsigned long long n = __atomic_add_fetch(&mm_slr_calls, 1, __ATOMIC_RELAXED);
+    bool timed = (n & MM_CLOCK_MASK) == 0;
+    unsigned long long t0 = timed ? mm_now_ns() : 0;
+    hb_result_t r = hb_memory_sync_live_range_inner(mem, base, size, perm);
+
+    if (timed) {
+        unsigned long long t1 = mm_now_ns();
+        __atomic_add_fetch(&mm_slr_ns, t1 - t0, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&mm_slr_ns_n, 1, __ATOMIC_RELAXED);
+        if (mm_due(t1)) mm_report(mem, "synclive");
+    }
+    return r;
 }
 
 hb_result_t hb_memory_guest32_reserve(hb_memory_t* mem) {
@@ -965,7 +1154,131 @@ hb_result_t hb_memory_unmap(hb_memory_t* mem, hb_gva_t base) {
     return HB_ERR_NOT_FOUND;
 }
 
-hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm) {
+/*
+ * Applying a protection change to every region inside [start, top).
+ *
+ * This used to walk mem->regions end to end.  A `sample` of a live Hollow Knight
+ * run in its slow regime (2026-07-29) put 913 of 2795 samples on the critical-path
+ * thread inside hb_memory_protect, in a call-free loop -- 33 % of that thread, and
+ * more than every guest memory read, write and region lookup in the whole process
+ * put together (164 + 158 + 102), despite VirtualProtect being far rarer than
+ * memory access.  That ratio only happens if the list is long, so the walk is the
+ * cost, not the call rate.
+ *
+ * mem->region_tree is a treap keyed by base, so the same set can be reached in
+ * O(log N + k).  The visitor only edits r->perm and host protection -- it never
+ * changes the tree shape -- so an in-order traversal is safe here.  Two splits
+ * have already run before this point, so no region straddles either boundary.
+ *
+ * One deliberate difference from the old loop: regions are now visited in base
+ * order rather than list order.  Every region in range is still visited, and the
+ * per-region work is unchanged; only *which* region reports the first mprotect
+ * failure can differ, and an error is an error either way.
+ */
+typedef struct {
+    hb_gva_t start;
+    hb_gva_t top;
+    hb_perm_t perm;
+    bool found;
+    bool touched_exec;
+    hb_result_t res;
+    /* Per-call, on the stack, folded into the globals ONCE at the end.  A shared
+     * atomic per visited node would charge the list arm N contended RMWs per call
+     * against the tree arm's ~log N, i.e. the instrument would manufacture part of
+     * the very difference it is measuring. */
+    unsigned long long visited;
+    unsigned long long applied;
+} protect_range_t;
+
+/* The per-region work, shared verbatim by both traversals.  The A/B arms must
+ * differ ONLY in how regions are reached -- if the bodies could drift, a timing
+ * difference would not be attributable to the traversal. */
+static void protect_apply_region(hb_region_t* node, protect_range_t* w) {
+    hb_gva_t rtop;
+    hb_perm_t old_perm;
+
+    if (node->base < w->start || node->base >= w->top) return;
+    rtop = node->base + node->size;
+    if (rtop > w->top) return;
+
+    w->applied++;
+    w->found = true;
+    old_perm = node->perm;
+    if ((old_perm | w->perm) & HB_PERM_EXEC) w->touched_exec = true;
+
+    /*
+     * Non-allocated, non-guest32 regions describe Wine-owned live process
+     * views.  Their host VM protection is owned by Wine/macOS.  Keep this
+     * path metadata-only: applying HB_PERM_* with mprotect() would break
+     * Wine's view manager and can make guest x64 code host-executable.
+     */
+    if (!node->allocated && !node->is_guest32) {
+        node->perm = w->perm;
+        return;
+    }
+
+    node->perm = w->perm;
+    if (node->is_guest32) {
+#ifdef __APPLE__
+        if (node->host_base) {
+            hb_result_t sync_r = guest32_sync_host_protection(node, node->base, node->size);
+            if ((w->perm & HB_PERM_WRITE) && !(old_perm & HB_PERM_WRITE)) {
+                fprintf(stderr,
+                        "macrunner-hb-protect-rw-gated: class=guest32 base=0x%llx "
+                        "size=%zu old_perm=0x%x new_perm=0x%x sync=%d\n",
+                        (unsigned long long)node->base, node->size,
+                        (unsigned)old_perm, (unsigned)w->perm, (int)sync_r);
+                fflush(stderr);
+            }
+            if (sync_r != HB_OK) w->res = HB_ERR_MEMORY_FAULT;
+        }
+#endif
+        return;
+    }
+
+    if (node->host_base) {
+        int prot = prot_from_perm(w->perm, false);
+        if (mprotect(node->host_base, node->size, prot) != 0) {
+            w->res = HB_ERR_MEMORY_FAULT;
+            return;
+        }
+        if ((w->perm & HB_PERM_WRITE) && !(old_perm & HB_PERM_WRITE)) {
+            fprintf(stderr,
+                    "macrunner-hb-protect-rw-gated: class=allocated base=0x%llx "
+                    "size=%zu old_perm=0x%x new_perm=0x%x prot=0x%x\n",
+                    (unsigned long long)node->base, node->size,
+                    (unsigned)old_perm, (unsigned)w->perm, prot);
+            fflush(stderr);
+        }
+    }
+}
+
+/* ARM "tree": reach the in-range regions through the treap, pruning both sides.
+ * Keyed by base, so a node at or above `top` prunes its whole right subtree and
+ * one below `start` prunes its left. */
+static void protect_range_visit(hb_region_t* node, protect_range_t* w) {
+    if (!node || w->res != HB_OK) return;
+    w->visited++;
+
+    if (node->base >= w->start) protect_range_visit(node->tree_left, w);
+    if (node->base < w->top) protect_range_visit(node->tree_right, w);
+    if (w->res != HB_OK) return;
+
+    protect_apply_region(node, w);
+}
+
+/* ARM "list": the walk that shipped -- every region in the map, every call.
+ * Kept as a live control arm so the A/B is one binary and one deploy. */
+static void protect_range_walk_list(hb_memory_t* mem, protect_range_t* w) {
+    for (hb_region_t* r = mem->regions; r; r = r->next) {
+        w->visited++;
+        if (w->res != HB_OK) return;
+        protect_apply_region(r, w);
+    }
+}
+
+static hb_result_t hb_memory_protect_inner(hb_memory_t* mem, hb_gva_t base, size_t size,
+                                           hb_perm_t perm) {
     hb_gva_t start;
     hb_gva_t top;
     hb_region_t* exact;
@@ -983,6 +1296,7 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
     exact = hb_memory_find_region(mem, start);
     if (exact && start >= exact->base && top <= exact->base + exact->size &&
         exact->perm == perm) {
+        __atomic_add_fetch(&mm_mp_fast, 1, __ATOMIC_RELAXED);
         if (!exact->allocated && !exact->is_guest32) return HB_OK;
         if (exact->is_guest32) {
 #ifdef __APPLE__
@@ -1013,15 +1327,19 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
      */
     if (exact && start >= exact->base && top <= exact->base + exact->size &&
         (start != exact->base || top != exact->base + exact->size)) {
+        __atomic_add_fetch(&mm_mp_reenter, 1, __ATOMIC_RELAXED);
         res = split_all_regions_at(mem, start);
         if (res != HB_OK) return res;
         res = split_all_regions_at(mem, top);
         if (res != HB_OK) return res;
-        return hb_memory_protect(mem, start, (size_t)(top - start), perm);
+        /* Re-enter the inner body, not the wrapper: this is one external call. */
+        return hb_memory_protect_inner(mem, start, (size_t)(top - start), perm);
     }
 
     if (exact && exact->base == start && exact->size == (size_t)(top - start)) {
         hb_perm_t old_perm = exact->perm;
+
+        __atomic_add_fetch(&mm_mp_exact, 1, __ATOMIC_RELAXED);
 
         if (!exact->allocated && !exact->is_guest32) {
             if ((old_perm | perm) & HB_PERM_EXEC) bump_generation(mem, exact);
@@ -1070,64 +1388,49 @@ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_p
     res = split_all_regions_at(mem, top);
     if (res != HB_OK) return res;
 
-    for (hb_region_t* r = mem->regions; r; r = r->next) {
-        hb_gva_t rtop = r->base + r->size;
-        hb_perm_t old_perm;
-
-        if (r->base < start || r->base >= top) continue;
-        if (rtop > top) continue;
-
-        found = true;
-        old_perm = r->perm;
-        if ((old_perm | perm) & HB_PERM_EXEC) touched_exec = true;
-
-        /*
-         * Non-allocated, non-guest32 regions describe Wine-owned live process
-         * views.  Their host VM protection is owned by Wine/macOS.  Keep this
-         * path metadata-only: applying HB_PERM_* with mprotect() would break
-         * Wine's view manager and can make guest x64 code host-executable.
-         */
-        if (!r->allocated && !r->is_guest32) {
-            r->perm = perm;
-            continue;
-        }
-
-        r->perm = perm;
-        if (r->is_guest32) {
-#ifdef __APPLE__
-            if (r->host_base) {
-                hb_result_t sync_r = guest32_sync_host_protection(r, r->base, r->size);
-                if ((perm & HB_PERM_WRITE) && !(old_perm & HB_PERM_WRITE)) {
-                    fprintf(stderr,
-                            "macrunner-hb-protect-rw-gated: class=guest32 base=0x%llx "
-                            "size=%zu old_perm=0x%x new_perm=0x%x sync=%d\n",
-                            (unsigned long long)r->base, r->size,
-                            (unsigned)old_perm, (unsigned)perm, (int)sync_r);
-                    fflush(stderr);
-                }
-                if (sync_r != HB_OK) return HB_ERR_MEMORY_FAULT;
-            }
-#endif
-            continue;
-        }
-
-        if (r->host_base) {
-            int prot = prot_from_perm(perm, false);
-            if (mprotect(r->host_base, r->size, prot) != 0) return HB_ERR_MEMORY_FAULT;
-            if ((perm & HB_PERM_WRITE) && !(old_perm & HB_PERM_WRITE)) {
-                fprintf(stderr,
-                        "macrunner-hb-protect-rw-gated: class=allocated base=0x%llx "
-                        "size=%zu old_perm=0x%x new_perm=0x%x prot=0x%x\n",
-                        (unsigned long long)r->base, r->size,
-                        (unsigned)old_perm, (unsigned)perm, prot);
-                fflush(stderr);
-            }
-        }
+    {
+        protect_range_t walk;
+        walk.start = start;
+        walk.top = top;
+        walk.perm = perm;
+        walk.found = false;
+        walk.touched_exec = false;
+        walk.res = HB_OK;
+        walk.visited = 0;
+        walk.applied = 0;
+        __atomic_add_fetch(&mm_mp_walk, 1, __ATOMIC_RELAXED);
+        if (macrunner_hb_memory_environment.memprotect_walk_list)
+            protect_range_walk_list(mem, &walk);
+        else
+            protect_range_visit(mem->region_tree, &walk);
+        __atomic_add_fetch(&mm_mp_visit, walk.visited, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&mm_mp_apply, walk.applied, __ATOMIC_RELAXED);
+        if (walk.res != HB_OK) return walk.res;
+        found = walk.found;
+        touched_exec = walk.touched_exec;
     }
 
-    if (!found) return HB_ERR_NOT_FOUND;
+    if (!found) {
+        __atomic_add_fetch(&mm_mp_notfound, 1, __ATOMIC_RELAXED);
+        return HB_ERR_NOT_FOUND;
+    }
     if (touched_exec) bump_generation(mem, NULL);
     return HB_OK;
+}
+
+hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm) {
+    unsigned long long n = __atomic_add_fetch(&mm_mp_calls, 1, __ATOMIC_RELAXED);
+    bool timed = (n & MM_CLOCK_MASK) == 0;
+    unsigned long long t0 = timed ? mm_now_ns() : 0;
+    hb_result_t r = hb_memory_protect_inner(mem, base, size, perm);
+
+    if (timed) {
+        unsigned long long t1 = mm_now_ns();
+        __atomic_add_fetch(&mm_mp_ns, t1 - t0, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&mm_mp_ns_n, 1, __ATOMIC_RELAXED);
+        if (mm_due(t1)) mm_report(mem, "protect");
+    }
+    return r;
 }
 
 hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t size) {

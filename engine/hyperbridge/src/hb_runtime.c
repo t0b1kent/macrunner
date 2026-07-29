@@ -1465,7 +1465,35 @@ decline:
     return false;
 }
 
+/* MacRunner 2026-07-30 — timed wrapper. Follows the _inner convention already used in
+ * hb_memory_protect_inner: the body has many exits and wrapping is safer than threading a stop
+ * through each one. This is the half of a compile that contains the round-trip self-check, which
+ * re-runs the whole load path and memcmps it for every stored block. */
+static bool native_blob_prepare_cache_store_inner(const hb_codegen_buffer_t* buf,
+                                            const uint8_t* code, size_t size,
+                                            const hb_ir_block_t* block,
+                                            const uint8_t** out_code,
+                                            uint8_t** owned_code);
+
+static uint64_t hb_time_now_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts)) return 0;
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 static bool native_blob_prepare_cache_store(const hb_codegen_buffer_t* buf,
+                                            const uint8_t* code, size_t size,
+                                            const hb_ir_block_t* block,
+                                            const uint8_t** out_code,
+                                            uint8_t** owned_code) {
+    uint64_t t0 = hb_time_now_ns();
+    bool r = native_blob_prepare_cache_store_inner(buf, code, size, block, out_code, owned_code);
+    uint64_t t1 = hb_time_now_ns();
+    if (t1 > t0) hb_contract_telemetry_add_time(1, t1 - t0);
+    return r;
+}
+
+static bool native_blob_prepare_cache_store_inner(const hb_codegen_buffer_t* buf,
                                             const uint8_t* code, size_t size,
                                             const hb_ir_block_t* block,
                                             const uint8_t** out_code,

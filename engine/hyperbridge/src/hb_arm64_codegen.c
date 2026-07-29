@@ -1,4 +1,6 @@
 #include "hb_codegen.h"
+#include "hb_contract_telemetry.h"
+#include <time.h>
 #include "hb_runtime.h"
 #include "hb_memory.h"
 #include "hb_flags.h"
@@ -10478,8 +10480,29 @@ static size_t codegen_instr_limit_before_fallthrough(const hb_ir_block_t* block)
     return block->instr_count;
 }
 
+static hb_result_t hb_arm64_codegen_block_with_cfg_inner(hb_arm64_codegen_t* cg,
+                                                         const hb_ir_block_t* block,
+                                                         const hb_ir_cfg_t* cfg,
+                                                         hb_codegen_buffer_t* out);
+
+/* MacRunner 2026-07-30 — timed wrapper; see hb_contract_telemetry.h. This is the other half of a
+ * compile: emitting the code, as opposed to preparing it for the cache. */
 hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_block_t* block,
                                             const hb_ir_cfg_t* cfg, hb_codegen_buffer_t* out) {
+    struct timespec a, b;
+    hb_result_t r;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    r = hb_arm64_codegen_block_with_cfg_inner(cg, block, cfg, out);
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    hb_contract_telemetry_add_time(0, (uint64_t)(b.tv_sec - a.tv_sec) * 1000000000ull
+                                      + (uint64_t)b.tv_nsec - (uint64_t)a.tv_nsec);
+    return r;
+}
+
+static hb_result_t hb_arm64_codegen_block_with_cfg_inner(hb_arm64_codegen_t* cg,
+                                                         const hb_ir_block_t* block,
+                                                         const hb_ir_cfg_t* cfg,
+                                                         hb_codegen_buffer_t* out) {
     size_t instr_limit;
     bool mid_block_transfer;
 

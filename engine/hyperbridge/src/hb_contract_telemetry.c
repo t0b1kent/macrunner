@@ -36,6 +36,8 @@ static uint64_t g_rl_collision;
 static uint64_t g_rl_roundtrip;
 static uint64_t g_bytes_loaded;
 static uint64_t g_bytes_stored;
+static uint64_t g_t_codegen_ns;
+static uint64_t g_t_store_ns;
 static uint64_t g_compile_count;
 static uint64_t g_translation_count;
 static uint64_t g_distinct_translation_count;
@@ -155,6 +157,10 @@ void hb_contract_telemetry_record_hostptr_census(int bucket) {
     }
 }
 
+void hb_contract_telemetry_add_time(int which, uint64_t ns) {
+    telemetry_add(which == 0 ? &g_t_codegen_ns : &g_t_store_ns, ns);
+}
+
 void hb_contract_telemetry_record_compile(void) {
     telemetry_add(&g_compile_count, 1);
     hb_contract_telemetry_maybe_emit_progress();
@@ -207,6 +213,8 @@ void hb_contract_telemetry_snapshot(hb_contract_telemetry_counts_t* out) {
     out->store_skips = telemetry_load(&g_store_skips);
     out->bytes_loaded = telemetry_load(&g_bytes_loaded);
     out->bytes_stored = telemetry_load(&g_bytes_stored);
+    out->t_codegen_ns = telemetry_load(&g_t_codegen_ns);
+    out->t_store_ns = telemetry_load(&g_t_store_ns);
     out->compile_count = telemetry_load(&g_compile_count);
     out->translation_count = telemetry_load(&g_translation_count);
     out->distinct_translation_count = telemetry_load(&g_distinct_translation_count);
@@ -230,6 +238,7 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     "rl_unkhelper=%llu rl_overflow=%llu "
                     "rl_desync=%llu rl_collision=%llu rl_roundtrip=%llu "
                     "bytes_loaded=%llu bytes_stored=%llu "
+                    "t_codegen_ms=%llu t_store_ms=%llu "
                     "compile_count=%llu translation_count=%llu "
                     "distinct_translation_count=%llu dispatches=%llu blocks=%llu steps=%llu\n",
                     (unsigned long long)counts->open_ok,
@@ -265,6 +274,8 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     (unsigned long long)counts->rl_roundtrip,
                     (unsigned long long)counts->bytes_loaded,
                     (unsigned long long)counts->bytes_stored,
+                    (unsigned long long)(counts->t_codegen_ns / 1000000ull),
+                    (unsigned long long)(counts->t_store_ns / 1000000ull),
                     (unsigned long long)counts->compile_count,
                     (unsigned long long)counts->translation_count,
                     (unsigned long long)counts->distinct_translation_count,

@@ -82,6 +82,21 @@ typedef struct {
      * rate. Counted so `compile_count - reloc_blocks - promo_compiles == 0` is checkable rather
      * than a gap somebody has to rediscover. */
     uint64_t promo_compiles;
+    /* 2026-07-30 — WHERE COMPILE TIME GOES. The arithmetic that should have been done first:
+     * cold compiles 251907 blocks in 740.6 s and warm 50020 in 271.0 s, i.e. 185-400 blocks per
+     * second. A block translator doing 300/s is very slow, and 260000 blocks at that rate IS the
+     * ~800 s cold start — the sum closes with no remainder. It also explains every negative result
+     * of the day: the cache cannot help a COLD run, which must compile everything once, while warm
+     * really is 2.9x faster because it compiles 4.5x fewer blocks.
+     *
+     * Correlation is not causation though — compile_count may simply be a proxy for how much code
+     * the game ran. These two say whether the time is actually spent INSIDE compiling, split at the
+     * one boundary worth splitting: emitting the code, versus preparing it for the cache. The
+     * latter contains our own round-trip self-check, which re-runs the whole load path and memcmps
+     * it for EVERY stored block — about 240000 full round trips per cold start, correct by design
+     * and never once measured. */
+    uint64_t t_codegen_ns;
+    uint64_t t_store_ns;
     uint64_t compile_count;
     uint64_t translation_count;
     uint64_t distinct_translation_count;
@@ -110,6 +125,8 @@ void hb_contract_telemetry_record_reloc_decline(int reason);
 /* bucket: 0 = reg x1, 1 = x2, 2 = x3, 3 = anything else. Called only alongside a HOSTPTR
  * decline, so the four always sum to rl_hostptr. */
 void hb_contract_telemetry_record_hostptr_census(int bucket);
+/* which: 0 = codegen, 1 = cache-store preparation (includes the round-trip self-check). */
+void hb_contract_telemetry_add_time(int which, uint64_t ns);
 void hb_contract_telemetry_record_compile(void);
 /* Call beside record_compile() from any path that cannot reach the persistent store. */
 void hb_contract_telemetry_record_promote_compile(void);

@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "engines": [
+    {
+      "id": "wine-arm64-native",
+      "lane": "arm64-native",
+      "host_arch": "arm64",
+      "guest_machines": ["arm64"],
+      "path": "engine/wine/dist-pure-arm64/bin/wine",
+      "status": "experimental",
+      "native_level": "full-native",
+      "requires_rosetta": false,
+      "requires_experimental": false
+    },
+    {
+      "id": "wine-x86_64-rosetta",
+      "lane": "x86_64-rosetta",
+      "host_arch": "arm64",
+      "guest_machines": ["x86_64"],
+      "path": "engine/wine-x86_64/bin/wine",
+      "status": "compatibility",
+      "native_level": "translated-compatibility",
+      "requires_rosetta": true,
+      "requires_experimental": false
+    },
+    {
+      "id": "wine-x86-rosetta-wow64",
+      "lane": "x86-rosetta-wow64",
+      "host_arch": "arm64",
+      "guest_machines": ["x86"],
+      "path": "engine/wine-x86_64/lib/wine/x86_64-unix/wine",
+      "status": "compatibility",
+      "native_level": "translated-compatibility",
+      "requires_rosetta": true,
+      "requires_experimental": false
+    },
+    {
+      "id": "arm64ec-x64-bridge",
+      "lane": "arm64ec-x64-bridge",
+      "host_arch": "arm64",
+      "guest_machines": ["x86_64", "arm64ec", "arm64x"],
+      "path": "engine/bridge/arm64ec-x64-bridge",
+      "status": "experimental",
+      "native_level": "hybrid-native",
+      "requires_rosetta": false,
+      "requires_experimental": true
+    },
+    {
+      "id": "wine-arm64-hyperbridge",
+      "lane": "arm64-hyperbridge",
+      "host_arch": "arm64",
+      "guest_machines": ["x86", "x86_64", "arm64"],
+      "_comment_path": "2026-07-29: was engine/wine/dist-pure-arm64/bin/wine, which has not existed for months. The registry marks a missing engine unusable and the launcher then falls back SILENTLY to the Rosetta lane — so every front-door launch of Hollow Knight today ran under Rosetta while reporting nothing unusual, including three that reached full gameplay with sound and were briefly mistaken for our own engine working. dist-arm64ec-spike is the tree everything is actually built into.",
+      "path": "engine/wine/dist-arm64ec-spike/bin/wine",
+      "status": "experimental",
+      "native_level": "hybrid-native",
+      "requires_rosetta": false,
+      "requires_experimental": false
+    }
+  ]
+}

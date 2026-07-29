@@ -254,11 +254,30 @@ struct macrunner_hb_ir_cache_entry
 {
     uint64_t pc;
     hb_ir_func_t *func;
+    /* MacRunner 2026-07-28 — SMC guard.  This cache is address-keyed and, until now,
+     * had no byte validation and no invalidation path, so a guest code rewrite (Mono
+     * patching a callsite/trampoline) left the lifted IR stale for the rest of the
+     * run_x64 dispatch even though the block cache correctly evicted its translation.
+     * See reports/phase4-hollow-knight/HK-SMC-STALE-IR-CACHE-SECOND-CACHE-GAP-20260728.md */
+    uint64_t smc_span_start;
+    uint32_t smc_span_len;
+    uint64_t smc_hash;
 };
+
+/* Funcs dropped by the SMC guard are NOT freed at find() time — block-cache entries can
+ * hold pointers derived from them and both caches are torn down together at run_x64 exit.
+ * Retire them here and free at reset/destroy. */
+#define MACRUNNER_HB_IR_RETIRE_MAX 4096
 
 struct macrunner_hb_ir_cache
 {
     struct macrunner_hb_ir_cache_entry entries[MACRUNNER_HB_IR_CACHE_SIZE];
+    hb_ir_func_t *retired[MACRUNNER_HB_IR_RETIRE_MAX];
+    size_t retired_count;
+    uint64_t smc_tracked;
+    uint64_t smc_checked;
+    uint64_t smc_stale;
+    uint64_t smc_retire_overflow;
 };
 
 struct macrunner_hb_tls_thread_values
@@ -318,7 +337,22 @@ static unsigned char macrunner_hb_fls_slots[MACRUNNER_HB_TLS_SLOT_MAX];
 static uint64_t macrunner_hb_fls_callbacks[MACRUNNER_HB_TLS_SLOT_MAX];
 static struct macrunner_hb_tls_thread_values macrunner_hb_tls_thread_values[MACRUNNER_HB_TLS_THREAD_MAX];
 
-static pthread_mutex_t macrunner_hb_x64_thread_context_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* MacRunner 2026-07-28 (async-signal re-entry, run31b live deadlock): this mutex
+ * MUST be recursive.  macrunner_hb_get_x64_thread_context() is reached from
+ * usr1_handler (Wine's SIGUSR1 suspend path, e.g. Mono/Boehm GC stop-the-world
+ * SuspendThread) ON THE SAME THREAD that may already hold the mutex inside the
+ * per-block macrunner_hb_update_current_x64_context() trylock region.  With a
+ * non-recursive mutex that is a guaranteed self-deadlock whenever the suspend
+ * signal lands inside the (enormous, per-block) trylock window — observed live:
+ * victim interrupted at update+0x138 (inside trylock..unlock per disassembly),
+ * its own suspend handler then hard-locked the same mutex; a second thread
+ * (try_thread_creation_semantic -> NtGetContextThread) piled up behind it and
+ * the whole process froze.  Re-entry from a signal handler is sequential with
+ * the interrupted frame (the handler runs to completion before the frame
+ * resumes), and the table is a fixed array whose slots are only created/torn
+ * down by their owning thread, so same-thread recursive re-entry is safe here.
+ * Cross-thread exclusion semantics are unchanged. */
+static pthread_mutex_t macrunner_hb_x64_thread_context_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 static struct macrunner_hb_x64_thread_context_entry macrunner_hb_x64_thread_contexts[MACRUNNER_HB_X64_THREAD_CONTEXT_MAX];
 /* Host-native sampler guest-progress channel.  The run thread is the sole
  * writer; the sampler reads relaxed atomic snapshots without touching the hot
@@ -928,15 +962,50 @@ __attribute__((visibility("default"))) NTSTATUS macrunner_hb_wow64_guest32_alloc
     return STATUS_SUCCESS;
 }
 
+/* MacRunner 2026-07-29 (HK master lane, ITER-4) — FAULT-PATH PE-HEADER PROBE.
+ *
+ * MEASURED on a live guest (laneA-MH-OFF-a1-try1-163710, pid 18861), three `sample`s over
+ * four minutes: THREE threads pinned at one instruction,
+ *   macrunner_hb_pc_is_x64_guest_code_module_no_lock+264 == `ldrh w9,[x0]`,
+ * which is the `dos->e_magic` read in macrunner_hb_module_machine() below, reached as
+ *   _sigtramp -> macrunner_hb_primary_signal_handler+628
+ *            -> macrunner_hb_route_x64_callback_fault+752 -> ...+264
+ * with 7518/7518, 7599/7599 and 6058/6058 samples at that single PC and every frame offset
+ * above it identical.  `ps -M` twice, 20 s apart: those threads burned **sys +4.6 s vs
+ * usr +0.38 s** each (STAT=R, ~25 % CPU), while healthy running threads on the same process
+ * invert that (usr +5.45 s vs sys +0.45 s).  User PC frozen + system time dominant = the
+ * load faults, the kernel services the fault, the same instruction re-faults, forever.
+ *
+ * Why the existing re-entrancy guard (signal_arm64.c, 202ade1b) cannot catch this, and why
+ * `macrunner-hb-fault-reentry-break`=0 was NOT evidence against a fault loop: the faulting
+ * load runs inside the handler with the signal masked, so the kernel never delivers a second
+ * signal — there is no re-entry to guard.  The sampled stack has exactly ONE _sigtramp.
+ *
+ * So: when we are inside the signal handler, read PE headers through
+ * mach_vm_read_overwrite (macrunner_hb_read_local_memory), which returns a failure code
+ * instead of faulting.  This is not a new technique here — macrunner_hb_module_from_pc()'s
+ * downward header scan already uses that helper for exactly this reason, and it sits on this
+ * same call chain (reached from macrunner_hb_pc_is_x64_guest_code_module_no_lock).
+ *
+ * Off the fault path this is a plain memcpy, so the run_x64 hot path (which calls the
+ * classifier PER BLOCK) keeps its raw-read cost.  Default OFF; gate with
+ * MACRUNNER_HB_FAULT_SAFE_HEADER_PROBE=1 and A/B against a running guest. */
+static BOOL macrunner_hb_probe_image_bytes( const void *addr, void *buf, size_t size );
+static BOOL macrunner_hb_header_probe_is_safe(void);
+
 static IMAGE_NT_HEADERS *macrunner_hb_image_nt_header( void *module )
 {
-    IMAGE_DOS_HEADER *dos = module;
+    IMAGE_DOS_HEADER dos;
     IMAGE_NT_HEADERS *nt;
+    DWORD signature;
 
-    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return NULL;
-    if (dos->e_lfanew <= 0 || dos->e_lfanew > 0x100000) return NULL;
-    nt = (IMAGE_NT_HEADERS *)((BYTE *)module + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return NULL;
+    if (!module) return NULL;
+    if (!macrunner_hb_probe_image_bytes( module, &dos, sizeof(dos) )) return NULL;
+    if (dos.e_magic != IMAGE_DOS_SIGNATURE) return NULL;
+    if (dos.e_lfanew <= 0 || dos.e_lfanew > 0x100000) return NULL;
+    nt = (IMAGE_NT_HEADERS *)((BYTE *)module + dos.e_lfanew);
+    if (!macrunner_hb_probe_image_bytes( nt, &signature, sizeof(signature) )) return NULL;
+    if (signature != IMAGE_NT_SIGNATURE) return NULL;
     return nt;
 }
 
@@ -945,6 +1014,43 @@ static void *macrunner_hb_redirect_arm64x_thunk_to_native( void *module, void *p
 static void *macrunner_hb_local_heap_alloc( SIZE_T requested_size, BOOL zero );
 static void macrunner_hb_sync_virtual_region( hb_context_t *ctx, void *base, SIZE_T size,
                                               ULONG protect );
+
+/* ---------------------------------------------------------------------------------------
+ * Guest memory-pressure instrument.
+ *
+ * WHY THIS EXISTS (run23, 2026-07-27): the HK start-game actuator's thread died c000007b
+ * because Mono's `newobj` JIT icall returned NULL -- the allocation failed, and Mono's own
+ * error->exception conversion then *silently skipped* setting a pending exception (its two
+ * `je` guards bail when the exception object itself cannot be allocated), so JIT'd managed
+ * code stored straight into a NULL object.  See
+ * reports/phase4-hollow-knight/START-GAME-ACTUATOR-DIED-MONO-OBJECT-NEW-SPECIFIC-RETURNED-NULL-20260727.md
+ *
+ * At that point we had NO instrument on ANY guest allocation-failure edge, so the run's
+ * silence about memory failure was evidence of nothing in either direction.  These counters
+ * close that gap.
+ *
+ * DISCIPLINE: the counters are AGGREGATE and UNCAPPED -- a zero is a real zero, never an
+ * exhausted sampling budget.  Only the per-event *logging* is rate-limited; the totals are
+ * always emitted in full alongside every macrunner-hb-run-exit. */
+static unsigned long macrunner_hb_mem_virtualalloc_ok;
+static unsigned long macrunner_hb_mem_virtualalloc_fail;
+static unsigned long macrunner_hb_mem_commit_ok;
+static unsigned long macrunner_hb_mem_commit_fail_precondition;
+static unsigned long macrunner_hb_mem_commit_fail_mprotect;
+
+static void macrunner_hb_report_mem_pressure_totals( const char *where )
+{
+    fprintf( stderr, "macrunner-hb-mem-pressure: where=%s virtualalloc_ok=%lu "
+             "virtualalloc_fail=%lu commit_ok=%lu commit_fail_precondition=%lu "
+             "commit_fail_mprotect=%lu sampling=none-aggregate\n",
+             where ? where : "(none)",
+             __atomic_load_n( &macrunner_hb_mem_virtualalloc_ok, __ATOMIC_RELAXED ),
+             __atomic_load_n( &macrunner_hb_mem_virtualalloc_fail, __ATOMIC_RELAXED ),
+             __atomic_load_n( &macrunner_hb_mem_commit_ok, __ATOMIC_RELAXED ),
+             __atomic_load_n( &macrunner_hb_mem_commit_fail_precondition, __ATOMIC_RELAXED ),
+             __atomic_load_n( &macrunner_hb_mem_commit_fail_mprotect, __ATOMIC_RELAXED ) );
+    fflush( stderr );
+}
 
 static void *macrunner_hb_find_named_export( void *module, const char *name )
 {
@@ -1037,6 +1143,71 @@ static BOOL macrunner_hb_read_local_memory( uintptr_t addr, void *buf, size_t si
 #endif
 }
 
+/* Nonzero while this thread is executing inside HyperBridge's signal handler.  Maintained by
+ * macrunner_hb_primary_signal_handler() in signal_arm64.c (the single sa_sigaction entry, so
+ * one scope covers the whole handler subtree: the callback-fault router AND the ARM64X
+ * hexpthk SIGILL redirect, both of which reach the PC classifier).  Not static: signal_arm64.c
+ * is a separate translation unit.  Reading a __thread int is a couple of instructions, which
+ * is why the gate lives here rather than in the caller. */
+__thread int macrunner_hb_fault_header_probe_depth;
+/* Times the safe probe refused a header read that would otherwise have faulted.  Non-static so
+ * it can be reported from non-signal context; a nonzero value is the direct evidence that the
+ * wedge site was reached and survived. */
+unsigned int macrunner_hb_fault_header_probe_refusals;
+
+static BOOL macrunner_hb_safe_header_probe_enabled(void)
+{
+    static int mode = -1;
+
+    if (mode < 0)
+    {
+        const char *s = getenv( "MACRUNNER_HB_FAULT_SAFE_HEADER_PROBE" );
+        mode = (s && *s && *s != '0') ? 1 : 0;
+    }
+    return mode != 0;
+}
+
+static BOOL macrunner_hb_header_probe_is_safe(void)
+{
+    /* Gate FIRST, depth second.  Ordering the depth check first would be marginally cheaper on
+     * the hot path, but it would mean the getenv() inside the gate is first evaluated from
+     * INSIDE a signal handler, where getenv() is not async-signal-safe.  Testing the gate first
+     * resolves and caches it during ordinary module loading instead.  (The codebase does do
+     * lazy getenv on the fault path elsewhere — macrunner_hb_fault_reentry_disabled() — but
+     * there is no reason to add another one.) */
+    if (!macrunner_hb_safe_header_probe_enabled()) return FALSE;
+    return macrunner_hb_fault_header_probe_depth > 0;
+}
+
+static BOOL macrunner_hb_probe_image_bytes( const void *addr, void *buf, size_t size )
+{
+    if (!addr || !buf || !size) return FALSE;
+    if (!macrunner_hb_header_probe_is_safe())
+    {
+        /* Byte-for-byte the previous behaviour, including the fault, so the gate-OFF arm of
+         * the A/B is a true control. */
+        memcpy( buf, addr, size );
+        return TRUE;
+    }
+    if (macrunner_hb_read_local_memory( (uintptr_t)addr, buf, size )) return TRUE;
+
+    /* Announce once, async-signal-safely: a fixed string through write(2), no formatting. */
+    {
+        static int announced;
+
+        __atomic_fetch_add( &macrunner_hb_fault_header_probe_refusals, 1, __ATOMIC_RELAXED );
+        if (!announced)
+        {
+            static const char msg[] =
+                "macrunner-hb-fault-header-probe-refused: unreadable PE header on the fault "
+                "path — refused instead of faulting (would have wedged this thread)\n";
+            announced = 1;
+            if (write( 2, msg, sizeof(msg) - 1 ) < 0) { /* nothing useful to do in a handler */ }
+        }
+    }
+    return FALSE;
+}
+
 #define MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE 256
 #define MACRUNNER_HB_MODULE_FROM_PC_NEG_CACHE_SIZE 512
 #define MACRUNNER_HB_LDR_FROM_PC_HOT_CACHE_SIZE 4
@@ -1047,6 +1218,33 @@ static BOOL macrunner_hb_read_local_memory( uintptr_t addr, void *buf, size_t si
  * the old 0x100000 (4GB) cap meant a Mono-JIT PC could do ~1M Mach syscalls. 0x10000
  * (256MB) is generous for any real non-LDR image while bounding the non-PE (Mono) case. */
 #define MACRUNNER_HB_MODULE_FROM_PC_SCAN_MAX 0x10000
+
+/* MacRunner (2026-07-29, HK master lane iter 2 — MEASURED, not assumed).  Three live
+ * `sample`s of Hollow Knight's one running thread (13:36, 13:45, 13:57, composition
+ * identical across all three) put 67% of that thread inside PC classification, and 43.6%
+ * inside macrunner_hb_ldr_entry_from_pc alone.  NB the sampled run was WEDGED at +53.3 s
+ * (it never reached `Begin MonoManager`), so this is the profile of a stuck boot, not of
+ * the Mono load phase — the cost below is real either way, but do not read it as a
+ * measurement of scene-load throughput.
+ * Mapping the sampled instruction offsets onto the shipped ntdll.so (UUID-matched to the
+ * running image) showed 97.2% of that in the PEB module-list walk (+184..+276), 0.6% in
+ * the 4-entry hot cache, and ZERO samples in the cache-insert tail (+280..+340) — i.e. the
+ * walk runs to completion and finds nothing, essentially every time.  The positive hot
+ * cache only caches HITS, so a miss re-walks ~40-80 modules — about ten times per fault,
+ * on the fault path.  [INFERRED from the same profile, not a direct read of the PC: those
+ * PCs are in no PE image at all rather than in a module missing from the PEB list —
+ * read_local_memory took zero samples, so module_from_pc's downward header scan never ran,
+ * while module_from_pc still reached ldr_entry_from_pc, which happens only after its own
+ * 256-entry positive cache misses.  That matches Mono-JIT/generated code, which has no PE
+ * header (see MODULE_FROM_PC_SCAN_MAX above).]
+ *
+ * Cache the misses too, direct-mapped by page so a negative lookup is one load + compare
+ * rather than the 512-entry linear scan the module_from_pc neg cache uses.  A negative
+ * entry can go stale if a module is later loaded over that page, so every Nth negative hit
+ * falls through to the full walk and re-validates (and clears the entry if the page is now
+ * covered).  Default OFF — gate with MACRUNNER_HB_LDR_NEG_CACHE=1 and A/B it. */
+#define MACRUNNER_HB_LDR_FROM_PC_NEG_CACHE_SIZE 512   /* power of two: direct-mapped */
+#define MACRUNNER_HB_LDR_FROM_PC_NEG_REVALIDATE 512   /* full re-walk every Nth negative hit */
 
 struct macrunner_hb_module_from_pc_cache_entry
 {
@@ -1069,6 +1267,20 @@ static __thread unsigned int macrunner_hb_module_from_pc_neg_cache_next;
 static __thread struct macrunner_hb_ldr_from_pc_hot_cache_entry
     macrunner_hb_ldr_from_pc_hot_cache[MACRUNNER_HB_LDR_FROM_PC_HOT_CACHE_SIZE];
 static __thread unsigned int macrunner_hb_ldr_from_pc_hot_cache_next;
+static __thread uintptr_t macrunner_hb_ldr_from_pc_neg_cache[MACRUNNER_HB_LDR_FROM_PC_NEG_CACHE_SIZE];
+static __thread unsigned int macrunner_hb_ldr_from_pc_neg_hits;
+
+static int macrunner_hb_ldr_neg_cache_enabled(void)
+{
+    static int mode = -1;
+
+    if (mode < 0)
+    {
+        const char *s = getenv( "MACRUNNER_HB_LDR_NEG_CACHE" );
+        mode = (s && *s && *s != '0') ? 1 : 0;
+    }
+    return mode;
+}
 
 static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc );
 
@@ -1240,6 +1452,9 @@ static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc )
     PEB *peb = NtCurrentTeb()->Peb;
     LIST_ENTRY *head, *entry;
     uintptr_t addr = (uintptr_t)pc;
+    uintptr_t page = addr & ~(uintptr_t)0xfff;
+    unsigned int neg_slot = 0;
+    int neg_on;
     unsigned int guard = 0, i;
 
     /* Module identity is stable for the lifetime of an executing x64 block.
@@ -1256,6 +1471,19 @@ static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc )
     }
 
     if (!peb || !peb->LdrData) return NULL;
+
+    /* Negative lookups dominate this function on the fault path (see the note at
+     * MACRUNNER_HB_LDR_FROM_PC_NEG_CACHE_SIZE): answer a known-miss page without the walk,
+     * but let every Nth hit through to re-validate against a module loaded since. */
+    neg_on = page && macrunner_hb_ldr_neg_cache_enabled();
+    if (neg_on)
+    {
+        neg_slot = (unsigned int)((page >> 12) & (MACRUNNER_HB_LDR_FROM_PC_NEG_CACHE_SIZE - 1));
+        if (macrunner_hb_ldr_from_pc_neg_cache[neg_slot] == page &&
+            ++macrunner_hb_ldr_from_pc_neg_hits % MACRUNNER_HB_LDR_FROM_PC_NEG_REVALIDATE)
+            return NULL;
+    }
+
     head = &peb->LdrData->InMemoryOrderModuleList;
     for (entry = head->Flink; entry && entry != head && guard++ < 4096; entry = entry->Flink)
     {
@@ -1268,6 +1496,9 @@ static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc )
         if (!entry->Flink || !entry->Blink) break;
         if (!base || !size || size > UINTPTR_MAX - base) continue;
         if (addr < base || addr >= base + size) continue;
+        /* Re-validation found a module covering a page we had recorded as a miss. */
+        if (neg_on && macrunner_hb_ldr_from_pc_neg_cache[neg_slot] == page)
+            macrunner_hb_ldr_from_pc_neg_cache[neg_slot] = 0;
         cached = &macrunner_hb_ldr_from_pc_hot_cache[
             macrunner_hb_ldr_from_pc_hot_cache_next++ % MACRUNNER_HB_LDR_FROM_PC_HOT_CACHE_SIZE];
         cached->start = base;
@@ -1275,6 +1506,7 @@ static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc )
         cached->ldr = ldr;
         return ldr;
     }
+    if (neg_on) macrunner_hb_ldr_from_pc_neg_cache[neg_slot] = page;
     return NULL;
 }
 
@@ -1414,6 +1646,13 @@ static int macrunner_hb_cached_env_flag_default_on( int *cache, const char *name
         __atomic_store_n( cache, value, __ATOMIC_RELAXED );
     }
     return value;
+}
+
+static int macrunner_hb_gfx_ring_ledger_enabled(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_GFX_RING_LEDGER" );
 }
 
 static int macrunner_hb_trace_abi_enabled(void)
@@ -11711,10 +11950,26 @@ BOOL macrunner_hb_try_commit_or_upgrade_page( unsigned long long addr )
         long pgsz = sysconf( _SC_PAGESIZE );
         size_t plen = pgsz > 0 ? (size_t)pgsz : 0x4000;
         uintptr_t page = (uintptr_t)addr & ~(uintptr_t)(plen - 1);
-        if (mprotect( (void *)page, plen, PROT_READ | PROT_WRITE ) == 0)
+        if (mprotect( (void *)page, plen, PROT_READ | PROT_WRITE ) != 0)
+        {
+            /* Host refused the commit -- the memory-exhaustion edge.  Aggregate/uncapped. */
+            int saved_errno = errno;
+            unsigned long mn = __atomic_add_fetch( &macrunner_hb_mem_commit_fail_mprotect, 1,
+                                                   __ATOMIC_RELAXED );
+            if (mn <= 64 || (mn & (mn - 1)) == 0)
+            {
+                fprintf( stderr, "macrunner-hb-commit-fail: reason=mprotect addr=0x%llx "
+                         "page=0x%llx len=%#zx errno=%d n=%lu\n",
+                         (unsigned long long)addr, (unsigned long long)page,
+                         plen, saved_errno, mn );
+                fflush( stderr );
+            }
+            return FALSE;
+        }
         {
             static unsigned long commit_n;
             unsigned long n = __atomic_add_fetch( &commit_n, 1, __ATOMIC_RELAXED );
+            __atomic_add_fetch( &macrunner_hb_mem_commit_ok, 1, __ATOMIC_RELAXED );
             /* Heavy logging for the Unity slab 0x320f/0x3f frontier */
             int heavy = (addr >= 0x320f00000ULL && addr < 0x321100000ULL) ||
                         (addr >= 0x3f0000000ULL && addr < 0x401000000ULL);
@@ -11729,6 +11984,11 @@ BOOL macrunner_hb_try_commit_or_upgrade_page( unsigned long long addr )
             return TRUE;
         }
     }
+    /* Precondition edge: not a lazily-committable reserved page (genuinely unmapped, or no
+     * WRITE in max_prot).  This is the CORRECT refusal -- counted, not logged, so that a real
+     * AV is still surfaced as before.  Kept separate from the mprotect edge because only the
+     * latter indicates host memory exhaustion. */
+    __atomic_add_fetch( &macrunner_hb_mem_commit_fail_precondition, 1, __ATOMIC_RELAXED );
     return FALSE;
 }
 #endif
@@ -12204,7 +12464,92 @@ static size_t macrunner_hb_ir_cache_hash( uint64_t pc )
     return (size_t)((pc >> 4) ^ (pc >> 17) ^ (pc >> 32)) & (MACRUNNER_HB_IR_CACHE_SIZE - 1);
 }
 
-static hb_ir_func_t *macrunner_hb_ir_cache_find( struct macrunner_hb_ir_cache *cache, uint64_t pc )
+/* MacRunner 2026-07-28 — SMC guard for the IR cache.  Kill switch MACRUNNER_HB_SMC_RELIFT=0
+ * (shared with the hb_runtime.c dispatch-exit half; both halves are required — see
+ * HK-SMC-STALE-IR-CACHE-SECOND-CACHE-GAP-20260728.md). */
+static BOOL macrunner_hb_ir_smc_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+        const char *e = getenv( "MACRUNNER_HB_SMC_RELIFT" );
+        cached = (e && e[0] == '0') ? 0 : 1;
+    }
+    return cached != 0;
+}
+
+/* Shares MACRUNNER_HB_TRACE_SMC_REVERIFY with the hb_runtime.c half so one env var lights
+ * up both sides of the invalidation path. */
+static BOOL macrunner_hb_ir_smc_trace_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+        const char *e = getenv( "MACRUNNER_HB_TRACE_SMC_REVERIFY" );
+        cached = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+/* FNV-1a over the CURRENT guest bytes of the lifted span.  Returns 0 when the span is
+ * unreadable or implausible — treated as unverifiable, never invalidates blind (same
+ * policy as smc_hash_current() in hb_runtime.c). */
+static uint64_t macrunner_hb_ir_smc_hash( hb_context_t *ctx, uint64_t start, uint32_t len )
+{
+    uint8_t bytes[512];
+    uint64_t h = 1469598103934665603ULL;
+    uint32_t i;
+
+    if (!ctx || !ctx->memory || !len || len > sizeof(bytes)) return 0;
+    if (hb_memory_read( ctx->memory, (hb_gva_t)start, bytes, len ) != HB_OK) return 0;
+    for (i = 0; i < len; i++) { h ^= bytes[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+/* The ACTUAL guest extent this func was lifted from.
+ * NB: func->guest_len is NOT usable here — hb_lift_x64.c:2159 sets it to dec->code_len, i.e.
+ * the 256-byte decoder WINDOW that macrunner_hb_lift_one_block hands in, not the lifted
+ * extent.  Hashing that window would (a) trip on unrelated code inside it and (b) fail the
+ * bounds check near a mapping edge, silently disabling the guard.  Walk the instrs instead,
+ * mirroring block_guest_span() in hb_runtime.c. */
+static BOOL macrunner_hb_ir_func_guest_span( const hb_ir_func_t *func, uint64_t *start, uint32_t *len )
+{
+    uint64_t lo = 0, hi = 0;
+    BOOL any = FALSE;
+    size_t b, i;
+
+    if (!func || !func->cfg) return FALSE;
+    for (b = 0; b < func->cfg->block_count; b++)
+    {
+        const hb_ir_block_t *blk = func->cfg->blocks[b];
+        if (!blk) continue;
+        for (i = 0; i < blk->instr_count; i++)
+        {
+            uint64_t a = blk->instrs[i].guest_addr;
+            uint64_t e = a + blk->instrs[i].guest_len;
+            if (!blk->instrs[i].guest_len) continue;
+            if (!any) { lo = a; hi = e; any = TRUE; continue; }
+            if (a < lo) lo = a;
+            if (e > hi) hi = e;
+        }
+    }
+    if (!any || hi <= lo || hi - lo > 512) return FALSE;
+    *start = lo;
+    *len = (uint32_t)(hi - lo);
+    return TRUE;
+}
+
+static void macrunner_hb_ir_cache_retire( struct macrunner_hb_ir_cache *cache, hb_ir_func_t *func )
+{
+    if (!cache || !func) return;
+    if (cache->retired_count < MACRUNNER_HB_IR_RETIRE_MAX)
+        cache->retired[cache->retired_count++] = func;
+    else
+        cache->smc_retire_overflow++;  /* leaked until run_x64 exit; never freed early */
+}
+
+static hb_ir_func_t *macrunner_hb_ir_cache_find( struct macrunner_hb_ir_cache *cache,
+                                                 hb_context_t *ctx, uint64_t pc )
 {
     size_t idx, i;
 
@@ -12214,16 +12559,55 @@ static hb_ir_func_t *macrunner_hb_ir_cache_find( struct macrunner_hb_ir_cache *c
     {
         struct macrunner_hb_ir_cache_entry *entry = &cache->entries[(idx + i) & (MACRUNNER_HB_IR_CACHE_SIZE - 1)];
         if (!entry->func) return NULL;
-        if (entry->pc == pc) return entry->func;
+        if (entry->pc != pc) continue;
+        if (entry->smc_hash)
+        {
+            uint64_t now = macrunner_hb_ir_smc_hash( ctx, entry->smc_span_start, entry->smc_span_len );
+
+            cache->smc_checked++;
+            if (now && now != entry->smc_hash)
+            {
+                /* Guest rewrote this code (Mono patching a callsite/trampoline).  Report a
+                 * MISS so the caller re-lifts from current bytes; the slot is deliberately
+                 * left occupied so the open-addressing probe chain stays intact, and
+                 * _put() below replaces the stale func in place. */
+                cache->smc_stale++;
+                return NULL;
+            }
+        }
+        return entry->func;
     }
     return NULL;
 }
 
-static BOOL macrunner_hb_ir_cache_put( struct macrunner_hb_ir_cache *cache, uint64_t pc, hb_ir_func_t *func )
+static BOOL macrunner_hb_ir_cache_put( struct macrunner_hb_ir_cache *cache, hb_context_t *ctx,
+                                       uint64_t pc, hb_ir_func_t *func )
 {
     size_t idx, i;
+    uint64_t span_start = 0;
+    uint32_t span_len = 0;
+    uint64_t span_hash = 0;
 
     if (!cache || !func) return FALSE;
+    if (macrunner_hb_ir_smc_enabled() &&
+        macrunner_hb_ir_func_guest_span( func, &span_start, &span_len ))
+    {
+        /* Only W+X spans can change under us (Mono/JIT code heaps are RWX); static RX code
+         * stays untracked and pays NOTHING at find() time.  Same policy as smc_track_entry()
+         * in hb_runtime.c — and it keeps the hash off the hot dispatch path for the ~all of
+         * guest code that is immutable. */
+        hb_region_t *region = ctx && ctx->memory
+            ? hb_memory_find_region( ctx->memory, (hb_gva_t)span_start ) : NULL;
+
+        if (region &&
+            (region->perm & (HB_PERM_WRITE | HB_PERM_EXEC)) == (HB_PERM_WRITE | HB_PERM_EXEC) &&
+            span_start + span_len <= region->base + region->size)
+        {
+            span_hash = macrunner_hb_ir_smc_hash( ctx, span_start, span_len );
+            if (span_hash) cache->smc_tracked++;
+        }
+        if (!span_hash) { span_start = 0; span_len = 0; }  /* untracked: never guess */
+    }
     idx = macrunner_hb_ir_cache_hash( pc );
     for (i = 0; i < MACRUNNER_HB_IR_CACHE_SIZE; i++)
     {
@@ -12232,9 +12616,26 @@ static BOOL macrunner_hb_ir_cache_put( struct macrunner_hb_ir_cache *cache, uint
         {
             entry->pc = pc;
             entry->func = func;
+            entry->smc_span_start = span_start;
+            entry->smc_span_len = span_len;
+            entry->smc_hash = span_hash;
             return TRUE;
         }
-        if (entry->pc == pc) return TRUE;
+        if (entry->pc == pc)
+        {
+            if (entry->func != func)
+            {
+                /* Replacing a func the SMC guard reported stale.  Retire (do NOT free):
+                 * block-cache entries can hold pointers derived from it and both caches
+                 * are torn down together at run_x64 exit. */
+                macrunner_hb_ir_cache_retire( cache, entry->func );
+                entry->func = func;
+                entry->smc_span_start = span_start;
+                entry->smc_span_len = span_len;
+                entry->smc_hash = span_hash;
+            }
+            return TRUE;
+        }
     }
     /* MacRunner (2026-06-17, HK first-frame): the IR cache has NO eviction — once full, put
      * fails here and the block is NOT cached, so macrunner_hb_run_x64 re-lifts it on EVERY
@@ -12384,6 +12785,8 @@ static void macrunner_hb_ir_cache_destroy( struct macrunner_hb_ir_cache *cache )
     if (!cache) return;
     for (i = 0; i < MACRUNNER_HB_IR_CACHE_SIZE; i++)
         if (cache->entries[i].func) hb_ir_func_destroy( cache->entries[i].func );
+    for (i = 0; i < cache->retired_count; i++)
+        hb_ir_func_destroy( cache->retired[i] );
     free( cache );
 }
 
@@ -12402,6 +12805,25 @@ static void macrunner_hb_ir_cache_reset( struct macrunner_hb_ir_cache *cache )
             cache->entries[i].func = NULL;
         }
     memset( cache->entries, 0, sizeof(cache->entries) );
+    /* Retired-by-SMC funcs: this is the point where freeing them is safe (the block cache
+     * that could hold derived pointers is reset in the same run_x64 prologue). */
+    if (cache->retired_count)
+    {
+        if (macrunner_hb_ir_smc_trace_enabled())
+        {
+            fprintf( stderr, "macrunner-hb-ircache-smc: dispatch summary tracked=%llu checked=%llu "
+                     "stale=%llu retired=%llu retire_overflow=%llu\n",
+                     (unsigned long long)cache->smc_tracked, (unsigned long long)cache->smc_checked,
+                     (unsigned long long)cache->smc_stale, (unsigned long long)cache->retired_count,
+                     (unsigned long long)cache->smc_retire_overflow );
+            fflush( stderr );
+        }
+        for (i = 0; i < cache->retired_count; i++)
+            hb_ir_func_destroy( cache->retired[i] );
+        cache->retired_count = 0;
+    }
+    cache->smc_tracked = cache->smc_checked = cache->smc_stale = 0;
+    cache->smc_retire_overflow = 0;
 }
 
 /* MacRunner 2026-06-19 (B-interim): per-thread pool of the JIT runtime + IR cache.
@@ -12453,15 +12875,30 @@ static void macrunner_hb_nested_rt_release( hb_jit_runtime_t *rt )
         hb_jit_runtime_destroy( rt );
 }
 
+/* THE MEASURED WEDGE SITE.  `dos->e_magic` below compiled to the `ldrh w9,[x0]` at
+ * macrunner_hb_pc_is_x64_guest_code_module_no_lock+264 that pinned three live threads in a
+ * kernel fault loop — see the note on macrunner_hb_image_nt_header() for the measurement. */
 static USHORT macrunner_hb_module_machine( void *module )
 {
-    const IMAGE_DOS_HEADER *dos = module;
+    IMAGE_DOS_HEADER dos;
     const IMAGE_NT_HEADERS *nt;
+    DWORD signature;
+    USHORT machine;
 
-    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return IMAGE_FILE_MACHINE_UNKNOWN;
-    nt = (const IMAGE_NT_HEADERS *)((const char *)module + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return IMAGE_FILE_MACHINE_UNKNOWN;
-    return nt->FileHeader.Machine;
+    if (!module) return IMAGE_FILE_MACHINE_UNKNOWN;
+    if (!macrunner_hb_probe_image_bytes( module, &dos, sizeof(dos) ))
+        return IMAGE_FILE_MACHINE_UNKNOWN;
+    if (dos.e_magic != IMAGE_DOS_SIGNATURE) return IMAGE_FILE_MACHINE_UNKNOWN;
+    /* Probe the exact members the raw code dereferenced, not whole structures: copying a full
+     * IMAGE_NT_HEADERS would touch ~264 bytes where the original touched 6, and could fault in
+     * the gate-OFF control arm where the original did not. */
+    nt = (const IMAGE_NT_HEADERS *)((const char *)module + dos.e_lfanew);
+    if (!macrunner_hb_probe_image_bytes( &nt->Signature, &signature, sizeof(signature) ))
+        return IMAGE_FILE_MACHINE_UNKNOWN;
+    if (signature != IMAGE_NT_SIGNATURE) return IMAGE_FILE_MACHINE_UNKNOWN;
+    if (!macrunner_hb_probe_image_bytes( &nt->FileHeader.Machine, &machine, sizeof(machine) ))
+        return IMAGE_FILE_MACHINE_UNKNOWN;
+    return machine;
 }
 
 static USHORT macrunner_hb_import_lookup_machine( const struct macrunner_hb_import_thunk *thunk )
@@ -12484,15 +12921,23 @@ static USHORT macrunner_hb_import_lookup_machine( const struct macrunner_hb_impo
     return current_machine;
 }
 
+/* Same raw-header shape as macrunner_hb_module_machine(); swept with it rather than left as
+ * the next thing to wedge. */
 static uint64_t macrunner_hb_module_size( void *module )
 {
-    const IMAGE_DOS_HEADER *dos = module;
+    IMAGE_DOS_HEADER dos;
     const IMAGE_NT_HEADERS *nt;
+    DWORD signature, size_of_image;
 
-    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
-    nt = (const IMAGE_NT_HEADERS *)((const char *)module + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
-    return nt->OptionalHeader.SizeOfImage;
+    if (!module) return 0;
+    if (!macrunner_hb_probe_image_bytes( module, &dos, sizeof(dos) )) return 0;
+    if (dos.e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    nt = (const IMAGE_NT_HEADERS *)((const char *)module + dos.e_lfanew);
+    if (!macrunner_hb_probe_image_bytes( &nt->Signature, &signature, sizeof(signature) )) return 0;
+    if (signature != IMAGE_NT_SIGNATURE) return 0;
+    if (!macrunner_hb_probe_image_bytes( &nt->OptionalHeader.SizeOfImage, &size_of_image,
+                                         sizeof(size_of_image) )) return 0;
+    return size_of_image;
 }
 
 static BOOL macrunner_hb_read_guest_astr( hb_context_t *ctx, uint64_t addr, char *out, size_t out_size )
@@ -15634,10 +16079,16 @@ static int macrunner_hb_pc_in_original_exec_section( void *module, uint64_t pc )
     return saw_module ? FALSE : -1;
 }
 
+/* Swept with macrunner_hb_module_machine(): this runs IMMEDIATELY after it on the same fault
+ * path (macrunner_hb_pc_is_x64_guest_code_module_no_lock calls one then the other), and walks
+ * the section table by raw dereference.  Fixing only the measured site would have relocated
+ * the wedge into this loop rather than removing it. */
 static int macrunner_hb_pc_in_executable_section( void *module, uint64_t pc )
 {
     IMAGE_NT_HEADERS *nt = macrunner_hb_image_nt_header( module );
-    IMAGE_SECTION_HEADER *sec;
+    const IMAGE_SECTION_HEADER *sec;
+    IMAGE_SECTION_HEADER sec_local;
+    IMAGE_FILE_HEADER file_header;
     uint64_t base = (uint64_t)(uintptr_t)module;
     DWORD rva;
     int original_exec;
@@ -15646,13 +16097,20 @@ static int macrunner_hb_pc_in_executable_section( void *module, uint64_t pc )
     if (!nt || pc < base) return FALSE;
     original_exec = macrunner_hb_pc_in_original_exec_section( module, pc );
     if (original_exec >= 0) return original_exec;
+    if (!macrunner_hb_probe_image_bytes( &nt->FileHeader, &file_header, sizeof(file_header) ))
+        return FALSE;
     rva = (DWORD)(pc - base);
-    sec = IMAGE_FIRST_SECTION( nt );
-    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+    /* IMAGE_FIRST_SECTION, but with SizeOfOptionalHeader taken from the probed copy. */
+    sec = (const IMAGE_SECTION_HEADER *)((const BYTE *)&nt->OptionalHeader +
+                                         file_header.SizeOfOptionalHeader);
+    for (i = 0; i < file_header.NumberOfSections; i++, sec++)
     {
-        DWORD start = sec->VirtualAddress;
-        DWORD size = sec->Misc.VirtualSize ? sec->Misc.VirtualSize : sec->SizeOfRawData;
-        if (!(sec->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+        DWORD start, size;
+
+        if (!macrunner_hb_probe_image_bytes( sec, &sec_local, sizeof(sec_local) )) return FALSE;
+        start = sec_local.VirtualAddress;
+        size = sec_local.Misc.VirtualSize ? sec_local.Misc.VirtualSize : sec_local.SizeOfRawData;
+        if (!(sec_local.Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
         if (rva >= start && rva < start + size) return TRUE;
     }
     return FALSE;
@@ -22677,6 +23135,20 @@ static BOOL macrunner_hb_try_ntdll_memory_semantic( hb_context_t *ctx,
     if (!macrunner_hb_strieq( thunk->import_name, "NtQueryVirtualMemory" ))
         return FALSE;
 
+    /* MacRunner 2026-07-29 (HK input) — UNGATED, once per process. Separates "this handler is
+     * never invoked in HK's process" from "it is invoked but never with MemoryWineUnixFuncs".
+     * Printed after the dll/import filters so it fires only for the call we care about. */
+    {
+        static int announced;
+        if (!announced)
+        {
+            announced = 1;
+            fprintf( stderr, "macrunner-hb-ntdll-memory-semantic: first NtQueryVirtualMemory thunk pid=%d\n",
+                     (int)getpid() );
+            fflush( stderr );
+        }
+    }
+
     info_class = (MEMORY_INFORMATION_CLASS)args[2];
     buffer = (PVOID)(uintptr_t)args[3];
     length = (SIZE_T)args[4];
@@ -22684,6 +23156,26 @@ static BOOL macrunner_hb_try_ntdll_memory_semantic( hb_context_t *ctx,
                                    (LPCVOID)(uintptr_t)args[1],
                                    info_class, buffer, length,
                                    (SIZE_T *)(uintptr_t)args[5] );
+    /* MacRunner 2026-07-29 (HK input) — UNGATED, and deliberately OUTSIDE the failure branch.
+     *
+     * The first version of this probe sat inside `if (status && info_class == …)`, so its zero
+     * count could equally mean "this handler never ran" or "it ran and the query SUCCEEDED" —
+     * two states needing opposite fixes. Printing every MemoryWineUnixFuncs query regardless of
+     * status separates them: no line at all ⇒ the guest's NtQueryVirtualMemory never reaches
+     * this thunk interception; a line with status=0 ⇒ it reaches it and succeeds, so the bridge
+     * below is simply not needed for that module; a line with status!=0 and the module name ⇒
+     * the bridge is needed and we can see exactly which name to match.
+     *
+     * Volume is bounded: MemoryWineUnixFuncs is queried once per builtin at unixlib init. */
+    if (info_class == MemoryWineUnixFuncs)
+    {
+        char probe_name[96];
+
+        macrunner_hb_get_export_module_name( (void *)(uintptr_t)args[1], probe_name, sizeof(probe_name) );
+        fprintf( stderr, "macrunner-hb-unixfuncs-query: module=%s status=%08x len=%zu\n",
+                 probe_name[0] ? probe_name : "(unknown)", (unsigned)status, (size_t)length );
+        fflush( stderr );
+    }
     if (status && info_class == MemoryWineUnixFuncs)
     {
         static void *winemetal_unix_handle;
@@ -22725,6 +23217,78 @@ static BOOL macrunner_hb_try_ntdll_memory_semantic( hb_context_t *ctx,
                     if (macrunner_hb_trace_thread_lifecycle_enabled())
                         fprintf( stderr, "macrunner-hb-dxmt-unixlib-bridge: module=%s funcs=%p\n",
                                  module_name, winemetal_unix_funcs );
+                }
+            }
+        }
+        /* MacRunner 2026-07-29 (HK input): winemac.drv needs the SAME bridge as winemetal.dll,
+         * and its absence here was the whole reason no guest ever received a keystroke.
+         *
+         * In an x86_64 guest process NtQueryVirtualMemory(MemoryWineUnixFuncs) fails for a
+         * builtin whose unixlib is a native aarch64 .so.  For winemetal.dll the branch above
+         * bridges it; winemac.drv was never added.  So in Hollow Knight's process
+         * __wine_init_unix_call() fails, dllmain.c:540 `if (status) return FALSE;` returns
+         * BEFORE MACDRV_CALL(init), macdrv_init never runs, init_user_driver() never replaces
+         * load_display_driver's re-entrancy placeholder, nothing pumps AppKit, and
+         * macdrv_key_event stays 0 no matter what is injected.
+         *
+         * The discriminator that found it: of 84 module loads on HK's thread, 37 wine builtins
+         * load TWICE — the x86_64 guest copy plus a native aarch64 twin (win32u, user32, gdi32,
+         * dxgi, d3d11, winemetal …) — and winemac.drv is the ONLY wine builtin with no twin.
+         * The other single-view modules are legitimately single: the game, UnityPlayer, Mono,
+         * xinput1_3, ntdll, xtajit64.
+         *
+         * Path comes from dladdr on this very function rather than from the environment:
+         * this object lives in <dist>/lib/wine/aarch64-unix/ntdll.so and winemac.so is its
+         * sibling, so the pair can never disagree about which dist is in use.  Deriving it
+         * from MACRUNNER_WINE_DIST would have inherited that variable's stale default, which
+         * has already sent whole runs at a three-week-old binary.
+         *
+         * Default ON because it is the fix; set MACRUNNER_HB_WINEMAC_UNIXLIB_BRIDGE=0 to A/B it. */
+        else if (macrunner_hb_strieq( module_name, "winemac.drv" ))
+        {
+            static void *winemac_unix_handle;
+            static const unixlib_entry_t *winemac_unix_funcs;
+            const char *gate = getenv( "MACRUNNER_HB_WINEMAC_UNIXLIB_BRIDGE" );
+
+            if (gate && gate[0] == '0')
+            {
+                /* A/B arm: leave the original failure in place. */
+            }
+            else if (length != sizeof(unixlib_handle_t))
+            {
+                status = STATUS_INFO_LENGTH_MISMATCH;
+            }
+            else
+            {
+                if (!winemac_unix_funcs)
+                {
+                    Dl_info info;
+                    char so_path[4096];
+
+                    so_path[0] = 0;
+                    if (dladdr( (const void *)macrunner_hb_strieq, &info ) && info.dli_fname)
+                    {
+                        const char *slash = strrchr( info.dli_fname, '/' );
+                        if (slash && (size_t)(slash - info.dli_fname) < sizeof(so_path) - 32)
+                        {
+                            memcpy( so_path, info.dli_fname, slash - info.dli_fname );
+                            so_path[slash - info.dli_fname] = 0;
+                            strlcat( so_path, "/winemac.so", sizeof(so_path) );
+                        }
+                    }
+                    if (so_path[0])
+                        winemac_unix_handle = dlopen( so_path, RTLD_NOW );
+                    if (winemac_unix_handle)
+                        winemac_unix_funcs = dlsym( winemac_unix_handle, "__wine_unix_call_funcs" );
+                    fprintf( stderr, "macrunner-hb-winemac-unixlib-bridge: path=%s handle=%p funcs=%p\n",
+                             so_path[0] ? so_path : "(unresolved)", winemac_unix_handle,
+                             (const void *)winemac_unix_funcs );
+                    fflush( stderr );
+                }
+                if (winemac_unix_funcs)
+                {
+                    *(unixlib_handle_t *)buffer = (UINT_PTR)winemac_unix_funcs;
+                    status = STATUS_SUCCESS;
                 }
             }
         }
@@ -26512,6 +27076,360 @@ static void macrunner_hb_present_item_creation_probe_block(
     }
 }
 
+/* UnityPlayer's unknown-Gfx-command fallback is the only guest-visible hook
+ * point for this ledger.  It is observational: first four fallback hits,
+ * with no guest writes, Mach calls, or ring-ordering operations. */
+#define MACRUNNER_HB_GFX_RING_LEDGER_HANDLER_RVA   0x11cd520u
+#define MACRUNNER_HB_GFX_RING_LEDGER_RETURN_RVA    0x11cd634u
+#define MACRUNNER_HB_GFX_RING_LEDGER_DISPATCH_RVA  0x11bf045u
+#define MACRUNNER_HB_GFX_RING_LEDGER_MAX_SAMPLES   4
+
+struct macrunner_hb_gfx_ring_ledger_dispatch
+{
+    uint64_t consumer;
+    uint64_t ring;
+    uint64_t payload_base;
+    uint64_t command_address;
+    uint32_t command;
+    uint32_t cursor_before;
+    uint32_t cursor_after_complete;
+    int valid;
+    int payload_ok;
+    int command_ok;
+    int complete;
+};
+
+struct macrunner_hb_gfx_ring_ledger_tls
+{
+    unsigned int sequence;
+    uint64_t unity_base;
+    uint64_t consumer;
+    uint64_t ring;
+    uint64_t payload_base;
+    uint64_t command_address;
+    uint32_t cursor_before;
+    uint32_t cursor_after_dispatch;
+    uint32_t publication_before;
+    int active;
+    struct macrunner_hb_gfx_ring_ledger_dispatch previous_dispatch;
+    struct macrunner_hb_gfx_ring_ledger_dispatch current_dispatch;
+};
+
+static LONG macrunner_hb_gfx_ring_ledger_samples;
+static LONG macrunner_hb_gfx_ring_ledger_skipped_fallbacks;
+static LONG macrunner_hb_gfx_ring_ledger_armed_logged;
+static __thread struct macrunner_hb_gfx_ring_ledger_tls macrunner_hb_gfx_ring_ledger_tls;
+
+static int macrunner_hb_gfx_ring_ledger_watchlist_contains( uint32_t command )
+{
+    switch (command)
+    {
+    case 10007:
+    case 10028:
+    case 10035:
+    case 10057:
+    case 10123:
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+static void macrunner_hb_gfx_ring_ledger_compiler_barrier(void)
+{
+#if defined(__clang__) || defined(__GNUC__)
+    __asm__ __volatile__( "" ::: "memory" );
+#endif
+}
+
+static int macrunner_hb_gfx_ring_ledger_read_u32( hb_context_t *ctx,
+                                                   uint64_t address, uint32_t *value )
+{
+    if (value) *value = 0;
+    return ctx && ctx->memory && address && value &&
+           hb_memory_read_u32( ctx->memory, (hb_gva_t)address, value ) == HB_OK;
+}
+
+static int macrunner_hb_gfx_ring_ledger_read_u64( hb_context_t *ctx,
+                                                   uint64_t address, uint64_t *value )
+{
+    if (value) *value = 0;
+    return ctx && ctx->memory && address && value &&
+           hb_memory_read_u64( ctx->memory, (hb_gva_t)address, value ) == HB_OK;
+}
+
+/* Capture dispatcher state without logging or modifying guest state.  At this
+ * block r14 is the stream, r15 the dispatcher and ecx the pre-dispatch cursor.
+ * The next dispatcher pass completes the previous command's consumed range. */
+static void macrunner_hb_gfx_ring_ledger_capture_dispatch(
+    hb_context_t *ctx, struct macrunner_hb_gfx_ring_ledger_tls *tls )
+{
+    struct macrunner_hb_gfx_ring_ledger_dispatch *current = &tls->current_dispatch;
+    uint64_t ring = ctx->regs.x64.r14, consumer = ctx->regs.x64.r15;
+    uint64_t payload_base = 0, command_address = 0;
+    uint32_t cursor_before = (uint32_t)ctx->regs.x64.rcx, command = 0;
+    int payload_ok = 0, command_ok = 0;
+
+    if (current->valid)
+    {
+        current->cursor_after_complete = cursor_before;
+        current->complete = TRUE;
+        tls->previous_dispatch = *current;
+    }
+    memset( current, 0, sizeof(*current) );
+
+    if (ring <= UINT64_MAX - 0x100)
+        payload_ok = macrunner_hb_gfx_ring_ledger_read_u64( ctx, ring + 0x100, &payload_base );
+    if (payload_ok && payload_base <= UINT64_MAX - cursor_before)
+    {
+        command_address = payload_base + cursor_before;
+        command_ok = macrunner_hb_gfx_ring_ledger_read_u32( ctx, command_address, &command );
+    }
+
+    current->consumer = consumer;
+    current->ring = ring;
+    current->payload_base = payload_base;
+    current->command_address = command_address;
+    current->command = command;
+    current->cursor_before = cursor_before;
+    current->valid = TRUE;
+    current->payload_ok = payload_ok;
+    current->command_ok = command_ok;
+}
+
+static void macrunner_hb_gfx_ring_ledger_log_return( hb_context_t *ctx,
+                                                      uint64_t block_pc )
+{
+    struct macrunner_hb_gfx_ring_ledger_tls *tls = &macrunner_hb_gfx_ring_ledger_tls;
+    uint32_t cursor_after_handler = 0, publication_after_handler = 0;
+    uint32_t consumed_bytes = 0;
+    int cursor_ok, publication_ok;
+
+    if (!tls->active || block_pc != tls->unity_base + MACRUNNER_HB_GFX_RING_LEDGER_RETURN_RVA)
+        return;
+
+    cursor_ok = macrunner_hb_gfx_ring_ledger_read_u32(
+        ctx, tls->ring + 0x108, &cursor_after_handler );
+    publication_ok = macrunner_hb_gfx_ring_ledger_read_u32(
+        ctx, tls->ring + 0x10c, &publication_after_handler );
+    if (cursor_ok) consumed_bytes = cursor_after_handler - tls->cursor_before;
+
+    fprintf( stderr,
+             "macrunner-hb-gfx-ring-ledger: stage=handler-return seq=%u tid=%04lx "
+             "ring=%p cursor_after_handler=0x%x cursor_after_handler_ok=%d "
+             "consumed_bytes=0x%x publication_after_handler=0x%x "
+             "publication_after_handler_ok=%d entry_publication=0x%x\\n",
+             tls->sequence, (unsigned long)GetCurrentThreadId(),
+             (void *)(uintptr_t)tls->ring, cursor_after_handler, cursor_ok,
+             consumed_bytes, publication_after_handler, publication_ok,
+             tls->publication_before );
+    fflush( stderr );
+    tls->active = FALSE;
+}
+
+static void macrunner_hb_gfx_ring_ledger_pre_block(
+    hb_context_t *ctx, uint64_t image_start, uint64_t block_pc )
+{
+    struct macrunner_hb_gfx_ring_ledger_tls *tls = &macrunner_hb_gfx_ring_ledger_tls;
+    const struct macrunner_hb_gfx_ring_ledger_dispatch *previous = &tls->previous_dispatch;
+    const struct macrunner_hb_gfx_ring_ledger_dispatch *current = &tls->current_dispatch;
+    uint64_t rva, ring, consumer, payload_base = 0, command_address = 0, last_address = 0;
+    uint32_t command, last_command = 0, cursor_after_dispatch = 0, cursor_before = 0;
+    uint32_t publication_before = 0, publication_after = 0, command_word = 0, next_word = 0;
+    uint32_t next_words[3] = {0};
+    uint32_t next_words_valid = 0;
+    uint32_t consumed_before_handler = 0;
+    uint64_t publication_address = 0, cursor_address = 0;
+    unsigned int sequence;
+    int payload_ok, cursor_ok, publication_before_ok, publication_after_ok;
+    int command_ok = 0, next_ok = 0, last_ok = 0, edx_matches_stream_word, sample_valid;
+    char module[64];
+    uint64_t module_rva = 0;
+
+    if (!ctx || !macrunner_hb_gfx_ring_ledger_enabled()) return;
+
+    if (InterlockedCompareExchange( &macrunner_hb_gfx_ring_ledger_armed_logged, 1, 0 ) == 0)
+    {
+        fprintf( stderr,
+                 "macrunner-hb-gfx-ring-ledger: stage=armed target=UnityPlayer.dll+0x%x "
+                 "dispatch=UnityPlayer.dll+0x%x max_samples=%u\\n",
+                 MACRUNNER_HB_GFX_RING_LEDGER_HANDLER_RVA,
+                 MACRUNNER_HB_GFX_RING_LEDGER_DISPATCH_RVA,
+                 MACRUNNER_HB_GFX_RING_LEDGER_MAX_SAMPLES );
+        fflush( stderr );
+    }
+
+    macrunner_hb_gfx_ring_ledger_log_return( ctx, block_pc );
+
+    if (!image_start || block_pc < image_start) return;
+    rva = block_pc - image_start;
+    if (rva == MACRUNNER_HB_GFX_RING_LEDGER_DISPATCH_RVA)
+    {
+        macrunner_hb_post_signal_probe_module_rva( block_pc, module, sizeof(module), &module_rva );
+        if ((macrunner_hb_strieq( module, "UnityPlayer.dll" ) ||
+             macrunner_hb_strieq( module, "UnityPlayer" )) &&
+            module_rva == MACRUNNER_HB_GFX_RING_LEDGER_DISPATCH_RVA)
+            macrunner_hb_gfx_ring_ledger_capture_dispatch( ctx, tls );
+        return;
+    }
+    command = (uint32_t)ctx->regs.x64.rdx;
+    if (rva != MACRUNNER_HB_GFX_RING_LEDGER_HANDLER_RVA)
+        return;
+
+    macrunner_hb_post_signal_probe_module_rva( block_pc, module, sizeof(module), &module_rva );
+    if ((!macrunner_hb_strieq( module, "UnityPlayer.dll" ) &&
+         !macrunner_hb_strieq( module, "UnityPlayer" )) ||
+        module_rva != MACRUNNER_HB_GFX_RING_LEDGER_HANDLER_RVA)
+        return;
+
+    /* The direct dispatcher preserves stream in r14. R8 is merely the
+     * formatter's third argument and is not accepted as stream provenance. */
+    ring = ctx->regs.x64.r14;
+    consumer = ctx->regs.x64.rcx;
+    if (consumer <= UINT64_MAX - 0x48) last_address = consumer + 0x48;
+    if (ring <= UINT64_MAX - 0x100) payload_ok =
+        macrunner_hb_gfx_ring_ledger_read_u64( ctx, ring + 0x100, &payload_base );
+    else payload_ok = 0;
+    if (ring <= UINT64_MAX - 0x108) cursor_address = ring + 0x108;
+    if (ring <= UINT64_MAX - 0x10c) publication_address = ring + 0x10c;
+    cursor_ok = macrunner_hb_gfx_ring_ledger_read_u32(
+        ctx, cursor_address, &cursor_after_dispatch );
+    publication_before_ok = macrunner_hb_gfx_ring_ledger_read_u32(
+        ctx, publication_address, &publication_before );
+    macrunner_hb_gfx_ring_ledger_compiler_barrier();
+    publication_after_ok = macrunner_hb_gfx_ring_ledger_read_u32(
+        ctx, publication_address, &publication_after );
+    last_ok = macrunner_hb_gfx_ring_ledger_read_u32( ctx, last_address, &last_command );
+
+    if (!macrunner_hb_gfx_ring_ledger_watchlist_contains( command ) &&
+        (!last_ok || !macrunner_hb_gfx_ring_ledger_watchlist_contains( last_command )))
+    {
+        InterlockedIncrement( &macrunner_hb_gfx_ring_ledger_skipped_fallbacks );
+        return;
+    }
+
+    sequence = (unsigned int)InterlockedIncrement( &macrunner_hb_gfx_ring_ledger_samples );
+    if (sequence > MACRUNNER_HB_GFX_RING_LEDGER_MAX_SAMPLES) return;
+
+    fprintf( stderr,
+             "macrunner-hb-gfx-ring-ledger: stage=watchlist seq=%u cmd_edx=%u last_command=%u "
+             "skipped_fallbacks=%ld\n",
+             sequence, command, last_command,
+             InterlockedCompareExchange( &macrunner_hb_gfx_ring_ledger_skipped_fallbacks, 0, 0 ) );
+    fflush( stderr );
+
+    /* Prefer the generic dispatcher snapshot for provenance, but always read
+     * the V4 witness from stream base+cursor instead of reusing its command. */
+    if (current->valid && current->ring == ring && current->command_ok &&
+        current->command == command)
+    {
+        payload_base = current->payload_base;
+        cursor_before = current->cursor_before;
+        payload_ok = current->payload_ok;
+        if (cursor_ok) consumed_before_handler = cursor_after_dispatch - cursor_before;
+    }
+    else if (cursor_ok && cursor_after_dispatch >= sizeof(uint32_t))
+    {
+        cursor_before = cursor_after_dispatch - sizeof(uint32_t);
+        consumed_before_handler = sizeof(uint32_t);
+    }
+
+    if (payload_ok && cursor_ok && publication_before_ok &&
+        cursor_after_dispatch >= sizeof(uint32_t) &&
+        cursor_after_dispatch <= publication_before &&
+        payload_base <= UINT64_MAX - cursor_before)
+    {
+        command_address = payload_base + cursor_before;
+        command_ok = macrunner_hb_gfx_ring_ledger_read_u32(
+            ctx, command_address, &command_word );
+    }
+    if (payload_ok && cursor_ok && publication_before_ok &&
+        cursor_after_dispatch <= publication_before &&
+        publication_before - cursor_after_dispatch >= sizeof(uint32_t) &&
+        payload_base <= UINT64_MAX - cursor_after_dispatch)
+    {
+        next_ok = macrunner_hb_gfx_ring_ledger_read_u32(
+            ctx, payload_base + cursor_after_dispatch, &next_word );
+        for (unsigned int i = 0; i < ARRAY_SIZE(next_words); ++i)
+        {
+            uint32_t offset;
+            uint64_t address;
+
+            if (cursor_after_dispatch > UINT32_MAX - i * sizeof(uint32_t))
+                continue;
+            offset = cursor_after_dispatch + i * sizeof(uint32_t);
+            if (offset > publication_before ||
+                publication_before - offset < sizeof(uint32_t))
+                continue;
+            address = payload_base + offset;
+            if (address < payload_base ||
+                !macrunner_hb_gfx_ring_ledger_read_u32( ctx, address, &next_words[i] ))
+                continue;
+            next_words_valid |= 1u << i;
+        }
+    }
+    edx_matches_stream_word = command_ok && command_word == command;
+    sample_valid = payload_ok && cursor_ok && publication_before_ok && publication_after_ok &&
+                   publication_before == publication_after && edx_matches_stream_word;
+
+    fprintf( stderr,
+             "macrunner-hb-gfx-ring-ledger: stage=layout-v4 seq=%u dispatcher=%p stream=%p "
+             "stream_source=r14 fallback_r8=%p base=%p base_ok=%d cursor=0x%x cursor_after=0x%x "
+             "cursor_ok=%d limit_addr=%p limit_before=0x%x limit_before_ok=%d "
+             "limit_after=0x%x limit_after_ok=%d limit_stable=%d opcode_addr=%p cmd_edx=%u "
+             "stream_word=%u stream_word_ok=%d edx_matches_stream_word=%d "
+             "next_words=%08x,%08x next_words_valid=0x%x\n",
+             sequence, (void *)(uintptr_t)consumer, (void *)(uintptr_t)ring,
+             (void *)(uintptr_t)ctx->regs.x64.r8, (void *)(uintptr_t)payload_base, payload_ok,
+             cursor_before, cursor_after_dispatch, cursor_ok, (void *)(uintptr_t)publication_address,
+             publication_before, publication_before_ok, publication_after, publication_after_ok,
+             publication_before_ok && publication_after_ok && publication_before == publication_after,
+             (void *)(uintptr_t)command_address, command, command_word, command_ok,
+             edx_matches_stream_word, next_words[0], next_words[1], next_words_valid & 0x3 );
+    fflush( stderr );
+
+    fprintf( stderr,
+             "macrunner-hb-gfx-ring-ledger: stage=handler-entry seq=%u valid=%d tid=%04lx "
+             "unity_base=%p handler_rva=0x%x consumer=%p cmd_edx=%u last_addr=%p last_command=%u last_ok=%d "
+             "ring=%p payload_base=%p payload_base_ok=%d cursor_addr=%p cursor_before=0x%x "
+             "cursor_after_dispatch=0x%x cursor_ok=%d command_addr=%p command_word=%u command_ok=%d "
+             "consumed_before_handler=%u "
+             "next_addr=%p next_word=%u next_ok=%d published_cursor_addr=%p "
+             "published_cursor_before=0x%x published_cursor_before_ok=%d "
+             "published_cursor_after=0x%x published_cursor_after_ok=%d publication_stable=%d "
+             "next_words=%08x,%08x,%08x next_words_valid=0x%x "
+             "previous_cmd=%u previous_ring=%p previous_cursor_before=0x%x previous_cursor_after=0x%x "
+             "previous_consumed=%u previous_complete=%d previous_matches_last=%d\\n",
+             sequence, sample_valid, (unsigned long)GetCurrentThreadId(),
+             (void *)(uintptr_t)image_start, MACRUNNER_HB_GFX_RING_LEDGER_HANDLER_RVA,
+             (void *)(uintptr_t)consumer, command, (void *)(uintptr_t)last_address, last_command, last_ok,
+             (void *)(uintptr_t)ring, (void *)(uintptr_t)payload_base, payload_ok,
+             (void *)(uintptr_t)cursor_address, cursor_before, cursor_after_dispatch, cursor_ok,
+             (void *)(uintptr_t)command_address, command_word, command_ok, consumed_before_handler,
+             payload_ok && payload_base <= UINT64_MAX - cursor_after_dispatch ?
+                 (void *)(uintptr_t)(payload_base + cursor_after_dispatch) : NULL,
+             next_word, next_ok, (void *)(uintptr_t)publication_address,
+             publication_before, publication_before_ok, publication_after, publication_after_ok,
+             publication_before_ok && publication_after_ok && publication_before == publication_after,
+             next_words[0], next_words[1], next_words[2], next_words_valid,
+             previous->command, (void *)(uintptr_t)previous->ring,
+             previous->cursor_before, previous->cursor_after_complete,
+             previous->complete ? previous->cursor_after_complete - previous->cursor_before : 0,
+             previous->complete, previous->valid && last_ok && previous->command == last_command );
+    fflush( stderr );
+
+    tls->sequence = sequence;
+    tls->unity_base = image_start;
+    tls->consumer = consumer;
+    tls->ring = ring;
+    tls->payload_base = payload_base;
+    tls->command_address = command_address;
+    tls->cursor_before = cursor_before;
+    tls->cursor_after_dispatch = cursor_after_dispatch;
+    tls->publication_before = publication_before;
+    tls->active = TRUE;
+}
+
 static void macrunner_hb_ring_pop_probe_log_snapshot( const char *stage, hb_context_t *ctx,
                                                        uint64_t block_pc )
 {
@@ -29336,11 +30254,25 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
         NtCurrentTeb()->LastStatusValue = status;
         if (status)
         {
+            /* Guest allocation-failure edge.  Mono/Boehm expands its heap through here, and a
+             * failure here is what makes `newobj` return NULL (run23).  Counter is aggregate
+             * and uncapped; only the log line is rate-limited. */
+            unsigned long fail_n = __atomic_add_fetch( &macrunner_hb_mem_virtualalloc_fail, 1,
+                                                       __ATOMIC_RELAXED );
+            if (fail_n <= 64 || (fail_n & (fail_n - 1)) == 0)
+            {
+                fprintf( stderr, "macrunner-hb-guest-alloc-fail: import=%s status=%08lx "
+                         "base=%p size=%#zx type=%#lx protect=%#lx n=%lu\n",
+                         thunk->import_name, (unsigned long)status, base, (size_t)size,
+                         (unsigned long)type, (unsigned long)protect, fail_n );
+                fflush( stderr );
+            }
             RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );
             *ret = 0;
         }
         else
         {
+            __atomic_add_fetch( &macrunner_hb_mem_virtualalloc_ok, 1, __ATOMIC_RELAXED );
             RtlSetLastWin32Error( ERROR_SUCCESS );
             *ret = (uint64_t)(uintptr_t)base;
             if (process == NtCurrentProcess() && (type & MEM_COMMIT))
@@ -30352,55 +31284,6 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                      (unsigned long)NtCurrentTeb()->LastErrorValue );
             fflush( stderr );
         }
-        return TRUE;
-    }
-
-    return FALSE;
-}
-
-static BOOL macrunner_hb_try_registry_semantic( hb_context_t *ctx,
-                                                const struct macrunner_hb_import_thunk *thunk,
-                                                const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
-                                                uint64_t *ret )
-{
-    static uint64_t next_handle = 0x00006f00f0000000ULL;
-    const char *name;
-
-    if (!ctx || !ctx->memory || !thunk || !args || !ret) return FALSE;
-    if (!macrunner_hb_strieq( thunk->dll_name, "advapi32.dll" )) return FALSE;
-    name = thunk->import_name;
-
-    if (macrunner_hb_strieq( name, "RegCloseKey" ) ||
-        macrunner_hb_strieq( name, "RegSetValueExW" ) ||
-        macrunner_hb_strieq( name, "RegDeleteValueW" ))
-    {
-        *ret = ERROR_SUCCESS;
-        return TRUE;
-    }
-    if (macrunner_hb_strieq( name, "RegOpenKeyW" ))
-    {
-        if (args[2]) hb_memory_write_u64( ctx->memory, (hb_gva_t)args[2], next_handle++ );
-        *ret = ERROR_SUCCESS;
-        return TRUE;
-    }
-    if (macrunner_hb_strieq( name, "RegOpenKeyExW" ))
-    {
-        if (args[4]) hb_memory_write_u64( ctx->memory, (hb_gva_t)args[4], next_handle++ );
-        *ret = ERROR_SUCCESS;
-        return TRUE;
-    }
-    if (macrunner_hb_strieq( name, "RegCreateKeyExW" ))
-    {
-        if (args[7]) hb_memory_write_u64( ctx->memory, (hb_gva_t)args[7], next_handle++ );
-        if (args[8]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[8], REG_CREATED_NEW_KEY );
-        *ret = ERROR_SUCCESS;
-        return TRUE;
-    }
-    if (macrunner_hb_strieq( name, "RegQueryValueExW" ))
-    {
-        if (args[4]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[4], REG_SZ );
-        if (args[5]) hb_memory_write_u32( ctx->memory, (hb_gva_t)args[5], 0 );
-        *ret = ERROR_FILE_NOT_FOUND;
         return TRUE;
     }
 
@@ -32168,7 +33051,6 @@ static hb_result_t macrunner_hb_call_import_thunk( hb_context_t *ctx,
         macrunner_hb_try_user32_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_winrt_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_kernel32_handle_semantic( ctx, thunk, args, &rc ) ||
-        macrunner_hb_try_registry_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_security_token_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_bcrypt_semantic( ctx, thunk, args, &rc ) ||
         macrunner_hb_try_vectored_exception_semantic( ctx, thunk, args, ret_addr, &rc,
@@ -35905,6 +36787,103 @@ static void macrunner_hb_aa_mono_patch_probe( hb_context_t *ctx, uint64_t block_
     fflush( stderr );
 }
 
+/* --- HK-MONO allocator return-value oracle ---------------------------------
+ * Settles [H-E]: when the JIT'd managed caller faults with rax==0 right after
+ * `call r11` into Mono's newobj wrapper, did Mono's allocator GENUINELY return
+ * NULL, or did a valid object get lost between the callee's `ret` and the
+ * caller's first instruction (`mov r14,rax`)?
+ *
+ * Hook point is mono-2.0-bdwgc.dll rva 0x1cfd70 -- the tail callee of
+ * mono_object_new_specific_checked.  Established by independent disassembly
+ * (tools/hk_mono_disas.py, 3/3 built-in controls PASS):
+ *
+ *   0x1cfd70  mov  qword ptr [rsp+8], rbx
+ *   0x1cfd7a  mov  dword ptr [r8], 0     ; error_init  (32-bit store)
+ *   0x1cfd8a  test rcx, rcx              ; <== rcx IS the allocated object
+ *   0x1cfd8d  jne  0x1cfdaf              ;     non-NULL -> mov rax,rbx; ret
+ *   0x1cfd8f  mov  r8d,[rdx+0x1c] ...    ;     NULL -> "Could not allocate %i
+ *                                        ;     bytes" then xor eax,eax; ret
+ *
+ * so reading rcx at block entry measures the allocator's return value
+ * DIRECTLY, one instruction before Mono itself tests it.  0x1cfd70 is a
+ * call/tail-jmp target and therefore necessarily a block start -- unlike the
+ * NULL arm at 0x1cfd8f this does not depend on a fall-through target being
+ * translated as a block of its own.
+ *
+ * CONTROL, known in advance and free: HK allocates managed objects
+ * constantly, so `total` MUST become non-zero within seconds.  total==0 means
+ * this hook is BLIND (block chaining bypassing the dispatch loop) and the run
+ * is INVALID -- it does NOT license the conclusion "no allocation happened".
+ * Counters are aggregate and uncapped; only the per-hit detail lines are
+ * capped, and every capped line still reports the running totals.
+ */
+static struct
+{
+    uint64_t total;      /* every entry to 0x1cfd70                    */
+    uint64_t null_hits;  /* rcx == 0  -> allocator really returned NULL */
+    uint64_t ok_hits;    /* rcx != 0  -> allocator returned an object   */
+    uint64_t detail;     /* detail lines already emitted                */
+} macrunner_hb_mono_alloc_oracle;
+
+static int macrunner_hb_mono_alloc_oracle_enabled(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_MONO_ALLOC_ORACLE" );
+}
+
+static void macrunner_hb_mono_alloc_oracle_before_block( hb_context_t *ctx, uint64_t block_pc )
+{
+    uintptr_t module;
+    size_t rva;
+    uint64_t obj, klass, err, total, nulls, oks;
+    uint32_t instance_size = 0;
+    int size_ok, is_null, milestone;
+
+    if (!ctx || !macrunner_hb_mono_alloc_oracle_enabled() ||
+        !macrunner_hb_aa_mono_site( block_pc, &module, &rva )) return;
+    if (rva != 0x1cfd70) return;
+
+    obj   = ctx->regs.x64.rcx;
+    klass = ctx->regs.x64.rdx;
+    err   = ctx->regs.x64.r8;
+    is_null = (obj == 0);
+
+    total = __atomic_add_fetch( &macrunner_hb_mono_alloc_oracle.total, 1, __ATOMIC_RELAXED );
+    if (is_null)
+        nulls = __atomic_add_fetch( &macrunner_hb_mono_alloc_oracle.null_hits, 1,
+                                    __ATOMIC_RELAXED );
+    else
+        nulls = __atomic_load_n( &macrunner_hb_mono_alloc_oracle.null_hits, __ATOMIC_RELAXED );
+    if (!is_null)
+        oks = __atomic_add_fetch( &macrunner_hb_mono_alloc_oracle.ok_hits, 1, __ATOMIC_RELAXED );
+    else
+        oks = __atomic_load_n( &macrunner_hb_mono_alloc_oracle.ok_hits, __ATOMIC_RELAXED );
+
+    /* Emit on: every NULL (the subject), and on decade milestones of `total`
+     * (the liveness control -- total==1 prints immediately so a blind hook is
+     * distinguishable from a silent one within seconds). */
+    milestone = (total == 1 || total == 10 || total == 100 || total == 1000 ||
+                 total == 10000 || total == 100000 || total == 1000000 ||
+                 total == 10000000);
+    if (!is_null && !milestone) return;
+    if (__atomic_add_fetch( &macrunner_hb_mono_alloc_oracle.detail, 1, __ATOMIC_RELAXED ) > 256)
+        return;
+
+    size_ok = klass && hb_memory_read_u32( ctx->memory, (hb_gva_t)(klass + 0x1c),
+                                           &instance_size ) == HB_OK;
+    fprintf( stderr,
+             "macrunner-hb-mono-alloc-oracle: verdict=%s module=%p rva=%p obj=%p klass=%p "
+             "instance_size=%s/%u error=%p total=%s null=%s ok=%s tid=%04x\n",
+             is_null ? "ALLOCATOR_RETURNED_NULL" : "ALLOCATOR_RETURNED_OBJECT",
+             (void *)module, (void *)rva, (void *)(uintptr_t)obj, (void *)(uintptr_t)klass,
+             size_ok ? "ok" : "unreadable", instance_size, (void *)(uintptr_t)err,
+             wine_dbgstr_longlong(total), wine_dbgstr_longlong(nulls),
+             wine_dbgstr_longlong(oks),
+             (unsigned int)(uintptr_t)NtCurrentTeb()->ClientId.UniqueThread );
+    fflush( stderr );
+}
+
 static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULONG64 *ret_value,
                                       ULONG64 *blocks_out, ULONG64 *steps_out,
                                       const char *label, void *image_base )
@@ -35985,6 +36964,7 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
     int trace_main_gate = macrunner_hb_trace_main_gate_enabled();
     int aa_rbp_probe = macrunner_hb_aa_rbp_probe_enabled();
     int aa_mono_patch_probe = macrunner_hb_aa_mono_patch_probe_enabled();
+    int mono_alloc_oracle = macrunner_hb_mono_alloc_oracle_enabled();
     int trace_low_stack = macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_LOW_STACK" );
     int trace_thread_run = label && !strcmp( label, "thread" ) &&
                            macrunner_hb_trace_thread_lifecycle_enabled();
@@ -37194,12 +38174,16 @@ skip_version_semantic:
         {
             fprintf( stderr, "macrunner-hb-runtime-fail: label=%s block_pc=%p next_pc=%p "
                      "ret=%s out=%s reason=cfg-dispatch-fast-path blocks=%s steps=%s "
-                     "rax=%p rsp=%p r10=%p\n",
+                     "rax=%p rsp=%p r10=%p r12=%p r13=%p r14=%p r15=%p\n",
                      label ? label : "entry", (void *)(uintptr_t)ctx->pc,
                      (void *)(uintptr_t)ctx->pc, hb_result_string(ret),
                      hb_result_string(ctx->last_result), wine_dbgstr_longlong(blocks),
                      wine_dbgstr_longlong(steps), (void *)(uintptr_t)ctx->regs.x64.rax,
-                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)ctx->regs.x64.r10 );
+                     (void *)(uintptr_t)ctx->regs.x64.rsp, (void *)(uintptr_t)ctx->regs.x64.r10,
+                     (void *)(uintptr_t)ctx->regs.x64.r12,
+                     (void *)(uintptr_t)ctx->regs.x64.r13,
+                     (void *)(uintptr_t)ctx->regs.x64.r14,
+                     (void *)(uintptr_t)ctx->regs.x64.r15 );
             status = STATUS_INVALID_IMAGE_FORMAT;
             status_reason = "cfg-dispatch-fast-path";
             break;
@@ -37209,6 +38193,7 @@ skip_version_semantic:
         block_pc = ctx->pc;
         if (aa_rbp_probe) macrunner_hb_aa_rbp_probe( "before", ctx, block_pc );
         if (aa_mono_patch_probe) macrunner_hb_aa_mono_patch_probe( ctx, block_pc );
+        if (mono_alloc_oracle) macrunner_hb_mono_alloc_oracle_before_block( ctx, block_pc );
         macrunner_hb_exit_origin_before_block( ctx, block_pc, image_start, label, blocks, steps );
         ctx->codegen_flags &= ~HB_CONTEXT_CODEGEN_MONO_MODULE;
         ctx->codegen_module_base = 0;
@@ -37840,7 +38825,7 @@ skip_version_semantic:
             if (post_mono_discriminator.enabled)
                 post_mono_module = macrunner_hb_post_mono_discriminator_observe(
                     &post_mono_discriminator, block_pc, blocks );
-            func = macrunner_hb_ir_cache_find( ir_cache, block_pc );
+            func = macrunner_hb_ir_cache_find( ir_cache, ctx, block_pc );
             lift_probe_cache_hit = !!func;
             if (post_mono_discriminator.enabled)
                 macrunner_hb_post_mono_discriminator_cache_result(
@@ -37895,7 +38880,7 @@ skip_version_semantic:
                                  (void *)(uintptr_t)block_pc, func );
                         fflush( stderr );
                     }
-                    if (!macrunner_hb_ir_cache_put( ir_cache, block_pc, func ))
+                    if (!macrunner_hb_ir_cache_put( ir_cache, ctx, block_pc, func ))
                         transient_func = TRUE;
                     if (lift_probe_log)
                     {
@@ -37987,6 +38972,7 @@ skip_version_semantic:
             ctx, image_start, block_pc );
         macrunner_hb_producer_publish_probe_pre_block(
             ctx, image_start, block_pc );
+        macrunner_hb_gfx_ring_ledger_pre_block( ctx, image_start, block_pc );
         macrunner_hb_present_item_creation_probe_pre_block( ctx, block_pc );
         if (trace_unity_origin)
             macrunner_hb_trace_unity_origin( "before", ctx, image_start, block_pc );
@@ -38423,7 +39409,7 @@ skip_version_semantic:
             fprintf( stderr, "macrunner-hb-runtime-fail: label=%s block_pc=%p next_pc=%p "
                      "module=%s rva=%p bytes=%s ret=%s out=%s reason=%s blocks=%s steps=%s out_steps=%s "
                      "rax=%p rcx=%p rdx=%p rsi=%p rdi=%p rsp=%p "
-                     "r8=%p r9=%p r10=%p r11=%p full=%s\n",
+                     "r8=%p r9=%p r10=%p r11=%p r12=%p r13=%p r14=%p r15=%p full=%s\n",
                      label ? label : "entry", (void *)(uintptr_t)block_pc,
                      (void *)(uintptr_t)ctx->pc,
                      fault_base[0] ? fault_base : "(unknown)", (void *)fault_rva,
@@ -38441,6 +39427,10 @@ skip_version_semantic:
                        (void *)(uintptr_t)ctx->regs.x64.r9,
                        (void *)(uintptr_t)ctx->regs.x64.r10,
                        (void *)(uintptr_t)ctx->regs.x64.r11,
+                       (void *)(uintptr_t)ctx->regs.x64.r12,
+                       (void *)(uintptr_t)ctx->regs.x64.r13,
+                       (void *)(uintptr_t)ctx->regs.x64.r14,
+                       (void *)(uintptr_t)ctx->regs.x64.r15,
                         fault_full[0] ? fault_full : "(unknown)" );
             {
                 static int galaxy_eh_probe_enabled = -1;
@@ -38727,6 +39717,12 @@ done:
         kern_return_t last_bytes_kr = KERN_FAILURE;
         char *last_bytes_ptr;
         unsigned int i;
+        BYTE prev_block_bytes[64];
+        char prev_bytes[224];
+        mach_vm_size_t prev_bytes_copied = 0;
+        kern_return_t prev_bytes_kr = KERN_FAILURE;
+        unsigned int prev_span = 0;
+        char *prev_bytes_ptr;
 
         last_bytes[0] = 0;
         if (last_block_pc)
@@ -38745,6 +39741,48 @@ done:
             }
         }
 
+        /* MacRunner 2026-07-27 — HK-MONO lane, run25 follow-up.
+         * run25 exonerated the class, its metadata, its vtable and the allocator: on this
+         * very thread, moments before the fault, both direct allocations of the failing
+         * class succeeded (reproduced=no), so the NULL object comes from the JIT'd newobj
+         * path itself.  The faulting block opens with `mov r14,rax`, so whatever produced
+         * rax sits IMMEDIATELY ABOVE last_block_pc — and we dump only the bytes AT pc.
+         * Dump the preceding window too, so the allocation sequence can be disassembled
+         * offline: a `call` to an allocator trampoline discriminates [H-E] (the result is
+         * lost in our translation) from [H-F] (an inline thread-local free-list fast path).
+         * The span shrinks on failure so an unmapped page above pc degrades the window
+         * instead of losing it entirely. */
+        prev_bytes[0] = 0;
+        if (last_block_pc)
+        {
+            static const unsigned int spans[] = { 64, 48, 32, 16 };
+            unsigned int s;
+
+            for (s = 0; s < sizeof(spans) / sizeof(spans[0]); s++)
+            {
+                if (spans[s] > last_block_pc) continue;
+                prev_bytes_copied = 0;
+                prev_bytes_kr = mach_vm_read_overwrite( mach_task_self(),
+                                                        (mach_vm_address_t)(last_block_pc - spans[s]),
+                                                        spans[s],
+                                                        (mach_vm_address_t)prev_block_bytes,
+                                                        &prev_bytes_copied );
+                if (prev_bytes_kr == KERN_SUCCESS && prev_bytes_copied)
+                {
+                    prev_span = spans[s];
+                    break;
+                }
+            }
+            if (prev_span)
+            {
+                prev_bytes_ptr = prev_bytes;
+                for (i = 0; i < prev_bytes_copied && i < sizeof(prev_block_bytes); i++)
+                    prev_bytes_ptr += snprintf( prev_bytes_ptr,
+                                                sizeof(prev_bytes) - (prev_bytes_ptr - prev_bytes),
+                                                "%s%02x", i ? " " : "", prev_block_bytes[i] );
+            }
+        }
+
         if (ctx && ctx->memory)
         {
             stack0_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &stack0 );
@@ -38759,6 +39797,10 @@ done:
             rbp_18_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rbp + 0x18, &rbp_18 );
             rbp_20_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rbp + 0x20, &rbp_20 );
         }
+        /* Emit the memory-pressure totals alongside every run-exit.  run23 died on a NULL
+         * managed allocation with zero visibility into whether memory had failed; these
+         * totals are aggregate and uncapped, so a zero here is a real zero. */
+        macrunner_hb_report_mem_pressure_totals( label ? label : "entry" );
         fprintf( stderr, "macrunner-hb-run-exit: label=%s status=%08x reason=%s pc=%p rip=%p "
                  "last_block=%p last_bytes=%s/%#x/%llu blocks=%s steps=%s "
                  "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p rbp=%p rsp=%p "
@@ -38805,9 +39847,147 @@ done:
                  ctx ? (void *)(uintptr_t)ctx->regs.x64.rbp : NULL,
                  (void *)(uintptr_t)rbp_18, hb_result_string(rbp_18_r),
                  (void *)(uintptr_t)rbp_20, hb_result_string(rbp_20_r) );
+        /* Bytes PRECEDING pc — the instructions that produced rax.  Emitted as its own
+         * line so the long-established run-exit format stays byte-compatible for parsers. */
+        fprintf( stderr, "macrunner-hb-run-exit-prev: label=%s pc=%p prev_start=%p prev_span=%u "
+                 "prev_bytes=%s/%#x/%llu\n",
+                 label ? label : "entry",
+                 (void *)(uintptr_t)last_block_pc,
+                 (void *)(uintptr_t)(last_block_pc - prev_span),
+                 prev_span,
+                 prev_bytes[0] ? prev_bytes : "(none)", prev_bytes_kr,
+                 (unsigned long long)prev_bytes_copied );
         fflush( stderr );
+        /* run26 turned the previous line into a NEW question.  Its window decoded
+         * UNAMBIGUOUSLY to `movabs r11,0x11c6c1000 ; call r11`, but the fault-time
+         * r11 was 0x87ef25d06d0 = mono_base+0x1d06d0.  r11 is VOLATILE, so that
+         * register held a value written DURING the call, not the target of it: the
+         * address actually called is the movabs immediate, and 0x11c6c1000 lies
+         * OUTSIDE the mono image (page-aligned, in the same heap region as the
+         * vtable/alloc pointers the newobj probe reports).  The instruction before it
+         * loads `movabs rcx,<vtable>`, byte-exact the vtable seq=140 reports for the
+         * failing class — the signature of one of Mono's GENERATED managed allocators,
+         * which is code we have never disassembled because it exists only at runtime.
+         * So dump it: decode the trailing `49 bb <imm64> 41 ff d3` out of the window we
+         * already hold and read the callee's first bytes.  Degrading spans again, so an
+         * unmapped target reports its failure instead of losing the line. */
+        if (prev_span >= 13 && prev_bytes_copied >= 13)
+        {
+            const BYTE *w = prev_block_bytes;
+            size_t n = prev_bytes_copied <= sizeof(prev_block_bytes) ?
+                       (size_t)prev_bytes_copied : sizeof(prev_block_bytes);
+
+            if (w[n - 3] == 0x41 && w[n - 2] == 0xff && w[n - 1] == 0xd3 &&
+                w[n - 13] == 0x49 && w[n - 12] == 0xbb)
+            {
+                static const unsigned int callee_spans[] = { 128, 96, 64, 32, 16 };
+                uint64_t callee = 0;
+                BYTE callee_bytes[128];
+                char callee_hex[3 * sizeof(callee_bytes) + 1];
+                mach_vm_size_t callee_copied = 0;
+                kern_return_t callee_kr = KERN_FAILURE;
+                unsigned int callee_span = 0, cs;
+                char *hp;
+
+                for (cs = 0; cs < 8; cs++)
+                    callee |= (uint64_t)w[n - 11 + cs] << (8 * cs);
+                for (cs = 0; cs < sizeof(callee_spans) / sizeof(callee_spans[0]); cs++)
+                {
+                    callee_copied = 0;
+                    callee_kr = mach_vm_read_overwrite( mach_task_self(),
+                                                        (mach_vm_address_t)callee,
+                                                        callee_spans[cs],
+                                                        (mach_vm_address_t)callee_bytes,
+                                                        &callee_copied );
+                    if (callee_kr == KERN_SUCCESS && callee_copied)
+                    {
+                        callee_span = callee_spans[cs];
+                        break;
+                    }
+                }
+                callee_hex[0] = 0;
+                hp = callee_hex;
+                for (i = 0; i < callee_copied && i < sizeof(callee_bytes); i++)
+                    hp += snprintf( hp, sizeof(callee_hex) - (hp - callee_hex),
+                                    "%s%02x", i ? " " : "", callee_bytes[i] );
+                fprintf( stderr,
+                         "macrunner-hb-run-exit-callee: label=%s pc=%p callee=%p "
+                         "r11_at_fault=%p callee_is_r11=%u callee_span=%u "
+                         "callee_bytes=%s/%#x/%llu\n",
+                         label ? label : "entry",
+                         (void *)(uintptr_t)last_block_pc, (void *)(uintptr_t)callee,
+                         ctx ? (void *)(uintptr_t)ctx->regs.x64.r11 : NULL,
+                         (unsigned int)(ctx && ctx->regs.x64.r11 == callee),
+                         callee_span, callee_hex[0] ? callee_hex : "(none)",
+                         callee_kr, (unsigned long long)callee_copied );
+                fflush( stderr );
+                /* If the callee is a plain thunk, its target is one more 30-minute run
+                 * away unless we follow it here.  Only the two unambiguous forms are
+                 * followed, both fixed-length and checked at offset 0 so there is no
+                 * scanning and no chance of matching mid-instruction:
+                 *   48 b8 <imm64> ff e0        movabs rax,imm ; jmp rax
+                 *   49 bb <imm64> 41 ff e3     movabs r11,imm ; jmp r11
+                 * Anything else emits nothing, and an absent hop line means "did not
+                 * match", NOT "the callee is not a thunk". */
+                if (callee_copied >= 13)
+                {
+                    const BYTE *c = callee_bytes;
+                    uint64_t hop = 0;
+                    int is_rax = (c[0] == 0x48 && c[1] == 0xb8 &&
+                                  c[10] == 0xff && c[11] == 0xe0);
+                    int is_r11 = (c[0] == 0x49 && c[1] == 0xbb && c[10] == 0x41 &&
+                                  c[11] == 0xff && c[12] == 0xe3);
+
+                    if (is_rax || is_r11)
+                    {
+                        static const unsigned int hop_spans[] = { 128, 96, 64, 32, 16 };
+                        BYTE hop_bytes[128];
+                        char hop_hex[3 * sizeof(hop_bytes) + 1];
+                        mach_vm_size_t hop_copied = 0;
+                        kern_return_t hop_kr = KERN_FAILURE;
+                        unsigned int hop_span = 0, hs;
+                        char *php;
+
+                        for (hs = 0; hs < 8; hs++)
+                            hop |= (uint64_t)c[2 + hs] << (8 * hs);
+                        for (hs = 0; hs < sizeof(hop_spans) / sizeof(hop_spans[0]); hs++)
+                        {
+                            hop_copied = 0;
+                            hop_kr = mach_vm_read_overwrite( mach_task_self(),
+                                                             (mach_vm_address_t)hop,
+                                                             hop_spans[hs],
+                                                             (mach_vm_address_t)hop_bytes,
+                                                             &hop_copied );
+                            if (hop_kr == KERN_SUCCESS && hop_copied)
+                            {
+                                hop_span = hop_spans[hs];
+                                break;
+                            }
+                        }
+                        hop_hex[0] = 0;
+                        php = hop_hex;
+                        for (i = 0; i < hop_copied && i < sizeof(hop_bytes); i++)
+                            php += snprintf( php, sizeof(hop_hex) - (php - hop_hex),
+                                             "%s%02x", i ? " " : "", hop_bytes[i] );
+                        fprintf( stderr,
+                                 "macrunner-hb-run-exit-callee-hop: label=%s callee=%p "
+                                 "form=%s hop=%p hop_span=%u hop_bytes=%s/%#x/%llu\n",
+                                 label ? label : "entry", (void *)(uintptr_t)callee,
+                                 is_rax ? "movabs-rax-jmp" : "movabs-r11-jmp",
+                                 (void *)(uintptr_t)hop, hop_span,
+                                 hop_hex[0] ? hop_hex : "(none)", hop_kr,
+                                 (unsigned long long)hop_copied );
+                        fflush( stderr );
+                    }
+                }
+            }
+        }
         if (macrunner_hb_block_trace_enabled())
             macrunner_hb_r15_ring_dump();   /* corruption origin: r15 history over the last 16 blocks */
+        {
+            extern void hb_jit_watch_ring_dump( void );
+            hb_jit_watch_ring_dump();   /* last 16 watched dispatches w/ live regs — the faulting call's OK-arm rcx / post-call rax (JIT-side; prints total=0 header when the watch was off) */
+        }
         {
             extern void macrunner_dump_read_ring( void );
             macrunner_dump_read_ring();   /* gate thread's recent file reads = wrong-data source (MACRUNNER_TRACE_FILEINFO) */

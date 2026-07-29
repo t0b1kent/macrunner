@@ -30,6 +30,12 @@
 #pragma makedep unix
 #endif
 
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "win32u_private.h"
@@ -40,6 +46,58 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(win);
 WINE_DECLARE_DEBUG_CHANNEL(keyboard);
+
+static BOOL return_route_observer_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *value = getenv("MACRUNNER_HB_RETURN_ROUTE_OBSERVER");
+        enabled = value && value[0] && value[0] != '0';
+    }
+    return enabled;
+}
+
+static unsigned int return_route_observer_limit(void)
+{
+    static unsigned int limit;
+
+    if (!limit)
+    {
+        const char *value = getenv("MACRUNNER_HB_RETURN_ROUTE_OBSERVER_MAX");
+        char *end;
+        unsigned long parsed = value ? strtoul(value, &end, 10) : 0;
+
+        limit = value && end != value && !*end && parsed && parsed <= 256 ? parsed : 64;
+    }
+    return limit;
+}
+
+void macrunner_return_route_observe( const char *stage, HWND hwnd, UINT keycode,
+                                     BOOL key_up, UINT flags, UINT event_time,
+                                     UINT message, LONG result )
+{
+    static unsigned int records;
+    struct timespec now;
+    uint64_t native_tid = 0;
+    unsigned int ordinal;
+
+    if (!return_route_observer_enabled() || keycode != VK_RETURN) return;
+    ordinal = __atomic_add_fetch( &records, 1, __ATOMIC_RELAXED );
+    if (ordinal > return_route_observer_limit()) return;
+    pthread_threadid_np( NULL, &native_tid );
+    clock_gettime( CLOCK_MONOTONIC, &now );
+    fprintf( stderr,
+             "macrunner-return-route: stage=%s seq=%u pid=%d native_tid=%llu wine_tid=%p "
+             "hwnd=%p focus=%p active=%p foreground=%p keycode=0x%x direction=%s "
+             "flags=0x%x event_time=%u monotonic_ns=%llu message=0x%x result=%ld\n",
+             stage, ordinal, getpid(), (unsigned long long)native_tid,
+             NtCurrentTeb()->ClientId.UniqueThread, hwnd, get_focus(), get_active_window(),
+             NtUserGetForegroundWindow(), keycode, key_up ? "up" : "down", flags, event_time,
+             (unsigned long long)now.tv_sec * 1000000000ull + now.tv_nsec, message, result );
+    fflush( stderr );
+}
 
 static const WCHAR keyboard_layouts_keyW[] =
 {
@@ -807,7 +865,14 @@ SHORT WINAPI NtUserGetAsyncKeyState( INT key )
         state = desktop_shm->keystate[key];
 
     if (status) return 0;
-    if (!(state & 0x40)) return (state & 0x80) << 8;
+    if (!(state & 0x40))
+    {
+        ret = (state & 0x80) << 8;
+        if (key == VK_RETURN && ret)
+            macrunner_return_route_observe( "unity-async-state-query", 0, key, !(ret & 0x8000),
+                                            state, NtGetTickCount(), 0, ret );
+        return ret;
+    }
 
     /* Need to make a server call to reset the last pressed bit */
     SERVER_START_REQ( get_key_state )
@@ -822,6 +887,9 @@ SHORT WINAPI NtUserGetAsyncKeyState( INT key )
     }
     SERVER_END_REQ;
 
+    if (key == VK_RETURN && ret)
+        macrunner_return_route_observe( "unity-async-state-query", 0, key, !(ret & 0x8000),
+                                        state, NtGetTickCount(), 0, ret );
     return ret;
 }
 
@@ -1033,6 +1101,9 @@ SHORT WINAPI NtUserGetKeyState( INT vkey )
     }
     SERVER_END_REQ;
     TRACE("key (0x%x) -> %x\n", vkey, retval);
+    if ((vkey & 0xff) == VK_RETURN && retval)
+        macrunner_return_route_observe( "unity-key-state-query", 0, vkey & 0xff,
+                                        !(retval & 0x8000), retval, NtGetTickCount(), 0, retval );
     return retval;
 }
 

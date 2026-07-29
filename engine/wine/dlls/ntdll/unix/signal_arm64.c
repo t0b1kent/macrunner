@@ -779,6 +779,9 @@ extern int macrunner_hb_pc_is_x64_guest_code( void *pc );
 extern int macrunner_hb_pc_is_x64_guest_code_no_lock( void *pc );
 extern int macrunner_hb_pc_is_x64_callback_target_no_lock( void *pc );
 extern int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc );
+/* Defined in macrunner_hb.c.  Nonzero while this thread is inside the signal handler; makes
+ * HyperBridge's PE-header reads use the non-faulting probe.  See macrunner_hb_image_nt_header(). */
+extern __thread int macrunner_hb_fault_header_probe_depth;
 extern void *macrunner_hb_pe_module_from_pc_no_lock( void *pc );
 extern int macrunner_hb_pc_is_pe_code_module_no_lock( void *pc );
 extern ULONG64 macrunner_hb_normalize_x64_callback_pc( ULONG64 pc );
@@ -4005,8 +4008,37 @@ static void macrunner_hb_chain_signal( int sig, siginfo_t *siginfo, void *sigcon
     raise( sig );
 }
 
+/* MacRunner 2026-07-29 (HK master lane, ITER-4): mark this thread as "inside the signal
+ * handler" for the whole handler subtree, so HyperBridge's PE-header reads switch to the
+ * non-faulting mach_vm_read_overwrite probe.  See the long note on
+ * macrunner_hb_image_nt_header() in macrunner_hb.c for the live measurement that motivates it:
+ * three threads pinned forever in a KERNEL fault loop on the `dos->e_magic` read reached from
+ * this handler.  Scoped here rather than in macrunner_hb_route_x64_callback_fault() because
+ * this is the single sa_sigaction entry point, so one scope also covers the ARM64X hexpthk
+ * SIGILL redirect, which reaches the same classifier by a different route.
+ *
+ * Deliberately NOT folded into the existing fault-reentry guard: that guard is skipped
+ * entirely when MACRUNNER_HB_FAULT_REENTRY_LIMIT_OFF is set, and this must not be. */
+struct macrunner_hb_header_probe_scope { int engaged; };
+
+static struct macrunner_hb_header_probe_scope macrunner_hb_header_probe_enter(void)
+{
+    struct macrunner_hb_header_probe_scope scope = { 1 };
+
+    macrunner_hb_fault_header_probe_depth++;
+    return scope;
+}
+
+static void macrunner_hb_header_probe_leave( struct macrunner_hb_header_probe_scope *scope )
+{
+    if (scope->engaged) macrunner_hb_fault_header_probe_depth--;
+}
+
 static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, void *sigcontext )
 {
+    struct macrunner_hb_header_probe_scope header_probe_scope
+        __attribute__((cleanup(macrunner_hb_header_probe_leave))) =
+        macrunner_hb_header_probe_enter();
     struct macrunner_hb_callback_loop_signal_scope callback_loop_scope
         __attribute__((cleanup(macrunner_hb_callback_loop_signal_leave))) =
         macrunner_hb_callback_loop_signal_enter( "primary", sig, sigcontext );

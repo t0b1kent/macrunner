@@ -80,6 +80,69 @@ static const char *trace_ui_input_event_name(NSEventType type)
     }
 }
 
+/* MacRunner 2026-07-29 (HK E2E lane): KEYBOARD-side counterpart of the trace below.
+ *
+ * trace_ui_input_event() filters out everything that is not a mouse BUTTON event
+ * (see its early return on trace_ui_input_mouse_button_event), so -sendEvent: has never
+ * been observable for keys at all.  Measured in laneA-HK-E2E-12-SELFINIT: HK's process
+ * has a WineApplication with will_run=1, a real 1512x982 Cocoa window and the real user
+ * driver installed, injection reports 4 posted CGEvents per key, and
+ * stage=macdrv_key_event is still 0 — with no way to tell whether AppKit delivered the
+ * event to -sendEvent: and it was dropped for want of a key window, or whether it never
+ * arrived.  Those need opposite fixes, so print the routing state with the event.
+ *
+ * Cheap by construction: key events only, and a hard budget, so it can ride the same
+ * narrow MACRUNNER_TRACE_WINEMAC_KEYS gate that keyboard.c uses without the
+ * ProcessEvents flood that MACRUNNER_TRACE_WINEMAC_INPUT causes at frame rates. */
+static BOOL trace_key_input_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+        enabled = getenv("MACRUNNER_TRACE_WINEMAC_KEYS") != NULL || trace_ui_input_enabled();
+    return enabled;
+}
+
+/* MacRunner 2026-07-29 (HK E2E lane): see -[WineApplicationController handleEvent:].
+ * ON by default -- it is the fix; "0" restores AppKit's key-window-only routing. */
+static BOOL macrunner_keydown_without_keywindow_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *env = getenv("MACRUNNER_MACDRV_KEYDOWN_NO_KEYWINDOW");
+        enabled = !(env && env[0] == '0');
+    }
+    return enabled;
+}
+
+static BOOL trace_key_input_event_type(NSEventType type)
+{
+    return type == NSEventTypeKeyDown || type == NSEventTypeKeyUp ||
+           type == NSEventTypeFlagsChanged;
+}
+
+static void trace_key_input_event(const char *stage, NSEvent *event)
+{
+    static int budget = 60;
+    NSEventType type;
+
+    if (!trace_key_input_enabled()) return;
+    type = [event type];
+    if (!trace_key_input_event_type(type)) return;
+    if (budget-- <= 0) return;
+
+    fprintf(stderr,
+            "macrunner-ui-input: stage=%s pid=%d type=%ld keycode=%u window=%p class=%s "
+            "keyWindow=%p mainWindow=%p active=%d policy=%ld\n",
+            stage, getpid(), (long)type, (unsigned)[event keyCode], [event window],
+            [event window] ? object_getClassName([event window]) : "(nil)",
+            [NSApp keyWindow], [NSApp mainWindow], (int)[NSApp isActive],
+            (long)[NSApp activationPolicy]);
+    fflush(stderr);
+}
+
 static void trace_ui_input_event(const char *stage, NSEvent *event)
 {
     NSEventType type;
@@ -178,6 +241,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
         BOOL handled;
 
         trace_ui_input_event("app_sendEvent_enter", anEvent);
+        trace_key_input_event("app_sendEvent_key_enter", anEvent);
         handled = [wineController handleEvent:anEvent];
         if (trace_ui_input_enabled() && trace_ui_input_mouse_button_event([anEvent type]))
         {
@@ -2019,6 +2083,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
         NSEventType type = [anEvent type];
 
         trace_ui_input_event("controller_handleEvent", anEvent);
+        trace_key_input_event("controller_handleEvent_key", anEvent);
 
         if (type == NSEventTypeFlagsChanged)
             self.lastFlagsChanged = anEvent;
@@ -2047,6 +2112,38 @@ static NSString* WineLocalizedString(unsigned int stringID)
             // send the event directly to the window.
             if (anEvent.keyCode == kVK_Help)
             {
+                [anEvent.window sendEvent:anEvent];
+                ret = TRUE;
+            }
+            /* MacRunner 2026-07-29 (HK E2E lane) — THE LAST BREAK IN THE KEYBOARD CHAIN.
+             *
+             * Measured in laneA-HK-E2E-13-KEYTRACE, HK's process, for all four injected
+             * keys (Down/Down/Up/Return), both down and up:
+             *   stage=app_sendEvent_key_enter    type=10 keycode=125 window=0x876864000
+             *       class=WineWindow keyWindow=0x0 mainWindow=0x0 active=0 policy=0
+             *   stage=controller_handleEvent_key ... identical
+             * so AppKit delivers the event, it carries the correct WineWindow, and this
+             * method sees it -- and macdrv_key_event is still 0.  The reason is right
+             * here: with no kVK_Help match this branch leaves ret = FALSE, so
+             * -[WineApplication sendEvent:] falls through to -[NSApplication sendEvent:],
+             * whose keyDown routing goes to the KEY WINDOW.  There is none, so the event
+             * is dropped and -[WineWindow keyDown:] -> postKeyEvent: never runs.  The
+             * KeyUp branch below then also drops it, because isKeyPressed: is false.
+             *
+             * No key window is not an anomaly to be fixed upstream of here: the process
+             * is not active (active=0), the driver only came up at ~+155 s via
+             * macdrv_process_selfinit, and CGEventPostToPid -- the whole point of which
+             * is unattended injection into a NON-frontmost app -- can never make one.
+             * The event already names its target window, so deliver it there, exactly as
+             * the Help bypass above and the KeyUp branch below already do.
+             *
+             * Deliberately narrow: only when NSApp genuinely has no key window (when it
+             * has one, AppKit's normal routing is correct and untouched).
+             * A/B: MACRUNNER_MACDRV_KEYDOWN_NO_KEYWINDOW=0 restores the old behaviour. */
+            else if (![NSApp keyWindow] && [[anEvent window] isKindOfClass:[WineWindow class]] &&
+                     macrunner_keydown_without_keywindow_enabled())
+            {
+                trace_key_input_event("controller_keydown_no_keywindow", anEvent);
                 [anEvent.window sendEvent:anEvent];
                 ret = TRUE;
             }

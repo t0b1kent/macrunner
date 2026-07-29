@@ -24,7 +24,9 @@
 #endif
 
 #include <assert.h>
+#include <dlfcn.h>    /* dlsym() — reach winemac.so's self-init without linking against it */
 #include <pthread.h>
+#include <unistd.h>   /* getpid() — correlate unix pids with wine pids in the driver trace */
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -46,6 +48,34 @@ static WCHAR driver_load_error[80];
  * It is NOT a real driver and must not outrank the one still being loaded — see
  * the CAS retry in __wine_set_user_driver(). */
 static void *placeholder_user_driver;
+
+/* MacRunner 2026-07-29 (HK E2E lane) — UNGATED, one line per SITE per process.
+ *
+ * Measured on live HK: the game process (unix 7057) creates a real Cocoa window
+ * (winemac.drv window.c stage=create_cocoa_window, ungated, so it genuinely ran
+ * there) while emitting NO load_display_driver_{reentrant,fallback,ok} line at all —
+ * every one of those three is an unconditional fprintf, so load_display_driver()
+ * was never entered in that process.  A different process (unix 7156 = wine 0020)
+ * emitted them.  Those two facts cannot both be true unless user_driver in HK's
+ * process became non-lazy WITHOUT going through load_display_driver, since every
+ * caller of it is guarded by `user_driver == &lazy_load_driver`.
+ *
+ * This prints WHICH driver is installed at each decision point, plus BOTH pids, so
+ * unix processes can be correlated with wine pids (the existing markers print one or
+ * the other, never both, which is why the two measurements could not be joined). */
+static void macrunner_driver_state( const char *site )
+{
+    const void *cur = user_driver;
+    const char *which = cur == &lazy_load_driver ? "lazy" :
+                        cur == (const void *)&null_user_driver ? "null_static" :
+                        cur == placeholder_user_driver ? "placeholder" : "other";
+
+    fprintf( stderr, "macrunner-ui-input: stage=driver_%s unix_pid=%d wine_pid=%04x tid=%04x "
+             "user_driver=%p which=%s placeholder=%p\n", site, (int)getpid(),
+             (unsigned int)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess,
+             (unsigned int)GetCurrentThreadId(), cur, which, placeholder_user_driver );
+    fflush( stderr );
+}
 
 static INT nulldrv_AbortDoc( PHYSDEV dev )
 {
@@ -798,8 +828,46 @@ static void nulldrv_GetDC( HDC hdc, HWND hwnd, HWND top_win, const RECT *win_rec
 {
 }
 
+/* MacRunner 2026-07-29 (HK E2E lane): the LATE hook for a deferred Mac-driver install.
+ *
+ * Why here, of all places. Hollow Knight's winemac.drv PE never runs its DllMain, so the
+ * driver can only be brought up from the unix side by macdrv_process_selfinit(). Doing that
+ * at its natural moment (~+145 s, from DXMT's swapchain path) costs the boot a measured
+ * ~558 s constant and the menu never loads: MonoManager->UnloadTime 784.1 s / 780.9 s and no
+ * `Loaded Objects now`, against 212.6 s / 204.5 s WITH the menu when the install is deferred
+ * past the scene load (MACRUNNER_MACDRV_SELFINIT_DELAY_MS).
+ *
+ * But deferral needs something to call back in afterwards, and every DXMT entry point that
+ * could is driven off swapchain creation at ~+144 s and never fires again -- measured: a run
+ * lived 79 s past the delay expiry with `macdrv_selfinit_entry` still 0. This is the one
+ * thing that keeps being called while the process is on the placeholder, because the guest
+ * pumps messages at the menu, and it runs on a proper Wine thread, which the install
+ * requires (a TEB-less thread reaching win32u is the documented route into the fault router,
+ * signal_arm64.c:1454).
+ *
+ * dlsym rather than a link-time reference: win32u must not gain a dependency on the Mac
+ * driver, and on a process where winemac.so is absent this resolves once to NULL and costs
+ * nothing thereafter. When no delay is configured, macdrv_process_selfinit() has already
+ * initialised long before this runs and returns on a single BOOL read. */
+static void macrunner_try_deferred_macdrv_install(void)
+{
+    static BOOL (*selfinit)(void);
+    static BOOL resolved;
+
+    if (!resolved)
+    {
+        resolved = TRUE;
+        selfinit = dlsym( RTLD_DEFAULT, "macdrv_process_selfinit" );
+        fprintf( stderr, "macrunner-ui-input: stage=nulldrv_selfinit_hook pid=%d resolved=%d\n",
+                 getpid(), (int)(selfinit != NULL) );
+        fflush( stderr );
+    }
+    if (selfinit) selfinit();
+}
+
 static BOOL nulldrv_ProcessEvents( DWORD mask )
 {
+    macrunner_try_deferred_macdrv_install();
     return FALSE;
 }
 
@@ -946,7 +1014,11 @@ static const WCHAR guid_key_prefixW[] =
 };
 static const WCHAR guid_key_suffixW[] = {'}','\\','0','0','0','0'};
 
-static BOOL load_desktop_driver( HWND hwnd )
+/* wait_for_explorer: FALSE skips the send_message( WM_NULL ) handshake below.  That
+ * handshake is what re-enters load_display_driver() and forces the placeholder install,
+ * so the repair path (which runs after the handshake has already happened once and
+ * explorer is known-ready) must not perform it again. */
+static BOOL load_desktop_driver( HWND hwnd, BOOL wait_for_explorer )
 {
     static const WCHAR guid_nullW[] = {'0','0','0','0','0','0','0','0','-','0','0','0','0','-','0','0','0','0','-',
                                        '0','0','0','0','-','0','0','0','0','0','0','0','0','0','0','0','0',0};
@@ -967,7 +1039,7 @@ static BOOL load_desktop_driver( HWND hwnd )
 
     asciiz_to_unicode( driver_load_error, "The explorer process failed to start." );  /* default error */
     /* wait for graphics driver to be ready */
-    send_message( hwnd, WM_NULL, 0, 0 );
+    if (wait_for_explorer) send_message( hwnd, WM_NULL, 0, 0 );
 
     guid_atom = HandleToULong( NtUserGetProp( hwnd, prop_nameW ));
     memcpy( key, guid_key_prefixW, sizeof(guid_key_prefixW) );
@@ -997,6 +1069,30 @@ static BOOL load_desktop_driver( HWND hwnd )
             void *ret_ptr;
             ULONG ret_len;
             ret = !KeUserModeCallback( NtUserLoadDriver, info->Data, info->DataLength, &ret_ptr, &ret_len );
+
+            /* MacRunner 2026-07-29 (HK E2E lane) — UNGATED, once per process.
+             *
+             * This callback is the ONLY thing that loads winemac.drv into the CALLING
+             * process.  Measured on live HK (unix 19195 = wine 0020): the process prints
+             * load_display_driver_ok ("real driver kept"), which requires desktop_ok ==
+             * TRUE, which requires this ret to be TRUE -- and yet no dllmain_attach ever
+             * appears for that wine pid, while the explorer-class process (wine 005c)
+             * prints a full dllmain_attach/_unixcall_init/_macdrv_init_call chain.
+             * So either this callback is not reached here, or it reports success without
+             * the PE's DllMain having run in this process.  Print both the driver name
+             * and the result so the two cannot be confused again. */
+            {
+                static LONG once;
+                if (!InterlockedCompareExchange( &once, 1, 0 ))
+                {
+                    fprintf( stderr, "macrunner-ui-input: stage=driver_loaddriver_callback "
+                             "unix_pid=%d wine_pid=%04x ret=%d driver=%s\n", (int)getpid(),
+                             (unsigned int)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess,
+                             (int)ret, debugstr_wn( (const WCHAR *)info->Data,
+                                                    info->DataLength / sizeof(WCHAR) ) );
+                    fflush( stderr );
+                }
+            }
         }
         else
         {
@@ -1024,10 +1120,14 @@ static BOOL load_desktop_driver( HWND hwnd )
 static void load_display_driver(void)
 {
     static __thread BOOL loading_display_driver;
+    static LONG entered_once;
     USEROBJECTFLAGS flags;
     HWINSTA winstation;
     BOOL service, desktop_ok;
     const struct user_driver_funcs *prev_driver;
+
+    if (!InterlockedCompareExchange( &entered_once, 1, 0 ))
+        macrunner_driver_state( "load_display_driver_enter" );
 
     if (loading_display_driver)
     {
@@ -1066,7 +1166,7 @@ static void load_display_driver(void)
 
     loading_display_driver = TRUE;
     service = is_service_process();
-    desktop_ok = !service && load_desktop_driver( get_desktop_window() );
+    desktop_ok = !service && load_desktop_driver( get_desktop_window(), TRUE );
     if (service || !desktop_ok || user_driver == &lazy_load_driver)
     {
         winstation = NtUserGetProcessWindowStation();
@@ -1086,11 +1186,81 @@ static void load_display_driver(void)
     }
     else
     {
+        /* MacRunner 2026-07-29 (HK E2E lane): this line used to claim "real driver kept"
+         * on the strength of `user_driver != &lazy_load_driver` alone -- and on live HK
+         * that claim was FALSE.  HK's process (unix 19195 = wine 0020) reaches here with
+         * the re-entrancy PLACEHOLDER installed (stage=driver_init_display_driver ...
+         * which=placeholder), i.e. the silent null_user_driver, and the log still said a
+         * real driver was kept.  "not lazy" is not "real": say which one it actually is. */
+        BOOL is_placeholder = (void *)user_driver == placeholder_user_driver;
+
         fprintf( stderr, "macrunner-ui-input: stage=load_display_driver_ok pid=%04x tid=%04x "
-                 "— real driver kept\n",
+                 "— %s (user_driver=%p placeholder=%p)\n",
                  (unsigned int)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueProcess,
-                 (unsigned int)GetCurrentThreadId() );
+                 (unsigned int)GetCurrentThreadId(),
+                 is_placeholder ? "PLACEHOLDER KEPT — this process has NO real driver"
+                                : "real driver kept",
+                 (void *)user_driver, placeholder_user_driver );
         fflush( stderr );
+
+        /* ── PLACEHOLDER REPAIR (A/B: MACRUNNER_WIN32U_PLACEHOLDER_REPAIR=1) ──────────
+         *
+         * Measured 2/2 on live HK: the game process (unix 19195 = wine 0020) leaves this
+         * function with the re-entrancy stand-in as its PERMANENT user driver, while the
+         * real macdrv is installed in a DIFFERENT, explorer-class process (wine 005c)
+         * that then exits.  88894334's CAS retry cannot help here -- it only fires when a
+         * real driver is later installed in the SAME process, and in HK's process none
+         * ever is, because winemac.drv is never loaded into it (no dllmain_attach, no
+         * macdrv_init_entry for wine 0020).  Result: no Cocoa app loop in the process
+         * that owns HK's window, so -sendEvent: never runs and injected keys produce
+         * macdrv_key_event = 0.
+         *
+         * The stand-in itself is NOT removable: lazy_load_driver's entry points chain
+         * through load_driver(), so leaving user_driver lazy during the re-entrant window
+         * recurses forever.  It must be installed -- and then REPAIRED, which is what
+         * this does: drop it back to lazy and perform the driver load that the re-entrant
+         * path skipped, WITHOUT the send_message( WM_NULL ) handshake that caused the
+         * re-entry in the first place (explorer is demonstrably up by now).
+         *
+         * Behind an env flag on purpose: an offline proof that a mechanism is wrong is not
+         * a proof that changing it is safe -- 666f6614 disabled the kernelbase EC mirror on
+         * correct analysis and killed the guest at runtime.  Default OFF; A/B and read the
+         * guest before this becomes unconditional.
+         *
+         * ── RESULT OF THAT A/B (HK-E2E-07-REPAIR, 2026-07-29): REFUTED. DO NOT ENABLE. ──
+         * The repair itself works -- stage=driver_placeholder_repair_done shows user_driver
+         * back at `lazy` with the placeholder freed -- but it leaves the process WORSE off.
+         * The very next load_display_driver() then takes the FALLBACK branch
+         * (`service=0 desktop_ok=1 was_lazy=1`) and installs null_user_driver with
+         * pCreateWindow = nodrv_CreateWindow, i.e. the LOUD null driver, so window creation
+         * now fails outright.  Guest regression measured against the same launcher:
+         * `Initialize engine version` 1 -> 0 and the run died at 1679 lines.
+         *
+         * It cannot work at this level, and the same run says why: the repair's
+         * load_desktop_driver() retry reached
+         *   stage=driver_loaddriver_callback unix_pid=26821 wine_pid=0020 ret=1 driver=L"winemac.drv"
+         * -- KeUserModeCallback( NtUserLoadDriver ) REPORTS SUCCESS in HK's process -- and
+         * yet no dllmain_attach is ever emitted for that wine pid, while the native
+         * explorer-class process emits a full `arch=aarch64` chain.  So winemac.drv's
+         * DllMain never runs in the x86_64 guest process even though the loader call
+         * claims it did.  The defect is in that PE load, not in this driver bookkeeping;
+         * this block is retained only because it is what produced that measurement. */
+        if (is_placeholder && getenv( "MACRUNNER_WIN32U_PLACEHOLDER_REPAIR" ))
+        {
+            void *ph = placeholder_user_driver;
+
+            if (InterlockedCompareExchangePointer( (void **)&user_driver,
+                                                   (void *)&lazy_load_driver, ph ) == ph)
+            {
+                InterlockedCompareExchangePointer( &placeholder_user_driver, NULL, ph );
+                free( ph );
+
+                load_desktop_driver( get_desktop_window(), FALSE );
+
+                macrunner_driver_state( "placeholder_repair_done" );
+            }
+            else macrunner_driver_state( "placeholder_repair_lost_race" );
+        }
     }
     loading_display_driver = FALSE;
 }
@@ -1104,6 +1274,14 @@ static const struct user_driver_funcs *load_driver(void)
 
 void init_display_driver(void)
 {
+    static LONG once;
+
+    /* The guard below is the suspected reason HK's process never loads a driver:
+     * if user_driver is already non-lazy here, load_display_driver() is skipped
+     * silently and winemac.drv is never brought into this process at all. */
+    if (!InterlockedCompareExchange( &once, 1, 0 ))
+        macrunner_driver_state( "init_display_driver" );
+
     if (user_driver == &lazy_load_driver) load_display_driver();
 }
 
@@ -1414,6 +1592,15 @@ const struct user_driver_funcs *user_driver = &lazy_load_driver;
 void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version )
 {
     struct user_driver_funcs *driver, *prev;
+
+    /* Every install attempt, ungated: this is the only place a process can acquire a
+     * non-lazy user_driver, so if HK's process has one, the call MUST appear here. */
+    {
+        static LONG once;
+        if (!InterlockedCompareExchange( &once, 1, 0 ))
+            macrunner_driver_state( funcs == &null_user_driver ? "set_user_driver_null"
+                                                              : "set_user_driver_real" );
+    }
 
     if (version != WINE_GDI_DRIVER_VERSION)
     {

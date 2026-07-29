@@ -544,6 +544,10 @@ static BOOL macrunner_hb_language_observer_enabled(void)
 {
     WCHAR value[8] = {0};
 
+    if (get_env( L"MACRUNNER_HB_RETURN_ROUTE_OBSERVER", value, sizeof(value) ) &&
+        value[0] && value[0] != '0')
+        return TRUE;
+    value[0] = 0;
     return get_env( L"MACRUNNER_HB_LANGUAGE_FLOW_OBSERVER", value, sizeof(value) ) &&
            value[0] && value[0] != '0';
 }
@@ -590,6 +594,109 @@ static BOOL macrunner_hb_winemetal_x64_dllmain_enabled(void)
     WCHAR value[8] = {0};
 
     return get_env( L"MACRUNNER_HB_WINEMETAL_X64_DLLMAIN", value, sizeof(value) ) &&
+           value[0] && value[0] != '0';
+}
+
+/* MacRunner 2026-07-29 (HK DllMain lane).  winemac.drv is in exactly the class the
+ * winemetal.dll comment below describes: a Wine builtin that carries its own unixlib and
+ * whose x64 DllMain calls __wine_init_unix_call before anything else can work.  It reached
+ * neither escape hatch, so in Hollow Knight's process (an AMD64 main on ARM64) it took the
+ * dll-entry SKIP: LdrLoadDll reported success, the loader logged the module as LOADED
+ * builtin, and DllMain never executed -- hence stage=dllmain_attach exists only for the
+ * aarch64 explorer-class pid 005c and never for HK's pid 0020.  With DllMain skipped,
+ * dllmain.c:562 MACDRV_CALL(init) is never issued, unix macdrv_init is never entered,
+ * macdrv_main.c:537 init_user_driver() -> gdi.c:297 __wine_set_user_driver never runs, and
+ * load_display_driver keeps its re-entrancy placeholder for the life of the process.
+ *
+ * winemac.drv is also the ONLY wine builtin on HK's thread with no native aarch64 twin (37
+ * of them load twice), because the native-counterpart swap is driven from import resolution
+ * and the display driver arrives via an explicit LdrLoadDll from User32LoadDriver instead.
+ * So it has neither of the two routes every other builtin has: no native thunk to be routed
+ * to, and no x64 entry allowed to run.  Running its x64 DllMain is the only remaining route.
+ *
+ * ---------------------------------------------------------------------------------------
+ * DEFAULT FLIPPED TO **OFF**, 2026-07-29, on measured evidence -- read this before turning
+ * it back on.  Running this DllMain WORKS as far as the loader is concerned and then HANGS
+ * the guest, reproducibly, 2 runs out of 2, in two independent lanes:
+ *
+ *   run                                        last log ts   endpoint
+ *   laneA-hk-dllmain-x64entry-i1  (this lane)   +50.182 s     stage=dllmain_unixcall_init
+ *   laneA-HK-E2E-20-TEBFIX        (e2e lane)    +45.946 s     stage=dllmain_unixcall_init
+ *
+ * Both stop on the LAST line winemac.drv's process_attach prints before MACDRV_CALL(init),
+ * i.e. between dllmain.c:551 and dllmain.c:563, with the process still alive and its log
+ * frozen (the e2e run sat there >9 min).  Three control runs on the ntdll WITHOUT this
+ * change (winemac-initdll=0) ran to +897 s, +2519 s and +4285 s instead.
+ *
+ * The regression is worse than "no gain": with the guest wedged inside process_attach, the
+ * unix-side self-init (macdrv_main.c macdrv_process_selfinit) never gets to run either, so
+ * user_driver_placeholder_replaced goes 1 -> 0.  All three control runs DID replace the
+ * placeholder with the real driver via that route.  So default-ON trades a working driver
+ * for a hung boot, and it wedges every sister lane sharing this dist.
+ *
+ * Opt IN with MACRUNNER_HB_WINEMAC_X64_DLLMAIN=1 to reproduce/diagnose the hang.  The route
+ * probe above it (macrunner-hb-winemac-initdll) stays UNGATED, so a run log still reports
+ * which route winemac.drv took even with this off. */
+static BOOL macrunner_hb_winemac_x64_dllmain_enabled(void)
+{
+    WCHAR value[8] = {0};
+
+    return get_env( L"MACRUNNER_HB_WINEMAC_X64_DLLMAIN", value, sizeof(value) ) &&
+           value[0] && value[0] != '0';
+}
+
+/* MacRunner 2026-07-29 (HK DllMain lane).  The OTHER route out of the same skip, and the one
+ * that does not have to survive the wedge documented above.
+ *
+ * The x64 route (gate above) does get winemac.drv's DllMain to run in HK's process --
+ * stage=dllmain_attach arch=x86_64 pid=0020 was measured -- and then wedges while the DllMain
+ * calls a native PE import, on a stack that carries BOTH macrunner_hb_x64_dll_entry and
+ * win32u's load_display_driver -> KeUserModeCallback.  `sample` caught the thread 3626/3626
+ * inside macrunner_hb_route_x64_callback_fault -> macrunner_hb_pc_in_executable_section, and a
+ * sister lane sampled a SECOND, unrelated fault ending in the same router.  That router is in
+ * engine/hyperbridge and ntdll/unix/macrunner_hb.c -- FORBIDDEN territory for this lane -- so
+ * the x64 route cannot be finished from here at all.
+ *
+ * This gate avoids it instead of surviving it: run the DllMain as NATIVE ARM64 code, the way
+ * win32u.dll, user32.dll and kernelbase.dll already run theirs in this very process, so no x64
+ * guest code executes, macrunner_hb_x64_dll_entry is never entered, and the fault router is
+ * never reached.
+ *
+ * Why this is now believed possible, measured on the shipped artifacts 2026-07-29 -- the point
+ * that was missing every previous time this was considered:
+ *
+ *   dist file                          machine  CHPEMetadataPointer  .hexpthk
+ *   aarch64-windows/win32u.dll         aa64     0x18004cbf8          YES     <- native route works
+ *   aarch64-windows/user32.dll         aa64     0x180154a3c          YES     <- native route works
+ *   aarch64-windows/winemac.drv        aa64     0x18000b230          YES     <- SAME SHAPE
+ *   x86_64-windows/winemac.drv         8664     0                    no      <- what HK loads
+ *
+ * i.e. the aarch64 winemac.drv is a genuine ARM64X hybrid, structurally identical to the two
+ * modules whose native entry macrunner_hb_get_native_arm64x_entry already resolves.  The copy
+ * HK actually loads is a pure AMD64 PE with no CHPE metadata, from which no native entry can
+ * ever be derived -- which is why adding winemac.drv to needs_native_entry only does anything
+ * when the ARM64X build is the one at c:\windows\system32\winemac.drv.
+ *
+ * So this is HALF of a two-part change and is inert on its own:
+ *   1. MACRUNNER_PREFIX_WINEMAC_NATIVE=1  (scripts/sync-prefix-from-dist.sh) puts the ARM64X
+ *      build at the path User32LoadDriver pins;
+ *   2. this gate lets the loader derive that build's native ARM64 entry and call it.
+ * Part 1 alone was tried on 2026-07-29 and correctly REFUTED -- but it was tried while DllMain
+ * was still being skipped for winemac.drv entirely, so it was acting downstream of an entry
+ * that was never invoked.  The pair has never been run together.
+ *
+ * Safe by construction when either half is missing: macrunner_hb_get_native_arm64x_entry()
+ * returns NULL for the pure-AMD64 file (it requires MACHINE_ARM64 + CHPEMetadataPointer on
+ * disk), and a NULL native_entry falls through to the existing needs_x64_entry check, i.e. to
+ * the unchanged default skip.  Default OFF regardless, because this lane's standing rule is
+ * that an offline proof is not a runtime proof.
+ *
+ * Opt IN with MACRUNNER_HB_WINEMAC_NATIVE_DLLMAIN=1. */
+static BOOL macrunner_hb_winemac_native_dllmain_enabled(void)
+{
+    WCHAR value[8] = {0};
+
+    return get_env( L"MACRUNNER_HB_WINEMAC_NATIVE_DLLMAIN", value, sizeof(value) ) &&
            value[0] && value[0] != '0';
 }
 
@@ -2449,6 +2556,59 @@ static void *macrunner_hb_get_pe_callback12_trampoline(void)
                                                                           ".hexpthk" );
 }
 
+/* MacRunner 2026-07-29 (HK DllMain lane, iter 9).  WHICH of the image's TWO DllMain bodies to call.
+ *
+ * An ARM64X wine builtin from build-arm64ec-spike links BOTH dllmain.o's into one .text
+ * (build-arm64ec-spike/Makefile:509892 passes dlls/<mod>/aarch64-windows/dllmain.o AND
+ * dlls/<mod>/arm64ec-windows/dllmain.o to one winegcc -marm64x link), so there are two entries:
+ *   - OptionalHeader.AddressOfEntryPoint  -> the PURE-ARM64 body (AAPCS64)
+ *   - CHPE AlternateEntryPoint            -> the ARM64EC body (x64 ABI)
+ * Decoded off the shipped aarch64-windows/winemac.drv: AEP 0x2d90 is `b 0x1808`, plain AArch64
+ * with no ARM64EC entry-thunk marker word; AlternateEntryPoint 0x6030 is the target of the
+ * image's single .hexpthk export thunk at 0x8000 (x86-64: `mov rax,rsp; mov [rax+20h],rbx;
+ * push rbp; pop rbp; jmp 0x6030`), i.e. 0x6030 is what x64 code enters -- the EC body.  The one
+ * .a64xrm redirection entry {src 0x8000 -> dst 0x6030} says the same thing independently.
+ *
+ * The EC body is the RIGHT choice for the other three natgate modules: measured in HK's own
+ * process (i8 run 105607), kernelbase.dll / win32u.dll / USER32.dll all take this path at their
+ * AlternateEntryPoint and their DllMains RETURN -- the loader runs on for dozens more modules.
+ * It is the WRONG choice for winemac.drv: three separate routes have now wedged in the
+ * HyperBridge EC-thunk fault router, while explorer executes the SAME FILE's pure-ARM64 body
+ * (initdll machine=aa64 entry=base+0x2d90) through dllmain_attach -> dllmain_unixcall_init
+ * status=00000000 -> macdrv_init_entry on every run.  winemac.drv is also the only one of the
+ * four whose DllMain calls straight back out through imports (macdrv_pe_trace -> GetStdHandle /
+ * WriteFile / MESSAGE, then __wine_init_unix_call) before doing anything else.
+ *
+ * Note the RVA is read from the DISK header on purpose: HK maps this image as its EC VIEW
+ * (measured -- initdll reports machine=8664 and entry=base+0x8000, the .hexpthk), so the
+ * in-memory AddressOfEntryPoint is the x64 thunk, not 0x2d90.  Section contents are not
+ * view-swapped, so base+0x2d90 is the native body in either view.
+ *
+ * Scope is deliberately winemac.drv-only: the other three work on the EC body today, and "an
+ * offline proof that a mechanism is wrong is not a proof that changing it is safe" has already
+ * cost this project two guest regressions.  Opt out with MACRUNNER_HB_WINEMAC_NATIVE_AEP=0 to
+ * A/B straight back to the EC body without a rebuild. */
+static BOOL macrunner_hb_prefer_native_view_aep( WINE_MODREF *target_mod )
+{
+    WCHAR value[8] = {0};
+
+    if (!target_mod || !target_mod->ldr.BaseDllName.Buffer) return FALSE;
+    if (wcsicmp( target_mod->ldr.BaseDllName.Buffer, L"winemac.drv" )) return FALSE;
+
+    /* default ON, but only ever reached from the already default-OFF winemac natgate */
+    if (!get_env( L"MACRUNNER_HB_WINEMAC_NATIVE_AEP", value, sizeof(value) )) return TRUE;
+    return value[0] != '0';
+}
+
+/* See the call site in MODULE_InitDLL for what this probe splits apart.  Default OFF. */
+static BOOL macrunner_hb_winemac_entry_probe_enabled(void)
+{
+    WCHAR value[8] = {0};
+
+    return get_env( L"MACRUNNER_HB_WINEMAC_ENTRY_PROBE", value, sizeof(value) ) &&
+           value[0] && value[0] != '0';
+}
+
 static DLLENTRYPROC macrunner_hb_find_disk_native_entry( WINE_MODREF *target_mod, const char *section )
 {
     FILE_STANDARD_INFORMATION info;
@@ -2518,6 +2678,8 @@ static DLLENTRYPROC macrunner_hb_find_disk_native_entry( WINE_MODREF *target_mod
         const IMAGE_ARM64EC_METADATA *disk_meta = NULL;
         ULONG64 meta_va = cfg->CHPEMetadataPointer;
         ULONG64 img_base = nt->OptionalHeader.ImageBase;
+        ULONG aep = nt->OptionalHeader.AddressOfEntryPoint;
+        BOOL prefer_aep = macrunner_hb_prefer_native_view_aep( target_mod );
         ULONG alt = 0;
 
         if (meta_va > img_base && meta_va - img_base < nt->OptionalHeader.SizeOfImage)
@@ -2527,7 +2689,21 @@ static DLLENTRYPROC macrunner_hb_find_disk_native_entry( WINE_MODREF *target_mod
                                                       sizeof(*disk_meta) );
         if (disk_meta && disk_meta->AlternateEntryPoint) alt = disk_meta->AlternateEntryPoint;
 
-        entry = alt ? alt : nt->OptionalHeader.AddressOfEntryPoint;
+        /* See macrunner_hb_prefer_native_view_aep(): the disk AEP is the pure-ARM64 body,
+         * AlternateEntryPoint is the ARM64EC one.  Everything except winemac.drv keeps the EC
+         * body it is measured to work on; the fallback chain is unchanged for them. */
+        entry = (prefer_aep && aep) ? aep : (alt ? alt : aep);
+
+        /* UNGATED, winemac.drv only.  Reports BOTH candidates AND the choice, so a run log can
+         * always separate "called the native body" from "called the EC body" from "never got
+         * here" -- three outcomes this lane has repeatedly confused.  Deliberately outside every
+         * failure branch: a probe that only fires on the bad path cannot prove absence (the
+         * unixfuncs probe wrapped in `if (status && ...)` is this lane's oldest trap). */
+        if (target_mod->ldr.BaseDllName.Buffer &&
+            !wcsicmp( target_mod->ldr.BaseDllName.Buffer, L"winemac.drv" ))
+            MESSAGE( "macrunner-hb-winemac-entrypick: prefer_aep=%u aep=%x alt=%x chosen=%x\n",
+                     (unsigned int)prefer_aep, (unsigned int)aep, (unsigned int)alt,
+                     (unsigned int)entry );
     }
     if (!entry) goto done_data;
     if (entry >= nt->OptionalHeader.SizeOfImage ||
@@ -2821,6 +2997,103 @@ static void *macrunner_hb_resolve_arm64x_native_target( void *ptr )
         ptr = next;
     }
     return ptr;
+}
+
+/*
+ * MacRunner 2026-07-29 (HK DllMain lane) -- MEASURED root cause, not a guess.
+ *
+ * In Hollow Knight's x86_64 guest process winemac.drv is mapped with NO executable pages at
+ * all.  `vmmap` on the live wedged process (pid 35734, run …i4-native-a1-try1-094345) against
+ * the on-disk section table: the image is exactly DllBase 0x87ef2e40000 + SizeOfImage 0x30000,
+ * and all three of its live regions are r-- / rw- / r--.  RVA 0x0-0xc000 -- which covers .text
+ * (marked XR- in the PE section table) and .hexpthk -- is live-mapped r--.  So the correctly
+ * resolved native entry (DllBase + AlternateEntryPoint 0x6030, inside .text) is a branch into a
+ * non-executable page: SIGILL, routed into macrunner_hb_route_x64_callback_fault ->
+ * macrunner_hb_redirect_arm64x_hexpthk_sigill, where the guest thread spun 4790/4790 samples.
+ *
+ * This is specific to this module, not a blanket "guest PEs are never executable": the same
+ * process has 37 executable regions out of 294 in the guest band, including one inside
+ * win32u.dll's guest copy.  winemac.drv has zero -- it is the one builtin that never enters
+ * builtin-twin resolution, because User32LoadDriver pins LdrLoadDll to c:\windows\system32.
+ *
+ * It also explains why the x64 route (MACRUNNER_HB_WINEMAC_X64_DLLMAIN) got further before
+ * wedging: guest x64 code is READ by the translator, and r-- pages read fine.  Native ARM64
+ * code must be EXECUTED, so it dies on the first instruction.
+ *
+ * The repair below only ever ADDS execute to a range the PE's own section header already marks
+ * IMAGE_SCN_MEM_EXECUTE, and only when the live protection lacks it -- so it cannot grant
+ * execute to data.  Scope is deliberately asymmetric:
+ *   - the PROBE runs for every needs_native_entry module (win32u/kernelbase/user32 included),
+ *     because their protections are the control this lane never measured;
+ *   - the REPAIR is applied to winemac.drv ONLY.  win32u/user32/kernelbase have working native
+ *     entries today, and "an offline proof that a mechanism is wrong is not a proof that
+ *     changing it is safe" has already cost this project two guest regressions.
+ * Opt out with MACRUNNER_HB_NATIVE_ENTRY_MKEXEC=0.
+ */
+static BOOL macrunner_hb_native_entry_mkexec_enabled(void)
+{
+    WCHAR value[8] = {0};
+
+    /* default ON: opt out with MACRUNNER_HB_NATIVE_ENTRY_MKEXEC=0 */
+    if (!get_env( L"MACRUNNER_HB_NATIVE_ENTRY_MKEXEC", value, sizeof(value) )) return TRUE;
+    return value[0] != '0';
+}
+
+static void macrunner_hb_make_native_entry_executable( WINE_MODREF *wm, DLLENTRYPROC entry )
+{
+    MEMORY_BASIC_INFORMATION info;
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_SECTION_HEADER *sec;
+    SIZE_T info_len = 0, size;
+    ULONG_PTR target = (ULONG_PTR)entry;
+    ULONG old_prot = 0;
+    void *base;
+    unsigned int i;
+    BOOL is_winemac, sect_exec = FALSE, repaired = FALSE;
+    NTSTATUS status;
+
+    if (!wm || !entry || !wm->ldr.DllBase) return;
+    if (!(nt = RtlImageNtHeader( wm->ldr.DllBase ))) return;
+
+    is_winemac = wm->ldr.BaseDllName.Buffer &&
+                 !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemac.drv" );
+
+    /* which section holds the entry, and does the PE itself call it executable */
+    sec = IMAGE_FIRST_SECTION( nt );
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+    {
+        if (!macrunner_hb_section_contains_target( wm->ldr.DllBase, sec, target )) continue;
+        sect_exec = (sec->Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
+        break;
+    }
+
+    if (NtQueryVirtualMemory( NtCurrentProcess(), (void *)target, MemoryBasicInformation,
+                              &info, sizeof(info), &info_len ))
+        return;
+
+    if (sect_exec && is_winemac && macrunner_hb_native_entry_mkexec_enabled() &&
+        !(info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                          PAGE_EXECUTE_WRITECOPY)))
+    {
+        base = info.BaseAddress;
+        size = info.RegionSize;
+        status = NtProtectVirtualMemory( NtCurrentProcess(), &base, &size,
+                                         PAGE_EXECUTE_READ, &old_prot );
+        repaired = !status;
+        MESSAGE( "macrunner-hb-native-entry-mkexec: module=%s entry=%p region=%p size=%p "
+                 "old_prot=%lx status=%lx repaired=%u\n",
+                 debugstr_w(wm->ldr.BaseDllName.Buffer), entry, base, (void *)size,
+                 (ULONG)old_prot, (ULONG)status, repaired );
+    }
+
+    /* UNGATED probe, every needs_native_entry module.  Prints AFTER any repair so the value is
+     * the protection the entry is actually called with -- the number that decides whether a
+     * SIGILL at the first instruction is even possible. */
+    MESSAGE( "macrunner-hb-native-entry-prot: module=%s entry=%p prot=%lx state=%lx "
+             "sect_exec=%u repaired=%u\n",
+             debugstr_w(wm->ldr.BaseDllName.Buffer), entry,
+             (ULONG)(repaired ? PAGE_EXECUTE_READ : info.Protect), (ULONG)info.State,
+             sect_exec, repaired );
 }
 
 static DLLENTRYPROC macrunner_hb_get_native_arm64x_entry( WINE_MODREF *wm )
@@ -3167,6 +3440,88 @@ static WINE_MODREF *macrunner_hb_load_native_counterpart_module( WINE_MODREF *ta
 done:
     RtlFreeHeap( GetProcessHeap(), 0, native_path );
     return native_mod;
+}
+
+/* MacRunner 2026-07-29 (HK DllMain lane) -- the LOAD-step route out of the winemac.drv skip.
+ *
+ * Measured, in HK's own process (wine pid 0020), and it is a mechanism, not a protection quirk:
+ * the native aarch64 twins are loaded as a SIDE EFFECT OF IMPORT RESOLUTION.  import_dll()
+ * computes force_native_imports (loader.c, "macrunner_hb_importer_is_native_wine_builtin") and
+ * calls macrunner_hb_load_native_counterpart_module() on each import of a native wine builtin.
+ * That is why 37 builtins load twice in HK and winemac.drv does not: **winemac.drv is imported
+ * by nobody.**  It is a display driver, reached only through an explicit LdrLoadDll issued by
+ * User32LoadDriver.  Never being an import, it never enters the twin path -- so HK holds only
+ * its pure-AMD64 system32 copy, whose DllMain MODULE_InitDLL then skips by design.
+ *
+ * Both earlier routes attacked the ENTRY of that guest-only copy and both failed for reasons
+ * that follow from this same fact:
+ *   - x64 entry (MACRUNNER_HB_WINEMAC_X64_DLLMAIN): DllMain runs, then wedges in the HyperBridge
+ *     fault router on a native PE import -- forbidden territory, unfixable from this lane;
+ *   - native entry (MACRUNNER_HB_WINEMAC_NATIVE_DLLMAIN + prefix swap): the resolved entry sits
+ *     in a hand-copied, non-executable image (vmmap: winemac.drv's 3 regions are the ONLY SM=ZER
+ *     regions in HK's 306-region PE band; SM=ZER implies non-executable 18/18 across two
+ *     processes, and all 38 executable regions are file-backed SM=COW), so it SIGILLs on its
+ *     first instruction and lands in that same router.
+ *
+ * This gate does neither.  It gives winemac.drv the one thing the other 37 builtins have: its
+ * aarch64-windows twin, loaded through the SAME proven helper, then attached the same way
+ * find_forwarded_export() attaches a dynamically loaded forwarder (load_dll + process_attach).
+ * The twin's FileHeader.Machine is aa64, so MODULE_InitDLL's amd64-main-on-arm64 block is not
+ * entered for it at all -- no skip, no native-entry lookup, no x64 entry, no fault router.  Its
+ * DllMain runs as ordinary native code, exactly as it already does in the aarch64 explorer
+ * process (pid 005c) where dllmain_attach + macdrv_init_entry are measured every run.
+ *
+ * The guest copy is left in place and untouched: this ADDS a module, it does not substitute one,
+ * so nothing that already resolved against the system32 copy changes.
+ *
+ * Default OFF.  It runs inside the KeUserModeCallback that load_display_driver issues, and the
+ * boot it would alter currently works -- HK gets its real driver at ~+141 s via the unix-side
+ * macdrv_process_selfinit.  Trading that for an untested load in a nested callback is exactly
+ * the move that has already cost this project two guest regressions.  Opt IN with
+ * MACRUNNER_HB_WINEMAC_TWIN_ATTACH=1.  The probe below is UNGATED, so a run log always reports
+ * whether the twin was attempted and what happened -- "the gate was off" and "the gate did
+ * nothing" can never produce the same log. */
+static BOOL macrunner_hb_winemac_twin_attach_enabled(void)
+{
+    WCHAR value[8] = {0};
+
+    return get_env( L"MACRUNNER_HB_WINEMAC_TWIN_ATTACH", value, sizeof(value) ) &&
+           value[0] && value[0] != '0';
+}
+
+static void macrunner_hb_attach_winemac_native_twin( WINE_MODREF *wm )
+{
+    WINE_MODREF *native_mod;
+    IMAGE_NT_HEADERS *nt;
+    NTSTATUS status = STATUS_DLL_NOT_FOUND;
+    void *twin_base = NULL;
+    BOOL enabled;
+
+    if (!wm || !wm->ldr.BaseDllName.Buffer || !wm->ldr.DllBase) return;
+    if (wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemac.drv" )) return;
+    if (!macrunner_hb_amd64_main_on_arm64) return;
+    if (current_machine != IMAGE_FILE_MACHINE_ARM64) return;
+
+    /* Only the guest (AMD64-view) copy needs a twin.  If this modref is already the native
+     * view -- the aarch64 explorer-class process, or the twin we ourselves just loaded --
+     * there is nothing to add, and recursing here would be a load loop. */
+    if (!(nt = RtlImageNtHeader( wm->ldr.DllBase ))) return;
+    if (nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) return;
+
+    enabled = macrunner_hb_winemac_twin_attach_enabled();
+    if (enabled && (native_mod = macrunner_hb_load_native_counterpart_module( wm )))
+    {
+        /* Same shape as find_forwarded_export()'s dynamic-forwarder attach: the twin is
+         * nobody's import, so no enclosing process_attach walk will ever reach it. */
+        twin_base = native_mod->ldr.DllBase;
+        status = process_attach( native_mod->ldr.DdagNode, NULL );
+        /* Read the base BEFORE unloading -- LdrUnloadDll can free the modref, so reporting
+         * native_mod->ldr.DllBase afterwards would be a use-after-free on the error path. */
+        if (status != STATUS_SUCCESS) LdrUnloadDll( twin_base );
+    }
+
+    MESSAGE( "macrunner-hb-winemac-twin-attach: gate=%u guest_base=%p twin=%p status=%08lx\n",
+             enabled, wm->ldr.DllBase, twin_base, (ULONG)status );
 }
 
 static void *macrunner_hb_find_native_counterpart_export( WINE_MODREF *target_mod, const char *import_name,
@@ -5701,6 +6056,31 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
     IMAGE_NT_HEADERS *nt = RtlImageNtHeader( module );
     BOOL retv = FALSE;
 
+    /* MacRunner 2026-07-29 (HK DllMain lane) -- UNGATED, and placed before EVERY early return
+     * in this function on purpose.  This lane's standing trap is that a probe sitting inside
+     * one branch cannot distinguish "took the other branch" from "never got here", so its
+     * silence proves nothing.  This one fires for winemac.drv whatever happens next: it
+     * reports the two inputs that decide the route (image machine + LDR_WINE_INTERNAL) and
+     * the flags that can short-circuit the call, so a run log always says which route was
+     * taken.  MESSAGE() survives WINEDEBUG=-all.
+     *
+     * PROCESS_* ONLY, restricted 2026-07-29 after measuring the cost of not restricting it.
+     * The first version printed for every reason, and a verify run logged 45 of these by
+     * +117 s -- 43 of them THREAD_ATTACH.  The reason is structural, not incidental: DllMain
+     * is what calls DisableThreadLibraryCalls(), so whenever winemac.drv's entry does NOT run
+     * (the default), thread notifications are never suppressed and this probe fires once per
+     * thread for the life of the process.  HK creates >100.  The routing question this probe
+     * exists to answer is a PROCESS_ATTACH question, so the thread reasons were pure noise on
+     * an already throughput-starved boot. */
+    if (wm->ldr.BaseDllName.Buffer && !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemac.drv" ) &&
+        (reason == DLL_PROCESS_ATTACH || reason == DLL_PROCESS_DETACH))
+        MESSAGE( "macrunner-hb-winemac-initdll: reason=%s machine=%04x flags=%08lx entry=%p "
+                 "x64main=%u gate=%u natgate=%u\n",
+                 reason < ARRAY_SIZE(reason_names) ? reason_names[reason] : "?",
+                 nt ? nt->FileHeader.Machine : 0, wm->ldr.Flags, entry,
+                 macrunner_hb_amd64_main_on_arm64, macrunner_hb_winemac_x64_dllmain_enabled(),
+                 macrunner_hb_winemac_native_dllmain_enabled() );
+
     /* Skip calls for modules loaded with special load flags */
 
     if (wm->ldr.Flags & LDR_DONT_RESOLVE_REFS) return STATUS_SUCCESS;
@@ -5744,7 +6124,14 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
                  * reach the guest WNDPROC through the x64 callback route. */
                 BOOL needs_native_entry = !wcsicmp( wm->ldr.BaseDllName.Buffer, L"win32u.dll" ) ||
                                           !wcsicmp( wm->ldr.BaseDllName.Buffer, L"kernelbase.dll" ) ||
-                                          !wcsicmp( wm->ldr.BaseDllName.Buffer, L"user32.dll" );
+                                          !wcsicmp( wm->ldr.BaseDllName.Buffer, L"user32.dll" ) ||
+                /* winemac.drv: run its DllMain as native ARM64 instead of as x64 guest code,
+                 * so the HyperBridge fault router the x64 route wedges in is never reached.
+                 * Inert unless the ARM64X build is the one at the pinned system32 path -- see
+                 * macrunner_hb_winemac_native_dllmain_enabled() for the measured two-part
+                 * chain and why a missing half degrades to the unchanged skip. */
+                                          (macrunner_hb_winemac_native_dllmain_enabled() &&
+                                           !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemac.drv" ));
                 /* winemetal.dll is a builtin that carries a Wine unixlib (DXMT's Metal bridge):
                  * unlike the other graphics frontends its x64 DllMain MUST run, because it calls
                  * __wine_init_unix_call to publish __wine_unixlib_handle.  If skipped, the handle
@@ -5752,8 +6139,14 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
                  * (WMTCopyAllDevices()==0 -> no Metal adapter -> D3D11CreateDevice==0x887A0002).
                  * It has no native ARM64 entry (pure x86_64 PE), so route it through the x64 entry
                  * path below instead of the skip. */
-                BOOL needs_x64_entry = macrunner_hb_winemetal_x64_dllmain_enabled() &&
-                                       !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemetal.dll" );
+                BOOL needs_x64_entry = (macrunner_hb_winemetal_x64_dllmain_enabled() &&
+                                        !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemetal.dll" )) ||
+                /* winemac.drv: same class as winemetal.dll (builtin + own unixlib), and
+                 * additionally the only builtin here with no native aarch64 twin, so the
+                 * skip left it with no route at all.  See
+                 * macrunner_hb_winemac_x64_dllmain_enabled() for the measured chain. */
+                                       (macrunner_hb_winemac_x64_dllmain_enabled() &&
+                                        !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemac.drv" ));
                 DLLENTRYPROC native_entry = NULL;
 
                 /* Fill the ARM64X dispatch slots for EVERY hybrid builtin at
@@ -5786,6 +6179,22 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
                     MESSAGE( "macrunner-hb-bootstrap-native-entry-path: module=%s native_entry=%p after-lookup\n",
                              debugstr_w(wm->ldr.BaseDllName.Buffer), native_entry );
 
+                /* UNGATED, winemac.drv only.  The native route has exactly one way to fail
+                 * silently -- macrunner_hb_get_native_arm64x_entry() returns NULL when the file
+                 * at the pinned system32 path is the pure-AMD64 build instead of the ARM64X one
+                 * -- and that failure is INVISIBLE downstream, because it degrades into the same
+                 * skip the default already takes.  Without this line, "the native gate did
+                 * nothing" and "the native gate was never on" produce identical logs, which is
+                 * this lane's oldest trap.  natentry=0000000000000000 means part 1 of the pair
+                 * (MACRUNNER_PREFIX_WINEMAC_NATIVE) did not land, not that the gate is wrong. */
+                if (wm->ldr.BaseDllName.Buffer && !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemac.drv" ) &&
+                    (reason == DLL_PROCESS_ATTACH || reason == DLL_PROCESS_DETACH))
+                    MESSAGE( "macrunner-hb-winemac-natentry: reason=%s natgate=%u needs_native=%u "
+                             "natentry=%p\n",
+                             reason < ARRAY_SIZE(reason_names) ? reason_names[reason] : "?",
+                             macrunner_hb_winemac_native_dllmain_enabled(), needs_native_entry,
+                             native_entry );
+
                 if (needs_native_entry && reason == DLL_PROCESS_ATTACH)
                 {
                     if (macrunner_hb_trace_bootstrap())
@@ -5799,6 +6208,53 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved 
 
                 if (native_entry)
                 {
+                    /* MacRunner 2026-07-29 (HK DllMain lane): the resolved native entry can sit
+                     * in a live-mapped NON-executable page -- measured for winemac.drv in HK's
+                     * guest process, where it SIGILLs on the first instruction.  Probe the
+                     * protection for every module taking this branch and repair winemac.drv's.
+                     * See macrunner_hb_make_native_entry_executable() for the measurement. */
+                    macrunner_hb_make_native_entry_executable( wm, native_entry );
+
+                    /* MacRunner 2026-07-29 (HK DllMain lane, iter 10).  SPLIT the remaining
+                     * failure space in two with one call.
+                     *
+                     * Measured across FOUR structurally different routes (x64 entry; native entry
+                     * on a prefix-swapped copy; ARM64EC body of a properly loaded twin; and iter 9,
+                     * the pure-ARM64 body of that twin): the loader reaches the line right before
+                     * call_dll_entry_point and the thread then spins 6353/6353 in
+                     * macrunner_hb_redirect_arm64x_hexpthk_sigill.  `stage=dllmain_attach` -- the
+                     * FIRST statement of DllMain -- never prints.  But that statement is
+                     * macdrv_pe_trace(), which itself calls out through imports (GetStdHandle /
+                     * WriteFile / MESSAGE), so its absence does NOT distinguish:
+                     *   (a) the CALL MECHANISM faults (entry prologue / ABI / unwind), from
+                     *   (b) the call lands fine and the first IMPORT out of DllMain faults.
+                     * Those have opposite fixes, and everything downstream of them is in
+                     * ntdll/unix/macrunner_hb.c, which this lane may not touch -- so handing the
+                     * owner of that file the wrong half would cost another day.
+                     *
+                     * winemac.drv's DllMain is `if (reason != DLL_PROCESS_ATTACH) return TRUE;`
+                     * (dllmain.c), i.e. for DLL_THREAD_ATTACH the body is a pure no-op that issues
+                     * NO imports.  So calling THIS SAME ENTRY with DLL_THREAD_ATTACH exercises the
+                     * call mechanism alone:
+                     *   returns  -> mechanism is fine, the fault is (b), the first import call;
+                     *   wedges   -> the fault is (a), before any of winemac.drv's own code runs.
+                     * Both probes print, so silence is interpretable either way.
+                     *
+                     * Default OFF; winemac.drv only; opt in with
+                     * MACRUNNER_HB_WINEMAC_ENTRY_PROBE=1.  Harmless when it returns: a spurious
+                     * THREAD_ATTACH to a DllMain that ignores every reason but PROCESS_ATTACH. */
+                    if (reason == DLL_PROCESS_ATTACH && macrunner_hb_winemac_entry_probe_enabled() &&
+                        wm->ldr.BaseDllName.Buffer &&
+                        !wcsicmp( wm->ldr.BaseDllName.Buffer, L"winemac.drv" ))
+                    {
+                        BOOL probe_ret;
+                        MESSAGE( "macrunner-hb-winemac-entryprobe: phase=before entry=%p reason=THREAD_ATTACH\n",
+                                 native_entry );
+                        probe_ret = call_dll_entry_point( native_entry, module, DLL_THREAD_ATTACH, NULL );
+                        MESSAGE( "macrunner-hb-winemac-entryprobe: phase=after ret=%u -- CALL MECHANISM OK, "
+                                 "so the wedge is in DllMain's own first import\n", (unsigned int)probe_ret );
+                    }
+
                     if (macrunner_hb_trace_bootstrap())
                         MESSAGE( "macrunner-hb-bootstrap-native-entry-path: module=%s call-native-entry=%p\n",
                                  debugstr_w(wm->ldr.BaseDllName.Buffer), native_entry );
@@ -8526,6 +8982,11 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR path_name, DWORD flags,
             LdrUnloadDll(wm->ldr.DllBase);
             wm = NULL;
         }
+        /* MacRunner (HK DllMain lane): winemac.drv is the one wine builtin nobody imports, so
+         * import_dll()'s native-counterpart swap never gives it an aarch64 twin.  Give it one
+         * here, at the explicit LdrLoadDll that User32LoadDriver issues.  Gated, and a no-op
+         * for every other module -- see macrunner_hb_attach_winemac_native_twin(). */
+        if (nts == STATUS_SUCCESS) macrunner_hb_attach_winemac_native_twin( wm );
     }
     *hModule = (wm) ? wm->ldr.DllBase : NULL;
 

@@ -561,12 +561,101 @@ static NTSTATUS macdrv_init_core(struct localized_string *strings, const char *o
  * called from a secondary thread, and HK's process main thread is parked in the bare
  * CFRunLoopRun of ntdll's loader, which is exactly the state it expects.
  */
-BOOL macdrv_process_selfinit(void)
+/* MacRunner 2026-07-29 (HK E2E lane): OPTIONAL DEFERRAL of the self-init above.
+ *
+ * The measurement that motivates it, conditioned on wall-clock >=600 s so that short
+ * diagnostic probes cannot manufacture failures: self-init ABSENT -> 14/16 runs reach
+ * `Loaded Objects now`, MonoManager->UnloadTime max 237.7 s, none over 300 s. Self-init
+ * PRESENT -> 0/8, with a heavy tail (784.1 s and 928.5 s observed). The medians are
+ * unchanged in both eras, so this is not a uniform slowdown -- a subset of runs stalls
+ * 2-4x -- and every one of those stalls sits inside the Mono scene-load window that
+ * self-init lands in the middle of (it fires at ~+140 s, the window is ~+54 s to ~+280 s).
+ *
+ * Both halves of this lane's objective have been demonstrated, never together: keys reach
+ * the guest when HK has a real driver, and the menu loads when it has none. Deferring the
+ * install past the scene-load window is the one intervention that can satisfy both, and it
+ * wins under either reading of the cost -- if the cost is specific to the loading window,
+ * deferral removes it; if the driver is simply expensive while Mono is loading, deferral
+ * moves that expense to after the menu, which is exactly when this lane needs input.
+ *
+ * MACRUNNER_MACDRV_SELFINIT_DELAY_MS=<n> withholds the driver for n ms measured from the
+ * FIRST call, i.e. from the first winemac.so entry point HK's process reaches. Unset or 0
+ * is the current behaviour, byte-for-byte: the very first call initialises inline.
+ *
+ * Deferral only has an effect if something calls back in after the delay, so the callers in
+ * d3dmetal.c retry from the recurring DXMT entry points as well as the one-shot swapchain
+ * path. Deliberately NOT a timer thread: a bare pthread has no Wine TEB, and a TEB-less
+ * thread reaching win32u is the documented way into the fault router that has already cost
+ * these lanes six iterations (signal_arm64.c:1454). Every caller here is a Wine thread. */
+static BOOL macdrv_selfinit_delay_elapsed(void)
+{
+    static const char *cached_env;
+    static DWORD first_tick, delay_ms;
+    static BOOL resolved;
+    DWORD now = NtGetTickCount();
+
+    if (!resolved)
+    {
+        resolved = TRUE;
+        cached_env = getenv("MACRUNNER_MACDRV_SELFINIT_DELAY_MS");
+        delay_ms = (cached_env && cached_env[0]) ? (DWORD)atoi(cached_env) : 0;
+        first_tick = now;
+        if (delay_ms)
+        {
+            fprintf(stderr, "macrunner-ui-input: stage=macdrv_selfinit_deferred pid=%d delay_ms=%u — "
+                    "driver withheld until the scene-load window has passed\n",
+                    getpid(), (unsigned int)delay_ms);
+            fflush(stderr);
+        }
+    }
+    if (!delay_ms) return TRUE;
+    /* NtGetTickCount wraps every ~49.7 days; the unsigned difference stays correct across it. */
+    if ((DWORD)(now - first_tick) >= delay_ms) return TRUE;
+
+    /* Count the declines and print on a coarse ladder.
+     *
+     * Without this, the first deferred run could not distinguish two very different failures:
+     * the retry sites are never called after the menu, or they are called and the run simply
+     * did not live long enough (it got 38 s of post-menu life before teardown). Those need
+     * opposite fixes -- widen the retry set, versus give the run more time -- and a zero on
+     * `macdrv_selfinit_entry` is equally consistent with both.
+     *
+     * Powers-of-four ladder so a hot render path cannot turn this into a log flood, with the
+     * elapsed time on every line so the LAST one before teardown dates the final retry. */
+    {
+        static unsigned long declines, next_report = 1;
+
+        if (++declines >= next_report)
+        {
+            next_report *= 4;
+            fprintf(stderr, "macrunner-ui-input: stage=macdrv_selfinit_waiting pid=%d declines=%lu "
+                    "elapsed_ms=%u delay_ms=%u\n", getpid(), declines,
+                    (unsigned int)(DWORD)(now - first_tick), (unsigned int)delay_ms);
+            fflush(stderr);
+        }
+    }
+    return FALSE;
+}
+
+/* DECLSPEC_EXPORT: winemac.so exports exactly three symbols, and win32u's placeholder
+ * driver needs to reach this one by dlsym. See nulldrv_ProcessEvents() in
+ * win32u/driver.c for why the call has to come from there rather than from DXMT. */
+DECLSPEC_EXPORT BOOL macdrv_process_selfinit(void)
 {
     static BOOL announced;   /* a duplicated log line under a race is harmless */
-    const char *gate = getenv("MACRUNNER_MACDRV_UNIX_SELFINIT");
+    static const char *gate;
+    static BOOL gate_resolved;
 
+    /* Ordered so the common case is a single BOOL read. This is now called from
+     * nulldrv_ProcessEvents(), i.e. on every message-pump wait of every placeholder
+     * process, so the getenv() that used to run before this check would have been an
+     * O(n) environment walk per pump. */
     if (macdrv_process_initialised) return TRUE;
+    if (!gate_resolved)
+    {
+        gate_resolved = TRUE;
+        gate = getenv("MACRUNNER_MACDRV_UNIX_SELFINIT");
+    }
     if (gate && gate[0] == '0')
     {
         if (!announced)
@@ -577,6 +666,11 @@ BOOL macdrv_process_selfinit(void)
         }
         return FALSE;
     }
+
+    /* Checked before the entry announcement so a deferred run's log says "waiting", not
+     * "initialising", at the moment it declines -- this lane has twice read an announcement
+     * as proof that the thing it announces actually happened. */
+    if (!macdrv_selfinit_delay_elapsed()) return FALSE;
 
     if (!announced)
     {

@@ -4034,8 +4034,48 @@ static void macrunner_hb_header_probe_leave( struct macrunner_hb_header_probe_sc
     if (scope->engaged) macrunner_hb_fault_header_probe_depth--;
 }
 
+/* MacRunner 2026-07-30 — COST and KIND of a fault, the two things that make the rate readable.
+ *
+ * The rate alone was measured at a steady ~1800/s (entries=8192 in 4583 ms, 12288 in 6865 ms,
+ * 16384 in 8799 ms). That number does not become a share of wall clock until it is multiplied by
+ * the cost of one entry, and nothing measured that: at 20 us per fault 1800/s is 3.6 % and a
+ * curiosity, at 500 us it is 90 % and the whole 16x gap to Rosetta. Guessing between those two is
+ * how this project has lost days before.
+ *
+ * KIND matters for the same reason. vmmap on a live guest shows 178 regions mapped r--/rwx against
+ * 459 rw-/rwx, and the read-only ones are where the guest's own memory sits — the classic
+ * write-watch arrangement, in which every guest WRITE to a watched page traps. si_code separates
+ * that case (SEGV_ACCERR, a permission fault on a mapped page) from a genuinely absent mapping
+ * (SEGV_MAPERR) at no cost, so the report can say whether the storm is write-watch or something
+ * else instead of leaving it to be inferred.
+ *
+ * The timing uses the cleanup attribute this handler already uses for its other scopes, so every
+ * exit path is covered including the ones that resume the guest by rewriting the context. */
+static ULONG64 macrunner_hb_fault_entries;
+static ULONG64 macrunner_hb_fault_first_ns;
+static ULONG64 macrunner_hb_fault_total_ns;
+static ULONG64 macrunner_hb_fault_accerr;   /* write/permission fault on a mapped page */
+static ULONG64 macrunner_hb_fault_maperr;   /* no mapping at that address */
+static ULONG64 macrunner_hb_fault_otherkind;
+
+struct macrunner_hb_faultrate_scope { ULONG64 t0; };
+
+static void macrunner_hb_faultrate_leave( struct macrunner_hb_faultrate_scope *scope )
+{
+    ULONG64 now;
+
+    if (!scope->t0) return;
+    now = macrunner_hb_callback_loop_now_ns();
+    if (now > scope->t0)
+        __atomic_add_fetch( &macrunner_hb_fault_total_ns, now - scope->t0, __ATOMIC_RELAXED );
+}
+
 static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, void *sigcontext )
 {
+    struct macrunner_hb_faultrate_scope faultrate_scope
+        __attribute__((cleanup(macrunner_hb_faultrate_leave))) =
+        { macrunner_hb_callback_loop_now_ns() };
+
     struct macrunner_hb_header_probe_scope header_probe_scope
         __attribute__((cleanup(macrunner_hb_header_probe_leave))) =
         macrunner_hb_header_probe_enter();
@@ -4067,22 +4107,37 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
      * already doing signal delivery is unmeasurable, and a gate is how this measurement would end
      * up never taken. The REPORT is throttled to once per 4096 entries. */
     {
-        static ULONG64 macrunner_hb_fault_entries;
-        static ULONG64 macrunner_hb_fault_first_ns;
         ULONG64 n = __atomic_add_fetch( &macrunner_hb_fault_entries, 1, __ATOMIC_RELAXED );
+        int code = siginfo ? siginfo->si_code : 0;
+
+        if (sig == SIGSEGV && code == SEGV_ACCERR)
+            __atomic_add_fetch( &macrunner_hb_fault_accerr, 1, __ATOMIC_RELAXED );
+        else if (sig == SIGSEGV && code == SEGV_MAPERR)
+            __atomic_add_fetch( &macrunner_hb_fault_maperr, 1, __ATOMIC_RELAXED );
+        else
+            __atomic_add_fetch( &macrunner_hb_fault_otherkind, 1, __ATOMIC_RELAXED );
 
         if (n == 1)
-            __atomic_store_n( &macrunner_hb_fault_first_ns, macrunner_hb_callback_loop_now_ns(),
-                              __ATOMIC_RELAXED );
+            __atomic_store_n( &macrunner_hb_fault_first_ns, faultrate_scope.t0, __ATOMIC_RELAXED );
         else if (!(n & 0xfff))
         {
             ULONG64 t0 = __atomic_load_n( &macrunner_hb_fault_first_ns, __ATOMIC_RELAXED );
-            ULONG64 now = macrunner_hb_callback_loop_now_ns();  /* CLOCK_MONOTONIC, ns */
-            ULONG64 ms = t0 && now > t0 ? (now - t0) / 1000000ull : 0;
+            ULONG64 ms = t0 && faultrate_scope.t0 > t0 ? (faultrate_scope.t0 - t0) / 1000000ull : 0;
+            /* total_ns excludes the entry in progress, which is what we want: it is the sum over
+             * COMPLETED handler calls, so avg_us is a cost per fault and not a partial one. */
+            ULONG64 total = __atomic_load_n( &macrunner_hb_fault_total_ns, __ATOMIC_RELAXED );
+            ULONG64 done = n - 1;
 
-            macrunner_signal_writef( "macrunner-hb-faultrate: entries=%llu elapsed_ms=%llu rate=%llu/s\n",
-                                     (unsigned long long)n, (unsigned long long)ms,
-                                     (unsigned long long)(ms ? (n * 1000ull) / ms : 0) );
+            macrunner_signal_writef(
+                "macrunner-hb-faultrate: entries=%llu elapsed_ms=%llu rate=%llu/s"
+                " avg_us=%llu busy_pct=%llu accerr=%llu maperr=%llu other=%llu\n",
+                (unsigned long long)n, (unsigned long long)ms,
+                (unsigned long long)(ms ? (n * 1000ull) / ms : 0),
+                (unsigned long long)(done ? (total / done) / 1000ull : 0),
+                (unsigned long long)(ms ? (total / 1000000ull) * 100ull / ms : 0),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_accerr, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_maperr, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_otherkind, __ATOMIC_RELAXED ) );
         }
     }
 

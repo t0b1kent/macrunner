@@ -243,7 +243,7 @@ MR_SLOT_LOCK="${TMPDIR:-/tmp}/macrunner-title-slot.lock"
 MR_SLOT_LOCK_HELD=0
 
 acquire_title_slot() {
-  local waited=0 owner
+  local waited=0 owner unreadable=0
   [ "${MACRUNNER_MR_RUN_NO_SLOT_LOCK:-0}" = "1" ] && return 0
   while :; do
     if mkdir "$MR_SLOT_LOCK" 2>/dev/null; then
@@ -253,9 +253,21 @@ acquire_title_slot() {
       return 0
     fi
     owner="$(cat "$MR_SLOT_LOCK/pid" 2>/dev/null)"
-    if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
-      echo "[mr-run] breaking stale title-slot lock (owner=${owner:-unknown} not alive)" >&2
+    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+      unreadable=0
+    else
+      # An EMPTY pid is not proof of staleness: the holder does `mkdir` and only then writes the
+      # pid, so there is a window in which the lock is real but looks abandoned. Treating that
+      # window as stale is how three Hollow Knights ended up on this machine again at 14:20 —
+      # each waiter broke a live lock and took it. Require the pid to stay unreadable across
+      # several polls before breaking, which no real holder can do and a dead one always will.
+      unreadable=$((unreadable + 1))
+      if [ -z "$owner" ] && [ "$unreadable" -lt 3 ]; then
+        sleep 5; waited=$((waited+5)); continue
+      fi
+      echo "[mr-run] breaking stale title-slot lock (owner=${owner:-unreadable x$unreadable})" >&2
       rm -rf "$MR_SLOT_LOCK" 2>/dev/null || true
+      unreadable=0
       continue
     fi
     [ $((waited % 300)) -eq 0 ] && echo "[mr-run] waiting for title slot (owner=$owner, ${waited}s)" >&2

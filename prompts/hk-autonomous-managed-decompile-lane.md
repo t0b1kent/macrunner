@@ -28,7 +28,33 @@ one is fine — prefer a user-local install that does not touch the engine toolc
 installation is blocked, a CLI-metadata + IL reader you write yourself is acceptable; say so
 and show the method bodies you decoded.
 
-## The questions, in order
+## ROUND 2 — new questions (round 1 is answered and committed, do not redo it)
+
+Round 1 established, with tokens: the boot parks on `while (!confirmedLanguage) yield return
+null;` (`StartManager.<Start>d__25.MoveNext`, token 0x060041d2, field 0x04000DE2); the only
+setter is `ConfirmLanguage()` (token 0x06000e6c) with zero IL callers; and the menu appears
+because `PlayerPrefs.GetInt("GameLangSet",0)` returns 0 despite the registry carrying it.
+
+**New contradiction to resolve, and it is the priority.** The engine lane's run17 REACHED
+LEVEL START at +1642s, logging `Loaded system language code 'EN'` and `Restored language
+code` — a string absent from the parked runs (run6/8/10/12). But round 1 said the boot cannot
+pass without `ConfirmLanguage()`, which nothing in IL calls. Both cannot be true as stated.
+From the assemblies, answer:
+
+1. **What emits `Restored language code`, and what path is it on?** Find the method. Does
+   that path set `confirmedLanguage`, or bypass the poll entirely, or skip the language-select
+   screen? Name the method and quote the IL.
+2. **What decides whether the language-select screen is shown at all?** Round 1 pointed at
+   `GameManager.ShowLanguageSelect` / `StartManager.CheckIsLanguageSet` — follow them
+   precisely and state the full predicate, every input to it, and where each input comes from.
+3. **Is `ConfirmLanguage()` really the only way `confirmedLanguage` becomes true?** Re-check
+   for reflection, PlayMaker actions, Unity event wiring stored as serialized data rather than
+   IL, coroutine state-machine assignments, and any `TCL_Language` restore path. "Zero IL
+   callers" may be true and still incomplete.
+4. **What is the first thing the boot does AFTER the gate is satisfied?** So the engine lane
+   can tell "the actuator worked and we hit a new wall" from "nothing happened".
+
+## Original questions (round 1 — answered, kept for reference)
 
 1. **What happens between oracle idx38 and idx40?** Every one of our runs stops right after
    `Unloading 5 Unused Serialized files`, and the next oracle line we never reach is

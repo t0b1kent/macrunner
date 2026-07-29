@@ -9,6 +9,16 @@
 # Both arms are identical except that one flag, and both wait for the title slot themselves: this
 # machine normally has other lanes launching runs, and an arm that silently does not run leaves a
 # number that still looks like a result.
+#
+# 2026-07-29 (ITER-13) — LAUNCHER FIXED, the first run of this script was VOID.
+# It called laneA-run-hk.sh DIRECTLY, which leaves the run contract BLOCKED before wine ever
+# starts: reports/phase4-hollow-knight/laneA-inprocwake-off-try1-232647/run-contract.json is
+# status=BLOCKED with blockers runner.branch_map.{actxprxy,crt_case_fusion,wwise_observer}
+# = "branch_input_absent", plus application.save_snapshot_manifest_sha256 = "path_absent".
+# hk-run-try12-config.sh is what exports those branch inputs (its lines 115-116 etc), so it is
+# the required launcher — it then delegates to laneA-run-hk.sh itself.
+# The failure is silent in the worst way: the arm still writes a run dir, a 226 KB run.log and a
+# flight.jsonl, and analyze() below would have reported NOT_REACHED/empty metrics as if measured.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -76,7 +86,7 @@ run_arm() {
     MACRUNNER_MSYNC_INPROC_WAKE="$gate" \
     MACRUNNER_HB_TRANSLATION_CACHE=1 \
     MACRUNNER_HB_TRACE_SYNCMETER=1 \
-    "$ROOT/scripts/laneA-run-hk.sh" "$TAG-$arm" "$TMO" 2 \
+    "$ROOT/scripts/hk-run-try12-config.sh" "$TAG-$arm" "$TMO" 2 \
     > "$OUT/$arm.stdout" 2>&1
   local rundir
   rundir="$(grep -o 'VALID_RUN=.*' "$OUT/$arm.stdout" | head -1 | cut -d= -f2-)"

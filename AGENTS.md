@@ -1043,6 +1043,41 @@ ps -axo comm= | awk '/^(wine-preloader|wine64-preloader|winedbg|wineserver)$/{c+
   winsxs comctl32_v6) ПЕРЕД запуском. `verify-build-freshness.sh` теперь проверяет это
   (`prefix_synced_*`: prefix-копия не старше dist) — гони гейт до прогона, FAIL = синкни.
   Лаунчер должен делать sync автоматически; не полагайся на ручной copy.
+- **Instrument must sit on the LIVE dispatch path — prove it with a positive signal.**
+  Случай 2026-07-27: SMC-reverify hook стоял в `hb_jit_runtime_run_legacy`, а живой
+  HK диспатчит через `hb_jit_runtime_run` (`MACRUNNER_HB_SINGLE_LOOKUP=1` дефолт в
+  laneA wrapper). Контрол PASS (он шёл legacy-путём), живая игра мерила ноль — тот же
+  класс что `WRONG_HELPER_STATE`. Правила: (1) control обязан бежать в ТОМ ЖЕ режиме
+  диспатча что live title (прогоняй и с `MACRUNNER_HB_SINGLE_LOOKUP=1`); (2) каждый
+  instrument обязан иметь positive-liveness aggregate (первое срабатывание + bounded
+  periodic), иначе «тишина» недоказуема («not logged» ≠ «did not happen»);
+  (3) eviction, разрушающая `cached->block`, не имеет права случиться после того как
+  fastpath его одолжил — reverify ДО borrow, не после.
+- **Wine window black but D3D readback has content = client surface never parented
+  (compositor gap, found 2026-07-27).** Unity creates the DXGI swapchain while the win32
+  window is mid-realization; `NtUserGetAncestor(hwnd, GA_ROOT)` returns NULL, winemac
+  `macdrv_client_surface_update` silently no-ops, the swapchain's Cocoa view is never
+  parented (present() still unhides it — everything reports success). Every Present renders
+  into a detached view; the visible window shows black forever. Fix: toplevel=hwnd fallback
+  in `macdrv_client_surface_update` (window.c). Diagnose: lldb `[view superview]`/`[view window]`
+  on the `winemetal[HWND]` client_cocoa_view pointer + SCK capture
+  (`tools/cg_window_capture.swift`, needs `swiftc -parse-as-library`; `screencapture -l`
+  fails on wine windows). macOS refuses to activate the unbundled wine process, so
+  Cocoa-level keyboard focus is unavailable — synthetic input (CGEvent, session tap,
+  win32 PostMessage/SendInput) does NOT reach Unity Raw Input; a real user keypress or
+  in-process NSEvent injection are the only working paths.
+- **SMC reverify (2026-07-27, HK Mono/JIT root fix).** JIT block cache keyed only by
+  guest address; Mono переписывает код (trampoline patching) ПОСЛЕ трансляции —
+  доказано live (3295 evictions за boot). Фикс в `hb_runtime.c`: FNV-1a хэш guest
+  bytes при трансляции (только RWX регионы — RX код не платит), re-verify на каждом
+  cache hit, mismatch → evict + retranslate. Default ON; kill switch
+  `MACRUNNER_HB_SMC_REVERIFY=0`; диагностика `MACRUNNER_HB_TRACE_SMC_REVERIFY=1`
+  (progress aggregate + первые 16 evictions + summary). Детерминированный контрол:
+  `tools/hb_smc_reverify_control.c` (оба dispatch path + disabled). Ни гость-write,
+  ни NtProtect, ни NtFlushInstructionCache трансляции НЕ инвалидируют (unix
+  `virtual.c:8571` делает только host `__clear_cache`) — единственная инвалидяция
+  вне reverify это `hb_jit_runtime_reset` на границах callback.
+- **`MACRUNNER_TRACE_UI_INPUT`/`MACRUNNER_TRACE_UI_EVENT_PATH` — shared gates with an ntdll firehose (2026-07-28).** These two env vars ALSO enable per-call flood tracing in ntdll (`hb_run_guest_return` per guest return in `macrunner_hb.c` thread-lifecycle, `NtWaitForMultipleObjects_enter/exit` per wait in `sync.c`). Enabling them for a winemac input trace wrote 5.9 GB in 4 minutes and distorted timing. For winemac-only input tracing use `MACRUNNER_TRACE_WINEMAC_INPUT=1` (dedicated gate in all winemac `trace_ui_input_enabled()` helpers; ntdll does not read it). Before enabling ANY trace env, grep the whole engine tree for the var name to see every consumer.
 
 ## Architectural bugs reference
 

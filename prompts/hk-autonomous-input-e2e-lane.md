@@ -68,7 +68,21 @@ negative runs on it as noise and use its retry argument.
 
 - **YOURS:** `engine/wine/dlls/win32u/driver.c`, `engine/wine/dlls/winemac.drv/**`, `scripts/**`
   (launcher configs), `tools/**`, `reports/**`.
-- **FORBIDDEN:** `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/hyperbridge/**`,
+- **EXCEPTION GRANTED 2026-07-29 by the coordinator:** you MAY edit the guest unixlib bridge in
+  `engine/wine/dlls/ntdll/unix/macrunner_hb.c` — the `MemoryWineUnixFuncs` fallback next to the
+  hardcoded `winemetal.dll` branch, and nothing else in that file. Another lane holds uncommitted
+  work there, so keep the edit inside that one `if/else if` chain and never revert or reformat
+  anything around it.
+- **STATE OF THAT FIX, measured — start here, do not redo it.** The coordinator already added a
+  `winemac.drv` branch to that bridge (dlopen of the sibling `aarch64-unix/winemac.so`, located
+  via `dladdr` rather than `MACRUNNER_WINE_DIST`, whose stale default has already misdirected whole
+  runs). It **did not fire**: `macrunner-hb-winemac-unixlib-bridge` = 0 and `PLACEHOLDER KEPT` = 1
+  in `laneA-WINEMACBRIDGE-try24-a1-try1-033507`. An ungated diagnostic is now in the same place —
+  `macrunner-hb-unixfuncs-miss: module=%s status=%08x len=%zu`, printed for EVERY module that
+  fails `MemoryWineUnixFuncs` — precisely because "the name did not match" and "this handler is
+  never reached for winemac.drv" need opposite fixes. Read that line's output first; it settles
+  which. Gate for A/B: `MACRUNNER_HB_WINEMAC_UNIXLIB_BRIDGE=0` restores the old behaviour.
+- **FORBIDDEN:** `engine/hyperbridge/**`,
   `engine/dxmt/**`, `engine/wine/dlls/kernelbase/locale.c`, `engine/wine/dlls/win32u/input.c` —
   other lanes hold uncommitted work there.
 - **Never `pkill`/`killall`** — scope by verified PID. **Never `git add -A`. No commits** — the

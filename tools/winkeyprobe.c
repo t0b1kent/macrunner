@@ -27,10 +27,46 @@
 
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
 
 static LONG g_keydown, g_keyup, g_char, g_mousemove, g_lbutton, g_setfocus, g_killfocus,
             g_activate, g_activateapp, g_ncactivate, g_paint;
 static DWORD g_deadline_ms;
+
+/* MacRunner 2026-07-29 (HK master lane iter 8) — the arm selector.
+ *
+ * The control arm below is proven to deliver keys to the guest (0 -> 5/5/5).  Hollow Knight's
+ * window is NOT that shape: measured on two runs, its one visible top-level window is
+ * style=0x94000000 (WS_POPUP|WS_VISIBLE|WS_CLIPSIBLINGS) with ex_style=0x0.  With ex_style==0 the
+ * `excluded_by_cycle` term in get_cocoa_window_state (window.c:259-260) reduces EXACTLY to
+ * "NtUserGetWindowRelative(hwnd, GW_OWNER) != NULL", and excluded_by_cycle drops
+ * NSWindowCollectionBehaviorParticipatesInCycle (cocoa_window.m:1469), which makes
+ * -isExcludedFromWindowsMenu YES (:2620), which makes -canBecomeKeyWindow return NO (:2556).
+ * A window that can never become key cannot activate its app on a click, and an inactive app
+ * receives no NSEvents from a HID tap — which is precisely the measured HK signature
+ * (applicationDidBecomeActive=0, zero NSEvents, [NSApp run] healthy and idle in mach_msg).
+ *
+ * So the difference between the working probe and HK is one of: the window STYLE, or the presence
+ * of an OWNER.  These arms separate those two in ~40 s each instead of a ~45 min title run.
+ * Pre-registered predictions are in scripts/hk-winkeyprobe-style-ab.sh; do not read this file for
+ * them, so that the expectation cannot be quietly edited after the numbers land.
+ */
+enum probe_arm { ARM_OVERLAPPED, ARM_HKSTYLE, ARM_HKSTYLE_OWNED };
+
+static enum probe_arm g_arm = ARM_OVERLAPPED;
+static const char *g_arm_name = "overlapped";
+
+static void select_arm(void)
+{
+    char buf[64];
+    DWORD n = GetEnvironmentVariableA("MACRUNNER_WINKEYPROBE_ARM", buf, sizeof(buf));
+
+    if (!n || n >= sizeof(buf)) return;          /* unset -> the control arm, unchanged */
+    if (!strcmp(buf, "hkstyle"))       { g_arm = ARM_HKSTYLE;       g_arm_name = "hkstyle"; }
+    else if (!strcmp(buf, "hkstyle_owned")) { g_arm = ARM_HKSTYLE_OWNED; g_arm_name = "hkstyle_owned"; }
+    else if (!strcmp(buf, "overlapped")) { /* explicit control */ }
+    else fprintf(stderr, "winkeyprobe: WARNING unknown arm '%s' — falling back to overlapped\n", buf);
+}
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -68,14 +104,22 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 static void report(const char *tag, HWND hwnd)
 {
-    fprintf(stderr, "winkeyprobe: %s keydown=%ld keyup=%ld char=%ld mousemove=%ld lbutton=%ld "
+    fprintf(stderr, "winkeyprobe: [%s] %s keydown=%ld keyup=%ld char=%ld mousemove=%ld lbutton=%ld "
             "setfocus=%ld killfocus=%ld activate=%ld activateapp=%ld ncactivate=%ld paint=%ld "
-            "visible=%d foreground=%d(self=%d) focus=%d active=%d\n",
-            tag, g_keydown, g_keyup, g_char, g_mousemove, g_lbutton, g_setfocus, g_killfocus,
+            "visible=%d foreground=%d(self=%d) focus=%d active=%d style=0x%lx ex_style=0x%lx "
+            "owner=%p excluded_by_cycle=%d\n",
+            g_arm_name, tag, g_keydown, g_keyup, g_char, g_mousemove, g_lbutton, g_setfocus, g_killfocus,
             g_activate, g_activateapp, g_ncactivate, g_paint,
             (int)IsWindowVisible(hwnd),
             (int)(GetForegroundWindow() != NULL), (int)(GetForegroundWindow() == hwnd),
-            (int)(GetFocus() == hwnd), (int)(GetActiveWindow() == hwnd));
+            (int)(GetFocus() == hwnd), (int)(GetActiveWindow() == hwnd),
+            GetWindowLongW(hwnd, GWL_STYLE), GetWindowLongW(hwnd, GWL_EXSTYLE),
+            GetWindow(hwnd, GW_OWNER),
+            /* the exact expression from window.c:259-260, evaluated guest-side so the probe
+             * reports the same predicate the driver will compute for this window */
+            (int)(!(GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_APPWINDOW) &&
+                  (GetWindow(hwnd, GW_OWNER) != NULL ||
+                   (GetWindowLongW(hwnd, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)))));
     fflush(stderr);
 }
 
@@ -87,6 +131,10 @@ int wmain(int argc, WCHAR **argv)
     DWORD secs = 25, last_report = 0;
 
     if (argc > 1) secs = (DWORD)_wtoi(argv[1]);
+
+    select_arm();
+    fprintf(stderr, "winkeyprobe: ARM=%s (MACRUNNER_WINKEYPROBE_ARM)\n", g_arm_name);
+    fflush(stderr);
 
     /* Which driver is actually serving THIS process?  The winecfg/winkeyprobe
      * runs showed only two processes reaching macdrv_init while a WS_VISIBLE
@@ -119,21 +167,51 @@ int wmain(int argc, WCHAR **argv)
     wc.lpszClassName = L"MacRunnerWinKeyProbe";
     RegisterClassExW(&wc);
 
-    /* WS_OVERLAPPEDWINDOW | WS_VISIBLE — deliberately NOT WS_POPUP.  The
-     * on-demand realization path (window.c:826) derives its activate flag from
-     * WS_POPUP alone, so an ordinary overlapped window is the case that gate
-     * gets wrong. */
-    hwnd = CreateWindowExW(0, wc.lpszClassName, L"MacRunner winkeyprobe",
-                           WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                           120, 120, 520, 360, NULL, NULL, wc.hInstance, NULL);
+    if (g_arm == ARM_OVERLAPPED)
+    {
+        /* WS_OVERLAPPEDWINDOW | WS_VISIBLE — deliberately NOT WS_POPUP.  The
+         * on-demand realization path (window.c:826) derives its activate flag from
+         * WS_POPUP alone, so an ordinary overlapped window is the case that gate
+         * gets wrong.  This is the arm that measured 0 -> 5/5/5; it is left
+         * byte-for-byte as it was so the new arms are comparable against it. */
+        hwnd = CreateWindowExW(0, wc.lpszClassName, L"MacRunner winkeyprobe",
+                               WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                               120, 120, 520, 360, NULL, NULL, wc.hInstance, NULL);
+    }
+    else
+    {
+        /* Hollow Knight's measured shape: style=0x94000000, ex_style=0x0, full screen at 0,0. */
+        HWND owner = NULL;
+        int cx = GetSystemMetrics(SM_CXSCREEN), cy = GetSystemMetrics(SM_CYSCREEN);
+
+        if (g_arm == ARM_HKSTYLE_OWNED)
+        {
+            /* An OWNER, and nothing else, is what flips excluded_by_cycle when ex_style==0.
+             * It must itself be a top-level window; it is deliberately left invisible so the
+             * only difference from the hkstyle arm on screen is nil. */
+            owner = CreateWindowExW(0, wc.lpszClassName, L"MacRunner winkeyprobe owner",
+                                    WS_OVERLAPPED, 0, 0, 64, 64,
+                                    NULL, NULL, wc.hInstance, NULL);
+            if (!owner)
+                fprintf(stderr, "winkeyprobe: WARNING owner CreateWindowExW FAILED err=%lu — "
+                        "this arm degenerates into hkstyle\n", GetLastError());
+        }
+
+        hwnd = CreateWindowExW(0, wc.lpszClassName, L"MacRunner winkeyprobe",
+                               WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS,
+                               0, 0, cx, cy, owner, NULL, wc.hInstance, NULL);
+    }
     if (!hwnd)
     {
-        fprintf(stderr, "winkeyprobe: CreateWindowExW FAILED err=%lu\n", GetLastError());
+        fprintf(stderr, "winkeyprobe: CreateWindowExW FAILED arm=%s err=%lu\n",
+                g_arm_name, GetLastError());
         return 2;
     }
 
-    fprintf(stderr, "winkeyprobe: hwnd=%p style=0x%lx visible=%d — window created, entering loop for %lus\n",
-            hwnd, GetWindowLongW(hwnd, GWL_STYLE), (int)IsWindowVisible(hwnd), secs);
+    fprintf(stderr, "winkeyprobe: arm=%s hwnd=%p style=0x%lx ex_style=0x%lx owner=%p visible=%d — "
+            "window created, entering loop for %lus\n",
+            g_arm_name, hwnd, GetWindowLongW(hwnd, GWL_STYLE), GetWindowLongW(hwnd, GWL_EXSTYLE),
+            GetWindow(hwnd, GW_OWNER), (int)IsWindowVisible(hwnd), secs);
     fflush(stderr);
 
     ShowWindow(hwnd, SW_SHOW);
@@ -179,7 +257,20 @@ int wmain(int argc, WCHAR **argv)
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        Sleep(10);
+
+        /* MacRunner 2026-07-29 (HK master lane iter 8) — this MUST be a message-pump WAIT, not
+         * Sleep().  macdrv's unix-side self-init is the only thing that installs the mac driver in
+         * a process whose winemac.drv PE DllMain never ran, and it is driven from
+         * nulldrv_ProcessEvents() — "called from every message-pump wait of every placeholder
+         * process" (macdrv_main.c:649-652).  A PeekMessage + Sleep(10) loop never performs such a
+         * wait, so self-init never fired and this probe ran its whole life on win32u's NULL driver:
+         * measured 2026-07-29 21:09, macdrv_selfinit_entry=0, run_cocoa_app_entry=0,
+         * macdrv_init_user_driver_set=0, macrunner-winshow=0, and ZERO wine-owned windows in the
+         * on-screen CGWindow list (28 candidates, none wine) — while the guest cheerfully reported
+         * visible=1 focus=1 active=1 foreground=1(self=1) paint=1, because on the null driver every
+         * USER call succeeds and no NSWindow is ever created.  That is a SILENT invalid vehicle:
+         * it produces confident guest-side numbers about a window macOS never saw. */
+        MsgWaitForMultipleObjectsEx(0, NULL, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 out:
     report("FINAL", hwnd);

@@ -1,8 +1,9 @@
-#!/usr/bin/env swift
 import CoreGraphics
 import Darwin
 import Foundation
 import ImageIO
+import AppKit
+import ScreenCaptureKit
 
 func emit(_ payload: [String: Any]) {
     let data = try! JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -81,99 +82,173 @@ func writeBMP(path: String, pixels: [UInt8], width: Int, height: Int) throws {
     try data.write(to: url, options: [.atomic])
 }
 
-guard CommandLine.arguments.count == 3 else {
-    fail("usage: cg_window_capture.swift WINDOW_ID OUTPUT_BMP", path: "")
-}
+func runScreencapture(arguments: [String], pngPath: String) -> (CGImage?, String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    process.arguments = arguments + [pngPath]
+    let stderrPipe = Pipe()
+    process.standardError = stderrPipe
 
-let outputPath = CommandLine.arguments[2]
-guard let parsedWindowID = UInt32(CommandLine.arguments[1]) else {
-    fail("invalid window id: \(CommandLine.arguments[1])", path: outputPath)
-}
+    do {
+        try process.run()
+        process.waitUntilExit()
+    } catch {
+        return (nil, "launch failed: \(error)")
+    }
 
-let pngPath = outputPath + ".png"
-let process = Process()
-process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-process.arguments = ["-x", "-l", String(parsedWindowID), pngPath]
-let stderrPipe = Pipe()
-process.standardError = stderrPipe
-
-do {
-    try process.run()
-    process.waitUntilExit()
-} catch {
-    fail("failed to launch screencapture: \(error)", path: outputPath)
-}
-
-if process.terminationStatus != 0 {
     let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
     let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
-    fail("screencapture rc=\(process.terminationStatus): \(stderrText)", path: outputPath)
-}
-
-guard let imageSource = CGImageSourceCreateWithURL(URL(fileURLWithPath: pngPath) as CFURL, nil),
-      let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
-    fail("failed to read screencapture PNG", path: outputPath)
-}
-
-let width = image.width
-let height = image.height
-let bytesPerRow = width * 4
-var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
-let colorSpace = CGColorSpaceCreateDeviceRGB()
-let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
-
-let drewImage = pixels.withUnsafeMutableBytes { rawBuffer -> Bool in
-    guard let baseAddress = rawBuffer.baseAddress,
-          let context = CGContext(
-              data: baseAddress,
-              width: width,
-              height: height,
-              bitsPerComponent: 8,
-              bytesPerRow: bytesPerRow,
-              space: colorSpace,
-              bitmapInfo: bitmapInfo
-          ) else {
-        return false
+    guard process.terminationStatus == 0 else {
+        return (nil, "rc=\(process.terminationStatus): \(stderrText)")
     }
-    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-    return true
+    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: pngPath) as CFURL, nil),
+          let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+        return (nil, "capture succeeded but PNG could not be decoded")
+    }
+    return (image, "")
 }
 
-if !drewImage {
-    fail("failed to draw captured image into RGBA buffer", path: outputPath, width: width, height: height)
+func boundsForWindow(_ windowID: CGWindowID) -> CGRect? {
+    guard let raw = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID),
+          let windows = raw as? [[String: Any]],
+          let window = windows.first,
+          let bounds = window[kCGWindowBounds as String] as? [String: Any] else {
+        return nil
+    }
+    return CGRect(dictionaryRepresentation: bounds as CFDictionary)
 }
 
-var nonblack = 0
-var colorful = 0
-for y in 0..<height {
-    for x in 0..<width {
-        let i = (y * width + x) * 4
-        let r = Int(pixels[i])
-        let g = Int(pixels[i + 1])
-        let b = Int(pixels[i + 2])
-        let maxChannel = max(r, max(g, b))
-        let minChannel = min(r, min(g, b))
-        if maxChannel > 4 {
-            nonblack += 1
+@main
+struct WindowCapture {
+    @MainActor
+    static func main() async {
+        _ = NSApplication.shared
+        guard CommandLine.arguments.count == 3 else {
+            fail("usage: cg_window_capture.swift WINDOW_ID OUTPUT_BMP", path: "")
         }
-        if maxChannel > 16 && maxChannel - minChannel > 24 {
-            colorful += 1
+
+        let outputPath = CommandLine.arguments[2]
+        guard let parsedWindowID = UInt32(CommandLine.arguments[1]) else {
+            fail("invalid window id: \(CommandLine.arguments[1])", path: outputPath)
         }
+
+        let pngPath = outputPath + ".png"
+        var image: CGImage?
+        var captureMode = "ScreenCaptureKit-window"
+        var errors: [String] = []
+
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false, onScreenWindowsOnly: true)
+            guard let window = content.windows.first(where: { $0.windowID == parsedWindowID }) else {
+                throw NSError(domain: "cg_window_capture", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "window id is not shareable"])
+            }
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let configuration = SCStreamConfiguration()
+            configuration.width = max(1, Int(window.frame.width.rounded()))
+            configuration.height = max(1, Int(window.frame.height.rounded()))
+            configuration.showsCursor = false
+            image = try await SCScreenshotManager.captureImage(
+                contentFilter: filter, configuration: configuration)
+        } catch {
+            errors.append("ScreenCaptureKit: \(error)")
+        }
+
+        if image == nil {
+            captureMode = "screencapture-window-id"
+            let result = runScreencapture(
+                arguments: ["-x", "-l", String(parsedWindowID)], pngPath: pngPath)
+            image = result.0
+            if image == nil {
+                errors.append("screencapture window-id: \(result.1)")
+            }
+        }
+
+        if image == nil, let bounds = boundsForWindow(parsedWindowID) {
+            captureMode = "screencapture-window-region"
+            let x = Int(bounds.origin.x.rounded(.down))
+            let y = Int(bounds.origin.y.rounded(.down))
+            let width = max(1, Int(bounds.width.rounded(.up)))
+            let height = max(1, Int(bounds.height.rounded(.up)))
+            let region = "\(x),\(y),\(width),\(height)"
+            let result = runScreencapture(
+                arguments: ["-x", "-R", region], pngPath: pngPath)
+            image = result.0
+            if image == nil {
+                errors.append("screencapture region \(region): \(result.1)")
+            }
+        }
+
+        guard let image else {
+            fail(errors.joined(separator: "; "), path: outputPath)
+        }
+
+        let width = image.width
+        let height = image.height
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+
+        let drewImage = pixels.withUnsafeMutableBytes { rawBuffer -> Bool in
+            guard let baseAddress = rawBuffer.baseAddress,
+                  let context = CGContext(
+                      data: baseAddress,
+                      width: width,
+                      height: height,
+                      bitsPerComponent: 8,
+                      bytesPerRow: bytesPerRow,
+                      space: colorSpace,
+                      bitmapInfo: bitmapInfo
+                  ) else {
+                return false
+            }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+
+        if !drewImage {
+            fail("failed to draw captured image into RGBA buffer",
+                 path: outputPath, width: width, height: height)
+        }
+
+        var nonblack = 0
+        var colorful = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                let r = Int(pixels[i])
+                let g = Int(pixels[i + 1])
+                let b = Int(pixels[i + 2])
+                let maxChannel = max(r, max(g, b))
+                let minChannel = min(r, min(g, b))
+                if maxChannel > 4 {
+                    nonblack += 1
+                }
+                if maxChannel > 16 && maxChannel - minChannel > 24 {
+                    colorful += 1
+                }
+            }
+        }
+
+        do {
+            try writeBMP(path: outputPath, pixels: pixels, width: width, height: height)
+            try? FileManager.default.removeItem(atPath: pngPath)
+        } catch {
+            fail("failed to write BMP: \(error)",
+                 path: outputPath, width: width, height: height)
+        }
+
+        emit([
+            "status": "PASS",
+            "path": outputPath,
+            "width": width,
+            "height": height,
+            "nonblack": nonblack,
+            "colorful": colorful,
+            "capture_mode": captureMode,
+            "fallback_errors": errors
+        ])
     }
 }
-
-do {
-    try writeBMP(path: outputPath, pixels: pixels, width: width, height: height)
-    try? FileManager.default.removeItem(atPath: pngPath)
-} catch {
-    fail("failed to write BMP: \(error)", path: outputPath, width: width, height: height)
-}
-
-emit([
-    "status": "PASS",
-    "path": outputPath,
-    "width": width,
-    "height": height,
-    "nonblack": nonblack,
-    "colorful": colorful
-])

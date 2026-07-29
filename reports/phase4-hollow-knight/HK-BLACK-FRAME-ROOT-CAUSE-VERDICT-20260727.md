@@ -1,5 +1,35 @@
 # Hollow Knight black frame — ROOT-CAUSE VERDICT (final)
 
+> ## ⚠️ SUPERSEDED IN PART — 2026-07-27 13:25, lane HK-MONO
+>
+> **Both clauses of the Verdict below are refuted.** See
+> `HK-ORACLE-TAIL-IS-HUMAN-GAMEPLAY-BOOTSTRAP-COMPLETE-20260727.md`.
+>
+> 1. **"No scene is ever created"** — false. The menu scene loads: `Unloading 66
+>    unused Assets … Loaded Objects now: **47240**` vs oracle **47392** = 99.68 %.
+>    (Half-corrected already in the lane journal at 12:43.)
+> 2. **"The managed scene bootstrap halts at `Performing automatic level start.`"**
+>    — false. It *completes*. The oracle markers used as the halt proof
+>    (`Making UI menu lean.` → `Opening_Sequence` → `Levels are ready…`) are emitted
+>    only by `UIManager::MakeMenuLean`, whose sole callers are the
+>    `<RunStartNewGame>d__359` / `<RunContinueGame>d__361` coroutines — the
+>    **Start-Game button flow**. Every caller of `StartNewGame` is an input handler
+>    (`StartGameEventTrigger::OnSubmit`, `SaveSlotButton::OnSubmit`, scene-wired
+>    UnityEvent buttons); no timer/autostart/command-line path exists.
+>    **The oracle `Player.log` is a recording of a human playing the game** (its tail
+>    has `Slash Impact R`/`Strike Nail R`/`Run Effects` pool exhaustion,
+>    `CameraLockArea.OnTriggerExit2D`, `Opening sequience skipping.`×3).
+>    Our runs reproduce every oracle line that needs no input; the first line we lack
+>    is the first line that needed a button press.
+>
+> **What survives:** the graphics-layer exonerations in §"Every graphics layer…"
+> are unaffected — but the black frame is now attributed to a *different* graphics-
+> adjacent defect the verdict did not test: the VS constant buffers flip
+> `IDENTITY,PLAUSIBLE` → `DEGENERATE,NAN_OR_INF` at draw=546 (the same log line as
+> `Unloading 66 … 47240`) and stay there for 851/903 unbiased samples, with
+> `Screen position out of view frustum` = 17927 vs oracle 0. The `jit_code_hash`
+> spin is retired as the mechanism: there is no permanent non-advancement to explain.
+
 Date: 2026-07-27. Lane: HK first-pixel (auto-loop).
 Runs: `laneA-combined-decisive-20260726` (iter-1) and `laneA-vscb-full-census-20260727`
 (iter-2), a two-run A/A pair on identical admitted artifacts.

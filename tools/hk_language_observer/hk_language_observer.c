@@ -14,6 +14,7 @@ typedef struct _MonoProfilerCallContext MonoProfilerCallContext;
 typedef struct _MonoReflectionType MonoReflectionType;
 typedef struct _MonoString MonoString;
 typedef struct _MonoType MonoType;
+typedef struct _MonoVTable MonoVTable;
 typedef void *MonoProfilerHandle;
 typedef ULONG MonoGCHandle;
 
@@ -60,6 +61,17 @@ typedef void (__cdecl *mono_profiler_call_context_free_buffer_fn)(void *buffer);
 typedef char *(__cdecl *mono_string_to_utf8_fn)(MonoString *string);
 typedef void (__cdecl *mono_free_fn)(void *memory);
 
+/* newobj probe (MACRUNNER_HB_NEWOBJ_PROBE). All five are exported by the shipped
+ * mono-2.0-bdwgc.dll -- verified by export-table scan before this was written:
+ * mono_class_instance_size 0xba910, mono_class_get_nested_types 0xc1180,
+ * mono_class_vtable 0x1c5de0, mono_object_new_specific 0x1d0310,
+ * mono_object_new 0x1cfe50. */
+typedef int32_t (__cdecl *mono_class_instance_size_fn)(MonoClass *klass);
+typedef MonoClass *(__cdecl *mono_class_get_nested_types_fn)(MonoClass *klass, void **iter);
+typedef MonoVTable *(__cdecl *mono_class_vtable_fn)(MonoDomain *domain, MonoClass *klass);
+typedef MonoObject *(__cdecl *mono_object_new_specific_fn)(MonoVTable *vtable);
+typedef MonoObject *(__cdecl *mono_object_new_fn)(MonoDomain *domain, MonoClass *klass);
+
 typedef int (__cdecl *MonoProfilerCallInstrumentationFilterCallback)(MonoProfiler *profiler,
                                                                      MonoMethod *method);
 typedef void (__cdecl *MonoProfilerMethodCallback)(MonoProfiler *profiler, MonoMethod *method,
@@ -96,7 +108,8 @@ enum observed_method
     METHOD_MAKE_MENU_LEAN,
     METHOD_OPENING_SEQUENCE_ON_CHANGING_SEQUENCES,
     METHOD_SCENE_LOAD,
-    METHOD_SCENE_LOAD_ASYNC
+    METHOD_SCENE_LOAD_ASYNC,
+    METHOD_CAMERA_TICK
 };
 
 struct mono_api
@@ -136,6 +149,11 @@ struct mono_api
     mono_profiler_call_context_free_buffer_fn context_free_buffer;
     mono_string_to_utf8_fn string_to_utf8;
     mono_free_fn mono_free;
+    mono_class_instance_size_fn class_instance_size;
+    mono_class_get_nested_types_fn class_get_nested_types;
+    mono_class_vtable_fn class_vtable;
+    mono_object_new_specific_fn object_new_specific;
+    mono_object_new_fn object_new;
 };
 
 #define MACRUNNER_HB_LANGUAGE_OBSERVER_BOOTSTRAP_VERSION 0x484b4c32u
@@ -175,6 +193,94 @@ static MonoClassField *confirmed_language_field;
 static MonoClassField *load_operation_field;
 static MonoMethod *allow_scene_activation_getter;
 static char log_path[MAX_PATH];
+/* MACRUNNER_HB_START_GAME_ACTUATOR — default OFF.
+ *
+ * WHY THIS EXISTS: the acceptance checklist (Making UI menu lean. / Opening_Sequence /
+ * Levels are ready) is NOT reachable by a correct engine alone. hk_callers.py shows
+ * UIManager::MakeMenuLean (0x06000f17) has exactly two callers, <RunStartNewGame>d__359
+ * and <RunContinueGame>d__361 -- both PLAYER-initiated. run20 rendered the language
+ * screen and its confirm dialog correctly, fired PreselectOption::HighlightDefault (the
+ * menu highlighting its default button), and then waited for a keypress that no part of
+ * our harness ever sends. So those markers are unreachable BY CONSTRUCTION.
+ *
+ * This presses the button, by the same proven route as the language actuator:
+ * FindObjectsOfType -> exact_one gate -> mono_runtime_invoke.
+ *
+ * Target: UIManager::UIStartNewGame (token 0x06000ebd), verified ARITY 0 against the
+ * shipped Assembly-CSharp.dll; its entire body is StartNewGame(this, false, false).
+ *
+ * NB it deliberately does NOT latch on the first attempt: UIManager lives in Menu_Title,
+ * so the earliest HighlightDefault (language select) legitimately finds zero of them.
+ * Latching there would burn the one shot before the target exists. It retries on each
+ * trigger and latches only on a successful invoke. Counters are aggregate, never capped,
+ * so a zero is a real zero rather than an exhausted budget. */
+static LONG start_game_actuator;
+static LONG start_game_latched;        /* set only after a successful invoke */
+static LONG start_game_attempts;       /* aggregate, never capped */
+static LONG start_game_not_found;      /* aggregate: UIManager not resolvable yet */
+static LONG start_game_exceptions;     /* aggregate */
+static LONG start_game_budget = 64;    /* retry cap so a broken menu cannot spin forever */
+
+/* MACRUNNER_HB_NEWOBJ_PROBE — default OFF. Runs immediately BEFORE the
+ * UIStartNewGame invoke, on the SAME thread, so it measures the state that the
+ * failing allocation actually sees.
+ *
+ * WHY: runs 23 and 24 die identically (2/2, byte-identical last_bytes) at
+ *   0x...c93: mov r14,rax / mov [rax+0x10],r15   with rax == 0
+ * i.e. Mono's newobj for UIManager's `<>c__DisplayClass170_0` returned NULL.
+ * Journal section 87 traced the only NULL route on the branch our object takes:
+ *   mono_object_new_specific_checked +0x179 (rva 0x1d04c9):
+ *     mov    rax,[rdi]              ; rax = vtable->klass
+ *     mov    rcx,rdi                ; arg0 = vtable
+ *     movsxd rdx,dword [rax+0x1c]   ; arg1 = klass->instance_size, SIGN-EXTENDED
+ *     call   0x264720               ; mono_gc_alloc_obj
+ * and I confirmed by disassembling 0x264720 that it performs NO size validation
+ * -- its only NULL paths are the three Boehm allocators returning NULL.
+ *
+ * [H-D] says that guest read of [klass+0x1c] yields garbage, so a sign-extended
+ * huge/negative size is rejected by Boehm with no OS request -- which reproduces
+ * run24's counters exactly (virtualalloc_fail=15, ALL STATUS_CONFLICTING_ADDRESSES,
+ * commit_fail_mprotect=0: our allocator never once refused MEMORY).
+ *
+ * Section 87 also recorded the cost not to repeat: run23 captured only the vtable,
+ * never the klass, so [klass+0x1c] could not be read after the fact. This captures
+ * the KLASS. */
+static LONG newobj_probe;
+static LONG newobj_probe_ran;        /* aggregate, never capped */
+static LONG newobj_probe_control_ok; /* aggregate: control passed */
+/* MACRUNNER_HB_CAMERA_PROBE — read Unity's OWN camera matrices as uint32 bit
+ * patterns. Answers whether the view/projection HK feeds its draws is singular
+ * or non-finite, independently of DXMT (whose constant-buffer probe classifies
+ * arbitrary CB bytes and whose PE-side formatter cannot print floats at all). */
+static LONG camera_probe;
+static LONG camera_probe_budget;
+static LONG camera_probe_stride = 1;
+static LONG camera_probe_dumps;      /* aggregate, never capped */
+static LONG camera_probe_suppressed; /* aggregate, never capped */
+static LONG camera_probe_ticks;      /* aggregate, never capped */
+static LONG camera_probe_active;     /* reentrancy guard */
+static LONG camera_probe_control_done;
+/* MACRUNNER_HB_CAMERA_M33_REPAIR — DIAGNOSTIC ONLY, default OFF. run19 measured
+ * worldToCameraMatrix[15] == 0x0000087e (invariant over 14 samples / 4 cameras /
+ * 4 phases) where 0x3f800000 is required, which pins ndc.z at 1.000600 at EVERY
+ * depth and far-plane-clips every triangle. This knob repairs that ONE float at
+ * the managed boundary and re-sets the matrix, to settle the root-cause report's
+ * §6 limit: the probe reads through the managed getter, so it proves the value
+ * Mono returns is corrupt, NOT that the same bytes reach UnityPlayer's C++
+ * renderer. If repairing only m33 turns the ordinal-200 readback non-black, the
+ * causal chain is proven end-to-end rather than argued. This is NOT the fix —
+ * the fix belongs in HyperBridge; a managed-boundary patch would light the screen
+ * while leaving a translator defect that silently truncates struct tails. */
+static LONG camera_m33_repair;
+static LONG m33_attempted;      /* aggregate, never capped */
+static LONG m33_patched;
+static LONG m33_already_ok;
+static LONG m33_unreadable;
+static LONG m33_setter_missing;
+static LONG m33_exception;
+static LONG m33_verified;       /* read back == 0x3f800000 through the same path */
+static LONG m33_verify_failed;
+static LONG m33_logged;
 
 struct text_builder
 {
@@ -377,6 +483,21 @@ static enum observed_method classify_method(MonoMethod *method)
         if (strings_equal(class_name, "GameCameras")) return METHOD_GAME_CAMERAS_AWAKE;
         if (strings_equal(class_name, "UIManager")) return METHOD_UI_MANAGER_AWAKE;
     }
+    /* The three managed callers of the Unity unprojection APIs that can emit
+     * "Screen position out of view frustum" (from Assembly-CSharp IL). Which of
+     * them fires is itself the answer to where the 17927 warnings come from. */
+    if (camera_probe)
+    {
+        if (strings_equal(class_name, "TouchManager") &&
+            strings_equal(method_name, "ConvertScreenToWorldPoint"))
+            return METHOD_CAMERA_TICK;
+        if (strings_equal(class_name, "ScreenToWorldPoint") &&
+            strings_equal(method_name, "DoScreenToWorldPoint"))
+            return METHOD_CAMERA_TICK;
+        if (strings_equal(class_name, "CameraController") &&
+            strings_equal(method_name, "LateUpdate"))
+            return METHOD_CAMERA_TICK;
+    }
     return METHOD_OTHER;
 }
 
@@ -442,6 +563,9 @@ static int post_level_method_details(enum observed_method observed, const char *
 static int language_method_instrumentation(enum observed_method observed)
 {
     if (observed == METHOD_OTHER) return MONO_PROFILER_CALL_INSTRUMENTATION_NONE;
+    if (observed == METHOD_CAMERA_TICK)
+        return camera_probe ? MONO_PROFILER_CALL_INSTRUMENTATION_ENTER
+                            : MONO_PROFILER_CALL_INSTRUMENTATION_NONE;
     if (return_route_only && observed != METHOD_SET_LANGUAGE &&
         observed != METHOD_HIGHLIGHT_DEFAULT)
         return MONO_PROFILER_CALL_INSTRUMENTATION_NONE;
@@ -1072,6 +1196,405 @@ static void invoke_diagnostic_direct_confirm(void)
 	                     : "classification=NOT_GOLDEN phase=return status=ok method=ConfirmLanguage");
 }
 
+/* Press "Start Game" the same way the language actuator picks a language.
+ *
+ * Mirrors invoke_oneshot_sequence() deliberately -- same thread-identity gate, same
+ * FindObjectsOfType resolution, same exact_one requirement, same runtime_invoke -- so
+ * that the one PROVEN actuator route in this tool is reused rather than reinvented.
+ * StartNewGame touches InputHandler::StopUIInput, so running it off the Unity UI thread
+ * would be meaningless; the identity gate is load-bearing, not decoration. */
+static void builder_append_hex32(struct text_builder *builder, ULONG value);
+
+static void builder_append_hex64(struct text_builder *builder, ULONGLONG value)
+{
+    builder_append_hex32(builder, (ULONG)(value >> 32));
+    builder_append_hex32(builder, (ULONG)value);
+}
+
+/* Two readers of the SAME dword, deliberately at different access widths.
+ *
+ * The failing instruction is a 4-byte `movsxd rdx, dword [rax+0x1c]`. If a wide
+ * read and a byte-wise reassembly of the same address disagree, that is itself a
+ * translator memory-coherence defect of the first order -- exactly the class this
+ * tree already proved once (the m33 narrow-store -> overlapping-wide-load hop).
+ * Costs nothing to check, so check it. */
+static ULONG dword_at_wide(const void *base, unsigned off)
+{
+    if (!base) return 0;
+    return *(const volatile ULONG *)(const void *)((const unsigned char *)base + off);
+}
+
+static ULONG dword_at_bytes(const void *base, unsigned off)
+{
+    const volatile unsigned char *p;
+
+    if (!base) return 0;
+    p = (const volatile unsigned char *)base + off;
+    return (ULONG)p[0] | ((ULONG)p[1] << 8) | ((ULONG)p[2] << 16) | ((ULONG)p[3] << 24);
+}
+
+static ULONGLONG qword_at(const void *base, unsigned off)
+{
+    if (!base) return 0;
+    return *(const volatile ULONGLONG *)(const void *)((const unsigned char *)base + off);
+}
+
+/* MonoVTable layout is not guessed -- it is read off mono_gc_alloc_obj (rva
+ * 0x264720) in the shipped DLL, which does `mov rax,[rcx]` for vtable->klass and
+ * `cmp qword [rcx+8],0` for vtable->gc_descr. MonoClass+0x1c is likewise read off
+ * the caller's `movsxd rdx,dword [rax+0x1c]`, and +0x28 off its
+ * `test dword [rax+0x28],0x800` (has_references). */
+#define MONO_VTABLE_KLASS_OFF     0x00
+#define MONO_VTABLE_GC_DESCR_OFF  0x08
+#define MONO_CLASS_INSTANCE_SIZE_OFF 0x1c
+#define MONO_CLASS_FLAGS_OFF      0x28
+
+/* Runs immediately before the UIStartNewGame invoke, on the same thread.
+ * Returns nothing: every result is logged, including the refusals. */
+static void run_newobj_probe(MonoClass *uimanager_class)
+{
+    MonoImage *corlib;
+    MonoClass *object_class, *nested, *target;
+    MonoDomain *domain;
+    MonoVTable *vt, *control_vt;
+    MonoObject *control_obj, *obj_specific, *obj_new;
+    void *iter;
+    const char *name;
+    int32_t control_size, api_size;
+    ULONG raw_before_wide, raw_before_bytes, raw_after_wide, raw_after_bytes, flags;
+    ULONGLONG vt_klass, vt_gc_descr;
+    int nested_seen, control_ok, i;
+    struct text_builder builder;
+    char detail[768];
+
+    if (!newobj_probe) return;
+    InterlockedIncrement(&newobj_probe_ran);
+
+    /* Refuse loudly rather than crash the actuator. `not logged != did not happen`
+     * cuts both ways: an absent probe line must be distinguishable from a probe
+     * that ran and found nothing. */
+    if (!mono.image_loaded || !mono.class_from_name || !mono.get_root_domain ||
+        !mono.class_instance_size || !mono.class_get_nested_types ||
+        !mono.class_vtable || !mono.object_new_specific || !mono.object_new ||
+        !uimanager_class)
+    {
+        builder_init(&builder, detail, sizeof(detail));
+        builder_append(&builder, "classification=NOT_GOLDEN phase=preflight status=api-unavailable"
+                                 " instance_size=");
+        builder_append_signed(&builder, mono.class_instance_size ? 1 : 0);
+        builder_append(&builder, " nested_types=");
+        builder_append_signed(&builder, mono.class_get_nested_types ? 1 : 0);
+        builder_append(&builder, " vtable=");
+        builder_append_signed(&builder, mono.class_vtable ? 1 : 0);
+        builder_append(&builder, " new_specific=");
+        builder_append_signed(&builder, mono.object_new_specific ? 1 : 0);
+        builder_append(&builder, " object_new=");
+        builder_append_signed(&builder, mono.object_new ? 1 : 0);
+        builder_append(&builder, " uimanager_class=");
+        builder_append_signed(&builder, uimanager_class ? 1 : 0);
+        observer_log("newobj-probe", detail);
+        return;
+    }
+
+    domain = mono.get_root_domain();
+
+    /* ---- CONTROL, with an answer known IN ADVANCE ------------------------
+     * System.Object is the empty reference type: on 64-bit its instance_size is
+     * exactly the MonoObject header, vtable + synchronisation = 16 bytes. And
+     * allocating one must succeed -- this boot has already allocated 47240
+     * objects. If either of those is wrong, the probe's own call path is broken
+     * and NOTHING below it may be believed. A control that cannot fail is not a
+     * control; this one can fail in both directions. */
+    corlib = mono.image_loaded("mscorlib");
+    object_class = corlib ? mono.class_from_name(corlib, "System", "Object") : NULL;
+    control_size = object_class ? mono.class_instance_size(object_class) : -1;
+    control_vt = (object_class && domain) ? mono.class_vtable(domain, object_class) : NULL;
+    control_obj = control_vt ? mono.object_new_specific(control_vt) : NULL;
+    control_ok = (control_size == 16) && (control_obj != NULL);
+    if (control_ok) InterlockedIncrement(&newobj_probe_control_ok);
+
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "classification=NOT_GOLDEN phase=control target=System.Object"
+                             " instance_size=");
+    builder_append_signed(&builder, control_size);
+    builder_append(&builder, " expected=16 vtable=0x");
+    builder_append_hex64(&builder, (ULONGLONG)(ULONG_PTR)control_vt);
+    builder_append(&builder, " alloc=0x");
+    builder_append_hex64(&builder, (ULONGLONG)(ULONG_PTR)control_obj);
+    builder_append(&builder, control_ok ? " result=PASS" :
+                   " result=FAILED -> DO-NOT-TRUST-ANY-NEWOBJ-NUMBER-BELOW");
+    observer_log("newobj-probe", detail);
+
+    /* ---- locate the exact class that fails -------------------------------
+     * `<>c__DisplayClass170_0` is nested in UIManager -- verified offline
+     * against the shipped Assembly-CSharp.dll (TypeDef row 3036, NestedClass ->
+     * row 480 UIManager) with exactly 3 fields: <>4__this, permaDeath, bossRush.
+     * That field set is what makes the size PREDICTABLE: a 16-byte header plus a
+     * pointer plus two bools = 0x1a, rounded to 0x18..0x20. */
+    target = NULL;
+    nested_seen = 0;
+    iter = NULL;
+    while ((nested = mono.class_get_nested_types(uimanager_class, &iter)) != NULL)
+    {
+        nested_seen++;
+        name = mono.class_get_name(nested);
+        if (name && strings_equal(name, "<>c__DisplayClass170_0"))
+        {
+            target = nested;
+            break;
+        }
+    }
+    if (!target)
+    {
+        builder_init(&builder, detail, sizeof(detail));
+        builder_append(&builder, "classification=NOT_GOLDEN phase=resolve"
+                                 " status=nested-class-not-found nested_seen=");
+        builder_append_signed(&builder, nested_seen);
+        observer_log("newobj-probe", detail);
+        return;
+    }
+
+    /* Raw reads BEFORE any API call that could lazily initialise the class --
+     * mono_class_instance_size() calls mono_class_init() when size_inited is 0,
+     * so reading after it would hide an uninitialised-metadata story. */
+    raw_before_wide = dword_at_wide(target, MONO_CLASS_INSTANCE_SIZE_OFF);
+    raw_before_bytes = dword_at_bytes(target, MONO_CLASS_INSTANCE_SIZE_OFF);
+
+    api_size = mono.class_instance_size(target);
+
+    raw_after_wide = dword_at_wide(target, MONO_CLASS_INSTANCE_SIZE_OFF);
+    raw_after_bytes = dword_at_bytes(target, MONO_CLASS_INSTANCE_SIZE_OFF);
+    flags = dword_at_wide(target, MONO_CLASS_FLAGS_OFF);
+
+    vt = domain ? mono.class_vtable(domain, target) : NULL;
+    vt_klass = qword_at(vt, MONO_VTABLE_KLASS_OFF);
+    vt_gc_descr = qword_at(vt, MONO_VTABLE_GC_DESCR_OFF);
+
+    /* THE MINIMAL REPRODUCER: allocate the exact class that fails, through the
+     * exact entry point Mono's newobj wrapper uses (mono_object_new_specific ->
+     * mono_object_new_specific_checked -> mono_gc_alloc_obj). If this returns
+     * NULL, the defect is reproducible without UIStartNewGame at all. */
+    obj_specific = vt ? mono.object_new_specific(vt) : NULL;
+    obj_new = domain ? mono.object_new(domain, target) : NULL;
+
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "classification=NOT_GOLDEN phase=subject"
+                             " target=UIManager/<>c__DisplayClass170_0 predicted_size=0x18..0x20"
+                             " klass=0x");
+    builder_append_hex64(&builder, (ULONGLONG)(ULONG_PTR)target);
+    builder_append(&builder, " raw_before_wide=0x");
+    builder_append_hex32(&builder, raw_before_wide);
+    builder_append(&builder, " raw_before_bytes=0x");
+    builder_append_hex32(&builder, raw_before_bytes);
+    builder_append(&builder, " api_instance_size=");
+    builder_append_signed(&builder, api_size);
+    builder_append(&builder, " raw_after_wide=0x");
+    builder_append_hex32(&builder, raw_after_wide);
+    builder_append(&builder, " raw_after_bytes=0x");
+    builder_append_hex32(&builder, raw_after_bytes);
+    builder_append(&builder, " width_agree=");
+    builder_append(&builder, (raw_after_wide == raw_after_bytes) ? "yes" : "NO");
+    builder_append(&builder, " flags=0x");
+    builder_append_hex32(&builder, flags);
+    builder_append(&builder, " has_references=");
+    builder_append(&builder, (flags & 0x800u) ? "1" : "0");
+    observer_log("newobj-probe", detail);
+
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "classification=NOT_GOLDEN phase=alloc vtable=0x");
+    builder_append_hex64(&builder, (ULONGLONG)(ULONG_PTR)vt);
+    builder_append(&builder, " vt_klass=0x");
+    builder_append_hex64(&builder, vt_klass);
+    builder_append(&builder, " vt_klass_matches=");
+    builder_append(&builder, (vt_klass == (ULONGLONG)(ULONG_PTR)target) ? "yes" : "NO");
+    builder_append(&builder, " vt_gc_descr=0x");
+    builder_append_hex64(&builder, vt_gc_descr);
+    builder_append(&builder, " object_new_specific=0x");
+    builder_append_hex64(&builder, (ULONGLONG)(ULONG_PTR)obj_specific);
+    builder_append(&builder, " object_new=0x");
+    builder_append_hex64(&builder, (ULONGLONG)(ULONG_PTR)obj_new);
+    builder_append(&builder, " reproduced=");
+    builder_append(&builder, (!obj_specific || !obj_new) ? "YES" : "no");
+    builder_append(&builder, " control=");
+    builder_append(&builder, control_ok ? "PASS" : "FAILED");
+    observer_log("newobj-probe", detail);
+
+    /* klass+0x00..0x3c as 16 dwords. Section 87 recorded the cost of not doing
+     * this: run23 captured only the vtable, so [klass+0x1c] could never be read
+     * after the fact and both processes were gone. */
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "classification=NOT_GOLDEN phase=klass-dump base=0x");
+    builder_append_hex64(&builder, (ULONGLONG)(ULONG_PTR)target);
+    builder_append(&builder, " dwords=");
+    for (i = 0; i < 16; i++)
+    {
+        if (i) builder_append(&builder, ",");
+        builder_append_hex32(&builder, dword_at_wide(target, (unsigned)(i * 4)));
+    }
+    observer_log("newobj-probe", detail);
+}
+
+static void invoke_start_game_actuator(void)
+{
+    MonoImage *image, *unity_image;
+    MonoClass *klass, *unity_object_class, *object_class;
+    MonoDomain *domain;
+    MonoType *type;
+    MonoReflectionType *reflection_type;
+    MonoMethod *find_method, *start_method;
+    MonoArray *found;
+    MonoObject *instance, *exception;
+    MonoObject **element_storage;
+    HWND fg;
+    DWORD fg_pid = 0, fg_tid = 0, tid;
+    char fg_class[64] = {0};
+    void *invoke_args[1];
+    int exact, count, count_ok, attempt;
+    struct text_builder builder;
+    char detail[384];
+
+    if (!start_game_actuator ||
+        InterlockedCompareExchange(&start_game_latched, 0, 0)) return;
+
+    attempt = (int)InterlockedIncrement(&start_game_attempts);
+    if (attempt > start_game_budget)
+    {
+        if (attempt == start_game_budget + 1)
+            observer_log("start-game", "classification=NOT_GOLDEN phase=gate status=budget-exhausted");
+        return;
+    }
+
+    /* Must be the Unity UI thread with the foreground window, exactly as the language
+     * actuator requires -- the accepted 145129 actuator shape. */
+    tid = GetCurrentThreadId();
+    fg = GetForegroundWindow();
+    if (fg)
+    {
+        fg_tid = GetWindowThreadProcessId(fg, &fg_pid);
+        GetClassNameA(fg, fg_class, (int)sizeof(fg_class));
+    }
+    exact = fg && fg_tid == tid && fg_pid == (DWORD)GetCurrentProcessId() &&
+            strings_equal(fg_class, "UnityWndClass");
+    if (!exact)
+    {
+        builder_init(&builder, detail, sizeof(detail));
+        builder_append(&builder, "classification=NOT_GOLDEN phase=gate status=not-ui-thread attempt=");
+        builder_append_signed(&builder, attempt);
+        builder_append(&builder, " wine_tid=");
+        builder_append_unsigned(&builder, tid);
+        builder_append(&builder, " window_tid=");
+        builder_append_unsigned(&builder, fg_tid);
+        observer_log("start-game", detail);
+        return;
+    }
+
+    image = mono.image_loaded("Assembly-CSharp");
+    unity_image = mono.image_loaded("UnityEngine");
+    klass = image ? mono.class_from_name(image, "", "UIManager") : NULL;
+    domain = mono.get_root_domain();
+    type = klass ? mono.class_get_type(klass) : NULL;
+    reflection_type = type && domain ? mono.type_get_object(domain, type) : NULL;
+    unity_object_class = unity_image
+        ? mono.class_from_name(unity_image, "UnityEngine", "Object") : NULL;
+    find_method = unity_object_class
+        ? mono.class_get_method_from_name(unity_object_class, "FindObjectsOfType", 1)
+        : NULL;
+    if (!reflection_type || !find_method)
+    {
+        builder_init(&builder, detail, sizeof(detail));
+        builder_append(&builder, "classification=NOT_GOLDEN phase=resolve status=type-unresolved attempt=");
+        builder_append_signed(&builder, attempt);
+        builder_append(&builder, " class=");
+        builder_append_unsigned(&builder, (ULONG_PTR)klass);
+        builder_append(&builder, " find_method=");
+        builder_append_unsigned(&builder, (ULONG_PTR)find_method);
+        observer_log("start-game", detail);
+        return;
+    }
+
+    exception = NULL;
+    invoke_args[0] = reflection_type;
+    found = (MonoArray *)mono.runtime_invoke(find_method, NULL, invoke_args, &exception);
+    instance = NULL;
+    count = (!exception && found) ? (int)mono.array_length(found) : -1;
+    count_ok = 0;
+    if (count == 1)
+    {
+        element_storage = (MonoObject **)mono.array_addr_with_size(
+            found, (int)sizeof(MonoObject *), (uintptr_t)0);
+        instance = element_storage ? *element_storage : NULL;
+        if (instance && (object_class = mono.object_get_class(instance)) &&
+            strings_equal(mono.class_get_name(object_class), "UIManager"))
+            count_ok = 1;
+        else
+            instance = NULL;
+    }
+    if (!count_ok)
+    {
+        /* Expected before Menu_Title: UIManager lives there, and run20 shows the first two
+         * HighlightDefault triggers (seq=8, seq=37) both precede UIManager::Awake (seq=67).
+         * Not an error, NOT a reason to latch -- and it must NOT consume the invoke budget,
+         * or a few early triggers would exhaust it before the target ever exists. Refund it.
+         * The log is rate-limited but the counter is aggregate, so a zero stays a real zero. */
+        LONG misses = InterlockedIncrement(&start_game_not_found);
+        InterlockedDecrement(&start_game_attempts);
+        if (misses <= 8)
+        {
+            builder_init(&builder, detail, sizeof(detail));
+            builder_append(&builder, "classification=NOT_GOLDEN phase=lookup status=no-uimanager-yet miss=");
+            builder_append_signed(&builder, misses);
+            builder_append(&builder, " count=");
+            builder_append_signed(&builder, count);
+            observer_log("start-game", detail);
+        }
+        return;
+    }
+
+    start_method = mono.class_get_method_from_name(object_class, "UIStartNewGame", 0);
+    if (!start_method)
+    {
+        observer_log("start-game",
+                     "classification=NOT_GOLDEN phase=resolve status=missing-UIStartNewGame arity=0");
+        return;
+    }
+
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "classification=NOT_GOLDEN phase=invoke status=begin method=UIStartNewGame arity=0 attempt=");
+    builder_append_signed(&builder, attempt);
+    builder_append(&builder, " instance=");
+    builder_append_unsigned(&builder, (ULONG_PTR)instance);
+    observer_log("start-game", detail);
+
+    /* Measured HERE deliberately: same thread, same moment in the boot, after the
+     * identity gate has already passed -- i.e. the state the failing allocation
+     * actually sees. Placing it earlier would measure a different process. */
+    run_newobj_probe(object_class);
+
+    exception = NULL;
+    mono.runtime_invoke(start_method, instance, NULL, &exception);
+    if (exception)
+    {
+        InterlockedIncrement(&start_game_exceptions);
+        builder_init(&builder, detail, sizeof(detail));
+        builder_append(&builder, "classification=NOT_GOLDEN phase=return status=managed-exception method=UIStartNewGame attempt=");
+        builder_append_signed(&builder, attempt);
+        observer_log("start-game", detail);
+        return; /* retry: the menu may not have finished wiring ih/gs yet */
+    }
+
+    InterlockedExchange(&start_game_latched, 1);
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "classification=NOT_GOLDEN phase=return status=ok method=UIStartNewGame attempt=");
+    builder_append_signed(&builder, attempt);
+    builder_append(&builder, " attempts_total=");
+    builder_append_signed(&builder, (LONG)InterlockedCompareExchange(&start_game_attempts, 0, 0));
+    builder_append(&builder, " not_found=");
+    builder_append_signed(&builder, (LONG)InterlockedCompareExchange(&start_game_not_found, 0, 0));
+    builder_append(&builder, " exceptions=");
+    builder_append_signed(&builder, (LONG)InterlockedCompareExchange(&start_game_exceptions, 0, 0));
+    observer_log("start-game", detail);
+}
+
 static void log_post_level_milestone(enum observed_method observed, const char *phase)
 {
     const char *class_name, *method_name;
@@ -1094,6 +1617,591 @@ static void log_post_level_milestone(enum observed_method observed, const char *
     builder_append(&builder, " sequence=");
     builder_append_signed(&builder, InterlockedIncrement(&post_level_sequence));
     observer_log("post-level-milestone", detail);
+}
+
+/* ------------------------------------------------------------------ *
+ * MACRUNNER_HB_CAMERA_PROBE
+ *
+ * Every float is printed as its uint32 bit pattern, never as a decimal:
+ * the payload is the discriminator we actually need (0xffc00000 = x86 QNaN
+ * indefinite, i.e. a genuine invalid operation, vs 0x7fc00000 = host libm
+ * default NaN, i.e. our translator's fingerprint).
+ *
+ * A control block runs FIRST and has a known-in-advance answer:
+ * UnityEngine.Matrix4x4::get_identity must come back through the exact same
+ * invoke -> unbox -> hex path as 3f800000 on the diagonal and 00000000
+ * everywhere else. If the control does not print that, no camera number
+ * below may be believed.
+ * ------------------------------------------------------------------ */
+
+static void builder_append_hex32(struct text_builder *builder, ULONG value)
+{
+    static const char digits[] = "0123456789abcdef";
+    char out[8];
+    int i;
+
+    for (i = 7; i >= 0; i--)
+    {
+        out[i] = digits[value & 0xfu];
+        value >>= 4;
+    }
+    for (i = 0; i < 8; i++)
+        if (builder->length + 1 < builder->capacity) builder->buffer[builder->length++] = out[i];
+    if (builder->capacity) builder->buffer[builder->length] = 0;
+}
+
+static ULONG float_bits_at(const void *base, unsigned index)
+{
+    ULONG value = 0;
+
+    copy_bytes(&value, (const char *)base + index * 4u, sizeof(value));
+    return value;
+}
+
+static void builder_append_float_vector(struct text_builder *builder, const void *base,
+                                        unsigned count)
+{
+    unsigned i;
+
+    for (i = 0; i < count; i++)
+    {
+        if (i) builder_append(builder, ",");
+        builder_append_hex32(builder, float_bits_at(base, i));
+    }
+}
+
+/* Invoke a 0-arg getter and unbox the value-type result. NULL on any failure. */
+static void *camera_probe_invoke_value(MonoMethod *method, void *instance)
+{
+    MonoObject *exception = NULL, *result;
+
+    if (!method) return NULL;
+    result = mono.runtime_invoke(method, instance, NULL, &exception);
+    if (exception || !result) return NULL;
+    return mono.object_unbox(result);
+}
+
+static MonoObject *camera_probe_invoke_object(MonoMethod *method, void *instance)
+{
+    MonoObject *exception = NULL, *result;
+
+    if (!method) return NULL;
+    result = mono.runtime_invoke(method, instance, NULL, &exception);
+    if (exception) return NULL;
+    return result;
+}
+
+static MonoClass *camera_probe_unity_class(const char *name_space, const char *name)
+{
+    static const char *const images[] = {"UnityEngine.CoreModule", "UnityEngine"};
+    MonoImage *image;
+    MonoClass *klass;
+    unsigned i;
+
+    for (i = 0; i < sizeof(images) / sizeof(images[0]); i++)
+    {
+        image = mono.image_loaded(images[i]);
+        if (!image) continue;
+        klass = mono.class_from_name(image, name_space, name);
+        if (klass) return klass;
+    }
+    return NULL;
+}
+
+/* Control with a known-in-advance result — runs before any camera is read. */
+static void camera_probe_run_control(void)
+{
+    MonoClass *matrix_class;
+    MonoMethod *identity_getter;
+    void *raw;
+    char detail[512];
+    struct text_builder builder;
+
+    if (InterlockedCompareExchange(&camera_probe_control_done, 1, 0)) return;
+
+    matrix_class = camera_probe_unity_class("UnityEngine", "Matrix4x4");
+    identity_getter =
+        matrix_class ? mono.class_get_method_from_name(matrix_class, "get_identity", 0) : NULL;
+    raw = camera_probe_invoke_value(identity_getter, NULL);
+
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "control=Matrix4x4.identity class=");
+    builder_append_unsigned(&builder, (ULONG_PTR)matrix_class);
+    builder_append(&builder, " getter=");
+    builder_append_unsigned(&builder, (ULONG_PTR)identity_getter);
+    builder_append(&builder, " expect=3f800000-on-diagonal-00000000-elsewhere status=");
+    builder_append(&builder, raw ? "read" : "UNREADABLE-DO-NOT-TRUST-CAMERA-DATA");
+    if (raw)
+    {
+        builder_append(&builder, " m=");
+        builder_append_float_vector(&builder, raw, 16);
+    }
+    observer_log("camera-probe-control", detail);
+}
+
+static void camera_probe_dump_one(MonoObject *camera, MonoClass *camera_class,
+                                  MonoClass *object_class, MonoClass *behaviour_class,
+                                  MonoClass *component_class, MonoClass *transform_class,
+                                  const char *phase, int index)
+{
+    MonoMethod *getter;
+    MonoObject *name_object, *transform;
+    void *raw;
+    char *utf8;
+    char detail[640];
+    struct text_builder builder;
+
+    /* identity + configuration */
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "phase=");
+    builder_append(&builder, phase);
+    builder_append(&builder, " camera=");
+    builder_append_signed(&builder, index);
+    builder_append(&builder, " object=");
+    builder_append_unsigned(&builder, (ULONG_PTR)camera);
+    builder_append(&builder, " name=");
+    getter = object_class ? mono.class_get_method_from_name(object_class, "get_name", 0) : NULL;
+    name_object = camera_probe_invoke_object(getter, camera);
+    utf8 = (name_object && mono.string_to_utf8) ? mono.string_to_utf8((MonoString *)name_object)
+                                                : NULL;
+    builder_append(&builder, utf8 ? utf8 : "?");
+    if (utf8 && mono.mono_free) mono.mono_free(utf8);
+    getter = behaviour_class ? mono.class_get_method_from_name(behaviour_class, "get_enabled", 0)
+                             : NULL;
+    raw = camera_probe_invoke_value(getter, camera);
+    builder_append(&builder, " enabled=");
+    builder_append_signed(&builder, raw ? *(const unsigned char *)raw : -1);
+    getter = mono.class_get_method_from_name(camera_class, "get_orthographic", 0);
+    raw = camera_probe_invoke_value(getter, camera);
+    builder_append(&builder, " orthographic=");
+    builder_append_signed(&builder, raw ? *(const unsigned char *)raw : -1);
+    observer_log("camera-probe", detail);
+
+    /* scalar configuration, as bit patterns */
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "camera=");
+    builder_append_signed(&builder, index);
+    builder_append(&builder, " orthographicSize=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_orthographicSize", 0), camera);
+    if (raw) builder_append_hex32(&builder, float_bits_at(raw, 0));
+    else builder_append(&builder, "unreadable");
+    builder_append(&builder, " fieldOfView=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_fieldOfView", 0), camera);
+    if (raw) builder_append_hex32(&builder, float_bits_at(raw, 0));
+    else builder_append(&builder, "unreadable");
+    builder_append(&builder, " near=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_nearClipPlane", 0), camera);
+    if (raw) builder_append_hex32(&builder, float_bits_at(raw, 0));
+    else builder_append(&builder, "unreadable");
+    builder_append(&builder, " far=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_farClipPlane", 0), camera);
+    if (raw) builder_append_hex32(&builder, float_bits_at(raw, 0));
+    else builder_append(&builder, "unreadable");
+    builder_append(&builder, " aspect=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_aspect", 0), camera);
+    if (raw) builder_append_hex32(&builder, float_bits_at(raw, 0));
+    else builder_append(&builder, "unreadable");
+    builder_append(&builder, " pixelRect=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_pixelRect", 0), camera);
+    if (raw) builder_append_float_vector(&builder, raw, 4);
+    else builder_append(&builder, "unreadable");
+    observer_log("camera-probe", detail);
+
+    /* render configuration. A non-NULL targetTexture would explain the exact
+     * symptom (correct clear on the backbuffer, no geometry) without any
+     * matrix being wrong, so it has to be ruled in or out explicitly.
+     * backgroundColor is directly comparable to the dumped frame's two
+     * colours: (0,0,0,5/255) over the camera rect and (0,0,0,0) outside. */
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "camera=");
+    builder_append_signed(&builder, index);
+    builder_append(&builder, " targetTexture=");
+    getter = mono.class_get_method_from_name(camera_class, "get_targetTexture", 0);
+    builder_append_unsigned(&builder, (ULONG_PTR)camera_probe_invoke_object(getter, camera));
+    builder_append(&builder, " clearFlags=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_clearFlags", 0), camera);
+    if (raw) builder_append_hex32(&builder, float_bits_at(raw, 0));
+    else builder_append(&builder, "unreadable");
+    builder_append(&builder, " cullingMask=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_cullingMask", 0), camera);
+    if (raw) builder_append_hex32(&builder, float_bits_at(raw, 0));
+    else builder_append(&builder, "unreadable");
+    builder_append(&builder, " depth=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_depth", 0), camera);
+    if (raw) builder_append_hex32(&builder, float_bits_at(raw, 0));
+    else builder_append(&builder, "unreadable");
+    builder_append(&builder, " backgroundColor=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_backgroundColor", 0), camera);
+    if (raw) builder_append_float_vector(&builder, raw, 4);
+    else builder_append(&builder, "unreadable");
+    builder_append(&builder, " rect=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_rect", 0), camera);
+    if (raw) builder_append_float_vector(&builder, raw, 4);
+    else builder_append(&builder, "unreadable");
+    observer_log("camera-probe", detail);
+
+    /* the two matrices that decide whether geometry lands on screen */
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "camera=");
+    builder_append_signed(&builder, index);
+    builder_append(&builder, " projectionMatrix=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_projectionMatrix", 0), camera);
+    if (raw) builder_append_float_vector(&builder, raw, 16);
+    else builder_append(&builder, "unreadable");
+    observer_log("camera-probe", detail);
+
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "camera=");
+    builder_append_signed(&builder, index);
+    builder_append(&builder, " worldToCameraMatrix=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_worldToCameraMatrix", 0), camera);
+    if (raw) builder_append_float_vector(&builder, raw, 16);
+    else builder_append(&builder, "unreadable");
+    observer_log("camera-probe", detail);
+
+    /* cameraToWorldMatrix — the SAME conceptual data through a DIFFERENT native
+     * producer (get_cameraToWorldMatrix_Injected). worldToCameraMatrix and
+     * projectionMatrix have byte-identical managed getters, so the defect is on
+     * the native producer side; this splits "a copy path shared by every 64-byte
+     * matrix icall" (expect m[15] wrong here too) from "this one producer"
+     * (expect m[15] == 3f800000 here). Both answers are informative. */
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "camera=");
+    builder_append_signed(&builder, index);
+    builder_append(&builder, " cameraToWorldMatrix=");
+    raw = camera_probe_invoke_value(
+        mono.class_get_method_from_name(camera_class, "get_cameraToWorldMatrix", 0), camera);
+    if (raw) builder_append_float_vector(&builder, raw, 16);
+    else builder_append(&builder, "unreadable");
+    observer_log("camera-probe", detail);
+
+    /* transform — a zero lossyScale is the cheapest way to make a view singular */
+    getter = component_class ? mono.class_get_method_from_name(component_class, "get_transform", 0)
+                             : NULL;
+    transform = camera_probe_invoke_object(getter, camera);
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "camera=");
+    builder_append_signed(&builder, index);
+    builder_append(&builder, " transform=");
+    builder_append_unsigned(&builder, (ULONG_PTR)transform);
+    if (transform && transform_class)
+    {
+        builder_append(&builder, " position=");
+        raw = camera_probe_invoke_value(
+            mono.class_get_method_from_name(transform_class, "get_position", 0), transform);
+        if (raw) builder_append_float_vector(&builder, raw, 3);
+        else builder_append(&builder, "unreadable");
+        builder_append(&builder, " lossyScale=");
+        raw = camera_probe_invoke_value(
+            mono.class_get_method_from_name(transform_class, "get_lossyScale", 0), transform);
+        if (raw) builder_append_float_vector(&builder, raw, 3);
+        else builder_append(&builder, "unreadable");
+    }
+    observer_log("camera-probe", detail);
+}
+
+static void camera_probe_emit_totals(const char *reason);
+
+/* DIAGNOSTIC repair of worldToCameraMatrix[15] — see the knob comment at the top.
+ * Repairs the single float and writes the matrix back through Unity's own setter,
+ * so the question "does this one float cause the black frame" becomes a pixel
+ * measurement instead of an argument. */
+static void camera_probe_repair_m33(void)
+{
+    MonoClass *camera_class;
+    MonoMethod *all_getter, *getter, *setter, *reset;
+    MonoArray *cameras;
+    MonoObject **slot, *exception;
+    void *raw, *args[1];
+    ULONG matrix[16];            /* ULONG[] not char[]: guarantees 4-byte alignment */
+    uintptr_t count, i;
+    ULONG before, after;
+    char detail[256];
+    struct text_builder builder;
+
+    camera_class = camera_probe_unity_class("UnityEngine", "Camera");
+    if (!camera_class) return;
+    getter = mono.class_get_method_from_name(camera_class, "get_worldToCameraMatrix", 0);
+    setter = mono.class_get_method_from_name(camera_class, "set_worldToCameraMatrix", 1);
+    reset = mono.class_get_method_from_name(camera_class, "ResetWorldToCameraMatrix", 0);
+    if (!getter || !setter)
+    {
+        InterlockedIncrement(&m33_setter_missing);
+        return;
+    }
+
+    all_getter = mono.class_get_method_from_name(camera_class, "get_allCameras", 0);
+    cameras = (MonoArray *)camera_probe_invoke_object(all_getter, NULL);
+    count = cameras ? mono.array_length(cameras) : 0;
+
+    for (i = 0; i < count && i < 16u; i++)
+    {
+        slot = (MonoObject **)mono.array_addr_with_size(cameras, (int)sizeof(MonoObject *), i);
+        if (!slot || !*slot) continue;
+        InterlockedIncrement(&m33_attempted);
+
+        /* Reset FIRST. Assigning worldToCameraMatrix makes Unity stop deriving it
+         * from the transform, so without this the camera would freeze at the first
+         * repaired value and stop following the player — the screen would light up
+         * but the scene would not track, which is a worse experiment. */
+        if (reset)
+        {
+            exception = NULL;
+            mono.runtime_invoke(reset, *slot, NULL, &exception);
+        }
+
+        raw = camera_probe_invoke_value(getter, *slot);
+        if (!raw)
+        {
+            InterlockedIncrement(&m33_unreadable);
+            continue;
+        }
+        copy_bytes(matrix, raw, sizeof(matrix));
+        before = matrix[15];
+        if (before == 0x3f800000u)
+        {
+            /* Already correct — e.g. if an engine-side fix landed. Then this knob
+             * is a no-op and cannot manufacture a false pixel result. */
+            InterlockedIncrement(&m33_already_ok);
+            continue;
+        }
+        matrix[15] = 0x3f800000u;
+
+        args[0] = matrix;        /* value-type argument: pointer to the raw data */
+        exception = NULL;
+        mono.runtime_invoke(setter, *slot, args, &exception);
+        if (exception)
+        {
+            InterlockedIncrement(&m33_exception);
+            continue;
+        }
+        InterlockedIncrement(&m33_patched);
+
+        /* Read back through the SAME getter. "The setter returned without an
+         * exception" is not evidence that the value landed. */
+        raw = camera_probe_invoke_value(getter, *slot);
+        after = raw ? float_bits_at(raw, 15) : 0u;
+        if (after == 0x3f800000u) InterlockedIncrement(&m33_verified);
+        else InterlockedIncrement(&m33_verify_failed);
+
+        if (InterlockedIncrement(&m33_logged) <= 24)
+        {
+            builder_init(&builder, detail, sizeof(detail));
+            builder_append(&builder, "camera=");
+            builder_append_signed(&builder, (LONG)i);
+            builder_append(&builder, " m33_before=");
+            builder_append_hex32(&builder, before);
+            builder_append(&builder, " m33_after_readback=");
+            builder_append_hex32(&builder, after);
+            builder_append(&builder, " status=");
+            builder_append(&builder, after == 0x3f800000u ? "REPAIRED" : "SET-DID-NOT-STICK");
+            observer_log("camera-m33-repair", detail);
+        }
+    }
+}
+
+/* UnityEngine.Time. The dumped frame's only colour, (0,0,0,5/255), is the same
+ * value Unity writes as the vertex colour — which is what a scene that has not
+ * faded in looks like. Every HK fade is driven by Time; if deltaTime or
+ * timeScale is zero, or time does not advance between two dumps, the menu is
+ * rendered-but-frozen and no matrix is at fault. Two samples, not one:
+ * a single reading cannot distinguish "stopped" from "slow". */
+static void camera_probe_dump_time(const char *phase)
+{
+    MonoClass *time_class;
+    void *raw;
+    char detail[448];
+    struct text_builder builder;
+    static const char *const scalars[] = {
+        "get_timeScale", "get_time", "get_unscaledTime", "get_deltaTime",
+        "get_unscaledDeltaTime", "get_realtimeSinceStartup", "get_fixedDeltaTime"};
+    static const char *const labels[] = {
+        "timeScale", "time", "unscaledTime", "deltaTime",
+        "unscaledDeltaTime", "realtimeSinceStartup", "fixedDeltaTime"};
+    unsigned i;
+
+    time_class = camera_probe_unity_class("UnityEngine", "Time");
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "phase=");
+    builder_append(&builder, phase);
+    builder_append(&builder, " time_class=");
+    builder_append_unsigned(&builder, (ULONG_PTR)time_class);
+    if (time_class)
+    {
+        for (i = 0; i < sizeof(scalars) / sizeof(scalars[0]); i++)
+        {
+            builder_append(&builder, " ");
+            builder_append(&builder, labels[i]);
+            builder_append(&builder, "=");
+            raw = camera_probe_invoke_value(
+                mono.class_get_method_from_name(time_class, scalars[i], 0), NULL);
+            if (raw) builder_append_hex32(&builder, float_bits_at(raw, 0));
+            else builder_append(&builder, "unreadable");
+        }
+        builder_append(&builder, " frameCount=");
+        raw = camera_probe_invoke_value(
+            mono.class_get_method_from_name(time_class, "get_frameCount", 0), NULL);
+        if (raw) builder_append_hex32(&builder, float_bits_at(raw, 0));
+        else builder_append(&builder, "unreadable");
+    }
+    builder_append(&builder, " tick_ms=");
+    builder_append_unsigned(&builder, GetTickCount64());
+    observer_log("camera-probe-time", detail);
+}
+
+static void camera_probe_dump(const char *phase)
+{
+    MonoClass *camera_class, *object_class, *behaviour_class, *component_class, *transform_class;
+    MonoMethod *all_cameras_getter, *main_getter;
+    MonoObject *main_camera;
+    MonoArray *all_cameras;
+    MonoObject **element_storage;
+    uintptr_t count, i;
+    char detail[384];
+    struct text_builder builder;
+
+    if (!camera_probe) return;
+    /* Managed getters below must never re-enter this probe through the filter. */
+    if (InterlockedCompareExchange(&camera_probe_active, 1, 0)) return;
+
+    /* The m33 repair runs on EVERY tick, deliberately BEFORE the stride and budget
+     * gates: those gates exist to bound LOGGING, and a repair throttled by the log
+     * budget would leave almost every frame unrepaired, which would make the
+     * resulting pixel measurement meaningless. */
+    if (camera_m33_repair) camera_probe_repair_m33();
+
+    /* Per-frame callers would spend the whole budget in the first few frames;
+     * stride spreads the samples across the boot instead. The tick counter is
+     * itself a measurement: it is the managed call rate of the unprojection
+     * callers, directly comparable to the frustum-warning count. */
+    if (strings_equal(phase, "camera-tick"))
+    {
+        LONG tick = InterlockedIncrement(&camera_probe_ticks);
+
+        if (!(tick % 4096)) camera_probe_emit_totals("periodic");
+        if (camera_probe_stride > 1 && tick % camera_probe_stride)
+        {
+            InterlockedExchange(&camera_probe_active, 0);
+            return;
+        }
+    }
+
+    if (InterlockedIncrement(&camera_probe_dumps) > camera_probe_budget)
+    {
+        LONG suppressed = InterlockedIncrement(&camera_probe_suppressed);
+
+        if (suppressed == 1 || !(suppressed % 4096)) camera_probe_emit_totals("budget");
+        InterlockedExchange(&camera_probe_active, 0);
+        return;
+    }
+
+    camera_probe_run_control();
+    camera_probe_dump_time(phase);
+
+    camera_class = camera_probe_unity_class("UnityEngine", "Camera");
+    object_class = camera_probe_unity_class("UnityEngine", "Object");
+    behaviour_class = camera_probe_unity_class("UnityEngine", "Behaviour");
+    component_class = camera_probe_unity_class("UnityEngine", "Component");
+    transform_class = camera_probe_unity_class("UnityEngine", "Transform");
+    main_getter = camera_class ? mono.class_get_method_from_name(camera_class, "get_main", 0) : NULL;
+    all_cameras_getter =
+        camera_class ? mono.class_get_method_from_name(camera_class, "get_allCameras", 0) : NULL;
+    main_camera = camera_probe_invoke_object(main_getter, NULL);
+    all_cameras = (MonoArray *)camera_probe_invoke_object(all_cameras_getter, NULL);
+    count = all_cameras ? mono.array_length(all_cameras) : 0;
+
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "phase=");
+    builder_append(&builder, phase);
+    builder_append(&builder, " dump=");
+    builder_append_signed(&builder, camera_probe_dumps);
+    builder_append(&builder, " camera_class=");
+    builder_append_unsigned(&builder, (ULONG_PTR)camera_class);
+    builder_append(&builder, " main=");
+    builder_append_unsigned(&builder, (ULONG_PTR)main_camera);
+    builder_append(&builder, " allCameras=");
+    builder_append_unsigned(&builder, (ULONGLONG)count);
+    builder_append(&builder, " managed_tid=");
+    builder_append_unsigned(&builder, GetCurrentThreadId());
+    observer_log("camera-probe-begin", detail);
+
+    if (camera_class)
+        for (i = 0; i < count && i < 16u; i++)
+        {
+            element_storage = (MonoObject **)mono.array_addr_with_size(
+                all_cameras, (int)sizeof(MonoObject *), i);
+            if (!element_storage || !*element_storage) continue;
+            camera_probe_dump_one(*element_storage, camera_class, object_class, behaviour_class,
+                                  component_class, transform_class, phase, (int)i);
+        }
+
+    InterlockedExchange(&camera_probe_active, 0);
+}
+
+/* Aggregate totals — a capped instrument that does not say what it dropped
+ * reads as full coverage when it is not. */
+static void camera_probe_emit_totals(const char *reason)
+{
+    char detail[256];
+    struct text_builder builder;
+
+    if (!camera_probe) return;
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "reason=");
+    builder_append(&builder, reason);
+    builder_append(&builder, " attempted=");
+    builder_append_signed(&builder, camera_probe_dumps);
+    builder_append(&builder, " emitted=");
+    builder_append_signed(&builder,
+                          camera_probe_dumps - camera_probe_suppressed > camera_probe_budget
+                              ? camera_probe_budget
+                              : camera_probe_dumps - camera_probe_suppressed);
+    builder_append(&builder, " suppressed_by_budget=");
+    builder_append_signed(&builder, camera_probe_suppressed);
+    builder_append(&builder, " budget=");
+    builder_append_signed(&builder, camera_probe_budget);
+    builder_append(&builder, " unprojection_caller_ticks=");
+    builder_append_signed(&builder, camera_probe_ticks);
+    builder_append(&builder, " stride=");
+    builder_append_signed(&builder, camera_probe_stride);
+    observer_log("camera-probe-totals", detail);
+
+    if (!camera_m33_repair) return;
+    /* Repair totals are aggregate and never capped — a repair instrument that
+     * reported only its first N successes would read as full coverage. */
+    builder_init(&builder, detail, sizeof(detail));
+    builder_append(&builder, "reason=");
+    builder_append(&builder, reason);
+    builder_append(&builder, " attempted=");
+    builder_append_signed(&builder, m33_attempted);
+    builder_append(&builder, " patched=");
+    builder_append_signed(&builder, m33_patched);
+    builder_append(&builder, " verified_readback=");
+    builder_append_signed(&builder, m33_verified);
+    builder_append(&builder, " verify_failed=");
+    builder_append_signed(&builder, m33_verify_failed);
+    builder_append(&builder, " already_ok=");
+    builder_append_signed(&builder, m33_already_ok);
+    builder_append(&builder, " unreadable=");
+    builder_append_signed(&builder, m33_unreadable);
+    builder_append(&builder, " setter_missing=");
+    builder_append_signed(&builder, m33_setter_missing);
+    builder_append(&builder, " managed_exception=");
+    builder_append_signed(&builder, m33_exception);
+    observer_log("camera-m33-repair-totals", detail);
 }
 
 static void method_enter(MonoProfiler *profiler, MonoMethod *method,
@@ -1158,6 +2266,10 @@ static void method_enter(MonoProfiler *profiler, MonoMethod *method,
         {
             invoke_oneshot_sequence();
             invoke_diagnostic_direct_confirm();
+            /* Same trigger, later target: HighlightDefault fires both on the language
+             * screen and again once the Menu_Title menu is interactive (run20 seq=37 and
+             * seq=121). The actuator itself decides whether UIManager exists yet. */
+            invoke_start_game_actuator();
         }
         break;
     case METHOD_CONFIRM_LANGUAGE:
@@ -1169,6 +2281,10 @@ static void method_enter(MonoProfiler *profiler, MonoMethod *method,
         builder_append(&builder, " confirmedLanguage=");
         builder_append_bool_availability(&builder, available, value, unavailable_reason);
         observer_log("confirm-language", detail);
+        camera_probe_dump("confirm-language");
+        break;
+    case METHOD_CAMERA_TICK:
+        camera_probe_dump("camera-tick");
         break;
     case METHOD_ALLOW_SCENE_ACTIVATION:
         state_value = -1;
@@ -1207,6 +2323,21 @@ static void method_enter(MonoProfiler *profiler, MonoMethod *method,
     case METHOD_GAME_CAMERAS_AWAKE:
     case METHOD_UI_MANAGER_AWAKE:
         log_manager_awake(observed);
+        /* Guaranteed sample points that do not depend on the unprojection
+         * callers ever firing. GameCameras::Awake is where HK builds its
+         * cameras; UIManager::Awake lands with the menu UI, which is the late
+         * sample the strided ticks might otherwise never reach. */
+        camera_probe_dump(observed == METHOD_GAME_CAMERAS_AWAKE   ? "gamecameras-awake"
+                          : observed == METHOD_UI_MANAGER_AWAKE   ? "uimanager-awake"
+                                                                  : "gamemanager-awake");
+        /* Second trigger for the start-game actuator, and the one that matters.
+         * run20's ordering, measured: HighlightDefault seq=8 (L1853) and seq=37
+         * (L1888) both land BEFORE UIManager::Awake (seq=67, L1932), so at those
+         * two the UIManager genuinely does not exist yet. GameCameras::Awake
+         * (seq=95, L1960) is the first hook AFTER it. Relying on HighlightDefault
+         * seq=121 alone would leave exactly one usable trigger in the whole run. */
+        if (!return_route_only && observed == METHOD_GAME_CAMERAS_AWAKE)
+            invoke_start_game_actuator();
         break;
     default:
         break;
@@ -1289,9 +2420,28 @@ static int configure_observer(void)
     post_level_milestone_trace = env_enabled("MACRUNNER_HB_POST_LEVEL_MILESTONE_TRACE");
     if (!return_route_only && !language_flow_observer && !post_level_milestone_trace)
         return 0;
+    camera_probe = env_enabled("MACRUNNER_HB_CAMERA_PROBE");
+    /* Default OFF and gated on the probe itself: run20 is an A/B that requires the
+     * identical instrument, so this must be behaviourally invisible unless asked for. */
+    camera_m33_repair = camera_probe && env_enabled("MACRUNNER_HB_CAMERA_M33_REPAIR");
+    camera_probe_budget = camera_probe ? env_record_limit("MACRUNNER_HB_CAMERA_PROBE_MAX") : 0;
+    camera_probe_stride = camera_probe ? env_record_limit("MACRUNNER_HB_CAMERA_PROBE_STRIDE") : 1;
     oneshot_sequence =
         !return_route_only && language_flow_observer && !post_level_milestone_trace &&
         env_enabled("MACRUNNER_HB_LANGUAGE_ONESHOT_SEQUENCE");
+    /* Default OFF, and gated on the same trigger path the language actuator uses, so a
+     * run that does not ask for it is byte-for-byte the previous behaviour. */
+    start_game_actuator =
+        !return_route_only && language_flow_observer &&
+        env_enabled("MACRUNNER_HB_START_GAME_ACTUATOR");
+    if (start_game_actuator)
+    {
+        LONG budget = env_record_limit("MACRUNNER_HB_START_GAME_ACTUATOR_MAX");
+        if (budget > 0) start_game_budget = budget;
+    }
+    /* Gated on the actuator, because it runs inside it and measures the state at
+     * that exact call site. Default OFF: unset => byte-identical behaviour. */
+    newobj_probe = start_game_actuator && env_enabled("MACRUNNER_HB_NEWOBJ_PROBE");
     diagnostic_direct_confirm =
         !oneshot_sequence && !return_route_only && language_flow_observer &&
         !post_level_milestone_trace &&
@@ -1358,6 +2508,23 @@ static void initialize_observer(HMODULE module, const char *description,
         RESOLVE_API(module, string_new, "mono_string_new");
         RESOLVE_API(module, array_length, "mono_array_length");
         RESOLVE_API(module, array_addr_with_size, "mono_array_addr_with_size");
+    }
+    if (newobj_probe)
+    {
+        /* OPTIONAL on purpose. RESOLVE_API aborts observer init on a miss, which
+         * would take the PROVEN 27/27 language actuator down with it. A diagnostic
+         * must never be able to break the load-bearing path, so these resolve
+         * softly and run_newobj_probe refuses (loudly) if any is NULL.
+         * All 5 were confirmed present in the shipped DLL's export table before
+         * this was written, so a miss here is a real anomaly worth logging. */
+        RESOLVE_OPTIONAL_API(module, image_loaded, "mono_image_loaded");
+        RESOLVE_OPTIONAL_API(module, class_from_name, "mono_class_from_name");
+        RESOLVE_OPTIONAL_API(module, get_root_domain, "mono_get_root_domain");
+        RESOLVE_OPTIONAL_API(module, class_instance_size, "mono_class_instance_size");
+        RESOLVE_OPTIONAL_API(module, class_get_nested_types, "mono_class_get_nested_types");
+        RESOLVE_OPTIONAL_API(module, class_vtable, "mono_class_vtable");
+        RESOLVE_OPTIONAL_API(module, object_new_specific, "mono_object_new_specific");
+        RESOLVE_OPTIONAL_API(module, object_new, "mono_object_new");
     }
     if (diagnostic_direct_confirm)
     {

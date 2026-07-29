@@ -27,6 +27,86 @@ Status: applied | reverted | superseded-by-<entry>
 
 ## Entries
 
+## 2026-07-28 08:15 — x64-thread-context mutex made recursive (SIGUSR1 suspend-handler self-deadlock)
+File(s): engine/wine/dlls/ntdll/unix/macrunner_hb.c:321
+Type: ROOT-FIX
+What: `macrunner_hb_x64_thread_context_mutex` initializer changed `PTHREAD_MUTEX_INITIALIZER` → `PTHREAD_RECURSIVE_MUTEX_INITIALIZER` (+ contract comment). Covers all 8 lock sites at once.
+Why: run31b live deadlock, instruction-level proven: HK boot froze after `<RI> Input initialized.` when SIGUSR1 (Wine suspend, e.g. Mono/Boehm GC stop-the-world) interrupted an x64 thread inside the per-block `macrunner_hb_update_current_x64_context` trylock region (interrupted PC update+0x138, disasm-proven inside trylock..unlock), and its own `usr1_handler → NtGetContextThread → macrunner_hb_get_x64_thread_context` hard-locked the same non-recursive mutex = self-deadlock; `Loading.PreloadManager` (try_thread_creation_semantic→NtGetContextThread) deadlocked behind it → whole-process freeze. Report: reports/phase4-hollow-knight/RUN31B-RESULT-SUSPEND-HANDLER-SELF-DEADLOCK-ON-X64-CTX-MUTEX-20260728.md.
+Verify: recursive sig `0x32aaaba2` byte-verified at __DATA 0x19cd00 in build output AND deployed `dist-arm64ec-spike/lib/wine/aarch64-unix/ntdll.so` (SHA 9f616472a18ca3a6→7ab1d576c3d778be); prior instruments survived relink. Runtime validation = run32 (pending slot).
+Status: applied
+
+## 2026-07-21 18:44 — Decode legacy MOVNT packed-store family for Unity JIT corridor
+File(s): engine/hyperbridge/src/hb_decode_x64.c:4598; engine/hyperbridge/src/hb_decode_x86.c:1235; engine/hyperbridge/tests/hb_test_runner.c:13827
+Type: ROOT-FIX
+What: Added x64/x86 decode coverage for legacy `MOVNTPS m128,xmm`, `MOVNTPD m128,xmm`, and `MOVNTDQ m128,xmm` as 128-bit `HB_INS_SSE_MOV` memory stores, rejecting register ModRM forms. Added focused decode/JIT tests and an exact Unity corridor compile test.
+Why: The pixel-first HK continuation reproduced the exact Unity block and proved the real JIT failure was not the first RIP-relative `MOVDQA`, but `UnityPlayer.dll+0xe1028d` bytes `66 0f e7 14 07` (`MOVNTDQ m128,xmm`) lowering to `UNSUPPORTED/273`.
+Verify: `--fast-family unity_movnt_store` PASS 4/4; real Unity corridor and containing `.pdata` function compile with `block_fail=0 instr_fail=0`; phase1_core PASS 50/50; W03 static/source floors PASS. Broad default `hb_test_runner` remains the known non-green 453/29 floor. One bounded HK runtime was attempted once and stopped fail-closed before managed product deployment, so product pixels remain UNKNOWN.
+Status: applied-uncommitted-NOT_GOLDEN
+
+## 2026-07-21 12:10 — Snapshot W03 env gates before suspend-capable workers
+File(s): engine/wine/dlls/ntdll/unix/macrunner_hb.c; engine/wine/dlls/ntdll/unix/loader.c; engine/hyperbridge/include/hb_memory.h; engine/hyperbridge/include/hb_runtime.h; engine/hyperbridge/src/hb_memory.c; engine/hyperbridge/src/hb_runtime.c
+Type: ROOT-FIX
+What: Removed the obsolete per-import HOTIMPORT getenv and eagerly snapshotted only the sync-import, hb_memory_write direct-gate, and persistent-cache-key environment flags in the existing single-threaded construction path. Hot execution now reads initialized fields while retaining each flag's exact presence/nonempty/atoi semantics.
+Why: A frozen HK sample pinned SIGUSR1 delivery while the import thunk held libc's environment lock; wait_suspend retained that lock and peer hb_memory/cache paths formed a process-wide fanout.
+Verify: Focused source contract 6/6, jit_signal_ownership 2/2, callback/x18/signal static floors PASS, translation cache 4/4. Fresh isolated ntdll pair Unix c185ef86... / PE 9c91c7d6... deployed hash-identically; Unix codesign PASS. Sole HK child passed +301.5s and +330s sample had zero wait_suspend/usr1_handler/unfair-lock fanout, but missing required noalloc profiler init forced INVALID_DEPLOYMENT stop at +456.3s. Broad HB runner remains nondeterministic/not green and was not represented as a passing floor.
+Status: applied-uncommitted-NOT_GOLDEN
+
+## 2026-07-18 16:42 — Add bounded scene/data file API probe
+File(s): engine/wine/dlls/ntdll/unix/file.c, tools/test_hb_scene_loading_probe_source.py
+Type: DIAGNOSTIC
+What: Added default-off `MACRUNNER_HB_SCENE_LOADING_PROBE` records for bounded, semantic `NtCreateFile`/attribute-query observations of serialized scenes, global managers, resources, managed runtime, and online-subsystem paths. Records include API, path class, status, access/disposition/options, NT path, and resolved Unix path; the probe never changes file semantics.
+Why: Hollow Knight's black bootstrap needed a direct discriminator between inaccessible Unity/GOG data and a managed scene-activation gate after graphics, shader translation, and vertex upload were excluded.
+Verify: Focused source contract PASS. Project-env/ccache ntdll build RC0 with no `install skipped`; signed build/dist are byte-identical SHA `76c77d0ac5d43dce29e2f4310d943dd2c963cbe94d9cb0b20efe7b3d4afb7724`, strict codesign PASS. One sealed 1800s run proved Mono/scripts complete and game-local Galaxy DLL access succeeds. Unity serialized I/O bypassed these hooks, an explicit limitation. Static IL plus the immutable empty PlayerPrefs template proved the actual wall is `StartManager` waiting for first-run `GameLangSet` confirmation before `Menu_Title` activation; report `SCENE-LOADING-CAUSE.md`.
+Status: applied; diagnostic root cause complete
+
+## 2026-07-17 10:10 — Add bounded DXMT backbuffer readback and Draw-state probe
+File(s): engine/dxmt/src/dxmt/dxmt_context.cpp, engine/dxmt/src/winemetal/{Metal.hpp,winemetal.h,winemetal_thunks.c,winemetal_thunks.h,unix/winemetal_unix.c}
+Type: DIAGNOSTIC
+What: Added default-off `MACRUNNER_HB_GPU_READBACK_PROBE`. DXMT appends W^X-independent Metal texture-to-shared-buffer blits after bounded color clears, after bounded render passes containing Draw commands, and immediately before presenter encoding. Completion handlers calculate an exact logical-pixel FNV-1a hash, black/nonblack/colorful counts and RGBA ranges/means without a GPU wait. The same gate captures the first 32 actual Draw calls with persistent encoder RTV/PSO/VS/PS, viewport/scissor, raster, buffer and texture state.
+Why: Hollow Knight reaches 3046 Draws and 1390 successful Present1 calls while the native window remains byte-black. GPU truth is required to distinguish zero fragment coverage from a presenter failure before changing renderer or managed scene behavior.
+Verify: ARM64 Unix WineMetal and x86_64 `d3d11.dll`/`winemetal.dll` builds passed; the only ARM64 linker diagnostic is the pre-existing LLVM 15 libunwind re-export warning, x86_64 final build has 0 errors/0 warnings and no `install skipped`. Unix-call native/WOW64 tables both contain index 132. Deployed SHAs: signed `winemetal.so` `36924559…`, `d3d11.dll` `df8a4863…`, `winemetal.dll` `612696f2…`; strict codesign passed. Runtime verification pending sealed 1800 s HK run.
+Status: applied; runtime pending
+
+## 2026-07-16 09:05 — Add bounded opcode 0x27fd frame-finalize probe
+File(s): engine/wine/dlls/ntdll/unix/macrunner_hb.c
+Type: DIAGNOSTIC
+What: Added env-gated `MACRUNNER_HB_FRAME_FINALIZE_PROBE`. The exact Gfx-worker dequeue boundary records Unity base without a module scan; opcode handler `Unity+0x11cc3b5` captures payload, Gfx object, vtable and slot `+0xa38`. Only the first configured events trace block/module transitions, vfunc entry bytes, return address and register arguments; all logging is budgeted and inactive outside the exact event chain.
+Why: Readable-range evidence proved handler selection but did not identify whether dominant opcode `0x27fd` was frame finalization, submission, or Present. A target-resolved event trace was required before patching the renderer or scheduler.
+Verify: Project-env/ccache build RC0 with no `install skipped` or probe compile error; built SHA `dc7232ec070cfd20f8743dfbc97882acc01dd1b834df01fb05dc389a50eb249f`, signed deployed SHA `72527cecf4dab85b309241e65a086de8fd8ac959c7bdf8b3a04dc7c8b88b5409`, strict codesign passed. Sealed 600 s run recorded 244 `0x27fd` ranges, resolved `+0xa38` to `Unity+0x6cda80`, and observed 25 Unity-only returns with no D3D/DXGI transition. Report `FRAME-FINALIZE-PROBE-RESULT.md`.
+Status: applied
+
+## 2026-07-16 04:53 — Add event-bounded Unity readable-range decoder probe
+File(s): engine/wine/dlls/ntdll/unix/macrunner_hb.c
+Type: DIAGNOSTIC
+What: Added env-gated `MACRUNNER_HB_READABLE_RANGE_DECODE_PROBE`. On a Gfx-worker wake/refill event it captures the packed readable start/end and exact bytes immediately before the fused refill-return/consumer block, recomputes effective readable as `min(+0x110, max(0, +0xc0 - +0x114))`, selects the one range containing `0x27a9`, then records a bounded consumer control-flow trace. The prior ring per-block probe can remain off.
+Why: The previous ring trace proved token receive and readable-limit update but could not distinguish a missing decoder/handler from a later rendering wall. Two invalid probe formulations were rejected: an epilogue-only hook was skipped by HyperBridge block fusion, and `+0x10c` was stale at block entry. The final probe uses the actual fused block boundary and producer counters.
+Verify: Project-env/ccache rebuild returned RC0 with no `install skipped`; strict deployed codesign passed. Built ntdll SHA `1751613233a94f6f0d708898a789517d8d4ebf347092d13d65e8e2952a1cf7f7`, signed dist SHA `acdc9346fd00442b927140cdbae28c4a17a691cfff5da7c0a52f8396b5e55455`. Sealed 600 s diagnostic run decoded `0x27a9 -> Unity+0x11cb4f7`, then `0x2713` into real D3D11 ClearRTV/ClearDSV calls; report `READABLE-RANGE-DECODER-RESULT.md`.
+Status: applied
+
+## 2026-07-15 23:18 — Add event-armed Unity Gfx ring-pop/callback probe
+File(s): engine/wine/dlls/ntdll/unix/macrunner_hb.c:23251-23690,24164-24247,34925
+Type: DIAGNOSTIC
+What: Added env-gated `MACRUNNER_HB_RING_POP_PROBE` with an independent ~5000-line budget. A Gfx-worker `dequeue-ready` event arms TLS state for exactly one token cycle; the next wait or a 4096-block cap disarms it. The probe preserves the cleared wait address through the scheduler's atomic signal record, resolves the worker object from nonvolatile `RDI` on exact Unity resume, asserts `[object+0x60] == signal`, then records raw availability fields (`c0/10c/110/114/140/148/14c/154`), backing-buffer words, and dynamic callbacks `+0x180/+0x118/+0x128` at the exact Unity worker RVAs.
+Why: The sealed scheduler run proved wake→dequeue-ready pairs, including token `0x27a9`, but not whether the returned readable range advanced or which callbacks ran. Unity byte truth shows `object+0xc0 - object+0x114` is the current allocation-block availability and the post-wake chain tests `+0x180` then calls `+0x118`; event-armed snapshots distinguish failed refill, skipped callback, timing callback and downstream dispatch without a continuous observer.
+Verify: Final source diff/audit passed. Rebuilt through project env/ccache with no new probe warning/error and no `install skipped`; unsigned build SHA `337521d996b875d4a1fcb76bcb1fd27ac8369a1fd881d380dd752d5909f51d63`, deployed ad-hoc signed SHA `5a8dce42961a2322327250647d2fd7bb8ea1f774854c1c31365280829eca1d9c`, strict codesign passed. Sealed 600s HK run proved 208/208 object-signal matches, `0x27a9` publication/refill, `+0x180=NULL`, `+0x118=Unity+0x9e0da0` timing callback, main alive at +590.918s, all fault families zero, and no real GetBuffer; report `RING-POP-PROBE-RESULT.md`.
+Status: applied
+
+## 2026-07-15 22:28 — Add event-driven Unity Gfx-thread boundary probe
+File(s): engine/wine/dlls/ntdll/unix/macrunner_hb.c:22899,23245-23455,23700-24009,29050,32899
+Type: DIAGNOSTIC
+What: Added env-gated `MACRUNNER_HB_GFX_THREAD_EVENT_PROBE`. It logs only thread create/name, Unity Gfx worker `WaitOnAddress` wait/return edges, a matching producer wake, and calls to exact synthetic import slot 984 (`0x6f0000003d80`). The valid build captures the caller of Unity's semaphore-release/acquire helper from `[rsp+0x30]` (nested import return + helper shadow/prologue), allowing the enqueue and worker-continuation sites to be disassembled. It does not register a per-block hook or create a sampler/observer thread.
+Why: The post-u128 baseline creates the swapchain and keeps main alive, but never calls `GetBuffer`. Evidence is needed at the actual main-producer/Gfx-consumer boundary to distinguish no enqueue, missing wake, failed dequeue, or a command stream that never requests the backbuffer. The same run must also identify the hot synthetic thunk without guessing from its slot number.
+Verify: Source diff-check and call/signature audit passed. The first diagnostic exposed and rejected the initial `+0x28` attribution; corrected rebuild through project env/ccache had no new probe warning/error and no `install skipped`. Valid build SHA `25ffbb6b349df01cabe403c4c14a488a5dfdacc252cf476123df031cba84ec97`, deployed ad-hoc signed SHA `8467388bd799ec9f6f630e8938e6092cdee2916b5b1f2e8a0e1651c7a84c5b45`, strict codesign passed. Sealed 600s HK run produced 240/240 enqueue-wake/dequeue-ready pairs (220/220 after MakeWindowAssociation), with no runtime fault family; report `GFX-THREAD-EVENT-PROBE-RESULT.md`.
+Status: applied
+
+## 2026-07-15 18:40 — Fix stale live-host write protection cache
+File(s): engine/hyperbridge/src/hb_arm64_codegen.c:5985, engine/hyperbridge/tests/hb_test_runner.c:17136
+Type: ROOT-FIX
+What: Changed `hb_jit_live_host_ptr()` so write requests do not reuse cached live host pointers. Write paths now refresh Mach VM protection before allowing raw stores; stale RW cache entries no longer bypass W^X after a guest page flips back to RX. Expanded the executable-page XMM store regression to prime the live pointer cache while RW, flip the mapping to RX, then issue an unaligned 128-bit store across the page boundary.
+Why: Hollow Knight reached a second raw memcpy-to-RX path through `hb_jit_helper_store_u128` and `hb_jit_live_host_ptr`. The previous 128-bit store fix covered the general memory-write path, but this helper could reuse a cached writable host pointer after Mono changed the live page protection, corrupting executable code and later blocking the graphics path.
+Verify: `hb_test_runner --fast-family jit_xmm_store_wx` passed 2/2. Rebuilt `libhyperbridge.a`, relinked/deployed/codesigned arm64ec `ntdll.so`, then ran the 600s Hollow Knight verification: Mono 0x2791bc, UDF0, SIGILL, SIGBUS, fastfail, import951, c000007b and pc=0 were all 0; main stayed alive to timeout. Graphics remains blocked before real GetBuffer/RTV/OMSet/Present and pixel gate is black.
+Status: applied
+
 ## 2026-06-07 03:48 — PE32 deploy: copy wow64/xtajit DLLs into syswow64
 File(s): scripts/sync-prefix-from-dist.sh
 Type: DIAGNOSTIC
@@ -708,3 +788,851 @@ Status: native-memmove-port-landed-default-off
 2026-07-04 · JIT last_result per-block reset
 - Cleared `ctx->last_result` before each native JIT block execution to prevent stale helper MEMORY_FAULT state from poisoning later control-only blocks.
 - Validation: control smoke clean; ABZU c000007b/runtime_fail/jit_fail dropped to zero, but new host-side c0000005 surfaced in ntdll debug-string path before real D3D11CreateDevice.
+
+## 2026-07-10 — Lane A ARM64X dual delay-import view normalization
+
+File(s): `engine/wine/include/winnt.h`, `engine/wine/tools/winedump/pe.c`, `engine/wine/dlls/ntdll/loader.c`, `tests/hyperbridge/test_arm64x_delay_import_view.py`
+Type: ROOT FIX / ARM64X LOADER
+What: Corrected the ARM64EC V2 metadata field names used by Wine and winedump, then taught `LdrResolveDelayLoadedAPI` to select the complete adjacent ARM64X delay-IAT/INT sibling when a native thunk address is outside the descriptor-selected hybrid table. Selection is bidirectional and requires V2 metadata, in-image tables, matching counts, terminators, aligned slot membership, and nonzero auxiliary delay-table metadata.
+Why: Hollow Knight's post-EH service thread reached `sechost!svcctl_OpenSCManagerW`, but native `__delayLoadHelper2` passed `sechost+0x34210` while the AMD64-selected descriptor named the adjacent IAT at `+0x34258`; the old resolver rejected the valid native slot before lookup and the common thunk branched through NULL.
+Verify: Raw PE parsing and fresh `winedump -j loadcfg` agree on `CHPEMetadataPointer` load-config offset `+0xc8`, V2 metadata size `0x74`, `AuxiliaryDelayloadIAT` offset `+0x50`, and `AuxiliaryDelayloadIATCopy` offset `+0x54`. The hybrid sechost fixture has a 9-import rpcrt4 family with exact adjacent span `0x50`. Four focused regressions pass (metadata/real-PE layout, name sibling, ordinal sibling, invalid neighbor). Unix and PE ntdll builds pass; deployed arm64ec-spike SHAs are `c7b02ab0b07f0f84d10365fa2a97a440defb8325279a1957b6a432f43ac15477` and `95356460bf1e40180f420fb98e4bd8456781fc9b2c6fb71c8966c8ef59c9cd9c`.
+Status: focused-build-and-tests-pass-awaiting-SCM-and-HK-runtime-verification
+
+## 2026-07-10 — Hollow Knight post-OMSet thread-lifecycle probe
+
+File: `engine/wine/dlls/ntdll/unix/thread.c`
+Type: DIAGNOSTIC ONLY / DEFAULT-OFF
+What: When the existing `MACRUNNER_HB_PRESENT_FOLLOW_PROBE` is enabled, emit one bounded lifecycle line at `abort_thread`, `NtTerminateThread` enter/result, `exit_thread`, and the final pthread exit.
+Why: A valid post-fix HK run armed the creator follow probe at UnityPlayer+0x9054ff, executed exactly 128 blocks through the WM_IME_COMPOSITION callback, then produced no normal HB exit/fault marker. A native sample proved the exact creator pthread absent while the process and 52 other threads remained. The existing top-level `present-follow-exit` path was therefore bypassed; the next evidence boundary is Wine's actual thread termination layer.
+Verify: Targeted Unix ntdll build passed; marker is present; codesign verification passed. Deployed Unix SHA is `5fc46eb6476d7cdeaf481c482aef7c278ca1e2889dc66e07ff602fc06edeaa20`; PE ntdll remains the ARM64X delay-IAT build `95356460bf1e40180f420fb98e4bd8456781fc9b2c6fb71c8966c8ef59c9cd9c`.
+Run validation: The lifecycle run produced 19 records but none for creator `tid=0x24`; that thread remained live through 20,250,624 sampled blocks / +159.681s after OMSet. The trace correctly captured unrelated early exits and timeout cleanup. No semantic thread-lifecycle defect is evidenced.
+Status: diagnostic-complete-no-lifecycle-fix; vanished-thread hypothesis disproved/nondeterministic
+
+## 2026-07-10 — Hollow Knight producer vfunc58 TIME_ALIGN validation
+
+File: no engine source change; existing default-off `MACRUNNER_HB_TRACE_RENDER_TIME_ALIGN` only
+Type: DIAGNOSTIC VALIDATION / NO SEMANTIC PATCH
+What: Ran exactly one 440s Hollow Knight probe with only TIME_ALIGN enabled. Producer tid `0x8000` returned from vfunc58 for item `0x34008a310`, published `item+0x40: 0 -> 1`, and consumer tid `0x3000` read 1 on the identical item within 113us.
+Why: The Direct Codex handoff required classifying whether PreloadManager never enters, never returns, publishes a different item, or suffers a stale consumer read before any patch.
+Verify: TIME_ALIGN=186 (consumer 134, producer 16, wait 36); exact `0x586d68=2`; semantic ready latch `seq=70744/70746`; same-item consumer observations=4, all `item40=1`; runtime faults=0; real Present1=0; pixel=0. Literal `0x586d65`/`0x586da3` sites did not emit, but adjacent before/after blocks captured return and publication.
+Status: no A/B/C/D/E failure branch; load completion proven; no code change justified
+
+## 2026-07-10 — Hollow Knight bounded post-ready consumer follow
+
+Files: `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `scripts/validate-hk-post-ready-consumer-follow.sh`
+Type: DIAGNOSTIC ONLY / DEFAULT-OFF / ZERO SEMANTIC MUTATION
+What: Added `MACRUNNER_HB_POST_READY_CONSUMER_FOLLOW`, armed only by the same latched manager/item at consumer `UnityPlayer+0x587249` with a successful `item+0x40==1` read. It follows only that tid, logs at most 64 sparse samples, and stops at the first D3D/DXGI boundary, thread exit, 8M blocks, or 60s.
+Why: Run 145409 proved producer publication and consumer coherence, moving the unresolved boundary to the consumer's natural post-ready continuation.
+Verify: Focused static validation PASS; targeted Unix ntdll build PASS; deployed/codesigned Unix SHA `b5985258eca783e38e68c2772c937e669b03ecd1a1c9ea902839a8cf0dd4c465`; ARM64X PE ntdll unchanged `95356460bf1e40180f420fb98e4bd8456781fc9b2c6fb71c8966c8ef59c9cd9c`. Single run produced arm=1/sample=64/stop=1, TIME_ALIGN=0, first PC Unity+0x587289, then active Unity/Mono integration, real Present1=0, pixel=0.
+Run finding: Separate tid 0x124 later proves `CRITICAL_SECTION_EX_FORCE_DEBUG_INFO_IGNORED`: the existing semantic fastpath discards Ex flags and leaves DebugInfo=-1, causing rpcrt4's required Spare[0] write to address 0x27. No semantic fix included.
+Status: diagnostic-complete; next branch is critical-section initialization fastpath family audit/fix
+
+## 2026-07-10 — Public critical-section FORCE_DEBUG family
+
+What: Reworked the HB public `InitializeCriticalSection` / `InitializeCriticalSectionAndSpinCount` / `InitializeCriticalSectionEx` and Delete family so Ex validates its supported public/Wine-builtin flags, FORCE allocates and publishes a guest-writable canonical debug object only after checked HB writes, and Delete frees only the exact fastpath-owned allocation. Added a bounded default-off FORCE-init evidence marker and an x64 22-assertion public/direct-Rtl fixture.
+
+Why: The immutable HK run proved rpcrt4 legally requested FORCE, then faulted at `rpcrt4+0x24945` because the semantic import path discarded flags and supplied `DebugInfo=-1`; the terminal STORE address was otherwise correct.
+
+Verify: ntdll all-target build PASS; focused fixture `22 passed, 0 failed`; source/object/build/deploy freshness order verified; Unix and ARM64X codesign strict PASS. Deployed SHAs: Unix `b8183a007bc3ce2e17cfe2257d36e271117618918c0ed0678bd2e16c17c5f87f`, ARM64X `91a44392e38b9e370b092f4e55622e350473aac61c932e74b7580343cfc079b3`, x86_64 `f661dcb682d07826ea4c27dab41f00d86ccd2ad7f4373996825a915f1d4dfdae`.
+
+Status: `FAMILY_FIX_BLOCKED_BEFORE_RUNTIME`. The mandatory full HB floor is `444 passed, 28 failed`, so the brief prohibited an HK run. No Present/pixel claim; no unrelated HB repair attempted.
+
+## 2026-07-10 — HB floor-28 provenance (no engine change)
+
+What: Performed a read-only provenance audit of the blocking full HB floor. Captured one exact current inventory (`443/29` after the recorded `444/28`), audited the HB/Wine dependency and timestamp boundary, and produced one detached clean-checkpoint baseline (`443/26`). No production source, semantic behavior, counter, threshold, expected value, test selection, build flag, deployment, Wine prefix, or game state was changed.
+
+Why: The critical-section family brief stopped before runtime on a summarized 28-failure HB floor; exact provenance was required before attributing or repairing any failure.
+
+Verify: All original 28 assertions recur in the current rerun; one additional REP MOVSQ result assertion moves under the unchanged current runner. Clean checkpoint `2ddb605f` shares 24 exact assertions with the original 28. HB binaries predate the Wine lane by about 7.5 hours, and its Makefile has no dependency on the lane's `macrunner_hb.c` or fixture. Temporary worktree removed; active HB hashes unchanged.
+
+Status: `NONDETERMINISTIC_FLOOR`; zero `LANE_REGRESSION`, 24 `IDENTICAL_PREEXISTING`, four `UNCLASSIFIED` in the original 28. `FAMILY_FIX_BLOCKED_BEFORE_RUNTIME` remains; ABZU owns the next runtime slot.
+
+## 2026-07-10 — Conditional HB differential waiver evaluation (no engine change)
+
+What: Evaluated the completed floor provenance against every mandatory condition in the conditional critical-section runtime brief. No build, test, deploy, Wine, game, production source, threshold, expectation, or runtime state changed.
+
+Verify: Required verdict is `PREEXISTING_IDENTICAL_FLOOR_DEBT`; actual verdict is `NONDETERMINISTIC_FLOOR`. Exact comparison is current `444/28` then `443/29`, clean baseline `443/26`, 24 shared, four current-only, two baseline-only, one adjacent-current rerun-only. Four current-only failures remain unclassified and one baseline-only failure lacks nondeterminism evidence.
+
+Status: `WAIVER_CONDITIONS_NOT_MET`; conditional HK attempts=0, absolute HB floor remains red, historical `FAMILY_FIX_BLOCKED_BEFORE_RUNTIME` unchanged, NOT_GOLDEN/no tag.
+
+## 2026-07-10 — Critical-section causal-isolation runtime (no engine change)
+
+What: After an explicit causal-isolation waiver and ABZU V2 slot release, executed exactly one 540-second-bounded HK diagnostic comparison with existing FORCE-init, post-ready, dispatch/cache/hot-block, and D3D/DXGI evidence. No source/build/deploy/test, semantic mutation, forcing, ledger, retry, or extension occurred.
+
+Why: The same `b4690115…` HyperBridge archive was linked into both the prior `b5985258…` diagnostic ntdll and current `b8183a00…` family ntdll, isolating the reviewed critical-section lane for one comparison despite the separately red/nondeterministic absolute floor.
+
+Verify: Sole run exited rc 253 at +44.779s. FORCE-init=0 and prior rpcrt4/0x27=0 because the family boundary was unreached. A replacement `c0000005` repeated 22 times at `kernelbase+0x3a91c`, fault `0x88`; real factory/device/swapchain/OMSet/Present1/pixel all remained zero. Triage reports ladder regression to rung 1. Own prefix and duplicate overlay removed; zero scoped runtime leftovers.
+
+Status: `CS_FAMILY_RUNTIME_REGRESSION`; Mono signal also insufficient, but the replacement fault is decisive. Absolute HB floor remains `NONDETERMINISTIC_FLOOR`, NOT_GOLDEN/no tag; stop before any new fault fix.
+
+## 2026-07-10 — kernelbase+0x3a91c static triage (no engine change)
+
+What: Performed static-only PE/pdata/xdata, source, disassembly, immutable-log, hash/route, critical-family, and signal/exception analysis of the replacement HK fault. No source, build, test, deployment, runtime, ABZU, timeout, semantic, or probe state changed.
+
+Verify: Current PC is native ARM64X kernelbase `wcstombs_dbcs` line 3131, `ldrh w16,[x9,x16,lsl #1]`; LR is the `WideCharToMultiByte` return after `wcstombs_codepage`. All 22 SEGV records share PC/LR/EA `0x88` and descend by `0x1690`; static exception setup proves nested dispatcher re-entry before terminal callback-domain stack exhaustion. The prior run explicitly used a non-ARM64X kernelbase route; current route is ARM64X SHA `0dc7ba3a…020b`.
+
+Status: `BINARY_ROUTE_DRIFT` with secondary `EXCEPTION_REENTRY_CORRIDOR_LOCALIZED`. Exact bad `WideCharTable`/WCHAR/codepage is unproven because the immutable record lacks GPRs. No patch authorized; one default-off one-shot pre-load owner/view probe is specified only for future review.
+
+## 2026-07-10 — dist provenance before wcstombs (no engine change after supersession)
+
+What: Stopped the in-progress wcstombs probe on supersession and preserved its already-edited but never-deployed state as a compact NOT_GOLDEN manifest/patch/checksum set. Then performed the requested read-only build/dist/reference provenance audit. No source restoration or further source edit, build, test, install, deployment, Wine, game, ABZU, commit, or tag occurred.
+
+Verify: The active dist was broadly reinstalled at 16:25–16:27: all 4,701 regular-file mtimes cluster there. Current versus rung13 has 2,334 changed paths, although all 76 NLS files match byte-for-byte. Prior runtime explicitly reported `not-arm64x`; current kernelbase is ARM64X SHA `0dc7ba3a…020b`. `a29dd3c6…` is only the rung13 Unix ntdll identity, and no complete capture-time kernelbase-plus-all-ntdll manifest exists.
+
+Status: `UNEXPECTED_DIST_DRIFT_PROVEN`; `CS_FAMILY_RUNTIME_CLOSURE_PROVEN=NO`, `FULL_RESTORABLE_FLOOR=NO`, `SAFE_TO_STAGE_SIDE_BY_SIDE=YES`. No Present1 or pixel claim. Stop before probe continuation or runtime.
+
+## 2026-07-10 — pure-kernelbase stage release aborted (no engine change)
+
+What: Verified the approved one-file checkpoint and release preconditions, then fed its fenced zsh recipe unchanged to the authorized isolated-stage command. The recipe failed its APFS guard before temporary helper creation, forced-clone invocation, stage creation, or runtime. No source, active dist, deployment, Wine prefix, ABZU state, commit, tag, semantic behavior, or timeout changed.
+
+Verify: The stored awk expression uses double-escaped parentheses and returns empty; a read-only control parser reports `Type (Bundle)=apfs` for `/dev/disk3s1`. Stage and recursive manifest are absent. Active/candidate/payload hashes remain `0dc7ba3a…020b` / `23b420d2…62a8f` / `23b420d2…62a8f`; result-manifest checksums pass and post-abort host isolation is unchanged.
+
+Status: `STAGE_MATERIALIZATION_ABORTED`; runtime wrapper attempts=0, HK attempts=0. No retry or recipe fix under this release, and no Present1/pixel/closure claim.
+
+## 2026-07-11 — pure-kernelbase full-copy diagnostic (no engine change)
+
+What: Materialized one temporary archive-preserving copy of the active Wine dist, proved exact inventory equality, replaced only staged kernelbase, proved exactly one SHA-only delta, and executed the sole authorized diagnostic runtime. No source, active dist, checkpoint, ABZU, semantic, timeout, commit, tag, golden, or floor state changed.
+
+Verify: The runtime reached prefix sync, then failed at `__wine_unix_call_dispatcher_arm64ec not found` before kernelbase route selection or Mono. Wrapper/game rc=1; all requested fault, Mono, graphics, Present1, and pixel signals are non-reach. Canonical run log SHA is `2b9f5335…8f25b`.
+
+Status: `FULLCOPY_DIAGNOSTIC_NO_REACH`. Prefix, 2.1-GiB stage, and inventory scratch removed; active kernelbase remains `0dc7ba3a…020b`; host released with no retry.
+
+## 2026-07-11 — HK post-Mono discriminator static ready (diagnostic only)
+
+What: Preserved V5 as DIAGNOSTIC_ONLY and statically mapped its terminal Unity log to x64 `UnityPlayer.dll` RVA `0x72f887`; the logger returns at `0x72f893`, and the exact resolver slot proves the next native Mono call is `mono_set_dirs` at `0x72fa29`. Added one confined default-off/atomic-one-shot observer in Unix ntdll's ARM64-host x64 run loop. It samples a fixed 262,144 translated-block window into a fixed 65,536-PC table and records per-module uniqueness, IR-cache hits/misses, quarter growth, last-new position, and top repetition with at most three success-path lines.
+
+Safety: The enable chain is Unix-host `macrunner_hb_cached_env_flag` → libc `getenv`, not guest PEB state. The disabled path is guarded; the observer writes no guest/context memory, changes no runtime result/cache/timeout/readiness/DXMT/Metal semantics, and frees its bounded table on summary/normal exit.
+
+Verify: Focused no-game structural unittest 11 passed/0 failed; Python syntax and owned whitespace checks pass. No build, deploy, Wine/game run, active-dist change, ABZU access, commit, tag, Present, or pixel claim. Exact source/test delta and decision matrix are sealed in `reports/phase4-hollow-knight/HK-POST-MONO-DISCRIMINATOR-STATIC-READY-20260711-NOT_GOLDEN/`.
+
+Status: `HK_POST_MONO_DISCRIMINATOR_STATIC_READY`; future runtime requires separate serialization and exactly one bounded attempt.
+
+## 2026-07-11 — HK post-Mono late-load hardening (static only)
+
+What: Applied the sole optional hardening from the independently verified Opus pre-runtime audit: while the existing one-shot discriminator is armed and `mono_base` remains NULL, it re-resolves `mono-2.0-bdwgc.dll` at post-arm sample 1 and then every 4,096 samples, revalidates AMD64, and refreshes `mono_size` before classification. The unchanged 262,144-sample window bounds this to 64 post-arm retries (65 total Mono lookups including arm time).
+
+Safety: Default-off/host-getenv gating, atomic claim, observer count, allocation, log budget, IR-cache accounting, guest state, timeout, cache behavior, and all runtime semantics are unchanged. No new log was added; a successful late transition uses the existing `mono-latched` record. The mandatory `armed mono=0x0` → Branch E, never B, rule remains authoritative.
+
+Verify: Original 11 static checks plus 4 focused late-load cases pass (15/15); Python syntax, source/test whitespace, and exact-delta apply-check pass. No build, deployment, Wine/HK process, active-dist change, ABZU access, commit, tag, Present, or pixel claim.
+
+Status: `HK_POST_MONO_DISCRIMINATOR_HARDENED_STATIC_READY`; compact hardening-only checkpoint at `reports/phase4-hollow-knight/HK-POST-MONO-DISCRIMINATOR-HARDENED-STATIC-READY-20260711-NOT_GOLDEN/` requires independent verification before separate runtime authorization.
+
+## 2026-07-11 — HK post-Mono runtime preflight route mismatch (no engine change)
+
+What: Re-ran the hardened 15-case static gate and the authorized fail-closed runtime preflight. All source/checkpoint, disk, prior-attempt, process-isolation, and PID99890 waiver gates passed, but the binary-route gate failed before backup/build: `unix/macrunner_hb.c` is an ARM64 Unix-nativized source linked only into Mach-O `dlls/ntdll/ntdll.so`; the explicitly authorized x64 PE `x86_64-windows/ntdll.dll` target neither depends on it nor contains the observer/gate strings.
+
+Safety: No source edit, backup, build, deploy, prefix, Wine/HK process, active-dist mutation, signal, ABZU access, runtime attempt, retry, or extension occurred. Spending the sole run with the PE-only build would leave the observer absent.
+
+Status: `PREFLIGHT_ROUTE_MISMATCH`; build/deploy/runtime attempts `0/0/0`. Compact evidence is sealed at `reports/phase4-hollow-knight/HK-POST-MONO-ONE-RUNTIME-PREFLIGHT-ROUTE-MISMATCH-20260711-NOT_GOLDEN/`; corrected authority must name the ARM64 Unix `ntdll.so` build/deploy path while leaving x64 PE ntdll unchanged.
+
+## 2026-07-11 — HK post-Mono one diagnostic runtime (temporary build fully restored)
+
+What: Under corrected authority, privately backed up the entire focused ntdll build subtree and dist Unix ntdll, focus-built/deployed only ARM64 Mach-O `ntdll.so`, proved its observer schemas/host gate/architecture/codesign and one-path dist drift, then ran the single 540-second-bounded HK attempt with explicit x64 loader and only the post-Mono discriminator flag added.
+
+Result: The attempt exited naturally rc253 at +43.699s before the observer armed. Counts `armed/mono-latched/summary=0/0/0` and Mono path/config `0/0` classify once as frozen Branch A. Kernelbase base `0x87efe7e0000` repeatedly faulted at RVA `0x3a91c`/address `0x88` 22 times, then reached one c00000fd stack exhaustion. Triage counts were dxgi IAT/real factory `7/0`, d3d11 IAT/device `1/0`, swapchain/Present/Present1/pixel `0/0/0/0`; all downstream zeros are non-reach, not closure.
+
+Restore: All 195 build entries and all 4,732 dist entries returned byte/size/mode/mtime_ns exact to pre-build inventory hashes; build/dist Unix ntdll and immutable x64 PE identities were restored and strict codesign passes. Prefix, backup, overlay, diagnostic cache, and non-waived runtime/build processes are absent.
+
+Status: `HK_POST_MONO_ONE_DIAGNOSTIC_BRANCH_A_COMPLETE`, attempts 1/1, retries/extensions 0/0. Result: `reports/phase4-hollow-knight/HK-POST-MONO-ONE-DIAGNOSTIC-RUNTIME-20260711-NOT_GOLDEN/RESULT.md`. No semantic edit, ABZU touch, commit/tag, Present, pixel, or golden claim.
+
+## 2026-07-11 — ARM64X locale data-view mirror family fix
+
+What: Changed only the `kernelbase/locale.c` ARM64X data-copy mechanism so its helper takes an explicit delta. Classified the complete 57-object family from linked symbols: 24 core/NLS/codepage objects use `0x27e8`; `unix_cp` plus 32 registry-entry objects use `0x1b00`. The pure-image CHPE guard, call order, and non-copy semantics are unchanged.
+
+Why: Static Branch-A/V5 proof showed the old universal `0x27d8` matched none of the 57 pairs. It shifted `ansi_cpinfo` by 16 bytes and copied `geo_ids_count=301` onto its header, displacing `WideCharTable` into the `DBCSOffsets` slot and causing the native `wcstombs_dbcs` fault corridor.
+
+Tests: New focused structural/synthetic/pure/post-link suite passes 7/7 after the targeted ARM64X kernelbase build; all 57 linked destinations are exact and unique. Python AST, whitespace, and owned-patch reverse apply-check pass. The unrelated unchanged HB floor remains nondeterministic red at `442/30`, exactly the documented failure-set union.
+
+Status: `HK_ARM64X_LOCALE_MIRROR_FAMILY_FIX_STATIC_READY`. Build-only checkpoint: `reports/phase4-hollow-knight/HK-ARM64X-LOCALE-MIRROR-FAMILY-FIX-FORENSIC-CHECKPOINT-20260711-NOT_GOLDEN/`. Active dist is unchanged; no deploy/runtime/ABZU/commit/tag or graphics truth claim.
+
+### 2026-07-11 — ARM64X locale mirror family, one-runtime diagnostic
+
+What: Materialized one throwaway full-copy dist and replaced only staged `aarch64-windows/kernelbase.dll` with the verified family build `893c6359…8c84`; launched one canonical 540-second HK attempt with explicit x64 loader and only the default-off owner/view diagnostic added. No source or active-dist file was changed.
+
+Evidence: The loaded diagnostic emitted two process-attach family syncs with `core_delta=0x27e8 entry_delta=0x1b00` and four matching verification rows. Mono path/config reached `+38.860/+38.861s`; the prior `kernelbase+0x3a91c fault=0x88` corridor and `0xc00000fd` recursion were both zero.
+
+Limitation: `macrunner-hb-wcstombs-owner-view` was zero. The eligible bounded owner/CPTABLEINFO/WideChar/DBCS boundary did not execute, so this run does not prove the locale defect closed. DXGI real factory, D3D11 real device, swapchain, Present/Present1, and pixel counts were all zero.
+
+Status: Attempts 1/1, no retry authorized. Cleanup restored the exact active 4,732-entry inventory and removed the scoped stage/prefix/overlay/pointer. Result is `DIAGNOSTIC_ONLY / NOT_GOLDEN` at `reports/phase4-hollow-knight/HK-ARM64X-LOCALE-MIRROR-FAMILY-ONE-DIAGNOSTIC-RUNTIME-20260711-NOT_GOLDEN/`.
+
+## 2026-07-11 — HK run-contract telemetry summary (static only)
+
+What: Added measurement-only HyperBridge contract telemetry under the existing
+`MACRUNNER_HB_TRACE_TRANSLATION_CACHE` path. The existing
+`macrunner-hb-translation-cache-summary` line now has `open_ok`, `open_fail`,
+`compile_count`, `translation_count`, `distinct_translation_count`,
+`dispatches`, `blocks`, and `steps` in addition to existing cache counters.
+
+Safety: No translation, cache, dispatch, signal, timeout, graphics, Wine/game,
+A/A runtime, ABZU, commit, tag, or golden-claim behavior was authorized or run.
+`MACRUNNER_HB_TRACE_DISPATCH_STATS` remains independent and is not required for
+the contract summary.
+
+Tests: `make -C engine/hyperbridge contract-telemetry-test` passed 4/4 focused
+tests; `make -C engine/hyperbridge tests/hb_test_runner` linked; `make -C
+engine/hyperbridge all` built `libhyperbridge.a` and `libhyperbridge.dylib`.
+
+Status: `HK_CONTRACT_TELEMETRY_READY` pending separate run-contract A/A
+authorization. Static report:
+`reports/phase4-hollow-knight/HK-CONTRACT-TELEMETRY-STATIC-20260711-STATIC_ONLY-NOT_GOLDEN/`.
+
+## 2026-07-11 — HK guest-PEB control observer (static only)
+
+- Added a default-off, one-shot PE-side scan at `loader_init` immediately before main import fixup. The scan selects the finalized native/WOW64 PEB view, validates readable bounds and exact double-NUL termination, caps input at 1 MiB/8192 records, and emits only SHA-256 digests, UTF-16 lengths, and source ordinals through a fixed-width PE/Unix ABI.
+- Added host-only activation controls excluded from both the Wine-created guest environment and the run-contract modeled environment. Publication is atomic/no-overwrite per process/view; partial, collision, wrong-view, and ambiguous-main states fail closed in the C7 collector.
+- Static/Python verification: G0-G31 32/32 and retained identity-ledger 78/78. No product build, sanitizer build, control child, title, runtime, game, publication enablement, or ABZU access was performed. Verdict remains `HK_GUEST_PEB_CONTROL_OBSERVER_CONFORMANT_STATIC_BUILD_REQUIRED`.
+
+## 2026-07-11 — HK guest-PEB focused build stopped at PE link
+
+- Verified the independent Opus authorization and static checkpoint, live source 11/11, two clean pre-build host samples, 61.06–61.11 GiB headroom, zero prior observer attempts, and the untouched PID 99890 waiver.
+- The single ccache-disabled focused ntdll build compiled the Unix publisher and x86_64 PE scanner objects, but the x86_64 PE link returned rc=2: Wine basename resolution selected Homebrew GCC 15.2.0, which rejected required clang flags `--no-default-config` and `-fms-hotpatch`.
+- Fail-closed/no-retry authority stopped sanitizer, regression-floor, and control-child stages. No Wine/title/game, ENABLE, shard, canonical wiring, deploy, cache mutation, PID signal, or ABZU action occurred. Dist remained unchanged; final host samples were clean. Checkpoint: `reports/phase4-hollow-knight/HK-RUN-CONTRACT-GUEST-PEB-CONTROL-OBSERVER-20260711-BUILD_CONTROL_ONLY-NOT_GOLDEN/`.
+
+## 2026-07-11 — HK guest-PEB control-name source-boundary repair
+
+- Replaced the `wchar_t` `L""`/runtime-`wcslen` control table in `observer_control_name` with six explicit `WCHAR[]` arrays and compile-time `ARRAY_SIZE` lengths; case folding and exact `=` boundary semantics are unchanged.
+- Test-first focused regression went RED on the old source and GREEN after the repair. The post-repair matrix passed identically under Apple clang plain O0/O1/O2, ASan+UBSan, and TSan: 18/18 control variants rejected, 8/8 non-controls accepted, and 18/18 privacy checks emitted nothing.
+- G0-G31 passed 32/32, the identity floor passed 78/78, and the ccache-disabled repo llvm-mingw clang 22.1.5 focused ntdll compile/link passed. No install/deploy, Wine/control/title/game, A/A, cache mutation, or ABZU action occurred; control attempts remain zero.
+
+## 2026-07-13 — HB critical-section family native-forward (Fix A, env-gated)
+
+- Added `MACRUNNER_HB_CS_FORWARD_NTDLL=1` in `unix/macrunner_hb.c`. It bypasses the custom HB semantic for the complete Enter/Leave/TryEnterCriticalSection family, allowing generic native PE dispatch to use the kernel32/kernelbase spec forwarders to the single ntdll Rtl implementation and wait protocol.
+- Initialize/Delete/SetCriticalSectionSpinCount and all unrelated semantics are unchanged. `tools/test_hb_cs_forward_source.py` statically guards all three siblings and both spec-forwarder families.
+- Main ntdll.so build passed, SHA `3d7d65c1…`. One `NOT_GOLDEN` ABZU verify did not exercise the forward branch and failed earlier with terminal `c000007b` in a winemetal thunk; no claim about ABBA removal is made. Overlay was restored and no retry occurred.
+
+## 2026-07-13 — x64 ntdll stack-probe semantic registration + validated dynamic-IAT recovery
+
+- Previous fix: Fix A (`MACRUNNER_HB_CS_FORWARD_NTDLL`) could not be evaluated because Main fell through an unclassified `winemetal` IAT jump to an ARM64EC `___chkstk_ms` target. The same binary reproduced with Fix A off, proving Fix A was not causal.
+- Evidence targeted: historical ABZU logs recovered `ntdll.dll!___chkstk_ms registered=0` from the exact `ff 25` block and resumed correctly; Main lacked `find_import_name_by_iat_jump` and its run_x64 branch. Loader source showed the EC target returned unregistered solely because the stack-probe family was not semantic and the target was non-executable.
+- Primary repair in `loader.c`: all three ntdll spellings are semantic imports, so loader-time registration no longer depends on executable-section classification.
+- Runtime contract in Unix HB: registered stack probes finish the x64 import as Wine's no-op while preserving RAX. A copied and bounded PE import-table/IAT recovery provides defense for late/dynamic bindings; it requires valid image ranges, `ff 25`, bounded descriptors/thunks, and slot-target equality. No module-specific exception exists.
+- Family: x64 ntdll stack probes. Members: `___chkstk_ms`, `__chkstk_ms`, `__chkstk`. Coverage: loader registration + registered dispatch + validated dynamic fallback for all three. Tests: `tools/test_hb_dynamic_iat_recovery_source.py` and `tools/test_hb_cs_forward_source.py`, both PASS. Audit completed: yes.
+- Not extending to: `__chkstk_arm64ec` or unrelated CRT helpers; neither is the evidenced x64 IAT family.
+- Coherent build PASS: Unix ntdll `af774f21…`, ARM64X PE ntdll `a62ea85a…`; both matching halves were deployed together. ABZU verify is PARTIAL: Fix A hits and ABBA disappears, but the stack-probe/dynamic-IAT path is not reached because the game stalls earlier at a post-ThreadInit event wait.
+
+## 2026-07-13 — env-gated ABZU event/thread lifecycle observer
+
+- Added diagnostic-only `MACRUNNER_HB_EVENT_LIFECYCLE_PROBE=1`: it aliases the existing bounded HB import and Wine low-level event tracers and adds a bounded 512-record thread create/server-suspend/NtSuspendThread/NtResumeThread lifecycle trace. Default behavior and event/thread semantics are unchanged.
+- Source guard `tools/test_hb_event_lifecycle_probe_source.py` passes together with the Fix A and dynamic-IAT guards. Coherent build PASS: Unix ntdll `778b3e87…`, ARM64X PE ntdll `a62ea85a…`; errors and `install skipped` are zero.
+- The sole observer run classified the apparent stall as a phantom: real main `0x009c` completes all `0x98` startup handshakes; TaskGraph worker `0xa4` legitimately waits on idle event `0x94`, pool worker `0xa8` polls idle event `0xa0`, and `0xc8` polls its private idle event. No event fix was made; follow-up belongs at the true main-thread post-handshake boundary.
+
+## 2026-07-13 — env-gated ABZU main 0x009c post-handshake observer
+
+- Added diagnostic-only `MACRUNNER_HB_MAIN_009C_PROBE=1` in `unix/macrunner_hb.c` and a low-level wait callback in `unix/sync.c`. It arms after main TID `0x009c` completes its third successful `0x98` startup handshake, then records bounded main-only waits, imports, guest block exits, and run exits. Default execution and all wait/import semantics are unchanged.
+- Source guard `tools/test_hb_main_009c_probe_source.py` passes together with event-lifecycle, CS-forward, and dynamic-IAT guards. Coherent build PASS: Unix ntdll `c27cf057…`, ARM64X PE ntdll `a62ea85a…`; errors and `install skipped` are zero.
+- Sole probe result: no post-handshake Wine wait. Main terminates guest progress in x64 `ws2_32!unix_call_init`, synchronously calling native `__wine_unix_call_dispatcher` with null unixlib handle for `ws_unix_gethostname`. Root cause is the existing policy that skips most AMD64 builtin DllMains while mixed-view routing can still execute their guest bodies; no runtime fix was made in this task.
+
+## 2026-07-13 — class-level AMD64 builtin Unixlib handle resolution
+
+- Previous fix: capability-based execution of every Unix-capable AMD64 builtin DllMain. Why it did not work: the sealed run reached ws2_32/dnsapi nonzero funcs but stalled in early loader attach, proving arbitrary DllMain side effects are not a safe publication mechanism. The candidate was removed rather than expanded.
+- This fix targets the evidenced class boundary only: when an x64 `WINE_UNIX_CALL` arrives with handle zero, derive the caller module from its guest return PC, query `MemoryWineUnixFuncs`, and dispatch through that module's returned table. Wine `virtual.c` owns/caches Unixlib loading.
+- Not extending to: module-name allowlists, arbitrary DllMain lifecycle, event/wait behavior, or native export routing.
+- New diagnostic gate: `MACRUNNER_HB_BUILTIN_UNIXLIB_RESOLVE=1`; bounded log `macrunner-hb-builtin-unixlib-resolve`. Source guard covers 40 `__wine_init_unix_call` module families and all four prior boundary guards remain PASS.
+- Coherent build PASS: Unix `b60e43c3…`, ARM64X PE `38841810…`; errors/install-skipped zero. Sole ABZU verify is PARTIAL: ws2 resolves (`status=0`, nonzero handle) and main continues with 12 additional ThreadInit successes, but a later UE4 JIT helper memory fault at `0x1405bd441` yields one `c000007b` before real graphics calls.
+
+## 2026-07-13 — bounded JIT memory-helper fault observer
+
+- File(s): `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `tools/test_hb_jit_fault_trace_source.py`.
+- Type: DIAGNOSTIC.
+- What: Added default-off `MACRUNNER_HB_JIT_FAULT_TRACE=1`. TLS records only the first failing special-read/write helper inside each JIT block; a global 128-line budget reports guest TID, block/next PC, helper, exact address/size/result, HB-region classification and x64 registers.
+- Why: sealed ABZU evidence reports generic `JIT helper fault` at block `0x1405bd441`, but does not distinguish unsupported execution from the suspected later `mov rax,[rcx]` NULL read after `CoCreateInstance` returned `REGDB_E_CLASSNOTREG`.
+- Semantics: wrappers return the original helper result unchanged; no recovery, retry, status mapping or interpreter/JIT routing changes. Source guard and all five prior boundary guards PASS.
+- Verify: coherent build PASS: Unix `4b16eda1…`, unchanged matching PE `38841810…`; gate/log strings present; errors and `install skipped` zero (13 pre-existing-style warnings). Six source guards PASS. One 120s NOT_GOLDEN ABZU probe remains pending. The proven `b60e43c3…`/`38841810…` breakthrough dist was floored byte-exact before this edit/build.
+- Run result: observer captured `special-read address=0 size=8` on worker `0xd0`; `RAX=0x80040154`/`RCX=0` binds the guest failure to ignored `REGDB_E_CLASSNOTREG` from WIC Factory2 activation. This is a fresh-prefix COM-registration defect, not a JIT semantic defect. Report: `reports/dualdata/ABZU-UE4-JIT-FAULT-5BD441-CAUSE.md`.
+- Status: diagnostic-verified-root-caused; observer retained default-off.
+
+## 2026-07-13 — opt-in Windowscodecs COM registration for throwaway DXMT prefixes
+
+- File(s): `scripts/mr-run.sh`, ABZU verification overlay `MacRunner-abzu/scripts/mr-run.sh`, `tools/test_mr_run_windowscodecs_regsvr32_source.py`.
+- Type: ROOT-FIX (env-gated diagnostic first).
+- What: Added default-off `MACRUNNER_MR_RUN_REGSVR32_WINCODECS=1`. After System32 synchronization, the runner validates the payload, selects `regsvr32.exe` from the same `${MACRUNNER_PREFIX_SYSTEM32_ARCH}` view, runs bounded `/s C:\\windows\\system32\\windowscodecs.dll`, and propagates missing payload, timeout, or registration failure instead of launching the title.
+- Why: the sealed ABZU WIC worker proved `REGDB_E_CLASSNOTREG`; a template-less prefix skipped wineboot and copied the AMD64 DLL without its COM registry mapping. The selected System32 payload is x86-64 (`d7c75f1d…`). The first candidate also selected x64 regsvr32, but the sealed verify proved that guest launcher exits `INVALID_ARG=1` before loading the DLL. It was corrected to the native ARM64 launcher already proven by the adjacent actxprxy stage; payload architecture remains x86-64.
+- Not extending to: wineboot policy, guest/JIT fault suppression, WIC object emulation, graphics APIs, or default-on behavior before title verification.
+- Verify: both Main and ABZU runners pass `bash -n`; the two-runner source guard proves default-off gating, native-launcher selection, bounded timeout paths, payload check, and nonzero rc propagation. No build required. An explicitly authorized second 300s NOT_GOLDEN run successfully registered x64 windowscodecs through the native ARM64 launcher; prior WIC HRESULT/NULL fault signatures are zero and the title survives to timeout. Graphics remains IAT-only, so the result is PARTIAL rather than end-to-end PASS.
+- Status: native-launcher-runtime-verified; later pre-RHI stall remains.
+
+## 2026-07-14 — bounded HK wait/wake boundary observer
+
+- File(s): `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdll/unix/sync.c`.
+- Type: DIAGNOSTIC.
+- What: Added default-off `MACRUNNER_HB_WAIT_WAKE_TRACE=1`, optional marker-file delayed arming, and a default 5000-line global budget. It records semantic WaitOnAddress guest address/comparand/size, exact per-thread host alert futex and value, waiter/waker Wine TID and name, timeout, caller module/RVA, WakeByAddress mode/target, NtAlertThreadByThreadId, and NtSetEvent. The observer can snapshot already-registered semantic waiters when armed.
+- Why: HK stopped after Mono with UnityGfxDeviceWorker and both DXMT workers parked, but a host sample alone could not distinguish a lost wake from correctly idle downstream queues.
+- Semantics: observation only. Wait/wake/alert/event return values, address values, timeouts, and routing are unchanged. Patch C/D/E/F/G/H and EH benign no-op are untouched.
+- Verify: HyperBridge and ntdll build PASS; errors 0, `install skipped` 0, build/dist byte comparison PASS, strict codesign PASS. Deployed Unix SHA is `d1d48b5b9e30d848854aa327b97875cff6ddf05e0dd702881eb19c1d2270fa7b`.
+- Run result: one 600s marker-gated run plus one 120s capture prove distinct wait addresses. Unity main TID `0x3c` successfully wakes worker `0xe0` five times through UnityPlayer semaphore release, then emits no later release; DXMT encode/finish remain on separate idle alert futexes. Root boundary is upstream producer execution, not Wine wait/wake semantics. Report: `reports/phase4-hollow-knight/WAIT-WAKE-BOUNDARY-RESULT.md`.
+- Status: diagnostic-verified; observer retained default-off.
+
+## 2026-07-14 - Bounded HK main-producer observer
+
+- File: `engine/wine/dlls/ntdll/unix/macrunner_hb.c`.
+- Type: DIAGNOSTIC.
+- What: Added default-off `MACRUNNER_HB_MAIN_PRODUCER_TRACE`, optional arm-file gating, and a bounded event budget for guest main TID `0x003c`.
+- Semantics: reused existing block/import/wait hooks; no synchronization, Fix A, Patch C/D/E/F/G/H, or EH benign-noop behavior changed.
+- Verify: build/deploy SHA-256 `c0e0fe484b2d26b1c059493ed72e60e2bc693996998596ab3135b29e9c707987`; strict codesign and build/dist comparison passed; errors and `install skipped` zero.
+- Run result: immediate post-Mono park disproved. TID `0x003c` executed Mono metadata/assembly blocks and imports until the shared 5,000-event budget exhausted 87 ms after arming; no wait was captured. Late wait/exit remains unresolved and requires `native_tid`, time-stratified blocks, and an independent wait budget.
+- Status: diagnostic-partial; observer retained default-off.
+
+## 2026-07-14 - Refined HK main-producer transition observer
+
+- Files: `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdll/unix/sync.c`.
+- Type: DIAGNOSTIC.
+- What: refined default-off `MACRUNNER_HB_MAIN_PRODUCER_TRACE` with guest/native TID mapping, a 200-block burst followed by approximately two-second PC samples, periodic top-3 import aggregation, an independent 1,024-record wait budget, exact `NtWaitForAlertByThreadId` entry/return fields, and armed `run_x64` exit records.
+- Semantics: observation only. Wait/futex/event return values and scheduling are unchanged; Patch C/D/E/F/G/H, Fix A, and EH benign no-op semantics are untouched.
+- Verify: HyperBridge/ntdll build PASS; Unix build/dist SHA-256 `2782f3bb16b3ca0b9d3b180203731f7d95d98f4f6fa114b9f632e53cda164df1`; byte comparison and strict codesign PASS; errors 0, `install skipped` 0, warnings 15.
+- Run result: guest main `0x003c` maps to native TID `34681011`; it does not remain in Mono or block on handle `0x118`. The wait returns success immediately and ten nested x64 frames unwind normally by `+59.996s`. The unresolved boundary moves to the native caller after final `run_x64` return. Host stack remains unavailable because the sample targeted bash.
+- Status: diagnostic-partial; observer retained default-off. Next evidence must instrument native post-return state, not alter synchronization.
+
+- 10:06 · Diagnostic-only POST_RUN_X64 native observer (default off): independent outer return/native wait/re-entry/thread-exit records; mr-run exact Wine PID handoff and mandatory run-contract/final-child/flight artifacts. Built and deployed ntdll SHA256 f5f5c6c8c30c202f2ad52a51b69f39909988893a0d03f3a51a10b016447a4f87.
+
+- 10:40 · Post-run observer follow-up (source only, not rebuilt/deployed): main thread-exit capture no longer depends on final-return pending and now records run depth/status/native caller module+RVA. mr-run now seeds/finalizes mandatory flight.jsonl. Verified run itself used deployed ntdll f5f5c6c8... and predates these follow-ups.
+
+### 2026-07-14 11:44 +10 - post-run_x64 termination observer verification
+
+- Built/deployed ntdll SHA-256 `da69bb793a634c9b26939ca4664eea567530563c988d055990a1cc5480fa2e77` with existing default-off post-run_x64 observer and NtTerminateThread/exit/abort/pthread coverage.
+- HK diagnostic exercised natural self termination only; static observer suite 6/6 PASS. No engine source was changed after the runtime.
+- Harness-only follow-up models exec `_` identically in identity-ledger and final-child capture; capture-only parity suite 6/6 PASS.
+
+### 2026-07-14 12:07 +10 - bounded HK exit-origin observer
+
+- Added default-off `MACRUNNER_HB_EXIT_ORIGIN_PROBE` instrumentation only: last executed x64 block and return PC at self AV termination, PE exception/vectored/SEH dispositions, and `RtlExitUserThread` caller identity.
+- No exception, translation, synchronization, or termination behavior is changed. Patch C/D/E/F/G/H, EH benign no-op, and fix A remain untouched.
+- 2026-07-14 12:30 · Default-off HK MACRUNNER_HB_EXIT_ORIGIN_PROBE verified in one 600s diagnostic run · linked nested x64 block state and PE exception-disposition state to RtlExitUserThread without semantic changes; runtime localized c0000005 to native run_jit_block_with_signal_guard+832 write AV, not guest EH; built/deployed ntdll SHA ebd096440b9765a6150d5ebfe8152cc7d906d2a4143791c82db9e3561e6a9500; Patch C/D/E/F/G/H, EH benign no-op, and fix A preserved.
+
+## 2026-07-14 - x64 callback reject must not skip JIT epilogue
+
+- Evidence: I386 callback rejection was encoded as return value zero after the signal route had already redirected PC to the callback trampoline. The trampoline returned to LR, skipping the active JIT epilogue and leaving SP low by 0x30 with x22 holding x86 bytes; guard teardown then wrote through corrupted x22.
+- Fix: callback-specific signal-safe non-AMD64 preflight before ucontext mutation; dispatcher handled/result split; trampoline returns to LR only when handled. No stack-layout compensation.
+- Files: `engine/wine/dlls/ntdll/unix/macrunner_hb.c`, `engine/wine/dlls/ntdll/unix/signal_arm64.c`, `tools/hk_callback_reject_contract_static_test.py`.
+- Validation: static adversarial contract 6/6 PASS; ntdll-only build PASS; deployed SHA `db8394149516458e478701eeae284c5075a814cec8aab662a64a602c6c46b4ee`.
+- HK NOT_GOLDEN verify: guard AV/RtlExitUserThread(c0000005)=0, process survived 600s, Physics and CreateDXGIFactory2 rc=0 reached; swapchain/Present1 not reached. Report: `reports/phase4-hollow-knight/CALLBACK-REJECT-FIX-VERIFY.md`.
+2026-07-14 · HK host-native observer · added default-off `MACRUNNER_HB_HOST_NATIVE_SAMPLER` with independent host-time Mach PC/module/RVA sampling, exact wait snapshots, and existing termination-chain correlation; harness locator selects the `run_x64` implementation rather than its declaration; static suite 8/8 PASS; ntdll SHA `f1e6a753aa5421ca9e492bbe3756ab42ccc30d4770eff9197d63c3e321993781`.
+2026-07-14 · HK callback/signal loop observer · added default-off `MACRUNNER_HB_CALLBACK_LOOP_TRACE` with bounded/time-stratified outer-signal, router, assembly-trampoline, and callback-dispatch correlation; focused suites 14/14 PASS; ntdll SHA `6bc5b52cef6c0943906a334ffe974780ee9c2571070a934d49e071a1b6cba7c7`. Diagnostic run proved callbacks balanced and exposed generic PE-call `x18` clobber window before native `RtlEnterCriticalSection`; no ABI fix applied in this turn.
+
+## 2026-07-14 - ARM64EC PE bridge x18/TEB restore family
+
+- Root-layer change: `macrunner_hb_arm64_pe_call12` restores saved TEB in `x18` immediately before its PE `blr`; `macrunner_hb_arm64_pe_call20_direct` now receives an explicit TEB and does the same restore.
+- Family audit: the import wrappers and dispatch functions are callers; the two direct `blr x20` PE bridge members in `macrunner_hb.c` are covered. Callback-frame semantics, Patch C/D/E/F/G/H, fix A, and the callback-reject fix were not changed.
+- Regression floor: x18 bridge static suite plus callback-reject and callback/signal suites passed.
+- Built/deployed ntdll SHA `d9b6ea94e6fdef6da47acf7827e8b256fdb7fe31190a4e58c072803c66a1ae88`.
+- HK verification was `NO-HIT`: compiled restores are present, but `pc=0x87fff9e0ed8 fault=0x48` persisted. No follow-on speculative source patch was applied; transition provenance remains required.
+
+## 2026-07-14 - x18 critical-section/dispatcher boundary diagnostics
+
+- Files: `engine/wine/dlls/ntdll/sync.c`, `engine/wine/dlls/ntdll/unix/signal_arm64.c`, `tools/hk_x18_dispatch_return_static_test.py`.
+- Added ARM64/ARM64EC x18 preservation around the existing critical-section observer family and retained bounded x18 fault provenance. Removed the redundant host C TEB helper after the dispatcher frame has already restored `x18`, so no host call remains between the frame load and PE return.
+- Focused static dispatcher-return suite: 6/6 PASS. Restored syscall stub disassembly contains the original `mov/mov/ldr/ldr/blr/ret` sequence and no experimental x18/stack handoff.
+- Built/deployed Unix ntdll `7b8e887b792a07b454b45cd8bbbab1901c4d590d4d675117ce3f23d03a38b274`; PE ntdll `c52154865375fcdb1cb6404ed403b775ddac566cb7f362e439f2d13b139e6a40`.
+- Runtime result remains `NO-HIT`. Register, stack, seeded-stack, and dispatcher-owned syscall experiments failed or regressed and were removed. No syscall causality claim is retained.
+- Patch C/D/E/F/G/H, fix A, callback-reject fix, and EH benign no-op behavior are unchanged.
+
+## 2026-07-14 — ARM64EC x18 producer family audit
+
+- Added bounded, default-off x18 fault stack provenance (`stack_c0`, `stack_150`) under the existing callback-loop diagnostic gate.
+- Audited the full PE-target `blr` family: call12 and call20_direct are complete; no third bridge exists.
+- Tested and rejected syscall/unix-call final routing through the x18 thunk: runtime no-hit, so the change was removed.
+- Focused x18 suites and ntdll-only build PASS. Clean host ntdll/dist SHA: `ef5b081900965c72112fe3bba480393a4f623c175adf069e85d2add0fbbc1054`.
+- No Patch C/D/E/F/G/H, fix A, callback fix, graphics source, or translation cache changes.
+
+## 2026-07-14 — HK main termination observer coverage completion
+
+- Reused `MACRUNNER_HB_POST_RUN_X64_OBSERVER`; no duplicate diagnostic gate.
+- Added a bounded process-wide remote `NtTerminateThread` path so a non-main caller is recorded with caller TID/depth/pending/native location.
+- Added explicit `natural-return/x64_thread_entry` correlation before the PE `RtlExitUserThread` chain.
+- Kept `abort_thread`, `exit_thread`, and `pthread_exit_wrapper` sink records independent of outer-run pending state.
+- Expanded static and capture-only fixtures; no Hollow Knight/Wine runtime authorized or executed.
+
+- 2026-07-15: Implemented default-off `MACRUNNER_HB_JIT_SIGBUS_INVALIDATE`: post-signal native-PC owner mapping, persistent per-runtime guest-block quarantine, exact snapshot-entry interpreter resume, and fail-closed JIT disable when mapping/allocation is unavailable. Build/verify pending.
+
+- 2026-07-15 verification: ntdll SHA `dd8866c27cc395550ac5826b002ad7ee6e2e8a2682d49f91784b6bdcc7038867`; 600 s HK run was PARTIAL/no-exercise (`SIGBUS=0`, invalidation records=0). The prior single-PC loop was absent, but no causal claim is permitted and D3D11/swapchain/Present1 remain unreached.
+
+- 2026-07-15: Extended the default-off host-native sampler with a race-free atomic guest-progress channel (`guest_pc`, block-update sequence, PC-change count). This distinguishes normal per-block module classification from a fixed guest loop without changing classifier semantics. Build/verify pending.
+
+- 2026-07-15 host sampler guest-progress verification: ntdll SHA `8e5323d20e18ee8eb49d7f1647de74f51e6fa0c219e96c6154cb44dcdc5e6948`. Probe established that module predicate RVA `+0x144` is a bounded LDR-list walk, while the actual terminal boundary is outer `run_x64` status `0xc000007b` at import index 951. Diagnostic counters are default-off with the existing host sampler.
+
+## 2026-07-15 04:34 · Default-off terminal import-thunk fault probe
+- File: engine/wine/dlls/ntdll/unix/macrunner_hb.c.
+- Gate: MACRUNNER_HB_IMPORT_THUNK_FAULT_PROBE=1 (default off).
+- Records bounded terminal failure stage, DLL/API/index, resolved target/module/RVA, stack return, guest/native PCs/TIDs; import dispatch behavior is unchanged.
+- Built/deployed ntdll.so SHA-256: 0b9b509e8d00101f48c3a73c6a6ea1988525a32b05a059a635df5c839e7c021e.
+2026-07-15 09:17 · A/A-only Hollow Knight diagnostics (default-off): `MACRUNNER_HB_AA_SIGBUS_PROBE` captures JIT block-entry x64 context, signal ucontext, guest/native bytes, source/destination pre/post windows and Mach VM protections before interpreter replay; `MACRUNNER_HB_AA_RBP_PROBE` checks Mono RVA 0x425870..0x425c8e frame invariant; `MACRUNNER_HB_AA_MONO_PATCH_PROBE` records patch-site/target/16 bytes at assertion RVAs. Signal fault API now receives read-only host ucontext. Build/relink PASS; no execution semantics changed when probes are disabled.
+2026-07-15 09:27 · A/B-only Hollow Knight diagnostic gate (default-off): `MACRUNNER_HB_AA_FORCE_MONO_SIMD_COPY_INTERP` recognizes the Mono SIMD-copy block entry byte signature (`0f1f440000f30f6f0af30f6f5210f30f`) and returns through the existing interpreter fallback before native entry. Disabled in A/A; intended as the single B variable after deterministic A/A.
+2026-07-15 09:29 · Rebuilt/relinked/deployed A/A+A/B diagnostics: `libhyperbridge.a` SHA-256 `cbeb54216d596d989383ee04d0cc5296e947d2897e194eed807a8ff067917557`; build `ntdll.so` `9e80a02fb72209068566250a5908a22717cc1c55d18cbca6763c43dadcc077ee`; ad-hoc-signed deployed `ntdll.so` `4cbef8c3c11a92bbfb6499668a1e31ded3d1ab03fd4833cc1de11b3c7ab8770f`.
+2026-07-15 10:12 · Narrowed default-off Mono SIMD-copy A/B diagnostics. `MACRUNNER_HB_AA_FORCE_MONO_SIMD_COPY_INTERP` now requires the existing Mono module discriminator plus `codegen_module_base` RVA `0x4ee14b` or `0x4ee150` and matching SIMD bytes; UnityPlayer/HK byte-signature matches are rejected. Added read-only `MACRUNNER_HB_AA_MONO_SIMD_COPY_GATE_PROBE` to log narrow hits without forcing interpreter. Build/relink pending.
+2026-07-15 10:13 · Rebuilt/relinked/deployed narrowed Mono SIMD-copy diagnostics: `libhyperbridge.a` SHA-256 `814ae6e96452b7931836619d57f249332a10597f9648b9b3b8cefb83041aced5`; build `ntdll.so` `cafe0dea1310866a4f79bb8a9e6bbf6b20f28fd6f390de1ae65ad5ba9924daae`; ad-hoc-signed deployed `ntdll.so` `558eaef2a0533ee1a57422758e6403dd9ac140e3243aabc6899318caf9a6c190`.
+2026-07-15 11:03 · Added default-off Mono `0x4ee14b` transparency and inline-force diagnostics. `MACRUNNER_HB_AA_MONO_4EE14B_TRANSPARENCY_PROBE` shadow-runs the same pre-state through native JIT and the IR helper, compares PC, selected registers, x64 context, XMM hash, and source/destination windows, then restores state before normal execution. `MACRUNNER_HB_AA_FORCE_MONO_SIMD_COPY_INTERP` now invokes `hb_jit_helper_exec_ir_block()` inline for cached Mono/RVA blocks instead of requesting the outer unsupported-feature fallback. Built/deployed inline artifact SHAs: `libhyperbridge.a=98d57662edaf34582c06a7bdc5134c3fa8605b9714ea014be47952ff2c964f91`, build `ntdll.so=5f7d946e1a5855fafbe657e42793309c37369f630418d2d1d8965bd153eb0478`, ad-hoc-signed deployed `ntdll.so=7cc24c214446ddc17d7d3319c5f50e837198d23c2d99f05752926c6bf7ada341`.
+
+2026-07-15 12:11 · Implemented default-off `MACRUNNER_HB_JIT_SIGILL_OWNERSHIP`. An active HyperBridge JIT-slab PC is claimed before ARM64X thunk/module/Mach-VM detection; non-owned SIGILL preserves the existing ARM64X route. Generalized the persistent recovery quarantine across SIGBUS/SIGILL, restores the exact block-entry snapshot for interpreter replay, and records the owner guest/native range, native offset/word, and 16 guest bytes. Signal-family source contracts: 2/2 PASS. Built/deployed SHAs: `libhyperbridge.a=aa58efa395ca19ce810c08eb8d3220e32e62a4cda14e0f125f4bb3a5120bddc9`, build `ntdll.so=aa9ce8e1cbcb6c9bceea505ccab03bb3d38f4c16c7f3cdcde6aa94b3846ac569`, signed deployed `ntdll.so=2ff51d32c6f7db90def39bba1cad6b25263e5847d69fa1c1fd91eb4c1eb3829e`. Runtime verification pending.
+
+2026-07-15 12:40 · Corrected SIGILL ownership after the first 600 s runtime exposed an out-of-slab JIT transfer. LLDB byte truth: guarded Mono RVA `0x4ee150` native entry `0x11e55a1f0..+0x334` reached zero RX `0x11c264000` (`UDF #0`), so slab membership was not a sufficient ownership predicate. The default-off pre-ARM64X path now claims any active TLS JIT guard, carries ntdll's signal-safe native word and full fault ucontext across `siglongjmp`, quarantines the guarded source block when native-PC lookup misses, and decodes only source branch edges resolving exactly to the fault PC. Non-owned SIGILL and range-owned SIGBUS behavior remain separate. Persistent cache byte scan found neither the current-ASLR block nor the stale target literal, so no speculative cache/codegen patch was made. Targeted signal-family tests: 2/2 PASS; build had no `install skipped`. SHAs: `libhyperbridge.a=190a287273ac3647b0e069730e6658e8d32b2d2e1551a860213e8f4924b53e0c`, build `ntdll.so=cb37a0b993fca2619cbbca00a273ce7d5469da537b0400451b06d940e4ce726d`, signed deployed `ntdll.so=79b7a98469af8944caeb0d1764f6cf7bc6dabde61e1275421603eaac9869e6a0`. Runtime re-verification pending.
+
+2026-07-15 14:02 · Fixed the evidenced executable-page 128-bit JIT store family. Fault provenance disproved null code emission: Mono RVA `0x4ee150` contained eight valid raw `DMB ISHST; STR X20; STR X22` sequences, while fault PC/X21 was an external R-X destination page and no branch among 64,685 live cache entries targeted it. `emit_direct_mem128_store_from_x20_x22()` now calls checked `hb_jit_helper_store_u128()`; executable writes use the existing W^X-aware memory path and bump generation, while writable memory retains its fast path. Persistent cache version is 21. Tests `jit_xmm_store_wx` 2/2 and signal ownership 2/2 PASS. Build/deploy SHAs: `libhyperbridge.a=62048b1204b89192fa130cdabefe5415677cbf377c777daff2a93245d588db53`, build `ntdll.so=01d57e88833abbd4c45c3fe2e86c7ee1cc0694930766948dc5410ab27f387c07`, signed deployed `ntdll.so=38a24ce6f66be276c62d8eacb2a837975a2fbb4dd02f0265170d7a38f70d63f7`; no warnings/errors/`install skipped`.
+2026-07-15 17:22 · Added default-off object-aware DXGI diagnostics. Factory and swapchain COM pointers are tracked separately, so factory slot 8 labels `MakeWindowAssociation` and only a registered swapchain slot 8 labels `Present`; unknown slot-8 candidates remain unlabeled. `MACRUNNER_HB_MAIN_POST_MAKEASSOC_PROBE` arms only after successful factory `MakeWindowAssociation` and emits bounded same-thread block/import telemetry plus periodic guest progress samples. Build/runtime verification pending.
+2026-07-15 17:27 · Rebuilt and deployed object-aware DXGI/post-MakeAssociation diagnostics. Build completed with rc=0 and no `install skipped`; existing unrelated warnings only. Build `ntdll.so` SHA-256 `c05f386f4ba39bd3561d455d2477c5fb186c750af2384c4374c6580ef7845d5f`; ad-hoc-signed deployed SHA-256 `397d2e4fcad6265acfb6f79a55e3514222627e666e5372f606ab137454dbc446` (previous deployed artifact preserved as raw evidence).
+2026-07-15 17:56 · Runtime-verified object-aware DXGI diagnostics: factory slot 8 now reports only `MakeWindowAssociation`, swapchain slot 8 only `Present`, and false Present count is zero. The 600 s READY run found the next root cause rather than a graphics wait: `hb_jit_helper_write_bytes_tso` uses `hb_jit_live_host_ptr` plus raw memcpy on metadata-RWX/current-RX pages, so the current 128-bit W^X fix is bypassed and main loops in signal callback/ARM64X routing at Mono `0x2791bc`. No source fix applied in this trace task; see `POST-MAKEASSOC-TRACE-RESULT.md` for the evidenced helper-family fix candidate.
+2026-07-16 10:05 · Added default-off cross-thread `MACRUNNER_HB_CALLBACK_4784D0_PROBE`. The bounded observer records exact Unity `+0x51b4b0` plan, `+0x51e840` enqueue, returned task handle, callback `+0x4784d0` entry on any HB guest thread, coordinator `+0x18d0/+0x18d8/+0x18e8` state, pending clear, tail reschedule, and scheduler return. No guest execution semantics change. READY 600 s runtime disproved callback loss: Gfx tid 00e8 enqueued it, scheduler tid 0078 executed it before enqueue returned, cleared pending 1→0, and returned to `+0x51dc03`; 114 traced edges were Unity-only. Run build/signed SHAs `aa78de275e2d…`/`7385c190b98f…`. Removed noisy intermediate predicate logs post-run while preserving exact plan proof; rebuilt/deployed `1e4942c01226…`/`389c7bb86c1f…`. Verdict: no callback/scheduler fix; graphics wall is downstream. Report: `CALLBACK-4784D0-CAUSE.md`.
+2026-07-16 11:33 · Added default-off, bounded `MACRUNNER_HB_WORK_OBJECT_PROBE` for the exact Unity coordinator lifecycle: Gfx-owner handoff, 32-byte descriptor construction, nested backing allocation, `+0x18d0` publication, `+0x2b6fc0` consumer return, and capacity decision. Event reads are limited to 32 descriptor and 64 backing bytes; disabled behavior is unchanged. READY runtime proved the tracked value is a Unity 4 MiB buffer/arena descriptor, immediately consumed on scheduler tid 0078, not a DXMT frame/Present work item. One post-epilogue observer snapshot used restored RDI and is excluded; source now reloads stable coordinator/descriptor state. Run build/signed SHAs `37d3d7c22248…`/`956d83ccef29…`; corrected observer rebuild/deploy `74d0b32d2d36…`/`305c471c9eeb…`, build rc=0, errors=0, `install skipped`=0, codesign verify PASS. No execution-semantic fix is warranted at this object.
+
+2026-07-16 12:43 · Added default-off, bounded `MACRUNNER_HB_GFX_OWNER_VTABLE_688_PROBE` in `macrunner_hb.c`. Exact Unity block gates capture the wrapper receiver, owner/coordinator, primary queue pop, slots `+0x680/+0x688/+0x690/+0x698`, target module/RVA/bytes, target entry/return, and the empty-queue branch without changing guest state. READY 600 s runtime resolved slot `+0x688` to Unity callback adapter `UnityPlayer+0x6c6960`; primary queue `coordinator+0x18` popped NULL in both owner cycles, so the callsite was correctly skipped toward the alternate queue. Evidence artifact build/signed SHAs `8895f374b8c7e86cca1a3bb11285546d6d0b1417557f0b6c1306c2f4052f9296`/`0b8f6ea005283f5c732ac5cf8efcd0506a65126b3a507666d6f027b1659cc7cd`; run log duplicated bounded empty-gate observations until budget exhaustion, so current source adds a per-owner gate latch. Final rebuild/deploy SHAs `b28c7afae5e5477757d4f7f14d4e4611bd258db45a316ebc6f855ef91d804fdc`/`bd6a0669dc61229605415a53c5e117ebe0cc3e6230c6a27e5da1cd04a50cd9a2`, build rc=0, errors=0, `install skipped`=0, codesign verify PASS. Probe-only change; no execution-semantic fix is warranted at `+0x688`.
+
+2026-07-16 13:27 · Added default-off, bounded `MACRUNNER_HB_ALTERNATE_QUEUE_478ABF_PROBE` in `macrunner_hb.c`. The event observer records coordinator queue pointers and `queue+0x40` states, alternate pop, item/payload bytes, dynamic `[payload+0x68]` target, callback descriptor/entry/return, and registers without changing guest execution. READY 600 s runtime proved `Unity+0x478abf` is an unreached indirect callsite: both primary `+0x18` and alternate `+0x10` queues had tagged empty state `0x2`, alternate pop returned NULL, and execution skipped to `+0x478b88`; real Present remained zero and strict pixel BLACK. Build/signed SHAs `792ad5e1d806d869276d247ed55059b1f9725e31c0eb0a79b39cf25f58d7acfd`/`716c2a3ef66d39e4a896d46720b497c4f0d02a9342ffaf03585261c703714275`, build rc=0, errors=0, existing warnings=14, `install skipped`=0, codesign PASS. Probe-only change; no consumer semantic fix is justified. Report: `ALTERNATE-QUEUE-478ABF-RESULT.md`.
+
+2026-07-16 14:36 · Added default-off, bounded `MACRUNNER_HB_PRODUCER_PUBLISH_PROBE` in `macrunner_hb.c`. Exact Unity events distinguish initial item construction, scheduler `+0x478650` and direct `+0x47893a` publication, atomic head/tag/tail transitions for coordinator queues `+0x10/+0x18/+0x20`, wake, and consumer-only requeue/recycle; item/payload bytes are captured without changing guest state. Build rc=0, errors=0, existing warnings=14, `install skipped`=0; build/signed deployed SHAs `107001b97df3f3635fc650806f07b17bb298a4148c58ef346119576e147ff1b0`/`5d784c2516a9c840ca601c6e34bfc9555f8e50d792975107016b07fda2e214a7`, codesign verify PASS. READY 600 s runtime caught two scheduler publications of one TextCore/resource item to `coordinator+0x10` and immediate drain; the MPSC producer is working, but no Present-bearing frame item was created. Probe-only change; no queue semantic fix is justified. Report: `PRODUCER-PUBLISH-RESULT.md`.
+## 2026-07-16 — Present-item lifecycle diagnostic correction
+
+- Added default-off `MACRUNNER_HB_PRESENT_ITEM_CREATION_PROBE` and a read-only owner-thread `hb_jit_runtime_native_block_info()` lookup for mapping a native PC into the live HB block cache. No guest state, control flow, queue, focus, or graphics behavior is changed.
+- The sealed runtime proved the assumed PlayerLoop table offsets hold RW self-linked data sentinels, not callbacks. Removed the impossible guest-PC comparisons and renamed the affected records to neutral table-value/profiler/generic-scheduler terminology.
+- Current-wall verdict: two valid 600 s runs reached swapchain creation and `MakeWindowAssociation`, but no Clear/GetBuffer/Present frame lifecycle; main remained in Mono/managed initialization through timeout. DXMT swapchain Present slot is non-null; strict pixel remains BLACK.
+- Evidence artifact SHAs: HyperBridge `7834420049dda4b889f3acb4484facbcd8cde29fc84cf4d2ac73c465666a3fac`, runtime ntdll build/signed `fc12b057d34fc024d5148558fe103314b531185cfb0891e254312099143d57de` / `5048abd3ff2b492d06099f5a90cd0331d1049d227c26ea71fc68428e7dd73118`. Final terminology-only build/signed `09c5ed4931dbf268d8a567d20d45a83c319f779cfe665d259cfb3dec4439f817` / `9c763fe3a5a421bc0f743a7bf85baf34ea25db70c61913b0ce940c6b075c7d22`.
+- Build/relink had errors 0 and `install skipped` 0. Full legacy HB suite is not green: 449 passed / 26 unrelated existing failures. Report: `reports/phase4-hollow-knight/PRESENT-ITEM-NOT-CREATED-CAUSE.md`.
+
+## 2026-07-16 — Host-only Mono-init stall sampler
+
+- Added default-off `MACRUNNER_HB_MONO_INIT_STALL_PROBE`. It reuses the independent host-native main-thread sampler with a 5-second default interval, relaxed-atomic guest PC/RSP/RBP snapshots, Mach thread state, run/wait/exit state, and a bounded 12-frame native FP walk. It does not inspect guest modules or guest memory from the executing guest thread.
+- An initial guest-thread inspection implementation deterministically introduced main `c0000005`; an identical flag-off control survived. That observer was removed before the valid runtime. This is recorded as observer-effect evidence, not a target failure.
+- Static host-sampler contract: 12/12 PASS. Build rc=0, ccache active, no `install skipped`; build `ntdll.so` SHA-256 `124a92f2d5eacfcd21ff7f7633e85046ff45ed06978d00ce72a30201633b98e3`, signed deployed SHA-256 `62c4d0a1607de93cee46a5b127364ae995b5716af777a73660baa4cf7fad8789`.
+- READY 600-second runtime classified the main as active/slow rather than deadlocked and exposed a separate existing hot-path defect: disabled A/A probes perform uncached environment lookup on every block. No performance semantic fix is included in this probe-only change. Report: `reports/phase4-hollow-knight/MONO-INIT-STALL-CAUSE.md`.
+
+## 2026-07-16 — Zero-cost-disabled HB diagnostics and loader classification caches
+
+- Cached the A/A RBP and Mono-patch env flags once per run and bypassed their helpers entirely
+  while disabled; added a four-entry TLS LDR range cache and a separate four-entry TLS Mono
+  classification cache. Mono classification now returns the module base in the same lookup.
+- Added a correctness-preserving no-op path for an exact, unchanged Wine-owned live HB region;
+  the Mach reserved-tail commit check still runs. Static minimal-overhead + host-sampler contracts:
+  18/18 PASS.
+- Build rc=0, ccache active, errors=0, existing warnings=14, `install skipped`=0. Build/signed
+  ntdll SHAs: `aac647534ad125c07bf5abc6869475bcd1a1217e5109fb5cd00109b269394d58` /
+  `09874c37027e14cc8c83d9f896bf3789335771652c7a3f4cc1faa86dbf4fa1fe`; codesign PASS.
+- Final host profile removed `__findenv_locked` (0/118 vs 28/119) and module-name matching
+  (0/118) from samples. Remaining `hb_memory_protect` cost is 24/118 and was not hidden by a
+  broader W^X bypass.
+- The probe-free 1800 s endpoint reached managed scene lifecycle by +416.118 s, disproving the
+  all-timeout Mono-init wall, but stayed pixel-black and exposed a managed JIT-helper EXEC_FAULT
+  on one worker at +633.070 s. Report:
+  `reports/phase4-hollow-knight/MINIMAL-OVERHEAD-1800S-RESULT.md`.
+
+## 2026-07-16 — x64 x87 state isolation and FST/FSTP masked-underflow family
+
+- Rooted the +633 s managed JIT-helper `EXEC_FAULT` in x87 state aliasing: x64 helpers used the
+  x86 member of the register union, overlaying RDI/RSP/RBP/R8…R14. Added an appended x64 x87
+  state and mode-aware accessor; existing context offsets remain stable.
+- Completed the evidenced FST/FSTP family: register `ST(i)` destinations, empty destination
+  stores, masked empty-source IE|SF/C1/indefinite response, and FSTP pop after masked underflow;
+  memory and register forms share the mechanism.
+- Exact x86_64 oracle for `DD D8 DD D9` produced SW/TOP `0000/0→0841/1→1041/2`.
+  Targeted interpreter+JIT x87 suite: 19/19 PASS (new tests failed 2/2 before the semantic fix).
+- Explicit archive rebuild and forced ntdll relink: lib `846f471e…`, build ntdll `c049b32b…`,
+  signed deployed `487c69ec…`; errors/warnings/`install skipped` all zero, codesign PASS.
+- Final 1800 s runtime crossed the former fault and stayed active through +1843.898 with all
+  runtime/signal fault gates zero. It entered a WineMetal render loop, but pixel stayed BLACK
+  because no render PSO was set. Report: `reports/phase4-hollow-knight/JIT-FAULT-633-CAUSE.md`.
+
+## 2026-07-17 — Bounded render-PSO compiler/command-stream diagnostic
+
+- Added default-off `MACRUNNER_HB_RENDER_PIPELINE_PROBE` instrumentation at the two exact
+  missing-PSO boundaries: DXMT shader dependency/Metal PSO compilation and WineMetal render
+  command decoding. The probe records whether a non-null PSO exists and whether `SetPSO`
+  precedes each Draw, without changing draw or pipeline semantics.
+- Probe output is event-driven and globally bounded (8192 records by default, override with
+  `MACRUNNER_HB_RENDER_PIPELINE_PROBE_MAX`). Existing D3D11 entry instrumentation will be routed
+  to the run directory for exact `D3D11CreateDevice` evidence.
+- Targeted x86_64 `d3d11.dll` and arm64 `winemetal.so` builds PASS. Deployed SHAs:
+  `1e580a96701b3834ccdbabe947076e063aaff63f304dcc04f29ca73e4dac8d1d` and
+  `061b42cba4d093acd29ad66ef4abefe8fddb609ffc386898e1dbd9be7af66a5c`.
+- The 1800 s diagnostic disproved PSO compilation failure: five observed PSOs reached
+  `metal-ok`, non-null PSOs reached WineMetal, and real Present/Present1 returned `S_OK`.
+- Root cause is WineMetal state lifetime: `_MTLRenderCommandEncoder_encodeCommands` resets local
+  `has_pso` on every call, but DXMT sends SetPSO and Draw in separate calls on the same encoder.
+  The later Draw is incorrectly discarded. No semantic fix is included in this diagnostic change.
+- Verdict: `reports/phase4-hollow-knight/RENDER-PSO-CAUSE.md`.
+
+## 2026-07-17 — Persist WineMetal PSO state for the render-encoder lifetime
+
+- Fixed the proven state-lifetime bug in `winemetal_unix.c`: `has_pso` is now associated with the
+  native `MTLRenderCommandEncoder`, survives split `encodeCommands` calls, is set by
+  `WMTRenderCommandSetPSO`, and is cleared at `endEncoding`. This is an unconditional semantic
+  fix, not a probe or game-specific workaround.
+- Arm64 WineMetal build/deploy PASS. Source SHA `90cbe39d…`; deployed `winemetal.so`
+  `6b47b2c…`. Requested ntdll rebuild and strict codesign verification PASS; no
+  `install skipped` was emitted.
+- The mandated minimal-probe 120 s Hollow Knight run was a runtime **NO-HIT**: timeout rc 124
+  before real swapchain/render command decoding, with Draw/Present/pixel all unexercised and all
+  CPU/JIT fault gates zero. The missing-PSO warning being absent cannot validate the fix because
+  the Draw boundary was not reached.
+- A sealed probes-off 1800 s follow-up reached 1,563 Unity frame-phase iterations. The prior
+  no-probe artifact emitted the unconditional missing-PSO Draw-skip diagnostic 1,648 times;
+  the fixed artifact emitted it zero times, so the proven state-lifetime rejection is gone.
+  All CPU/JIT fault gates remained zero.
+- Runtime classification remains **PARTIAL**, not pixel PASS: all 146 on-screen strict captures
+  were exactly black, and successful Draw/Present method counts are not observable with the
+  mandated probes-off environment.
+- Verification: `reports/phase4-hollow-knight/PSO-PERSIST-FIX-VERIFY.md`.
+
+### 2026-07-17 — Persistent-PSO method-level runtime verification
+
+- No new engine mutation in this step. A sealed 1800 s diagnostic enabled only the bounded
+  WineMetal render-pipeline and object-aware DXMT method counters.
+- Runtime proof: 3,046 Draw commands, zero missing-PSO rejections, and 96 Draw-bearing
+  `encodeCommands` calls that relied on PSO state set by a prior call. This directly verifies the
+  encoder-level persistence fix.
+- GetBuffer/RTV/OMSet succeeded; 1,390 Present1 calls returned `S_OK`; nil drawable,
+  skipped presentDrawable, Metal command errors, and CPU/JIT fault gates were all zero.
+- Pixel is still blocked: 147 strict captures were exactly `#000000`. The remaining boundary is
+  backbuffer fragment/output content, not PSO lifetime or submission.
+- Verification: `reports/phase4-hollow-knight/DRAW-EXECUTED-BLACK-CAUSE.md`.
+
+### 2026-07-17 — Native bounded GPU backbuffer readback diagnostic
+
+- Added default-off `MACRUNNER_HB_GPU_READBACK_PROBE` instrumentation in native WineMetal.
+  It records the first bounded Draw states and asynchronously blits render targets after Clear,
+  after Draws, and before presentation, reporting hashes and RGBA histograms only after the
+  owning Metal command buffer completes. Disabled cost is one startup-cached env branch.
+- The first design added a new PE Unix-call export; runtime proved that transport invalid because
+  its lazy import target was not materialized before HB dispatch. That attempt is labelled
+  `INVALID_PROBE_TRANSPORT`. The export/import was removed and the probe moved behind the existing
+  native `endEncoding` boundary; no new PE ABI remains.
+- Arm64 WineMetal and x86_64 D3D11/WineMetal builds PASS. Deployed SHAs are
+  `1abd31841fb43e345ccbadb5e4c587acc250a38023419c094e02c0052b6a80f9`,
+  `7a89602849920f4126f6c64de6be7c7b60b26ff4f93072642b635469b93d10ab`, and
+  `3077596a83bd5d9535f2cae2b06749eb56102a7d2f8c386b8cd10ab693480c20`;
+  strict codesign PASS and no `install skipped` was emitted.
+- The sealed 1800 s runtime completed 2 after-Clear, 4 after-Draw, and 4 pre-Present readbacks.
+  Clear is all-zero; every after-Draw/pre-Present sample is RGB-black with identical hash
+  `d69a0ed1d32d0383`, while alpha changes to max 5 / mean 4.167. Real Draw work therefore occurs,
+  but the presenter receives zero visible-colour output from upstream.
+- Verification: `reports/phase4-hollow-knight/BACKBUFFER-READBACK-RESULT.md`.
+
+### 2026-07-17 — Bounded shader-input and live texture-content diagnostic
+
+- Added default-off `MACRUNNER_HB_SHADER_INPUTS_PROBE` instrumentation at the DXMT argument
+  encoder and native WineMetal Draw boundary. It records bounded CB byte hashes/raw IEEE-754
+  matrix windows, sampler/SRV metadata, native slot-29/30 table qwords, and resolves bound
+  resource IDs to live Metal textures for at most 16 unique readbacks. Disabled env checks are
+  startup-cached; no PE/Unix-call ABI was added.
+- Arm64 WineMetal and x86_64 D3D11/WineMetal builds PASS. Deployed/codesigned SHAs:
+  WineMetal `b392eee839d880070d8c60263ea378ffb42ce665727fbcd8b970e005b7081552`,
+  D3D11 `016ea0b6cc417219a71bd200425a5cd0e89f77989fe1120d5f82a811656bc8f0`;
+  ntdll remained `487c69ec5e10dd3f8deab861463039811068106d8a5063106aa95013e36b415c`.
+  No `install skipped` line was emitted.
+- Sealed 1800 s verification: 344/344 CBs are CPU-visible/nonzero; active VS data contains
+  finite projection/transform matrices; PS data contains nonzero/white values; 31 bounded scene
+  Draws have nonzero Metal argument tables. Two actually bound RGBA8 textures read back 100%
+  and 98.05% nonblack RGB. All CPU/JIT/signal fault gates are zero.
+- Pixel remains exactly black. The camera/CB/texture/argument-buffer hypotheses are disproved;
+  the first open boundary is translated fragment return versus per-PSO blend/color-attachment
+  state. The D3D11→Metal color-write-mask static mapping is explicitly correct, but runtime PSO
+  values were not captured.
+- Verification: `reports/phase4-hollow-knight/SHADER-INPUTS-CAUSE.md`.
+
+### 2026-07-17 — Exact-PSO fragment-output transparency diagnostic (build-only)
+
+- Added default-off, bounded D3D11/WineMetal instrumentation with a shared pointer-free
+  PSO identity derived from original stable shader names plus finalized semantic pipeline
+  fields. It correlates `PSValidRenderTargets`, actual D3D RT0 format, D3D blend state,
+  final native Metal color attachment state, and the bound Draw under one ID.
+- Added a fail-closed exact-ID control that replaces only the native fragment function with
+  opaque magenta. Blend/write mask, RTV, depth, viewport, VS, and Draw remain unchanged.
+  Missing/invalid/nonmatching target IDs never activate the override.
+- Added source-contract checks, a separately compiled Metal magenta fixture, and a D3D11
+  blend/write-mask fixture covering four sibling state cases. Final target-clean arm64 and
+  x86_64 builds PASS; artifact SHAs are recorded in the handoff. No game, fixture runtime,
+  install, or deploy was performed, so causality remains `UNKNOWN` pending sealed 1800 s A/B.
+- Handoff: `reports/phase4-hollow-knight/FRAGMENT-OUTPUT-MAGENTA-AB-BUILD.md`.
+
+### 2026-07-17 — Fragment-output magenta A/B localizes black RGB
+
+- Added the authorized cached, default-off `MACRUNNER_HB_FORCE_FRAGMENT_MAGENTA`
+  diagnostic transport so a sealed A/B can change one child-env variable without a
+  silent mismatch against the older exact-ID control. Original PSO IDs and all attachment,
+  blend, depth, viewport, VS, and Draw state remain observable and unchanged.
+- Source contract and native rebuild/deploy/codesign PASS. This is diagnostic scaffolding,
+  not a production workaround.
+- Two valid 1800 s runs obtained the exact same six original PSOs and 64 bounded Draws.
+  A GPU readback was RGB zero with alpha max 5. B was exactly RGBA 255,0,255,255 for all
+  786,432 pixels after Draw and pre-Present. All checked CPU/JIT/signal fault classes were 0.
+- Conclusion: runtime blend/write-mask/RTV propagation carries nonzero RGB correctly;
+  the open defect is in the original translated fragment result path (output semantics/ABI
+  or its consumed shader inputs). No production semantic patch is justified until that
+  sub-boundary is measured.
+- Verdict: `reports/phase4-hollow-knight/FRAGMENT-OUTPUT-MAGENTA-AB-RESULT.md`.
+
+### 2026-07-17 — Bounded fragment translation byte capture
+
+- Added default-off, bounded `MACRUNNER_HB_FRAGMENT_SHADER_TRANSLATION_PROBE`
+  diagnostics. Claimed pixel variants bypass the shader cache only while the probe is
+  enabled and preserve exact DXBC, pre/post optimization AIR and metallib artifacts.
+  Added a native DXBC parser dump utility and source-contract coverage; shader semantics
+  are unchanged.
+- Clean arm64/x86_64 builds and deployed checksums passed. One valid requested 1800 s
+  timeout captured five real scene fragment variants at the render boundary with zero
+  target CPU/JIT fault markers.
+- All five declare float `SV_Target0/o0.xyzw` and return a computed packed float4 as AIR
+  render target 0. The identity shader `mov o0.xyzw,v1.xyzw` survives as fragment input
+  plus the existing tiny UNORM bias; output mapping, missing return and Metal return ABI
+  are disproved as the RGB-zero mechanism.
+- No production semantic fix was applied. The next evidence boundary is paired vertex
+  output versus fragment `user(reg1_0)` interpolation; previous input probes established
+  CB/texture transport, not rasterized interpolant values.
+- Verdict: `reports/phase4-hollow-knight/FRAGMENT-TRANSLATION-CAUSE.md`.
+
+### 2026-07-17 — Exact interpolant causal ladder fails closed at readback isolation
+
+- Added default-off exact-identity C0–C3 diagnostic variants for logical PSO
+  `0x9d2b46c27af732f4`: unchanged draw, final fragment magenta, fragment-input
+  magenta, and paired vertex `user(reg1_0)` magenta. Diagnostic physical PSOs do not
+  alter the original logical PSO key.
+- Focused contracts, diff checks, clean arm64 WineMetal/D3D11 and x86_64 D3D11 builds
+  passed. The sealed 1800 s run compiled all variants and matched the exact draw.
+- Runtime proved the target is draw 2 of 8 in one render encoder. Encoder-end readback
+  is therefore not an immediate result of that draw; C0 rejected the sample and C1–C3
+  were intentionally suppressed. Verdict is `UNKNOWN`, and no shader semantic fix was
+  applied.
+- Next diagnostic must mirror the exact draw result into a dedicated per-draw side
+  channel; repeating the same encoder-end backbuffer copy cannot establish causality.
+- Verdict: `reports/phase4-hollow-knight/CAUSAL-LADDER-PS-BEF43B20-RESULT.md`.
+
+## 2026-07-17 — DXMT exact-draw fragment side-channel diagnostic (default off)
+
+- Evidence problem: encoder-end RTV readback for `ps_bef43b20` sampled draw 2
+  only after draws 3–8, so it could not support a causal shader claim.
+- Added default-off `MACRUNNER_HB_CAUSAL_LADDER_BEF43B20` storage
+  side-channel: instrumented C0–C3 fragment variants write final `float4` to a
+  dedicated shared buffer at Metal fragment slot 28. The exact draw alone binds
+  it; prior binding/PSO are restored immediately, with no encoder split or draw
+  reorder. Empty/mixed/nonfinite/GPU-error cases fail closed.
+- Logical PSO hashing excludes physical diagnostic handles. C0–C3 remain four
+  physical PSOs over one original logical PSO/descriptors/draw contract.
+- Validation: clean arm64 WineMetal+D3D11 and clean x86_64 D3D11 builds, strict
+  codesign/build-dist equality, blend fixture build, three focused source
+  contracts, and diff check PASS.
+- Runtime: C0 immediate side-channel PASS/BLACK (`655360` viewport pixels), but
+  C1 failed `logical-draw-signature-drift`; C2/C3 did not run. Verdict UNKNOWN,
+  and no production shader-semantic fix was made. See
+  `reports/phase4-hollow-knight/CAUSAL-LADDER-SIDE-CHANNEL-RESULT.md`.
+
+## 2026-07-18 — DXMT exact-draw selector drift telemetry and skip
+
+- Added bounded field-wise expected/observed telemetry for `ps_bef43b20`
+  exact-draw signature mismatches.
+- Evidence showed the C1 rejection was an over-broad same-PSO selector:
+  `index_buffer_offset`, `base_vertex`, `vertex_bindings_hash`, and
+  `color_load_action` differed from the C0 draw.
+- WineMetal now skips nonmatching same-PSO candidates after C0 and waits for the
+  saved exact draw signature. Missing baseline and null physical PSO remain
+  fail-closed invalid states.
+- Validation: focused source contract PASS, ARM WineMetal rebuild PASS, dist
+  artifact SHA-256
+  `16d82e06bd7923bf64ff905b6c7569fce7f524360deca8d583b99fad1ef8331f`.
+- Runtime: C0 BLACK reproduced, four C1 candidates were skipped, but the exact
+  C0 draw did not recur before 1800s timeout. C1/C2/C3 did not run; shader
+  causality remains UNKNOWN. See
+  `reports/phase4-hollow-knight/CAUSAL-LADDER-DRIFT-FIX-RESULT.md`.
+
+## 2026-07-18 — DXMT ps_bef43b20 per-process causal controls (build only)
+
+- Replaced the one-process boolean ladder gate with the exact default-off selector
+  `MACRUNNER_HB_CAUSAL_CONTROL=C0|C1|C2|C3`. All shader variants remain available
+  from one binary, but one fresh process can claim only its selected control once.
+- Replaced the mutable C0 baseline and pointer-bearing comparator with a canonical
+  54-field logical signature. It covers stable shader hashes, draw arguments,
+  viewport/scissor bits, exact index-slice contents, and render/pipeline semantics.
+  Control PSO selection occurs only after checksum and full-field equality.
+- Sealed artifact:
+  `reports/phase4-hollow-knight/PS-BEF43B20-C0-LOGICAL-SIGNATURE.json`, FNV-1a64
+  checksum `0x07194c46f282d32d`, source run-log SHA-256 `f5dcf159...a66350`.
+- Focused source/artifact/binary selector contracts PASS. Clean ARM64 WineMetal +
+  ARM64/x86_64 D3D11 builds PASS with zero errors, zero `install skipped`, and no
+  warnings in modified files. Build-to-dist byte equality and strict WineMetal
+  codesign PASS; staged SHAs are `edb9ea8a...e5ef`, `cefb3e3f...4f24`, and
+  `faef00f6...cd61`.
+- Two target-clean passes were not byte-reproducible, so deterministic rebuild is
+  explicitly not claimed. No Hollow Knight process ran. C0-C3 remain runtime
+  `UNKNOWN`; forced magenta is a `NOT_GOLDEN` forensic checkpoint only.
+
+## 2026-07-18 - Default-off DXMT vertex-data provenance probe
+
+- Added `MACRUNNER_HB_VERTEX_DATA_PROBE=1` as a bounded, default-off diagnostic.
+  It records D3D11 Map/Unmap and UpdateSubresource source bytes, IA layout and
+  vertex binding, the actual DXMT allocation encoded into slot 16, and semantic
+  WineMetal draw/index fields. It does not modify vertex data or render state.
+- Exact draw selection remains pointer-free. Buffer/resource pointers are emitted
+  only for the intra-process upload-to-binding provenance join.
+- The first diagnostic process was rejected for exact identity because the new
+  gate retained render state but not `MacRunnerPipelineProbeInfo`. Added the
+  vertex-only gate to pipeline metadata creation and a regression assertion.
+- The draw index hash initially reused a legacy noncanonical FNV helper. The final
+  source uses the canonical causal-signature hash; raw recorded indices from the
+  runtime recompute to the sealed C0 value.
+- Added `tools/analyze_dxmt_vertex_data_probe.py` and
+  `tools/test_dxmt_vertex_data_probe_source.py`. The analyzer fails closed when
+  the semantic shader/PSO/draw identity is unavailable.
+- Valid 1800-second evidence proves Unity writes `(0,0,0,5/255)` through Map/Unmap
+  and DXMT binds the same allocation as stride 88 with `reg1` at byte offset 24.
+  Colored vertex buffers exist globally, so no vertex upload/binding semantic fix
+  is warranted. Remaining content boundary is Unity scene/bootstrap.
+- Final clean build: errors 0, `install skipped` 0, modified-during-build warnings
+  0; ARM64 WineMetal/D3D11 and x86_64 D3D11 build-to-dist `cmp` PASS, strict
+  WineMetal codesign PASS. Full evidence:
+  `reports/phase4-hollow-knight/VERTEX-DATA-BLACK-CAUSE.md`.
+
+## 2026-07-19 — HK language observer admission and diagnostic fallback
+
+- Extended the x64 DLL callback corridor with a generic `arg0` and made exact registered original AMD64 executable sections precede broad builtin/LDR module ranges. Overlap resolution chooses the narrowest section and uses a bounded generation-aware cache. This fixed observer callbacks being rejected as `c000007b` when nested inside `dynamic-builtin.dll` ranges.
+- Focused source tests PASS. Unix ntdll deterministic A/B build, build-to-selected-dist equality and deploy PASS at SHA-256 `e1037bfae9e41108946aeb96c970c943853c46bb55ba25ce179564033f138123`; errors 0, `install skipped` 0, changed-region warnings 0.
+- The read-only language observer now has a separate default-off `MACRUNNER_HB_LANGUAGE_DIAGNOSTIC_DIRECT_CONFIRM=1` path. It captures the allocated StartManager object with a pinned GC handle, resolves `ConfirmLanguage` once, removes the allocation callback immediately, and invokes only after exact `HighlightDefault`. Every diagnostic record is marked `NOT_GOLDEN`; normal observer runs never enable allocation profiling or managed invocation.
+- Observer/input focused tests PASS. Deterministic fallback builds E/F and immutable/selected dist are byte-identical SHA-256 `289c02b858bc7af289e65025b5623e678e8ccf76c09df50cfb5d5a39deff7e6f`; PE entrypoint is zero and imports are KERNEL32-only.
+- Runtime A/A PASS. Sealed real-input B posted the first Return to the proven HK PID but Unity did not execute `SetLanguage`; the remaining two events were withheld and the strict result is `UNKNOWN` at input delivery. Separate direct fallback invoked `ConfirmLanguage` exactly once and returned `ok`, but activation/managers/pixel remained absent/BLACK. No production fix or snapshot was made. Evidence: `reports/phase4-hollow-knight/LANGUAGE-INPUT-AB-VERIFY.md`.
+
+## 2026-07-19 — Return-only host-to-Unity route observer
+
+- Added default-off `MACRUNNER_HB_RETURN_ROUTE_OBSERVER=1`, bounded to 64 records by default (hard max 256), across macdrv NSEvent receipt/dequeue/vkey mapping, win32u send and WM_INPUT dequeue, Wine server raw-input enqueue, Unity raw data/buffer and async/key-state queries, plus managed SetLanguage entry. The selector suppresses the legacy direct Confirm diagnostic and emits zero Return telemetry while disabled.
+- Static UnityPlayer analysis proved keyboard Raw Input registration `{1,6}` and its GetRawInputData/GetRawInputBuffer callsites; DirectInput is not the keyboard route. Added a sealed host controller that can publish only one Return down/up pair after exact `HighlightDefault` readiness.
+- Focused Return controller/observer and language observer regression tests PASS. Canonical build completed with errors 0 and `install skipped` 0. Six selected Wine build/dist pairs remain byte-identical; profiler build/dist/sealed SHA-256 is `982151aba788ef21ee6669f0a374f8cd5d0fae229182fe7cc21129a48f8e719a`.
+- Runtime A/A reproduced readiness with zero input. Sealed B posted keycode 36 down/up once to HK PID 37712, but `target_frontmost=false` and macdrv observed zero NSEvents; all downstream input and SetLanguage counters were zero. Because host-side target HWND/key-window/native-tid coverage is incomplete, verdict is UNKNOWN. No ConfirmLanguage call, activation change, production fix, or snapshot was made. Evidence: `reports/phase4-hollow-knight/RETURN-TO-SETLANGUAGE-SEALED-AB.md`.
+
+## 2026-07-19 — Return focus-activation boundary telemetry
+
+- Extended bounded Return telemetry in winemac.drv with CG/Cocoa window IDs,
+  Cocoa-to-HWND mapping, foreground/active/focus HWNDs, `NSApp` active,
+  key/main window identity, and macdrv native tid. Managed readiness now records
+  PID, Wine/native tid join data, and GUI HWND state.
+- Added a sealed controller mode using `NSRunningApplication` activation for the
+  proven HK PID. B waits for frontmost + exact key NSWindow + exact focus HWND;
+  no proof means no Return. No AX/HID/global-CG/Wine-focus or managed-confirm
+  path was added.
+- Four focused source tests PASS. Targeted macdrv build completed with errors=0
+  and `install skipped`=0. Selected PE, Unix and observer build/dist pairs are
+  byte-identical at `a43181d…`, `82c6777…`, and `ca5a6e…` respectively.
+- Runtime could not admit the comparison: A1 at 1350s and the authorized 1800s
+  fallback both missed `HighlightDefault` and exact target mapping. Zero Return
+  events were posted; A2/B were stopped. Verdict UNKNOWN, not a focus/activation
+  finding. Evidence:
+  `reports/phase4-hollow-knight/FOCUS-ACTIVATION-SEALED-AB.md`.
+
+## 2026-07-19 — Default-off Return focus-milestone observer selector
+
+- Added cached, default-off
+  `MACRUNNER_HB_RETURN_ROUTE_FOCUS_MILESTONES`. It gates exactly one
+  `macdrv-window-map` and two `macdrv-focus-state` observer calls before their
+  Cocoa/Win32 state-query path; all three call sites are covered.
+- ON preserves the existing call positions/arguments. Common Return stages and
+  passive `TRACE_WINSHOW` markers are unchanged. The helper has no activation,
+  focus, input, managed-state, or timing side effects.
+- Focused selector, Return observer, and language observer tests PASS. Two
+  isolated snapshot builds are byte-identical: PE `3b506d3…`, Unix `65bf6bf…`;
+  errors=0 and `install skipped`=0. Working dist was not modified.
+- Sealed as a 2.0 MiB NOT_GOLDEN bundle with a replayable minimal diff,
+  toolchain/env manifest, two build sets/logs, and standalone verifier. Runtime
+  is not authorized or executed. Evidence:
+  `reports/phase4-hollow-knight/NEW-FOCUS-OBSERVER-BASELINE-BUILD-CONTRACT.md`.
+
+## 2026-07-25 - HK Ring Ledger V3 and DXMT draw trace
+
+- `macrunner_hb.c`: retain V2 ledger records while gating the four capture slots
+  on observed Gfx watchlist opcodes (`10007`, `10028`, `10035`, `10057`, `10123`)
+  and counting skipped fallback records without consuming capture budget.
+- `d3d11_context_impl.cpp`: add logging-only counters and bounded entry traces
+  for Draw/DrawIndexed/DrawInstanced/DrawIndexedInstanced/ClearRenderTargetView.
+- Built successfully, not installed: ntdll SHA-256 `b908d24d462aede71c480a3fe360038eaff1a2ed1a17ca38c9a8737170e697fd`;
+  DXMT d3d11 SHA-256 `496e9846aa8d6677f3bd2cd0fafb0398e23cb31fcb18eda9b8e70d3ee4a4a34b`.
+- The live V2 game process (PID `54774`) was preserved; no `dist` mutation,
+  game run, test, or commit occurred.
+
+## 2026-07-25 - HK Ring Ledger V4 recovered-layout witness
+
+- `macrunner_hb.c`: fallback ledger now derives stream state from `R14` and
+  dispatcher last-command from `RCX+0x48`; it records a fresh, bound-checked
+  `base + (cursor_after - 4)` read alongside guest `EDX` and an equality witness.
+- Reads of the next words are constrained by the recovered `stream+0x10c`
+  limit. Existing arming, watchlist, four-slot cap, and DXMT trace are retained.
+- `ntdll.so` built successfully as
+  `85022a049f2ce8c486f9ccd30b409b4d07dac74659a0ef07a06085c652ed7b0f`.
+  Coherent-dist installation was blocked before mutation because an external HK
+  run was live; no game was launched and no commit was made.
+
+## 2026-07-25 - DXMT bounded Present frame dump
+
+- `d3d11_swapchain.cpp` selects only the first five real Presents and every
+  200th Present when `MACRUNNER_DXMT_FRAME_DUMP=1` is set; it otherwise has no
+  effect on the present path.
+- `dxmt_context` carries that selected frame to the real Metal command buffer.
+  `winemetal` encodes a texture-to-shared-buffer blit before the presenter and
+  writes raw RGBA plus RGB statistics from the completion handler, without a
+  synchronous GPU wait.
+- Published artifacts: x86 `d3d11.dll`
+  `172ddbdba215a66d4974b07ccd9d6403400bf330d3cc68d112d1c33099113f41`,
+  x86 `winemetal.dll`
+  `80a6dc36d65468ed047bac45bd27b775f896f868866793a1f484c3521b0b1440`,
+  and arm64 Unix bridge `winemetal.so`
+  `7da877915020038c2304732e802999d02d546e4e02defddcf14dd85388ee28fa`.
+- Build-only: no HK/Wine runtime, cache mutation, commit, or GOLDEN claim.
+
+## 2026-07-26 - C0 sidechannel full-grid statistics
+
+- Extended only the proven C0 causal sidechannel in
+  `engine/dxmt/src/winemetal/unix/winemetal_unix.c`. With the default-off
+  `MACRUNNER_HB_CAUSAL_SIDECHANNEL_GRID=1` gate, its existing shared-buffer
+  completion handler emits one full-coverage 1024x768 RGB summary: sample
+  counts, min/max/mean, and nonzero fraction.
+- No texture-to-buffer blit, new command-buffer completion path, file output,
+  or synchronization was introduced. The optional work is post-completion CPU
+  analysis of the same C0 buffer already used by the BLACK sidechannel result.
+- Published runtime Unix bridge:
+  `engine/graphics/dist/dxmt/aarch64-unix/winemetal.so`, SHA-256
+  `1b2ba54a9f3580097dc15931de24bb12575b192d0707d6e92ba98a21ad807203`.
+  The source contract passed and each gate/log-format marker is present once.
+- Build-only: no HK/Wine runtime, cache mutation, commit, or GOLDEN claim.
+
+## 2026-07-27 09:05 — Interpreter honors is_locked (LOCK-prefix fence parity with codegen)
+File(s): engine/hyperbridge/src/hb_interpreter.c (exec_instr wrapper, ~line 3245)
+Type: ROOT-FIX (correctness parity; proven INERT for the HK stall)
+What: exec_instr now brackets every is_locked IR instr with __atomic_thread_fence(SEQ_CST)
+  before+after, mirroring codegen's DMB ISH bracket (hb_arm64_codegen.c); adds bounded
+  aggregate trace MACRUNNER_HB_TRACE_INTERP_LOCK=1 (armed line + first-8/2^20 counts).
+Why: lifter marks LOCK-prefixed ops is_locked; codegen fenced them; interpreter consulted
+  the flag nowhere — generic locked RMW (`lock or [rsp],r`, Mono hazard-pointer idiom)
+  ran fence-free through the live helper path. Suspected HK stall candidate.
+Verify: control tools/hb_interp_lock_control.c PASS trace+notrace (semantics 0x30|7=0x37,
+  exactly 1 count line, unlocked twin adds none); suite 27 fails == reverted-baseline
+  (1 flaky slot rotates without the fix too); live run9: armed=1, ZERO locked instrs in
+  25 min — refutes it as the stall mechanism, fix stays as parity.
+Status: applied
+
+## 2026-07-27 09:47 — winemac client surface parenting when GA_ROOT is NULL (compositor gap)
+File(s): engine/wine/dlls/winemac.drv/window.c (macdrv_client_surface_update)
+Type: ROOT-FIX
+What: toplevel fallback — if NtUserGetAncestor(hwnd, GA_ROOT) returns NULL, use hwnd
+  itself for the get_win_data lookup (semantically identical for top-level windows);
+  trace line macrunner-winrealize: client_surface_update toplevel_fallback.
+Why: Unity creates the DXGI swapchain while the win32 window is mid-realization;
+  GA_ROOT=NULL made client_surface_update silently no-op, so the swapchain client
+  surface's Cocoa view was NEVER parented while present() unhid it. Every Present
+  rendered into a detached view; the visible window stayed black forever
+  (HK run8: readback magenta vs window black; lldb: bound view superview=nil).
+  Retroactively voids all window-level "black screen" observations to date.
+Verify: run10 live — fallback fired 2x at swapchain time; lldb: view parented into
+  the visible window; SCK window capture nonblack=13924 (was 0); menu visible on
+  screen; ordinal-200 readback byte-identical to run5/6 (detector parity).
+Status: applied
+
+## 2026-07-28 12:20 — HK input root: NSApp is stock NSApplication; winemac recovery fix + thief hook
+File(s): engine/wine/dlls/winemac.drv/cocoa_main.m (run_cocoa_app recovery branch + sharedApplication hook + constructor probe);
+  trace helpers + 12 stage points in cocoa_window.m/keyboard.c/window.c/cocoa_app.m; gate MACRUNNER_TRACE_WINEMAC_INPUT
+  added to all 8 trace_ui_input_enabled helpers (event.c, cocoa_event.m, mouse.c, macdrv_main.c, cocoa_app.m,
+  cocoa_window.m, keyboard.c, window.c, cocoa_main.m)
+Type: ROOT-FIX (pending run verification) + DIAGNOSTIC
+What:
+  1) run_cocoa_app: if NSApp pre-exists and is NOT WineApplication, install WineApplicationController as
+     NSApp delegate + swizzle -[NSApplication sendEvent:] with macrunner_sendEvent_stock_recovery
+     (same logic as -[WineApplication sendEvent:] but via sharedController singleton), then enter [NSApp run].
+  2) Thief hook: constructor swizzles +[NSApplication sharedApplication] to log first caller class + stack.
+  3) Input-chain trace: macrunner-ui-input stages across keyDown/postKey/focus/activation (env MACRUNNER_TRACE_WINEMAC_INPUT).
+Why: Live lldb on try5 (laneA-INPUT-TEST-try5-112123, pid 15041): NSApp class=NSApplication, superclass=NSResponder,
+  delegate=nil, no setWineController → upstream run_cocoa_app then skips controller install and never enters
+  [NSApp run] → sendEvent/handleEvent dead → keyboard+mouse never enter Wine (operator's menu dead-input root).
+  Wine-side queue proven alive (lldb [win keyDown:] → postKey_posted KEY_PRESS in run.log); consumer never
+  dequeues (JIT spin, MONO lane territory). Also live on run35A pid 34444: winemac.so loaded, driver init
+  pending, NSApp ALREADY stock → thief acts between winemac.so dlopen and run_cocoa_app.
+Verify: try5 evidence above; fix+hook to be verified in try7 (queued behind run35A): expect
+  stage=first_sharedApplication (thief identity) + stage=run_cocoa_app_stock_recovery + input flow.
+Status: applied (dist-arm64ec-spike winemac.so, adhoc re-signed, strings-verified), needs-verify

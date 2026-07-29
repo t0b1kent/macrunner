@@ -23,7 +23,8 @@ echo "[mr-clean] remaining spike procs: $left"
 if [ "${1:-}" = "--prune" ]; then
   echo "[mr-clean] --prune: deleting throwaway run prefixes (drive_c trees) + giant logs…"
   # delete the bulk (drive_c) of per-run prefixes under artifacts, KEEP small evidence (json/ppm/logs)
-  find "$ROOT/artifacts" -type d -name 'drive_c' -prune -exec rm -rf {} + 2>/dev/null
+  find "$ROOT/artifacts" \( -type d -name 'hk-windows-oracle-prefix-template*' -prune \) -o \
+    \( -type d -name 'drive_c' -exec rm -rf {} + \) 2>/dev/null
   # delete giant raw trace logs (>50M); keep small summaries
   find "$ROOT/reports" -type f -name '*.log' -size +50M -delete 2>/dev/null
   echo "[mr-clean] prune done. Disk:"; df -h /System/Volumes/Data 2>/dev/null | tail -1 | awk '{print "  avail="$4" used="$3" ("$5")"}'

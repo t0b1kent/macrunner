@@ -42,6 +42,17 @@ logs/
 .env
 .env.local
 secrets/
+# Captured child environments hold UNREDACTED secrets (API keys/tokens) — NEVER commit
+final-child.json
+**/final-child.json
+CHILD-ENV.bin
+**/CHILD-ENV*
+child-env*
+**/child-env*
+launch.env.sh
+**/launch.env.sh
+launch.env
+**/launch.env*
 
 # Test installers (большие)
 tests/installers/*.exe

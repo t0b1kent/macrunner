@@ -131,7 +131,11 @@ compile_helper() {
   local out="$2"
   mkdir -p "$(dirname "$out")"
   if [[ ! -x "$out" || "$src" -nt "$out" ]]; then
-    swiftc -O "$src" -o "$out"
+    if [[ "$src" == "$CAPTURE_SRC" ]]; then
+      swiftc -parse-as-library -O "$src" -o "$out"
+    else
+      swiftc -O "$src" -o "$out"
+    fi
   fi
 }
 

@@ -54,6 +54,80 @@ for line in sys.stdin:
 '
 }
 
+# ── PIPE WATCHDOG (MacRunner 2026-07-29, HK master lane iter 7) ────────────────────────────
+#
+# THE BUG THIS FIXES, measured twice in one afternoon and characterised end to end.
+# Line ~218 runs `mr-run.sh ... 2>&1 | timestamp_stream >> run.log`.  mr-run starts wine's
+# service processes (MACRUNNER_MR_RUN_START_SERVICES=1); those inherit the pipeline's stderr
+# and are reparented to init when the guest dies.  The guest then exits, mr-run.sh exits —
+# and `services.exe` is STILL holding the pipe's write end, so the python filter never sees
+# EOF, `rc=${PIPESTATUS[0]}` is never reached, and the whole driver chain hangs forever with
+# its run long dead.
+#
+# Measured 2026-07-29 18:5x on laneA-BLACKFRAME-DRAWTRACE-a1: guest 10408 dead, chain
+# 97576→56973→57004→93248→93250 wedged 24 min.  `lsof` on the filter's fd 0 gave pipe device
+# 0xdd6a4a8f3dd15998, and exactly one process held the matching write end:
+#     pid=13371  cmd=services.exe  fd=2   (ppid 1, from this run's winetemp dir)
+# `kill -TERM 13371` unwedged the entire chain within 10 s.  The identical shape wedged
+# iter 6's HDRPROBE-AB2 arm for 37 min and cost the blackframe run 40 min of the title slot.
+#
+# WHY THE SCOPE IS SAFE.  It does not guess by name, dist path or winetemp directory — any of
+# which could match a sibling lane's live run.  It kills *only* processes that hold the write
+# end of THIS pipeline's stderr, which is by construction the set of processes preventing this
+# run's teardown, and it does so only after the guest recorded in $RUNDIR/wine-child.pid is
+# already dead plus a grace period.  A live sibling cannot be in that set.
+# Kill switch: MACRUNNER_LANEA_NO_PIPE_WATCHDOG=1.
+_is_descendant_of() {   # $1 = pid, $2 = ancestor pid
+  local p="$1" n=0
+  while [ -n "$p" ] && [ "$p" != "1" ] && [ "$p" != "0" ] && [ "$n" -lt 12 ]; do
+    [ "$p" = "$2" ] && return 0
+    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    n=$((n+1))
+  done
+  return 1
+}
+
+pipe_watchdog() {   # $1 = rundir
+  local rundir="$1" grace="${MACRUNNER_LANEA_PIPE_GRACE:-25}" gp filt dev writers n=0
+  [ "${MACRUNNER_LANEA_NO_PIPE_WATCHDOG:-0}" = "1" ] && return 0
+
+  # Wait for the guest to be recorded and then to die.  Bounded so the watchdog can never
+  # outlive a run that simply takes a long time.
+  while [ "$n" -lt 720 ]; do
+    sleep 10; n=$((n+1))
+    gp="$(cat "$rundir/wine-child.pid" 2>/dev/null || true)"
+    [ -n "$gp" ] || continue
+    kill -0 "$gp" 2>/dev/null || break
+  done
+  [ -n "${gp:-}" ] || return 0
+  kill -0 "$gp" 2>/dev/null && return 0    # still alive at the cap: do nothing
+
+  sleep "$grace"                            # let a healthy teardown happen on its own
+
+  # Locate the filter.  It is NOT a direct child of this script: `timestamp_stream` is a shell
+  # FUNCTION, so bash forks a subshell for it and python is that subshell's child — measured
+  # 57004(script) → 93248(subshell) → 93250(python).  Matching on ppid==$$ finds nothing and
+  # would make this watchdog a no-op that merely looks like a fix, so walk the ancestry instead.
+  filt=""
+  for cand in $(ps -Ao pid,comm | awk '$2 ~ /[Pp]ython/ {print $1}'); do
+    if _is_descendant_of "$cand" "$$"; then filt="$cand"; break; fi
+  done
+  [ -n "$filt" ] || return 0
+  dev="$(lsof -p "$filt" -a -d 0 2>/dev/null | awk '$5=="PIPE"{print $6; exit}')"
+  [ -n "$dev" ] || return 0
+
+  writers="$(lsof 2>/dev/null | awk -v d="->$dev" '$NF==d {print $2}' | sort -u)"
+  [ -n "$writers" ] || return 0
+  for w in $writers; do
+    [ "$w" = "$filt" ] && continue
+    [ "$w" = "$$" ] && continue
+    echo "[laneA] pipe-watchdog: guest $gp is dead but pid $w still holds the run pipe" \
+         "($(ps -o comm= -p "$w" 2>/dev/null)) — TERM, else this driver hangs forever" \
+         >> "$rundir/run.log"
+    kill -TERM "$w" 2>/dev/null || true
+  done
+}
+
 append_time_to_swapchain() {
   python3 - "$1" <<'PY' >> "$1" 2>/dev/null || true
 import re
@@ -108,11 +182,34 @@ for try in $(seq 1 "$MAX"); do
   # the spike dist + winetemp + stale services/.exe) + drop throwaway prefixes,
   # then proceed. mr-clean is scoped to dist-arm64ec-spike, so a separate worktree
   # / non-spike wine is untouched.
+  # MacRunner 2026-07-29 (HK master lane, iter 3) — DO NOT force-clean a LIVE run.
+  #
+  # The force-clean below exists for orphans and that purpose is unchanged.  What it could not
+  # previously tell apart is an orphan from somebody's legitimately running title.  It fires
+  # UPSTREAM of mr-run.sh's atomic slot lock, so that lock cannot prevent it, and two concurrent
+  # invocations therefore destroy each other's runs.  Measured today: a pre-registered A/B died
+  # at +64.5 s with exit=143 (SIGTERM) while another run was live on the machine.
+  #
+  # mr-run.sh already records the slot owner's pid in the lock and already defines staleness by
+  # PID LIVENESS rather than by age (a real run legitimately lasts 45+ min).  Reuse exactly that
+  # definition instead of inventing a second one: a LIVE owner means the wine we can see is a
+  # real run -> keep waiting; no owner, or a dead one, means this is the orphan the branch was
+  # written for -> clean it exactly as before.
   n=0
   while pgrep -f "$WINE_DIST" >/dev/null 2>&1; do
     sleep 5; n=$((n+1))
     if [ "$n" -ge 12 ]; then
-      echo "[laneA] live spike wine persisted ~60s — force-cleaning orphaned spike wine (scoped) and proceeding" >&2
+      _slot_owner="$(cat "${TMPDIR:-/tmp}/macrunner-title-slot.lock/pid" 2>/dev/null)"
+      if [ -n "$_slot_owner" ] && kill -0 "$_slot_owner" 2>/dev/null; then
+        [ $((n % 60)) -eq 0 ] && \
+          echo "[laneA] title slot held by LIVE pid $_slot_owner — waiting $((n*5))s, NOT force-cleaning" >&2
+        if [ "$n" -ge "${LANEA_SLOT_WAIT_MAX_ITERS:-720}" ]; then
+          echo "[laneA] slot held by live pid $_slot_owner for $((n*5))s — giving up rather than killing someone's run" >&2
+          exit 75
+        fi
+        continue
+      fi
+      echo "[laneA] live spike wine persisted ~60s and NO live slot owner — force-cleaning orphaned spike wine (scoped) and proceeding" >&2
       "$ROOT/scripts/mr-clean.sh" >/dev/null 2>&1 || true
       rm -rf "$ROOT"/artifacts/_mr-run.* 2>/dev/null || true
       break
@@ -176,6 +273,11 @@ for try in $(seq 1 "$MAX"); do
   export LANEA_RUN_START_EPOCH="$RUN_START_EPOCH"
   echo "[laneA] run_start_epoch=$RUN_START_EPOCH" >> "$RUNDIR/run.log"
 
+  # Armed BEFORE the pipeline, because once the pipeline blocks there is no later point at
+  # which this shell regains control — that is the whole failure mode (see pipe_watchdog).
+  pipe_watchdog "$RUNDIR" &
+  PIPE_WD_PID=$!
+
   set +e
   set -o pipefail
     MACRUNNER_RUN_DIR="$RUNDIR" MACRUNNER_HB_TRANSLATION_CACHE="$CACHE_ENABLED" \
@@ -195,6 +297,9 @@ for try in $(seq 1 "$MAX"); do
     "$WINE_DIST" "$HK" "$TMO" ${HK_EXTRA_ARGS:-} 2>&1 | timestamp_stream >> "$RUNDIR/run.log"
   rc=${PIPESTATUS[0]}
   set +o pipefail
+  # The pipeline returned, so the watchdog has nothing left to guard — retire it rather than
+  # leaving one background sleeper per attempt.
+  kill -TERM "$PIPE_WD_PID" 2>/dev/null || true
   append_time_to_swapchain "$RUNDIR/run.log"
   lines=$(wc -l < "$RUNDIR/run.log")
   echo "try$try rc=$rc lines=$lines $RUNDIR"

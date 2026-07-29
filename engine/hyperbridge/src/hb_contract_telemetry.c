@@ -1,0 +1,223 @@
+#include "hb_contract_telemetry.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+static uint64_t g_open_ok;
+static uint64_t g_open_fail;
+static uint64_t g_hits;
+static uint64_t g_misses;
+static uint64_t g_stores;
+static uint64_t g_store_skips;
+static uint64_t g_store_skip_multi;
+static uint64_t g_store_skip_unmatched;
+static uint64_t g_bytes_loaded;
+static uint64_t g_bytes_stored;
+static uint64_t g_compile_count;
+static uint64_t g_translation_count;
+static uint64_t g_distinct_translation_count;
+static uint64_t g_dispatches;
+static uint64_t g_blocks;
+static uint64_t g_steps;
+static int g_trace_enabled_cached = -1;
+static int g_atexit_registered;
+static int g_summary_emitted;
+
+static void telemetry_add(uint64_t* dst, uint64_t val) {
+    if (!hb_contract_telemetry_enabled()) return;
+    __atomic_fetch_add(dst, val, __ATOMIC_RELAXED);
+}
+
+static uint64_t telemetry_load(const uint64_t* src) {
+    return __atomic_load_n(src, __ATOMIC_RELAXED);
+}
+
+/* Defined below, next to the summary emitter it shares a format with. */
+static void hb_contract_telemetry_maybe_emit_progress(void);
+
+int hb_contract_telemetry_enabled(void) {
+    int cached = __atomic_load_n(&g_trace_enabled_cached, __ATOMIC_RELAXED);
+    if (cached < 0) {
+        const char* env = getenv("MACRUNNER_HB_TRACE_TRANSLATION_CACHE");
+        cached = env && *env && *env != '0';
+        __atomic_store_n(&g_trace_enabled_cached, cached, __ATOMIC_RELAXED);
+    }
+    return cached;
+}
+
+void hb_contract_telemetry_record_open(bool ok) {
+    telemetry_add(ok ? &g_open_ok : &g_open_fail, 1);
+}
+
+void hb_contract_telemetry_record_cache_hit(uint64_t bytes_loaded) {
+    telemetry_add(&g_hits, 1);
+    telemetry_add(&g_bytes_loaded, bytes_loaded);
+}
+
+void hb_contract_telemetry_record_cache_miss(void) {
+    telemetry_add(&g_misses, 1);
+}
+
+void hb_contract_telemetry_record_cache_store(uint64_t bytes_stored) {
+    telemetry_add(&g_stores, 1);
+    telemetry_add(&g_bytes_stored, bytes_stored);
+}
+
+void hb_contract_telemetry_record_cache_store_skip(void) {
+    telemetry_add(&g_store_skips, 1);
+}
+
+void hb_contract_telemetry_record_cache_store_skip_multi(void) {
+    telemetry_add(&g_store_skip_multi, 1);
+}
+
+void hb_contract_telemetry_record_cache_store_skip_unmatched(void) {
+    telemetry_add(&g_store_skip_unmatched, 1);
+}
+
+void hb_contract_telemetry_record_compile(void) {
+    telemetry_add(&g_compile_count, 1);
+    hb_contract_telemetry_maybe_emit_progress();
+}
+
+void hb_contract_telemetry_record_translation(bool distinct) {
+    telemetry_add(&g_translation_count, 1);
+    if (distinct) telemetry_add(&g_distinct_translation_count, 1);
+}
+
+void hb_contract_telemetry_record_dispatch(uint64_t dispatches, uint64_t blocks, uint64_t steps) {
+    telemetry_add(&g_dispatches, dispatches);
+    telemetry_add(&g_blocks, blocks);
+    telemetry_add(&g_steps, steps);
+}
+
+void hb_contract_telemetry_snapshot(hb_contract_telemetry_counts_t* out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->open_ok = telemetry_load(&g_open_ok);
+    out->open_fail = telemetry_load(&g_open_fail);
+    out->hits = telemetry_load(&g_hits);
+    out->misses = telemetry_load(&g_misses);
+    out->stores = telemetry_load(&g_stores);
+    out->store_skip_multi_helper = telemetry_load(&g_store_skip_multi);
+    out->store_skip_unmatched = telemetry_load(&g_store_skip_unmatched);
+    out->store_skips = telemetry_load(&g_store_skips);
+    out->bytes_loaded = telemetry_load(&g_bytes_loaded);
+    out->bytes_stored = telemetry_load(&g_bytes_stored);
+    out->compile_count = telemetry_load(&g_compile_count);
+    out->translation_count = telemetry_load(&g_translation_count);
+    out->distinct_translation_count = telemetry_load(&g_distinct_translation_count);
+    out->dispatches = telemetry_load(&g_dispatches);
+    out->blocks = telemetry_load(&g_blocks);
+    out->steps = telemetry_load(&g_steps);
+}
+
+int hb_contract_telemetry_format_summary(char* buf, size_t size,
+                                         const hb_contract_telemetry_counts_t* counts) {
+    if (!buf || !size || !counts) return -1;
+    return snprintf(buf, size,
+                    "macrunner-hb-translation-cache-summary: "
+                    "open_ok=%llu open_fail=%llu hits=%llu misses=%llu stores=%llu "
+                    "store_skips=%llu store_skip_multi=%llu store_skip_unmatched=%llu "
+                    "bytes_loaded=%llu bytes_stored=%llu "
+                    "compile_count=%llu translation_count=%llu "
+                    "distinct_translation_count=%llu dispatches=%llu blocks=%llu steps=%llu\n",
+                    (unsigned long long)counts->open_ok,
+                    (unsigned long long)counts->open_fail,
+                    (unsigned long long)counts->hits,
+                    (unsigned long long)counts->misses,
+                    (unsigned long long)counts->stores,
+                    (unsigned long long)counts->store_skips,
+                    (unsigned long long)counts->store_skip_multi_helper,
+                    (unsigned long long)counts->store_skip_unmatched,
+                    (unsigned long long)counts->bytes_loaded,
+                    (unsigned long long)counts->bytes_stored,
+                    (unsigned long long)counts->compile_count,
+                    (unsigned long long)counts->translation_count,
+                    (unsigned long long)counts->distinct_translation_count,
+                    (unsigned long long)counts->dispatches,
+                    (unsigned long long)counts->blocks,
+                    (unsigned long long)counts->steps);
+}
+
+int hb_contract_telemetry_emit_summary(FILE* stream) {
+    hb_contract_telemetry_counts_t counts;
+    char line[512];
+    int expected = 0;
+    int n;
+
+    if (!stream || !hb_contract_telemetry_enabled()) return 0;
+    if (!__atomic_compare_exchange_n(&g_summary_emitted, &expected, 1, false,
+                                     __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        return 0;
+    hb_contract_telemetry_snapshot(&counts);
+    n = hb_contract_telemetry_format_summary(line, sizeof(line), &counts);
+    if (n < 0 || (size_t)n >= sizeof(line)) return 0;
+    fputs(line, stream);
+    fflush(stream);
+    return 1;
+}
+
+/* MacRunner 2026-07-29: emit a PROGRESS line every N compiles.
+ *
+ * The summary above is one-shot and runs from atexit, so a run killed by its harness timeout
+ * emits nothing at all. Every cache A/B today produced "сводки нет" instead of numbers, because
+ * Hollow Knight's Mono load phase alone is 232 s and no run survives to a clean exit inside a
+ * measurement-sized budget. Tying progress to compile count rather than to a timer keeps it
+ * free of threads and signal-safety questions, and makes the cadence proportional to the work
+ * being measured. */
+#define HB_TELEMETRY_PROGRESS_EVERY 5000
+
+static void hb_contract_telemetry_maybe_emit_progress(void) {
+    static uint64_t next_at = HB_TELEMETRY_PROGRESS_EVERY;
+    hb_contract_telemetry_counts_t counts;
+    char line[512];
+    uint64_t compiles;
+    int n;
+
+    if (!hb_contract_telemetry_enabled()) return;
+    compiles = telemetry_load(&g_compile_count);
+    if (compiles < __atomic_load_n(&next_at, __ATOMIC_RELAXED)) return;
+    __atomic_store_n(&next_at, compiles + HB_TELEMETRY_PROGRESS_EVERY, __ATOMIC_RELAXED);
+
+    hb_contract_telemetry_snapshot(&counts);
+    n = hb_contract_telemetry_format_summary(line, sizeof(line), &counts);
+    if (n < 0 || (size_t)n >= sizeof(line)) return;
+    /* Same fields, different marker, so a partial reading can never be mistaken for the final
+     * one — today's worst hours came from reading numbers that meant something else. */
+    fputs("macrunner-hb-translation-cache-progress: ", stderr);
+    fputs(line + sizeof("macrunner-hb-translation-cache-summary: ") - 1, stderr);
+    fflush(stderr);
+}
+
+static void hb_contract_telemetry_atexit_summary(void) {
+    (void)hb_contract_telemetry_emit_summary(stderr);
+}
+
+void hb_contract_telemetry_register_atexit(void) {
+    int expected = 0;
+    if (!hb_contract_telemetry_enabled()) return;
+    if (__atomic_compare_exchange_n(&g_atexit_registered, &expected, 1, false,
+                                    __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+        atexit(hb_contract_telemetry_atexit_summary);
+    }
+}
+
+void hb_contract_telemetry_reset_for_test(void) {
+    __atomic_store_n(&g_open_ok, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_open_fail, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_hits, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_misses, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_stores, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_store_skips, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_bytes_loaded, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_bytes_stored, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_compile_count, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_translation_count, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_distinct_translation_count, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_dispatches, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_blocks, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_steps, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_trace_enabled_cached, -1, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_summary_emitted, 0, __ATOMIC_RELAXED);
+}

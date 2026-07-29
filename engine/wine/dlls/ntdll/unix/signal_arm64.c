@@ -1478,6 +1478,34 @@ static BOOL macrunner_hb_redirect_arm64x_hexpthk_sigill( ucontext_t *context );
  * an A/B. */
 #define MACRUNNER_HB_FAULT_REENTRY_LIMIT 2
 
+/* MacRunner 2026-07-29, second half of the same defect — REPEATED faults, not nested ones.
+ *
+ * The depth guard above stops a fault taken INSIDE the router. It does nothing for the case
+ * actually caught in the wild, which is sequential: the handler classifies the fault, returns
+ * to the very same instruction, that instruction faults again, forever. Each fault enters at
+ * depth 1 and leaves cleanly, so the depth counter never rises and `fault-reentry-break` reads
+ * 0 while the process burns a core in silence.
+ *
+ * Measured on HK pid 71264, wedged 435 s at 99.9 % CPU, `sample` 542 frames on the hot thread:
+ * **351 of them in `_sigtramp`** — i.e. the thread is almost entirely inside signal delivery —
+ * under `segv_handler -> macrunner_hb_route_x64_callback_fault ->
+ * macrunner_hb_redirect_arm64x_hexpthk_sigill -> …pc_is_x64_guest_code_module_no_lock ->
+ * macrunner_hb_module_from_pc -> macrunner_hb_ldr_entry_from_pc`. Every other thread in the
+ * process was parked in a wait.
+ *
+ * So: count consecutive faults at the SAME pc. Past the limit, stop claiming to handle it and
+ * return FALSE, which lets the fault reach normal handling — a diagnosable crash with the pc
+ * printed, instead of a hang that looks like a guest livelock and has cost this project six
+ * iterations of misdirected work.
+ *
+ * The counter resets whenever the pc changes, so ordinary high-volume faulting (the JIT takes
+ * SIGSEGV routinely as a control-flow mechanism) is unaffected: only *no forward progress at a
+ * single address* trips it. Limit is deliberately generous for the same reason. */
+#define MACRUNNER_HB_FAULT_SAME_PC_LIMIT 4096
+
+static __thread ULONG_PTR macrunner_hb_fault_last_pc;
+static __thread unsigned int macrunner_hb_fault_same_pc_count;
+
 struct macrunner_hb_fault_reentry_guard { int engaged; };
 static __thread int macrunner_hb_fault_reentry_depth;
 
@@ -1534,6 +1562,33 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
         }
         macrunner_hb_fault_reentry_depth++;
         reentry_guard.engaged = 1;
+
+        /* Same-pc repeat detector — see MACRUNNER_HB_FAULT_SAME_PC_LIMIT above. */
+        {
+            ULONG_PTR here = PC_sig(context);
+
+            if (here != macrunner_hb_fault_last_pc)
+            {
+                macrunner_hb_fault_last_pc = here;
+                macrunner_hb_fault_same_pc_count = 0;
+            }
+            else if (++macrunner_hb_fault_same_pc_count >= MACRUNNER_HB_FAULT_SAME_PC_LIMIT)
+            {
+                static int announced_pc;
+
+                if (!announced_pc)
+                {
+                    announced_pc = 1;
+                    macrunner_signal_writef(
+                        "macrunner-hb-fault-same-pc-break: pc=%p fault=%p source=%s count=%u "
+                        "— no forward progress at this address, refusing to keep handling\n",
+                        (void *)here, (void *)fault_addr, source ? source : "(none)",
+                        macrunner_hb_fault_same_pc_count );
+                }
+                callback_loop_scope.disposition = "same-pc-break";
+                return FALSE;
+            }
+        }
     }
 
     /* A native ARM64 indirect call can land on an imported ARM64X x64 entry thunk

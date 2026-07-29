@@ -1228,6 +1228,34 @@ static bool reloc_instr_index(const hb_ir_block_t* block, uint64_t value, uint64
     return true;
 }
 
+/* CENSUS of the one decline that is left. After the relocation table landed, Hollow Knight measured
+ * stores=239364 store_skips=8841 with rl_hostptr=8841 and every other reason exactly 0 — so these
+ * blocks are the entire missing 3.5 %, and what they point AT decides whether that is recoverable.
+ *
+ * The claim above is that they are other IR blocks handed to the fused hot-family helpers. If so
+ * they are nameable: a foreign block is reachable through this block's CFG, and it also carries a
+ * guest_addr that is identical in every run. If instead they are heap or arena addresses, they are
+ * not nameable and the 3.5 % is a ceiling rather than a gap.
+ *
+ * Measurement only — the caller declines either way. Buckets match
+ * hb_contract_telemetry_record_hostptr_census(). */
+static int reloc_hostptr_census_bucket(const hb_ir_block_t* block, uint64_t value) {
+    uint64_t idx;
+    size_t i;
+
+    if (!block) return 3;
+    for (i = 0; i < block->succ_count; i++)
+        if (block->succ && value == (uint64_t)(uintptr_t)block->succ[i]) return 0;
+    for (i = 0; i < block->pred_count; i++)
+        if (block->pred && value == (uint64_t)(uintptr_t)block->pred[i]) return 1;
+    /* One level only. A pointer into a successor's instruction array is the shape the fused
+     * two/four-block helpers take, and going deeper would make the census cost grow with the
+     * graph for no extra decision. */
+    for (i = 0; i < block->succ_count; i++)
+        if (block->succ && reloc_instr_index(block->succ[i], value, &idx)) return 2;
+    return 3;
+}
+
 /* A literal that already looks like a sentinel would be indistinguishable from one we wrote, so
  * the load-time scan would rewrite it. Declining such a block makes that scan unambiguous by
  * construction rather than by probability. Sentinels sit at 0x4842_5254_xxxx_xxxx, far above any
@@ -1365,6 +1393,8 @@ static bool native_blob_reloc_store(const hb_codegen_buffer_t* buf,
             /* A host pointer this block cannot name: `first`/`second`/`sort`/`entry` point into
              * OTHER IR blocks, which will not exist at load time. Genuinely un-persistable, and
              * the only decline here that is about the code rather than about this matcher. */
+            hb_contract_telemetry_record_hostptr_census(
+                reloc_hostptr_census_bucket(block, rl->value));
             if (why) *why = HB_RELOC_DECLINE_HOSTPTR;
             goto decline;
         }

@@ -24,6 +24,10 @@ static uint64_t g_rl_highhalf_sites;
 static uint64_t g_rl_patched_sites;
 static uint64_t g_rl_x23_value;
 static uint64_t g_promo_compiles;
+static uint64_t g_rl_hp_succ;
+static uint64_t g_rl_hp_pred;
+static uint64_t g_rl_hp_succ_instr;
+static uint64_t g_rl_hp_other;
 static uint64_t g_rl_hostptr;
 static uint64_t g_rl_unknown_helper;
 static uint64_t g_rl_overflow;
@@ -142,6 +146,15 @@ void hb_contract_telemetry_record_reloc_decline(int reason) {
     }
 }
 
+void hb_contract_telemetry_record_hostptr_census(int bucket) {
+    switch (bucket) {
+        case 0: telemetry_add(&g_rl_hp_succ, 1); break;
+        case 1: telemetry_add(&g_rl_hp_pred, 1); break;
+        case 2: telemetry_add(&g_rl_hp_succ_instr, 1); break;
+        default: telemetry_add(&g_rl_hp_other, 1); break;
+    }
+}
+
 void hb_contract_telemetry_record_compile(void) {
     telemetry_add(&g_compile_count, 1);
     hb_contract_telemetry_maybe_emit_progress();
@@ -182,6 +195,10 @@ void hb_contract_telemetry_snapshot(hb_contract_telemetry_counts_t* out) {
     out->rl_x23_value = telemetry_load(&g_rl_x23_value);
     out->promo_compiles = telemetry_load(&g_promo_compiles);
     out->rl_hostptr = telemetry_load(&g_rl_hostptr);
+    out->rl_hp_succ = telemetry_load(&g_rl_hp_succ);
+    out->rl_hp_pred = telemetry_load(&g_rl_hp_pred);
+    out->rl_hp_succ_instr = telemetry_load(&g_rl_hp_succ_instr);
+    out->rl_hp_other = telemetry_load(&g_rl_hp_other);
     out->rl_unknown_helper = telemetry_load(&g_rl_unknown_helper);
     out->rl_overflow = telemetry_load(&g_rl_overflow);
     out->rl_desync = telemetry_load(&g_rl_desync);
@@ -209,7 +226,8 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     "reloc_blocks=%llu reloc_sites=%llu reloc_overflow=%llu "
                     "rl_stores=%llu rl_patched=%llu rl_literal=%llu rl_highhalf=%llu "
                     "rl_x23val=%llu promo_compiles=%llu "
-                    "rl_hostptr=%llu rl_unkhelper=%llu rl_overflow=%llu "
+                    "rl_hostptr=%llu hp_succ=%llu hp_pred=%llu hp_succinstr=%llu hp_other=%llu "
+                    "rl_unkhelper=%llu rl_overflow=%llu "
                     "rl_desync=%llu rl_collision=%llu rl_roundtrip=%llu "
                     "bytes_loaded=%llu bytes_stored=%llu "
                     "compile_count=%llu translation_count=%llu "
@@ -236,6 +254,10 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     (unsigned long long)counts->rl_x23_value,
                     (unsigned long long)counts->promo_compiles,
                     (unsigned long long)counts->rl_hostptr,
+                    (unsigned long long)counts->rl_hp_succ,
+                    (unsigned long long)counts->rl_hp_pred,
+                    (unsigned long long)counts->rl_hp_succ_instr,
+                    (unsigned long long)counts->rl_hp_other,
                     (unsigned long long)counts->rl_unknown_helper,
                     (unsigned long long)counts->rl_overflow,
                     (unsigned long long)counts->rl_desync,

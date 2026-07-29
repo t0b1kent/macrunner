@@ -55,6 +55,22 @@ typedef struct {
                                 * used to imply "helper", so each of these declined a whole block:
                                 * this counter is the direct measure of that fix. */
     uint64_t rl_hostptr;       /* declined: host pointer that is not this block or its instrs */
+    /* 2026-07-30 — CENSUS of that one decline, which is now the ONLY one left. The measured mix
+     * after the table landed: stores=239364 store_skips=8841 and rl_hostptr=8841, every other
+     * reason exactly 0 — so these 8841 blocks are the whole of the missing 3.5 %.
+     *
+     * The claim in hb_runtime.c is that they are pointers to OTHER IR blocks handed to the fused
+     * hot-family helpers (first/second/sort/entry). That is a hypothesis about the code, and it
+     * decides whether the 3.5 % is recoverable: a foreign block HAS a stable name across runs, its
+     * guest_addr, so if these really are blocks they can be encoded and re-resolved on load. If
+     * they are something else — a heap allocation, a JIT arena address — they cannot.
+     *
+     * Counting only; nothing changes behaviour on these fields. rl_hp_succ + rl_hp_pred +
+     * rl_hp_succ_instr + rl_hp_other == rl_hostptr, so a mismatch says the buckets are wrong. */
+    uint64_t rl_hp_succ;       /* the value IS a successor block of this one */
+    uint64_t rl_hp_pred;       /* ...a predecessor */
+    uint64_t rl_hp_succ_instr; /* ...an instruction inside a successor block */
+    uint64_t rl_hp_other;      /* none of the above — not nameable via this block's CFG */
     uint64_t rl_unknown_helper;/* declined: a KIND_HELPER value is not a registered helper */
     uint64_t rl_overflow;      /* declined: the table overflowed, so it is not trustworthy */
     uint64_t rl_desync;        /* declined: table offset does not decode as the recorded mov */
@@ -94,6 +110,9 @@ void hb_contract_telemetry_record_reloc_store(unsigned long patched, unsigned lo
 void hb_contract_telemetry_record_reloc_highhalf(unsigned long sites);
 void hb_contract_telemetry_record_reloc_x23_value(unsigned long sites);
 void hb_contract_telemetry_record_reloc_decline(int reason);
+/* bucket: 0 successor block, 1 predecessor block, 2 instruction of a successor, 3 none of those.
+ * Called only alongside a HOSTPTR decline, so the four always sum to rl_hostptr. */
+void hb_contract_telemetry_record_hostptr_census(int bucket);
 void hb_contract_telemetry_record_compile(void);
 /* Call beside record_compile() from any path that cannot reach the persistent store. */
 void hb_contract_telemetry_record_promote_compile(void);

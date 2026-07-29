@@ -1239,21 +1239,43 @@ static bool reloc_instr_index(const hb_ir_block_t* block, uint64_t value, uint64
  *
  * Measurement only — the caller declines either way. Buckets match
  * hb_contract_telemetry_record_hostptr_census(). */
-static int reloc_hostptr_census_bucket(const hb_ir_block_t* block, uint64_t value) {
-    uint64_t idx;
-    size_t i;
+/* CENSUS v1 WAS VOID — kept written down because the failure is more instructive than the result.
+ *
+ * v1 bucketed the declined value against block->succ and block->pred and reported, very
+ * consistently, hp_succ=0 hp_pred=0 hp_succinstr=0 hp_other=8485 with the four summing exactly to
+ * rl_hostptr. The sum checking out is what made it look sound. It was not: hb_ir_cfg_add_edge() has
+ * ZERO callers in the engine, so succ_count and pred_count are 0 for every block that has ever
+ * existed here, and those three buckets were unreachable by construction. "Not found via the CFG"
+ * was a tautology, not a measurement -- the same class of mistake as reading a counter behind a
+ * gate that was never switched on.
+ *
+ * v2 therefore measures something that cannot be empty: the DESTINATION REGISTER, which the
+ * relocation table records for every site and which the decline path already has in hand. reg tells
+ * us the calling convention position -- 1/2/3/4 are helper arguments, so a block pointer handed to
+ * a fused hot-family helper lands in one of those, while an address that is not an argument at all
+ * lands elsewhere. Plus a one-shot dump of the first few actual values next to `block` and
+ * `block->instrs`, because at this point looking at the numbers beats bucketing against a guess. */
+static int reloc_hostptr_census_bucket(const hb_ir_block_t* block, uint64_t value, uint8_t reg) {
+    static int dumped;
 
-    if (!block) return 3;
-    for (i = 0; i < block->succ_count; i++)
-        if (block->succ && value == (uint64_t)(uintptr_t)block->succ[i]) return 0;
-    for (i = 0; i < block->pred_count; i++)
-        if (block->pred && value == (uint64_t)(uintptr_t)block->pred[i]) return 1;
-    /* One level only. A pointer into a successor's instruction array is the shape the fused
-     * two/four-block helpers take, and going deeper would make the census cost grow with the
-     * graph for no extra decision. */
-    for (i = 0; i < block->succ_count; i++)
-        if (block->succ && reloc_instr_index(block->succ[i], value, &idx)) return 2;
-    return 3;
+    if (hb_contract_telemetry_enabled() &&
+        __atomic_fetch_add(&dumped, 1, __ATOMIC_RELAXED) < 6) {
+        fprintf(stderr,
+                "macrunner-hb-hostptr-sample: value=0x%llx reg=%u block=%p instrs=%p"
+                " instr_count=%zu succ_count=%zu\n",
+                (unsigned long long)value, (unsigned)reg, (const void*)block,
+                block ? (const void*)block->instrs : NULL,
+                block ? block->instr_count : (size_t)0,
+                block ? block->succ_count : (size_t)0);
+        fflush(stderr);
+    }
+
+    switch (reg) {
+        case 1: return 0;
+        case 2: return 1;
+        case 3: return 2;
+        default: return 3;  /* 4, 23, or anything else — split further only if this points there */
+    }
 }
 
 /* A literal that already looks like a sentinel would be indistinguishable from one we wrote, so
@@ -1394,7 +1416,7 @@ static bool native_blob_reloc_store(const hb_codegen_buffer_t* buf,
              * OTHER IR blocks, which will not exist at load time. Genuinely un-persistable, and
              * the only decline here that is about the code rather than about this matcher. */
             hb_contract_telemetry_record_hostptr_census(
-                reloc_hostptr_census_bucket(block, rl->value));
+                reloc_hostptr_census_bucket(block, rl->value, rl->reg));
             if (why) *why = HB_RELOC_DECLINE_HOSTPTR;
             goto decline;
         }

@@ -291,6 +291,33 @@ def _configure_wine_env_for_lane(env: dict[str, str], lane: str, engine: EngineD
         env["WINESERVER"] = str(engine_root / "bin" / "wineserver")
         env["WINEDLLPATH"] = str(engine_root / "lib" / "wine")
 
+        # MacRunner 2026-07-29: the front door was launching this lane with NO translation
+        # cache at all — the run log contained not one `translation-cache-open` line — so every
+        # basic block was re-translated from scratch on every launch. That is the single
+        # largest reason a front-door launch feels far slower than Rosetta, which translates
+        # ahead of time and keeps a persistent system cache. scripts/mr-run.sh has always set
+        # these; the user-facing launcher never did.
+        #
+        # Keyed by the engine binary, because generated code is only valid for the engine that
+        # produced it. That is also why a development day full of rebuilds is mostly cold
+        # starts: today produced 16 distinct cache keys. Narrowing the key to what actually
+        # affects codegen is worth doing, but it is a separate change with its own risk.
+        cache_root = env.get("MACRUNNER_HB_TRANSLATION_CACHE_ROOT")
+        if not cache_root:
+            try:
+                import hashlib
+
+                ntdll = engine_root / "lib" / "wine" / "aarch64-unix" / "ntdll.so"
+                digest = hashlib.sha256(ntdll.read_bytes()).hexdigest()[:16]
+                repo_root = Path(env.get("MACRUNNER_ROOT") or Path(__file__).resolve().parents[2])
+                cache_root = str(repo_root / "artifacts" / "hb-translation-cache" / f"ntdll-{digest}")
+            except OSError:
+                cache_root = ""
+        if cache_root:
+            Path(cache_root).mkdir(parents=True, exist_ok=True)
+            env.setdefault("MACRUNNER_HB_TRANSLATION_CACHE", "1")
+            env.setdefault("MACRUNNER_HB_TRANSLATION_CACHE_ROOT", cache_root)
+
 
 def _append_path_env(env: dict[str, str], name: str, paths: Sequence[Path]) -> None:
     entries = [str(path) for path in paths if path.exists()]

@@ -878,21 +878,38 @@ static bool native_blob_multi_helper_enabled(void) {
     return cached != 0;
 }
 
+/* Why a multi-helper block still could not be persisted. Measured because the first A/B cut
+ * multi-helper skips from 118547 to 43909 — a threefold improvement, but 44k blocks are still
+ * being dropped and there are four different reasons that could be doing it. Attributing them
+ * is the difference between a targeted second pass and another guess. */
+typedef enum {
+    HB_MH_OK = 0,
+    HB_MH_TOO_MANY,      /* more helper sites than HB_MULTI_HELPER_MAX */
+    HB_MH_WIDE_ARG,      /* pointer moved into x2/x3/x4 somewhere in the block */
+    HB_MH_UNKNOWN_HELPER,/* helper address/id not in the cacheable set */
+    HB_MH_ARG_SHAPE      /* not exactly one recognised arg1 in this site's window */
+} hb_mh_reason_t;
+
 /* Collect one stub per helper call site. Returns false if any site fails to resolve, so a
  * partially-understood block is never persisted. */
 static bool native_blob_helper_stubs(const uint8_t* code, size_t size,
                                      const hb_ir_block_t* block, bool canonical,
-                                     hb_cached_helper_stub_t* out, size_t* out_count) {
+                                     hb_cached_helper_stub_t* out, size_t* out_count,
+                                     hb_mh_reason_t* out_reason) {
     size_t blrs[HB_MULTI_HELPER_MAX];
     size_t n = 0;
 
+    if (out_reason) *out_reason = HB_MH_OK;
     if (!code || !size || !block || !out || !out_count) return false;
 
     for (size_t off = 0; off + 4 <= size; off += 4) {
         uint32_t insn;
         memcpy(&insn, code + off, sizeof(insn));
         if (insn == (0xd63f0000u | (23u << 5))) {
-            if (n >= HB_MULTI_HELPER_MAX) return false;
+            if (n >= HB_MULTI_HELPER_MAX) {
+                if (out_reason) *out_reason = HB_MH_TOO_MANY;
+                return false;
+            }
             blrs[n++] = off;
         }
     }
@@ -904,8 +921,10 @@ static bool native_blob_helper_stubs(const uint8_t* code, size_t size,
         uint64_t value = 0;
         if (arm64_mov_imm64_at(code, size, off, 2, &value) ||
             arm64_mov_imm64_at(code, size, off, 3, &value) ||
-            arm64_mov_imm64_at(code, size, off, 4, &value))
+            arm64_mov_imm64_at(code, size, off, 4, &value)) {
+            if (out_reason) *out_reason = HB_MH_WIDE_ARG;
             return false;
+        }
     }
 
     for (size_t i = 0; i < n; i++) {
@@ -924,10 +943,16 @@ static bool native_blob_helper_stubs(const uint8_t* code, size_t size,
             if ((helper_value & HB_RUNTIME_CACHE_HELPER_MASK) != HB_RUNTIME_CACHE_HELPER_SENTINEL)
                 return false;
             helper_id = (uint8_t)(helper_value & 0xffu);
-            if (!helper_addr_for_cache_id(helper_id)) return false;
+            if (!helper_addr_for_cache_id(helper_id)) {
+                if (out_reason) *out_reason = HB_MH_UNKNOWN_HELPER;
+                return false;
+            }
         } else {
             helper_id = helper_cache_id_for_addr(helper_value);
-            if (!helper_id) return false;
+            if (!helper_id) {
+                if (out_reason) *out_reason = HB_MH_UNKNOWN_HELPER;
+                return false;
+            }
         }
 
         for (size_t off = win_lo; off + 16 <= size && off < blr_off; off += 4) {
@@ -963,7 +988,10 @@ static bool native_blob_helper_stubs(const uint8_t* code, size_t size,
                 }
             }
         }
-        if (arg1_count != 1 || arg1_off == SIZE_MAX) return false;
+        if (arg1_count != 1 || arg1_off == SIZE_MAX) {
+            if (out_reason) *out_reason = HB_MH_ARG_SHAPE;
+            return false;
+        }
 
         out[i].arg1_mov_off = arg1_off;
         out[i].helper_mov_off = blr_off - 16;
@@ -988,7 +1016,8 @@ static bool native_blob_prepare_cache_store(const uint8_t* code, size_t size,
     if (native_blob_multi_helper_enabled() && native_blob_has_helper_call(code, size)) {
         hb_cached_helper_stub_t stubs[HB_MULTI_HELPER_MAX];
         size_t count = 0;
-        if (native_blob_helper_stubs(code, size, block, false, stubs, &count) && count > 1) {
+        hb_mh_reason_t mh_reason = HB_MH_OK;
+        if (native_blob_helper_stubs(code, size, block, false, stubs, &count, &mh_reason) && count > 1) {
             patched = malloc(size);
             if (!patched) return false;
             memcpy(patched, code, size);
@@ -1000,11 +1029,53 @@ static bool native_blob_prepare_cache_store(const uint8_t* code, size_t size,
                 arm64_patch_mov_imm64_at(patched, size, stubs[i].helper_mov_off, 23,
                                          HB_RUNTIME_CACHE_HELPER_SENTINEL | stubs[i].helper_id);
             }
+
+            /* SELF-CHECK, and the reason this is safe to ship at all.
+             *
+             * Patching emitted machine code is the one class of change here that fails silently:
+             * a wrong offset does not crash the patcher, it executes wrong instructions later and
+             * far from the cause. So prove the transformation is invertible before trusting it —
+             * re-derive the stubs from the patched form exactly as the load path will
+             * (canonical=true) and patch them back. If the result is not byte-identical to what
+             * codegen produced, this block's round trip is not sound and we decline to persist
+             * something we cannot faithfully restore.
+             *
+             * One extra scan and memcmp per stored block, paid at compile time, never on the hot
+             * path. Cheap insurance against the only failure mode here that has no symptom. */
+            {
+                hb_cached_helper_stub_t back[HB_MULTI_HELPER_MAX];
+                size_t back_count = 0;
+                uint8_t* restored = malloc(size);
+                bool sound = false;
+
+                if (restored) {
+                    memcpy(restored, patched, size);
+                    if (native_blob_helper_stubs(patched, size, block, true, back, &back_count, NULL) &&
+                        back_count == count) {
+                        for (size_t i = 0; i < back_count; i++) {
+                            arm64_patch_mov_imm64_at(restored, size, back[i].arg1_mov_off, 1,
+                                                     back[i].arg1_is_instr
+                                                         ? (uint64_t)(uintptr_t)&block->instrs[back[i].instr_index]
+                                                         : (uint64_t)(uintptr_t)block);
+                            arm64_patch_mov_imm64_at(restored, size, back[i].helper_mov_off, 23,
+                                                     (uint64_t)(uintptr_t)helper_addr_for_cache_id(back[i].helper_id));
+                        }
+                        sound = (memcmp(restored, code, size) == 0);
+                    }
+                    free(restored);
+                }
+                if (!sound) {
+                    free(patched);
+                    goto multi_helper_declined;
+                }
+            }
+
             *out_code = patched;
             *owned_code = patched;
             return true;
         }
     }
+multi_helper_declined:;
     if (!native_blob_has_helper_call(code, size)) return true;
     if (!native_blob_single_arg_helper_stub(code, size, block, false, &stub))
         return false;
@@ -1038,7 +1109,7 @@ static bool native_blob_prepare_cache_load(const uint8_t* code, size_t size,
     if (native_blob_multi_helper_enabled() && native_blob_has_helper_call(code, size)) {
         hb_cached_helper_stub_t stubs[HB_MULTI_HELPER_MAX];
         size_t count = 0;
-        if (native_blob_helper_stubs(code, size, block, true, stubs, &count) && count > 1) {
+        if (native_blob_helper_stubs(code, size, block, true, stubs, &count, NULL) && count > 1) {
             patched = malloc(size);
             if (!patched) return false;
             memcpy(patched, code, size);
@@ -4432,8 +4503,16 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                         /* Attribute the skip: >1 helper call is the structural restriction in
                          * native_blob_single_arg_helper_stub; anything else is a single stub
                          * whose shape was not recognised. See native_blob_helper_call_count. */
-                        if (native_blob_helper_call_count(code_buf->code, code_buf->size) > 1)
+                        if (native_blob_helper_call_count(code_buf->code, code_buf->size) > 1) {
                             hb_contract_telemetry_record_cache_store_skip_multi();
+                            {   /* re-derive the reason for attribution only */
+                                hb_cached_helper_stub_t why[HB_MULTI_HELPER_MAX];
+                                size_t whyn = 0; hb_mh_reason_t r = HB_MH_OK;
+                                (void)native_blob_helper_stubs(code_buf->code, code_buf->size,
+                                                               compile_block, false, why, &whyn, &r);
+                                hb_contract_telemetry_record_mh_reason((int)r);
+                            }
+                        }
                         else
                             hb_contract_telemetry_record_cache_store_skip_unmatched();
                         hb_contract_telemetry_record_cache_store_skip();
@@ -4877,8 +4956,16 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                         /* Attribute the skip: >1 helper call is the structural restriction in
                          * native_blob_single_arg_helper_stub; anything else is a single stub
                          * whose shape was not recognised. See native_blob_helper_call_count. */
-                        if (native_blob_helper_call_count(code_buf->code, code_buf->size) > 1)
+                        if (native_blob_helper_call_count(code_buf->code, code_buf->size) > 1) {
                             hb_contract_telemetry_record_cache_store_skip_multi();
+                            {   /* re-derive the reason for attribution only */
+                                hb_cached_helper_stub_t why[HB_MULTI_HELPER_MAX];
+                                size_t whyn = 0; hb_mh_reason_t r = HB_MH_OK;
+                                (void)native_blob_helper_stubs(code_buf->code, code_buf->size,
+                                                               compile_block, false, why, &whyn, &r);
+                                hb_contract_telemetry_record_mh_reason((int)r);
+                            }
+                        }
                         else
                             hb_contract_telemetry_record_cache_store_skip_unmatched();
                         hb_contract_telemetry_record_cache_store_skip();

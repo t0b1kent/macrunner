@@ -11,6 +11,10 @@ static uint64_t g_stores;
 static uint64_t g_store_skips;
 static uint64_t g_store_skip_multi;
 static uint64_t g_store_skip_unmatched;
+static uint64_t g_mh_too_many;
+static uint64_t g_mh_wide_arg;
+static uint64_t g_mh_unknown_helper;
+static uint64_t g_mh_arg_shape;
 static uint64_t g_bytes_loaded;
 static uint64_t g_bytes_stored;
 static uint64_t g_compile_count;
@@ -75,6 +79,16 @@ void hb_contract_telemetry_record_cache_store_skip_unmatched(void) {
     telemetry_add(&g_store_skip_unmatched, 1);
 }
 
+void hb_contract_telemetry_record_mh_reason(int reason) {
+    switch (reason) {
+        case 1: telemetry_add(&g_mh_too_many, 1); break;
+        case 2: telemetry_add(&g_mh_wide_arg, 1); break;
+        case 3: telemetry_add(&g_mh_unknown_helper, 1); break;
+        case 4: telemetry_add(&g_mh_arg_shape, 1); break;
+        default: break;
+    }
+}
+
 void hb_contract_telemetry_record_compile(void) {
     telemetry_add(&g_compile_count, 1);
     hb_contract_telemetry_maybe_emit_progress();
@@ -101,6 +115,10 @@ void hb_contract_telemetry_snapshot(hb_contract_telemetry_counts_t* out) {
     out->stores = telemetry_load(&g_stores);
     out->store_skip_multi_helper = telemetry_load(&g_store_skip_multi);
     out->store_skip_unmatched = telemetry_load(&g_store_skip_unmatched);
+    out->mh_too_many = telemetry_load(&g_mh_too_many);
+    out->mh_wide_arg = telemetry_load(&g_mh_wide_arg);
+    out->mh_unknown_helper = telemetry_load(&g_mh_unknown_helper);
+    out->mh_arg_shape = telemetry_load(&g_mh_arg_shape);
     out->store_skips = telemetry_load(&g_store_skips);
     out->bytes_loaded = telemetry_load(&g_bytes_loaded);
     out->bytes_stored = telemetry_load(&g_bytes_stored);
@@ -119,6 +137,7 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     "macrunner-hb-translation-cache-summary: "
                     "open_ok=%llu open_fail=%llu hits=%llu misses=%llu stores=%llu "
                     "store_skips=%llu store_skip_multi=%llu store_skip_unmatched=%llu "
+                    "mh_toomany=%llu mh_widearg=%llu mh_unkhelper=%llu mh_argshape=%llu "
                     "bytes_loaded=%llu bytes_stored=%llu "
                     "compile_count=%llu translation_count=%llu "
                     "distinct_translation_count=%llu dispatches=%llu blocks=%llu steps=%llu\n",
@@ -130,6 +149,10 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     (unsigned long long)counts->store_skips,
                     (unsigned long long)counts->store_skip_multi_helper,
                     (unsigned long long)counts->store_skip_unmatched,
+                    (unsigned long long)counts->mh_too_many,
+                    (unsigned long long)counts->mh_wide_arg,
+                    (unsigned long long)counts->mh_unknown_helper,
+                    (unsigned long long)counts->mh_arg_shape,
                     (unsigned long long)counts->bytes_loaded,
                     (unsigned long long)counts->bytes_stored,
                     (unsigned long long)counts->compile_count,
@@ -142,7 +165,11 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
 
 int hb_contract_telemetry_emit_summary(FILE* stream) {
     hb_contract_telemetry_counts_t counts;
-    char line[512];
+    /* 1024, not 512: the line now carries 20 %llu fields, each up to 20 digits, and the
+     * overflow branch below RETURNS SILENTLY — a buffer one field too small would make the
+     * whole measurement vanish with no error, which is the failure mode this file exists to
+     * prevent. */
+    char line[1024];
     int expected = 0;
     int n;
 
@@ -171,7 +198,7 @@ int hb_contract_telemetry_emit_summary(FILE* stream) {
 static void hb_contract_telemetry_maybe_emit_progress(void) {
     static uint64_t next_at = HB_TELEMETRY_PROGRESS_EVERY;
     hb_contract_telemetry_counts_t counts;
-    char line[512];
+    char line[1024];  /* see the note in emit_summary: too small means silent nothing */
     uint64_t compiles;
     int n;
 

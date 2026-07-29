@@ -25,6 +25,14 @@ typedef struct {
      * `blr x23`, so these counters size the fix before anyone rewrites the patcher. */
     uint64_t store_skip_multi_helper;   /* >1 helper call in the block */
     uint64_t store_skip_unmatched;      /* single helper, but arg1/helper mov not recognised */
+    /* 2026-07-29: why a MULTI-helper block was still declined after the generalisation. The
+     * first A/B cut multi-helper skips 118547 -> 43909; these four say what the remaining 44k
+     * are, because each needs a different fix and guessing between them is how this project
+     * loses days. */
+    uint64_t mh_too_many;      /* more helper sites than the 16-site cap */
+    uint64_t mh_wide_arg;      /* pointer moved into x2/x3/x4 somewhere in the block */
+    uint64_t mh_unknown_helper;/* helper not in the cacheable set */
+    uint64_t mh_arg_shape;     /* not exactly one recognised arg1 in a site's window */
     uint64_t bytes_loaded;
     uint64_t bytes_stored;
     uint64_t compile_count;
@@ -46,6 +54,7 @@ void hb_contract_telemetry_record_cache_store(uint64_t bytes_stored);
 void hb_contract_telemetry_record_cache_store_skip(void);
 void hb_contract_telemetry_record_cache_store_skip_multi(void);
 void hb_contract_telemetry_record_cache_store_skip_unmatched(void);
+void hb_contract_telemetry_record_mh_reason(int reason);
 void hb_contract_telemetry_record_compile(void);
 void hb_contract_telemetry_record_translation(bool distinct);
 void hb_contract_telemetry_record_dispatch(uint64_t dispatches, uint64_t blocks, uint64_t steps);

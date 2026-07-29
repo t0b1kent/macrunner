@@ -72,6 +72,46 @@ CORE_SYSTEM32_MODULES=(
     msacm32.drv          # ACM codec driver — winmm's format conversion depends on it
     winspool.drv         # printing; harmless here, but it is the same silent-omission class
 )
+
+# MacRunner 2026-07-29 (HK master lane, iter 2) — A/B lever for the audio drivers added above.
+#
+# Measured, over today's 23 run dirs that both reached `Initialize engine version` AND lived
+# >= 400 s (the wall-clock condition matters: short probes share run dirs with real attempts
+# and have reversed a conclusion on this project before):
+#     winecoreaudio absent  ->  19/19 reached `Begin MonoManager`
+#     winecoreaudio present ->   0/4  reached it        Fisher exact two-sided p = 1.1e-4
+# The commit that added these drivers (2aa93b2b) landed at 11:32; the last run to reach Mono
+# started at 11:16 and the first to fail at 11:41.
+#
+# That separation is PERFECTLY CONFOUNDED WITH TIME — all four failures are simply the four
+# most recent runs — so it is a hypothesis, not a cause, and log archaeology cannot settle it.
+# This gate exists so it can be settled by an A/B instead: set the variable, run, and see
+# whether `Begin MonoManager` comes back.
+#
+# ── A/B SETTLED 2026-07-29 14:16, AND THE DEFAULT IS NOW REVERSED ───────────────────────────
+# Tested by construction with the prediction registered before the run: arm A (drivers EXCLUDED,
+# everything else identical) reached `Begin MonoManager`, which no run with the drivers present
+# had managed in four attempts. Shipping these drivers breaks the boot.
+#
+# And they buy nothing today: tools/winaudioprobe.c, run against a prefix that DID contain
+# winecoreaudio.drv, reports `waveOutGetNumDevs = 0` — zero audio endpoints. The file arriving is
+# necessary but demonstrably not sufficient, so we were paying a boot regression for no sound.
+#
+# They stay listed but OFF by default. Set MACRUNNER_SYNC_INCLUDE_AUDIO_DRV=1 to ship them once
+# endpoint enumeration actually works, so re-testing costs one variable rather than a revert.
+# Whoever turns them on: check `Begin MonoManager` in the same run, not just whether you hear it.
+if [[ -z "${MACRUNNER_SYNC_INCLUDE_AUDIO_DRV:-}" ]]; then
+    _keep=()
+    for _m in "${CORE_SYSTEM32_MODULES[@]}"; do
+        case "$_m" in
+            winecoreaudio.drv|msacm32.drv|winspool.drv)
+                echo "[sync] holding back $_m by default (set MACRUNNER_SYNC_INCLUDE_AUDIO_DRV=1 to ship it)" ;;
+            *) _keep+=("$_m") ;;
+        esac
+    done
+    CORE_SYSTEM32_MODULES=("${_keep[@]}")
+fi
+
 CORE_SYSTEM32_PROGRAMS=(
     wineboot.exe
     start.exe

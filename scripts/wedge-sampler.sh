@@ -28,7 +28,12 @@ already(){ local d; for d in "${SAMPLED[@]:-}"; do [ "$d" = "$1" ] && return 0; 
 
 while :; do
   sleep 30
-  PID=$(ps -Ao pid,comm 2>/dev/null | awk '$2 ~ /Hollow Knight\.exe$/ {print $1}' | head -1)
+  # `ps -Ao pid,comm` prints the full executable PATH, which contains spaces ("Hollow
+  # Knight.exe"), so awk splits it across $2 and $3 and `$2 ~ /Hollow Knight\.exe$/` can never
+  # match. The first version of this sampler used exactly that and was therefore blind: it sat
+  # armed through a live 15-minute run and caught nothing, while reporting "0 runs" to me.
+  # Match the whole line instead, and take the pid from field 1.
+  PID=$(ps -Ao pid,comm 2>/dev/null | grep 'Hollow Knight\.exe' | awk '{print $1}' | head -1)
   [ -z "$PID" ] && continue
 
   RD=$(ls -dt reports/*/laneA-* 2>/dev/null | head -1)

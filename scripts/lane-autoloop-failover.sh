@@ -72,7 +72,15 @@ for i in $(seq 1 "$MAX"); do
   AFTER="$(wc -l < "$PROGRESS" 2>/dev/null | tr -d ' ')"
   # A backend that wrote a REPORT but no heartbeat has still worked. Counting only journal lines
   # retired a healthy Kimi on 2026-07-27 after it had already produced the root-cause verdict.
-  TOUCHED="$(find reports -type f -newer "$MARK" 2>/dev/null | grep -vc jsonl)"
+  #
+  # 2026-07-29: but this MUST exclude run artifacts. A live game run writes into
+  # reports/*/laneA-*/ continuously, and a concurrent audio-check run was doing exactly that
+  # while codex returned "You've hit your usage limit" instantly on every iteration. Every dead
+  # return therefore looked like work, no strike was ever counted, no failover fired, and the
+  # lane burned all 60 iterations in ten minutes without writing a single journal line.
+  # Someone else's output is not evidence that THIS backend did anything.
+  TOUCHED="$(find reports -type f -newer "$MARK" 2>/dev/null \
+             | grep -v jsonl | grep -vc '/laneA-[^/]*/')"
   sleep 3
 
   if [ "$ELAPSED" -lt "$FASTFAIL" ] && [ "$AFTER" -le "$BEFORE" ] && [ "$TOUCHED" -eq 0 ]; then

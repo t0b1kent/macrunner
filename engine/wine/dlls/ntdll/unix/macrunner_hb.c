@@ -5470,6 +5470,47 @@ static void macrunner_hb_finish_import( hb_context_t *ctx, uint64_t ret_addr, ui
     ctx->indirect_ic_native_code = 0;
 }
 
+/* Re-runs the retired linear scan behind the index and shouts if it ever disagrees — see the note on
+ * macrunner_hb_find_import_thunk for why the scan is unreachable and why that claim is left falsifiable
+ * rather than simply asserted. */
+static int macrunner_hb_verify_import_index_enabled(void)
+{
+    static int cache = -1;
+
+    return macrunner_hb_cached_env_flag( &cache, "MACRUNNER_HB_VERIFY_IMPORT_INDEX" );
+}
+
+/* MacRunner 2026-07-30 — SPEED: the linear fallback this function used to end with was both provably
+ * unreachable and the single largest item on the critical thread.
+ *
+ * Measured, run SPEEDDIG1: `sample` of the one thread executing guest code put 84 of 536 samples
+ * (15.7 %), and 99 of 501 in a second sample 3 minutes later, on ONE instruction —
+ * macrunner_hb_run_x64+15540, which disassembles to `add x24, x24, #0xf0` inside
+ *
+ *     ldr x11, [x24] / cmp x11, x8 / b.eq hit / add x24, x24, #0xf0 / subs x10, #1 / b.ne
+ *
+ * i.e. this scan, inlined. 0xf0 is sizeof(struct macrunner_hb_import_thunk) = 240, so each iteration
+ * touches a fresh cache line and a full sweep walks ~1 MB. The hot caller is the dispatch loop's
+ * `macrunner_hb_find_import_thunk( ctx->pc )`, reached on EVERY guest block dispatch — 205.8 M of them
+ * on the critical thread by wall_s 85.6. ctx->pc is a real code address, never a synthetic import
+ * address, so the index check above missed every time and the scan ran to completion and returned NULL.
+ *
+ * Why the scan cannot ever find what the index misses. Every slot is appended by exactly three sites
+ * (this file's register_dynamic_import_thunk and the two register paths near lines 7299 and 7346), all
+ * of which set
+ *     slot->guest_target = MACRUNNER_HB_IMPORT_BASE + macrunner_hb_import_count * STRIDE
+ * with the count ALREADY incremented, so entry i always holds BASE + (i+1)*STRIDE. The count is
+ * mutated nowhere else except the single `macrunner_hb_import_count--` that pops a just-zeroed last
+ * slot when emitting its code thunk fails, so the table is append-only and never compacted from the
+ * middle; there is no bulk assignment or memcpy into macrunner_hb_imports[] anywhere. Hence for a
+ * given guest_target at most ONE index can match, it is computable in closed form, and that is the
+ * index already tested. (The one other `guest_target =` on a thunk, near line 35021, writes a stack
+ * local that is never inserted into the table.)
+ *
+ * The proof is mine, so it is made falsifiable rather than trusted: MACRUNNER_HB_VERIFY_IMPORT_INDEX=1
+ * still runs the old scan whenever the index says NULL and prints a loud marker if it ever disagrees.
+ * If the invariant is broken by a later change, that flag names the entry instead of leaving a silent
+ * lookup failure. */
 static struct macrunner_hb_import_thunk *macrunner_hb_find_import_thunk( uint64_t guest_target )
 {
     uint64_t delta;
@@ -5488,8 +5529,28 @@ static struct macrunner_hb_import_thunk *macrunner_hb_find_import_thunk( uint64_
         }
     }
 
-    for (i = 0; i < macrunner_hb_import_count; i++)
-        if (macrunner_hb_imports[i].guest_target == guest_target) return &macrunner_hb_imports[i];
+    if (macrunner_hb_verify_import_index_enabled())
+    {
+        for (i = 0; i < macrunner_hb_import_count; i++)
+        {
+            if (macrunner_hb_imports[i].guest_target != guest_target) continue;
+            {
+                static int reported;
+                if (reported < 8)
+                {
+                    reported++;
+                    fprintf( stderr, "macrunner-hb-import-index-VIOLATION: guest_target=%p found by scan "
+                                     "at i=%u (expected index %llu) dll=%s api=%s\n",
+                             (void *)(uintptr_t)guest_target, i,
+                             (unsigned long long)((guest_target - MACRUNNER_HB_IMPORT_BASE) /
+                                                  MACRUNNER_HB_IMPORT_STRIDE - 1),
+                             macrunner_hb_imports[i].dll_name, macrunner_hb_imports[i].import_name );
+                    fflush( stderr );
+                }
+            }
+            return &macrunner_hb_imports[i];
+        }
+    }
     return NULL;
 }
 

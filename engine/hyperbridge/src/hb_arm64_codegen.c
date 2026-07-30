@@ -584,8 +584,12 @@ static bool jit_native_memmove_enabled(void) {
 
 static bool jit_block_chain_enabled(void) {
     static int cached = -1;
-    /* UNSAFE: single-slot tail patch, needs chain-entry trampoline — see report.
-     * Generated chain slots stay behind MACRUNNER_HB_BLOCK_CHAIN=1. */
+    /* The "UNSAFE: needs a chain-entry trampoline" note that stood here is out of date: the trampoline
+     * landed in f17c5202 and hb_runtime.c's chain_trampoline_build now also guards the branch on
+     * ctx->pc, so a wrong successor mispredicts into the dispatcher instead of running the wrong block.
+     * Still default-off, and still measured before the default moves — MACRUNNER_HB_BLOCK_CHAIN=1 turns
+     * on both the emitted chain slot here and the patching in hb_runtime.c, which have to agree about
+     * this same variable or no slot exists to patch. */
     return hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_BLOCK_CHAIN", 0) != 0;
 }
 

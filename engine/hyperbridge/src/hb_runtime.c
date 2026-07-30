@@ -157,6 +157,53 @@ static uint64_t runtime_now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+/* Terminal-op histogram slots — declared here because dispatch_stats_flush_thread below reports them;
+ * the classifier that fills them, and the reasoning for classifying on the LAST instruction, are at
+ * dispatch_stats_note_terminal. */
+enum {
+    HB_TERM_JMP_DIR = 0, HB_TERM_JMP_IND, HB_TERM_JCC, HB_TERM_CALL_DIR, HB_TERM_CALL_IND,
+    HB_TERM_RET, HB_TERM_LOOP, HB_TERM_XFER_MID, HB_TERM_OTHER, HB_TERM_N
+};
+static const char* const hb_term_slot_names[HB_TERM_N] = {
+    "jmp_dir", "jmp_ind", "jcc", "call_dir", "call_ind", "ret", "loop", "xfer_mid", "other"
+};
+static __thread uint64_t t_dispatch_term[HB_TERM_N];
+
+/* Scan-length accounting for the O(N) CFG lookup every dispatch opens with — see find_block. */
+static __thread uint64_t t_findblock_calls;
+static __thread uint64_t t_findblock_iters;
+static __thread uint64_t t_findblock_max_n;
+
+/* MacRunner 2026-07-30 — WHY CHAINING DECLINES, counted per reason instead of guessed.
+ *
+ * The W^X fix stopped chaining from killing the guest, but avg_chain stayed at exactly 1.0000 over
+ * 450 000 dispatches: the mechanism is safe and inert. patch_block_tail has eleven separate ways to
+ * return false and the dispatcher can also decline to call it at all, so naming the culprit by reading is
+ * a guess. One counter per exit tells it from a single run, which is the same discipline that turned the
+ * dispatcher question into avg_chain rather than an eight-run A/B.
+ *
+ * `site_*` covers the call site (chain_patch_enabled is gated on ctx->step_limit and ctx->block_limit
+ * being zero, so a title that sets either never patches at all), the rest are patch_block_tail's exits in
+ * source order. Per-thread and non-atomic, like every other counter here. */
+enum {
+    CHAIN_SITE_CALLED = 0, CHAIN_SITE_PATCH_OFF, CHAIN_SITE_NO_ENTRY,
+    CHAIN_DECL_GATE, CHAIN_DECL_INVALID, CHAIN_DECL_NOMETA, CHAIN_DECL_ALREADY,
+    CHAIN_DECL_TERMINAL, CHAIN_DECL_SLOT_CUR, CHAIN_DECL_SLOT_NEXT, CHAIN_DECL_TRAMP,
+    CHAIN_DECL_REACH, CHAIN_DECL_WRITEGATE, CHAIN_DECL_WPROT, CHAIN_DECL_XPROT,
+    CHAIN_DECL_PATCHED, CHAIN_DECL_N
+};
+static const char* const hb_chain_decline_names[CHAIN_DECL_N] = {
+    "site_called", "site_patch_off", "site_no_entry",
+    "gate", "invalid", "nometa", "already",
+    "terminal", "slot_cur", "slot_next", "tramp",
+    "reach", "write_off", "wprot", "xprot",
+    "PATCHED"
+};
+static __thread uint64_t t_chain_decline[CHAIN_DECL_N];
+
+/* Defined with the other block helpers further down; needed by the classifier above it. */
+static const hb_ir_instr_t* first_control_transfer_instr(const hb_ir_block_t* block);
+
 static int trace_dispatch_stats_enabled(void) {
     static int cached = -1;
     if (cached < 0) {
@@ -191,10 +238,20 @@ static void dispatch_stats_summary(void) {
     fflush(stderr);
 }
 
+/* MacRunner 2026-07-30 — register ONCE PER THREAD, because this is called from dispatch_stats_add on
+ * every single dispatch and everything below it is once-only work behind a CAS. The unconditional
+ * runtime_now_ns() ahead of that CAS therefore bought a clock_gettime per dispatch: measured at 21 of
+ * 536 samples, 3.9 % of the critical thread, in the SPEEDDIG1 profile
+ * (dispatch_stats_add -> clock_gettime). An instrument that charges 4 % for being switched on makes
+ * every timing arm it appears in pessimistic, which is the opposite of its job. */
+static __thread int t_dispatch_stats_registered;
+
 static void dispatch_stats_register(void) {
     uint64_t now;
     int expected = 0;
     if (!trace_dispatch_stats_enabled()) return;
+    if (t_dispatch_stats_registered) return;
+    t_dispatch_stats_registered = 1;
     now = runtime_now_ns();
     if (now) {
         uint64_t zero = 0;
@@ -265,7 +322,98 @@ static void dispatch_stats_flush_thread(int force) {
             (unsigned long long)t_dispatch_stats_dispatches,
             (unsigned long long)t_dispatch_stats_blocks,
             (unsigned long long)t_dispatch_stats_steps);
+    /* avg_chain is thread_blocks/thread_dispatches: exactly 1.00 when every block transition returns
+     * to the dispatcher, above 1 as chaining takes hold. Printed here so it needs no arithmetic at
+     * read time, and per-thread so a parked thread cannot dilute the critical one. The terminal
+     * histogram beside it is the ceiling — see dispatch_stats_note_terminal. */
+    {
+        uint64_t d = t_dispatch_stats_dispatches;
+        uint64_t chainable = t_dispatch_term[HB_TERM_JMP_DIR];
+        uint64_t classified = 0;
+        int i;
+        for (i = 0; i < HB_TERM_N; i++) classified += t_dispatch_term[i];
+        fprintf(stderr, "macrunner-hb-chainlen: thread_dispatches=%llu thread_blocks=%llu "
+                        "avg_chain=%.4f chainable_pct=%.2f",
+                (unsigned long long)d, (unsigned long long)t_dispatch_stats_blocks,
+                d ? (double)t_dispatch_stats_blocks / (double)d : 0.0,
+                classified ? 100.0 * (double)chainable / (double)classified : 0.0);
+        for (i = 0; i < HB_TERM_N; i++)
+            fprintf(stderr, " %s=%llu", hb_term_slot_names[i],
+                    (unsigned long long)t_dispatch_term[i]);
+        fprintf(stderr, "\n");
+        /* Why chaining declined, per reason — see the enum at hb_chain_decline_names. Printed only when
+         * something has been counted, so a non-chaining run does not carry a line of zeros. */
+        {
+            uint64_t any = 0;
+            for (i = 0; i < CHAIN_DECL_N; i++) any += t_chain_decline[i];
+            if (any) {
+                fprintf(stderr, "macrunner-hb-chaindecline:");
+                for (i = 0; i < CHAIN_DECL_N; i++)
+                    if (t_chain_decline[i])
+                        fprintf(stderr, " %s=%llu", hb_chain_decline_names[i],
+                                (unsigned long long)t_chain_decline[i]);
+                fprintf(stderr, "\n");
+            }
+        }
+        /* The O(N) CFG scan every dispatch opens with on the default path — see find_block. */
+        fprintf(stderr, "macrunner-hb-findblock: thread_calls=%llu thread_iters=%llu avg_scan=%.2f "
+                        "max_block_count=%llu scans_per_dispatch=%.2f\n",
+                (unsigned long long)t_findblock_calls, (unsigned long long)t_findblock_iters,
+                t_findblock_calls ? (double)t_findblock_iters / (double)t_findblock_calls : 0.0,
+                (unsigned long long)t_findblock_max_n,
+                d ? (double)t_findblock_calls / (double)d : 0.0);
+    }
     fflush(stderr);
+}
+
+/* MacRunner 2026-07-30 — TERMINAL-OP HISTOGRAM of dispatched blocks: the chaining CEILING as a
+ * number rather than an argument.
+ *
+ * blocks/dispatches (already reported above as thread_blocks/thread_dispatches) says whether chaining
+ * is happening. It does not say how much chaining could ever happen, and that is the figure which
+ * decides whether the dispatcher round trip is worth attacking this way at all: block_terminal_is_chainable
+ * admits ONLY a direct HB_IR_JMP, so every dispatched block whose terminal is Jcc, RET, an indirect
+ * jump or a call is ineligible no matter how well the trampoline works. In compiled x86 the executed
+ * terminals are dominated by Jcc backedges and CALL/RET, so the ceiling may be far below the 297-339
+ * of ~535 samples the profile attributes to dispatch overhead.
+ *
+ * Classified on the LAST instruction, deliberately: that is the exact expression
+ * block_terminal_is_chainable uses, so jmp_dir is the eligible population and not an approximation of
+ * it. xfer_mid counts blocks whose first control transfer is NOT the last instruction, where the
+ * last-instruction model does not hold at all — reported separately so it cannot quietly inflate any
+ * other bucket. Per-thread and non-atomic, following the t_dispatch_stats_* convention right above:
+ * summing over 64 threads would mix in the parked ones, and rule two here is that the critical thread
+ * is the measurement. */
+static void dispatch_stats_note_terminal(const hb_ir_block_t* block) {
+    const hb_ir_instr_t* last;
+    const hb_ir_instr_t* transfer;
+    int slot;
+
+    if (!trace_dispatch_stats_enabled()) return;
+    if (!block || block->instr_count == 0) {
+        t_dispatch_term[HB_TERM_OTHER]++;
+        return;
+    }
+    last = &block->instrs[block->instr_count - 1];
+    transfer = first_control_transfer_instr(block);
+    if (transfer && transfer != last) {
+        t_dispatch_term[HB_TERM_XFER_MID]++;
+        return;
+    }
+    switch (last->op) {
+    case HB_IR_JMP:
+        slot = (last->src1.type == HB_OP_NONE) ? HB_TERM_JMP_DIR : HB_TERM_JMP_IND;
+        break;
+    case HB_IR_CALL:
+        slot = (last->src1.type == HB_OP_NONE) ? HB_TERM_CALL_DIR : HB_TERM_CALL_IND;
+        break;
+    case HB_IR_Jcc:    slot = HB_TERM_JCC; break;
+    case HB_IR_RET:    slot = HB_TERM_RET; break;
+    case HB_IR_LOOP:
+    case HB_IR_JRCXZ:  slot = HB_TERM_LOOP; break;
+    default:           slot = HB_TERM_OTHER; break;
+    }
+    t_dispatch_term[slot]++;
 }
 
 static void dispatch_stats_add(uint64_t dispatches, uint64_t blocks, uint64_t steps) {
@@ -615,14 +763,49 @@ static int runtime_env_enabled_default_on(const char* name) {
 
 static int runtime_block_chain_enabled(void) {
     static int cached = -1;
-    /* UNSAFE: single-slot tail patch, needs chain-entry trampoline — see report.
-     * Keep MACRUNNER_HB_BLOCK_CHAIN default-off until the redesign lands. */
+    /* The redesign this was waiting for has landed: the single-slot raw tail patch became a per-target
+     * trampoline whose eviction is one 8-byte store (f17c5202), and the branch is now guarded on
+     * ctx->pc, so a mispredicted successor returns to the dispatcher instead of executing the wrong
+     * guest block. Default stays 0 until a measured run moves it — avg_chain (dispatch_stats) is the
+     * number that decides, and it has been exactly 1.0000 while this is off. */
     return runtime_env_flag_cached(&cached, "MACRUNNER_HB_BLOCK_CHAIN", 0);
 }
 
 static int runtime_single_lookup_enabled(void) {
     static int cached = -1;
     return runtime_env_flag_cached(&cached, "MACRUNNER_HB_SINGLE_LOOKUP", 0);
+}
+
+/* MacRunner 2026-07-30 — BISECT HANDLE for the chaining exit=5.
+ *
+ * Arming MACRUNNER_HB_BLOCK_CHAIN changes three things at once, which is why 5/5 runs dying told us
+ * nothing about WHICH: at emit time it adds a 4-NOP chain slot and 7 instructions of block/step counter
+ * accounting to every block (hb_arm64_codegen.c, same env var), and at run time it lets
+ * patch_block_tail rewrite block tails to branch through a trampoline.
+ *
+ * Setting MACRUNNER_HB_CHAIN_PATCH=0 keeps the whole emit side and disables only the run-time patching.
+ * If a run then BOOTS, the emitted shape is innocent and the defect is in the patch/trampoline/eviction
+ * machinery; if it still dies at exit=5, the defect is in the emitted block itself — the slot or the
+ * counter accounting — which would be the more surprising answer and worth knowing before touching the
+ * trampoline again. One 45-second run decides it, because these deaths are fast. */
+static int runtime_chain_patch_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_CHAIN_PATCH", 1);
+}
+
+/* Second half of that bisect, now that CHAIN_PATCH=0 has cleared the emit side (it booted to
+ * Begin MonoManager at +61.3 s and 19.15 M dispatches, where every patching arm dies at exit=5 within a
+ * second of the first dispatch).
+ *
+ * The patch path still does two separable things: it lazily COMMITS a 128-byte trampoline into the JIT
+ * arena for the target, and it WRITES two instructions over the predecessor's chain slot — i.e. it
+ * modifies code that other threads may be executing, on a W^X MAP_JIT mapping, with i-cache maintenance.
+ * MACRUNNER_HB_CHAIN_WRITE=0 keeps the trampoline commit and skips only that write, so a boot tells us
+ * the arena allocation is fine and the live-code modification is fatal, while another exit=5 points at
+ * committing into the arena while the guest runs. */
+static int runtime_chain_write_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_CHAIN_WRITE", 1);
 }
 
 static int runtime_indirect_ic_enabled(void) {
@@ -2581,10 +2764,31 @@ void hb_jit_runtime_reset(hb_jit_runtime_t* rt, hb_context_t* ctx) {
 }
 
 /* Find block by guest address */
+/* MacRunner 2026-07-30 — this is a LINEAR SCAN over every block in the lifted function, comparing
+ * guest addresses, and on the default configuration the dispatch loop begins with it unconditionally
+ * (hb_jit_runtime_run_legacy, "hb_ir_block_t* block = find_block(func->cfg, ctx->pc)") BEFORE the O(1)
+ * hash lookup block_cache_find that follows a few lines later. So today every guest block transition
+ * pays a scan whose length is the function's block count.
+ *
+ * Whether that matters is a number, not an argument, so count it instead of reasoning about it: the
+ * scan length is accumulated once per CALL rather than per iteration, which keeps the added cost O(1)
+ * and leaves the loop itself untouched. Reported per thread beside avg_chain. If avg_scan comes back
+ * in the hundreds, MACRUNNER_HB_SINGLE_LOOKUP=1 — which reorders the fast path to consult the hash
+ * FIRST and reach find_block only on a miss — is worth far more than block chaining, and unlike
+ * chaining it patches no code. This is the same shape as the hb_memory_protect O(N) walk that turned
+ * out to be 27 % of a run. (Counters declared up with t_dispatch_term, which reports them.) */
 static hb_ir_block_t* find_block(const hb_ir_cfg_t* cfg, uint64_t addr) {
-    for (size_t i = 0; i < cfg->block_count; i++) {
-        if (cfg->blocks[i]->guest_addr == addr) return cfg->blocks[i];
+    size_t n = cfg->block_count;
+    if (n > t_findblock_max_n) t_findblock_max_n = n;
+    for (size_t i = 0; i < n; i++) {
+        if (cfg->blocks[i]->guest_addr == addr) {
+            t_findblock_calls++;
+            t_findblock_iters += (uint64_t)i + 1;
+            return cfg->blocks[i];
+        }
     }
+    t_findblock_calls++;
+    t_findblock_iters += (uint64_t)n;
     return NULL;
 }
 
@@ -2601,29 +2805,95 @@ static const hb_ir_instr_t* first_control_transfer_instr(const hb_ir_block_t* bl
     return NULL;
 }
 
+/* MacRunner 2026-07-30 — a chainable terminal must be a DIRECT jump, and the src1 test is what
+ * makes it one.
+ *
+ * This accepted any HB_IR_JMP, which is wrong in a way that would not have shown up as a crash.
+ * hb_arm64_codegen.c:4625 splits the op on exactly this field: src1.type == HB_OP_NONE emits
+ * emit_set_pc_imm64(instr->target) — one fixed successor, known at translation time — while
+ * src1.type != HB_OP_NONE emits emit_native_indirect_jmp, which computes the target into x20 at run
+ * time. The same test appears at the indirect-IC call site in the dispatcher below.
+ *
+ * Chaining an indirect jump means patch_block_tail nails its tail to whichever block happened to
+ * follow it the first time it ran; every later execution with a different computed target then runs
+ * the wrong guest code, silently, with no fault to notice. Indirect jumps are how vtable, switch and
+ * import dispatch work, so this would have fired constantly the moment MACRUNNER_HB_BLOCK_CHAIN was
+ * armed — a hazard entirely separate from the eviction one the chain-entry trampoline removes. */
+/* MacRunner 2026-07-30 — WIDENED, because the direct-JMP-only rule capped chaining at 7.4 % of
+ * dispatches and the PC guard removes the reason for the rule.
+ *
+ * Measured over 205.8 M dispatched blocks on HK's critical thread (run SPEEDDIG1): jcc 71.1 %,
+ * ret 9.1 %, call_dir 8.0 %, jmp_dir 7.4 %, call_ind 2.8 %, jmp_ind 1.6 %. Only jmp_dir was eligible,
+ * so the whole mechanism could address at most 7.4 % of the round trips that make up ~54 % of that
+ * thread. The single-successor restriction existed because the tail patch branched unconditionally:
+ * anything with more than one possible successor would have run the wrong guest block.
+ *
+ * chain_trampoline_build now checks ctx->pc against the target's guest_addr before branching, so a
+ * wrong guess costs four instructions and a normal dispatch instead of silent corruption. That admits
+ * Jcc (either edge), and indirect jumps and calls with it — the case that was outright unsafe before.
+ *
+ * RET stays out on purpose: its successor is a return address that differs per call site, so it would
+ * mispredict nearly always and pay the guard for nothing. That leaves 90.9 % of terminals eligible
+ * against 7.4 %. MACRUNNER_HB_CHAIN_WIDE=0 restores the direct-JMP-only set for an A/B of the widening
+ * on its own. */
+static int runtime_chain_wide_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_CHAIN_WIDE", 1);
+}
+
 static bool block_terminal_is_chainable(const hb_ir_block_t* block) {
     const hb_ir_instr_t* terminal;
     if (!block || block->instr_count == 0) return false;
     terminal = &block->instrs[block->instr_count - 1];
-    return terminal->op == HB_IR_JMP;
+    if (!runtime_chain_wide_enabled())
+        return terminal->op == HB_IR_JMP && terminal->src1.type == HB_OP_NONE;
+    return terminal->op == HB_IR_JMP || terminal->op == HB_IR_Jcc ||
+           terminal->op == HB_IR_CALL;
 }
 
+/* MacRunner 2026-07-30 — this must recognise a slot that has ALREADY been patched, and until it did, it
+ * made block chaining unmeasurable and self-limiting at the same time.
+ *
+ * It sniffs the emitted bytes rather than carrying a flag, which is the right call: the persistent
+ * translation cache restores blobs, so anything derived from the bytes survives a cache load for free
+ * while a struct field would have to be serialised. What was wrong is that it demanded all four words
+ * still be NOP — and patch_block_tail overwrites the first two with `MOV X0, X19` / `B <trampoline>`.
+ * So every successfully chained block stopped satisfying it, with two consequences measured on HK
+ * (`macrunner-hb-chaindecline`, 6365 tails patched):
+ *
+ *   - `native_accounting = chain_accounting && entry_has_chain_slot(cached, NULL)` went false for exactly
+ *     the chained blocks, so the dispatcher counted blocks_executed++ instead of reading the ctx->block_count
+ *     delta the emitted accounting maintains. avg_chain was therefore pinned at 1.0000 by construction, no
+ *     matter how well chaining worked — the metric was blind to its own subject.
+ *   - a patched block was rejected as a chain TARGET (slot_next=47054), so chaining throttled itself.
+ *
+ * Accepting both shapes fixes both. Re-patching a patched slot is harmless and in fact useful (it re-aims
+ * the chain at a new successor); the `meta->target_code` early return upstream is what keeps it from
+ * happening needlessly. */
 static bool entry_has_chain_slot(const hb_block_cache_entry_t* entry, size_t* offset) {
     static const uint32_t arm64_nop = 0xd503201fu;
+    static const uint32_t arm64_mov_x0_x19 = 0xaa1303e0u; /* MOV X0, X19 — what the patch writes */
     static const uint32_t epilogue[4] = {
         0xa9427bf7u, /* LDP X23, LR,  [SP, #32] */
         0xa9415bf5u, /* LDP X21, X22, [SP, #16] */
         0xa8c353f3u, /* LDP X19, X20, [SP], #48 */
         0xd65f03c0u  /* RET */
     };
+    uint32_t w[4];
     uint32_t insn;
+    bool pristine, patched;
 
     if (!entry || !entry->native_code || entry->native_size < 32) return false;
     size_t pos = entry->native_size - 32;
-    for (size_t i = 0; i < 4; i++) {
-        memcpy(&insn, entry->native_code + pos + i * 4, sizeof(insn));
-        if (insn != arm64_nop) return false;
-    }
+    for (size_t i = 0; i < 4; i++)
+        memcpy(&w[i], entry->native_code + pos + i * 4, sizeof(w[i]));
+
+    pristine = (w[0] == arm64_nop && w[1] == arm64_nop && w[2] == arm64_nop && w[3] == arm64_nop);
+    /* B is 0b000101<imm26>; the trampoline branch is unconditional and always in range by construction. */
+    patched = (w[0] == arm64_mov_x0_x19 && (w[1] & 0xfc000000u) == 0x14000000u &&
+               w[2] == arm64_nop && w[3] == arm64_nop);
+    if (!pristine && !patched) return false;
+
     for (size_t i = 0; i < 4; i++) {
         memcpy(&insn, entry->native_code + pos + 16 + i * 4, sizeof(insn));
         if (insn != epilogue[i]) return false;
@@ -2686,7 +2956,7 @@ static uint32_t arm64_mov_reg_u32(int rd, int rn) {
  * eviction store to be atomic, and the offset that achieves that is only knowable once the arena
  * has handed out an address. */
 
-#define HB_CHAIN_TRAMPOLINE_BYTES 64
+#define HB_CHAIN_TRAMPOLINE_BYTES 128
 
 static uint32_t arm64_ldr_x_literal(int rt_reg, ptrdiff_t byte_delta) {
     /* LDR Xt, <label> — imm19 counts instructions, not bytes. */
@@ -2701,6 +2971,50 @@ static uint32_t arm64_str_x_off(int rt_reg, int rn, unsigned byte_off) {
            ((uint32_t)rn << 5) | (uint32_t)rt_reg;
 }
 
+static uint32_t arm64_ldr_x_off(int rt_reg, int rn, unsigned byte_off) {
+    return 0xf9400000u | (((uint32_t)(byte_off / 8) & 0xfffu) << 10) |
+           ((uint32_t)rn << 5) | (uint32_t)rt_reg;
+}
+
+/* CMP Xn, Xm — SUBS XZR, Xn, Xm. */
+static uint32_t arm64_cmp_x(int rn, int rm) {
+    return 0xeb000000u | ((uint32_t)rm << 16) | ((uint32_t)rn << 5) | 31u;
+}
+
+/* B.<cond> to an absolute address. cond 1 == NE. */
+static uint32_t arm64_bcond_to(const uint8_t* from, const uint8_t* to, uint32_t cond) {
+    intptr_t off = (intptr_t)(to - from);
+    return 0x54000000u | ((uint32_t)((off / 4) & 0x7ffff) << 5) | (cond & 0xfu);
+}
+
+/* MacRunner 2026-07-30 — PC-GUARDED CHAIN: one layout helper, because three functions have to agree
+ * about where the literals live and a silent disagreement between them would corrupt control flow.
+ *
+ * Offsets are derived from `dest`'s own address so both literals land 8-aligned — the eviction store
+ * has to be a single atomic 8-byte write, and only the arena knows the final address. */
+struct hb_chain_tramp_layout {
+    size_t expect_lit;   /* .quad this target's guest_addr */
+    size_t live_lit;     /* .quad live entry, or this trampoline's eviction bail-out */
+    size_t mispredict;   /* bare epilogue: leave ctx->pc alone, return to the dispatcher */
+    size_t evict_bail;   /* set ctx->pc to guest_addr, then epilogue */
+    size_t total;
+};
+
+static bool chain_tramp_layout(const uint8_t* dest, struct hb_chain_tramp_layout* out) {
+    size_t off;
+    if (!dest || ((uintptr_t)dest & 3u) != 0) return false;
+
+    /* guard (6 instrs) then the mispredict epilogue (4 instrs) */
+    out->mispredict = 6 * 4;
+    off = out->mispredict + 4 * 4;
+    while ((((uintptr_t)dest + off) & 7u) != 0) off += 4;
+    out->expect_lit = off;
+    out->live_lit = off + 8;
+    out->evict_bail = off + 16;
+    out->total = out->evict_bail + 6 * 4;
+    return out->total <= HB_CHAIN_TRAMPOLINE_BYTES;
+}
+
 /* Lays out, at `dest`: trampoline (LDR/BR + literal) followed by this target's bail-out.
  * Returns the trampoline address, or NULL if the layout cannot be aligned within the block. */
 static uint8_t* chain_trampoline_build(uint8_t* dest, uint8_t* live_entry, uint64_t guest_addr) {
@@ -2710,51 +3024,67 @@ static uint8_t* chain_trampoline_build(uint8_t* dest, uint8_t* live_entry, uint6
         0xa8c353f3u, /* LDP X19, X20, [SP], #48 */
         0xd65f03c0u  /* RET */
     };
-    size_t tramp_lit, bail, bail_lit, i;
-    uint8_t* bail_addr;
+    struct hb_chain_tramp_layout L;
+    uint8_t* mis;
+    uint8_t* bail;
+    size_t i;
 
     if (!dest || !live_entry) return NULL;
-    if (((uintptr_t)dest & 3u) != 0) return NULL;
+    if (!chain_tramp_layout(dest, &L)) return NULL;
 
-    /* literal for the trampoline: first 8-aligned slot at or after +8 */
-    tramp_lit = 8;
-    while ((((uintptr_t)dest + tramp_lit) & 7u) != 0) tramp_lit += 4;
-    bail = tramp_lit + 8;                       /* bail-out code starts after the literal */
-    bail_lit = bail + 6 * 4;                    /* 6 instructions, then its own literal */
-    while ((((uintptr_t)dest + bail_lit) & 7u) != 0) bail_lit += 4;
-    if (bail_lit + 8 > HB_CHAIN_TRAMPOLINE_BYTES) return NULL;
+    mis = dest + L.mispredict;
+    bail = dest + L.evict_bail;
 
-    bail_addr = dest + bail;
+    /* The guard. X0 holds ctx — the predecessor's chain slot put it there with MOV X0, X19 — and the
+     * predecessor's terminal has already stored its computed next PC into ctx->pc. So comparing that
+     * against this target's own guest_addr asks exactly the right question: "is this the successor I
+     * was chained for?" A match branches into the target's live code; a mismatch falls into a bare
+     * epilogue and lets the dispatcher resolve ctx->pc as it always would.
+     *
+     * That check is what makes chaining safe for terminals with more than one successor. A Jcc that
+     * takes its other edge, an indirect jump through a different vtable slot, an indirect call to a
+     * different callee: each simply mispredicts and pays four extra instructions instead of executing
+     * the wrong guest block. X16/X17 are IP0/IP1, scratch at any call boundary. */
+    arm64_store_u32(dest + 0, arm64_ldr_x_off(16, 0, 544 /* offsetof(hb_context_t, pc) */));
+    arm64_store_u32(dest + 4, arm64_ldr_x_literal(17, (ptrdiff_t)(L.expect_lit - 4)));
+    arm64_store_u32(dest + 8, arm64_cmp_x(16, 17));
+    arm64_store_u32(dest + 12, arm64_bcond_to(dest + 12, mis, 1 /* NE */));
+    arm64_store_u32(dest + 16, arm64_ldr_x_literal(16, (ptrdiff_t)(L.live_lit - 16)));
+    arm64_store_u32(dest + 20, arm64_br_reg(16));
 
-    arm64_store_u32(dest, arm64_ldr_x_literal(16, (ptrdiff_t)tramp_lit));
-    arm64_store_u32(dest + 4, arm64_br_reg(16));
-    memset(dest + 8, 0, tramp_lit - 8);          /* padding, if any */
-    __atomic_store_n((uint64_t*)(void*)(dest + tramp_lit), (uint64_t)(uintptr_t)live_entry,
-                     __ATOMIC_RELAXED);
-
-    arm64_store_u32(bail_addr,
-                    arm64_ldr_x_literal(1, (ptrdiff_t)(bail_lit - bail)));
-    arm64_store_u32(bail_addr + 4, arm64_str_x_off(1, 0, 544 /* offsetof(hb_context_t, pc) */));
+    /* Mispredict: unwind the frame the ORIGINATING block pushed, exactly as a normal return would, and
+     * leave ctx->pc as the terminal set it. */
     for (i = 0; i < 4; i++)
-        arm64_store_u32(bail_addr + 8 + i * 4, epilogue[i]);
-    memset(bail_addr + 24, 0, (bail_lit - bail) - 24);
-    __atomic_store_n((uint64_t*)(void*)(dest + bail_lit), guest_addr, __ATOMIC_RELAXED);
+        arm64_store_u32(mis + i * 4, epilogue[i]);
+    memset(dest + L.mispredict + 16, 0, L.expect_lit - (L.mispredict + 16)); /* alignment padding */
+
+    /* Eviction bail-out: reached only because eviction flipped live_lit to point here, in which case
+     * the guard has already confirmed ctx->pc == guest_addr; the store keeps that true for a resumed
+     * dispatch and costs nothing. */
+    arm64_store_u32(bail + 0,
+                    arm64_ldr_x_literal(1, (ptrdiff_t)L.expect_lit - (ptrdiff_t)L.evict_bail));
+    arm64_store_u32(bail + 4, arm64_str_x_off(1, 0, 544));
+    for (i = 0; i < 4; i++)
+        arm64_store_u32(bail + 8 + i * 4, epilogue[i]);
+
+    __atomic_store_n((uint64_t*)(void*)(dest + L.expect_lit), guest_addr, __ATOMIC_RELAXED);
+    __atomic_store_n((uint64_t*)(void*)(dest + L.live_lit), (uint64_t)(uintptr_t)live_entry,
+                     __ATOMIC_RELAXED);
     return dest;
 }
 
 /* Where the literal that selects live-entry vs bail-out lives, for a trampoline at `tramp`. */
 static uint64_t* chain_trampoline_slot(uint8_t* tramp) {
-    size_t off = 8;
-    if (!tramp) return NULL;
-    while ((((uintptr_t)tramp + off) & 7u) != 0) off += 4;
-    return (uint64_t*)(void*)(tramp + off);
+    struct hb_chain_tramp_layout L;
+    if (!chain_tramp_layout(tramp, &L)) return NULL;
+    return (uint64_t*)(void*)(tramp + L.live_lit);
 }
 
 /* Address of this trampoline's bail-out, i.e. what the literal is set to on eviction. */
 static uint8_t* chain_trampoline_bailout(uint8_t* tramp) {
-    uint64_t* slot = chain_trampoline_slot(tramp);
-    if (!slot) return NULL;
-    return (uint8_t*)(void*)((char*)slot + 8);
+    struct hb_chain_tramp_layout L;
+    if (!chain_tramp_layout(tramp, &L)) return NULL;
+    return tramp + L.evict_bail;
 }
 
 /* Get, or lazily create, the trampoline through which others reach `entry`. */
@@ -2768,9 +3098,28 @@ static uint8_t* chain_trampoline_for(hb_jit_runtime_t* rt, hb_block_cache_entry_
     if (!meta) return NULL;
     if (meta->in_trampoline) return meta->in_trampoline;
 
+    /* MacRunner 2026-07-30 — the make_writable/commit bracket around the BUILD is what was missing, and
+     * it is why block chaining has never booted.
+     *
+     * jit_commit_blob makes the arena writable only for its own memcpy of `zeros` and then calls
+     * hb_jit_buffer_commit, which re-protects it. chain_trampoline_build then wrote 20 instruction words
+     * straight into that just-re-protected page — a plain store to non-writable JIT memory, which takes
+     * the process down with no guest-visible exception. That matches the signature exactly: exit=5 within
+     * a second of the first dispatch, no SIGSEGV/SIGBUS/quarantine/interp-fallback line anywhere.
+     * patch_block_tail below has always bracketed its own two stores this way; this path did not.
+     *
+     * Bisected rather than guessed (HK, 45-second arms): emit side alone (MACRUNNER_HB_CHAIN_PATCH=0)
+     * boots to Begin MonoManager with 19.15 M dispatches, while committing the trampoline with the tail
+     * write still disabled (MACRUNNER_HB_CHAIN_WRITE=0) dies at exit=5 — and in that arm no trampoline is
+     * ever branched to, so only building one can be at fault. */
     memset(zeros, 0, sizeof(zeros));
     if (jit_commit_blob(rt, zeros, sizeof(zeros), &dest) != HB_OK || !dest) return NULL;
-    if (!chain_trampoline_build(dest, entry->native_code + 12, entry->guest_addr)) return NULL;
+    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK) return NULL;
+    if (!chain_trampoline_build(dest, entry->native_code + 12, entry->guest_addr)) {
+        (void)hb_jit_buffer_commit(rt->jit_mem);
+        return NULL;
+    }
+    if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return NULL;
     block_cache_clear_icache(dest, HB_CHAIN_TRAMPOLINE_BYTES);
     meta->in_trampoline = dest;
     return dest;
@@ -2784,35 +3133,62 @@ static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
     size_t patch_offset;
     bool ok;
 
-    if (!runtime_block_chain_enabled() || !rt || !rt->jit_mem || !cur || !next)
+    if (!runtime_block_chain_enabled() || !runtime_chain_patch_enabled() ||
+        !rt || !rt->jit_mem || !cur || !next) {
+        t_chain_decline[CHAIN_DECL_GATE]++;
         return false;
-    if (!cur->valid || !next->valid || !cur->native_code || !next->native_code)
+    }
+    if (!cur->valid || !next->valid || !cur->native_code || !next->native_code) {
+        t_chain_decline[CHAIN_DECL_INVALID]++;
         return false;
+    }
     meta = block_cache_chain_meta(rt->block_cache, cur, true);
-    if (!meta) return false;
-    if (meta->target_code) return meta->target_code == next->native_code + 16;
-    if (!block_terminal_is_chainable(cur->block))
+    if (!meta) { t_chain_decline[CHAIN_DECL_NOMETA]++; return false; }
+    if (meta->target_code) {
+        t_chain_decline[CHAIN_DECL_ALREADY]++;
+        return meta->target_code == next->native_code + 16;
+    }
+    if (!block_terminal_is_chainable(cur->block)) {
+        t_chain_decline[CHAIN_DECL_TERMINAL]++;
         return false;
-    if (!entry_has_chain_slot(cur, &patch_offset) || !entry_has_chain_slot(next, NULL))
+    }
+    if (!entry_has_chain_slot(cur, &patch_offset)) {
+        t_chain_decline[CHAIN_DECL_SLOT_CUR]++;
         return false;
+    }
+    if (!entry_has_chain_slot(next, NULL)) {
+        t_chain_decline[CHAIN_DECL_SLOT_NEXT]++;
+        return false;
+    }
 
     /* Through the trampoline, not at the code: see chain_trampoline_build above. Falling back to
      * the raw address would reintroduce exactly the dangling-branch hazard this exists to remove,
      * so a trampoline we cannot create means we do not chain. */
     target = chain_trampoline_for(rt, next);
-    if (!target) return false;
+    if (!target) { t_chain_decline[CHAIN_DECL_TRAMP]++; return false; }
     patch = cur->native_code + patch_offset;
-    if (!arm64_branch_reaches(patch + sizeof(uint32_t), target))
+    if (!arm64_branch_reaches(patch + sizeof(uint32_t), target)) {
+        t_chain_decline[CHAIN_DECL_REACH]++;
         return false;
+    }
 
-    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK)
+    /* Bisect stop: the trampoline above is committed, the block tail is left alone. */
+    if (!runtime_chain_write_enabled()) {
+        t_chain_decline[CHAIN_DECL_WRITEGATE]++;
         return false;
+    }
+
+    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK) {
+        t_chain_decline[CHAIN_DECL_WPROT]++;
+        return false;
+    }
     arm64_store_u32(patch, arm64_mov_reg_u32(0, 19)); /* MOV X0, X19 (ctx) */
     arm64_store_u32(patch + sizeof(uint32_t),
                     arm64_b_to(patch + sizeof(uint32_t), target));
     block_cache_clear_icache(patch, 2 * sizeof(uint32_t));
     ok = hb_jit_buffer_make_executable(rt->jit_mem) == HB_OK;
-    if (!ok) return false;
+    if (!ok) { t_chain_decline[CHAIN_DECL_XPROT]++; return false; }
+    t_chain_decline[CHAIN_DECL_PATCHED]++;
 
     meta->guest_addr = next->guest_addr;
     meta->target_code = target;
@@ -3721,6 +4097,9 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         frame.dispatched_guest = cached->guest_addr;
         frame.dispatched_native = (uint64_t)(uintptr_t)exec;
         frame.dispatched_native_size = cached->native_size;
+        /* One call per native dispatch, which is what makes this the right place for it: every
+         * dispatch reaches here exactly once, on the legacy path and the fast path alike. */
+        dispatch_stats_note_terminal(cached->block);
         exec(ctx);
         g_jit_signal_fault_frame = frame.prev;
         return HB_OK;
@@ -5482,41 +5861,20 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
     }
 }
 
-/* MacRunner 2026-07-30 — CHAIN LENGTH: the one number that answers "is the dispatcher being
- * bypassed" from a SINGLE run.
+/* MacRunner 2026-07-30 — CHAIN LENGTH: this wrapper used to count it here, and the number it produced
+ * did not mean what it said. It divided blocks executed by calls to THIS function, describing that as
+ * "blocks per dispatcher entry, exactly 1.0 when every transition goes through the dispatcher". But
+ * the dispatcher is the while (1) loop inside hb_jit_runtime_run_inner: one call to this function
+ * retires as many blocks as the guest runs before it leaves the lifted function, so the ratio was
+ * blocks-per-lifted-function-entry and was already far above 1 with chaining off. Read as documented
+ * it would have reported chaining as working on a build where it does nothing.
  *
- * Every other figure this file reports is a rate that only means something beside another run, and
- * with time-to-menu at 598.7 +- 78.0 s such a comparison needs about eight runs per arm before it
- * resolves anything at all. This needs none: blocks executed divided by dispatcher entries is exactly
- * 1.0 when every block transition goes through the dispatcher, and rises as chaining takes hold. No
- * control arm, no baseline, and run-to-run variance does not enter the answer.
- *
- * Wrapped rather than counted inline because the dispatcher has many exits; the _inner convention is
- * the one already used in this file (hb_memory_protect_inner, native_blob_prepare_cache_store_inner).
- * Reported every 4096 entries so a run killed by its timeout still shows the number. */
-static hb_result_t hb_jit_runtime_run_inner(hb_jit_runtime_t* rt, const hb_ir_func_t* func,
-                                            hb_exec_result_t* out);
-
-hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func,
-                               hb_exec_result_t* out) {
-    static uint64_t chain_entries, chain_blocks;
-    hb_result_t r;
-    uint64_t n = __atomic_add_fetch(&chain_entries, 1, __ATOMIC_RELAXED);
-
-    r = hb_jit_runtime_run_inner(rt, func, out);
-    if (out) __atomic_add_fetch(&chain_blocks, out->blocks_executed, __ATOMIC_RELAXED);
-
-    if (!(n & 0xfff)) {
-        uint64_t b = __atomic_load_n(&chain_blocks, __ATOMIC_RELAXED);
-        fprintf(stderr, "macrunner-hb-chainlen: dispatch_entries=%llu blocks=%llu avg_chain=%llu.%02llu\n",
-                (unsigned long long)n, (unsigned long long)b,
-                (unsigned long long)(b / n), (unsigned long long)(((b * 100) / n) % 100));
-        fflush(stderr);
-    }
-    return r;
-}
-
-hb_result_t hb_jit_runtime_run_inner(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out) {
+ * The denominator has to be native dispatches, and that counter already exists, per-thread and
+ * wall-clock stamped: dispatch_stats (MACRUNNER_HB_TRACE_DISPATCH_STATS=1) increments dispatches once
+ * per dispatch and blocks by the real retired count, on the legacy path as well as the fast path, so
+ * thread_blocks/thread_dispatches is the honest avg_chain. It is printed as avg_chain= there, beside
+ * the terminal histogram that gives the ceiling. Duplicating it here bought a wrong second opinion. */
+hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out) {
 
     int block_chain = runtime_block_chain_enabled();
     int single_lookup_gate = runtime_single_lookup_enabled();
@@ -5997,6 +6355,11 @@ hb_result_t hb_jit_runtime_run_inner(hb_jit_runtime_t* rt, const hb_ir_func_t* f
         if (terminal->op == HB_IR_JMP || terminal->op == HB_IR_Jcc ||
             terminal->op == HB_IR_CALL || terminal->op == HB_IR_LOOP ||
             terminal->op == HB_IR_JRCXZ) {
+            if (chain_accounting) {
+                if (!chain_patch_enabled) t_chain_decline[CHAIN_SITE_PATCH_OFF]++;
+                else if (!cached || !next_cached) t_chain_decline[CHAIN_SITE_NO_ENTRY]++;
+                else t_chain_decline[CHAIN_SITE_CALLED]++;
+            }
             if (chain_patch_enabled && cached && next_cached)
                 (void)patch_block_tail(rt, cached, next_cached);
             if (indirect_ic_enabled &&

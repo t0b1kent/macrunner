@@ -4139,7 +4139,22 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
         int code = siginfo ? siginfo->si_code : 0;
 
         if (sig == SIGSEGV && code == SEGV_ACCERR)
+        {
+            /* 2026-07-30 — sample this path too, because the LABEL is not stable. Two runs of the
+             * same binary: one reported 17429592 SIGBUS/BUS_ADRALN against 23464 accerr, the other
+             * 9445176 accerr against 200 bus. This file already knew why -- the 2026-07-02 note in
+             * bus_handler records BUS_ADRALN firing for a genuine ARM64 permission fault -- so the
+             * two counters are ONE phenomenon the kernel labels inconsistently, and an instrument
+             * that only watches bus_handler is blind whenever the coin lands the other way. */
+            static int accerr_dumped;
+
             __atomic_add_fetch( &macrunner_hb_fault_accerr, 1, __ATOMIC_RELAXED );
+            if (__atomic_fetch_add( &accerr_dumped, 1, __ATOMIC_RELAXED ) < 6)
+                macrunner_signal_writef( "macrunner-hb-accerr-sample: pc=%p fault=%p lr=%p esr=0x%llx\n",
+                                         (void *)(ULONG_PTR)PC_sig(context), (void *)fault_addr,
+                                         (void *)(ULONG_PTR)LR_sig(context),
+                                         (unsigned long long)get_fault_esr( context ) );
+        }
         else if (sig == SIGSEGV && code == SEGV_MAPERR)
             __atomic_add_fetch( &macrunner_hb_fault_maperr, 1, __ATOMIC_RELAXED );
         else

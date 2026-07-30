@@ -188,16 +188,16 @@ static __thread uint64_t t_findblock_max_n;
 enum {
     CHAIN_SITE_CALLED = 0, CHAIN_SITE_PATCH_OFF, CHAIN_SITE_NO_ENTRY,
     CHAIN_DECL_GATE, CHAIN_DECL_INVALID, CHAIN_DECL_NOMETA, CHAIN_DECL_ALREADY,
-    CHAIN_DECL_TERMINAL, CHAIN_DECL_SLOT_CUR, CHAIN_DECL_SLOT_NEXT, CHAIN_DECL_TRAMP,
-    CHAIN_DECL_REACH, CHAIN_DECL_WRITEGATE, CHAIN_DECL_WPROT, CHAIN_DECL_XPROT,
-    CHAIN_DECL_PATCHED, CHAIN_DECL_N
+    CHAIN_DECL_TERMINAL, CHAIN_DECL_BACKEDGE, CHAIN_DECL_SLOT_CUR, CHAIN_DECL_SLOT_NEXT,
+    CHAIN_DECL_TRAMP, CHAIN_DECL_REACH, CHAIN_DECL_WRITEGATE, CHAIN_DECL_WPROT,
+    CHAIN_DECL_XPROT, CHAIN_DECL_CAPPED, CHAIN_DECL_PATCHED, CHAIN_DECL_N
 };
 static const char* const hb_chain_decline_names[CHAIN_DECL_N] = {
     "site_called", "site_patch_off", "site_no_entry",
     "gate", "invalid", "nometa", "already",
-    "terminal", "slot_cur", "slot_next", "tramp",
-    "reach", "write_off", "wprot", "xprot",
-    "PATCHED"
+    "terminal", "backedge", "slot_cur", "slot_next",
+    "tramp", "reach", "write_off", "wprot",
+    "xprot", "capped", "PATCHED"
 };
 static __thread uint64_t t_chain_decline[CHAIN_DECL_N];
 
@@ -558,22 +558,33 @@ static void block_cache_prepare_replace_entry(hb_jit_runtime_t* rt, hb_block_cac
     int made_writable = 0;
 
     if (!entry || !entry->valid) return;
-    if (runtime_block_chain_enabled() && cache) {
-        /* One store retires every inbound chain at once. Done BEFORE the unchain walk below so the
-         * window in which a predecessor could still enter dead code is closed even if that walk
-         * cannot run (it needs the arena writable and gives up otherwise — the hole that made this
-         * whole path unsafe). A literal is data, so no i-cache maintenance is needed here. */
+    /* MacRunner 2026-07-30 — the eviction literal store USED TO HAPPEN OUTSIDE THE WRITABLE BRACKET, and
+     * that is the same defect class already fixed in chain_trampoline_for: a plain store into the JIT arena
+     * while it is mapped read+execute.
+     *
+     * It fires exactly when a trampoline exists for the evicted block, which is precisely the variable the
+     * bisection isolated. MACRUNNER_HB_CHAIN_PATCH=0 boots because it never creates a trampoline, so
+     * `self->in_trampoline` is always NULL and this store never runs; every arm that creates one wedges —
+     * including CHAIN_WRITE=0, which installs no tail patches at all and therefore rules out both the patch
+     * and the chained execution as causes. Note the W^X cycle below runs in the booting arm too (it is gated
+     * only on runtime_block_chain_enabled()), so the cycle itself was never the difference — the unbracketed
+     * store was.
+     *
+     * Both writes now share ONE bracket. The ordering the original comment cared about is preserved inside
+     * it: the literal is retired BEFORE the unchain walk, so the window in which a predecessor could still
+     * enter dead code stays closed. */
+    if (runtime_block_chain_enabled() && rt && rt->jit_mem && cache &&
+        hb_jit_buffer_make_writable(rt->jit_mem) == HB_OK) {
         hb_block_chain_meta_t* self = block_cache_chain_meta(cache, entry, false);
+        made_writable = 1;
+        /* One store retires every inbound chain at once. A literal is data, so no i-cache maintenance is
+         * needed for it — but it is still arena memory and still needs the arena writable. */
         if (self && self->in_trampoline) {
             uint64_t* slot = chain_trampoline_slot(self->in_trampoline);
             uint8_t* bail = chain_trampoline_bailout(self->in_trampoline);
             if (slot && bail)
                 __atomic_store_n(slot, (uint64_t)(uintptr_t)bail, __ATOMIC_RELEASE);
         }
-    }
-    if (runtime_block_chain_enabled() && rt && rt->jit_mem &&
-        hb_jit_buffer_make_writable(rt->jit_mem) == HB_OK) {
-        made_writable = 1;
         block_cache_unchain_references(cache, entry->native_code);
         block_cache_unchain_entry(cache, entry);
         (void)hb_jit_buffer_make_executable(rt->jit_mem);
@@ -806,6 +817,114 @@ static int runtime_chain_patch_enabled(void) {
 static int runtime_chain_write_enabled(void) {
     static int cached = -1;
     return runtime_env_flag_cached(&cached, "MACRUNNER_HB_CHAIN_WRITE", 1);
+}
+
+/* MacRunner 2026-07-30 — third bisect handle, for the wedge that appears once chaining actually engages.
+ *
+ * With the slot predicate fixed, chaining works (avg_chain 5.19, 12033 tails patched) and the boot wedges
+ * deterministically at ~+53 s, 2/2, with identical counters — a repeatable state, not a race. The leading
+ * explanation is a chained CYCLE: a guest loop whose blocks are chained in both directions runs natively and
+ * correctly, but re-enters the dispatcher only on a mispredict, so a hot loop with a rare exit edge spins in
+ * the arena while ctx->block_count climbs. That is exactly the observed shape — blocks high, dispatches low,
+ * then silence.
+ *
+ * MACRUNNER_HB_CHAIN_FORWARD_ONLY=1 declines to patch when the successor's guest address is not strictly
+ * greater than the predecessor's, which is the shape of a loop backedge. If the wedge disappears while
+ * avg_chain stays above 1, the cycle explanation is confirmed and forward-only chaining is a usable subset;
+ * if the wedge survives, the cause is instead the 5x larger steps/blocks deltas feeding back through
+ * out->steps_executed into macrunner_hb_run_x64's loop, and the cycle idea is refuted. Default 0, so it
+ * changes nothing until a measurement says otherwise. */
+static int runtime_chain_forward_only_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_CHAIN_FORWARD_ONLY", 0);
+}
+
+/* MacRunner 2026-07-30 — bisect on HOW MUCH chaining is survivable, after both kind-based splits failed.
+ *
+ * Restricting WHICH edges get chained has now been tried twice and neither changed the wedge: the widened
+ * terminal set and the original direct-JMP-only set both die, and forward-only chaining (which removed
+ * 258 640 backedges and dropped avg_chain from 5.19 to 1.37) wedges identically. So the next axis is
+ * quantity, not kind. MACRUNNER_HB_CHAIN_MAX_PATCHES=N stops after N successful patches; 0 means unlimited.
+ *
+ * If a small N boots and unlimited wedges, the wedge is cumulative — a resource or state effect — and the
+ * cap is itself a shippable subset of chaining. If even a handful of patches wedges, then
+ * MACRUNNER_HB_TRACE_CHAIN_EDGE=1 has already logged those few cur->next guest pairs and the culprit edge
+ * is named outright. Either way the answer is one run, which is why this is the axis to bisect. */
+static uint64_t runtime_chain_max_patches(void) {
+    static int parsed;
+    static uint64_t limit;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_CHAIN_MAX_PATCHES");
+        limit = (env && *env) ? strtoull(env, NULL, 0) : 0;
+        parsed = 1;
+    }
+    return limit;
+}
+
+static int trace_chain_edge_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_TRACE_CHAIN_EDGE", 0);
+}
+
+/* MacRunner 2026-07-30 — log edges NEAR one guest address instead of just the first 64.
+ *
+ * The fault is deterministic at guest pc 0x87ef2469a30 (mono-2.0-bdwgc.dll+0x69a30, entered with garbage
+ * rcx/rdx identical across three runs), but with ~11 000 tails patched a first-64 cap never reaches that
+ * region, so "is the faulting block reached by a chain" stayed unanswerable. MACRUNNER_HB_CHAIN_EDGE_NEAR
+ * takes that guest address and logs every edge whose predecessor or successor lies within +-64 KB of it.
+ * Observation only — it decides whether the chain even touches the block that dies, which five mechanism
+ * guesses could not. */
+static uint64_t runtime_chain_edge_near(void) {
+    static int parsed;
+    static uint64_t addr;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_CHAIN_EDGE_NEAR");
+        addr = (env && *env) ? strtoull(env, NULL, 0) : 0;
+        parsed = 1;
+    }
+    return addr;
+}
+
+static int chain_edge_is_near(uint64_t a, uint64_t b) {
+    uint64_t c = runtime_chain_edge_near();
+    if (!c) return 0;
+    return (a > c ? a - c : c - a) <= 0x10000ull || (b > c ? b - c : c - b) <= 0x10000ull;
+}
+
+static uint64_t g_chain_patches_installed;
+
+/* MacRunner 2026-07-30 — observe the guest state ACROSS a chained transition, which is the one thing none
+ * of the cap/kind arms could see.
+ *
+ * Established by bisection: no patch boots to Begin MonoManager, while 1, 8 and 11 458 patches all wedge,
+ * and refusing self edges or backedges changes nothing. So the first chained transition is already fatal
+ * and the question is no longer WHICH edge but WHAT it does. block_delta > 1 is exactly the signal that a
+ * chain executed inside one native dispatch, so printing ctx->pc beside the predecessor's guest_addr there
+ * separates the two remaining possibilities: a PC that is not a sane guest address means the trampoline is
+ * corrupting control flow (and since the encodings are clang-verified byte for byte, that would point at the
+ * native_code+12 entry contract or the frame, not the instruction bytes), while a sane PC means nothing is
+ * corrupted and the loss is the per-dispatch host work a chained transition skips. */
+static int chain_edge_is_near(uint64_t a, uint64_t b);
+
+static void trace_chain_transition(const hb_context_t* ctx, const hb_block_cache_entry_t* cur,
+                                   uint64_t block_delta, uint64_t step_delta,
+                                   uint64_t before_rcx, uint64_t before_rdx) {
+    static uint64_t shown;
+    int near;
+    if (!trace_chain_edge_enabled() || !ctx || !cur) return;
+    near = chain_edge_is_near(cur->guest_addr, ctx->pc);
+    if (!near && __atomic_add_fetch(&shown, 1, __ATOMIC_RELAXED) > 32) return;
+    /* rcx/rdx are the two registers that come back identically garbage in every failing run
+     * (rcx=0xf0e0993f rdx=0x320eec31), so printing them either side of the chained run says whether the
+     * chain corrupts them or inherits them already wrong. */
+    fprintf(stderr, "macrunner-hb-chaintransit:%s from=0x%llx pc_after=0x%llx blocks=%llu steps=%llu "
+                    "rcx %llx->%llx rdx %llx->%llx\n",
+            near ? " NEAR" : "",
+            (unsigned long long)cur->guest_addr, (unsigned long long)ctx->pc,
+            (unsigned long long)block_delta, (unsigned long long)step_delta,
+            (unsigned long long)before_rcx, (unsigned long long)ctx->regs.x64.rcx,
+            (unsigned long long)before_rdx, (unsigned long long)ctx->regs.x64.rdx);
+    fflush(stderr);
 }
 
 static int runtime_indirect_ic_enabled(void) {
@@ -3017,7 +3136,12 @@ static bool chain_tramp_layout(const uint8_t* dest, struct hb_chain_tramp_layout
 
 /* Lays out, at `dest`: trampoline (LDR/BR + literal) followed by this target's bail-out.
  * Returns the trampoline address, or NULL if the layout cannot be aligned within the block. */
-static uint8_t* chain_trampoline_build(uint8_t* dest, uint8_t* live_entry, uint64_t guest_addr) {
+/* Builds into `out` the trampoline that will LIVE at `at`. The two are separated so the whole thing can be
+ * assembled in a local buffer and handed to jit_commit_blob in one shot: every displacement below is
+ * computed from `at`, every store goes to `out`. That keeps `jit_commit_blob` the only writer that ever
+ * toggles the arena's W^X state — see chain_trampoline_for. */
+static uint8_t* chain_trampoline_build_at(uint8_t* out, const uint8_t* at, uint8_t* live_entry,
+                                          uint64_t guest_addr) {
     static const uint32_t epilogue[4] = {
         0xa9427bf7u, /* LDP X23, LR,  [SP, #32] */
         0xa9415bf5u, /* LDP X21, X22, [SP, #16] */
@@ -3029,11 +3153,11 @@ static uint8_t* chain_trampoline_build(uint8_t* dest, uint8_t* live_entry, uint6
     uint8_t* bail;
     size_t i;
 
-    if (!dest || !live_entry) return NULL;
-    if (!chain_tramp_layout(dest, &L)) return NULL;
+    if (!out || !at || !live_entry) return NULL;
+    if (!chain_tramp_layout(at, &L)) return NULL;
 
-    mis = dest + L.mispredict;
-    bail = dest + L.evict_bail;
+    mis = out + L.mispredict;
+    bail = out + L.evict_bail;
 
     /* The guard. X0 holds ctx — the predecessor's chain slot put it there with MOV X0, X19 — and the
      * predecessor's terminal has already stored its computed next PC into ctx->pc. So comparing that
@@ -3045,18 +3169,18 @@ static uint8_t* chain_trampoline_build(uint8_t* dest, uint8_t* live_entry, uint6
      * takes its other edge, an indirect jump through a different vtable slot, an indirect call to a
      * different callee: each simply mispredicts and pays four extra instructions instead of executing
      * the wrong guest block. X16/X17 are IP0/IP1, scratch at any call boundary. */
-    arm64_store_u32(dest + 0, arm64_ldr_x_off(16, 0, 544 /* offsetof(hb_context_t, pc) */));
-    arm64_store_u32(dest + 4, arm64_ldr_x_literal(17, (ptrdiff_t)(L.expect_lit - 4)));
-    arm64_store_u32(dest + 8, arm64_cmp_x(16, 17));
-    arm64_store_u32(dest + 12, arm64_bcond_to(dest + 12, mis, 1 /* NE */));
-    arm64_store_u32(dest + 16, arm64_ldr_x_literal(16, (ptrdiff_t)(L.live_lit - 16)));
-    arm64_store_u32(dest + 20, arm64_br_reg(16));
+    arm64_store_u32(out + 0, arm64_ldr_x_off(16, 0, 544 /* offsetof(hb_context_t, pc) */));
+    arm64_store_u32(out + 4, arm64_ldr_x_literal(17, (ptrdiff_t)(L.expect_lit - 4)));
+    arm64_store_u32(out + 8, arm64_cmp_x(16, 17));
+    arm64_store_u32(out + 12, arm64_bcond_to(at + 12, at + L.mispredict, 1 /* NE */));
+    arm64_store_u32(out + 16, arm64_ldr_x_literal(16, (ptrdiff_t)(L.live_lit - 16)));
+    arm64_store_u32(out + 20, arm64_br_reg(16));
 
     /* Mispredict: unwind the frame the ORIGINATING block pushed, exactly as a normal return would, and
      * leave ctx->pc as the terminal set it. */
     for (i = 0; i < 4; i++)
         arm64_store_u32(mis + i * 4, epilogue[i]);
-    memset(dest + L.mispredict + 16, 0, L.expect_lit - (L.mispredict + 16)); /* alignment padding */
+    memset(out + L.mispredict + 16, 0, L.expect_lit - (L.mispredict + 16)); /* alignment padding */
 
     /* Eviction bail-out: reached only because eviction flipped live_lit to point here, in which case
      * the guard has already confirmed ctx->pc == guest_addr; the store keeps that true for a resumed
@@ -3067,10 +3191,10 @@ static uint8_t* chain_trampoline_build(uint8_t* dest, uint8_t* live_entry, uint6
     for (i = 0; i < 4; i++)
         arm64_store_u32(bail + 8 + i * 4, epilogue[i]);
 
-    __atomic_store_n((uint64_t*)(void*)(dest + L.expect_lit), guest_addr, __ATOMIC_RELAXED);
-    __atomic_store_n((uint64_t*)(void*)(dest + L.live_lit), (uint64_t)(uintptr_t)live_entry,
+    __atomic_store_n((uint64_t*)(void*)(out + L.expect_lit), guest_addr, __ATOMIC_RELAXED);
+    __atomic_store_n((uint64_t*)(void*)(out + L.live_lit), (uint64_t)(uintptr_t)live_entry,
                      __ATOMIC_RELAXED);
-    return dest;
+    return out;
 }
 
 /* Where the literal that selects live-entry vs bail-out lives, for a trampoline at `tramp`. */
@@ -3112,14 +3236,32 @@ static uint8_t* chain_trampoline_for(hb_jit_runtime_t* rt, hb_block_cache_entry_
      * boots to Begin MonoManager with 19.15 M dispatches, while committing the trampoline with the tail
      * write still disabled (MACRUNNER_HB_CHAIN_WRITE=0) dies at exit=5 — and in that arm no trampoline is
      * ever branched to, so only building one can be at fault. */
-    memset(zeros, 0, sizeof(zeros));
-    if (jit_commit_blob(rt, zeros, sizeof(zeros), &dest) != HB_OK || !dest) return NULL;
-    if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK) return NULL;
-    if (!chain_trampoline_build(dest, entry->native_code + 12, entry->guest_addr)) {
-        (void)hb_jit_buffer_commit(rt->jit_mem);
-        return NULL;
+    /* MacRunner 2026-07-30 — assembled in a LOCAL buffer and committed in ONE jit_commit_blob call, so no
+     * writer outside jit_commit_blob ever toggles the arena's W^X state.
+     *
+     * The earlier version reserved the space, then wrote the instructions straight into the arena behind a
+     * second make_writable/commit bracket. That bracket was itself suspect: measured across five arms, the
+     * only configuration that boots is the one performing ZERO extra cycles (MACRUNNER_HB_CHAIN_PATCH=0),
+     * while one extra cycle — whether from this build or from the tail patch — wedges the guest, even though
+     * the chained transition it installs provably executes correctly
+     * (`chaintransit: from=0x87ef3e43250 pc_after=0x87ef3e4325c blocks=4`). And such a bracket flushes
+     * nothing: make_writable sets dirty_start = used, so the paired commit sees an empty dirty range and
+     * skips __builtin___clear_cache, leaving correctness to the explicit block_cache_clear_icache below.
+     *
+     * jit_commit_blob places the blob at writable + used, so the address is predictable before the call;
+     * the layout is computed for THAT address and the result verified against what we actually got, because
+     * emitting a trampoline whose literals are relative to the wrong address would be silent corruption. */
+    {
+        uint8_t built[HB_CHAIN_TRAMPOLINE_BYTES];
+        const uint8_t* predicted = rt->jit_mem->writable + rt->jit_mem->used;
+
+        memset(zeros, 0, sizeof(zeros));
+        memset(built, 0, sizeof(built));
+        if (!chain_trampoline_build_at(built, predicted, entry->native_code + 12, entry->guest_addr))
+            return NULL;
+        if (jit_commit_blob(rt, built, sizeof(built), &dest) != HB_OK || !dest) return NULL;
+        if (dest != predicted) return NULL; /* layout was computed for another address — refuse to chain */
     }
-    if (hb_jit_buffer_commit(rt->jit_mem) != HB_OK) return NULL;
     block_cache_clear_icache(dest, HB_CHAIN_TRAMPOLINE_BYTES);
     meta->in_trampoline = dest;
     return dest;
@@ -3152,6 +3294,10 @@ static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
         t_chain_decline[CHAIN_DECL_TERMINAL]++;
         return false;
     }
+    if (runtime_chain_forward_only_enabled() && next->guest_addr <= cur->guest_addr) {
+        t_chain_decline[CHAIN_DECL_BACKEDGE]++;
+        return false;
+    }
     if (!entry_has_chain_slot(cur, &patch_offset)) {
         t_chain_decline[CHAIN_DECL_SLOT_CUR]++;
         return false;
@@ -3176,6 +3322,23 @@ static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
     if (!runtime_chain_write_enabled()) {
         t_chain_decline[CHAIN_DECL_WRITEGATE]++;
         return false;
+    }
+
+    {
+        uint64_t cap = runtime_chain_max_patches();
+        uint64_t n = __atomic_add_fetch(&g_chain_patches_installed, 1, __ATOMIC_RELAXED);
+        if (cap && n > cap) {
+            __atomic_sub_fetch(&g_chain_patches_installed, 1, __ATOMIC_RELAXED);
+            t_chain_decline[CHAIN_DECL_CAPPED]++;
+            return false;
+        }
+        if (trace_chain_edge_enabled() &&
+            (n <= 64 || chain_edge_is_near(cur->guest_addr, next->guest_addr))) {
+            fprintf(stderr, "macrunner-hb-chainedge: n=%llu cur=0x%llx next=0x%llx tramp=%p\n",
+                    (unsigned long long)n, (unsigned long long)cur->guest_addr,
+                    (unsigned long long)next->guest_addr, (void*)target);
+            fflush(stderr);
+        }
     }
 
     if (hb_jit_buffer_make_writable(rt->jit_mem) != HB_OK) {
@@ -6038,6 +6201,21 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             bool native_accounting = chain_accounting && entry_has_chain_slot(cached, NULL);
             uint64_t before_steps = native_accounting ? ctx->step_count : 0;
             uint64_t before_blocks = native_accounting ? ctx->block_count : 0;
+            uint64_t before_rcx = ctx->regs.x64.rcx;
+            uint64_t before_rdx = ctx->regs.x64.rdx;
+            /* Entry-state probe for ONE guest block, so the same line can be compared with chaining on and
+             * off. The chained arm shows rcx/rdx arriving as f0e0993f/320eec31 — the exact values the fault
+             * reports — and this says what they are when the block is reached the ordinary way. */
+            if (trace_chain_edge_enabled() && cached->guest_addr == runtime_chain_edge_near()) {
+                static uint64_t seen;
+                if (__atomic_add_fetch(&seen, 1, __ATOMIC_RELAXED) <= 8)
+                    fprintf(stderr, "macrunner-hb-blockentry: guest=0x%llx rcx=0x%llx rdx=0x%llx "
+                                    "rax=0x%llx rsp=0x%llx n=%llu\n",
+                            (unsigned long long)cached->guest_addr,
+                            (unsigned long long)ctx->regs.x64.rcx, (unsigned long long)ctx->regs.x64.rdx,
+                            (unsigned long long)ctx->regs.x64.rax, (unsigned long long)ctx->regs.x64.rsp,
+                            (unsigned long long)seen), fflush(stderr);
+            }
             hb_result_t run_result = run_jit_block_with_signal_guard(rt, cached, out,
                                                                       steps, blocks_executed);
             if (run_result != HB_OK || out->faulted) return run_result;
@@ -6049,6 +6227,9 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                     run_block_delta = block_delta;
                     blocks_executed += block_delta;
                     steps += step_delta;
+                    if (block_delta > 1)
+                        trace_chain_transition(ctx, cached, block_delta, step_delta,
+                                               before_rcx, before_rdx);
                     if (dispatch_stats_enabled_run) dispatch_stats_add(1, block_delta, step_delta);
                 } else {
                     blocks_executed++;
@@ -6261,6 +6442,21 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             bool native_accounting = chain_accounting && entry_has_chain_slot(cached, NULL);
             uint64_t before_steps = native_accounting ? ctx->step_count : 0;
             uint64_t before_blocks = native_accounting ? ctx->block_count : 0;
+            uint64_t before_rcx = ctx->regs.x64.rcx;
+            uint64_t before_rdx = ctx->regs.x64.rdx;
+            /* Entry-state probe for ONE guest block, so the same line can be compared with chaining on and
+             * off. The chained arm shows rcx/rdx arriving as f0e0993f/320eec31 — the exact values the fault
+             * reports — and this says what they are when the block is reached the ordinary way. */
+            if (trace_chain_edge_enabled() && cached->guest_addr == runtime_chain_edge_near()) {
+                static uint64_t seen;
+                if (__atomic_add_fetch(&seen, 1, __ATOMIC_RELAXED) <= 8)
+                    fprintf(stderr, "macrunner-hb-blockentry: guest=0x%llx rcx=0x%llx rdx=0x%llx "
+                                    "rax=0x%llx rsp=0x%llx n=%llu\n",
+                            (unsigned long long)cached->guest_addr,
+                            (unsigned long long)ctx->regs.x64.rcx, (unsigned long long)ctx->regs.x64.rdx,
+                            (unsigned long long)ctx->regs.x64.rax, (unsigned long long)ctx->regs.x64.rsp,
+                            (unsigned long long)seen), fflush(stderr);
+            }
             hb_result_t run_result = run_jit_block_with_signal_guard(rt, cached, out,
                                                                       steps, blocks_executed);
             if (run_result != HB_OK || out->faulted) return run_result;
@@ -6272,6 +6468,9 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                     run_block_delta = block_delta;
                     blocks_executed += block_delta;
                     steps += step_delta;
+                    if (block_delta > 1)
+                        trace_chain_transition(ctx, cached, block_delta, step_delta,
+                                               before_rcx, before_rdx);
                     if (dispatch_stats_enabled_run) dispatch_stats_add(1, block_delta, step_delta);
                 } else {
                     blocks_executed++;

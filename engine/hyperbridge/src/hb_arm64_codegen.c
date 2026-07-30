@@ -627,9 +627,28 @@ static void emit_block_chain_slot(hb_codegen_buffer_t* buf) {
     emit_nop(buf);
 }
 
+/* MacRunner 2026-07-30 — a chain slot belongs ONLY to a block's final, normal-path epilogue.
+ *
+ * emit_epilogue is called from several places, and emit_return_if_helper_failed uses it to emit an
+ * epilogue INSIDE the block for the helper-failure branch. Every one of those carried a 4-NOP chain slot,
+ * and entry_has_chain_slot identifies the slot purely by position (native_size - 32). So for any block whose
+ * last emitted epilogue is the helper-failure one, patch_block_tail patched the FAILURE path: instead of
+ * returning with ctx->last_result set, the block branched into its successor and execution continued on
+ * corrupt state, which surfaces later as a guest memory access to a bad address — the measured
+ * `out=MEMORY_FAULT reason="JIT helper fault"` that kills the main thread only when tails are patched.
+ *
+ * Mid-block epilogues therefore emit no slot. Blocks that end with one simply stop being chainable, because
+ * their last 32 bytes no longer match the signature — the safe outcome, and one that needs no new
+ * bookkeeping. */
+static void emit_epilogue_ex(hb_codegen_buffer_t* buf, bool with_chain_slot);
+
+static void emit_epilogue_mid_block(hb_codegen_buffer_t* buf) { emit_epilogue_ex(buf, false); }
+
 /* Epilogue: restore and ret */
-static void emit_epilogue(hb_codegen_buffer_t* buf) {
-    emit_block_chain_slot(buf);
+static void emit_epilogue(hb_codegen_buffer_t* buf) { emit_epilogue_ex(buf, true); }
+
+static void emit_epilogue_ex(hb_codegen_buffer_t* buf, bool with_chain_slot) {
+    if (with_chain_slot) emit_block_chain_slot(buf);
     emit_u32(buf, 0xa9427bf7); /* LDP X23, LR,  [SP, #32] */
     emit_u32(buf, 0xa9415bf5); /* LDP X21, X22, [SP, #16] */
     emit_u32(buf, 0xa8c353f3); /* LDP X19, X20, [SP], #48 */
@@ -641,7 +660,7 @@ static void emit_return_if_helper_failed(hb_codegen_buffer_t* buf) {
     emit_ldr_w(buf, 22, 19, (uint32_t)offsetof(hb_context_t, last_result));
     emit_cmp_imm(buf, 22, 0);
     ok_branch = emit_bcond_deferred(buf, 0); /* EQ -> skip inline epilogue */
-    emit_epilogue(buf);
+    emit_epilogue_mid_block(buf);
     patch_bcond(buf, ok_branch, 0, buf->size);
 }
 

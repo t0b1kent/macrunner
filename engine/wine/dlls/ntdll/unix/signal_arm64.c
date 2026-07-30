@@ -4086,6 +4086,45 @@ static ULONG64 macrunner_hb_fault_bus_adrerr;
 static ULONG64 macrunner_hb_fault_bus_objerr;
 static ULONG64 macrunner_hb_fault_bus_othercode;
 
+/* 2026-07-30 — THE DISCRIMINATOR between "expensive but correct" and "broken".
+ *
+ * Established: one PC (0x7ffd078b944, identical across processes, so a fixed-base module, and
+ * 190 KB from the loader-init PC the log reports) executing `str x0,[x20]` (insn=0xf9000280) into
+ * mostly page-ALIGNED addresses in SM=COW image mappings, with esr=0x9200004f — DFSC 0x0f, a write
+ * permission fault, align=0. Between 9.4 and 17.4 million per run.
+ *
+ * Two readings fit that and only one is a defect:
+ *   - first-touch copy-on-write, one fault per page. Expensive but CORRECT, and the answer would be
+ *     to touch fewer pages, not to change the fault path.
+ *   - the same pages faulting again and again because something re-protects them. A defect, and the
+ *     fix is to stop re-arming.
+ * The earlier samples support the second (…d7000, …d7048, …d70c8 all inside ONE page) and these
+ * support the first (…91d000, …702000, …17a000, page-aligned, different pages). Counting distinct
+ * pages settles it: faults ~= distinct pages is reading one, faults >> distinct pages is reading two.
+ *
+ * A 4096-entry direct-mapped table of page numbers, not a real set: a collision undercounts
+ * distinct pages, which biases toward reading two, so a "faults ~= distinct" result cannot be an
+ * artefact of the table. Lossy on purpose — an exact set has no place on a signal path. */
+#define MACRUNNER_HB_FAULT_PAGE_SLOTS 4096
+static ULONG64 macrunner_hb_fault_page_tab[MACRUNNER_HB_FAULT_PAGE_SLOTS];
+static ULONG64 macrunner_hb_fault_pages_distinct;
+static ULONG64 macrunner_hb_fault_same_page_repeat;
+
+static void macrunner_hb_fault_note_page( ULONG_PTR addr )
+{
+    ULONG64 page = (ULONG64)(addr >> 14);  /* 16 KB pages on this platform */
+    size_t slot = (size_t)((page * 2654435761u) & (MACRUNNER_HB_FAULT_PAGE_SLOTS - 1));
+    ULONG64 prev = __atomic_load_n( &macrunner_hb_fault_page_tab[slot], __ATOMIC_RELAXED );
+
+    if (prev == page)
+    {
+        __atomic_add_fetch( &macrunner_hb_fault_same_page_repeat, 1, __ATOMIC_RELAXED );
+        return;
+    }
+    __atomic_store_n( &macrunner_hb_fault_page_tab[slot], page, __ATOMIC_RELAXED );
+    __atomic_add_fetch( &macrunner_hb_fault_pages_distinct, 1, __ATOMIC_RELAXED );
+}
+
 struct macrunner_hb_faultrate_scope { ULONG64 t0; };
 
 static void macrunner_hb_faultrate_leave( struct macrunner_hb_faultrate_scope *scope )
@@ -4137,6 +4176,8 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
     {
         ULONG64 n = __atomic_add_fetch( &macrunner_hb_fault_entries, 1, __ATOMIC_RELAXED );
         int code = siginfo ? siginfo->si_code : 0;
+
+        if (fault_addr) macrunner_hb_fault_note_page( fault_addr );
 
         if (sig == SIGSEGV && code == SEGV_ACCERR)
         {
@@ -4195,7 +4236,8 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
                 "macrunner-hb-faultrate: entries=%llu elapsed_ms=%llu rate=%llu/s"
                 " avg_us=%llu busy_pct=%llu accerr=%llu maperr=%llu other=%llu"
                 " ill=%llu bus=%llu trap=%llu segv_other=%llu"
-                " adraln=%llu adrerr=%llu objerr=%llu buscode_other=%llu\n",
+                " adraln=%llu adrerr=%llu objerr=%llu buscode_other=%llu"
+                " pages_distinct=%llu same_page=%llu\n",
                 (unsigned long long)n, (unsigned long long)ms,
                 (unsigned long long)(ms ? (n * 1000ull) / ms : 0),
                 (unsigned long long)(done ? (total / done) / 1000ull : 0),
@@ -4210,7 +4252,9 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_bus_adraln, __ATOMIC_RELAXED ),
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_bus_adrerr, __ATOMIC_RELAXED ),
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_bus_objerr, __ATOMIC_RELAXED ),
-                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_bus_othercode, __ATOMIC_RELAXED ) );
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_bus_othercode, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_pages_distinct, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_same_page_repeat, __ATOMIC_RELAXED ) );
         }
     }
 

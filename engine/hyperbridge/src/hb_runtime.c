@@ -3488,7 +3488,28 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
                 "JIT disabled after unmapped native signal; interpreter fallback" :
                 "JIT native-signal block quarantined; interpreter fallback");
     }
-    memset(&frame, 0, sizeof(frame));
+    /* MacRunner 2026-07-30 — this runs on EVERY guest block dispatch, and a profile of the thread
+     * that actually drives startup found it: of 273 samples inside hb_jit_runtime_run, 39 were
+     * _platform_memset and 47 _platform_memmove, both under this function — 31 % of the critical
+     * path spent on bookkeeping rather than on the guest.
+     *
+     * The memset zeroes the whole frame, whose largest member by far is `snapshot`, a full
+     * hb_context_t at 2616 bytes — and that member is then completely overwritten by the assignment
+     * a few lines below. Zeroing it is pure waste, so skip it: that is about two thirds of the
+     * zeroing on a path taken millions of times per startup.
+     *
+     * Written as two ranges around the member rather than as a list of field initialisers so a field
+     * added later still gets zeroed by construction: it necessarily falls in one range or the other.
+     * The whole correctness argument is that `snapshot` is unconditionally assigned below, which is
+     * checkable at a glance.
+     *
+     * The 2616-byte COPY is deliberately NOT touched here. It is the pre-image the fault path
+     * restores with `*ctx = frame.snapshot`, so eliding it needs a policy for blocks that have never
+     * faulted — a behaviour change that wants its own measurement, not a drive-by. */
+    memset(&frame, 0, offsetof(hb_jit_signal_fault_frame_t, snapshot));
+    memset((char*)&frame + offsetof(hb_jit_signal_fault_frame_t, snapshot) + sizeof(frame.snapshot),
+           0,
+           sizeof(frame) - offsetof(hb_jit_signal_fault_frame_t, snapshot) - sizeof(frame.snapshot));
     frame.prev = g_jit_signal_fault_frame;
     frame.rt = rt;
     frame.ctx = ctx;

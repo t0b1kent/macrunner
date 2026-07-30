@@ -4068,6 +4068,23 @@ static ULONG64 macrunner_hb_fault_sigill;
 static ULONG64 macrunner_hb_fault_sigbus;
 static ULONG64 macrunner_hb_fault_sigtrap;
 static ULONG64 macrunner_hb_fault_sigsegv_other;
+/* 2026-07-30 — IDENTIFIED, now narrow it. The split said SIGBUS: bus=17429592 of 17453056 entries,
+ * ill=0 trap=0 segv_other=0, at 35943/s and 16 % of wall clock in a run that reached the language
+ * marker at +299.7 s. So it is neither the write-watch path (accerr, 23464) nor the untranslated-code
+ * path (SIGILL, zero) — my guess of SIGILL was wrong.
+ *
+ * si_code is what separates the two candidates that remain, and they need opposite fixes:
+ *   BUS_ADRALN — an unaligned access. x86 permits unaligned accesses including unaligned LOCK
+ *                operations; ARM64 exclusives do not, so a guest atomic on an odd address traps
+ *                every single execution. Mono leans on lock cmpxchg heavily.
+ *   BUS_OBJERR — the W^X arrangement on Apple Silicon: a page cannot be writable and executable at
+ *                once, so writing to one mapped executable raises this.
+ * Six sampled PCs and addresses come with it, because after three wrong guesses today the numbers
+ * are cheaper than another theory. */
+static ULONG64 macrunner_hb_fault_bus_adraln;
+static ULONG64 macrunner_hb_fault_bus_adrerr;
+static ULONG64 macrunner_hb_fault_bus_objerr;
+static ULONG64 macrunner_hb_fault_bus_othercode;
 
 struct macrunner_hb_faultrate_scope { ULONG64 t0; };
 
@@ -4129,7 +4146,21 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
         {
             __atomic_add_fetch( &macrunner_hb_fault_otherkind, 1, __ATOMIC_RELAXED );
             if (sig == SIGILL)       __atomic_add_fetch( &macrunner_hb_fault_sigill, 1, __ATOMIC_RELAXED );
-            else if (sig == SIGBUS)  __atomic_add_fetch( &macrunner_hb_fault_sigbus, 1, __ATOMIC_RELAXED );
+            else if (sig == SIGBUS)
+            {
+                static int bus_dumped;
+
+                __atomic_add_fetch( &macrunner_hb_fault_sigbus, 1, __ATOMIC_RELAXED );
+                if (code == BUS_ADRALN)      __atomic_add_fetch( &macrunner_hb_fault_bus_adraln, 1, __ATOMIC_RELAXED );
+                else if (code == BUS_ADRERR) __atomic_add_fetch( &macrunner_hb_fault_bus_adrerr, 1, __ATOMIC_RELAXED );
+                else if (code == BUS_OBJERR) __atomic_add_fetch( &macrunner_hb_fault_bus_objerr, 1, __ATOMIC_RELAXED );
+                else                         __atomic_add_fetch( &macrunner_hb_fault_bus_othercode, 1, __ATOMIC_RELAXED );
+
+                if (__atomic_fetch_add( &bus_dumped, 1, __ATOMIC_RELAXED ) < 6)
+                    macrunner_signal_writef( "macrunner-hb-bus-sample: code=%d pc=%p fault=%p lr=%p\n",
+                                             code, (void *)(ULONG_PTR)PC_sig(context),
+                                             (void *)fault_addr, (void *)(ULONG_PTR)LR_sig(context) );
+            }
             else if (sig == SIGTRAP) __atomic_add_fetch( &macrunner_hb_fault_sigtrap, 1, __ATOMIC_RELAXED );
             else if (sig == SIGSEGV) __atomic_add_fetch( &macrunner_hb_fault_sigsegv_other, 1, __ATOMIC_RELAXED );
         }
@@ -4148,7 +4179,8 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
             macrunner_signal_writef(
                 "macrunner-hb-faultrate: entries=%llu elapsed_ms=%llu rate=%llu/s"
                 " avg_us=%llu busy_pct=%llu accerr=%llu maperr=%llu other=%llu"
-                " ill=%llu bus=%llu trap=%llu segv_other=%llu\n",
+                " ill=%llu bus=%llu trap=%llu segv_other=%llu"
+                " adraln=%llu adrerr=%llu objerr=%llu buscode_other=%llu\n",
                 (unsigned long long)n, (unsigned long long)ms,
                 (unsigned long long)(ms ? (n * 1000ull) / ms : 0),
                 (unsigned long long)(done ? (total / done) / 1000ull : 0),
@@ -4159,7 +4191,11 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_sigill, __ATOMIC_RELAXED ),
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_sigbus, __ATOMIC_RELAXED ),
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_sigtrap, __ATOMIC_RELAXED ),
-                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_sigsegv_other, __ATOMIC_RELAXED ) );
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_sigsegv_other, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_bus_adraln, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_bus_adrerr, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_bus_objerr, __ATOMIC_RELAXED ),
+                (unsigned long long)__atomic_load_n( &macrunner_hb_fault_bus_othercode, __ATOMIC_RELAXED ) );
         }
     }
 

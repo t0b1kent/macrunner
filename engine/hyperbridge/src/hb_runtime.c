@@ -3458,6 +3458,46 @@ static void jit_aa_report_sigbus(const hb_jit_signal_fault_frame_t* frame,
     fflush(stderr);
 }
 
+/* MacRunner 2026-07-30 — the per-block context snapshot, minus the part the JIT cannot touch.
+ *
+ * Stable baseline from three loop iterations: run_jit_block_with_signal_guard 96/99/102 samples on
+ * the critical thread with _platform_memmove 65/69/80 of them, i.e. the copy below is the largest
+ * identified cost left on that thread now that promotion is off.
+ *
+ * sizeof(hb_context_t) is 2616 bytes, and bytes [1472, 2496) — xmm_ext, ymm_hi_ext, zmm_hi_ext —
+ * are one contiguous 1024-byte block the header calls "Interpreter-only ... for AVX-512 ZMM16..31".
+ * Verified rather than trusted: a grep of the whole engine finds those three fields referenced ONLY
+ * in hb_interpreter.c and hb_context.c, with zero mentions in hb_arm64_codegen.c or in this file.
+ * So emitted code cannot change them, and not snapshotting them is not an approximation — it is the
+ * correct rule, restore-what-changed.
+ *
+ * BOTH sides must skip the same range. The memset above no longer zeroes `snapshot`, so the
+ * un-copied bytes hold whatever was on the stack; a full-struct restore would push that garbage into
+ * the live context. Hence a matching pair rather than a lone optimisation on the save path.
+ *
+ * Gated so it can be A/B'd against the baseline above; default off. */
+static int snapshot_skip_interp_only(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_SNAPSHOT_SKIP_INTERP", 0);
+}
+
+#define HB_CTX_INTERP_ONLY_BEGIN offsetof(hb_context_t, xmm_ext)
+#define HB_CTX_INTERP_ONLY_END   offsetof(hb_context_t, guest32_base)
+
+static inline void hb_ctx_snapshot_save(hb_context_t* dst, const hb_context_t* src) {
+    if (!snapshot_skip_interp_only()) { *dst = *src; return; }
+    memcpy(dst, src, HB_CTX_INTERP_ONLY_BEGIN);
+    memcpy((char*)dst + HB_CTX_INTERP_ONLY_END, (const char*)src + HB_CTX_INTERP_ONLY_END,
+           sizeof(hb_context_t) - HB_CTX_INTERP_ONLY_END);
+}
+
+static inline void hb_ctx_snapshot_restore(hb_context_t* dst, const hb_context_t* src) {
+    if (!snapshot_skip_interp_only()) { *dst = *src; return; }
+    memcpy(dst, src, HB_CTX_INTERP_ONLY_BEGIN);
+    memcpy((char*)dst + HB_CTX_INTERP_ONLY_END, (const char*)src + HB_CTX_INTERP_ONLY_END,
+           sizeof(hb_context_t) - HB_CTX_INTERP_ONLY_END);
+}
+
 static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
                                                    hb_block_cache_entry_t* cached,
                                                    hb_exec_result_t* out,
@@ -3514,7 +3554,7 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
     frame.rt = rt;
     frame.ctx = ctx;
     frame.entry = cached;
-    frame.snapshot = *ctx;
+    hb_ctx_snapshot_save(&frame.snapshot, ctx);
     frame.steps = steps;
     frame.blocks_executed = blocks_executed;
     frame.aa_enabled = jit_aa_sigbus_probe_enabled();
@@ -3543,7 +3583,7 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         frame.aa_src_post_valid = jit_aa_capture_window(
             frame.snapshot.memory, frame.snapshot.regs.x64.rdx, frame.aa_src_post);
     }
-    *ctx = frame.snapshot;
+    hb_ctx_snapshot_restore(ctx, &frame.snapshot);
     faulted = block_cache_find_native_pc(rt->block_cache, frame.host_pc);
     if (jit_signal_quarantine_enabled_for(frame.signal)) {
         hb_block_cache_entry_t* quarantine_entry = faulted ? faulted : cached;

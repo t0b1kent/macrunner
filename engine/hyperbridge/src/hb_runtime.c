@@ -5482,7 +5482,42 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
     }
 }
 
-hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out) {
+/* MacRunner 2026-07-30 — CHAIN LENGTH: the one number that answers "is the dispatcher being
+ * bypassed" from a SINGLE run.
+ *
+ * Every other figure this file reports is a rate that only means something beside another run, and
+ * with time-to-menu at 598.7 +- 78.0 s such a comparison needs about eight runs per arm before it
+ * resolves anything at all. This needs none: blocks executed divided by dispatcher entries is exactly
+ * 1.0 when every block transition goes through the dispatcher, and rises as chaining takes hold. No
+ * control arm, no baseline, and run-to-run variance does not enter the answer.
+ *
+ * Wrapped rather than counted inline because the dispatcher has many exits; the _inner convention is
+ * the one already used in this file (hb_memory_protect_inner, native_blob_prepare_cache_store_inner).
+ * Reported every 4096 entries so a run killed by its timeout still shows the number. */
+static hb_result_t hb_jit_runtime_run_inner(hb_jit_runtime_t* rt, const hb_ir_func_t* func,
+                                            hb_exec_result_t* out);
+
+hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func,
+                               hb_exec_result_t* out) {
+    static uint64_t chain_entries, chain_blocks;
+    hb_result_t r;
+    uint64_t n = __atomic_add_fetch(&chain_entries, 1, __ATOMIC_RELAXED);
+
+    r = hb_jit_runtime_run_inner(rt, func, out);
+    if (out) __atomic_add_fetch(&chain_blocks, out->blocks_executed, __ATOMIC_RELAXED);
+
+    if (!(n & 0xfff)) {
+        uint64_t b = __atomic_load_n(&chain_blocks, __ATOMIC_RELAXED);
+        fprintf(stderr, "macrunner-hb-chainlen: dispatch_entries=%llu blocks=%llu avg_chain=%llu.%02llu\n",
+                (unsigned long long)n, (unsigned long long)b,
+                (unsigned long long)(b / n), (unsigned long long)(((b * 100) / n) % 100));
+        fflush(stderr);
+    }
+    return r;
+}
+
+hb_result_t hb_jit_runtime_run_inner(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out) {
+
     int block_chain = runtime_block_chain_enabled();
     int single_lookup_gate = runtime_single_lookup_enabled();
     int indirect_ic_gate = runtime_indirect_ic_enabled();

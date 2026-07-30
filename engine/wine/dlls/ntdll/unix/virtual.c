@@ -1627,6 +1627,43 @@ static struct file_view *find_view( const void *addr, size_t size )
 /***********************************************************************
  *           is_write_watch_range
  */
+/* MacRunner 2026-07-30 — is the fault storm Mono's GC write barrier?
+ *
+ * Established by measurement: 9.4-17.4 million write-PERMISSION faults per startup (esr=0x9200004f,
+ * DFSC 0x0f, align=0), all from one PC executing `str x0,[x20]`, with the same page faulting
+ * repeatedly at advancing offsets, and the storm starting exactly when Mono comes up -- 88/s before,
+ * 12000-36000/s after. Our own commit-upgrade path never fires (zero traces), so the faults are
+ * handled upstream, and set_vprot at virtual.c:1516 is why they happen at all: a VPROT_WRITEWATCH
+ * page has PROT_WRITE stripped on purpose, so every write traps once per page.
+ *
+ * Once per page would be fine. What makes it a storm is re-arming, and the only thing that re-arms
+ * is a caller resetting the watch -- which is exactly what a generational GC does every collection
+ * to find its dirty pages. Mono is a generational GC. use_kernel_writewatch, the path where the
+ * kernel tracks dirty pages with no faults at all, is set only by the Linux pagemap_scan ioctl, so
+ * on macOS we are always on the mprotect-and-signal fallback.
+ *
+ * That chain is coherent but it is still inference at the last link, and four inferences today were
+ * wrong. These three counters close it: if a guest asks for MEM_WRITE_WATCH and then resets the
+ * watch thousands of times, the storm is the GC barrier and the fix is to make this feature
+ * unavailable so Mono falls back to its software card table -- a few instructions per write instead
+ * of a kernel round trip. If they stay at zero, write-watch is not involved and the read-only
+ * mapping comes from somewhere else entirely. */
+static unsigned int macrunner_ww_alloc, macrunner_ww_get, macrunner_ww_reset;
+
+static void macrunner_ww_note( const char *what, unsigned int *ctr )
+{
+    unsigned int n = __atomic_add_fetch( ctr, 1, __ATOMIC_RELAXED );
+
+    if (n <= 4 || !(n & 0x3ff))
+    {
+        fprintf( stderr, "macrunner-ww: %s n=%u alloc=%u get=%u reset=%u\n", what, n,
+                 __atomic_load_n( &macrunner_ww_alloc, __ATOMIC_RELAXED ),
+                 __atomic_load_n( &macrunner_ww_get, __ATOMIC_RELAXED ),
+                 __atomic_load_n( &macrunner_ww_reset, __ATOMIC_RELAXED ) );
+        fflush( stderr );
+    }
+}
+
 static inline BOOL is_write_watch_range( const void *addr, size_t size )
 {
     struct file_view *view = find_view( addr, size );
@@ -6489,7 +6526,11 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
         if (!(status = get_vprot_flags( protect, &vprot, FALSE )))
         {
             if (type & MEM_COMMIT) vprot |= VPROT_COMMITTED;
-            if (type & MEM_WRITE_WATCH) vprot |= VPROT_WRITEWATCH;
+            if (type & MEM_WRITE_WATCH)
+            {
+                vprot |= VPROT_WRITEWATCH;
+                macrunner_ww_note( "alloc", &macrunner_ww_alloc );
+            }
             if (type & MEM_RESERVE_PLACEHOLDER) vprot |= VPROT_PLACEHOLDER | VPROT_FREE_PLACEHOLDER;
             if (protect & PAGE_NOCACHE) vprot |= SEC_NOCACHE;
 
@@ -8199,6 +8240,8 @@ NTSTATUS WINAPI NtGetWriteWatch( HANDLE process, ULONG flags, PVOID base, SIZE_T
                                  ULONG_PTR *count, ULONG *granularity )
 {
     NTSTATUS status = STATUS_SUCCESS;
+
+    macrunner_ww_note( "get", &macrunner_ww_get );
     sigset_t sigset;
     char *end;
 
@@ -8257,6 +8300,7 @@ NTSTATUS WINAPI NtGetWriteWatch( HANDLE process, ULONG flags, PVOID base, SIZE_T
  */
 NTSTATUS WINAPI NtResetWriteWatch( HANDLE process, PVOID base, SIZE_T size )
 {
+    macrunner_ww_note( "reset", &macrunner_ww_reset );
     NTSTATUS status = STATUS_SUCCESS;
     sigset_t sigset;
     char *end;

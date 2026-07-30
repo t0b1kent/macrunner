@@ -4838,8 +4838,32 @@ static void try_promote_self_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
     }
 }
 
+/* MacRunner 2026-07-30 — one kill switch for all seven families, so the question they raise can be
+ * answered by measurement instead of by reading.
+ *
+ * What a profile of the thread that drives startup shows: try_promote_hot_block_families is 40
+ * samples at the top of stack, and under the helper it installs —
+ * hb_jit_helper_exec_two_block_loop — sits hb_jit_helper_exec_ir_block_once, then
+ * exec_instr_unlocked, then mem_read → hb_memory_read → find_region_normalized. That is the
+ * INTERPRETER, with a region lookup per guest memory access.
+ *
+ * Reading the helper confirms the shape: it tries three hand-written fast paths
+ * (test/jne epilogue, cmp/rol/test, vector store) and, when none of them matches, runs a
+ * budgeted while loop interpreting the IR block by block. So a promoted hot loop is not translated
+ * to ARM64 at all — it becomes a call into an interpreter — while an unpromoted block goes through
+ * run_jit_block_with_signal_guard and executes native code.
+ *
+ * Which of those is faster is not obvious and must not be guessed: the fused path saves dispatch and
+ * guard overhead per iteration, the plain path executes real instructions. Hence a gate rather than a
+ * deletion. Default 1, so this commit changes nothing until the A/B says which way to set it. */
+static int promote_families_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_PROMOTE_FAMILIES", 1);
+}
+
 static void try_promote_hot_block_families(hb_jit_runtime_t* rt, hb_context_t* ctx,
                                            const hb_ir_block_t* block) {
+    if (!promote_families_enabled()) return;
     try_promote_copy_scan_counted_loop(rt, ctx, block);
     try_promote_bounded_scan_loop(rt, ctx, block);
     try_promote_byte_compare_loop(rt, ctx, block);

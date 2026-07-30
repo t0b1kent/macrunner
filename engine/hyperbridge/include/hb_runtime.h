@@ -54,6 +54,10 @@ typedef struct {
     uint64_t guest_addr;
     uint8_t* target_code;
     size_t patch_offset;
+    /* 2026-07-30: this entry's own chain-entry trampoline — what OTHER blocks branch to in order
+     * to reach it. Created lazily on the first inbound chain and never moved, so eviction only has
+     * to rewrite the trampoline's literal instead of hunting down every inbound branch. */
+    uint8_t* in_trampoline;
 } hb_block_chain_meta_t;
 
 /* MacRunner (2026-06-17 — FIX#2a, HK rank-7 livelock): the block-cache hash table was

@@ -400,11 +400,29 @@ static void block_cache_unchain_references(hb_block_cache_t* cache, const uint8_
     }
 }
 
+/* Defined next to chain_trampoline_build, which explains the whole arrangement; declared here
+ * because eviction is the other half of it and comes first in this file. */
+static uint64_t* chain_trampoline_slot(uint8_t* tramp);
+static uint8_t* chain_trampoline_bailout(uint8_t* tramp);
+
 static void block_cache_prepare_replace_entry(hb_jit_runtime_t* rt, hb_block_cache_t* cache,
                                               hb_block_cache_entry_t* entry) {
     int made_writable = 0;
 
     if (!entry || !entry->valid) return;
+    if (runtime_block_chain_enabled() && cache) {
+        /* One store retires every inbound chain at once. Done BEFORE the unchain walk below so the
+         * window in which a predecessor could still enter dead code is closed even if that walk
+         * cannot run (it needs the arena writable and gives up otherwise — the hole that made this
+         * whole path unsafe). A literal is data, so no i-cache maintenance is needed here. */
+        hb_block_chain_meta_t* self = block_cache_chain_meta(cache, entry, false);
+        if (self && self->in_trampoline) {
+            uint64_t* slot = chain_trampoline_slot(self->in_trampoline);
+            uint8_t* bail = chain_trampoline_bailout(self->in_trampoline);
+            if (slot && bail)
+                __atomic_store_n(slot, (uint64_t)(uintptr_t)bail, __ATOMIC_RELEASE);
+        }
+    }
     if (runtime_block_chain_enabled() && rt && rt->jit_mem &&
         hb_jit_buffer_make_writable(rt->jit_mem) == HB_OK) {
         made_writable = 1;
@@ -2630,6 +2648,134 @@ static uint32_t arm64_mov_reg_u32(int rd, int rn) {
     return 0xaa0003e0u | ((uint32_t)rn << 16) | (uint32_t)rd;
 }
 
+/* MacRunner 2026-07-30 — CHAIN-ENTRY TRAMPOLINE.
+ *
+ * Why this exists: patch_block_tail below writes a direct `B` to next->native_code+12, i.e. a raw
+ * pointer into the JIT arena. When the target is evicted its arena memory is reused, so every branch
+ * still pointing at it becomes a jump into unrelated code. Eviction does try to undo those patches
+ * (block_cache_unchain_references), but that path needs the arena writable and silently gives up
+ * when it is not — and undoing a patch means rewriting INSTRUCTIONS, which on ARM64 obliges us to
+ * get i-cache maintenance right against threads that may be executing them. That combination is why
+ * MACRUNNER_HB_BLOCK_CHAIN has been default-off and marked unsafe, and why it has been armed in
+ * 0 of 218 runs — leaving every guest block transition to pay a full dispatcher round trip, which
+ * the profile shows as 297-339 of ~535 samples on the critical thread inside hb_jit_runtime_run.
+ *
+ * The trampoline removes the hazard instead of tracking it. Predecessors branch to a per-target stub
+ *
+ *      LDR X16, <literal>
+ *      BR  X16
+ *      <literal>            ; live entry, or this target's bail-out
+ *
+ * and eviction becomes ONE 8-byte store to the literal. Every inbound chain is redirected at once,
+ * however many there are, so single-slot metadata stops being a limitation. A literal is data, not
+ * code, so no i-cache maintenance is involved in the switch at all — which is the part that made
+ * patching the branch itself hard to do safely.
+ *
+ * The bail-out is generated per target rather than shared because it has to name the guest address
+ * to resume at:
+ *
+ *      LDR X1, <literal>            ; guest_addr
+ *      STR X1, [X0, #pc]            ; X0 holds ctx — the chain slot's MOV X0, X19 put it there
+ *      LDP X23, LR,  [SP, #32]      ; the same epilogue every block ends with, so the frame the
+ *      LDP X21, X22, [SP, #16]      ; ORIGINATING block pushed is unwound exactly as on a normal
+ *      LDP X19, X20, [SP], #48      ; return, and the dispatcher resumes at ctx->pc
+ *      RET
+ *
+ * Space is committed BEFORE the instructions are built, and the instructions are then written
+ * knowing the final address. That is not fussiness: the literal must be 8-byte aligned for the
+ * eviction store to be atomic, and the offset that achieves that is only knowable once the arena
+ * has handed out an address. */
+
+#define HB_CHAIN_TRAMPOLINE_BYTES 64
+
+static uint32_t arm64_ldr_x_literal(int rt_reg, ptrdiff_t byte_delta) {
+    /* LDR Xt, <label> — imm19 counts instructions, not bytes. */
+    uint32_t imm19 = (uint32_t)((byte_delta / 4) & 0x7ffff);
+    return 0x58000000u | (imm19 << 5) | (uint32_t)rt_reg;
+}
+
+static uint32_t arm64_br_reg(int rn) { return 0xd61f0000u | ((uint32_t)rn << 5); }
+
+static uint32_t arm64_str_x_off(int rt_reg, int rn, unsigned byte_off) {
+    return 0xf9000000u | (((uint32_t)(byte_off / 8) & 0xfffu) << 10) |
+           ((uint32_t)rn << 5) | (uint32_t)rt_reg;
+}
+
+/* Lays out, at `dest`: trampoline (LDR/BR + literal) followed by this target's bail-out.
+ * Returns the trampoline address, or NULL if the layout cannot be aligned within the block. */
+static uint8_t* chain_trampoline_build(uint8_t* dest, uint8_t* live_entry, uint64_t guest_addr) {
+    static const uint32_t epilogue[4] = {
+        0xa9427bf7u, /* LDP X23, LR,  [SP, #32] */
+        0xa9415bf5u, /* LDP X21, X22, [SP, #16] */
+        0xa8c353f3u, /* LDP X19, X20, [SP], #48 */
+        0xd65f03c0u  /* RET */
+    };
+    size_t tramp_lit, bail, bail_lit, i;
+    uint8_t* bail_addr;
+
+    if (!dest || !live_entry) return NULL;
+    if (((uintptr_t)dest & 3u) != 0) return NULL;
+
+    /* literal for the trampoline: first 8-aligned slot at or after +8 */
+    tramp_lit = 8;
+    while ((((uintptr_t)dest + tramp_lit) & 7u) != 0) tramp_lit += 4;
+    bail = tramp_lit + 8;                       /* bail-out code starts after the literal */
+    bail_lit = bail + 6 * 4;                    /* 6 instructions, then its own literal */
+    while ((((uintptr_t)dest + bail_lit) & 7u) != 0) bail_lit += 4;
+    if (bail_lit + 8 > HB_CHAIN_TRAMPOLINE_BYTES) return NULL;
+
+    bail_addr = dest + bail;
+
+    arm64_store_u32(dest, arm64_ldr_x_literal(16, (ptrdiff_t)tramp_lit));
+    arm64_store_u32(dest + 4, arm64_br_reg(16));
+    memset(dest + 8, 0, tramp_lit - 8);          /* padding, if any */
+    __atomic_store_n((uint64_t*)(void*)(dest + tramp_lit), (uint64_t)(uintptr_t)live_entry,
+                     __ATOMIC_RELAXED);
+
+    arm64_store_u32(bail_addr,
+                    arm64_ldr_x_literal(1, (ptrdiff_t)(bail_lit - bail)));
+    arm64_store_u32(bail_addr + 4, arm64_str_x_off(1, 0, 544 /* offsetof(hb_context_t, pc) */));
+    for (i = 0; i < 4; i++)
+        arm64_store_u32(bail_addr + 8 + i * 4, epilogue[i]);
+    memset(bail_addr + 24, 0, (bail_lit - bail) - 24);
+    __atomic_store_n((uint64_t*)(void*)(dest + bail_lit), guest_addr, __ATOMIC_RELAXED);
+    return dest;
+}
+
+/* Where the literal that selects live-entry vs bail-out lives, for a trampoline at `tramp`. */
+static uint64_t* chain_trampoline_slot(uint8_t* tramp) {
+    size_t off = 8;
+    if (!tramp) return NULL;
+    while ((((uintptr_t)tramp + off) & 7u) != 0) off += 4;
+    return (uint64_t*)(void*)(tramp + off);
+}
+
+/* Address of this trampoline's bail-out, i.e. what the literal is set to on eviction. */
+static uint8_t* chain_trampoline_bailout(uint8_t* tramp) {
+    uint64_t* slot = chain_trampoline_slot(tramp);
+    if (!slot) return NULL;
+    return (uint8_t*)(void*)((char*)slot + 8);
+}
+
+/* Get, or lazily create, the trampoline through which others reach `entry`. */
+static uint8_t* chain_trampoline_for(hb_jit_runtime_t* rt, hb_block_cache_entry_t* entry) {
+    hb_block_chain_meta_t* meta;
+    uint8_t zeros[HB_CHAIN_TRAMPOLINE_BYTES];
+    uint8_t* dest = NULL;
+
+    if (!rt || !rt->block_cache || !entry || !entry->native_code) return NULL;
+    meta = block_cache_chain_meta(rt->block_cache, entry, true);
+    if (!meta) return NULL;
+    if (meta->in_trampoline) return meta->in_trampoline;
+
+    memset(zeros, 0, sizeof(zeros));
+    if (jit_commit_blob(rt, zeros, sizeof(zeros), &dest) != HB_OK || !dest) return NULL;
+    if (!chain_trampoline_build(dest, entry->native_code + 12, entry->guest_addr)) return NULL;
+    block_cache_clear_icache(dest, HB_CHAIN_TRAMPOLINE_BYTES);
+    meta->in_trampoline = dest;
+    return dest;
+}
+
 static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
                              hb_block_cache_entry_t* next) {
     hb_block_chain_meta_t* meta;
@@ -2650,7 +2796,11 @@ static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
     if (!entry_has_chain_slot(cur, &patch_offset) || !entry_has_chain_slot(next, NULL))
         return false;
 
-    target = next->native_code + 12; /* Reuse current frame, then run callee MOV X19, X0. */
+    /* Through the trampoline, not at the code: see chain_trampoline_build above. Falling back to
+     * the raw address would reintroduce exactly the dangling-branch hazard this exists to remove,
+     * so a trampoline we cannot create means we do not chain. */
+    target = chain_trampoline_for(rt, next);
+    if (!target) return false;
     patch = cur->native_code + patch_offset;
     if (!arm64_branch_reaches(patch + sizeof(uint32_t), target))
         return false;

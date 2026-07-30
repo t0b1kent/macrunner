@@ -4858,7 +4858,21 @@ static void try_promote_self_loop(hb_jit_runtime_t* rt, hb_context_t* ctx,
  * deletion. Default 1, so this commit changes nothing until the A/B says which way to set it. */
 static int promote_families_enabled(void) {
     static int cached = -1;
-    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_PROMOTE_FAMILIES", 1);
+    /* Default flipped to 0 on 2026-07-30. Measured, three runs:
+     *   promotion on   771.0 s and 780.0 s to the language marker
+     *   promotion off  250.3 s
+     * plus the profile of the critical thread, 113 -> 35 samples in hb_jit_runtime_run, with every
+     * component falling together (two_block_loop 34->0, signal guard 32->5, memmove 25->4,
+     * find_region 8->0). The two "on" runs landing within 9 s of each other is what makes this a
+     * bimodal distribution rather than noise, and it retro-explains the 272/321/463/528/750/804 s
+     * spread that made every A/B this month unreadable: fast runs were the ones where promotion
+     * never caught a hot loop.
+     *
+     * =1 restores the old behaviour. The three hand-written fast paths inside
+     * hb_jit_helper_exec_two_block_loop are presumably a win where they match; what loses is the
+     * interpreter fallback they sit in front of. Re-enabling per-family, once each family can be
+     * measured on its own, is the follow-up. */
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_PROMOTE_FAMILIES", 0);
 }
 
 static void try_promote_hot_block_families(hb_jit_runtime_t* rt, hb_context_t* ctx,

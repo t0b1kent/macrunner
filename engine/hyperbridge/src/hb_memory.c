@@ -294,11 +294,360 @@ static void hot_cache_reset_tls(hb_memory_t* mem, uint64_t epoch) {
     memset(g_hot_cache_tls.slot, 0, sizeof(g_hot_cache_tls.slot));
 }
 
+/* MacRunner 2026-07-31 — is the region hot cache actually working?
+ *
+ * Clean critical-thread profile (instruments off) puts the guest-MMU group at 10.5 %:
+ * find_region_normalized 3.0 % + hb_memory_read 5.4 % + hb_memory_write 2.1 %. The lookup already has an
+ * O(log n) treap AND this per-thread MRU cache in front of it, so the cost is either cache misses falling
+ * through to the treap or the cache being wiped. The wipe is the suspicious part: hot_cache_reset_tls clears
+ * EVERY slot whenever the region epoch changes, and Mono maps and unmaps constantly, so a high reset rate
+ * would mean the cache is permanently cold no matter how good its locality is.
+ *
+ * Three counters answer it from one run: lookups, hits, and resets. Gated and per-thread, reported every
+ * 8 M lookups. hit_pct says whether the cache earns its keep; resets_per_1k_lookups says whether epoch churn
+ * is destroying it. */
+static __thread uint64_t t_hc_lookups, t_hc_hits, t_hc_resets, t_hc_next;
+
+/* MacRunner 2026-07-31 — first measurement said 67.7 % hits / 0.04 resets per 1k lookups, so epoch churn is
+ * NOT what costs us; the misses are. Two follow-up questions decide what to do about them, and both are
+ * answerable in one run:
+ *
+ *   (a) How deep do HITS sit? The scan is 16 slots wide and linear. If hits concentrate in slot 0-1 the
+ *       remaining 14 comparisons are dead weight on every miss.
+ *   (b) Are MISSES curable by capacity? A miss that resolves to a real region (hot_cache_insert runs) can be
+ *       caught by a bigger cache. A miss where the treap returns NULL — an unmapped guest address — can never
+ *       be cached at any size, and needs a negative cache instead. t_hc_shadow is a 64-deep true-LRU shadow
+ *       of the same reference stream, so the depth at which a missed region is found in it prices slots=32/64
+ *       exactly, without rebuilding. */
+#define HC_SHADOW 64
+static __thread int t_hc_depth_hist[HB_MEMORY_HOT_CACHE_SLOTS];
+static __thread uint64_t t_hc_miss_resolved, t_hc_shadow_absent;
+static __thread hb_region_t* t_hc_shadow[HC_SHADOW];
+static __thread uint64_t t_hc_shadow_hist[HC_SHADOW];
+static __thread int t_hc_miss_pending;
+
+static int trace_hot_cache_stats_enabled(void);
+__thread uint64_t hb_trace_current_block_addr;
+/* Which C caller produces the NULL answers. The guest-PC histogram came back diffuse (top block <=4 % of
+ * 112.9 M), so the nulls are not one loop; the remaining question is whether they are a PROBE whose NULL is a
+ * normal answer (hb_memory_host_ptr deciding the JIT cannot take a direct pointer) rather than a failed access.
+ * One TLS tag set at each of the five resolve call sites answers it. */
+enum { RSITE_OTHER = 0, RSITE_READ, RSITE_WRITE, RSITE_HOST_PTR, RSITE_FIND_REGION, RSITE_CHECK_PERM,
+       RSITE_JIT_HOST_SPAN, RSITE_JIT_CODEGEN, RSITE_INTERP, RSITE_N };
+static const char* const rsite_names[RSITE_N] = {
+    "other", "read", "write", "host_ptr", "find_region", "check_perm",
+    "jit_host_span", "jit_codegen", "interp"
+};
+__thread int hb_trace_rsite;
+#define t_rsite hb_trace_rsite
+static __thread uint64_t t_null_by_site[RSITE_N], t_lookup_by_site[RSITE_N];
+static __thread uint64_t t_gap_hits, t_gap_fills, t_gap_flushes;  /* negative cache, defined below */
+/* Express the saving in the unit that actually costs time: dependent, cache-cold pointer loads. A failed treap
+ * walk over ~24000 regions is ~15-20 of them; the gap scan it replaces is a linear MRU array. Counting both
+ * makes the trade a measured ratio instead of an argument from region count. */
+static __thread uint64_t t_walk_nodes_fail, t_walk_fail, t_walk_nodes_ok, t_walk_ok, t_gap_scanned;
+
+/* MacRunner 2026-07-31 — 97.4 % of the misses resolve to NULL: 167.7 M lookups per run for guest addresses
+ * that NO region contains. A bigger cache cannot help those (measured: slots=64 would buy 0.3 points), so the
+ * question is who asks. Bucket the unresolved addresses by 16 MB and keep one example each — if they cluster in
+ * one or two buckets this is a single unregistered range (the guest stack is the obvious suspect: stack traffic
+ * is the most frequent memory traffic any program has), which is a completely different and much cheaper fix
+ * than tuning the cache. */
+/* First cut of this sampler was first-come-first-served over 20 slots: twenty cold startup addresses took the
+ * table and 99.96 % of the traffic fell into "other", so it measured nothing. Misra-Gries instead — a matching
+ * key increments, a free slot is claimed, and an unmatched key decrements every counter. Any bucket holding
+ * more than 1/32 of the stream is guaranteed to survive in the table, which is exactly the question. */
+#define HC_NULLBUCKETS 32
+static __thread uint64_t t_hc_null_key[HC_NULLBUCKETS], t_hc_null_cnt[HC_NULLBUCKETS];
+static __thread uint64_t t_hc_null_ex[HC_NULLBUCKETS], t_hc_null_ex_last[HC_NULLBUCKETS];
+static __thread uint64_t t_hc_null_other, t_hc_null_total;
+
+/* Which guest block issues the unmapped lookups. Same Misra-Gries discipline as the address buckets: any
+ * block responsible for more than 1/32 of the null stream is guaranteed to survive in the table. If they
+ * concentrate in one or two blocks, the 166 M nulls are a loop, not diffuse probing — which is the difference
+ * between a caching problem and a spin-wait worth far more than the cache. */
+#define HC_PCSLOTS 32
+static __thread uint64_t t_pc_key[HC_PCSLOTS], t_pc_cnt[HC_PCSLOTS], t_pc_addr[HC_PCSLOTS];
+static __thread uint64_t t_pc_total, t_pc_evicted;
+
+static void null_pc_note(hb_gva_t addr) {
+    uint64_t pc = hb_trace_current_block_addr;
+    int free_slot = -1;
+    t_pc_total++;
+    for (int i = 0; i < HC_PCSLOTS; i++) {
+        if (t_pc_cnt[i] && t_pc_key[i] == pc) { t_pc_cnt[i]++; return; }
+        if (!t_pc_cnt[i] && free_slot < 0) free_slot = i;
+    }
+    if (free_slot >= 0) {
+        t_pc_key[free_slot] = pc;
+        t_pc_cnt[free_slot] = 1;
+        t_pc_addr[free_slot] = (uint64_t)addr;
+        return;
+    }
+    t_pc_evicted++;
+    for (int i = 0; i < HC_PCSLOTS; i++) t_pc_cnt[i]--;
+}
+
+/* Set MACRUNNER_HB_NULL_SPAN_RECHECK=1 to restore the redundant re-lookup for an A/B. */
+static int null_span_recheck_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_NULL_SPAN_RECHECK");
+        cached = e && *e && *e != '0';
+    }
+    return cached;
+}
+
+static int trace_null_pc_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_TRACE_NULL_PC");
+        cached = e && *e && *e != '0';
+    }
+    return cached;
+}
+
+static void hot_cache_note_unresolved(hb_gva_t addr) {
+    uint64_t key = (uint64_t)addr >> 24;   /* 16 MB granularity */
+    int free_slot = -1;
+    if (!trace_hot_cache_stats_enabled()) return;
+    if (trace_null_pc_enabled()) null_pc_note(addr);
+    if (t_rsite < RSITE_N) t_null_by_site[t_rsite]++;
+    /* the 16 MB address buckets already answered their question (two clusters, ~32 buckets); keep the code but
+     * do not pay its 32-slot loop on every null unless asked */
+    if (!getenv("MACRUNNER_HB_TRACE_NULL_BUCKETS")) return;
+    t_hc_null_total++;
+    for (int i = 0; i < HC_NULLBUCKETS; i++) {
+        if (t_hc_null_cnt[i] && t_hc_null_key[i] == key) {
+            t_hc_null_cnt[i]++;
+            t_hc_null_ex_last[i] = (uint64_t)addr;
+            return;
+        }
+        if (!t_hc_null_cnt[i] && free_slot < 0) free_slot = i;
+    }
+    if (free_slot >= 0) {
+        t_hc_null_key[free_slot] = key;
+        t_hc_null_cnt[free_slot] = 1;
+        t_hc_null_ex[free_slot] = (uint64_t)addr;
+        t_hc_null_ex_last[free_slot] = (uint64_t)addr;
+        return;
+    }
+    t_hc_null_other++;
+    for (int i = 0; i < HC_NULLBUCKETS; i++) t_hc_null_cnt[i]--;
+}
+
+static void hot_shadow_touch(hb_region_t* region, int* out_depth) {
+    int depth = -1;
+    for (int i = 0; i < HC_SHADOW; i++) {
+        if (t_hc_shadow[i] != region) continue;
+        depth = i;
+        break;
+    }
+    if (out_depth) *out_depth = depth;
+    if (depth == 0) return;
+    int from = depth < 0 ? HC_SHADOW - 1 : depth;
+    for (int i = from; i > 0; i--) t_hc_shadow[i] = t_hc_shadow[i - 1];
+    t_hc_shadow[0] = region;
+}
+
+static int trace_hot_cache_stats_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_TRACE_HOT_CACHE");
+        cached = e && *e && *e != '0';
+    }
+    return cached;
+}
+
+/* Called from the resolve path with the region the treap returned, i.e. only after a real miss. */
+static void hot_cache_note_resolved(hb_region_t* region) {
+    int depth = -1;
+    if (!trace_hot_cache_stats_enabled() || !t_hc_miss_pending) return;
+    t_hc_miss_pending = 0;
+    t_hc_miss_resolved++;
+    hot_shadow_touch(region, &depth);
+    if (depth < 0) t_hc_shadow_absent++;
+    else t_hc_shadow_hist[depth]++;
+}
+
+static void hot_cache_note(int hit_depth, int reset, hb_region_t* hit_region) {
+    if (!trace_hot_cache_stats_enabled()) return;
+    t_hc_lookups++;
+    if (t_rsite < RSITE_N) t_lookup_by_site[t_rsite]++;
+    if (reset) t_hc_resets++;
+    if (hit_depth >= 0) {
+        t_hc_hits++;
+        if (hit_depth < HB_MEMORY_HOT_CACHE_SLOTS) t_hc_depth_hist[hit_depth]++;
+        hot_shadow_touch(hit_region, NULL);
+        t_hc_miss_pending = 0;
+    } else {
+        t_hc_miss_pending = 1;
+    }
+    if (t_hc_lookups < t_hc_next) return;
+    t_hc_next = t_hc_lookups + 8000000ull;
+
+    uint64_t misses = t_hc_lookups - t_hc_hits;
+    /* Cumulative hit rate a cache of N slots would have reached: real hits (all within 16) plus the missed
+     * regions the 64-deep shadow found shallower than N. */
+    uint64_t deeper = 0;
+    for (int i = HB_MEMORY_HOT_CACHE_SLOTS; i < HC_SHADOW; i++) deeper += t_hc_shadow_hist[i];
+    uint64_t d32 = 0;
+    for (int i = HB_MEMORY_HOT_CACHE_SLOTS; i < 32; i++) d32 += t_hc_shadow_hist[i];
+    double scan = 0.0;
+    for (int i = 0; i < HB_MEMORY_HOT_CACHE_SLOTS; i++) scan += (double)t_hc_depth_hist[i] * (i + 1);
+    fprintf(stderr, "macrunner-hb-hotcache: lookups=%llu hits=%llu hit_pct=%.2f resets=%llu "
+                    "resets_per_1k_lookups=%.2f miss=%llu miss_resolved=%llu miss_null=%llu "
+                    "miss_null_pct_of_miss=%.2f avg_hit_depth=%.2f hit_pct_if_32=%.2f hit_pct_if_64=%.2f "
+                    "shadow_absent=%llu\n",
+            (unsigned long long)t_hc_lookups, (unsigned long long)t_hc_hits,
+            t_hc_lookups ? 100.0 * (double)t_hc_hits / (double)t_hc_lookups : 0.0,
+            (unsigned long long)t_hc_resets,
+            t_hc_lookups ? 1000.0 * (double)t_hc_resets / (double)t_hc_lookups : 0.0,
+            (unsigned long long)misses, (unsigned long long)t_hc_miss_resolved,
+            (unsigned long long)(misses - t_hc_miss_resolved),
+            misses ? 100.0 * (double)(misses - t_hc_miss_resolved) / (double)misses : 0.0,
+            t_hc_hits ? scan / (double)t_hc_hits : 0.0,
+            t_hc_lookups ? 100.0 * (double)(t_hc_hits + d32) / (double)t_hc_lookups : 0.0,
+            t_hc_lookups ? 100.0 * (double)(t_hc_hits + deeper) / (double)t_hc_lookups : 0.0,
+            (unsigned long long)t_hc_shadow_absent);
+    fprintf(stderr, "macrunner-hb-negcache: walk_fail=%llu nodes_per_failed_walk=%.1f "
+                    "walk_ok=%llu nodes_per_ok_walk=%.1f gap_entries_scanned_per_hit=%.2f\n",
+            (unsigned long long)t_walk_fail,
+            t_walk_fail ? (double)t_walk_nodes_fail / (double)t_walk_fail : 0.0,
+            (unsigned long long)t_walk_ok,
+            t_walk_ok ? (double)t_walk_nodes_ok / (double)t_walk_ok : 0.0,
+            t_gap_hits ? (double)t_gap_scanned / (double)t_gap_hits : 0.0);
+    fprintf(stderr, "macrunner-hb-negcache: gap_hits=%llu gap_fills=%llu gap_flushes=%llu "
+                    "gap_hits_per_1k_lookups=%.1f\n",
+            (unsigned long long)t_gap_hits, (unsigned long long)t_gap_fills,
+            (unsigned long long)t_gap_flushes,
+            t_hc_lookups ? 1000.0 * (double)t_gap_hits / (double)t_hc_lookups : 0.0);
+    fprintf(stderr, "macrunner-hb-nullsite:");
+    for (int i = 0; i < RSITE_N; i++)
+        fprintf(stderr, " %s=%llu/%llu", rsite_names[i], (unsigned long long)t_null_by_site[i],
+                (unsigned long long)t_lookup_by_site[i]);
+    fprintf(stderr, "\n");
+    if (trace_null_pc_enabled()) {
+        fprintf(stderr, "macrunner-hb-nullpc: total=%llu evicted=%llu", (unsigned long long)t_pc_total,
+                (unsigned long long)t_pc_evicted);
+        for (int i = 0; i < HC_PCSLOTS; i++) {
+            if (t_pc_cnt[i] < t_pc_total / 100) continue;   /* >= 1 % of the null stream */
+            fprintf(stderr, " [block=0x%llx n>=%llu pct>=%.1f ex_addr=0x%llx]",
+                    (unsigned long long)t_pc_key[i], (unsigned long long)t_pc_cnt[i],
+                    t_pc_total ? 100.0 * (double)t_pc_cnt[i] / (double)t_pc_total : 0.0,
+                    (unsigned long long)t_pc_addr[i]);
+        }
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "macrunner-hb-hotcache-null: total=%llu evicted=%llu",
+            (unsigned long long)t_hc_null_total, (unsigned long long)t_hc_null_other);
+    for (int i = 0; i < HC_NULLBUCKETS; i++) {
+        if (t_hc_null_cnt[i] < t_hc_null_total / 200) continue;   /* >=0.5 % of the stream */
+        fprintf(stderr, " [0x%llx000000 n>=%llu pct>=%.1f first=0x%llx last=0x%llx]",
+                (unsigned long long)t_hc_null_key[i], (unsigned long long)t_hc_null_cnt[i],
+                t_hc_null_total ? 100.0 * (double)t_hc_null_cnt[i] / (double)t_hc_null_total : 0.0,
+                (unsigned long long)t_hc_null_ex[i], (unsigned long long)t_hc_null_ex_last[i]);
+    }
+    fprintf(stderr, "\n");
+    fprintf(stderr, "macrunner-hb-hotcache-depth:");
+    for (int i = 0; i < HB_MEMORY_HOT_CACHE_SLOTS; i++)
+        fprintf(stderr, " d%d=%d", i, t_hc_depth_hist[i]);
+    fprintf(stderr, "\n");
+    fflush(stderr);
+}
+
+/* MacRunner 2026-07-31 — the negative cache.
+ *
+ * Measured on a live HK boot: 97 % of hot-cache misses resolve to NULL — 166 M lookups per run for guest
+ * addresses NO region contains, ~25 % of all lookups, each paying the full 16-slot scan AND a failed treap
+ * walk. A bigger positive cache cannot touch them (slots=64 was worth 0.3 points), because the answer being
+ * cached is the absence of a region.
+ *
+ * A failed treap walk already computes the exact answer for free: the last node we went LEFT at is the
+ * successor (smallest base > addr) and the last we went RIGHT at is the predecessor, so [lo,hi) is a genuine
+ * region-free gap — regions are non-overlapping and the treap is keyed by base. One entry therefore covers a
+ * whole gap rather than one address, which is why 8 slots suffice for a stream spread over ~32 buckets.
+ *
+ * Soundness rests on two things: the epoch (bumped now on add as well as on remove/split/rebuild), and
+ * skipping this entirely when guest32 is active, since that path's NULL means "found but not guest32", which
+ * is a different statement. */
+#define HB_GAP_SLOTS 8
+typedef struct { hb_gva_t lo, hi; } hb_gap_ent_t;
+static __thread struct {
+    hb_memory_t* mem;
+    uint64_t epoch;
+    int count;
+    hb_gap_ent_t e[HB_GAP_SLOTS];
+} g_gap_tls;
+/* Default OFF. The first A/B (both arms sampled at guest+164 s, same build) measured the negative cache
+ * WORSE: find_region* self 4.05 % vs 1.96 %, dispatches at 300 s 532 M vs 560 M — despite it provably
+ * skipping 99.4 % of a 17.2-node walk. The suspected cause is now addressed (duplicate acquire loads on a
+ * shared line, plus adds wiping the positive cache), but the default stays where the evidence is until a
+ * fresh A/B says otherwise. */
+static int verify_neg_cache_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_VERIFY_NEG_CACHE");
+        cached = e && *e && *e != '0';
+    }
+    return cached;
+}
+
+static int neg_cache_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_NEG_CACHE");
+        cached = e && *e && *e != '0';
+    }
+    return cached;
+}
+
+static bool gap_lookup(hb_memory_t* mem, hb_gva_t addr, uint64_t epoch) {
+    if (!neg_cache_enabled() || mem->guest32_base) return false;
+    if (g_gap_tls.mem != mem || g_gap_tls.epoch != epoch) {
+        g_gap_tls.mem = mem;
+        g_gap_tls.epoch = epoch;
+        g_gap_tls.count = 0;
+        t_gap_flushes++;
+        return false;
+    }
+    for (int i = 0; i < g_gap_tls.count; i++) {
+        t_gap_scanned++;
+        if (addr < g_gap_tls.e[i].lo || addr >= g_gap_tls.e[i].hi) continue;
+        if (i) {
+            hb_gap_ent_t tmp = g_gap_tls.e[i];
+            g_gap_tls.e[i] = g_gap_tls.e[0];
+            g_gap_tls.e[0] = tmp;
+        }
+        t_gap_hits++;
+        return true;
+    }
+    return false;
+}
+
+static void gap_insert(hb_memory_t* mem, hb_gva_t lo, hb_gva_t hi, uint64_t epoch) {
+    if (!neg_cache_enabled() || mem->guest32_base || hi <= lo) return;
+    if (g_gap_tls.mem != mem || g_gap_tls.epoch != epoch) {
+        g_gap_tls.mem = mem;
+        g_gap_tls.epoch = epoch;
+        g_gap_tls.count = 0;
+    }
+    for (int i = g_gap_tls.count < HB_GAP_SLOTS ? g_gap_tls.count : HB_GAP_SLOTS - 1; i > 0; i--)
+        g_gap_tls.e[i] = g_gap_tls.e[i - 1];
+    g_gap_tls.e[0].lo = lo;
+    g_gap_tls.e[0].hi = hi;
+    if (g_gap_tls.count < HB_GAP_SLOTS) g_gap_tls.count++;
+    t_gap_fills++;
+}
+
 static hb_region_t* hot_cache_lookup(hb_memory_t* mem, hb_gva_t addr) {
+    int did_reset = 0;
     if (macrunner_hb_disable_hot_cache_enabled()) return NULL;
     uint64_t epoch = hot_cache_epoch(mem);
-    if (g_hot_cache_tls.mem != mem || g_hot_cache_tls.epoch != epoch)
+    if (g_hot_cache_tls.mem != mem || g_hot_cache_tls.epoch != epoch) {
         hot_cache_reset_tls(mem, epoch);
+        did_reset = 1;
+    }
 
     for (int i = 0; i < HB_MEMORY_HOT_CACHE_SLOTS; i++) {
         hb_region_t* c = g_hot_cache_tls.slot[i];
@@ -307,9 +656,11 @@ static hb_region_t* hot_cache_lookup(hb_memory_t* mem, hb_gva_t addr) {
                 g_hot_cache_tls.slot[i] = g_hot_cache_tls.slot[0];
                 g_hot_cache_tls.slot[0] = c;
             }
+            hot_cache_note(i, did_reset, c);
             return c;
         }
     }
+    hot_cache_note(-1, did_reset, NULL);
     return NULL;
 }
 
@@ -524,6 +875,19 @@ static void clear_hot_cache(hb_memory_t* mem) {
     if (!mem) return;
     memset(mem->hot, 0, sizeof(mem->hot));
     __atomic_add_fetch(&mem->hot_gen, 1, __ATOMIC_RELEASE);
+    /* MacRunner 2026-07-31 — invalidate the NEGATIVE cache here too, conservatively.
+     *
+     * Splitting the epochs was right in principle (an add cannot invalidate a cached region) but it assumed
+     * every add goes through insert_region_head. It does not: the VM-map sync path appends straight to
+     * mem->regions and calls rebuild_region_tree, bumping only hot_gen. With the negative cache keyed solely on
+     * add_gen, those regions materialised INSIDE cached gaps with nothing to invalidate them — 2118 verified
+     * violations on a live boot (267 distinct addresses, all adjacent 64 KB commits), zero in the
+     * single-threaded unit suite, which is why it took the real workload to expose it.
+     *
+     * Removes and splits do not strictly need to invalidate a gap, so this over-invalidates slightly; that is
+     * the correct trade against a stale gap reporting mapped memory as unmapped. Plain adds still bump only
+     * add_gen, so the positive cache keeps the hit rate the split bought it. */
+    __atomic_add_fetch(&mem->add_gen, 1, __ATOMIC_RELEASE);
 }
 
 static void rebuild_region_tree(hb_memory_t* mem) {
@@ -553,6 +917,10 @@ static void insert_region_head(hb_memory_t* mem, hb_region_t* r) {
     r->tree_right = NULL;
     r->tree_prio = region_prio(r->base);
     tree_insert(&mem->region_tree, r);
+    /* Bump ONLY the negative-cache epoch: a gap entry must not outlive the gap, but the positive cache is
+     * provably unaffected by an add, so wiping it here (as the first cut did) was pure loss — it cost every
+     * thread its 16 slots and wrote a cache line 54 threads read on every lookup. */
+    __atomic_add_fetch(&mem->add_gen, 1, __ATOMIC_RELEASE);
 }
 
 static bool range_overlaps(hb_gva_t a_base, size_t a_size, hb_gva_t b_base, size_t b_size) {
@@ -791,7 +1159,20 @@ static void trace_guest_write(const char* path, hb_gva_t addr, const void* in, s
 }
 
 static hb_region_t* find_region_normalized(hb_memory_t* mem, hb_gva_t addr);
+static hb_region_t* find_region_after_hot_miss(hb_memory_t* mem, hb_gva_t addr);
 static bool check_perm_region(hb_memory_t* mem, hb_gva_t addr, size_t size, hb_perm_t p, hb_region_t** out);
+
+/* MacRunner 2026-07-31 — every instance starts at a globally unique epoch.
+ *
+ * The per-thread caches key their validity on (mem pointer, hot_gen). calloc gives hot_gen = 0, so a destroyed
+ * hb_memory_t whose address malloc later hands back produces a NEW instance that a stale TLS table matches
+ * exactly — classic ABA. For the positive cache that means serving pointers to regions freed with the previous
+ * instance; it is why hb_test_runner:19370 fails the moment anything else is cached on the same key. Seeding
+ * from a global counter makes the pair unique for the process, so no reused address can alias.
+ *
+ * The stride keeps instances apart even after per-instance bumps: an instance would need 2^32 region mutations
+ * to reach its successor's seed. */
+static uint64_t g_memory_epoch_seq;
 
 hb_memory_t* hb_memory_create(size_t max_size) {
     hb_memory_t* mem = calloc(1, sizeof(hb_memory_t));
@@ -799,6 +1180,8 @@ hb_memory_t* hb_memory_create(size_t max_size) {
     hb_memory_init_environment();
     __atomic_add_fetch(&mm_maps, 1, __ATOMIC_RELAXED);
     mem->max_size = max_size;
+    mem->hot_gen = __atomic_add_fetch(&g_memory_epoch_seq, 1, __ATOMIC_RELAXED) << 32;
+    mem->add_gen = mem->hot_gen;   /* same ABA protection for the negative cache */
     return mem;
 }
 
@@ -1439,14 +1822,27 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
     int dv_hit = macrunner_hb_datadiverge_hit((uint64_t)addr, size);
     if (!mem || !out) return HB_ERR_INVALID_ARG;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return HB_ERR_MEMORY_FAULT;
+    t_rsite = RSITE_READ;
     region = hot_cache_lookup(mem, addr);
     is_hit = region != NULL;
     if (!region) {
-        region = find_region_normalized(mem, addr);
+        region = find_region_after_hot_miss(mem, addr);
     }
     if (dv_hit) fprintf(stderr, "macrunner-hb-dv-read-mem: gva=0x%llx size=%zu region=%p base=0x%llx host_base=%p rperm=%d\n", (unsigned long long)addr, size, (void*)region, region?(unsigned long long)region->base:0, region?region->host_base:NULL, region?(int)region->perm:-1);
+/* MacRunner 2026-07-31 — do not re-derive a NULL we already have.
+ *
+ * Call-site attribution on a live boot: hb_memory_find_region answers NULL 94.7 % of the time and accounts for
+ * 47.8 % of ALL null lookups, and the arithmetic closes exactly — its 63.0 M nulls equal read's 49.9 M plus
+ * write's 12.3 M. The reason is right here: a read/write that misses calls can_read_span/can_write_span, which
+ * calls check_perm_span, which looks up THE SAME address again. check_perm_span bails on the first null, so
+ * when region is already NULL that second lookup is provably NULL as well (same addr — normalize was applied
+ * before both — and same epoch), and can_read_span can only return false.
+ *
+ * So skip it: ~62 M full lookups per run, each a 16-slot scan plus a 17.2-node treap walk, that exist only to
+ * recompute a value the caller is holding. Unlike caching the miss, this removes the work rather than making
+ * it cheaper. Gated so it can be A/B'd. */
     if (!region || addr + size > region->base + region->size || !(region->perm & HB_PERM_READ)) {
-        if (hb_memory_can_read_span(mem, addr, size)) {
+        if ((region || null_span_recheck_enabled()) && hb_memory_can_read_span(mem, addr, size)) {
             uint8_t* dst = out;
             hb_gva_t cur = addr;
             size_t remaining = size;
@@ -1571,10 +1967,11 @@ hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, siz
         }
     }
 grow_retry:
+    t_rsite = RSITE_WRITE;
     region = hot_cache_lookup(mem, addr);
     is_hit = region != NULL;
     if (!region) {
-        region = find_region_normalized(mem, addr);
+        region = find_region_after_hot_miss(mem, addr);
     }
     if (macrunner_hb_datadiverge_hit((uint64_t)addr, size)) {
         fprintf(stderr, "macrunner-hb-dv-write: gva=0x%llx size=%zu region=%p base=0x%llx rsize=0x%llx host_base=%p rperm=%d val=0x%llx\n",
@@ -1616,7 +2013,7 @@ grow_retry:
             fflush(stderr);
         }
 #endif
-        if (hb_memory_can_write_span(mem, addr, size)) {
+        if ((region || null_span_recheck_enabled()) && hb_memory_can_write_span(mem, addr, size)) {
             const uint8_t* src = in;
             hb_gva_t cur = addr;
             size_t remaining = size;
@@ -1811,6 +2208,7 @@ void* hb_memory_host_ptr(hb_memory_t* mem, hb_gva_t addr, size_t size, hb_perm_t
 
     if (!mem || !size) return NULL;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return NULL;
+    t_rsite = RSITE_HOST_PTR;
     region = find_region_normalized(mem, addr);
     if (dv_hit) {
         fprintf(stderr, "macrunner-hb-dv-read-host_ptr: gva=0x%llx size=%zu want_perm=%d region=%p base=0x%llx rsize=0x%llx host_base=%p rperm=%d\n",
@@ -1868,10 +2266,28 @@ hb_result_t hb_memory_fetch(hb_memory_t* mem, hb_gva_t addr, uint8_t* out) {
 hb_region_t* hb_memory_find_region(hb_memory_t* mem, hb_gva_t addr) {
     if (!mem) return NULL;
     if (!normalize_guest32_mirror_addr(mem, &addr, 1)) return NULL;
+    /* Only claim the generic tag when no caller identified itself, otherwise the external tags below would be
+     * overwritten by the very wrapper they call. Callers reset to 0 after use. */
+    if (t_rsite < RSITE_JIT_HOST_SPAN) t_rsite = RSITE_FIND_REGION;
     return find_region_normalized(mem, addr);
 }
 
-static hb_region_t* find_region_normalized(hb_memory_t* mem, hb_gva_t addr) {
+/* MacRunner 2026-07-31 — hb_memory_read/hb_memory_write already ran hot_cache_lookup and only call this on a
+ * miss, yet the unconditional lookup below then ran the SAME 16-slot linear scan a second time. That second
+ * scan can only ever miss: same addr, and either the epoch is unchanged (same slots -> same verdict) or it
+ * changed (hot_cache_reset_tls NULLs every slot -> empty scan). So it is pure waste, ~32 % of every lookup in
+ * the run paying a 16-deep pointer chase twice. use_hot=false skips it on those known-miss paths; the gate
+ * exists only so the redundancy can be re-armed for an A/B. */
+static int hot_miss_skip_disabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_NO_HOT_MISS_SKIP");
+        cached = e && *e && *e != '0';
+    }
+    return cached;
+}
+
+static hb_region_t* find_region_impl(hb_memory_t* mem, hb_gva_t addr, bool use_hot) {
     if (!mem) return NULL;
     if (mem->guest32_base && addr < HB_GUEST32_SIZE) {
         hb_region_t* n = mem->region_tree;
@@ -1886,8 +2302,35 @@ static hb_region_t* find_region_normalized(hb_memory_t* mem, hb_gva_t addr) {
         }
     }
 
-    hb_region_t* hot = hot_cache_lookup(mem, addr);
-    if (hot) return hot;
+    if (use_hot) {
+        hb_region_t* hot = hot_cache_lookup(mem, addr);
+        if (hot) return hot;
+    }
+
+    /* ONE acquire load of the negative epoch for the whole resolve, not one per helper. */
+    uint64_t add_epoch = __atomic_load_n(&mem->add_gen, __ATOMIC_ACQUIRE);
+    if (gap_lookup(mem, addr, add_epoch)) {
+        /* Falsify the bracket instead of arguing for it: with MACRUNNER_HB_VERIFY_NEG_CACHE the gap answer is
+         * checked against the full walk it replaced, and any disagreement is printed with the entry that lied.
+         * A gap hit claims "no region contains addr"; if the treap finds one, the bracket is wrong. */
+        if (verify_neg_cache_enabled()) {
+            for (hb_region_t* v = mem->region_tree; v; ) {
+                if (addr < v->base) v = v->tree_left;
+                else if (addr >= v->base + v->size) v = v->tree_right;
+                else {
+                    fprintf(stderr, "macrunner-hb-negcache-VIOLATION: addr=0x%llx claimed unmapped but region "
+                                    "[0x%llx,0x%llx) contains it; gap[0]=[0x%llx,0x%llx) epoch=%llu\n",
+                            (unsigned long long)addr, (unsigned long long)v->base,
+                            (unsigned long long)(v->base + v->size),
+                            (unsigned long long)g_gap_tls.e[0].lo, (unsigned long long)g_gap_tls.e[0].hi,
+                            (unsigned long long)add_epoch);
+                    fflush(stderr);
+                    return v;
+                }
+            }
+        }
+        return NULL;
+    }
 
     /* MacRunner (2026-06-17, HK first-frame perf): O(log n) treap walk instead of an O(n)
      * linear scan of mem->regions.  mem->region_tree is the SAME treap the guest32 path
@@ -1898,22 +2341,42 @@ static hb_region_t* find_region_normalized(hb_memory_t* mem, hb_gva_t addr) {
      * module_from_pc mach-scan was fixed, find_region_normalized became the #1 main-thread
      * hotspot (~33% during Mono ReloadAssembly) — the guest's region list grows large under
      * Mono so the per-memory-access linear scan dominated. */
+    hb_gva_t gap_lo = 0, gap_hi = ~(hb_gva_t)0;
+    uint64_t nodes = 0;
     for (hb_region_t* n = mem->region_tree; n; ) {
+        nodes++;
         if (addr < n->base) {
+            if (n->base < gap_hi) gap_hi = n->base;      /* last left turn = successor */
             n = n->tree_left;
         } else if (addr >= n->base + n->size) {
+            if (n->base + n->size > gap_lo) gap_lo = n->base + n->size;  /* last right turn = predecessor */
             n = n->tree_right;
         } else {
+            if (trace_hot_cache_stats_enabled()) { t_walk_nodes_ok += nodes; t_walk_ok++; }
             hot_cache_insert(mem, n);
+            hot_cache_note_resolved(n);
             return n;
         }
     }
+    if (trace_hot_cache_stats_enabled()) { t_walk_nodes_fail += nodes; t_walk_fail++; }
+    gap_insert(mem, gap_lo, gap_hi, add_epoch);
+    hot_cache_note_unresolved(addr);
     return NULL;
+}
+
+static hb_region_t* find_region_normalized(hb_memory_t* mem, hb_gva_t addr) {
+    return find_region_impl(mem, addr, true);
+}
+
+/* For callers that just missed in the hot cache themselves. */
+static hb_region_t* find_region_after_hot_miss(hb_memory_t* mem, hb_gva_t addr) {
+    return find_region_impl(mem, addr, hot_miss_skip_disabled());
 }
 
 static bool check_perm_region(hb_memory_t* mem, hb_gva_t addr, size_t size, hb_perm_t p, hb_region_t** out) {
     hb_region_t* r;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return false;
+    t_rsite = RSITE_CHECK_PERM;
     r = find_region_normalized(mem, addr);
     if (out) *out = r;
     if (!r) return false;

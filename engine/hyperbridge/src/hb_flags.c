@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <stdlib.h>
 #include "hb_flags.h"
 #include "hb_memory.h"
 #include <stdint.h>
@@ -522,8 +524,49 @@ static uint64_t resolve_operand_addr(hb_context_t* ctx, const hb_ir_operand_t* o
     return ea;
 }
 
+/* MacRunner 2026-07-30 — size the lazy-flags re-read before changing anything.
+ *
+ * Clean profile of HK's critical thread puts hb_flags_read_operand_value at 7.7 % self, the second largest
+ * single item, with hb_context_read_reg_value + hb_context_write_reg_value at 1.9 % each and
+ * hb_jit_helper_exec_extend_operand_lazy at 1.7 % — about 13 % as a group. It is all reached from
+ * hb_jit_helper_eval_cond_lazy, the C helper the emitter calls for EVERY Jcc, and Jcc is 71.1 % of all
+ * dispatched terminals on this workload.
+ *
+ * The design defers flag computation and, when a Jcc finally needs a flag, re-reads the PENDING operation's
+ * operands and recomputes. So the question that decides whether this is worth restructuring is what those
+ * operands are: a register re-read is a few loads, but HB_OP_MEM goes through mem_read_size and the whole
+ * software MMU (hb_memory_read 5.4 %, find_region_normalized 3.0 %). Counting by operand type says how much
+ * of the MMU cost is actually the flag path in disguise. Gated, per-thread, reported every 4 M calls. */
+static __thread uint64_t t_flagop_reg, t_flagop_imm, t_flagop_mem, t_flagop_next;
+
+static int trace_flag_operands_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_TRACE_FLAG_OPERANDS");
+        cached = e && *e && *e != '0';
+    }
+    return cached;
+}
+
+static void flagop_note(int type) {
+    if (!trace_flag_operands_enabled()) return;
+    if (type == 0) t_flagop_reg++; else if (type == 1) t_flagop_imm++; else t_flagop_mem++;
+    {
+        uint64_t n = t_flagop_reg + t_flagop_imm + t_flagop_mem;
+        if (n >= t_flagop_next) {
+            t_flagop_next = n + 4000000ull;
+            fprintf(stderr, "macrunner-hb-flagops: total=%llu reg=%llu imm=%llu mem=%llu mem_pct=%.2f\n",
+                    (unsigned long long)n, (unsigned long long)t_flagop_reg,
+                    (unsigned long long)t_flagop_imm, (unsigned long long)t_flagop_mem,
+                    n ? 100.0 * (double)t_flagop_mem / (double)n : 0.0);
+            fflush(stderr);
+        }
+    }
+}
+
 hb_result_t hb_flags_read_operand_value(hb_context_t* ctx, const hb_ir_operand_t* op, uint64_t* out) {
     if (!ctx || !op || !out) return HB_ERR_INVALID_ARG;
+    flagop_note(op->type == HB_OP_REG ? 0 : (op->type == HB_OP_IMM ? 1 : 2));
     if (op->type == HB_OP_REG) {
         *out = read_reg_value_sized(ctx, op->reg, op->size, op->reg_offset);
         return HB_OK;

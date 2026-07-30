@@ -10,6 +10,20 @@
 #define HB_GUEST32_SIZE 0x100000000ULL
 #define HB_MEMORY_HOT_CACHE_SLOTS 16
 
+/* MacRunner 2026-07-31 — diagnostic hand-off: the guest block address currently dispatching, written by the
+ * runtime ONLY when MACRUNNER_HB_TRACE_NULL_PC is set. hb_memory.c has no ctx, and a quarter of all region
+ * lookups resolve to NULL, so the open question is which guest code issues them. Gated because on Darwin a
+ * TLS store is not free — _tlv_get_addr is already 7-9 % of the critical thread. */
+extern __thread uint64_t hb_trace_current_block_addr;
+
+/* Call-site tag for region lookups, so the null traffic can be attributed across translation units.
+ * hb_memory_find_region alone answers NULL 90.8 % of the time and accounts for half of all nulls; these
+ * constants say WHICH of its callers. Diagnostic only. */
+#define HB_RSITE_JIT_HOST_SPAN  6
+#define HB_RSITE_JIT_CODEGEN    7
+#define HB_RSITE_INTERP         8
+extern __thread int hb_trace_rsite;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -70,6 +84,12 @@ typedef struct hb_memory {
      * split/remove/rebuild. hot[] is kept zeroed for diagnostics/back-compat. */
     hb_region_t* hot[HB_MEMORY_HOT_CACHE_SLOTS];
     uint64_t     hot_gen;
+    /* MacRunner 2026-07-31 — separate epoch for the NEGATIVE (gap) cache. Adds and removes invalidate
+     * different things: an add is the only event that can turn "no region here" into a lie, and it can never
+     * invalidate a cached region (every add is guarded by any_overlap). Removing/splitting only ever makes
+     * more of the address space region-free, so a cached gap stays true. Keeping them apart means an add no
+     * longer wipes every thread's positive cache, and the two counters do not share write traffic. */
+    uint64_t     add_gen;
 } hb_memory_t;
 
 hb_memory_t* hb_memory_create(size_t max_size);

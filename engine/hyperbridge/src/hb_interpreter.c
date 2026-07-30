@@ -1515,7 +1515,9 @@ static void trace_stack_write_fault(hb_context_t* ctx, uint64_t addr, uint64_t v
 
     hb_memory_t* mem = ctx ? ctx->memory : NULL;
     uint64_t rsp = ctx ? ctx->regs.x64.rsp : 0;
+    hb_trace_rsite = HB_RSITE_INTERP;
     const hb_region_t* hit = mem ? hb_memory_find_region(mem, addr) : NULL;
+    hb_trace_rsite = 0;
     const hb_region_t* below = nearest_region(mem, addr, 1);
     const hb_region_t* above = nearest_region(mem, addr, 0);
 

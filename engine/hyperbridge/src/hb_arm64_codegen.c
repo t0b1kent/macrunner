@@ -769,6 +769,22 @@ static void* hb_jit_live_host_ptr(hb_memory_t* mem, uint64_t addr, size_t bytes,
 static bool is_direct_user_mem_operand(const hb_ir_operand_t* op) {
     if (!op || op->type != HB_OP_MEM) return false;
     if (op->mem.segment != 0 || op->mem.addr32) return false;
+    /* MacRunner 2026-07-30 — RIP-relative operands must NOT take the direct path.
+     *
+     * This guard admits any base below HB_REG_XMM0, and HB_REG_RIP is 16 while HB_REG_XMM0 is 17, so a
+     * RIP-relative operand passed and reached emit_direct_mem_addr — which has no RIP case and therefore
+     * emitted `ldr x21, [x19, #reg_off(RIP)]`, i.e. it read ctx->regs.x64.rip as though RIP were an ordinary
+     * GPR. That value is only synced at block boundaries (sync_arch_pc_after_jit_block), so mid-block it is
+     * stale by however far into the block execution has got, while x86 RIP-relative addressing is defined
+     * against the address of the NEXT instruction. The sibling emit_direct_mem_addr_for_instr computes
+     * exactly that (`instr->guest_addr + instr->guest_len`) and is used by only 2 of the 21 call sites.
+     *
+     * Consequence measured: arming MACRUNNER_HB_JIT_NATIVE_MEM_IR=1 killed HK at +52.3 s with c000001d, the
+     * guest executing garbage after writes landed at wrong addresses — RIP-relative access is how x86-64
+     * reaches globals, so this fires constantly. Excluding it here sends those operands back to the helper,
+     * which is correct, and leaves every other shape free to use the native path. Threading `instr` through
+     * so the _for_instr variant handles RIP is the follow-up, not a prerequisite. */
+    if (op->mem.base == HB_REG_RIP || op->mem.index == HB_REG_RIP) return false;
     if (op->size != HB_SIZE_8 && op->size != HB_SIZE_16 &&
         op->size != HB_SIZE_32 && op->size != HB_SIZE_64) return false;
     if (op->mem.scale != 1 && op->mem.scale != 2 &&
@@ -822,10 +838,89 @@ static bool is_direct_user_xmm_mem_operand(const hb_ir_operand_t* op) {
     return true;
 }
 
+/* MacRunner 2026-07-31 — SHAPE BISECT for the native LOAD/STORE path.
+ *
+ * Arming MACRUNNER_HB_JIT_NATIVE_MEM_IR=1 kills HK at +52 s with c000001d (the guest executing garbage after
+ * writes land wrong), the unit suite shows zero arm-specific failures, and four separate statically-proven
+ * defects in this area have each turned out not to be the blocker. Reading more code has a poor record here;
+ * bisecting the population with the guest as oracle has worked every time it was tried.
+ *
+ * MACRUNNER_HB_JIT_NATIVE_MEM_SHAPE narrows which operand shapes may take the native path:
+ *   0 (default) — no restriction, current behaviour
+ *   1 — 64-bit only, no index register, displacement in [0,4096)   (narrowest useful shape)
+ *   2 — as 1 plus an index register
+ *   3 — as 2 plus arbitrary displacement
+ *   4 — as 3 plus sub-register sizes (equivalent to 0)
+ * The first level that boots gives a working subset, and the level that breaks names the shape by difference. */
+static int jit_native_mem_shape_level(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_JIT_NATIVE_MEM_SHAPE");
+        cached = (e && *e) ? atoi(e) : 0;
+    }
+    return cached;
+}
+
+/* MacRunner 2026-07-31 — split the native mem path by SIDE, which is a sharper cut than by size.
+ *
+ * The size bisect said "sub-64-bit breaks it", but reading the LOAD case afterwards showed why that is
+ * ambiguous: the native LOAD path is additionally gated by jit_native_mem_ir_qword_loads_enabled() (also
+ * default 0), so in the SHAPE=1..3 arms 64-bit LOADs still went to the helper and only STOREs used the native
+ * path. Those arms therefore tested native stores, not native loads, and "unrestricted crashes" could be any
+ * native LOAD rather than narrowness as such.
+ *
+ * MACRUNNER_HB_JIT_NATIVE_MEM_SIDE: 0 both (default), 1 stores only, 2 loads only. With SHAPE unrestricted,
+ * store-only vs load-only says which side carries the defect in one run each. */
+static int jit_native_mem_side(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_JIT_NATIVE_MEM_SIDE");
+        cached = (e && *e) ? atoi(e) : 0;
+    }
+    return cached;
+}
+static bool jit_native_mem_side_store(void) { int v = jit_native_mem_side(); return v == 0 || v == 1; }
+static bool jit_native_mem_side_load(void)  { int v = jit_native_mem_side(); return v == 0 || v == 2; }
+
+static bool jit_native_mem_shape_allows(const hb_ir_operand_t* op) {
+    int lvl = jit_native_mem_shape_level();
+    /* Width-only levels, addressing unrestricted, for isolating which narrow width breaks:
+     *   5 — 64 and 32 bit only (excludes 16 and 8)
+     *   6 — everything except 8-bit
+     * Byte stores are the structural suspect: direct_mem_alignment_mask(HB_SIZE_8) is 0, so they are the only
+     * width with no alignment check and no helper fallback emitted, taking the inline STLRB unconditionally. */
+    if (lvl == 5) return op->size == HB_SIZE_64 || op->size == HB_SIZE_32;
+    if (lvl == 6) return op->size != HB_SIZE_8;
+    if (lvl <= 0 || lvl >= 4) return true;
+    if (lvl < 3 && op->mem.index != HB_REG_COUNT && op->mem.index < HB_REG_XMM0) {
+        if (lvl < 2) return false;              /* level 1: no index at all */
+    }
+    if (lvl < 3 && !(op->mem.disp >= 0 && op->mem.disp < 4096)) return false;
+    if (lvl < 4 && op->size != HB_SIZE_64) return false;
+    return true;
+}
+
 static bool direct_user_mem_allowed(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
     if (mem_operand_is_kuser_absolute(op)) return false;
+    /* MacRunner 2026-07-31 — BYTE operands never take the direct path. This has to live in the PREDICATE,
+     * not in the HB_IR_STORE case: guarding only that case still crashed (exit=29, c000001d, 324 M dispatches)
+     * even though it cut STORE helper traffic 139.0 -> 39.2 per 1000 dispatches, because this predicate has 32
+     * call sites and the read-modify-write ops emit inline byte stores of their own. Excluding it here is the
+     * configuration that measurably boots (the equivalent shape arm reached Begin MonoManager with 364 M
+     * dispatches and zero illegal instructions).
+     *
+     * Root cause, localised by five bisection arms rather than by reading: byte stores are the only width with
+     * direct_mem_alignment_mask() == 0, so no misalignment fallback is ever emitted for them, and every other
+     * width routes its unaligned cases into hb_jit_helper_store_sized -> hb_memory_host_ptr(), which performs
+     * the guest->host translation, the HB_PERM_WRITE check and the software-path fallback. A byte store reached
+     * none of that: raw STLRB against x21, which on x64 is the guest address itself
+     * (emit_x86_ea_to_host is a no-op there), with no permission check.
+     *
+     * Conservative on purpose: this also excludes byte LOADS, which the side bisect exonerated
+     * (stores-only reproduced the crash on its own). Re-admitting byte loads is a measurable follow-up. */
+    if (op->size == HB_SIZE_8) return false;
     return direct_mem_codegen_arch_enabled(buf) && jit_direct_scalar_mem_enabled() &&
-           is_direct_user_mem_operand(op);
+           is_direct_user_mem_operand(op) && jit_native_mem_shape_allows(op);
 }
 
 static bool direct_user_xmm_mem_allowed(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
@@ -4523,7 +4618,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             }
             if (!is_gpr_reg_operand(&instr->dst))
                 return emit_interp_ir_helper(buf, instr);
-            if (jit_native_mem_ir_enabled(buf) &&
+            if (jit_native_mem_ir_enabled(buf) && jit_native_mem_side_load() &&
                 direct_user_mem_allowed(buf, &instr->src1) &&
                 (instr->src1.size != HB_SIZE_64 ||
                  jit_native_mem_ir_qword_loads_enabled()) &&
@@ -4560,7 +4655,23 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
             }
             if (instr->src2.type == HB_OP_REG && !is_gpr_reg_operand(&instr->src2))
                 return emit_interp_ir_helper(buf, instr);
-            if (jit_native_mem_ir_enabled(buf) &&
+            /* MacRunner 2026-07-31 — BYTE stores must not take the inline path. Localised by bisection, not
+             * by reading: with MACRUNNER_HB_JIT_NATIVE_MEM_IR=1 the guest dies at +52 s with c000001d, and
+             * five arms narrowed it to exactly this case — 64-bit-only stores boot (564 M dispatches),
+             * everything-except-8-bit boots (364 M), all widths crash; and keeping the inline ADDRESS while
+             * routing the store through hb_jit_helper_store_sized (MACRUNNER_HB_FORCE_LAZY_STORE=1) boots with
+             * 552 M dispatches, which exonerates the address arithmetic and pins it on the inline store.
+             *
+             * Why this width alone: direct_mem_alignment_mask(HB_SIZE_8) is 0, so byte stores are the ONLY
+             * width for which no misalignment fallback is emitted — every other width routes its unaligned
+             * cases to hb_jit_helper_store_sized, which calls hb_memory_host_ptr() and therefore performs the
+             * guest->host translation, the HB_PERM_WRITE check and the software-path fallback. A byte store had
+             * no path to any of that: it always executed a raw STLRB against x21, which on x64 is the guest
+             * address (emit_x86_ea_to_host is a no-op there, identity mapping) with no permission check at all.
+             *
+             * Excluding it keeps every other width on the native path. A runtime region check would let byte
+             * stores join them, but that is a design change and this is the measured-good subset. */
+            if (jit_native_mem_ir_enabled(buf) && jit_native_mem_side_store() &&
                 direct_user_mem_allowed(buf, &instr->src1) &&
                 (instr->src2.type == HB_OP_REG || instr->src2.type == HB_OP_IMM)) {
                 if (instr->src2.type == HB_OP_REG) {
@@ -5332,7 +5443,56 @@ void hb_jit_helper_load_to_reg_sized(hb_context_t* ctx, uint64_t addr,
     ctx->last_result = hb_flags_write_operand_value(ctx, &dst, val);
 }
 
+
+/* MacRunner 2026-07-30 — WHICH IR ops still go through a C helper, ranked, from one run.
+ *
+ * Measured: hb_flags_read_operand_value is called 560 M times on HK's critical thread with 58.8 % of the
+ * operands in guest MEMORY, and every caller of it is one of the hb_jit_helper_exec_* entry points below —
+ * i.e. instructions the emitter could not translate natively, executed in C instead, each paying the software
+ * MMU for its operands. That is 7.7 % (flags operand read) + 10.5 % (MMU) + 3.8 % (reg read/write) of the
+ * thread.
+ *
+ * The op set is finite and externally specified (244 entries in hb_ir.h) and the interpreter implements all of
+ * them, which is exactly the condition the project's bulk-over-reactive rule names: cover the whole set once
+ * against the reference rather than adding one op per slow run. This histogram is the coverage matrix's input —
+ * rank the ops by how often they actually reach a helper, emit the top ones natively, re-run and compare.
+ * Per-thread, non-atomic, gated; reports the top 12 every 8 M helper calls. */
+static __thread uint32_t t_helper_op[256];
+static __thread uint64_t t_helper_calls, t_helper_next;
+
+static int trace_helper_ops_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_TRACE_HELPER_OPS");
+        cached = e && *e && *e != '0';
+    }
+    return cached;
+}
+
+static void hb_jit_helper_op_note(const hb_ir_instr_t* instr) {
+    if (!trace_helper_ops_enabled() || !instr) return;
+    t_helper_op[(unsigned)instr->op & 0xffu]++;
+    if (++t_helper_calls < t_helper_next) return;
+    t_helper_next = t_helper_calls + 8000000ull;
+    {
+        int i, k, best;
+        uint32_t used[256];
+        for (i = 0; i < 256; i++) used[i] = t_helper_op[i];
+        fprintf(stderr, "macrunner-hb-helperops: calls=%llu top=", (unsigned long long)t_helper_calls);
+        for (k = 0; k < 12; k++) {
+            best = -1;
+            for (i = 0; i < 256; i++) if (used[i] && (best < 0 || used[i] > used[best])) best = i;
+            if (best < 0) break;
+            fprintf(stderr, "%sop%d:%u", k ? "," : "", best, used[best]);
+            used[best] = 0;
+        }
+        fprintf(stderr, "\n");
+        fflush(stderr);
+    }
+}
+
 void hb_jit_helper_exec_load_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t val = 0;
     hb_result_t r;
     if (!ctx || !instr) return;
@@ -5343,6 +5503,7 @@ void hb_jit_helper_exec_load_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t
 }
 
 void hb_jit_helper_exec_store_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t val = 0;
     hb_result_t r;
     if (!ctx || !instr) return;
@@ -5569,6 +5730,7 @@ static hb_result_t hb_jit_pop_flags_stack(hb_context_t* ctx, hb_size_t size, uin
 /* not static: the persistent translation cache needs this address to be
  * resolvable across translation units (helper id table in hb_runtime.c). */
 void hb_jit_helper_exec_pushf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     hb_size_t size;
     uint64_t value = 0;
     hb_result_t r;
@@ -5585,6 +5747,7 @@ void hb_jit_helper_exec_pushf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) 
 /* not static: the persistent translation cache needs this address to be
  * resolvable across translation units (helper id table in hb_runtime.c). */
 void hb_jit_helper_exec_popf_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     hb_size_t size;
     uint64_t value = 0;
     hb_result_t r;
@@ -5634,6 +5797,7 @@ static void hb_diag_nullcall(hb_context_t* ctx, const hb_ir_instr_t* instr, cons
 }
 
 void hb_jit_helper_exec_call_operand(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t target = instr ? instr->target : 0;
     uint64_t ret_addr;
     hb_result_t r;
@@ -5810,6 +5974,7 @@ static void trace_x86_branch_operand(hb_context_t* ctx, const hb_ir_instr_t* ins
 }
 
 void hb_jit_helper_exec_xfg_dispatch_call(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t target = instr ? instr->target : 0;
     hb_result_t r;
     if (!ctx || !instr) return;
@@ -5840,6 +6005,7 @@ void hb_jit_helper_exec_xfg_dispatch_call(hb_context_t* ctx, const hb_ir_instr_t
 }
 
 void hb_jit_helper_exec_jmp_operand(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t target = instr ? instr->target : 0;
     hb_result_t r;
     if (!ctx || !instr) return;
@@ -5893,6 +6059,7 @@ void hb_jit_helper_exec_cmp_test_lazy(hb_context_t* ctx, uint64_t op,
 }
 
 void hb_jit_helper_exec_cmp_test_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t lhs = 0, rhs = 0;
     uint64_t result = 0;
     hb_result_t r;
@@ -6016,7 +6183,9 @@ static bool hb_jit_live_writable_heap_span(hb_memory_t* mem, uint64_t addr, size
 
     if (!mem || !bytes || addr + bytes < addr) return false;
     while (remaining) {
+        hb_trace_rsite = HB_RSITE_JIT_CODEGEN;
         hb_region_t* r = hb_memory_find_region(mem, cur);
+        hb_trace_rsite = 0;
         hb_gva_t end;
         size_t chunk;
 
@@ -6583,6 +6752,7 @@ static hb_result_t hb_jit_atomic_cmpxchg8b_split_locked(hb_context_t* ctx,
 }
 
 void hb_jit_helper_exec_atomic_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     hb_result_t r = HB_ERR_UNSUPPORTED_FEATURE;
     uint64_t trace_count = 0;
 
@@ -6650,6 +6820,7 @@ void hb_jit_helper_exec_atomic_ir(hb_context_t* ctx, const hb_ir_instr_t* instr)
 }
 
 void hb_jit_helper_exec_mul_div_operand(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     hb_result_t r = HB_OK;
     uint64_t lhs = 0, rhs = 0;
     hb_size_t size;
@@ -6820,6 +6991,7 @@ void hb_jit_helper_exec_mul_div_operand(hb_context_t* ctx, const hb_ir_instr_t* 
 }
 
 void hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t count = 0;
     uint64_t next = 0;
     bool taken = false;
@@ -6855,6 +7027,7 @@ void hb_jit_helper_exec_loop_branch(hb_context_t* ctx, const hb_ir_instr_t* inst
 }
 
 void hb_jit_helper_exec_interp_ir(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     if (!ctx || !instr) {
         if (ctx) ctx->last_result = HB_ERR_INVALID_ARG;
         return;
@@ -9059,7 +9232,9 @@ static const uint8_t* hb_jit_helper_host_read_span(hb_context_t* ctx, uint64_t a
     if (!ctx || !ctx->memory) return NULL;
     if (min_size && addr + min_size < addr) return NULL;
     if (macrunner_hb_codegendv_hit(addr)) fprintf(stderr, "macrunner-hb-dv-host_read_span: addr=0x%llx min=%zu\n", (unsigned long long)addr, min_size);
+    hb_trace_rsite = HB_RSITE_JIT_HOST_SPAN;
     region = hb_memory_find_region(ctx->memory, addr);
+    hb_trace_rsite = 0;
     if (!region || !(region->perm & HB_PERM_READ)) return NULL;
     region_end = region->base + region->size;
     if (region_end < region->base || addr < region->base || addr >= region_end) return NULL;
@@ -9931,6 +10106,7 @@ void hb_jit_helper_exec_cmovcc_lazy(hb_context_t* ctx, uint64_t cc, uint64_t dst
 }
 
 void hb_jit_helper_exec_mov_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t src = 0;
     if (!ctx || !instr) return;
     if (hb_flags_read_operand_value(ctx, &instr->src1, &src) != HB_OK) return;
@@ -9940,6 +10116,7 @@ void hb_jit_helper_exec_mov_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t*
 }
 
 void hb_jit_helper_exec_binop_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     if (!ctx || !instr) return;
     if (hb_jit_operand_is_guest_mem(&instr->dst) ||
         hb_jit_operand_is_guest_mem(&instr->src1) ||
@@ -9953,6 +10130,7 @@ void hb_jit_helper_exec_binop_operand_lazy(hb_context_t* ctx, const hb_ir_instr_
 }
 
 void hb_jit_helper_exec_double_shift_operand(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     if (!ctx || !instr) return;
     if (hb_jit_operand_is_guest_mem(&instr->dst) ||
         hb_jit_operand_is_guest_mem(&instr->src1) ||
@@ -9966,6 +10144,7 @@ void hb_jit_helper_exec_double_shift_operand(hb_context_t* ctx, const hb_ir_inst
 }
 
 void hb_jit_helper_exec_setcc_operand_lazy(hb_context_t* ctx, uint64_t cc, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     bool value = false;
     if (!ctx || !instr) return;
     if (hb_flags_eval_cond(ctx, (hb_cc_t)cc, &value) != HB_OK) return;
@@ -9974,6 +10153,7 @@ void hb_jit_helper_exec_setcc_operand_lazy(hb_context_t* ctx, uint64_t cc, const
 }
 
 void hb_jit_helper_exec_cmovcc_operand_lazy(hb_context_t* ctx, uint64_t cc, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     bool value = false;
     uint64_t src = 0;
     if (!ctx || !instr) return;
@@ -9985,6 +10165,7 @@ void hb_jit_helper_exec_cmovcc_operand_lazy(hb_context_t* ctx, uint64_t cc, cons
 }
 
 void hb_jit_helper_exec_not_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t src = 0;
     if (!ctx || !instr) return;
     if (hb_flags_read_operand_value(ctx, &instr->src1, &src) != HB_OK) return;
@@ -9994,6 +10175,7 @@ void hb_jit_helper_exec_not_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t*
 }
 
 void hb_jit_helper_exec_neg_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t src = 0;
     if (!ctx || !instr) return;
     hb_size_t size = instr->dst.size ? instr->dst.size : instr->src1.size;
@@ -10012,6 +10194,7 @@ void hb_jit_helper_exec_neg_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t*
 }
 
 void hb_jit_helper_exec_bit_scan(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     uint64_t val = 0;
     uint64_t result = 0;
     uint64_t width;
@@ -10068,6 +10251,7 @@ void hb_jit_helper_exec_bit_scan(hb_context_t* ctx, const hb_ir_instr_t* instr) 
 }
 
 void hb_jit_helper_exec_extend_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    hb_jit_helper_op_note(instr);
     if (!ctx || !instr || instr->dst.type != HB_OP_REG) return;
 
     uint64_t value = 0;

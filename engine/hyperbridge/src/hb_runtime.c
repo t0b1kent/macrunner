@@ -190,14 +190,14 @@ enum {
     CHAIN_DECL_GATE, CHAIN_DECL_INVALID, CHAIN_DECL_NOMETA, CHAIN_DECL_ALREADY,
     CHAIN_DECL_TERMINAL, CHAIN_DECL_BACKEDGE, CHAIN_DECL_SLOT_CUR, CHAIN_DECL_SLOT_NEXT,
     CHAIN_DECL_TRAMP, CHAIN_DECL_REACH, CHAIN_DECL_WRITEGATE, CHAIN_DECL_WPROT,
-    CHAIN_DECL_XPROT, CHAIN_DECL_CAPPED, CHAIN_DECL_PATCHED, CHAIN_DECL_N
+    CHAIN_DECL_XPROT, CHAIN_DECL_CAPPED, CHAIN_DECL_REFUSED, CHAIN_DECL_PATCHED, CHAIN_DECL_N
 };
 static const char* const hb_chain_decline_names[CHAIN_DECL_N] = {
     "site_called", "site_patch_off", "site_no_entry",
     "gate", "invalid", "nometa", "already",
     "terminal", "backedge", "slot_cur", "slot_next",
     "tramp", "reach", "write_off", "wprot",
-    "xprot", "capped", "PATCHED"
+    "xprot", "capped", "refused_near", "PATCHED"
 };
 static __thread uint64_t t_chain_decline[CHAIN_DECL_N];
 
@@ -384,6 +384,15 @@ static void dispatch_stats_flush_thread(int force) {
  * other bucket. Per-thread and non-atomic, following the t_dispatch_stats_* convention right above:
  * summing over 64 threads would mix in the parked ones, and rule two here is that the critical thread
  * is the measurement. */
+static int trace_null_pc_enabled_rt(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_TRACE_NULL_PC");
+        cached = e && *e && *e != '0';
+    }
+    return cached;
+}
+
 static void dispatch_stats_note_terminal(const hb_ir_block_t* block) {
     const hb_ir_instr_t* last;
     const hb_ir_instr_t* transfer;
@@ -883,6 +892,13 @@ static uint64_t runtime_chain_edge_near(void) {
         parsed = 1;
     }
     return addr;
+}
+
+/* Refuse to chain exactly the edges the near-filter selects. If the fault then vanishes, the defect belongs
+ * to this block pair; if it merely relocates to another chained edge, the defect is general to chaining. */
+static int runtime_chain_refuse_near(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_CHAIN_REFUSE_NEAR", 0);
 }
 
 static int chain_edge_is_near(uint64_t a, uint64_t b) {
@@ -3294,6 +3310,10 @@ static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
         t_chain_decline[CHAIN_DECL_TERMINAL]++;
         return false;
     }
+    if (runtime_chain_refuse_near() && chain_edge_is_near(cur->guest_addr, next->guest_addr)) {
+        t_chain_decline[CHAIN_DECL_REFUSED]++;
+        return false;
+    }
     if (runtime_chain_forward_only_enabled() && next->guest_addr <= cur->guest_addr) {
         t_chain_decline[CHAIN_DECL_BACKEDGE]++;
         return false;
@@ -4164,13 +4184,42 @@ static void jit_aa_report_sigbus(const hb_jit_signal_fault_frame_t* frame,
  * un-copied bytes hold whatever was on the stack; a full-struct restore would push that garbage into
  * the live context. Hence a matching pair rather than a lone optimisation on the save path.
  *
- * Gated so it can be A/B'd against the baseline above; default off. */
+ * DEFAULT FLIPPED ON 2026-07-30, after the measurement this gate was waiting for. Run SNAPSHOT760 with the
+ * widened window (760 bytes instead of the full 2616): on the critical thread `_platform_memmove` self time
+ * fell from 81/536 = 15.1 % to 16/498 = 3.2 %, and run_jit_block_with_signal_guard's own self time from
+ * 10.6 % to 7.8 % — a within-run before/after on the exact item the change targets. Time to
+ * `Restored language` came in at 369.0 s against 448.4 s and 490.3 s for the two previous best runs and a
+ * 593 +- 78 s project baseline, with the Mono phase at 109.7 s against 135.5/150.5 s, and ZERO
+ * `HyperBridge run failed` lines.
+ *
+ * The marker time is n=1, so the load-bearing evidence is the profile share, not the clock.
+ * MACRUNNER_HB_SNAPSHOT_SKIP_INTERP=0 restores the full-struct copy in one env var if anything downstream
+ * disagrees. */
 static int snapshot_skip_interp_only(void) {
     static int cached = -1;
-    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_SNAPSHOT_SKIP_INTERP", 0);
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_SNAPSHOT_SKIP_INTERP", 1);
 }
 
-#define HB_CTX_INTERP_ONLY_BEGIN offsetof(hb_context_t, xmm_ext)
+/* MacRunner 2026-07-30 — the window starts at ymm_hi, not xmm_ext, which nearly triples what it skips.
+ *
+ * Two things had to be established first. (1) This gate is DEFAULT OFF, so every run measured this week has
+ * been copying the whole 2616-byte struct (`*dst = *src`), not the 1592 the comment above describes — the
+ * profile's 15.1 % `_platform_memmove` is the cost of the FULL copy. (2) The interpreter-only AVX region is
+ * not just xmm_ext..zmm_hi_ext but starts three fields earlier: ymm_hi [640,896), zmm_hi [896,1408) and the
+ * AVX-512 opmask k [1408,1472) are contiguous with xmm_ext [1472,1728), ymm_hi_ext [1728,1984) and
+ * zmm_hi_ext [1984,2496) — one unbroken 1856-byte run of interpreter EVEX/AVX state.
+ *
+ * Safe because the emitter cannot reach it, checked exhaustively rather than by sampling: the COMPLETE set of
+ * `offsetof(hb_context_t, …)` in hb_arm64_codegen.c is block_count, flags, guest32_base,
+ * indirect_ic_guest_addr, indirect_ic_native_code, last_result, lazy_flags, pc, step_count — plus the regs
+ * union — and every one of those lies outside [640,2496): regs [32,432), flags [432,438),
+ * lazy_flags [440,504), step_count [512,520), block_count [528,536), pc [544,552), last_result [584,588),
+ * guest32_base [2496,2504), codegen_flags [2504,2508), indirect_ic_* [2512,2528). ymm_hi/zmm_hi/k are
+ * referenced 0 times in the emitter and only from hb_interpreter.c and hb_context.c.
+ *
+ * Result: the snapshot copies [0,640) + [2496,2616) = 760 bytes instead of 2616, a 71 % cut on a path taken
+ * on every single dispatch. Still one gate, still both sides skipping the same range. */
+#define HB_CTX_INTERP_ONLY_BEGIN offsetof(hb_context_t, ymm_hi)
 #define HB_CTX_INTERP_ONLY_END   offsetof(hb_context_t, guest32_base)
 
 static inline void hb_ctx_snapshot_save(hb_context_t* dst, const hb_context_t* src) {
@@ -4263,6 +4312,7 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         /* One call per native dispatch, which is what makes this the right place for it: every
          * dispatch reaches here exactly once, on the legacy path and the fast path alike. */
         dispatch_stats_note_terminal(cached->block);
+        if (trace_null_pc_enabled_rt()) hb_trace_current_block_addr = cached->guest_addr;
         exec(ctx);
         g_jit_signal_fault_frame = frame.prev;
         return HB_OK;

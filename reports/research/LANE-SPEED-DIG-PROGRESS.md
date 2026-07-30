@@ -1703,3 +1703,350 @@ FEX делает это `RegisterAllocationPass`, box64 — отдельным �
 Решай сам, но, по-моему, стоит отложить дальнейший бисект связывания и оценить
 распределение регистров: сколько обращений к памяти в среднем блоке приходится на
 чтение/запись гостевых регистров. Это меряется статически, без прогона.
+
+## 2026-07-31 (VI) — STATIC step per the new brief: the register-allocation ceiling is 9.0 %, and it is not the biggest item
+
+Measured with **zero HK runs**, on 1 096 350 real blocks / 37 825 816 emitted ARM64 instructions from a
+persisted translation cache (`ntdll-5385710288b50361`, 221 MB). Full method and numbers:
+`reports/research/SPEED-DIG-STATIC-REGISTER-TRAFFIC-20260731.md`.
+
+Guest-register traffic is exactly identifiable in the emitted code: every access is `LDR/STR` with base
+**x19** (the `hb_context_t` pointer) at a `reg_off()` displacement. Offsets taken from the compiler, not read
+off the struct.
+
+```
+emitted = 11.8 + 7.2 × guest_instructions
+```
+
+- mean guest instructions per block **3.14** (44.8 % of blocks hold ≤2, and those are 32.8 % of all emitted code)
+- **fixed per-block overhead 11.8 instrs = 34 % of ALL emitted code**
+- **guest-GPR loads/stores = 9.0 % of all emitted**, i.e. **0.99 per guest instruction**
+- XMM context traffic 7.0 %; `rip`/`rflags` context traffic **zero**
+
+**The brief's premise does not hold.** "`add rax, rbx` = four memory accesses per arithmetic op" — the
+emitted average is **one** guest-GPR access per guest instruction, 9.0 % of instructions overall. Register
+allocation is worth at most 9 %.
+
+**Fixed per-block overhead is 3.8× the entire register-allocation ceiling**, and it is paid once per dispatch
+on 3.14-instruction blocks: 3.8 ARM64 instructions of pure overhead per guest instruction.
+
+**Register allocation is gated on block size, not the reverse.** A static 16→16 mapping must flush at every
+unchained block boundary; with 3.14-instruction blocks and ~1.0 GPR access per instruction, the mandatory
+load-on-entry/store-on-exit traffic is comparable to what is removed. Chaining/larger blocks create the room
+for RA — so the brief's ordering (RA, then chaining) is inverted by the data.
+
+Method trap recorded: the first counter reported 0 load/stores in 37.8 M instructions. JS bitwise ops return
+signed int32, so `w & 0xFFC00000` never matched the positive constant. A zero from a counter is a claim about
+the counter first.
+
+[NEXT] price the 11.8-instruction prologue/epilogue from the same cache (common prefix/suffix across blocks,
+no run): that decides whether to chain past it or shrink it.
+
+## 2026-07-31 (VII) — the 34 % fixed overhead is a callee-saved frame, and half the blocks never need it
+
+Decomposed the per-block overhead from the same cache, still zero HK runs. Modal prologue is 4 instructions
+(100 % of blocks), modal epilogue 5 (63.9 %):
+
+```
+STP x19,x20,[sp,#-48]! / STP x21,x22,[sp,#16] / STP x23,x30,[sp,#32] / MOV x19,x0
+... STR x21,[x19,#544] / LDP x23,x30 / LDP x21,x22 / LDP x19,x20 / RET
+```
+
+Eight of those nine instructions are a **callee-saved register frame — 12 memory accesses per dispatch** for a
+block averaging 3.14 guest instructions. All guest-register traffic together is 3.1 per block, so **the frame
+costs ~4× what register allocation could save.**
+
+The frame exists only because a block may `BL` a helper. Counted: **48.3 % of blocks (529 347) make ZERO
+calls** — calls per block are only ever 0 or 1, mean 0.52. Eliding the frame there removes **6 352 164 memory
+accesses = 1.87× the ENTIRE register-allocation ceiling**, and **4 234 776 instructions = 11.2 % of all
+emitted code**.
+
+Feasible because the frame only honours AAPCS: a call-free block can take its 5 scratch registers from the
+caller-saved bank (x9–x15, 7 available), needing no save/restore and no x30 spill; the epilogue collapses to
+`STR x21,[x19,#544]; RET`.
+
+**Revised ordering: (1) elide the frame on call-free blocks — 11.2 %; (2) chaining/larger blocks; (3) register
+allocation — 9.0 % ceiling, mostly eaten by boundary flushes until (2).**
+
+[NEXT] implement (1) behind a gate: parameterise the hard-coded scratch register numbers per block, select the
+caller-saved mapping when the IR block lowers to no helper call, and verify by re-dumping the cache — call-free
+blocks must start with `MOV`, not `STP`.
+
+## 2026-07-31 (VIII) — preconditions for the lean frame all verified; design settled, no run
+
+Checked what a call-free block actually needs, over all 529 347 of them (frame words excluded): **0** use the
+stack for anything else, **0** write x24–x28, **0** write x30, **0** end in anything but `RET`. Body register
+usage: x19 100 %, x21 100 %, x20 86.4 %, x22 56.6 %, x23 32.0 % — at most five registers, no stack. AAPCS has
+seven caller-saved (x9–x15), so **a call-free block can run with no frame at all.**
+
+Design: the 596 hard-coded scratch literals mean the remap must live in the **42 encoder primitives** —
+`uint8_t rmap[32]` on `hb_codegen_buffer_t`, identity by default, applied on primitive entry. Call sites stay
+untouched. Two conditions: (a) relocations are recorded inside a primitive (`:259 relocs[].reg = rd`), so the
+remap must be applied BEFORE that line and patching stays consistent for free — classification is already by
+KIND after the earlier x23 incident; (b) call-free must be known before emission → two-pass emit (re-emit with
+frame if a call appeared), costing ~0.35 s of the already-refuted 0.69 s codegen budget.
+
+Instrument trap: the first precondition check said "100 % of call-free blocks touch SP outside the frame". That
+was my window — the epilogue is 5 words and I excluded 3, so `LDP x23,x30,[sp,#32]` was counted once per block.
+Exactly-one-per-block is what exposed it.
+
+[NEXT] implement behind `MACRUNNER_HB_LEAN_FRAME`: rmap in the 42 primitives, skip frame for call-free blocks,
+two-pass emit. Verify with no HK run by re-dumping the cache — call-free blocks must start with `MOV`, not
+`STP`, and still end in `RET`; then unit suite 5 runs per arm before any timing claim.
+
+## 2026-07-31 (IX) — lean frame implemented and gated; two self-inflicted bugs found, baseline restored
+
+Implemented the frameless-block change behind `MACRUNNER_HB_LEAN_FRAME`:
+- `rmap[32]` on `hb_codegen_buffer_t`, applied in the **31 leaf encoders** (those that build an encoding
+  directly). Composites like `emit_ldr_gpr` are deliberately excluded — they delegate, and remapping both
+  levels would substitute twice. None of the 596 call sites changed.
+- `emit_prologue`/`emit_epilogue_ex` skip the frame when armed; `emit_blr` sets `emitted_call`.
+- Two-pass emit in `hb_arm64_codegen_block_with_cfg`: emit lean, and if a call appeared, reset and re-emit
+  with the frame.
+- Relocation ordering verified: `emit_mov_imm64_kind` applies `rd = hb_rm(...)` **before**
+  `codegen_note_reloc(buf, rd, …)`, so the recorded register is the remapped one and patching stays consistent.
+
+**Static verification passed.** From a cache dumped by a real run: 81.8 % of blocks frameless, **0 frameless
+blocks containing a call**, 0 frameless blocks referencing the old ctx register x19 as a base (136 use the
+remapped x11; framed blocks still correctly use x19). The mechanism does exactly what it claims.
+
+**Bug 1 — register collision (real, fixed).** First mapping was x19→x9. But `hb_arm64_codegen.c:3453` already
+emits `MOV x9, x20` / `MOV x10, x21` as temporaries, so x19→x9 made that instruction overwrite the **ctx
+pointer**. Moved the mapping to x11–x15, the five caller-saved registers nothing else claims.
+
+**Bug 2 — uninitialised gate (real, fixed, and it broke the DEFAULT path).** `hb_codegen_buffer_t` is never
+zero-initialised anywhere in the tree, so testing `buf->rmap_active` read uninitialised stack and armed the
+remap at random **with the gate off**. The plain baseline regressed to no markers at all. Fixed with two
+guards: a file-scope `g_lean_frame_on` that only `lean_frame_arm()` sets, plus an `0xA5` sentinel — with the
+gate unset the remap is the identity by construction. **Baseline re-verified: `Begin MonoManager` 56.2 s,
+`UnloadTime` 152.2 s** (the fastest UnloadTime measured today, vs 175.6/212.7/223.4/245.4 s).
+
+**All lean-frame timing results from this pass are VOID** — every one of those runs executed on the build with
+the uninitialised gate, so both the "lean" and "control" arms were randomly remapping. The 22-block caches and
+absent markers measured the bug, not the change.
+
+A second confound worth recording: I enabled `MACRUNNER_HB_TRANSLATION_CACHE=1` to obtain a dump, which
+changed two variables at once. The control run (cache on, lean off) produced a byte-identical 254 KB log,
+which is what exposed that the regression was not the lean frame.
+
+Unit suite 5 runs per arm on the pre-sentinel build: stable failures 33 in both, none introduced.
+
+[NEXT] redo the lean-frame measurement on the fixed build: unit suite 5×5, then one gated run vs one baseline
+run, comparing `UnloadTime` on the in-run clock and the frameless share from a fresh cache dump. Only after
+that does any speed claim mean anything.
+
+## 2026-07-31 (X) — lean frame measured cleanly on the fixed build: it BREAKS the boot
+
+With the uninitialised-gate bug fixed, the comparison is finally valid — same build, same config, only
+`MACRUNNER_HB_LEAN_FRAME` differs:
+
+| arm | log | Begin MonoManager | UnloadTime |
+|---|---|---|---|
+| gate OFF (baseline) | 0.50 MB | 56.2 s | **152.2 s** |
+| gate ON (lean frame) | 0.28 MB | — | **never — no markers at all** |
+
+Unit suite on the fixed build, 5 runs per arm: stable failures 33 in both, **none introduced**. So the defect
+is on a path `hb_test_runner` does not exercise — which is consistent with it being the signal/fault or
+dispatch machinery, the parts HK hammers and the suite barely touches.
+
+**What is verified correct**, so the search can skip it: the emitted code itself. From a real cache dump,
+81.8 % of blocks frameless, **0** frameless blocks containing a call, **0** frameless blocks still using x19
+as a ctx base (136 use the remapped x11, while framed blocks correctly keep x19). Relocations are recorded
+after the remap. The register collision with `MOV x9, x20` at `:3453` is fixed by mapping to x11–x15.
+
+**One latent incompatibility found, but it is NOT the current cause:** `hb_runtime.c` recognises the block
+tail by exact encoding — `entry_has_chain_slot` (`:3010`) keys on `MOV X0, X19` (`0xaa1303e0`) plus
+`LDP X23,LR,[SP,#32]` / `LDP X19,X20,[SP],#48`, and `chain_trampoline_build_at` (`:3162`) does the same. A
+frameless block has none of those bytes. Both sites are inside the chaining machinery, which is default-off,
+so they cannot explain this failure — but they will have to be taught about frameless blocks before chaining
+and the lean frame can ever be on together.
+
+**Gate stays OFF and the tree is safe:** the baseline was re-verified on this exact build (UnloadTime 152.2 s,
+the fastest measured today).
+
+[NEXT] bisect the change into its two independent halves, which the gate makes trivial:
+(a) **remap only** — apply x19–x23 → x11–x15 but KEEP emitting the frame. Semantically valid (the block still
+    preserves the callee-saved registers it no longer uses), so if this breaks, the remap is at fault;
+(b) **frame elision only** — impossible to test alone without violating AAPCS, so it is the residual: if (a)
+    boots, the defect is in dropping the frame, and the next question is who depends on that stack layout.
+One run per arm answers it, and the technique — bisect with the guest as oracle — is the one that has
+localised every defect in this lane.
+
+## 2026-07-31 (XI) — bisect: the REMAP is at fault, not the frame elision
+
+Added `MACRUNNER_HB_LEAN_REMAP_ONLY` — apply the register remap but keep emitting the frame. That is
+semantically valid (the block preserves callee-saved registers it has stopped using), so it splits the change
+cleanly in two.
+
+| arm | log | markers |
+|---|---|---|
+| baseline (same build) | 0.50 MB | MonoManager 56.2 s, **UnloadTime 152.2 s** |
+| remap + frame elided | 0.28 MB | none |
+| **remap only, frame kept** | **0.25 MB** | **none** |
+
+Half A breaks too, so **the defect is the register remap itself** and frame elision is exonerated for now.
+That is worth knowing precisely because the frame elision was the part carrying the 11.2 % — it is still
+viable once the remap is sound.
+
+**Mechanism, confirmed:** the remap lives in the 31 leaf encoders, but not every instruction goes through
+them. `hb_arm64_codegen.c:4527` builds an encoding inline with literal register numbers —
+
+```c
+emit_u32(buf, 0x8b000000 | (21 << 16) | (shift << 10) | (20 << 5) | 20);   /* ADD x20, x20, x21, LSL #s */
+```
+
+— so `hb_rm` never sees it. With the remap armed, every other instruction in that block uses x12/x13 while
+this one still writes x20: silent corruption of a live value. There are **57** expression-built `emit_u32`
+sites in the file, and a source grep can only find the ones spelled with literal digits; a local variable
+holding 21 would be invisible to it.
+
+**So the audit must be empirical, not textual.** The method that already worked (checking the ctx base
+register in emitted blocks, which came back clean at 0/136) generalises: dump a cache from a remap-only run
+and scan **every register field of every instruction** in remapped blocks for any surviving reference to
+x19–x23. That produces the exact list of bypassing instructions with no reliance on grep. My earlier check
+only inspected the `Rn` field of loads and stores, which is why it reported clean while `Rd`/`Rm` bypasses
+went unseen.
+
+Build discipline note: this pass also caught a `make` failure where hyperbridge returned rc=2 and wine
+relinked the previous library — the `strings` gate check on the shipped `ntdll.so` reported `gate=0` and
+stopped a measurement that would have been meaningless. Cause was use-before-declaration
+(`lean_remap_only()` called from `emit_prologue`, defined ~10 000 lines later); fixed with a file-scope flag.
+
+[NEXT] run remap-only WITH `MACRUNNER_HB_TRANSLATION_CACHE=1`, dump, and scan all register fields of remapped
+blocks for x19–x23 survivors. Fix each, re-run, and only when that scan returns zero re-test the full lean
+frame.
+
+## 2026-07-31 (XII) — the remap was incomplete because my own transform skipped attributed functions
+
+Fixed the remap and it now boots. Two bypass classes, found by two different methods:
+
+**1. Inline encoding (found by reading source).** `:4527` built `ADD x20,x20,x21,LSL#s` with `emit_u32` and
+literal registers. Routed through `emit_add_reg_lsl`, which encodes identically and is remapped. Fixing this
+alone changed nothing — still no markers.
+
+**2. Twelve primitives my transform silently skipped (found by scanning emitted code).** The empirical scan —
+decode every instruction in remapped blocks, extract every register field, look for x19–x23 survivors —
+returned four offending encodings: `SUB x22,x20,x21`, `AND x22,x22,x23`, `AND x21,x21,x23`, `EOR x22,x20,x21`.
+Tracing them to source found `emit_sub_reg`, `emit_and_reg`, `emit_ands_reg`, `emit_orr_reg`, `emit_eor_reg`,
+`emit_cmp_reg`, `emit_tst_reg`, `emit_lslv`, `emit_lsrv`, `emit_asrv`, `emit_mvn`, `emit_neg` — **all declared
+`static void __attribute__((unused)) emit_…`**, and my transform's regex character class excluded parentheses,
+so it never matched them. Twelve leaf encoders, silently untouched, while the tool reported "31 transformed"
+and looked successful.
+
+**After fixing all 12:**
+
+| | log | Begin MonoManager | UnloadTime |
+|---|---|---|---|
+| baseline | 0.50 MB | 56.2 s | **152.2 s** |
+| remap-only (before) | 0.25 MB | — | none |
+| **remap-only (after)** | **0.42 MB** | **55.4 s** | **210.5 s** |
+
+**Scan now returns zero:** 47 705 remapped blocks, 1 098 656 body instructions decoded, **no x19–x23
+references remain**. Caveat on that claim: 5.9 % of instruction forms are undecoded by my classifier, so
+"zero" covers the 94.1 % it recognises.
+
+210.5 s vs 152.2 s is slower, but n=1 per arm and today's `UnloadTime` spread is 152–245 s, so this is not yet
+a speed verdict — only proof the remap is sound enough to run.
+
+**Method note worth keeping:** the source-transform tool reported success and a plausible count (31 functions)
+while missing a whole category. What caught it was scanning the *emitted artifact*, not re-reading the source
+— the same lesson as the earlier "verify the artifact, not the build". A transform's own report of what it did
+is not evidence that it did it.
+
+[NEXT] now that the remap is clean, re-test the FULL lean frame (frame elision) — that is the half carrying the
+11.2 %, and it was exonerated by the bisect but never ran on a sound remap. Then, if it boots, a proper
+multi-run timing comparison rather than n=1.
+
+## 2026-07-31 (XIII) — the lean frame WORKS end to end; timing inconclusive at n=2, as expected
+
+With the remap sound, the full change was tested:
+
+| arm | Begin MonoManager | UnloadTime |
+|---|---|---|
+| baseline | 56.2 s / — | 152.2 s, 218.3 s |
+| remap only (frame kept) | 55.4 s | 210.5 s |
+| **lean frame (full)** | 55.4 s, 56.7 s | **150.6 s, 229.0 s** |
+
+**The mechanism works end to end**: frameless blocks execute, the guest boots, both markers are reached, no
+new failure class, and the unit suite showed no stable regressions at 5 runs per arm.
+
+**Timing is inconclusive and no claim is made.** Means are 185.3 s (baseline) vs 189.8 s (lean) at n=2 each,
+while the within-arm spread is 66–78 s — the brief's ±78 s warning, exactly. Separating a hoped-for ~11 %
+effect from that noise needs ~8 runs per arm, which is hours; cross-run timing is the last resort by Rule 1.
+
+**So the next measurement is the within-run one.** The change's magnitude is a property of the emitted code,
+not the clock: the static prediction is 4 234 776 instructions removed = 11.2 % of all emitted code, and the
+same cache dump that verified the remap can verify the actual reduction directly — mean emitted instructions
+per block, lean vs baseline, on the same corpus of guest addresses. That is a Rule-1 quantity, immune to the
+±78 s, and it either confirms 11.2 % or says the two-pass re-emit is eating it.
+
+Operational note: the Bash tool caps at 10 minutes, so a loop of four 260 s runs was killed mid-flight. One
+run per call from now on; the killed run left no orphaned wine processes (`mr-clean` verified 0), and its
+partial run dir was discarded rather than read.
+
+[NEXT] dump caches for both arms on this build and compare mean emitted instructions per block over the
+intersection of guest addresses — the within-run confirmation of the 11.2 %.
+
+## 2026-07-31 (XIV) — within-run confirmation: 11.03 % fewer emitted instructions, predicted 11.2 %
+
+Dumped a translation cache from each arm on the same build and intersected on identical 48-byte cache keys, so
+the comparison is over the SAME guest blocks rather than whatever each run happened to reach.
+
+| | baseline | lean |
+|---|---|---|
+| same guest blocks | 53 414 | 53 414 |
+| mean emitted instrs/block | 36.03 | **32.06** |
+| total instructions | 1 924 765 | 1 712 491 |
+| **reduction** | — | **11.03 %** (predicted **11.2 %**) |
+| smaller / identical / larger | — | 66.2 % / 33.8 % / **0** |
+
+Two independent samples agree on block size: 3.10 guest instrs/block here vs 3.14 on the 1.1 M-block corpus.
+Lean arm emits 48 055 frameless against 25 065 framed blocks.
+
+This is the Rule-1 quantity for this change — a property of the emitted code, immune to the ±78 s. The static
+analysis predicted the effect before the code was written and the built change hit it to within 0.2 points.
+
+**Wall-clock still unproven and no claim made**: UnloadTime n=2 per arm, baseline 152.2 / 218.3 s vs lean
+150.6 / 229.0 s, within-arm spread 66–78 s. Gate stays OFF until a multi-run campaign (~8 per arm) can
+separate 11 % from that noise.
+
+[NEXT] either fund the timing campaign (~8 runs/arm ≈ 70 min of slot) or go after the rest of the fixed
+overhead, since the same corpus says the frame is only part of the 34 %: chaining removes the dispatch
+round-trip that the remaining prologue/epilogue serves.
+
+## 2026-07-31 (XV) — the cheap marker is not sensitive; the lean frame's timing verdict is not affordable
+
+Tried to buy the timing verdict cheaply. `Begin MonoManager` lands at ~55 s with a ~1 s spread, so a 120 s
+budget would cost half a run — if that marker responds to the change.
+
+| arm | Begin MonoManager | mean |
+|---|---|---|
+| baseline | 56.2, 54.1 | 55.15 s |
+| lean | 55.4, 56.7, 55.7 | 55.93 s |
+
+**It does not respond** — lean is 0.8 s *slower*, i.e. noise. `Begin MonoManager` sits in the load-dominated
+prefix, not a JIT-throughput-bound phase, so its low variance buys nothing. Recorded as a refuted experiment
+design rather than a result about the change.
+
+**And the expensive verdict is not worth funding, by arithmetic.** The frame is 6 instructions of a ~34.5
+instruction block, all L1-resident stack accesses. Even assuming they cost their full share of block execution
+(~15 %), block execution is only part of the run — the clean profile puts the dispatcher at 16.0 % and guest
+code at ~5 %. A plausible wall-clock effect is therefore **3–6 %**, i.e. 6–11 s on a 185 s mean, against a
+measured within-arm spread of 66–78 s. Detecting that needs on the order of **30 runs per arm**, not 8. At
+~4 min per run that is hours of slot for a single-digit percentage.
+
+**Decision: stop here on the lean frame.** It stays gated, correct, and documented with a measured 11.03 %
+code-size reduction. Spending the slot on the same corpus's larger item is the better trade.
+
+**What that larger item is, from the same measurements:** the frame was only part of the 34 % fixed overhead.
+The rest is the dispatch round-trip itself — return to C, re-enter the dispatcher, look up the next block —
+which chaining removes outright. The clean profile puts `hb_jit_runtime_run` at 16.0 % and
+`run_jit_block_with_signal_guard` at 4.6 % of the critical thread, ~20 % in dispatch machinery, against the
+frame's 11 % of emitted bytes. Chaining is also what makes register allocation worth doing (Part I): with
+3.14-instruction blocks, boundary flushes eat the 9 % until blocks get longer.
+
+[NEXT] chaining. It is already implemented and gated (`MACRUNNER_HB_BLOCK_CHAIN`) with a precisely localised
+defect from 30.07 — guest `rcx`/`rdx` corrupted on the edge out of `0x87ef246adb6`, successor
+`mono-2.0-bdwgc.dll+0x69a30` receiving non-pointers. Start by reproducing that single edge, not by re-running
+the whole feature: the cache-dump tooling built this pass can decode the emitted trampoline and the
+predecessor's tail directly, which is exactly the kind of evidence that localised every other defect here.

@@ -71,6 +71,15 @@ typedef struct {
     size_t reloc_count;
     bool reloc_overflow;  /* more sites than the table holds — do not trust it for this block */
     hb_arch_t arch;  /* guest architecture — defaults to HB_ARCH_X64 (=0) */
+    /* MacRunner 2026-07-31 — scratch-register remap for frameless blocks.
+     * Measured: the per-block prologue/epilogue is a callee-saved frame costing 12 memory accesses per
+     * dispatch, and 48.3 % of blocks never call anything, so they preserve registers against a call that
+     * never happens. Such a block can instead take its scratch from the caller-saved bank and carry no frame.
+     * The 596 call sites hard-code x19-x23, so the substitution happens in the leaf encoders instead.
+     * rmap_active is the guard: a zero-initialised buffer means IDENTITY, never "everything becomes x0". */
+    uint8_t rmap_active;
+    uint8_t emitted_call;  /* set by emit_blr: a lean block must not contain one */
+    uint8_t rmap[32];
 } hb_codegen_buffer_t;
 
 /* ARM64 codegen */

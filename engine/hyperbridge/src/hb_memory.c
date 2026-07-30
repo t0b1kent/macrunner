@@ -640,21 +640,27 @@ static void gap_insert(hb_memory_t* mem, hb_gva_t lo, hb_gva_t hi, uint64_t epoc
     t_gap_fills++;
 }
 
+/* MacRunner 2026-07-31 — take the thread-local address ONCE.
+ * On Darwin every __thread access from a dylib goes through _tlv_get_addr, which is 6.31 % of the critical
+ * thread even after removing my own instrumentation. This function touched g_hot_cache_tls for .mem, .epoch
+ * and then .slot[i] across a 16-iteration loop, so nothing but the optimiser was stopping it from paying that
+ * call repeatedly. One local pointer makes the rest plain loads. */
 static hb_region_t* hot_cache_lookup(hb_memory_t* mem, hb_gva_t addr) {
+    hb_hot_cache_tls_t* const tls = &g_hot_cache_tls;
     int did_reset = 0;
     if (macrunner_hb_disable_hot_cache_enabled()) return NULL;
     uint64_t epoch = hot_cache_epoch(mem);
-    if (g_hot_cache_tls.mem != mem || g_hot_cache_tls.epoch != epoch) {
+    if (tls->mem != mem || tls->epoch != epoch) {
         hot_cache_reset_tls(mem, epoch);
         did_reset = 1;
     }
 
     for (int i = 0; i < HB_MEMORY_HOT_CACHE_SLOTS; i++) {
-        hb_region_t* c = g_hot_cache_tls.slot[i];
+        hb_region_t* c = tls->slot[i];
         if (c && addr >= c->base && addr < c->base + c->size) {
             if (i != 0) {
-                g_hot_cache_tls.slot[i] = g_hot_cache_tls.slot[0];
-                g_hot_cache_tls.slot[0] = c;
+                tls->slot[i] = tls->slot[0];
+                tls->slot[0] = c;
             }
             hot_cache_note(i, did_reset, c);
             return c;
@@ -665,24 +671,25 @@ static hb_region_t* hot_cache_lookup(hb_memory_t* mem, hb_gva_t addr) {
 }
 
 static void hot_cache_insert(hb_memory_t* mem, hb_region_t* region) {
+    hb_hot_cache_tls_t* const tls = &g_hot_cache_tls;
     if (!region || macrunner_hb_disable_hot_cache_enabled()) return;
     uint64_t epoch = hot_cache_epoch(mem);
-    if (g_hot_cache_tls.mem != mem || g_hot_cache_tls.epoch != epoch)
+    if (tls->mem != mem || tls->epoch != epoch)
         hot_cache_reset_tls(mem, epoch);
 
     for (int i = 0; i < HB_MEMORY_HOT_CACHE_SLOTS; i++) {
-        if (g_hot_cache_tls.slot[i] == region) {
+        if (tls->slot[i] == region) {
             if (i != 0) {
-                g_hot_cache_tls.slot[i] = g_hot_cache_tls.slot[0];
-                g_hot_cache_tls.slot[0] = region;
+                tls->slot[i] = tls->slot[0];
+                tls->slot[0] = region;
             }
             return;
         }
     }
 
     for (int i = HB_MEMORY_HOT_CACHE_SLOTS - 1; i > 0; i--)
-        g_hot_cache_tls.slot[i] = g_hot_cache_tls.slot[i - 1];
-    g_hot_cache_tls.slot[0] = region;
+        tls->slot[i] = tls->slot[i - 1];
+    tls->slot[0] = region;
 }
 
 
@@ -1822,7 +1829,7 @@ hb_result_t hb_memory_read(hb_memory_t* mem, hb_gva_t addr, void* out, size_t si
     int dv_hit = macrunner_hb_datadiverge_hit((uint64_t)addr, size);
     if (!mem || !out) return HB_ERR_INVALID_ARG;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return HB_ERR_MEMORY_FAULT;
-    t_rsite = RSITE_READ;
+    if (trace_hot_cache_stats_enabled()) t_rsite = RSITE_READ;   /* diagnostic: TLS write, gated */
     region = hot_cache_lookup(mem, addr);
     is_hit = region != NULL;
     if (!region) {
@@ -1967,7 +1974,7 @@ hb_result_t hb_memory_write(hb_memory_t* mem, hb_gva_t addr, const void* in, siz
         }
     }
 grow_retry:
-    t_rsite = RSITE_WRITE;
+    if (trace_hot_cache_stats_enabled()) t_rsite = RSITE_WRITE;   /* diagnostic: TLS write, gated */
     region = hot_cache_lookup(mem, addr);
     is_hit = region != NULL;
     if (!region) {
@@ -2208,7 +2215,7 @@ void* hb_memory_host_ptr(hb_memory_t* mem, hb_gva_t addr, size_t size, hb_perm_t
 
     if (!mem || !size) return NULL;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return NULL;
-    t_rsite = RSITE_HOST_PTR;
+    if (trace_hot_cache_stats_enabled()) t_rsite = RSITE_HOST_PTR;   /* diagnostic: TLS write, gated */
     region = find_region_normalized(mem, addr);
     if (dv_hit) {
         fprintf(stderr, "macrunner-hb-dv-read-host_ptr: gva=0x%llx size=%zu want_perm=%d region=%p base=0x%llx rsize=0x%llx host_base=%p rperm=%d\n",
@@ -2268,7 +2275,7 @@ hb_region_t* hb_memory_find_region(hb_memory_t* mem, hb_gva_t addr) {
     if (!normalize_guest32_mirror_addr(mem, &addr, 1)) return NULL;
     /* Only claim the generic tag when no caller identified itself, otherwise the external tags below would be
      * overwritten by the very wrapper they call. Callers reset to 0 after use. */
-    if (t_rsite < RSITE_JIT_HOST_SPAN) t_rsite = RSITE_FIND_REGION;
+    if (trace_hot_cache_stats_enabled() && t_rsite < RSITE_JIT_HOST_SPAN) t_rsite = RSITE_FIND_REGION;
     return find_region_normalized(mem, addr);
 }
 
@@ -2376,7 +2383,7 @@ static hb_region_t* find_region_after_hot_miss(hb_memory_t* mem, hb_gva_t addr) 
 static bool check_perm_region(hb_memory_t* mem, hb_gva_t addr, size_t size, hb_perm_t p, hb_region_t** out) {
     hb_region_t* r;
     if (!normalize_guest32_mirror_addr(mem, &addr, size)) return false;
-    t_rsite = RSITE_CHECK_PERM;
+    if (trace_hot_cache_stats_enabled()) t_rsite = RSITE_CHECK_PERM;   /* diagnostic: TLS write, gated */
     r = find_region_normalized(mem, addr);
     if (out) *out = r;
     if (!r) return false;

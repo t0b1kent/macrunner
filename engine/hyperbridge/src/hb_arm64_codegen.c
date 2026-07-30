@@ -40,7 +40,26 @@ static void emit_u32(hb_codegen_buffer_t* buf, uint32_t insn) {
 static void emit_nop(hb_codegen_buffer_t* buf)   { emit_u32(buf, 0xd503201f); }
 static void emit_ret(hb_codegen_buffer_t* buf)   { emit_u32(buf, 0xd65f03c0); }
 
+/* Leaf-encoder register substitution. Applied ONLY in functions that build an encoding directly, never in
+ * composites (emit_ldr_gpr etc. delegate, and remapping both levels would substitute twice).
+ *
+ * MacRunner 2026-07-31 — TWO guards, because one was not enough. hb_codegen_buffer_t is never zero-initialised
+ * anywhere in the tree, so testing `buf->rmap_active` alone read uninitialised stack and enabled the remap at
+ * random: it broke the PLAIN baseline (30 MB log reaching UnloadTime -> 254 KB and no markers) with the gate
+ * off entirely. g_lean_frame_on is file-scope, starts at 0 and is set only by lean_frame_arm(), so with the
+ * gate unset this is the identity by construction. The 0xA5 sentinel is the second guard. */
+#define HB_RMAP_ARMED 0xA5u
+static int g_lean_frame_on = 0;
+static int g_lean_remap_only = 0;  /* bisect half A: remap applied, frame still emitted */
+
+static inline int hb_rm(const hb_codegen_buffer_t* buf, int r) {
+    if (!g_lean_frame_on) return r;
+    return (buf && buf->rmap_active == HB_RMAP_ARMED && r >= 0 && r < 32) ? (int)buf->rmap[r] : r;
+}
+
 static void emit_br(hb_codegen_buffer_t* buf, int rn) {
+    rn = hb_rm(buf, rn);
+
     emit_u32(buf, 0xd61f0000 | (rn << 5));
 }
 
@@ -50,61 +69,109 @@ static void emit_b(hb_codegen_buffer_t* buf, int32_t off) {
 }
 
 static void emit_mov_reg(hb_codegen_buffer_t* buf, int rd, int rn) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     /* ORR Xd, XZR, Xn */
     emit_u32(buf, 0xaa0003e0 | (rn << 16) | rd);
 }
 
 static void emit_add_reg(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0x8b000000 | (rm << 16) | (rn << 5) | rd);
 }
 
 static void emit_add_reg_lsl(hb_codegen_buffer_t* buf, int rd, int rn, int rm, uint32_t shift) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0x8b000000 | (rm << 16) | ((shift & 0x3f) << 10) | (rn << 5) | rd);
 }
 
 static void __attribute__((unused)) emit_sub_reg(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0xcb000000 | (rm << 16) | (rn << 5) | rd);
 }
 
 static void __attribute__((unused)) emit_and_reg(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0x8a000000 | (rm << 16) | (rn << 5) | rd);
 }
 
 static void __attribute__((unused)) emit_ands_reg(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0xea000000 | (rm << 16) | (rn << 5) | rd);
 }
 
 static void __attribute__((unused)) emit_orr_reg(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0xaa000000 | (rm << 16) | (rn << 5) | rd);
 }
 
 static void __attribute__((unused)) emit_eor_reg(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0xca000000 | (rm << 16) | (rn << 5) | rd);
 }
 
 static void emit_add_imm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imm12) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     emit_u32(buf, 0x91000000 | ((imm12 & 0xFFF) << 10) | (rn << 5) | rd);
 }
 
 static void emit_sub_imm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imm12) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     emit_u32(buf, 0xd1000000 | ((imm12 & 0xFFF) << 10) | (rn << 5) | rd);
 }
 
 static void emit_subs_imm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imm12) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     emit_u32(buf, 0xf1000000 | ((imm12 & 0xFFF) << 10) | (rn << 5) | rd);
 }
 
 static void __attribute__((unused)) emit_cmp_reg(hb_codegen_buffer_t* buf, int rn, int rm) {
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     /* SUBS XZR, Xn, Xm */
     emit_u32(buf, 0xeb00001f | (rm << 16) | (rn << 5));
 }
 
 static void emit_cmp_imm(hb_codegen_buffer_t* buf, int rn, uint32_t imm12) {
+    rn = hb_rm(buf, rn);
+
     /* SUBS XZR, Xn, #imm12 */
     emit_u32(buf, 0xf100001f | ((imm12 & 0xFFF) << 10) | (rn << 5));
 }
 
 static void __attribute__((unused)) emit_tst_reg(hb_codegen_buffer_t* buf, int rn, int rm) {
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     /* ANDS XZR, Xn, Xm */
     emit_u32(buf, 0xea00001f | (rm << 16) | (rn << 5));
 }
@@ -137,12 +204,18 @@ static void emit_guest_fence(hb_codegen_buffer_t* buf, hb_fence_kind_t kind) {
 }
 
 static void emit_ldr_x(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    rt = hb_rm(buf, rt);
+    rn = hb_rm(buf, rn);
+
     /* LDR Xt, [Xn, #off]  — off must be multiple of 8 */
     uint32_t imm12 = (off / 8) & 0xFFF;
     emit_u32(buf, 0xf9400000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 static void emit_ldr_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    rt = hb_rm(buf, rt);
+    rn = hb_rm(buf, rn);
+
     /* LDR Wt, [Xn, #off]  — off must be multiple of 4 */
     uint32_t imm12 = (off / 4) & 0xFFF;
     emit_u32(buf, 0xb9400000 | (imm12 << 10) | (rn << 5) | rt);
@@ -155,17 +228,26 @@ static void emit_ldr_gpr(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off)
 }
 
 static void emit_ldrb_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    rt = hb_rm(buf, rt);
+    rn = hb_rm(buf, rn);
+
     /* LDRB Wt, [Xn, #off] */
     emit_u32(buf, 0x39400000 | ((off & 0xfff) << 10) | (rn << 5) | rt);
 }
 
 static void emit_ldrh_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    rt = hb_rm(buf, rt);
+    rn = hb_rm(buf, rn);
+
     /* LDRH Wt, [Xn, #off] — off must be multiple of 2 */
     uint32_t imm12 = (off / 2) & 0xFFF;
     emit_u32(buf, 0x79400000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 static void emit_ldar_to_reg(hb_codegen_buffer_t* buf, int rt, int rn, hb_size_t size) {
+    rt = hb_rm(buf, rt);
+    rn = hb_rm(buf, rn);
+
     /* MacRunner: x86 permits UNALIGNED ordinary loads, but ARM64 LDAR (load-acquire)
      * faults SIGBUS (BUS_ADRALN) on a non-naturally-aligned address. Mono's string
      * compare (`cmp [rdx+8], r12` with rdx 4-aligned) hit this and livelocked.
@@ -184,41 +266,64 @@ static void emit_ldar_to_reg(hb_codegen_buffer_t* buf, int rt, int rn, hb_size_t
 }
 
 static void emit_str_x(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    rt = hb_rm(buf, rt);
+    rn = hb_rm(buf, rn);
+
     /* STR Xt, [Xn, #off] */
     uint32_t imm12 = (off / 8) & 0xFFF;
     emit_u32(buf, 0xf9000000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 static void emit_str_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    rt = hb_rm(buf, rt);
+    rn = hb_rm(buf, rn);
+
     /* STR Wt, [Xn, #off] — off must be multiple of 4 */
     uint32_t imm12 = (off / 4) & 0xFFF;
     emit_u32(buf, 0xb9000000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 static void emit_stp_x(hb_codegen_buffer_t* buf, int rt, int rt2, int rn, uint32_t off) {
+    rt = hb_rm(buf, rt);
+    rt2 = hb_rm(buf, rt2);
+    rn = hb_rm(buf, rn);
+
     /* STP Xt1, Xt2, [Xn, #off] — off must be multiple of 8 and fit imm7. */
     uint32_t imm7 = (off / 8) & 0x7f;
     emit_u32(buf, 0xa9000000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt);
 }
 
 static void emit_ldp_x(hb_codegen_buffer_t* buf, int rt, int rt2, int rn, uint32_t off) {
+    rt = hb_rm(buf, rt);
+    rt2 = hb_rm(buf, rt2);
+    rn = hb_rm(buf, rn);
+
     /* LDP Xt1, Xt2, [Xn, #off] — off must be multiple of 8 and fit imm7. */
     uint32_t imm7 = (off / 8) & 0x7f;
     emit_u32(buf, 0xa9400000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt);
 }
 
 static void emit_strb_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    rt = hb_rm(buf, rt);
+    rn = hb_rm(buf, rn);
+
     /* STRB Wt, [Xn, #off] */
     emit_u32(buf, 0x39000000 | ((off & 0xfff) << 10) | (rn << 5) | rt);
 }
 
 static void emit_strh_w(hb_codegen_buffer_t* buf, int rt, int rn, uint32_t off) {
+    rt = hb_rm(buf, rt);
+    rn = hb_rm(buf, rn);
+
     /* STRH Wt, [Xn, #off] — off must be multiple of 2 */
     uint32_t imm12 = (off / 2) & 0xFFF;
     emit_u32(buf, 0x79000000 | (imm12 << 10) | (rn << 5) | rt);
 }
 
 static void emit_stlr_from_reg(hb_codegen_buffer_t* buf, int rt, int rn, hb_size_t size) {
+    rt = hb_rm(buf, rt);
+    rn = hb_rm(buf, rn);
+
     switch (size) {
         case HB_SIZE_8:  emit_u32(buf, 0x089ffc00 | (rn << 5) | rt); break; /* STLRB Wt, [Xn] */
         case HB_SIZE_16: emit_u32(buf, 0x489ffc00 | (rn << 5) | rt); break; /* STLRH Wt, [Xn] */
@@ -268,6 +373,8 @@ static void codegen_note_reloc(hb_codegen_buffer_t* buf, int rd, uint64_t val, i
  * `mov x23, 0xffffffff` (the 32-bit zero-extension, on a quarter of all blocks) and a large
  * `mem.disp` parked in x23 as scratch. */
 static void emit_mov_imm64_kind(hb_codegen_buffer_t* buf, int rd, uint64_t val, int kind) {
+    rd = hb_rm(buf, rd);
+
     codegen_note_reloc(buf, rd, val, kind);
     /* MOVZ + up to 3 MOVK */
     emit_u32(buf, 0xd2800000 | ((val & 0xFFFF) << 5) | rd);
@@ -282,6 +389,8 @@ static void emit_mov_imm64(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
 }
 
 static void emit_mov_imm64_compact(hb_codegen_buffer_t* buf, int rd, uint64_t val) {
+    rd = hb_rm(buf, rd);
+
     bool seeded = false;
     for (unsigned hw = 0; hw < 4; hw++) {
         uint32_t part = (uint32_t)((val >> (hw * 16)) & 0xffffu);
@@ -302,6 +411,9 @@ static void emit_mov_imm_compact(hb_codegen_buffer_t* buf, int rd, uint64_t val)
 }
 
 static void emit_blr(hb_codegen_buffer_t* buf, int rn) {
+    rn = hb_rm(buf, rn);
+    buf->emitted_call = 1;   /* a frameless block must contain no call: BLR clobbers x30 */
+
     emit_u32(buf, 0xd63f0000 | (rn << 5));
 }
 
@@ -311,6 +423,8 @@ static void emit_bcond(hb_codegen_buffer_t* buf, int cond, int32_t off) {
 }
 
 static void emit_cset_w(hb_codegen_buffer_t* buf, int rd, int cond) {
+    rd = hb_rm(buf, rd);
+
     /* CSET Wd, cond == CSINC Wd, WZR, WZR, invert(cond). */
     emit_u32(buf, 0x1a9f07e0 | (((cond ^ 1) & 0xf) << 12) | (rd & 31));
 }
@@ -348,30 +462,55 @@ static void patch_b(hb_codegen_buffer_t* buf, size_t pos, size_t target) {
 }
 
 static void __attribute__((unused)) emit_lslv(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0x9ac02000 | (rm << 16) | (rn << 5) | rd);
 }
 
 static void __attribute__((unused)) emit_lsrv(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0x9ac02400 | (rm << 16) | (rn << 5) | rd);
 }
 
 static void __attribute__((unused)) emit_asrv(hb_codegen_buffer_t* buf, int rd, int rn, int rm) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0x9ac02800 | (rm << 16) | (rn << 5) | rd);
 }
 
 static void emit_rbit_x(hb_codegen_buffer_t* buf, int rd, int rn) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     emit_u32(buf, 0xdac00000 | (rn << 5) | rd);
 }
 
 static void emit_clz_x(hb_codegen_buffer_t* buf, int rd, int rn) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     emit_u32(buf, 0xdac01000 | (rn << 5) | rd);
 }
 
 static void emit_csel_x(hb_codegen_buffer_t* buf, int rd, int rn, int rm, int cond) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+
     emit_u32(buf, 0x9a800000 | (rm << 16) | ((cond & 0xf) << 12) | (rn << 5) | rd);
 }
 
 static void emit_sbfm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imms) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     emit_u32(buf, 0x93400000 | ((imms & 0x3f) << 10) | (rn << 5) | rd);
 }
 
@@ -437,6 +576,9 @@ static int macrunner_hb_jit_disable_mono_metadata_fusions(void) {
 }
 
 static void emit_ubfm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imms) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     emit_u32(buf, 0xd3400000 | ((imms & 0x3f) << 10) | (rn << 5) | rd);
 }
 
@@ -450,20 +592,32 @@ static void emit_x86_ea_to_host(hb_codegen_buffer_t* buf) {
 }
 
 static void __attribute__((unused)) emit_mvn(hb_codegen_buffer_t* buf, int rd, int rn) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     /* ORN Xd, XZR, Xn */
     emit_u32(buf, 0xaa2003e0 | (rn << 16) | rd);
 }
 
 static void __attribute__((unused)) emit_neg(hb_codegen_buffer_t* buf, int rd, int rn) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     /* SUB Xd, XZR, Xn */
     emit_u32(buf, 0xcb0003e0 | (rn << 16) | rd);
 }
 
 static void emit_rev_x(hb_codegen_buffer_t* buf, int rd, int rn) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     emit_u32(buf, 0xdac00c00 | (rn << 5) | rd);
 }
 
 static void emit_rev_w(hb_codegen_buffer_t* buf, int rd, int rn) {
+    rd = hb_rm(buf, rd);
+    rn = hb_rm(buf, rn);
+
     emit_u32(buf, 0x5ac00800 | (rn << 5) | rd);
 }
 
@@ -600,9 +754,14 @@ static bool jit_indirect_ic_enabled(void) {
 
 /* Prologue: canonical Windows ARM64 packed-unwind layout for x19-x23, lr; x19 = ctx */
 static void emit_prologue(hb_codegen_buffer_t* buf) {
-    emit_u32(buf, 0xa9bd53f3); /* STP X19, X20, [SP, #-48]! */
-    emit_u32(buf, 0xa9015bf5); /* STP X21, X22, [SP, #16] */
-    emit_u32(buf, 0xa9027bf7); /* STP X23, LR,  [SP, #32] */
+    /* Lean mode: scratch has been remapped into the caller-saved bank, so there is nothing to preserve and no
+     * frame to build. Verified over 529 347 call-free blocks: none touches the stack outside this frame, none
+     * writes x24-x28, none writes x30. The MOV is remapped along with everything else. */
+    if (!(g_lean_frame_on && buf->rmap_active == HB_RMAP_ARMED) || g_lean_remap_only) {
+        emit_u32(buf, 0xa9bd53f3); /* STP X19, X20, [SP, #-48]! */
+        emit_u32(buf, 0xa9015bf5); /* STP X21, X22, [SP, #16] */
+        emit_u32(buf, 0xa9027bf7); /* STP X23, LR,  [SP, #32] */
+    }
     emit_mov_reg(buf, 19, 0); /* MOV X19, X0 (ctx) */
 }
 
@@ -649,9 +808,11 @@ static void emit_epilogue(hb_codegen_buffer_t* buf) { emit_epilogue_ex(buf, true
 
 static void emit_epilogue_ex(hb_codegen_buffer_t* buf, bool with_chain_slot) {
     if (with_chain_slot) emit_block_chain_slot(buf);
-    emit_u32(buf, 0xa9427bf7); /* LDP X23, LR,  [SP, #32] */
-    emit_u32(buf, 0xa9415bf5); /* LDP X21, X22, [SP, #16] */
-    emit_u32(buf, 0xa8c353f3); /* LDP X19, X20, [SP], #48 */
+    if (!(g_lean_frame_on && buf->rmap_active == HB_RMAP_ARMED) || g_lean_remap_only) {
+        emit_u32(buf, 0xa9427bf7); /* LDP X23, LR,  [SP, #32] */
+        emit_u32(buf, 0xa9415bf5); /* LDP X21, X22, [SP, #16] */
+        emit_u32(buf, 0xa8c353f3); /* LDP X19, X20, [SP], #48 */
+    }
     emit_ret(buf);
 }
 
@@ -4407,7 +4568,10 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
                                  (instr->src1.mem.scale == 2) ? 1 :
                                  (instr->src1.mem.scale == 4) ? 2 :
                                  (instr->src1.mem.scale == 8) ? 3 : 0;
-                emit_u32(buf, 0x8b000000 | (21 << 16) | (shift << 10) | (20 << 5) | 20);
+                /* Was a raw emit_u32 with literal registers, which bypassed the leaf encoders and therefore
+                 * the scratch remap: with the remap armed every other instruction here used x12/x13 while this
+                 * one still wrote x20. emit_add_reg_lsl encodes identically and is remapped. */
+                emit_add_reg_lsl(buf, 20, 20, 21, shift);
             }
             if (instr->src1.mem.disp != 0) {
                 if (instr->src1.mem.disp >= 0 && instr->src1.mem.disp < 4096) {
@@ -5469,8 +5633,20 @@ static int trace_helper_ops_enabled(void) {
     return cached;
 }
 
-static void hb_jit_helper_op_note(const hb_ir_instr_t* instr) {
-    if (!trace_helper_ops_enabled() || !instr) return;
+/* MacRunner 2026-07-31 — the DISABLED path of this diagnostic cost 2.60 % of the critical thread.
+ * It early-returns, but it is an out-of-line call at 21 hot helper sites, so the call itself was the cost.
+ * Hoist the check to an inlinable static load + predicted branch; the counting path is unchanged. */
+static int g_trace_helper_ops = -1;
+static void hb_jit_helper_op_note_slow(const hb_ir_instr_t* instr);
+
+static inline void hb_jit_helper_op_note(const hb_ir_instr_t* instr) {
+    if (__builtin_expect(g_trace_helper_ops == 0, 1)) return;
+    hb_jit_helper_op_note_slow(instr);
+}
+
+static void hb_jit_helper_op_note_slow(const hb_ir_instr_t* instr) {
+    if (g_trace_helper_ops < 0) g_trace_helper_ops = trace_helper_ops_enabled() ? 1 : 0;
+    if (!g_trace_helper_ops || !instr) return;
     t_helper_op[(unsigned)instr->op & 0xffu]++;
     if (++t_helper_calls < t_helper_next) return;
     t_helper_next = t_helper_calls + 8000000ull;
@@ -10694,11 +10870,77 @@ static hb_result_t hb_arm64_codegen_block_with_cfg_inner(hb_arm64_codegen_t* cg,
 
 /* MacRunner 2026-07-30 — timed wrapper; see hb_contract_telemetry.h. This is the other half of a
  * compile: emitting the code, as opposed to preparing it for the cache. */
+/* MacRunner 2026-07-31 — frameless blocks, gated by MACRUNNER_HB_LEAN_FRAME.
+ *
+ * 48.3 % of blocks contain no call, yet every block pays a 6-register callee-saved frame: 12 memory accesses
+ * per dispatch on blocks averaging 3.14 guest instructions. Measured over 1 096 350 real blocks, eliding it on
+ * call-free blocks removes 6 352 164 memory accesses and 11.2 % of all emitted code — 1.87x the entire
+ * register-allocation ceiling.
+ *
+ * Whether a block calls is known only after lowering, so emit optimistically in lean mode and re-emit with the
+ * frame if a call appeared. Codegen is 2.2 us/block (0.69 s per run, already measured and refuted as a cost),
+ * so redoing ~52 % of blocks is ~0.35 s. */
+static int lean_frame_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_LEAN_FRAME");
+        const char* r = getenv("MACRUNNER_HB_LEAN_REMAP_ONLY");
+        cached = (e && *e && *e != '0') || (r && *r && *r != '0');
+    }
+    return cached;
+}
+
+/* Bisect half A: apply the register remap but STILL emit the frame. That is semantically valid — the block
+ * preserves callee-saved registers it has stopped using — so if this boots, the remap is innocent and the
+ * defect is in dropping the frame; if it breaks, the remap itself is at fault. */
+static int lean_remap_only(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_LEAN_REMAP_ONLY");
+        cached = e && *e && *e != '0';
+    }
+    return cached;
+}
+
+/* x19->x9 .. x23->x13: five scratch registers into the caller-saved bank, which no callee must preserve.
+ * x0-x8 argument usage is untouched. */
+static void lean_frame_arm(hb_codegen_buffer_t* out) {
+    int i;
+    for (i = 0; i < 32; i++) out->rmap[i] = (uint8_t)i;
+    /* x9 and x10 are NOT free: hb_arm64_codegen.c already emits `MOV x9, x20` / `MOV x10, x21` in a fast
+     * path, so mapping x19->x9 made that instruction overwrite the ctx pointer and killed the guest at once
+     * (22 blocks translated, no markers). Use x11-x15, the five caller-saved registers nothing else claims. */
+    out->rmap[19] = 11; out->rmap[20] = 12; out->rmap[21] = 13;
+    out->rmap[22] = 14; out->rmap[23] = 15;
+    out->rmap_active = HB_RMAP_ARMED;
+    out->emitted_call = 0;
+    g_lean_frame_on = 1;
+    if (lean_remap_only()) g_lean_remap_only = 1;
+}
+
 hb_result_t hb_arm64_codegen_block_with_cfg(hb_arm64_codegen_t* cg, const hb_ir_block_t* block,
                                             const hb_ir_cfg_t* cfg, hb_codegen_buffer_t* out) {
     struct timespec a, b;
     hb_result_t r;
     clock_gettime(CLOCK_MONOTONIC, &a);
+    if (lean_frame_enabled() && out && out->size == 0) {
+        size_t reloc0 = out->reloc_count;
+        lean_frame_arm(out);
+        r = hb_arm64_codegen_block_with_cfg_inner(cg, block, cfg, out);
+        if (r != HB_OK || out->emitted_call) {
+            out->size = 0;
+            out->reloc_count = reloc0;
+            out->reloc_overflow = false;
+            out->rmap_active = 0;
+            out->emitted_call = 0;
+            r = hb_arm64_codegen_block_with_cfg_inner(cg, block, cfg, out);
+        }
+        out->rmap_active = 0;
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        hb_contract_telemetry_add_time(0, (uint64_t)(b.tv_sec - a.tv_sec) * 1000000000ull
+                                          + (uint64_t)b.tv_nsec - (uint64_t)a.tv_nsec);
+        return r;
+    }
     r = hb_arm64_codegen_block_with_cfg_inner(cg, block, cfg, out);
     clock_gettime(CLOCK_MONOTONIC, &b);
     hb_contract_telemetry_add_time(0, (uint64_t)(b.tv_sec - a.tv_sec) * 1000000000ull

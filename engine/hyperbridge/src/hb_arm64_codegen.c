@@ -2513,6 +2513,31 @@ static void emit_ands_xzr_reg_sized(hb_codegen_buffer_t* buf, int rn, int rm, hb
     }
 }
 
+/* FEAT_FlagM, and the first place in this whole exercise where it is actually required.
+ *
+ * The width census over one HK run says 8-bit is 55.6% of the calls the fusion still cannot take
+ * and 16-bit another 6.1% — together 61.7%. x86 computes flags on the NARROW value; a 32-bit
+ * SUBS over zero-extended operands gets C and Z right (zero-extension preserves the unsigned
+ * comparison, and the result is zero exactly when the narrow result is) but N and V wrong, since
+ * they would describe bit 31 rather than bit 7/15.
+ *
+ * SETF8/SETF16 exist for exactly this: they recompute N, Z and V from the low 8/16 bits of a
+ * register and leave C alone. So SUBS for the carry, then SETF8 on the UNMASKED result for the
+ * rest, gives all four flags x86-correct. The result must not be masked first — V is defined by
+ * whether the value still fits the signed narrow range, which masking would destroy.
+ *
+ * hw.optional.arm.FEAT_FlagM reads 1 on this hardware. A wrong encoding here is silent wrong
+ * flags, so the gate stays default-OFF and the A/B's milestone check is the guard. */
+static void emit_setf8(hb_codegen_buffer_t* buf, int rn) {
+    rn = hb_rm(buf, rn);
+    emit_u32(buf, 0x3a00080du | ((uint32_t)(rn & 31) << 5));
+}
+
+static void emit_setf16(hb_codegen_buffer_t* buf, int rn) {
+    rn = hb_rm(buf, rn);
+    emit_u32(buf, 0x3a00480du | ((uint32_t)(rn & 31) << 5));
+}
+
 /* x86 TEST/AND set ZF and SF and FORCE CF = OF = 0; ARM ANDS writes N and Z and leaves C and V
  * untouched. So only conditions that read N or Z alone survive the substitution — E/NE/S/NS.
  * Everything carry- or overflow-derived (the whole unsigned family, and the signed ones, which
@@ -2598,7 +2623,8 @@ static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_
             return false;
         size = op->src1.size;
     }
-    if (size != HB_SIZE_32 && size != HB_SIZE_64) return false;
+    if (size != HB_SIZE_8 && size != HB_SIZE_16 &&
+        size != HB_SIZE_32 && size != HB_SIZE_64) return false;
 
     /* Once a loader has emitted, bailing out would leave that code stranded in the buffer and
      * the generic path would emit the instruction a second time on top of it. The old narrow
@@ -2623,13 +2649,12 @@ static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_
     if (!emit_scalar_operand_to_x20(buf, &op->src1, size)) FUSE_BAIL();
     if (!emit_scalar_operand_to_x21(buf, &op->src2, size)) FUSE_BAIL();
     /* Non-flag-setting forms: the result is needed for the lazy note and for AND/SUB's
-     * destination, but NZCV must come from the flag-setting instruction below, not from here. */
+     * destination, but NZCV must come from the flag-setting instruction below, not from here.
+     * For narrow widths the UNMASKED result also feeds SETF8/SETF16, so masking happens after. */
     if (op->op == HB_IR_TEST || op->op == HB_IR_AND)
         emit_and_reg(buf, 22, 20, 21);
     else
         emit_sub_reg(buf, 22, 20, 21);
-    emit_mask_x_reg_to_size(buf, 22, 23, size);
-    emit_note_lazy_from_x20_x21_x22(buf, kind, size);  /* stores only */
     /* Flags MUST come from the operands as they were read, and the destination store MUST come
      * after. x86 SUB usually has dst == src1 (`sub rax, rbx`), so storing first and re-reading
      * src1 yields the RESULT, and the compare becomes (result - src2). That is exactly the bug
@@ -2641,6 +2666,12 @@ static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_
         emit_ands_xzr_reg_sized(buf, 20, 21, size); /* N/Z only — the cc filter above enforces it */
     else
         emit_subs_xzr_reg_sized(buf, 20, 21, size); /* real NZCV from the ORIGINAL operands */
+    /* Narrow widths: SUBS/ANDS above ran 32-bit and so set N/V for bit 31. Recompute them from the
+     * narrow result; C survives, which is what the unsigned conditions need. */
+    if (size == HB_SIZE_8) emit_setf8(buf, 22);
+    else if (size == HB_SIZE_16) emit_setf16(buf, 22);
+    emit_mask_x_reg_to_size(buf, 22, 23, size);
+    emit_note_lazy_from_x20_x21_x22(buf, kind, size);
     if (writes_dst) {
         emit_mov_reg(buf, 20, 22);
         emit_store_x20_to_gpr_sized(buf, &op->dst);
@@ -6470,11 +6501,33 @@ static int jcc_cc_census_enabled(void) {
 }
 
 static uint64_t g_jcc_cc_counts[16];
+static uint64_t g_jcc_kind_counts[16];
+/* Operand width of the flag producer. The kind census refuted the ADD/OR/XOR guess — 96.7% of
+ * the surviving calls come from CMP/TEST/SUB, the very producers the fusion already accepts —
+ * so the barrier is not the producer. Width is the next suspect: the emitter refuses 8/16-bit,
+ * where x86 sets flags on the narrow value and matching that needs FEAT_FlagM's SETF8/SETF16. */
+static uint64_t g_jcc_width_counts[9];
 static uint64_t g_jcc_cc_total;
 
-static void jcc_cc_census_note(uint64_t cc) {
+/* Which instruction produced the flags this Jcc is about to read. The web has plenty of
+ * "CMP and TEST dominate" and no dynamic trace for ADD/DEC/XOR, and it could not answer for
+ * this binary anyway — but ctx->lazy_flags.kind already carries the producer, so the census
+ * can simply report it. That turns "E/NE probably come from ADD/OR/XOR" into a measurement. */
+static const char* jcc_kind_name(unsigned k) {
+    static const char* names[] = {"none","ADD","ADC","SUB","SBB","AND","OR","XOR",
+                                  "SHL","SHR","SAR","CMP","TEST","unk"};
+    return k < (sizeof(names)/sizeof(names[0])) ? names[k] : "?";
+}
+
+static void jcc_cc_census_note_ctx(hb_context_t* ctx, uint64_t cc) {
     uint64_t n;
     if (!jcc_cc_census_enabled()) return;
+    if (ctx) {
+        unsigned k = (unsigned)ctx->lazy_flags.kind;
+        unsigned w = (unsigned)ctx->lazy_flags.width;
+        if (k < 16) g_jcc_kind_counts[k]++;
+        if (w < 9) g_jcc_width_counts[w]++;
+    }
     if (cc < 16) g_jcc_cc_counts[cc]++;
     n = ++g_jcc_cc_total;
     /* Every 2^21 (~2M calls, roughly one line every few seconds), not 2^23.
@@ -6492,6 +6545,13 @@ static void jcc_cc_census_note(uint64_t cc) {
             if (g_jcc_cc_counts[i])
                 fprintf(stderr, " %s=%llu", jcc_cc_name((uint64_t)i),
                         (unsigned long long)g_jcc_cc_counts[i]);
+        for (i = 0; i < 16; i++)
+            if (g_jcc_kind_counts[i])
+                fprintf(stderr, " by_%s=%llu", jcc_kind_name((unsigned)i),
+                        (unsigned long long)g_jcc_kind_counts[i]);
+        for (i = 0; i < 9; i++)
+            if (g_jcc_width_counts[i])
+                fprintf(stderr, " w%d=%llu", i, (unsigned long long)g_jcc_width_counts[i]);
         fprintf(stderr, "\n");
         fflush(stderr);
     }
@@ -6500,7 +6560,7 @@ static void jcc_cc_census_note(uint64_t cc) {
 uint64_t hb_jit_helper_eval_cond_lazy(hb_context_t* ctx, uint64_t cc) {
     bool value = false;
     hb_result_t r;
-    jcc_cc_census_note(cc);
+    jcc_cc_census_note_ctx(ctx, cc);
     r = hb_flags_eval_cond(ctx, (hb_cc_t)cc, &value);
     if (ctx) ctx->last_result = r;
     if (r != HB_OK) return 0;

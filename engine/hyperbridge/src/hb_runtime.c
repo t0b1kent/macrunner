@@ -5690,6 +5690,21 @@ static void try_promote_hot_block_families(hb_jit_runtime_t* rt, hb_context_t* c
 }
 
 static bool should_retry_cached_promotion(const hb_block_cache_entry_t* entry) {
+    /* This gate is a retry for promotion, so with promotion off there is nothing to retry into.
+     * Without this line it fires on EVERY dispatch: the backoff below reads entry->hit_count,
+     * but hit_count is only ever incremented at trace_jit_hot_block_tick():2771, which sits
+     * BELOW that function's `!trace_jit_hot_blocks_enabled()` early return at :2770. Tracing is
+     * off in every normal run, so hit_count stays 0 for the life of the entry, `hit_count < 4`
+     * is permanently true, and each dispatch pays an extra block_cache_find() into a 36 MB
+     * (524288 x ~72 B) open-addressed table — a likely DRAM access — plus a call to
+     * try_promote_hot_block_families() that returns immediately because promote_families_enabled()
+     * is 0. Pure cost, no effect.
+     *
+     * Found while accounting per-block dispatch cost: ~350-500 host instructions and ~1.5 KB of
+     * memset/memcpy traffic per guest block, against a translated block averaging 34 ARM64
+     * instructions. Halving the hash probing is small against that, but it is free and it is on
+     * the hottest path in the engine. */
+    if (!promote_families_enabled()) return false;
     if (!entry || entry->fused) return false;
     if (entry->hit_count < 4) return true;
     return (entry->hit_count & (entry->hit_count - 1)) == 0;

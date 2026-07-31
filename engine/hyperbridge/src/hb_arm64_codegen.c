@@ -1109,13 +1109,54 @@ static int direct_byte_load_enabled(void) {
     return cached;
 }
 
+/* Which sub-condition of the direct-load predicate actually refuses. The emitter-level census
+ * put 27.8% of all Jcc-fusion refusals on the operand loader while its own filters measured
+ * zero, and five successive guesses at the cause were each refuted by measurement. So instead
+ * of a sixth guess, the predicate reports which term fails. Same env gate as the other census. */
+enum { DL_KUSER = 0, DL_BYTE, DL_ARCH, DL_SCALAR, DL_SHAPE_OP, DL_SHAPE_NATIVE, DL_OK, DL_MAX };
+static uint64_t g_dl_reason[DL_MAX];
+static int dl_census_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_JCC_CC_CENSUS");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
+static void dl_note(int r) {
+    static uint64_t seen;
+    static const char* n[DL_MAX] = {"kuser","byte","arch","scalar_gate","not_user_mem","shape","ok"};
+    if (!dl_census_enabled()) return;
+    g_dl_reason[r]++;
+    /* Print early and often: the predicate only runs for MEM operands, so a coarse period simply
+     * never fires. The first version used 1<<14 and printed nothing at all — the third time today
+     * that a chosen print threshold, not the thing being measured, decided the result. */
+    if (++seen == 1 || seen == 100 || (seen & 0x3ffu) == 0) {
+        int i;
+        fprintf(stderr, "macrunner-hb-directload-reasons:");
+        for (i = 0; i < DL_MAX; i++)
+            if (g_dl_reason[i])
+                fprintf(stderr, " %s=%llu", n[i], (unsigned long long)g_dl_reason[i]);
+        fprintf(stderr, "\n");
+        fflush(stderr);
+    }
+}
+
 static bool direct_user_mem_load_allowed(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
     if (op && op->size == HB_SIZE_8 && direct_byte_load_enabled()) {
-        if (mem_operand_is_kuser_absolute(op)) return false;
+        if (mem_operand_is_kuser_absolute(op)) { dl_note(DL_KUSER); return false; }
         return direct_mem_codegen_arch_enabled(buf) && jit_direct_scalar_mem_enabled() &&
                is_direct_user_mem_operand(op) && jit_native_mem_shape_allows(op);
     }
-    return direct_user_mem_allowed(buf, op);
+    if (mem_operand_is_kuser_absolute(op)) { dl_note(DL_KUSER); return false; }
+    if (op && op->size == HB_SIZE_8) { dl_note(DL_BYTE); return false; }
+    if (!direct_mem_codegen_arch_enabled(buf)) { dl_note(DL_ARCH); return false; }
+    if (!jit_direct_scalar_mem_enabled()) { dl_note(DL_SCALAR); return false; }
+    if (!is_direct_user_mem_operand(op)) { dl_note(DL_SHAPE_OP); return false; }
+    if (!jit_native_mem_shape_allows(op)) { dl_note(DL_SHAPE_NATIVE); return false; }
+    dl_note(DL_OK);
+    return true;
 }
 
 static bool direct_user_xmm_mem_allowed(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {

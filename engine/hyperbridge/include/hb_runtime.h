@@ -53,6 +53,8 @@ typedef struct {
      * half is block->instrs[i].guest_addr. Owned by the entry, freed on eviction. Allocated
      * only while MACRUNNER_HB_RIPMAP is on, so normal runs carry no extra memory. */
     uint32_t* host_off;
+    /* Instruction index for host_off[n] -- see hb_codegen.h: fusions make it differ from n. */
+    uint16_t* host_instr;
     uint16_t host_off_count;
 } hb_block_cache_entry_t;
 

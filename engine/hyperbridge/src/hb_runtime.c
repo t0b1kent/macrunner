@@ -2207,15 +2207,22 @@ static void ripmap_attach(hb_block_cache_entry_t* entry, const hb_codegen_buffer
     bytes = (size_t)buf->host_off_count * sizeof(uint32_t);
     entry->host_off = (uint32_t*)malloc(bytes);
     if (!entry->host_off) return;
+    entry->host_instr = (uint16_t*)malloc((size_t)buf->host_off_count * sizeof(uint16_t));
+    if (!entry->host_instr) { free(entry->host_off); entry->host_off = NULL; return; }
     memcpy(entry->host_off, buf->host_off, bytes);
+    memcpy(entry->host_instr, buf->host_instr, (size_t)buf->host_off_count * sizeof(uint16_t));
+    /* Set last: the resolver takes a non-zero count as "both arrays are populated". */
     entry->host_off_count = buf->host_off_count;
 }
 
 /* host_pc -> exact guest address of the instruction being executed, or 0 if unresolvable. */
 static uint64_t ripmap_guest_for_host_pc(const hb_block_cache_entry_t* entry, uint64_t host_pc) {
     size_t lo = 0, hi, mid, best;
+    uint16_t instr;
     uint64_t off;
-    if (!entry || !entry->host_off || !entry->host_off_count || !entry->block) return 0;
+    if (!entry || !entry->host_off || !entry->host_instr || !entry->host_off_count ||
+        !entry->block)
+        return 0;
     if (!entry->native_code || host_pc < (uint64_t)(uintptr_t)entry->native_code) return 0;
     off = host_pc - (uint64_t)(uintptr_t)entry->native_code;
     if (off >= entry->native_size) return 0;
@@ -2226,8 +2233,13 @@ static uint64_t ripmap_guest_for_host_pc(const hb_block_cache_entry_t* entry, ui
         if (entry->host_off[mid] <= off) { best = mid; lo = mid + 1; }
         else { if (!mid) break; hi = mid - 1; }
     }
-    if (best >= entry->block->instr_count) return 0;
-    return entry->block->instrs[best].guest_addr;
+    /* best indexes the MAP, not the instruction list -- the two diverge in any block where a
+     * fusion fired, so the instruction index has to be read out of the map rather than assumed
+     * equal to it. Getting this wrong returns a plausible-looking address from the same block,
+     * which is exactly the kind of wrong answer a counter cannot flag as wrong. */
+    instr = entry->host_instr[best];
+    if (instr >= entry->block->instr_count) return 0;
+    return entry->block->instrs[instr].guest_addr;
 }
 
 static void ripmap_check(const hb_block_cache_entry_t* faulted, uint64_t host_pc,
@@ -2269,6 +2281,7 @@ static void block_cache_evict_entry(hb_jit_runtime_t* rt, hb_block_cache_t* cach
         block_cache_prepare_replace_entry(rt, cache, entry);
     block_cache_release_owned_block(entry, NULL);
     free(entry->host_off);
+    free(entry->host_instr);
     memset(entry, 0, sizeof(*entry));
     if (cache->chain_meta && idx != SIZE_MAX)
         memset(&cache->chain_meta[idx], 0, sizeof(cache->chain_meta[idx]));
@@ -3131,9 +3144,23 @@ static bool is_control_transfer_op(hb_ir_op_t op) {
  * The write is a benign race by construction: two threads racing on the same block compute the
  * SAME value from the same immutable input, so a torn read is impossible (aligned int32) and a
  * lost update only costs a recompute. No lock, no atomic ordering requirement. */
+/* A/B by ENVIRONMENT ONLY — one binary, no deploy between arms, which is the only way to compare
+ * two arms of a boot whose marker time already spans 210-628 s without also varying the build.
+ * Default 1 (memoised); MACRUNNER_HB_TERMINAL_MEMO=0 restores the per-dispatch scan. */
+static int terminal_memo_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_TERMINAL_MEMO", 1);
+}
+
 static const hb_ir_instr_t* first_control_transfer_instr(const hb_ir_block_t* block) {
     int32_t idx;
     if (!block) return NULL;
+
+    if (!terminal_memo_enabled()) {
+        for (size_t i = 0; i < block->instr_count; i++)
+            if (is_control_transfer_op(block->instrs[i].op)) return &block->instrs[i];
+        return NULL;
+    }
 
     idx = block->first_transfer_idx;
     if (idx == HB_IR_TRANSFER_NONE) return NULL;

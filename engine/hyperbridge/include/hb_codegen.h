@@ -99,6 +99,12 @@ typedef struct {
      * snapshot path before anything is removed. host_off_overflow marks a block with more
      * instructions than the table holds — such a block simply keeps the old path. */
     uint32_t host_off[HB_CODEGEN_MAX_HOST_OFF];
+    /* The instruction index that produced host_off[n]. NOT redundant with n: fusions consume
+     * 2-4 instructions and record only the first, so the entry counter runs behind the loop
+     * index. Indexing block->instrs[] by the entry number instead of by this value returns a
+     * different guest instruction's address in every block where a fusion fired -- which, with
+     * CMP/Jcc fused, is the common case rather than a corner one. */
+    uint16_t host_instr[HB_CODEGEN_MAX_HOST_OFF];
     uint16_t host_off_count;
     bool host_off_overflow;
 } hb_codegen_buffer_t;

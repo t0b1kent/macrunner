@@ -11544,10 +11544,18 @@ static hb_result_t hb_arm64_codegen_block_with_cfg_inner(hb_arm64_codegen_t* cg,
          * already carries, so the pair is complete without emitting anything into the code
          * stream. Fusions that consume several instructions record only the first, which is
          * correct: the fault lands inside the fused sequence and the guest position that matters
-         * is where that sequence started. See hb_codegen.h. */
-        if (out->host_off_count < HB_CODEGEN_MAX_HOST_OFF)
+         * is where that sequence started.
+         *
+         * The instruction index is recorded EXPLICITLY alongside the offset rather than being
+         * inferred from the entry number. Those two are equal only in a block where no fusion
+         * fired: every fusion advances `i` past instructions that get no entry, so the entry
+         * counter runs behind `i` from that point on. Reading block->instrs[] by entry number
+         * therefore returns a different instruction's guest address -- silently, and in the
+         * common case, since CMP/Jcc is fused. See hb_codegen.h. */
+        if (out->host_off_count < HB_CODEGEN_MAX_HOST_OFF) {
+            out->host_instr[out->host_off_count] = (uint16_t)i;
             out->host_off[out->host_off_count++] = (uint32_t)out->size;
-        else
+        } else
             out->host_off_overflow = true;
 
         if (i + 2 < instr_limit &&

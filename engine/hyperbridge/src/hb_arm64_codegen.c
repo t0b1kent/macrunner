@@ -2463,6 +2463,122 @@ static bool emit_scalar_flags_jcc_pair(hb_codegen_buffer_t* buf, const hb_ir_ins
     return emit_cmp_zero_set_pc(buf, jcc->cc, jcc->target, jcc->guest_addr + jcc->guest_len);
 }
 
+/* MacRunner 2026-07-31 — fuse CMP/SUB + Jcc for the FULL condition set.
+ *
+ * Why the old pair emitter stops at E/NE: it computes the result with a NON-flag-setting
+ * SUB and then does `cmp result, #0`, so the only thing derivable is zero/non-zero. Everything
+ * else — the signed and unsigned families — falls through to a full C call into
+ * hb_jit_helper_eval_cond_lazy. Census over one 288 s HK run, counted inside that helper:
+ *
+ *   243 269 632 calls: A 14.7% GE 11.4% G 11.2% NE 11.2% L 11.0% B 9.9% AE 9.6% BE 9.0%
+ *                      E 7.6% LE 4.3% NS 0.8% S 0.6% | O+P together 0.01%
+ *
+ * So ~99% of the calls are conditions ARM can test directly, if real NZCV exists at the
+ * branch. This emitter produces them with SUBS at the operand width and then branches.
+ *
+ * No FEAT_FlagM is needed here, contrary to the first reading of the census: after SUBS the
+ * ARM unsigned conditions HI/HS/LO/LS mean exactly what x86 JA/JAE/JB/JBE mean. CFINV would
+ * only be needed to materialise CF into a register (SETcc/ADC), not to branch on it.
+ *
+ * Deliberately narrow, because a wrong branch here is silent corruption:
+ *   - producers: CMP and SUB only. ADD's carry has the opposite sense, and AND/TEST clear
+ *     CF/OF on x86 while ANDS leaves them untouched — both need their own reasoning.
+ *   - widths: 32 and 64 only. 8/16-bit x86 ops set flags on the narrow value; matching that
+ *     needs FEAT_FlagM's SETF8/SETF16, which is a separate step.
+ *   - conditions: the 14 arm64_cond() maps. P/NP keep the helper — they are 0.002% of calls
+ *     and have no ARM equivalent (FEAT_AFP is 0 on this hardware).
+ * Flags are produced LAST, immediately before the branch: the lazy-flags note and the dst
+ * store in between are stores only, which do not disturb NZCV. */
+static void emit_subs_xzr_reg_sized(hb_codegen_buffer_t* buf, int rn, int rm, hb_size_t size) {
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+    if (size == HB_SIZE_32) {
+        /* SUBS WZR, Wn, Wm — 32-bit form, so NZCV reflect the 32-bit compare. */
+        emit_u32(buf, 0x6b00001f | (rm << 16) | (rn << 5));
+    } else {
+        /* SUBS XZR, Xn, Xm */
+        emit_u32(buf, 0xeb00001f | (rm << 16) | (rn << 5));
+    }
+}
+
+static bool emit_flags_set_pc_any_cond(hb_codegen_buffer_t* buf, hb_cc_t cc,
+                                       uint64_t target, uint64_t fallthrough) {
+    int64_t delta = (int64_t)target - (int64_t)fallthrough;
+    if (cc == HB_CC_P || cc == HB_CC_NP) return false;
+    if (delta >= -4095 && delta <= 4095) {
+        emit_mov_imm_compact(buf, 21, fallthrough);
+        emit_bcond(buf, arm64_cond(cc) ^ 1, 8);
+        if (delta >= 0) emit_add_imm(buf, 21, 21, (uint32_t)delta);
+        else emit_sub_imm(buf, 21, 21, (uint32_t)(-delta));
+        emit_str_x(buf, 21, 19, (uint32_t)offsetof(hb_context_t, pc));
+        return true;
+    }
+    emit_bcond(buf, arm64_cond(cc), 28);
+    emit_mov_imm64(buf, 21, fallthrough);
+    emit_str_x(buf, 21, 19, (uint32_t)offsetof(hb_context_t, pc));
+    emit_b(buf, 24);
+    emit_mov_imm64(buf, 20, target);
+    emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, pc));
+    return true;
+}
+
+static int jcc_fuse_full_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_JCC_FUSE_FULL");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
+static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
+                                    const hb_ir_instr_t* jcc) {
+    hb_lazy_flags_kind_t kind;
+    hb_size_t size;
+    bool writes_dst = false;
+
+    if (!jcc_fuse_full_enabled()) return false;
+    if (!op || !jcc || jcc->op != HB_IR_Jcc) return false;
+    if (jcc->cc == HB_CC_P || jcc->cc == HB_CC_NP) return false;
+    if (op->op != HB_IR_CMP && op->op != HB_IR_SUB) return false;
+    if (!lazy_kind_for_scalar_op(op->op, &kind)) return false;
+
+    if (op->op == HB_IR_SUB) {
+        if (!is_plain_gpr_reg_operand(&op->dst) || !is_plain_gpr_reg_operand(&op->src1) ||
+            (op->src2.type == HB_OP_REG && !is_plain_gpr_reg_operand(&op->src2)) ||
+            (op->src2.type != HB_OP_REG && op->src2.type != HB_OP_IMM))
+            return false;
+        size = op->dst.size;
+        writes_dst = true;
+    } else {
+        if (op->src1.type == HB_OP_REG && op->src1.reg_offset != 0) return false;
+        if (op->src2.type == HB_OP_REG && op->src2.reg_offset != 0) return false;
+        if (op->src2.type != HB_OP_REG && op->src2.type != HB_OP_IMM) return false;
+        size = op->src1.size;
+    }
+    if (size != HB_SIZE_32 && size != HB_SIZE_64) return false;
+
+    if (!emit_scalar_operand_to_x20(buf, &op->src1, size)) return false;
+    if (!emit_scalar_operand_to_x21(buf, &op->src2, size)) return false;
+    emit_sub_reg(buf, 22, 20, 21);                 /* plain SUB: leaves NZCV alone */
+    emit_mask_x_reg_to_size(buf, 22, 23, size);
+    emit_note_lazy_from_x20_x21_x22(buf, kind, size);  /* stores only */
+    /* Flags MUST come from the operands as they were read, and the destination store MUST come
+     * after. x86 SUB usually has dst == src1 (`sub rax, rbx`), so storing first and re-reading
+     * src1 yields the RESULT, and the compare becomes (result - src2). That is exactly the bug
+     * the first version shipped: the fused arm died at +6.4 s with c0000144/c000007b while the
+     * unfused arm reached "Restored language". Reordering is safe because everything below
+     * writes memory or moves registers — emit_store_x20_to_gpr_sized emits only
+     * strb/strh/str/ubfm, and emit_mov_reg is an ORR; none of them touch NZCV. */
+    emit_subs_xzr_reg_sized(buf, 20, 21, size);    /* real NZCV from the ORIGINAL operands */
+    if (writes_dst) {
+        emit_mov_reg(buf, 20, 22);
+        emit_store_x20_to_gpr_sized(buf, &op->dst);
+    }
+    return emit_flags_set_pc_any_cond(buf, jcc->cc, jcc->target,
+                                      jcc->guest_addr + jcc->guest_len);
+}
+
 static bool emit_scalar_flags_result_to_x22(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op) {
     hb_lazy_flags_kind_t kind;
     hb_size_t size;
@@ -6252,9 +6368,58 @@ void hb_jit_helper_exec_cmp_test_operand_lazy(hb_context_t* ctx, const hb_ir_ins
     ctx->last_result = HB_OK;
 }
 
+/* MacRunner 2026-07-31 — which condition codes actually pay for the helper.
+ *
+ * emit_scalar_flags_jcc_pair (:2419) fuses a flag-op + Jcc pair only when
+ * `cc == HB_CC_E || cc == HB_CC_NE`, because the fused form emits the NON-flag-setting
+ * SUB/AND and then tests the result against zero — from which nothing but zero/non-zero
+ * is derivable. Every other condition therefore lands here, on a full C call.
+ *
+ * Counting at TRANSLATION time would give the static shape of the code; the cost is
+ * dynamic, so the counter lives in the helper itself, where cc arrives as an argument.
+ * The dump is periodic and NOT atexit: runs end on SIGTERM (rc=143) and an atexit
+ * summary is exactly what we lost to that once already. */
+static const char* jcc_cc_name(uint64_t cc) {
+    static const char* names[16] = {"E","NE","S","NS","G","GE","L","LE",
+                                    "A","AE","B","BE","O","NO","P","NP"};
+    return cc < 16 ? names[cc] : "?";
+}
+
+static int jcc_cc_census_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_JCC_CC_CENSUS");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
+static uint64_t g_jcc_cc_counts[16];
+static uint64_t g_jcc_cc_total;
+
+static void jcc_cc_census_note(uint64_t cc) {
+    uint64_t n;
+    if (!jcc_cc_census_enabled()) return;
+    if (cc < 16) g_jcc_cc_counts[cc]++;
+    n = ++g_jcc_cc_total;
+    /* 1st, 1e6, then every 2^23 — bounded output that survives a killed run. */
+    if (n == 1 || n == 1000000 || (n & 0x7fffffu) == 0) {
+        int i;
+        fprintf(stderr, "macrunner-hb-jcc-cc-census: total=%llu", (unsigned long long)n);
+        for (i = 0; i < 16; i++)
+            if (g_jcc_cc_counts[i])
+                fprintf(stderr, " %s=%llu", jcc_cc_name((uint64_t)i),
+                        (unsigned long long)g_jcc_cc_counts[i]);
+        fprintf(stderr, "\n");
+        fflush(stderr);
+    }
+}
+
 uint64_t hb_jit_helper_eval_cond_lazy(hb_context_t* ctx, uint64_t cc) {
     bool value = false;
-    hb_result_t r = hb_flags_eval_cond(ctx, (hb_cc_t)cc, &value);
+    hb_result_t r;
+    jcc_cc_census_note(cc);
+    r = hb_flags_eval_cond(ctx, (hb_cc_t)cc, &value);
     if (ctx) ctx->last_result = r;
     if (r != HB_OK) return 0;
     return value ? 1 : 0;
@@ -11134,6 +11299,14 @@ static hb_result_t hb_arm64_codegen_block_with_cfg_inner(hb_arm64_codegen_t* cg,
         }
         if (i + 1 < instr_limit &&
             emit_test_same_reg_jcc_pair(out, &block->instrs[i], &block->instrs[i + 1])) {
+            i++;
+            continue;
+        }
+        /* Full-condition CMP/SUB + Jcc goes first: it takes the signed and unsigned families
+         * that emit_scalar_flags_jcc_pair rejects (it only handles E/NE). Gated OFF by default;
+         * when the gate is off this call returns immediately and the old path is unchanged. */
+        if (i + 1 < instr_limit &&
+            emit_cmp_sub_jcc_native(out, &block->instrs[i], &block->instrs[i + 1])) {
             i++;
             continue;
         }

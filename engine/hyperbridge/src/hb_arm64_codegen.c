@@ -1084,6 +1084,40 @@ static bool direct_user_mem_allowed(hb_codegen_buffer_t* buf, const hb_ir_operan
            is_direct_user_mem_operand(op) && jit_native_mem_shape_allows(op);
 }
 
+/* Byte LOADS on the direct path, opt-in.
+ *
+ * direct_user_mem_allowed() refuses HB_SIZE_8 outright, and its own comment explains why: byte
+ * STORES are the only width with direct_mem_alignment_mask() == 0, so no misalignment fallback is
+ * ever emitted and a raw STLRB reaches neither the guest->host translation nor the HB_PERM_WRITE
+ * check. Five bisection arms established that. The same comment records that the exclusion is
+ * deliberately wider than the evidence — "this also excludes byte LOADS, which the side bisect
+ * exonerated (stores-only reproduced the crash on its own)".
+ *
+ * The Jcc-fusion reason census is what makes that follow-up worth taking now: of the CMP+Jcc pairs
+ * the emitter cannot take, 27.8% die on the operand loader, and 8-bit pairs lost only 8.5% of their
+ * helper calls against 85% for 16-bit — SETF8 is fine, the operands never reach it. A load performs
+ * no write, so the permission-check hazard does not apply to it.
+ *
+ * Separate gate, default OFF, so the byte-store ban stays exactly as its author left it and this
+ * can be A/B'd on its own. */
+static int direct_byte_load_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_DIRECT_BYTE_LOAD");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
+static bool direct_user_mem_load_allowed(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
+    if (op && op->size == HB_SIZE_8 && direct_byte_load_enabled()) {
+        if (mem_operand_is_kuser_absolute(op)) return false;
+        return direct_mem_codegen_arch_enabled(buf) && jit_direct_scalar_mem_enabled() &&
+               is_direct_user_mem_operand(op) && jit_native_mem_shape_allows(op);
+    }
+    return direct_user_mem_allowed(buf, op);
+}
+
 static bool direct_user_xmm_mem_allowed(hb_codegen_buffer_t* buf, const hb_ir_operand_t* op) {
     if (mem_operand_is_kuser_absolute(op)) return false;
     return direct_mem_codegen_arch_enabled(buf) && jit_direct_xmm_mem_enabled() &&
@@ -2317,7 +2351,7 @@ static bool emit_scalar_operand_to_x20(hb_codegen_buffer_t* buf, const hb_ir_ope
         return true;
     }
     if (op->type == HB_OP_MEM && jit_direct_mem_codegen_enabled(buf) &&
-        direct_user_mem_allowed(buf, op)) {
+        direct_user_mem_load_allowed(buf, op)) {
         uint32_t off = emit_direct_mem_addr_with_offset(buf, op);
         emit_direct_mem_load_to_x20_off(buf, size, off);
         return true;
@@ -2589,6 +2623,37 @@ static bool fuse_source_operand_ok(const hb_ir_operand_t* op) {
     return op->type == HB_OP_MEM;
 }
 
+/* Why a CMP+Jcc pair is refused. Guessing cost two wrong turns already (ADD/OR/XOR as the
+ * producer; "8/16-bit is 61.7% of the remainder", read off an unrepresentative early sample),
+ * so the emitter reports its own rejection reasons. TRANSLATION-time counts: they show which
+ * filter eats the pairs, not how hot those pairs are. Own env check — the census gate is
+ * defined further down the file. */
+enum { FR_PRODUCER = 0, FR_CC_NZ, FR_DST, FR_SRCSHAPE, FR_WIDTH, FR_LOADER, FR_OK, FR_MAX };
+static uint64_t g_fuse_reason[FR_MAX];
+static int fuse_reason_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_JCC_CC_CENSUS");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+static void fuse_reason(int r) {
+    static uint64_t seen;
+    static const char* n[FR_MAX] = {"producer","cc_nz","dst","srcshape","width","loader","fused"};
+    if (!fuse_reason_enabled()) return;
+    g_fuse_reason[r]++;
+    if ((++seen & 0x3fffu) == 0) {
+        int i;
+        fprintf(stderr, "macrunner-hb-jcc-fuse-reasons:");
+        for (i = 0; i < FR_MAX; i++)
+            if (g_fuse_reason[i])
+                fprintf(stderr, " %s=%llu", n[i], (unsigned long long)g_fuse_reason[i]);
+        fprintf(stderr, "\n");
+        fflush(stderr);
+    }
+}
+
 static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
                                     const hb_ir_instr_t* jcc) {
     hb_lazy_flags_kind_t kind;
@@ -2604,18 +2669,18 @@ static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_
     if (!op || !jcc || jcc->op != HB_IR_Jcc) return false;
     if (jcc->cc == HB_CC_P || jcc->cc == HB_CC_NP) return false;
     if (op->op != HB_IR_CMP && op->op != HB_IR_SUB &&
-        op->op != HB_IR_TEST && op->op != HB_IR_AND) return false;
+        op->op != HB_IR_TEST && op->op != HB_IR_AND) { fuse_reason(FR_PRODUCER); return false; }
     /* TEST/AND produce flags with ANDS, which cannot serve carry/overflow conditions. */
     if ((op->op == HB_IR_TEST || op->op == HB_IR_AND) && !cc_reads_only_n_or_z(jcc->cc))
-        return false;
+        { fuse_reason(FR_CC_NZ); return false; }
     if (!lazy_kind_for_scalar_op(op->op, &kind)) return false;
 
     if (op->op == HB_IR_SUB || op->op == HB_IR_AND) {
         /* dst must stay a plain GPR — the result is written back through
          * emit_store_x20_to_gpr_sized, which only knows how to reach a register. */
-        if (!is_plain_gpr_reg_operand(&op->dst)) return false;
+        if (!is_plain_gpr_reg_operand(&op->dst)) { fuse_reason(FR_DST); return false; }
         if (!fuse_source_operand_ok(&op->src1) || !fuse_source_operand_ok(&op->src2))
-            return false;
+            { fuse_reason(FR_SRCSHAPE); return false; }
         size = op->dst.size;
         writes_dst = true;
     } else {
@@ -2624,7 +2689,7 @@ static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_
         size = op->src1.size;
     }
     if (size != HB_SIZE_8 && size != HB_SIZE_16 &&
-        size != HB_SIZE_32 && size != HB_SIZE_64) return false;
+        size != HB_SIZE_32 && size != HB_SIZE_64) { fuse_reason(FR_WIDTH); return false; }
 
     /* Once a loader has emitted, bailing out would leave that code stranded in the buffer and
      * the generic path would emit the instruction a second time on top of it. The old narrow
@@ -2643,6 +2708,7 @@ static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_
         buf->reloc_overflow = saved_overflow; \
         buf->rmap_active = saved_rmap;     \
         buf->emitted_call = saved_call;    \
+        fuse_reason(FR_LOADER);            \
         return false;                      \
     } while (0)
 
@@ -2681,6 +2747,7 @@ static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_
     if (!emit_flags_set_pc_any_cond(buf, jcc->cc, jcc->target,
                                     jcc->guest_addr + jcc->guest_len))
         FUSE_BAIL();
+    fuse_reason(FR_OK);
     return true;
 #undef FUSE_BAIL
 }

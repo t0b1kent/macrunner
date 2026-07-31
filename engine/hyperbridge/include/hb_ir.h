@@ -585,7 +585,21 @@ typedef struct hb_ir_block {
     size_t succ_count;
     struct hb_ir_block** pred;
     size_t pred_count;
+    /* MacRunner 2026-08-01 — memoised index of the first control-transfer instruction.
+     *
+     * hb_jit_runtime_run re-derived this with a linear scan on EVERY dispatched block, and the
+     * profile put that scan at the top of the critical thread's self time. The answer is a pure
+     * function of `instrs`, which never changes after translation, so it is computed once.
+     *
+     * -2 = not yet computed, -1 = no control-transfer instruction in this block, >=0 = index.
+     * Blocks are created by hb_ir_block_create and only appended to during translation, so the
+     * one place that must invalidate this is the append path. */
+    int32_t first_transfer_idx;
 } hb_ir_block_t;
+
+/* Sentinels for hb_ir_block_t.first_transfer_idx. */
+#define HB_IR_TRANSFER_UNCOMPUTED (-2)
+#define HB_IR_TRANSFER_NONE       (-1)
 
 /* Control-flow graph */
 typedef struct {

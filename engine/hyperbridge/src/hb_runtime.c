@@ -567,6 +567,12 @@ static hb_ir_block_t* block_clone_for_cache(const hb_ir_block_t* block) {
     if (block->instr_count)
         memcpy(copy->instrs, block->instrs, block->instr_count * sizeof(hb_ir_instr_t));
     copy->instr_count = block->instr_count;
+    /* This path fills `instrs` by memcpy rather than through hb_ir_emit, so it must carry the
+     * memo itself. The copy is instruction-for-instruction identical, so the source's answer is
+     * valid for it; if the source was never asked, UNCOMPUTED propagates and the clone resolves it
+     * on first use. Cached blocks are the ones the dispatcher actually sees, so getting this wrong
+     * would be invisible in translation and wrong at run time. */
+    copy->first_transfer_idx = block->first_transfer_idx;
     return copy;
 }
 
@@ -3108,11 +3114,39 @@ static bool is_control_transfer_op(hb_ir_op_t op) {
            op == HB_IR_Jcc || op == HB_IR_LOOP || op == HB_IR_JRCXZ;
 }
 
+/* MacRunner 2026-08-01 — memoised, because this linear scan was the top self-time item on the
+ * critical thread.
+ *
+ * Profiled with the dispatch-stats instrument OFF (it inflates the caller by ~10 points), the two
+ * hot PCs inside hb_jit_runtime_run together carried 24.2 % / 18.6 % of the critical thread's
+ * samples across two samples of one run. Disassembly identifies one of them as this loop: a
+ * 184-byte-stride walk testing each op against the control-transfer bitmask — i.e. hb_ir_instr_t
+ * is 184 bytes, so a 3-instruction block touches ~552 bytes of cold-ish memory purely to answer
+ * "where is the terminal", on EVERY dispatch.
+ *
+ * The answer cannot change: it is a pure function of `instrs`, which is fixed once translation
+ * finishes. So compute it once and keep it on the block. hb_ir_emit invalidates the memo, so a
+ * block still being built can never serve a stale answer.
+ *
+ * The write is a benign race by construction: two threads racing on the same block compute the
+ * SAME value from the same immutable input, so a torn read is impossible (aligned int32) and a
+ * lost update only costs a recompute. No lock, no atomic ordering requirement. */
 static const hb_ir_instr_t* first_control_transfer_instr(const hb_ir_block_t* block) {
+    int32_t idx;
     if (!block) return NULL;
+
+    idx = block->first_transfer_idx;
+    if (idx == HB_IR_TRANSFER_NONE) return NULL;
+    if (idx >= 0)
+        return (size_t)idx < block->instr_count ? &block->instrs[idx] : NULL;
+
     for (size_t i = 0; i < block->instr_count; i++) {
-        if (is_control_transfer_op(block->instrs[i].op)) return &block->instrs[i];
+        if (is_control_transfer_op(block->instrs[i].op)) {
+            ((hb_ir_block_t*)block)->first_transfer_idx = (int32_t)i;
+            return &block->instrs[i];
+        }
     }
+    ((hb_ir_block_t*)block)->first_transfer_idx = HB_IR_TRANSFER_NONE;
     return NULL;
 }
 

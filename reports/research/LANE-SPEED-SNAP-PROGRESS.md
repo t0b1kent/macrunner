@@ -107,3 +107,68 @@ thread DOMINATED by that symbol (self share > ~50 %), not one that merely touche
 
 Evidence: `MASTER-I12-SELFINIT-SAMPLES/SPEEDPROF1-s{1,2}.txt`,
 `SPEEDPROF2_SKIP-s{1,2}.txt`; runs `laneA-SPEEDPROF1-*`, `laneA-SPEEDPROF2SKIP-*`.
+
+## 2026-08-01 — THE INSTRUMENT COST 17 POINTS, AND A PER-DISPATCH SCAN WAS THE REAL TOP ITEM
+
+### 1. Correction: `MACRUNNER_HB_TRACE_DISPATCH_STATS=1` inflates the critical thread by ~17 points
+
+Same config, trace ON vs OFF, critical thread (`Thread_175198873` / `Thread_175227269`, both samples
+of each arm agreeing):
+
+| self time | ON s1 | ON s2 | OFF s1 | OFF s2 |
+|---|---|---|---|---|
+| `run_jit_block_with_signal_guard` | 14.4 % | 13.3 % | **2.1 %** | **5.2 %** |
+| `_tlv_get_addr` | 8.9 % | 7.8 % | 4.5 % | 5.1 % |
+| `dispatch_stats*` | 2.4 % | 3.7 % | 0 % | 0 % |
+| `hb_contract_telemetry_record_dispatch` | 1.7 % | 1.0 % | 0 % | 0 % |
+
+**The entry above that called the guard "the largest attackable item at 14.4 %" was measuring the
+instrument.** `dispatch_stats_note_terminal()` is called INSIDE the guard and inlines into it, so
+~10 of those points were the trace. With the trace off the guard is 2-5 %. The *direction* of the
+previous entry survives — the snapshot is a small lever, retired — but its headline number was
+wrong, and the ~4-point snapshot pricing was measured inside an inflated regime, so the true
+snapshot prize is smaller still.
+
+Standing consequence: **any timing arm carrying `MACRUNNER_HB_TRACE_DISPATCH_STATS=1` is pessimistic
+by roughly 17 % of the critical thread.** The census added last entry is unaffected — it is one
+fprintf per 2^20 dispatches — but it does keep its own `__thread` counters, which is part of the
+residual `_tlv_get_addr`.
+
+### 2. The real top item: a per-dispatch linear scan for the block's terminal
+
+With the instrument off, `hb_jit_runtime_run` self was 24.2 %/18.6 % — and taking the instruction
+OFFSETS rather than the symbol (the lesson from the import-scan find) collapsed nearly all of it
+onto two PCs, `+5392` and `+2272`, in both samples. Disassembly of `+5392` shows a 184-byte-stride
+loop testing each op against a bitmask — `first_control_transfer_instr()`, i.e. `hb_ir_instr_t` is
+184 bytes and every dispatch re-walked the block's instruction array to answer "where is the
+terminal". `hb_jit_runtime_run:6866` runs it on EVERY dispatched block.
+
+The answer is a pure function of `instrs`, which never changes after translation. Memoised it on
+`hb_ir_block_t.first_transfer_idx` (`-2` uncomputed / `-1` none / `>=0` index), invalidated in
+`hb_ir_emit` (the only mutation path) and carried across `block_clone_for_cache` (which fills
+`instrs` by memcpy, bypassing `hb_ir_emit` — the one place that could have gone stale silently).
+The racing write is benign by construction: two threads derive the SAME value from the same
+immutable input.
+
+**Verified within-run, by the offsets themselves:**
+
+| self time | BASE s1 | BASE s2 | MEMO s1 | MEMO s2 |
+|---|---|---|---|---|
+| `hb_jit_runtime_run` | 24.2 % | 18.6 % | **12.7 %** | **10.9 %** |
+| hot leaf offsets | `+5392,2272` (984) | `+5392,2272` (807) | `+4568,4632` (487) | `+4568,2292` (476) |
+
+The previously dominant PCs are gone and the symbol's self time roughly halved — ~8-10 points off
+the critical thread.
+
+**What this does NOT show.** The memo run did **not** reach `Restored language` inside its 380 s
+budget (the trace-off baseline did, at 303.7 s) and logged fewer dispatches in similar wall time
+(629 M vs 757 M). Phase markers up to that point were all slightly EARLIER (`Initialize engine
+version` 42.6 s vs 44.2 s, `Begin MonoManager` 44.1 vs 45.7, `UnloadTime` 139.6 vs 146.5), no
+`HyperBridge run failed`, no new error class, `recover=0`. So: the change is confirmed to do what it
+was designed to do, and is **not** confirmed as a net speed win. One 380 s run sits well inside the
+documented 210-628 s spread (SPEEDPROF1 missed the marker too), and rule one says cross-run
+wall-clock at n=1 decides nothing. The next arm should be a longer budget so the marker is reached
+in both.
+
+Evidence: `SPEEDPROF3_NOTRACE-s{1,2}.txt`, `SPEEDPROF4_MEMO-s{1,2}.txt`; runs
+`laneA-SPEEDPROF3NOTRACE-*`, `laneA-SPEEDPROF4MEMO-*`.

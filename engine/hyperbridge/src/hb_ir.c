@@ -33,6 +33,9 @@ hb_ir_block_t* hb_ir_block_create(uint64_t id, uint64_t guest_addr) {
     if (!block) return NULL;
     block->id = id;
     block->guest_addr = guest_addr;
+    /* calloc would leave this 0, which is a VALID index and would claim instruction 0 is a
+     * control transfer. Set the sentinel explicitly. */
+    block->first_transfer_idx = HB_IR_TRANSFER_UNCOMPUTED;
     block->instr_cap = 16;
     block->instrs = calloc(block->instr_cap, sizeof(hb_ir_instr_t));
     if (!block->instrs) {
@@ -126,6 +129,10 @@ hb_ir_instr_t* hb_ir_emit(hb_ir_builder_t* b, hb_ir_op_t op) {
     hb_ir_instr_t* instr = &blk->instrs[blk->instr_count++];
     memset(instr, 0, sizeof(hb_ir_instr_t));
     instr->op = op;
+    /* The memo describes a fixed instruction list; appending changes that list, so drop it. This
+     * is the ONLY mutation path (hb_ir_block_create is the only other writer), which is what makes
+     * the memo safe to trust in the dispatcher. */
+    blk->first_transfer_idx = HB_IR_TRANSFER_UNCOMPUTED;
     return instr;
 }
 

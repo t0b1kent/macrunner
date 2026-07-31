@@ -1437,8 +1437,28 @@ static void emit_note_lazy_cmp_from_x23_x22_x21(hb_codegen_buffer_t* buf, hb_siz
     emit_note_lazy_masks(buf, 16, HB_FLAG_BIT_ALL);
 }
 
+/* MacRunner 2026-07-31 — the direct-load chain was fixed to X20 all the way up, even though
+ * emit_ldar_to_reg() has always taken a destination. That is why emit_scalar_operand_to_x21()
+ * had no HB_OP_MEM branch at all and `cmp rax, [rbx]` — one of the commonest x86 shapes — fell
+ * out of the Jcc fusion on its SECOND operand. The reason census put 27.8% of all refusals on
+ * the operand loader with shape and width both at exactly 0, which left this.
+ *
+ * Parameterising by destination is the honest fix rather than a private workaround: any emitter
+ * that needs a guest load somewhere other than X20 can now ask for it. The X20 entry points stay
+ * as thin wrappers so no existing call site changes.
+ *
+ * Safe for both operands: emit_direct_mem_addr_with_offset() writes only X21 (and X22 for a
+ * folded offset), never X20, so loading src2 cannot disturb src1 already sitting in X20. And
+ * `LDAR X21, [X21]` is well-defined — the address is consumed before the destination is
+ * written — so a memory src2 can land in the very register that carried its address. x86 cannot
+ * encode two memory operands in one instruction, so the two never collide. */
+static void emit_direct_mem_load_to_reg_base(hb_codegen_buffer_t* buf, int dst, hb_size_t size,
+                                             int rn) {
+    emit_ldar_to_reg(buf, dst, rn, size);
+}
+
 static void emit_direct_mem_load_to_x20_base(hb_codegen_buffer_t* buf, hb_size_t size, int rn) {
-    emit_ldar_to_reg(buf, 20, rn, size);
+    emit_direct_mem_load_to_reg_base(buf, 20, size, rn);
 }
 
 static void emit_direct_mem_load_to_x20(hb_codegen_buffer_t* buf, hb_size_t size) {
@@ -1466,6 +1486,11 @@ static int emit_direct_mem_base_for_offset(hb_codegen_buffer_t* buf, uint32_t of
         emit_add_reg(buf, 22, 21, 22);
     }
     return 22;
+}
+
+static void emit_direct_mem_load_to_reg_off(hb_codegen_buffer_t* buf, int dst, hb_size_t size,
+                                            uint32_t off) {
+    emit_direct_mem_load_to_reg_base(buf, dst, size, emit_direct_mem_base_for_offset(buf, off));
 }
 
 static void emit_direct_mem_load_to_x20_off(hb_codegen_buffer_t* buf, hb_size_t size, uint32_t off) {
@@ -2370,6 +2395,16 @@ static bool emit_scalar_operand_to_x21(hb_codegen_buffer_t* buf, const hb_ir_ope
     if (op->type == HB_OP_IMM) {
         emit_mov_imm64(buf, 21, (uint64_t)op->imm);
         emit_mask_x_reg_to_size(buf, 21, 23, size);
+        return true;
+    }
+    /* Memory as the SECOND operand — `cmp rax, [rbx]` and friends. The address materialises in
+     * X21 and the value lands back in X21; LDAR consumes the base before writing the
+     * destination, so the self-overwrite is defined. X20, already holding src1, is untouched
+     * because the address helper only ever writes X21/X22. */
+    if (op->type == HB_OP_MEM && jit_direct_mem_codegen_enabled(buf) &&
+        direct_user_mem_load_allowed(buf, op)) {
+        uint32_t off = emit_direct_mem_addr_with_offset(buf, op);
+        emit_direct_mem_load_to_reg_off(buf, 21, size, off);
         return true;
     }
     return false;

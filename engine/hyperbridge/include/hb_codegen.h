@@ -63,6 +63,8 @@ typedef struct {
 } hb_codegen_reloc_t;
 
 /* Code generation result */
+#define HB_CODEGEN_MAX_HOST_OFF 512
+
 typedef struct {
     uint8_t* code;
     size_t size;
@@ -80,6 +82,25 @@ typedef struct {
     uint8_t rmap_active;
     uint8_t emitted_call;  /* set by emit_blr: a lean block must not contain one */
     uint8_t rmap[32];
+    /* MacRunner 2026-08-01 — host-offset map, the half of FEX's JITCodeTail we do not have.
+     *
+     * FEX carries no context snapshot at all: each block ends with a table of (host-PC delta,
+     * guest-RIP delta) pairs, one per guest opcode, and a fault is resolved by folding the
+     * faulting host PC through that table into the exact guest RIP. Rollback granularity is one
+     * guest instruction, so work completed before the faulting instruction is never discarded —
+     * and no sigsetjmp, no 760-byte snapshot and no 790-byte frame memset are needed per block.
+     *
+     * We already hold the guest side: block->instrs[i].guest_addr. Only the host side is missing.
+     * host_off[i] is the buffer offset where instruction i's code begins, recorded as it is
+     * emitted; (host_pc - native_code) then binary-searches to i and yields the guest address.
+     *
+     * Recorded unconditionally (a few stores per instruction, no branches on the hot path) but
+     * used only behind a gate, so the new mechanism can be verified against the existing
+     * snapshot path before anything is removed. host_off_overflow marks a block with more
+     * instructions than the table holds — such a block simply keeps the old path. */
+    uint32_t host_off[HB_CODEGEN_MAX_HOST_OFF];
+    uint16_t host_off_count;
+    bool host_off_overflow;
 } hb_codegen_buffer_t;
 
 /* ARM64 codegen */

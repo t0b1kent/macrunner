@@ -11539,6 +11539,17 @@ static hb_result_t hb_arm64_codegen_block_with_cfg_inner(hb_arm64_codegen_t* cg,
         }
     }
     for (size_t i = 0; i < instr_limit; i++) {
+        /* Host half of the FEX-style (host offset -> guest RIP) map: where this guest
+         * instruction's code begins. The guest half is block->instrs[i].guest_addr, which the IR
+         * already carries, so the pair is complete without emitting anything into the code
+         * stream. Fusions that consume several instructions record only the first, which is
+         * correct: the fault lands inside the fused sequence and the guest position that matters
+         * is where that sequence started. See hb_codegen.h. */
+        if (out->host_off_count < HB_CODEGEN_MAX_HOST_OFF)
+            out->host_off[out->host_off_count++] = (uint32_t)out->size;
+        else
+            out->host_off_overflow = true;
+
         if (i + 2 < instr_limit &&
             emit_arith_rmw_dead_flags_test_jcc(out, &block->instrs[i], &block->instrs[i + 1],
                                                &block->instrs[i + 2])) {

@@ -131,6 +131,78 @@ static __thread uint64_t t_dispatch_stats_flushed_dispatches;
 static __thread uint64_t t_dispatch_stats_flushed_steps;
 static __thread uint64_t t_dispatch_stats_next_report;
 
+/* MacRunner 2026-08-01 — how often is the fault-recovery branch actually TAKEN? Deliberately
+ * ungated.
+ *
+ * Every dispatch pays for that branch in advance: a 790-byte frame memset, a 760-byte
+ * hb_ctx_snapshot_save and a sigsetjmp, so that `hb_ctx_snapshot_restore` can roll the guest back
+ * if the block faults. Whether that price is worth paying is one number — recoveries per
+ * dispatch — and nothing in the tree reports it.
+ *
+ * The existing observation that it is nearly free ("20 480 faults and ripmap_check printed
+ * nothing") is not evidence: ripmap_check sits behind MACRUNNER_HB_RIPMAP and prints once per
+ * 1024 calls, so its silence is equally consistent with the gate being off. That is the trap this
+ * lane hit three times already — a zero from an instrument nobody proved was switched on. Hence:
+ * no env gate, no dependency on trace_dispatch_stats_enabled(), counted on the same line as the
+ * dispatches it is a ratio of.
+ *
+ * Cost is an increment and a mask test per dispatch against a 760-byte copy already there, and one
+ * fprintf per 2^20 dispatches. Per-thread counters, folded into a global only at flush time, so 64
+ * threads do not contend on a cache line every dispatch. Printed periodically rather than at exit
+ * because these runs die on the timeout's SIGKILL and never reach atexit. */
+static uint64_t g_guard_dispatch_total;
+static uint64_t g_guard_recover_total;
+
+/* The live wire beside the zero — see guard_census_flush.
+ *
+ * A recovery count of zero is only evidence if the instrument could have moved, and the honest
+ * way to show that is a counter on the SAME mechanism that does. These sit on the fault-claim
+ * entry point, one fault apart from the recovery branch: claim_calls counts every time the signal
+ * handler consults the guard, and claim_taken every time it hands control to siglongjmp. Faults
+ * run at ~2000/s, five orders below the dispatch rate, so plain atomics are affordable here in a
+ * way they would not be on the dispatch path. */
+static uint64_t g_guard_claim_calls;
+static uint64_t g_guard_claim_declined_frame;
+static uint64_t g_guard_claim_declined_range;
+static uint64_t g_guard_claim_taken;
+static __thread uint64_t t_guard_dispatch;
+static __thread uint64_t t_guard_recover;
+static __thread uint64_t t_guard_flushed_dispatch;
+static __thread uint64_t t_guard_flushed_recover;
+
+/* Power of two: the hot-path test below is a mask, not a division. */
+#define HB_GUARD_CENSUS_PERIOD (1ull << 20)
+
+static void guard_census_flush(const char* why) {
+    uint64_t d_add = t_guard_dispatch - t_guard_flushed_dispatch;
+    uint64_t r_add = t_guard_recover - t_guard_flushed_recover;
+    uint64_t d_tot, r_tot;
+
+    t_guard_flushed_dispatch = t_guard_dispatch;
+    t_guard_flushed_recover = t_guard_recover;
+    d_tot = d_add ? __atomic_add_fetch(&g_guard_dispatch_total, d_add, __ATOMIC_RELAXED)
+                  : __atomic_load_n(&g_guard_dispatch_total, __ATOMIC_RELAXED);
+    r_tot = r_add ? __atomic_add_fetch(&g_guard_recover_total, r_add, __ATOMIC_RELAXED)
+                  : __atomic_load_n(&g_guard_recover_total, __ATOMIC_RELAXED);
+
+    /* recover_per_1e6 is the whole point: it is the share of dispatches whose snapshot was used
+     * for anything, scaled so a cold branch is readable instead of rounding to 0.00 %. */
+    fprintf(stderr,
+            "macrunner-hb-guard-census: why=%s thread_dispatch=%llu thread_recover=%llu "
+            "thread_recover_per_1e6=%.3f total_dispatch=%llu total_recover=%llu "
+            "total_recover_per_1e6=%.3f claim_calls=%llu claim_taken=%llu "
+            "claim_declined_frame=%llu claim_declined_range=%llu\n",
+            why,
+            (unsigned long long)t_guard_dispatch, (unsigned long long)t_guard_recover,
+            t_guard_dispatch ? 1000000.0 * (double)t_guard_recover / (double)t_guard_dispatch : 0.0,
+            (unsigned long long)d_tot, (unsigned long long)r_tot,
+            d_tot ? 1000000.0 * (double)r_tot / (double)d_tot : 0.0,
+            (unsigned long long)__atomic_load_n(&g_guard_claim_calls, __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&g_guard_claim_taken, __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&g_guard_claim_declined_frame, __ATOMIC_RELAXED),
+            (unsigned long long)__atomic_load_n(&g_guard_claim_declined_range, __ATOMIC_RELAXED));
+}
+
 static uint32_t jit_block_step_count(const hb_ir_block_t* block);
 static void trace_jit_code_cache_full_once(hb_jit_runtime_t* rt,
                                            const char* reason,
@@ -2099,6 +2171,89 @@ static void smc_track_entry(hb_jit_runtime_t* rt, hb_block_cache_entry_t* entry,
     g_smc_tracked++;
 }
 
+/* MacRunner 2026-08-01 — FEX-style guest-position reconstruction, built alongside the old path.
+ *
+ * FEX carries no context snapshot: a fault is resolved by folding the faulting host PC through a
+ * per-block (host delta -> guest RIP delta) table, so rollback granularity is one guest
+ * instruction and work completed before it is never discarded. Our equivalent needs no emitted
+ * table — the guest side is block->instrs[i].guest_addr, and host_off[i] now records where that
+ * instruction's code begins.
+ *
+ * Nothing is removed yet. This runs in parallel with the snapshot path and reports disagreements,
+ * because five hypotheses about the chaining defect were refuted by measurement today and
+ * replacing a mechanism on the strength of a sixth would be the same mistake. */
+static void ripmap_attach(hb_block_cache_entry_t* entry, const hb_codegen_buffer_t* buf);
+
+static int ripmap_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_RIPMAP", 0);
+}
+
+static uint64_t t_ripmap_hit, t_ripmap_miss, t_ripmap_agree, t_ripmap_disagree;
+
+/* Copy the host-offset map the codegen recorded into the cached entry, which outlives the buffer.
+ * Only while the gate is on: normal runs allocate nothing. A block whose instruction count
+ * overflowed the codegen table keeps no map and simply falls back to the snapshot path. */
+static void ripmap_attach(hb_block_cache_entry_t* entry, const hb_codegen_buffer_t* buf) {
+    size_t bytes;
+    if (!entry || !buf || !ripmap_enabled()) return;
+    if (buf->host_off_overflow || !buf->host_off_count) return;
+    bytes = (size_t)buf->host_off_count * sizeof(uint32_t);
+    entry->host_off = (uint32_t*)malloc(bytes);
+    if (!entry->host_off) return;
+    memcpy(entry->host_off, buf->host_off, bytes);
+    entry->host_off_count = buf->host_off_count;
+}
+
+/* host_pc -> exact guest address of the instruction being executed, or 0 if unresolvable. */
+static uint64_t ripmap_guest_for_host_pc(const hb_block_cache_entry_t* entry, uint64_t host_pc) {
+    size_t lo = 0, hi, mid, best;
+    uint64_t off;
+    if (!entry || !entry->host_off || !entry->host_off_count || !entry->block) return 0;
+    if (!entry->native_code || host_pc < (uint64_t)(uintptr_t)entry->native_code) return 0;
+    off = host_pc - (uint64_t)(uintptr_t)entry->native_code;
+    if (off >= entry->native_size) return 0;
+    /* Last entry whose offset is <= off: the instruction the faulting PC belongs to. */
+    hi = entry->host_off_count - 1; best = 0;
+    while (lo <= hi) {
+        mid = lo + (hi - lo) / 2;
+        if (entry->host_off[mid] <= off) { best = mid; lo = mid + 1; }
+        else { if (!mid) break; hi = mid - 1; }
+    }
+    if (best >= entry->block->instr_count) return 0;
+    return entry->block->instrs[best].guest_addr;
+}
+
+static void ripmap_check(const hb_block_cache_entry_t* faulted, uint64_t host_pc,
+                         uint64_t snapshot_pc) {
+    uint64_t guest;
+    if (!ripmap_enabled()) return;
+    guest = ripmap_guest_for_host_pc(faulted, host_pc);
+    if (!guest) { t_ripmap_miss++; }
+    else {
+        t_ripmap_hit++;
+        if (guest == snapshot_pc) t_ripmap_agree++;
+        else {
+            t_ripmap_disagree++;
+            /* A disagreement is the interesting case and must not hide behind a coarse period:
+             * the snapshot restores the position the DISPATCH began at, the map gives the
+             * instruction that actually faulted, and where a chain retired several blocks those
+             * are supposed to differ. That difference is the whole argument for the scheme. */
+            if (t_ripmap_disagree <= 16 || (t_ripmap_disagree & 0xffu) == 0)
+                fprintf(stderr,
+                        "macrunner-hb-ripmap: disagree=%llu agree=%llu miss=%llu "
+                        "map_guest=0x%llx snapshot_pc=0x%llx delta=%lld\n",
+                        (unsigned long long)t_ripmap_disagree, (unsigned long long)t_ripmap_agree,
+                        (unsigned long long)t_ripmap_miss, (unsigned long long)guest,
+                        (unsigned long long)snapshot_pc, (long long)(guest - snapshot_pc));
+        }
+    }
+    if (((t_ripmap_hit + t_ripmap_miss) & 0x3ffu) == 0)
+        fprintf(stderr, "macrunner-hb-ripmap-progress: hit=%llu miss=%llu agree=%llu disagree=%llu\n",
+                (unsigned long long)t_ripmap_hit, (unsigned long long)t_ripmap_miss,
+                (unsigned long long)t_ripmap_agree, (unsigned long long)t_ripmap_disagree);
+}
+
 static void block_cache_evict_entry(hb_jit_runtime_t* rt, hb_block_cache_t* cache,
                                     hb_block_cache_entry_t* entry) {
     size_t idx;
@@ -2107,6 +2262,7 @@ static void block_cache_evict_entry(hb_jit_runtime_t* rt, hb_block_cache_t* cach
     if (runtime_block_chain_enabled())
         block_cache_prepare_replace_entry(rt, cache, entry);
     block_cache_release_owned_block(entry, NULL);
+    free(entry->host_off);
     memset(entry, 0, sizeof(*entry));
     if (cache->chain_meta && idx != SIZE_MAX)
         memset(&cache->chain_meta[idx], 0, sizeof(cache->chain_meta[idx]));
@@ -3303,6 +3459,14 @@ static uint8_t* chain_trampoline_for(hb_jit_runtime_t* rt, hb_block_cache_entry_
     return dest;
 }
 
+/* Scope the fault rollback to the block its snapshot describes — see the call site for why. */
+static int chain_scoped_rollback_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_CHAIN_SCOPED_ROLLBACK", 0);
+}
+
+static uint64_t t_chain_rollback_skipped;
+
 static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
                              hb_block_cache_entry_t* next) {
     hb_block_chain_meta_t* meta;
@@ -4027,19 +4191,31 @@ int hb_jit_runtime_handle_signal_fault(uint64_t pc, uint64_t fault_addr, int sig
     hb_jit_signal_fault_frame_t* frame = g_jit_signal_fault_frame;
     uintptr_t native_start, native_end, slab_start, slab_end;
 
+    /* Counted before any decline, so "the handler never consults the guard" and "it consults and
+     * refuses" stay distinguishable — they argue for the same conclusion but by different routes. */
+    __atomic_add_fetch(&g_guard_claim_calls, 1, __ATOMIC_RELAXED);
+
     if (!frame || !frame->rt || !frame->rt->jit_mem || !frame->entry ||
-        !frame->entry->native_code || !frame->entry->native_size)
+        !frame->entry->native_code || !frame->entry->native_size) {
+        __atomic_add_fetch(&g_guard_claim_declined_frame, 1, __ATOMIC_RELAXED);
         return 0;
+    }
 
     native_start = (uintptr_t)frame->entry->native_code;
     native_end = native_start + frame->entry->native_size;
     slab_start = (uintptr_t)frame->rt->jit_mem->executable;
     slab_end = slab_start + frame->rt->jit_mem->used;
-    if (native_end < native_start || slab_end < slab_start) return 0;
-    if (!((uintptr_t)pc >= native_start && (uintptr_t)pc < native_end) &&
-        !((uintptr_t)pc >= slab_start && (uintptr_t)pc < slab_end))
+    if (native_end < native_start || slab_end < slab_start) {
+        __atomic_add_fetch(&g_guard_claim_declined_range, 1, __ATOMIC_RELAXED);
         return 0;
+    }
+    if (!((uintptr_t)pc >= native_start && (uintptr_t)pc < native_end) &&
+        !((uintptr_t)pc >= slab_start && (uintptr_t)pc < slab_end)) {
+        __atomic_add_fetch(&g_guard_claim_declined_range, 1, __ATOMIC_RELAXED);
+        return 0;
+    }
 
+    __atomic_add_fetch(&g_guard_claim_taken, 1, __ATOMIC_RELAXED);
     return jit_signal_fault_claim(frame, pc, fault_addr, signal, 0, false,
                                   false, host_context);
 }
@@ -4053,6 +4229,10 @@ int hb_jit_runtime_handle_owned_sigill(uint64_t pc, uint32_t native_word,
      * active guard is the ownership authority here, not Mach VM membership:
      * the observed failure is a generated tail branch into an old zero RX page
      * outside both the guarded entry and the current JIT slab. */
+    /* The second route into the recovery branch. Counted on the same pair of counters so
+     * claim_taken means "siglongjmp was attempted", by whichever door. */
+    __atomic_add_fetch(&g_guard_claim_calls, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_guard_claim_taken, 1, __ATOMIC_RELAXED);
     return jit_signal_fault_claim(frame, pc, 0, SIGILL, native_word,
                                   native_word_valid != 0, true, host_context);
 }
@@ -4331,6 +4511,12 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
     }
     g_jit_signal_fault_frame = &frame;
 
+    /* Counted here, before sigsetjmp, so it is one increment per dispatch on both the returning
+     * path and the faulting one. Thread-local, so the guard's own re-entry through siglongjmp
+     * cannot double-count it. */
+    if ((++t_guard_dispatch & (HB_GUARD_CENSUS_PERIOD - 1)) == 0)
+        guard_census_flush("period");
+
     if (sigsetjmp(frame.env, 0) == 0) {
         exec = (jit_block_t)(void*)cached->native_code;
         frame.dispatched_guest = cached->guest_addr;
@@ -4345,6 +4531,14 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         return HB_OK;
     }
 
+    /* Reached only via siglongjmp, i.e. the snapshot is about to be used. The first few print
+     * individually because "does it ever happen at all" is the question, and a purely periodic
+     * report cannot distinguish never from rarely; after that the period keeps a hot branch from
+     * drowning the log in its own measurement. */
+    ++t_guard_recover;
+    if (t_guard_recover <= 8 || (t_guard_recover & 0xfffu) == 0)
+        guard_census_flush("recover");
+
     g_jit_signal_fault_frame = frame.prev;
     if (frame.aa_enabled && frame.signal == SIGBUS) {
         frame.aa_dst_post_valid = jit_aa_capture_window(
@@ -4352,8 +4546,44 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         frame.aa_src_post_valid = jit_aa_capture_window(
             frame.snapshot.memory, frame.snapshot.regs.x64.rdx, frame.aa_src_post);
     }
-    hb_ctx_snapshot_restore(ctx, &frame.snapshot);
+    /* MacRunner 2026-07-31 — a snapshot may only roll back the block it describes.
+     *
+     * hb_ctx_snapshot_save() runs ONCE per dispatch (above). Unchained, a dispatch is one block
+     * and the contract holds. Chained, one dispatch retires 2-6 blocks (traces show blocks=2,3,4,6)
+     * while the snapshot still describes the state before the FIRST — so restoring it after a fault
+     * in a later block discards guest work that legitimately completed. With 3.6 M faults per run
+     * (99.3% BUS_ADRALN) this is a hot path, not an edge case, and it matches every symptom: damage
+     * accumulating across consecutive edges, values identical run to run because they are STALE
+     * rather than random, and the REFUSE_NEAR differential reporting the defect as general to
+     * chaining — any chain longer than one block has it.
+     *
+     * frame.entry is the block the snapshot was taken for; block_cache_find_native_pc() recovers
+     * the block that actually faulted. When they differ, the snapshot is simply not a valid
+     * pre-image, and applying it is worse than leaving the context alone: ctx->pc is maintained by
+     * every terminator, so the dispatcher can carry on from where the guest really is.
+     *
+     * Gated, default OFF, because "do not roll back" leaves the faulting block's partial effects in
+     * place — the lesser of two wrongs, but a behaviour change that has to be measured rather than
+     * assumed. */
     faulted = block_cache_find_native_pc(rt->block_cache, frame.host_pc);
+    /* Compare the FEX-style reconstruction against what the snapshot would restore, before the
+     * snapshot is applied and the evidence is gone. */
+    ripmap_check(faulted, frame.host_pc, frame.snapshot.pc);
+    if (!chain_scoped_rollback_enabled() || !faulted || faulted == frame.entry)
+        hb_ctx_snapshot_restore(ctx, &frame.snapshot);
+    else {
+        /* Print it. Four times this session a counter I added decided the outcome instead of the
+         * thing being measured — a 2^23 census period that turned 36% into a reported 57%, an
+         * unrepresentative early sample, and twice a predicate whose counters never fired because
+         * a short-circuit upstream meant it was never called. A counter nobody reads is worse than
+         * no counter: it looks like evidence. */
+        if (++t_chain_rollback_skipped <= 8 || (t_chain_rollback_skipped & 0x3ffu) == 0)
+            fprintf(stderr,
+                    "macrunner-hb-chain-rollback-skipped: n=%llu faulted_guest=0x%llx entry_guest=0x%llx\n",
+                    (unsigned long long)t_chain_rollback_skipped,
+                    (unsigned long long)(faulted ? faulted->guest_addr : 0),
+                    (unsigned long long)(frame.entry ? frame.entry->guest_addr : 0));
+    }
     if (jit_signal_quarantine_enabled_for(frame.signal)) {
         hb_block_cache_entry_t* quarantine_entry = faulted ? faulted : cached;
         uint64_t fault_guest = quarantine_entry ? quarantine_entry->guest_addr : 0;
@@ -5988,6 +6218,7 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                 cached = block_cache_put(rt, rt->block_cache, ctx->pc, dest, emitted_size,
                                          jit_block_step_count(compile_block), compile_block,
                                          false, true);
+                ripmap_attach(cached, code_buf);
                 if (!cached) {
                     hb_ir_block_destroy(compile_block);
                     /* MacRunner FIX#2a: non-latching (live block_cache_is_full gates). */

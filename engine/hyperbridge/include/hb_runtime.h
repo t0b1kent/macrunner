@@ -48,6 +48,12 @@ typedef struct {
     uint64_t smc_span_start;
     uint64_t smc_hash;
     uint32_t smc_span_len;
+    /* MacRunner 2026-08-01 — host half of the FEX-style fault map (see hb_codegen.h).
+     * host_off[i] is the offset into native_code where guest instruction i begins; the guest
+     * half is block->instrs[i].guest_addr. Owned by the entry, freed on eviction. Allocated
+     * only while MACRUNNER_HB_RIPMAP is on, so normal runs carry no extra memory. */
+    uint32_t* host_off;
+    uint16_t host_off_count;
 } hb_block_cache_entry_t;
 
 typedef struct {

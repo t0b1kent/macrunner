@@ -3324,7 +3324,14 @@ static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
     if (!meta) { t_chain_decline[CHAIN_DECL_NOMETA]++; return false; }
     if (meta->target_code) {
         t_chain_decline[CHAIN_DECL_ALREADY]++;
-        return meta->target_code == next->native_code + 16;
+        /* "Already chained to this same successor?" — answered by the guest address stored
+         * alongside, not by the code pointer. meta->target_code holds the TRAMPOLINE address
+         * (assigned from `target` below), never next->native_code + 16, so the old comparison
+         * was unconditionally false: a tail that was already patched always reported failure and
+         * could never be re-aimed. The trampoline also enters its target at +12
+         * (chain_trampoline_for) while update_indirect_ic uses +16, so no single constant would
+         * have made the pointer form right either. */
+        return meta->guest_addr == next->guest_addr;
     }
     if (!block_terminal_is_chainable(cur->block)) {
         t_chain_decline[CHAIN_DECL_TERMINAL]++;

@@ -2501,6 +2501,28 @@ static void emit_subs_xzr_reg_sized(hb_codegen_buffer_t* buf, int rn, int rm, hb
     }
 }
 
+static void emit_ands_xzr_reg_sized(hb_codegen_buffer_t* buf, int rn, int rm, hb_size_t size) {
+    rn = hb_rm(buf, rn);
+    rm = hb_rm(buf, rm);
+    if (size == HB_SIZE_32) {
+        /* ANDS WZR, Wn, Wm */
+        emit_u32(buf, 0x6a00001f | (rm << 16) | (rn << 5));
+    } else {
+        /* ANDS XZR, Xn, Xm */
+        emit_u32(buf, 0xea00001f | (rm << 16) | (rn << 5));
+    }
+}
+
+/* x86 TEST/AND set ZF and SF and FORCE CF = OF = 0; ARM ANDS writes N and Z and leaves C and V
+ * untouched. So only conditions that read N or Z alone survive the substitution — E/NE/S/NS.
+ * Everything carry- or overflow-derived (the whole unsigned family, and the signed ones, which
+ * test N against V) would read stale flags and branch wrongly, so they stay on the helper.
+ * These four are exactly what the census showed the CMP/SUB emitter could not reach:
+ * E 19.3M + NE 27.2M + S/NS 3.4M still on the helper after the first fusion landed. */
+static bool cc_reads_only_n_or_z(hb_cc_t cc) {
+    return cc == HB_CC_E || cc == HB_CC_NE || cc == HB_CC_S || cc == HB_CC_NS;
+}
+
 static bool emit_flags_set_pc_any_cond(hb_codegen_buffer_t* buf, hb_cc_t cc,
                                        uint64_t target, uint64_t fallthrough) {
     int64_t delta = (int64_t)target - (int64_t)fallthrough;
@@ -2531,36 +2553,81 @@ static int jcc_fuse_full_enabled(void) {
     return cached;
 }
 
+/* A source operand is worth attempting when the scalar loaders can materialise it. They
+ * already handle HB_OP_MEM through the direct-mem path, so a memory source is not a
+ * capability gap — the old pre-filters simply refused to try. High-byte views (AH/BH,
+ * reg_offset != 0) stay out: the loaders do not produce them here. */
+static bool fuse_source_operand_ok(const hb_ir_operand_t* op) {
+    if (!op) return false;
+    if (op->type == HB_OP_REG) return op->reg_offset == 0;
+    if (op->type == HB_OP_IMM) return true;
+    return op->type == HB_OP_MEM;
+}
+
 static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op,
                                     const hb_ir_instr_t* jcc) {
     hb_lazy_flags_kind_t kind;
     hb_size_t size;
     bool writes_dst = false;
+    size_t saved_size;
+    size_t saved_relocs;
+    bool saved_overflow;
+    int saved_rmap;
+    int saved_call;
 
     if (!jcc_fuse_full_enabled()) return false;
     if (!op || !jcc || jcc->op != HB_IR_Jcc) return false;
     if (jcc->cc == HB_CC_P || jcc->cc == HB_CC_NP) return false;
-    if (op->op != HB_IR_CMP && op->op != HB_IR_SUB) return false;
+    if (op->op != HB_IR_CMP && op->op != HB_IR_SUB &&
+        op->op != HB_IR_TEST && op->op != HB_IR_AND) return false;
+    /* TEST/AND produce flags with ANDS, which cannot serve carry/overflow conditions. */
+    if ((op->op == HB_IR_TEST || op->op == HB_IR_AND) && !cc_reads_only_n_or_z(jcc->cc))
+        return false;
     if (!lazy_kind_for_scalar_op(op->op, &kind)) return false;
 
-    if (op->op == HB_IR_SUB) {
-        if (!is_plain_gpr_reg_operand(&op->dst) || !is_plain_gpr_reg_operand(&op->src1) ||
-            (op->src2.type == HB_OP_REG && !is_plain_gpr_reg_operand(&op->src2)) ||
-            (op->src2.type != HB_OP_REG && op->src2.type != HB_OP_IMM))
+    if (op->op == HB_IR_SUB || op->op == HB_IR_AND) {
+        /* dst must stay a plain GPR — the result is written back through
+         * emit_store_x20_to_gpr_sized, which only knows how to reach a register. */
+        if (!is_plain_gpr_reg_operand(&op->dst)) return false;
+        if (!fuse_source_operand_ok(&op->src1) || !fuse_source_operand_ok(&op->src2))
             return false;
         size = op->dst.size;
         writes_dst = true;
     } else {
-        if (op->src1.type == HB_OP_REG && op->src1.reg_offset != 0) return false;
-        if (op->src2.type == HB_OP_REG && op->src2.reg_offset != 0) return false;
-        if (op->src2.type != HB_OP_REG && op->src2.type != HB_OP_IMM) return false;
+        if (!fuse_source_operand_ok(&op->src1) || !fuse_source_operand_ok(&op->src2))
+            return false;
         size = op->src1.size;
     }
     if (size != HB_SIZE_32 && size != HB_SIZE_64) return false;
 
-    if (!emit_scalar_operand_to_x20(buf, &op->src1, size)) return false;
-    if (!emit_scalar_operand_to_x21(buf, &op->src2, size)) return false;
-    emit_sub_reg(buf, 22, 20, 21);                 /* plain SUB: leaves NZCV alone */
+    /* Once a loader has emitted, bailing out would leave that code stranded in the buffer and
+     * the generic path would emit the instruction a second time on top of it. The old narrow
+     * pre-filters existed to guarantee the loaders could not fail; widening them to memory
+     * sources reintroduces that risk, so take the rollback the lean-frame path already uses
+     * (see hb_arm64_codegen_block_with_cfg): remember the buffer state and restore it. */
+    saved_size = buf->size;
+    saved_relocs = buf->reloc_count;
+    saved_overflow = buf->reloc_overflow;
+    saved_rmap = buf->rmap_active;
+    saved_call = buf->emitted_call;
+#define FUSE_BAIL()                        \
+    do {                                   \
+        buf->size = saved_size;            \
+        buf->reloc_count = saved_relocs;   \
+        buf->reloc_overflow = saved_overflow; \
+        buf->rmap_active = saved_rmap;     \
+        buf->emitted_call = saved_call;    \
+        return false;                      \
+    } while (0)
+
+    if (!emit_scalar_operand_to_x20(buf, &op->src1, size)) FUSE_BAIL();
+    if (!emit_scalar_operand_to_x21(buf, &op->src2, size)) FUSE_BAIL();
+    /* Non-flag-setting forms: the result is needed for the lazy note and for AND/SUB's
+     * destination, but NZCV must come from the flag-setting instruction below, not from here. */
+    if (op->op == HB_IR_TEST || op->op == HB_IR_AND)
+        emit_and_reg(buf, 22, 20, 21);
+    else
+        emit_sub_reg(buf, 22, 20, 21);
     emit_mask_x_reg_to_size(buf, 22, 23, size);
     emit_note_lazy_from_x20_x21_x22(buf, kind, size);  /* stores only */
     /* Flags MUST come from the operands as they were read, and the destination store MUST come
@@ -2570,13 +2637,21 @@ static bool emit_cmp_sub_jcc_native(hb_codegen_buffer_t* buf, const hb_ir_instr_
      * unfused arm reached "Restored language". Reordering is safe because everything below
      * writes memory or moves registers — emit_store_x20_to_gpr_sized emits only
      * strb/strh/str/ubfm, and emit_mov_reg is an ORR; none of them touch NZCV. */
-    emit_subs_xzr_reg_sized(buf, 20, 21, size);    /* real NZCV from the ORIGINAL operands */
+    if (op->op == HB_IR_TEST || op->op == HB_IR_AND)
+        emit_ands_xzr_reg_sized(buf, 20, 21, size); /* N/Z only — the cc filter above enforces it */
+    else
+        emit_subs_xzr_reg_sized(buf, 20, 21, size); /* real NZCV from the ORIGINAL operands */
     if (writes_dst) {
         emit_mov_reg(buf, 20, 22);
         emit_store_x20_to_gpr_sized(buf, &op->dst);
     }
-    return emit_flags_set_pc_any_cond(buf, jcc->cc, jcc->target,
-                                      jcc->guest_addr + jcc->guest_len);
+    /* Cannot fail for the conditions that reach here (P/NP are refused above), but the branch
+     * is emitted last and a silent false would strand the whole sequence — so it bails too. */
+    if (!emit_flags_set_pc_any_cond(buf, jcc->cc, jcc->target,
+                                    jcc->guest_addr + jcc->guest_len))
+        FUSE_BAIL();
+    return true;
+#undef FUSE_BAIL
 }
 
 static bool emit_scalar_flags_result_to_x22(hb_codegen_buffer_t* buf, const hb_ir_instr_t* op) {
@@ -6402,8 +6477,15 @@ static void jcc_cc_census_note(uint64_t cc) {
     if (!jcc_cc_census_enabled()) return;
     if (cc < 16) g_jcc_cc_counts[cc]++;
     n = ++g_jcc_cc_total;
-    /* 1st, 1e6, then every 2^23 — bounded output that survives a killed run. */
-    if (n == 1 || n == 1000000 || (n & 0x7fffffu) == 0) {
+    /* Every 2^21 (~2M calls, roughly one line every few seconds), not 2^23.
+     *
+     * The coarse period made the counter measure the wrong thing: the value that reaches the log
+     * is the LAST periodic print before the run ends, so it mixed "how many calls the fusion
+     * removed" with "how long this particular run happened to live". That is how a 36% reduction
+     * got reported as 57% — the faster arm had simply run 200 s less. The harness stamps every
+     * stderr line with +<seconds>, so with a fine enough period the two arms can be compared at
+     * the SAME timestamp instead of at their respective ends. */
+    if (n == 1 || n == 1000000 || (n & 0x1fffffu) == 0) {
         int i;
         fprintf(stderr, "macrunner-hb-jcc-cc-census: total=%llu", (unsigned long long)n);
         for (i = 0; i < 16; i++)

@@ -4429,6 +4429,13 @@ static int snapshot_skip_interp_only(void) {
 #define HB_CTX_INTERP_ONLY_BEGIN offsetof(hb_context_t, ymm_hi)
 #define HB_CTX_INTERP_ONLY_END   offsetof(hb_context_t, guest32_base)
 
+/* Measurement arm for the per-dispatch snapshot — see the call site. Default OFF, and it must stay
+ * OFF: it prices the copy, it does not replace it. */
+static int snapshot_measure_skip_save(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_SNAPSHOT_MEASURE_SKIP", 0);
+}
+
 static inline void hb_ctx_snapshot_save(hb_context_t* dst, const hb_context_t* src) {
     if (!snapshot_skip_interp_only()) { *dst = *src; return; }
     memcpy(dst, src, HB_CTX_INTERP_ONLY_BEGIN);
@@ -4499,7 +4506,25 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
     frame.rt = rt;
     frame.ctx = ctx;
     frame.entry = cached;
-    hb_ctx_snapshot_save(&frame.snapshot, ctx);
+    /* MacRunner 2026-08-01 — MEASUREMENT ARM. Not a candidate default, and not safe as one.
+     *
+     * The census settled that this snapshot is restored 0 times in 741 M dispatches, and the
+     * profile says the guard is the largest attackable item on the critical thread: 14.4 % / 13.3 %
+     * self across two samples, plus 5.6 % / 5.4 % of memmove+memset, against 16.9 % / 15.3 % for
+     * hb_jit_runtime_run itself. The 760-byte copy is `static inline`, so most of it lands in the
+     * guard's OWN self time rather than in _platform_memmove — which is why the earlier 3.2 %
+     * memmove reading understated it.
+     *
+     * Before building the FEX-style resume that would make eliding this copy CORRECT (host-offset
+     * map -> exact faulting guest RIP -> no rollback at all), measure what eliding it is worth.
+     * This gate answers that and nothing else: it skips the save, leaving the recovery path with a
+     * frame whose `snapshot` is zeroed rather than a true pre-image.
+     *
+     * That is only tolerable because it is observable: recovery entries are counted UNGATED by the
+     * census, so a run that takes this arm reports `total_recover=` and any non-zero value
+     * invalidates its own timing. Never default this on; the real fix is the resume map. */
+    if (!snapshot_measure_skip_save())
+        hb_ctx_snapshot_save(&frame.snapshot, ctx);
     frame.steps = steps;
     frame.blocks_executed = blocks_executed;
     frame.aa_enabled = jit_aa_sigbus_probe_enabled();

@@ -924,22 +924,42 @@ static int chain_edge_is_near(uint64_t a, uint64_t b);
 
 static void trace_chain_transition(const hb_context_t* ctx, const hb_block_cache_entry_t* cur,
                                    uint64_t block_delta, uint64_t step_delta,
-                                   uint64_t before_rcx, uint64_t before_rdx) {
+                                   uint64_t before_rcx, uint64_t before_rdx,
+                                   uint64_t before_rbp, uint64_t before_rsp) {
     static uint64_t shown;
     int near;
     if (!trace_chain_edge_enabled() || !ctx || !cur) return;
+
+    /* MacRunner 2026-07-31 — the failure dump says the corrupted register is RBP, not rcx/rdx.
+     * A chaining run dies at +50.9 s with `rbp=0x8` at mono-2.0-bdwgc.dll rva 0x6adc2, and that dump appears
+     * 0x in the baseline and lean-frame controls, so it belongs to chaining. This alert is deliberately NOT
+     * subject to the 32-line cap below: the cap is why the first 32 transitions all looked clean while the
+     * one that matters was never printed. */
+    if (before_rbp >= 0x10000 && ctx->regs.x64.rbp < 0x10000) {
+        fprintf(stderr, "macrunner-hb-chain-RBP-VIOLATION: from=0x%llx pc_after=0x%llx blocks=%llu steps=%llu "
+                        "rbp %llx->%llx rsp %llx->%llx rcx %llx->%llx\n",
+                (unsigned long long)cur->guest_addr, (unsigned long long)ctx->pc,
+                (unsigned long long)block_delta, (unsigned long long)step_delta,
+                (unsigned long long)before_rbp, (unsigned long long)ctx->regs.x64.rbp,
+                (unsigned long long)before_rsp, (unsigned long long)ctx->regs.x64.rsp,
+                (unsigned long long)before_rcx, (unsigned long long)ctx->regs.x64.rcx);
+        fflush(stderr);
+    }
+
     near = chain_edge_is_near(cur->guest_addr, ctx->pc);
     if (!near && __atomic_add_fetch(&shown, 1, __ATOMIC_RELAXED) > 32) return;
     /* rcx/rdx are the two registers that come back identically garbage in every failing run
      * (rcx=0xf0e0993f rdx=0x320eec31), so printing them either side of the chained run says whether the
      * chain corrupts them or inherits them already wrong. */
     fprintf(stderr, "macrunner-hb-chaintransit:%s from=0x%llx pc_after=0x%llx blocks=%llu steps=%llu "
-                    "rcx %llx->%llx rdx %llx->%llx\n",
+                    "rcx %llx->%llx rdx %llx->%llx rbp %llx->%llx rsp %llx->%llx\n",
             near ? " NEAR" : "",
             (unsigned long long)cur->guest_addr, (unsigned long long)ctx->pc,
             (unsigned long long)block_delta, (unsigned long long)step_delta,
             (unsigned long long)before_rcx, (unsigned long long)ctx->regs.x64.rcx,
-            (unsigned long long)before_rdx, (unsigned long long)ctx->regs.x64.rdx);
+            (unsigned long long)before_rdx, (unsigned long long)ctx->regs.x64.rdx,
+            (unsigned long long)before_rbp, (unsigned long long)ctx->regs.x64.rbp,
+            (unsigned long long)before_rsp, (unsigned long long)ctx->regs.x64.rsp);
     fflush(stderr);
 }
 
@@ -6253,6 +6273,8 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             uint64_t before_blocks = native_accounting ? ctx->block_count : 0;
             uint64_t before_rcx = ctx->regs.x64.rcx;
             uint64_t before_rdx = ctx->regs.x64.rdx;
+            uint64_t before_rbp = ctx->regs.x64.rbp;
+            uint64_t before_rsp = ctx->regs.x64.rsp;
             /* Entry-state probe for ONE guest block, so the same line can be compared with chaining on and
              * off. The chained arm shows rcx/rdx arriving as f0e0993f/320eec31 — the exact values the fault
              * reports — and this says what they are when the block is reached the ordinary way. */
@@ -6279,7 +6301,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                     steps += step_delta;
                     if (block_delta > 1)
                         trace_chain_transition(ctx, cached, block_delta, step_delta,
-                                               before_rcx, before_rdx);
+                                               before_rcx, before_rdx, before_rbp, before_rsp);
                     if (dispatch_stats_enabled_run) dispatch_stats_add(1, block_delta, step_delta);
                 } else {
                     blocks_executed++;
@@ -6494,6 +6516,8 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             uint64_t before_blocks = native_accounting ? ctx->block_count : 0;
             uint64_t before_rcx = ctx->regs.x64.rcx;
             uint64_t before_rdx = ctx->regs.x64.rdx;
+            uint64_t before_rbp = ctx->regs.x64.rbp;
+            uint64_t before_rsp = ctx->regs.x64.rsp;
             /* Entry-state probe for ONE guest block, so the same line can be compared with chaining on and
              * off. The chained arm shows rcx/rdx arriving as f0e0993f/320eec31 — the exact values the fault
              * reports — and this says what they are when the block is reached the ordinary way. */
@@ -6520,7 +6544,7 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                     steps += step_delta;
                     if (block_delta > 1)
                         trace_chain_transition(ctx, cached, block_delta, step_delta,
-                                               before_rcx, before_rdx);
+                                               before_rcx, before_rdx, before_rbp, before_rsp);
                     if (dispatch_stats_enabled_run) dispatch_stats_add(1, block_delta, step_delta);
                 } else {
                     blocks_executed++;

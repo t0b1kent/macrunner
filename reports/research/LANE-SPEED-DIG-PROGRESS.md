@@ -2050,3 +2050,71 @@ defect from 30.07 — guest `rcx`/`rdx` corrupted on the edge out of `0x87ef246a
 `mono-2.0-bdwgc.dll+0x69a30` receiving non-pointers. Start by reproducing that single edge, not by re-running
 the whole feature: the cache-dump tooling built this pass can decode the emitted trampoline and the
 predecessor's tail directly, which is exactly the kind of evidence that localised every other defect here.
+
+## 2026-07-31 (XVI) — chaining: the corrupted register is RBP, and the instrument was watching the wrong ones
+
+Moved to chaining. Two cheap statics first, then one run.
+
+**Static 1 — stack-leak hypothesis REFUTED for free.** The trampoline branches to `entry->native_code + 12`
+(`hb_runtime.c:3276`), i.e. three words past the head, landing on `MOV X19, X0` and deliberately *skipping*
+the successor's frame push. The predecessor's frame is reused and whichever block finally mispredicts runs the
+one epilogue that pops it. No per-hop leak.
+
+**Static 2 — that same line pins the lean-frame incompatibility exactly.** A frameless block's prologue is one
+instruction, so its `+12` is not `MOV X19, X0` but the middle of the body. Chaining and
+`MACRUNNER_HB_LEAN_FRAME` cannot be enabled together until the chain target is computed from the block's real
+entry rather than a hard-coded offset. (Alongside the encoding-signature checks at `:3010`/`:3162`.)
+
+**The run.** `MACRUNNER_HB_BLOCK_CHAIN=1` + `MACRUNNER_HB_TRACE_CHAIN_EDGE=1`, 150 s: 64 chain edges, 32
+transits, then a **guest failure dump at +50.9 s** and a wedge — no further output until the timeout at
++171 s. Control: the same dump appears **0 times** in both the baseline and lean-frame runs, so it belongs to
+chaining.
+
+**What the dump says:**
+
+```
+macrunner-hb-fail-backtrace: rsp=0x11992d978 walk_from=0x11992d978 stack_top=0x119940000 rbp=0x8
+macrunner-hb-fail-bt[2]: val=0x87ef246adc2 module=mono-2.0-bdwgc.dll rva=0x6adc2
+```
+
+**`rbp = 0x8`.** The guest frame pointer is garbage — which is why the walker had to start from `rsp`. And the
+failing site sits in the same mono function the 30.07 work named (`0x87ef246adb6`, rva `0x6adb6`), so this is
+the same defect, now with the corrupted register identified.
+
+**Why 32 traced transitions looked clean:** `macrunner-hb-chaintransit` prints only `rcx` and `rdx`. Zero of
+32 showed a pointer→non-pointer change, and I nearly recorded that as "corruption not reproducing". The
+instrument was simply watching the wrong registers — the 30.07 framing named rcx/rdx, and the trace was built
+to match that framing rather than to find whatever is actually wrong.
+
+**One naming trap recorded:** `macrunner-hb-fail-rbp-chain` is NOT about block chaining — it is the
+frame-pointer-chain section header of the generic failure backtrace in `macrunner_hb_run_x64`. I started to
+follow it as a chaining lead before reading its source.
+
+[NEXT] extend `trace_chain_transition` to print `rbp` and `rsp` alongside rcx/rdx, re-run, and find the exact
+transition where `rbp` becomes 0x8. That single edge is the defect, and the 30.07 work already narrowed the
+neighbourhood to mono rva 0x6adXX.
+
+## 2026-07-31 (XVII) — rbp instrumented: 21 transitions land on exactly 0x8, but the control is missing
+
+Extended `trace_chain_transition` to carry `rbp`/`rsp` alongside rcx/rdx, plus an alert that is deliberately
+**not** subject to the existing 32-line cap — that cap is precisely why the first 32 transitions all looked
+clean while whatever matters was never printed.
+
+**Result:** **21 chain transitions land on `rbp = 0x8`**, the exact value the failure dump reports at
+`mono-2.0-bdwgc.dll rva 0x6adc2`. So the corruption is observable at a chain boundary, not only in the
+post-mortem.
+
+**But the alert cannot convict yet.** It fired 7232 times across 171 distinct source blocks, 2524 of them
+`rbp→0`, and a normal transit line shows `rbp 1->1` — small rbp values genuinely occur in this guest code.
+The trace only exists when chaining is ON, so there is no unchained control and "chaining corrupts rbp" is
+not yet separable from "the guest sets rbp small here anyway". Recorded as an unfinished measurement rather
+than a finding.
+
+**The fix for that is the same shape that has worked all along — an in-run control.** `trace_chain_transition`
+is called only when `block_delta > 1`, i.e. when a chain actually executed. Sampling `block_delta == 1`
+dispatches the same way gives the unchained rate of `rbp→small` inside the same run, same workload, same
+thread. If chained and unchained rates match, rbp is a red herring and the 0x8 is downstream of something
+else; if the chained rate is higher, the 21 hits on 0x8 are the defect and their 171 source blocks are the
+search space.
+
+[NEXT] add the `block_delta == 1` control arm to the same instrument and compare the two rates within one run.

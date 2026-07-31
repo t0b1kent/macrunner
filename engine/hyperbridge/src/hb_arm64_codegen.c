@@ -807,6 +807,27 @@ static void emit_epilogue_mid_block(hb_codegen_buffer_t* buf) { emit_epilogue_ex
 static void emit_epilogue(hb_codegen_buffer_t* buf) { emit_epilogue_ex(buf, true); }
 
 static void emit_epilogue_ex(hb_codegen_buffer_t* buf, bool with_chain_slot) {
+    /* MacRunner 2026-07-31 — keep rip coherent when the block may be chained.
+     *
+     * sync_arch_pc_after_jit_block() (hb_runtime.c:3430) does `ctx->regs.x64.rip = ctx->pc` and is
+     * called only from the C dispatcher. A chained edge never returns there, so rip stays at
+     * whatever the last unchained block left it while ctx->pc advances — for the whole chain.
+     * Every terminator that can be chained (JMP, Jcc, CALL on both its native and helper paths)
+     * writes ctx->pc, verified by reading; none writes rip, because the dispatcher always did.
+     *
+     * This is the "CPU state coordination" invariant that dynamic binary translators have to
+     * maintain explicitly once translated code stops round-tripping through the runtime. Anything
+     * that reads rip — a helper computing a rip-relative address, exception delivery, unwind —
+     * sees a stale value, and a wrong address is exactly how garbage ends up written back into
+     * guest registers.
+     *
+     * Emitted before the chain slot so it runs on BOTH paths: the chained branch takes it and so
+     * does the ordinary return, where it is redundant but harmless. Two instructions, and only
+     * when chaining is armed. */
+    if (with_chain_slot && jit_block_chain_enabled()) {
+        emit_ldr_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, pc));
+        emit_str_x(buf, 20, 19, (uint32_t)offsetof(hb_context_t, regs.x64.rip));
+    }
     if (with_chain_slot) emit_block_chain_slot(buf);
     if (!(g_lean_frame_on && buf->rmap_active == HB_RMAP_ARMED) || g_lean_remap_only) {
         emit_u32(buf, 0xa9427bf7); /* LDP X23, LR,  [SP, #32] */

@@ -76,6 +76,9 @@ typedef struct hb_jit_signal_fault_frame {
     hb_context_t* ctx;
     hb_block_cache_entry_t* entry;
     hb_context_t snapshot;
+    /* Whether `snapshot` above holds a real pre-image. A frame field rather than a local because
+     * the recovery path reads it after siglongjmp, where a non-volatile local is indeterminate. */
+    bool snapshot_valid;
     uint64_t steps;
     uint64_t blocks_executed;
     uint64_t host_pc;
@@ -2195,14 +2198,42 @@ static int ripmap_enabled(void) {
     return runtime_env_flag_cached(&cached, "MACRUNNER_HB_RIPMAP", 0);
 }
 
+/* Rank 1 of the prior-art synthesis: stop paying the per-dispatch pre-image.
+ *
+ * The census settled the premise -- the snapshot is restored 0 times in 741 M dispatches, and
+ * claim_taken is 0 against ~7.2 M claim_calls -- so what the copy buys is a rollback that does
+ * not happen. QEMU (encode_search / cpu_unwind_data_from_tb) and FEX (JITCodeTail ->
+ * RestoreRIPFromHostPC) both resolve a fault by recovering the faulting guest instruction's
+ * POSITION from a side table read only on the fault path, and carry no per-block pre-image at all.
+ *
+ * With this on, the guard resolves ctx->pc through the map instead of restoring registers. What
+ * that gives up is stated plainly: a block that faulted part-way leaves its partial effects in
+ * place. That is the same trade the chain-scoped rollback gate already makes, and it is why this
+ * is a gate with a default of OFF rather than a deletion.
+ *
+ * The FRAME stays. It is not only the pre-image: the signal handler identifies its own faults
+ * through g_jit_signal_fault_frame, 3.6 M times per run. Removing the copy is not removing it. */
+static int nosnapshot_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_NO_SNAPSHOT", 0);
+}
+
+/* The map is optional evidence under MACRUNNER_HB_RIPMAP, but it is the ONLY way back under
+ * MACRUNNER_HB_NO_SNAPSHOT -- so it has to be built whenever either gate is on. */
+static int ripmap_needed(void) { return ripmap_enabled() || nosnapshot_enabled(); }
+
 static uint64_t t_ripmap_hit, t_ripmap_miss, t_ripmap_agree, t_ripmap_disagree;
+/* Recoveries under MACRUNNER_HB_NO_SNAPSHOT: position recovered from the map, versus faults where
+ * the map could not answer. The premise is that both stay at 0 (the branch is cold); an unresolved
+ * count that is not 0 is the number that decides whether this scheme can replace the snapshot. */
+static uint64_t t_nosnap_resolved, t_nosnap_unresolved;
 
 /* Copy the host-offset map the codegen recorded into the cached entry, which outlives the buffer.
  * Only while the gate is on: normal runs allocate nothing. A block whose instruction count
  * overflowed the codegen table keeps no map and simply falls back to the snapshot path. */
 static void ripmap_attach(hb_block_cache_entry_t* entry, const hb_codegen_buffer_t* buf) {
     size_t bytes;
-    if (!entry || !buf || !ripmap_enabled()) return;
+    if (!entry || !buf || !ripmap_needed()) return;
     if (buf->host_off_overflow || !buf->host_off_count) return;
     bytes = (size_t)buf->host_off_count * sizeof(uint32_t);
     entry->host_off = (uint32_t*)malloc(bytes);
@@ -4584,11 +4615,16 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
      * That is only tolerable because it is observable: recovery entries are counted UNGATED by the
      * census, so a run that takes this arm reports `total_recover=` and any non-zero value
      * invalidates its own timing. Never default this on; the real fix is the resume map. */
-    if (!snapshot_measure_skip_save())
+    frame.aa_enabled = jit_aa_sigbus_probe_enabled();
+    /* The aa probe reads frame.snapshot for its pre/post windows, so it forces the copy even when
+     * the no-snapshot gate is on: a probe that reads uninitialised memory would report noise and
+     * look like a finding. Probe off is the normal configuration, so this costs nothing in a
+     * measurement run -- but it must be stated, because the two gates otherwise interact silently. */
+    frame.snapshot_valid = !nosnapshot_enabled() || frame.aa_enabled;
+    if (frame.snapshot_valid && !snapshot_measure_skip_save())
         hb_ctx_snapshot_save(&frame.snapshot, ctx);
     frame.steps = steps;
     frame.blocks_executed = blocks_executed;
-    frame.aa_enabled = jit_aa_sigbus_probe_enabled();
     if (frame.aa_enabled) {
         frame.aa_dst_pre_valid = jit_aa_capture_window(
             frame.snapshot.memory, frame.snapshot.regs.x64.rcx, frame.aa_dst_pre);
@@ -4654,10 +4690,41 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
     faulted = block_cache_find_native_pc(rt->block_cache, frame.host_pc);
     /* Compare the FEX-style reconstruction against what the snapshot would restore, before the
      * snapshot is applied and the evidence is gone. */
-    ripmap_check(faulted, frame.host_pc, frame.snapshot.pc);
-    if (!chain_scoped_rollback_enabled() || !faulted || faulted == frame.entry)
-        hb_ctx_snapshot_restore(ctx, &frame.snapshot);
-    else {
+    if (!frame.snapshot_valid) {
+        /* No pre-image exists, so there is nothing to roll back TO. Recover the guest POSITION
+         * from the map and let the dispatcher carry on from where the guest actually is -- which
+         * is what QEMU and FEX do, and what ctx->pc alone cannot give us, since it names the block
+         * entry rather than the faulting instruction.
+         *
+         * Note frame.snapshot is NOT read here, not even for a comparison: it was never written,
+         * and reading it would be reading uninitialised stack. */
+        uint64_t guest = ripmap_guest_for_host_pc(faulted, frame.host_pc);
+        if (guest) {
+            ctx->pc = guest;
+            sync_arch_pc_after_jit_block(ctx);
+            t_nosnap_resolved++;
+        } else {
+            t_nosnap_unresolved++;
+        }
+        /* Printed from the first occurrence: "does the cold branch ever fire, and can the map
+         * answer when it does" is the whole question this arm exists to settle, and a periodic
+         * report cannot tell never from rarely. */
+        if ((t_nosnap_resolved + t_nosnap_unresolved) <= 16 ||
+            ((t_nosnap_resolved + t_nosnap_unresolved) & 0xffu) == 0)
+            fprintf(stderr,
+                    "macrunner-hb-nosnap: resolved=%llu unresolved=%llu guest=0x%llx "
+                    "host_pc=0x%llx entry_guest=0x%llx\n",
+                    (unsigned long long)t_nosnap_resolved,
+                    (unsigned long long)t_nosnap_unresolved, (unsigned long long)guest,
+                    (unsigned long long)frame.host_pc,
+                    (unsigned long long)(frame.entry ? frame.entry->guest_addr : 0));
+    } else {
+        /* Compare the map's answer against what the snapshot would restore, before the snapshot is
+         * applied and the evidence is gone. */
+        ripmap_check(faulted, frame.host_pc, frame.snapshot.pc);
+        if (!chain_scoped_rollback_enabled() || !faulted || faulted == frame.entry)
+            hb_ctx_snapshot_restore(ctx, &frame.snapshot);
+        else {
         /* Print it. Four times this session a counter I added decided the outcome instead of the
          * thing being measured — a 2^23 census period that turned 36% into a reported 57%, an
          * unrepresentative early sample, and twice a predicate whose counters never fired because
@@ -4669,6 +4736,7 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
                     (unsigned long long)t_chain_rollback_skipped,
                     (unsigned long long)(faulted ? faulted->guest_addr : 0),
                     (unsigned long long)(frame.entry ? frame.entry->guest_addr : 0));
+        }
     }
     if (jit_signal_quarantine_enabled_for(frame.signal)) {
         hb_block_cache_entry_t* quarantine_entry = faulted ? faulted : cached;

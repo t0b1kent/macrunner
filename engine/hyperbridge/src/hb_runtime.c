@@ -964,6 +964,41 @@ static int trace_chain_edge_enabled(void) {
  * takes that guest address and logs every edge whose predecessor or successor lies within +-64 KB of it.
  * Observation only — it decides whether the chain even touches the block that dies, which five mechanism
  * guesses could not. */
+/* MacRunner 2026-08-01 — WARM-UP GATE: дифференциал ВНУТРИ одного прогона.
+ *
+ * Межпроцессное сравнение (сцепление вкл против выкл, два запуска) ответа дать не может: два
+ * процесса получают разные базы выделения. Замер: 137638 расхождений на 23774 сопоставленных пары,
+ * из них 70 % — это оба значения указатели с разницей, кратной 0x10000, то есть сдвиг базы; и в
+ * сцепленной руке 8228 различных блоков против 1409 в контрольной, то есть сами исполнения
+ * разошлись. Отделить порчу от недетерминизма так нельзя.
+ *
+ * Двойное исполнение блока тоже не годится: запись в память произошла бы дважды.
+ *
+ * Поэтому: не патчить НИ ОДНОЙ цепочки, пока не пройдено N диспетчеризаций. В одном процессе, при
+ * одних базах, потоках и таймингах, у каждого блока появляются записи ДО включения (эталон) и
+ * ПОСЛЕ (проверяемое). Значение, которого нет в эталонной популяции ТОГО ЖЕ блока, сдвигом базы
+ * уже не объясняется.
+ *
+ * 0 = выключено: сцеплять сразу, прежнее поведение. */
+static uint64_t g_dispatch_ticks;
+
+static uint64_t runtime_chain_after_n(void) {
+    static int parsed;
+    static uint64_t n;
+    if (!parsed) {
+        const char* env = getenv("MACRUNNER_HB_CHAIN_AFTER_N");
+        n = (env && *env) ? strtoull(env, NULL, 0) : 0;
+        parsed = 1;
+    }
+    return n;
+}
+
+static int chain_warmup_passed(void) {
+    uint64_t n = runtime_chain_after_n();
+    if (!n) return 1;
+    return __atomic_load_n(&g_dispatch_ticks, __ATOMIC_RELAXED) >= n;
+}
+
 static uint64_t runtime_chain_edge_near(void) {
     static int parsed;
     static uint64_t addr;
@@ -3597,6 +3632,7 @@ static uint64_t t_chain_rollback_skipped;
 
 static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
                              hb_block_cache_entry_t* next) {
+    if (!chain_warmup_passed()) return false;
     hb_block_chain_meta_t* meta;
     uint8_t* target;
     uint8_t* patch;
@@ -6551,6 +6587,9 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
  * thread_blocks/thread_dispatches is the honest avg_chain. It is printed as avg_chain= there, beside
  * the terminal histogram that gives the ceiling. Duplicating it here bought a wrong second opinion. */
 hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, hb_exec_result_t* out) {
+    /* Порог разогрева считается здесь: через эту точку проходит КАЖДЫЙ вход в диспетчер,
+     * в отличие от зондов, один из которых лежит на редкой ветви. */
+    __atomic_add_fetch(&g_dispatch_ticks, 1, __ATOMIC_RELAXED);
 
     int block_chain = runtime_block_chain_enabled();
     int single_lookup_gate = runtime_single_lookup_enabled();
@@ -6730,15 +6769,42 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             /* Entry-state probe for ONE guest block, so the same line can be compared with chaining on and
              * off. The chained arm shows rcx/rdx arriving as f0e0993f/320eec31 — the exact values the fault
              * reports — and this says what they are when the block is reached the ordinary way. */
-            if (trace_chain_edge_enabled() && cached->guest_addr == runtime_chain_edge_near()) {
+            /* 2026-08-01 — ALL-BLOCKS mode. The single-address form caught only FOUR entries in a
+             * 900 s run (two threads, twice each), which is far too few to locate a first divergence:
+             * the differential needs the block to be entered many times, and this one is not hot.
+             *
+             * When MACRUNNER_HB_CHAIN_EDGE_NEAR is 0/unset the filter is dropped and every dispatched
+             * block is recorded. Alignment between the two arms is NOT by the global sequence number
+             * -- chaining changes how many dispatcher entries there are, which is the whole point of
+             * it -- but by (guest_addr, k-th occurrence of that address), which the comparison script
+             * does. So the emitted line only needs the address and a global index. */
+            __atomic_add_fetch(&g_dispatch_ticks, 1, __ATOMIC_RELAXED);
+            if (trace_chain_edge_enabled() &&
+                (runtime_chain_edge_near() == 0 ||
+                 cached->guest_addr == runtime_chain_edge_near())) {
                 static uint64_t seen;
-                if (__atomic_add_fetch(&seen, 1, __ATOMIC_RELAXED) <= 8)
-                    fprintf(stderr, "macrunner-hb-blockentry: guest=0x%llx rcx=0x%llx rdx=0x%llx "
-                                    "rax=0x%llx rsp=0x%llx n=%llu\n",
-                            (unsigned long long)cached->guest_addr,
-                            (unsigned long long)ctx->regs.x64.rcx, (unsigned long long)ctx->regs.x64.rdx,
-                            (unsigned long long)ctx->regs.x64.rax, (unsigned long long)ctx->regs.x64.rsp,
-                            (unsigned long long)seen), fflush(stderr);
+                /* Full GPR file and a high cap, because this probe is now one half of a
+                 * DIFFERENTIAL: the same guest block is entered in a chained run and an unchained
+                 * one, and the first sequence number whose registers disagree names the exact
+                 * point where chaining departs from correct execution.
+                 *
+                 * Four registers and a cap of 8 could not do that. Register deltas across a
+                 * transition are dominated by legitimate guest work -- 8-9 of 16 change per
+                 * chained transition -- so nothing short of the whole file compared against the
+                 * unchained baseline separates corruption from ordinary execution. */
+                uint64_t n_ = __atomic_add_fetch(&seen, 1, __ATOMIC_RELAXED);
+                if (n_ <= 200000) {  /* all-blocks mode needs a much larger budget */
+                    const uint64_t* g = &ctx->regs.x64.rax;
+                    unsigned gi;
+                    fprintf(stderr, "macrunner-hb-blockentry: n=%llu phase=%d guest=0x%llx",
+                            (unsigned long long)n_, chain_warmup_passed() ? 1 : 0,
+                                (unsigned long long)cached->guest_addr);
+                    for (gi = 0; gi < HB_TRACE_GPR_N; gi++)
+                        fprintf(stderr, " %s=%llx", hb_trace_gpr_names[gi],
+                                (unsigned long long)g[gi]);
+                    fprintf(stderr, "\n");
+                    fflush(stderr);
+                }
             }
             hb_result_t run_result = run_jit_block_with_signal_guard(rt, cached, out,
                                                                       steps, blocks_executed);
@@ -6985,13 +7051,28 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
              * reports — and this says what they are when the block is reached the ordinary way. */
             if (trace_chain_edge_enabled() && cached->guest_addr == runtime_chain_edge_near()) {
                 static uint64_t seen;
-                if (__atomic_add_fetch(&seen, 1, __ATOMIC_RELAXED) <= 8)
-                    fprintf(stderr, "macrunner-hb-blockentry: guest=0x%llx rcx=0x%llx rdx=0x%llx "
-                                    "rax=0x%llx rsp=0x%llx n=%llu\n",
-                            (unsigned long long)cached->guest_addr,
-                            (unsigned long long)ctx->regs.x64.rcx, (unsigned long long)ctx->regs.x64.rdx,
-                            (unsigned long long)ctx->regs.x64.rax, (unsigned long long)ctx->regs.x64.rsp,
-                            (unsigned long long)seen), fflush(stderr);
+                /* Full GPR file and a high cap, because this probe is now one half of a
+                 * DIFFERENTIAL: the same guest block is entered in a chained run and an unchained
+                 * one, and the first sequence number whose registers disagree names the exact
+                 * point where chaining departs from correct execution.
+                 *
+                 * Four registers and a cap of 8 could not do that. Register deltas across a
+                 * transition are dominated by legitimate guest work -- 8-9 of 16 change per
+                 * chained transition -- so nothing short of the whole file compared against the
+                 * unchained baseline separates corruption from ordinary execution. */
+                uint64_t n_ = __atomic_add_fetch(&seen, 1, __ATOMIC_RELAXED);
+                if (n_ <= 4096) {
+                    const uint64_t* g = &ctx->regs.x64.rax;
+                    unsigned gi;
+                    fprintf(stderr, "macrunner-hb-blockentry: n=%llu phase=%d guest=0x%llx",
+                            (unsigned long long)n_, chain_warmup_passed() ? 1 : 0,
+                                (unsigned long long)cached->guest_addr);
+                    for (gi = 0; gi < HB_TRACE_GPR_N; gi++)
+                        fprintf(stderr, " %s=%llx", hb_trace_gpr_names[gi],
+                                (unsigned long long)g[gi]);
+                    fprintf(stderr, "\n");
+                    fflush(stderr);
+                }
             }
             hb_result_t run_result = run_jit_block_with_signal_guard(rt, cached, out,
                                                                       steps, blocks_executed);

@@ -64,14 +64,28 @@ if [ "$uses_chain" = 1 ] && ! have MACRUNNER_HB_BLOCK_CHAIN; then
   fail=1
 fi
 
-# ── 4. The binary must be at least as new as the engine sources. ──────────────────────────────
-newer=$(find "$SRC" engine/hyperbridge/include -name '*.c' -o -name '*.h' 2>/dev/null \
-        | while read -r f; do [ "$f" -nt "$DIST" ] && echo "$f"; done | head -3)
-if [ -n "$newer" ]; then
-  note "FAIL: исходники новее развёрнутого бинаря — правки не в прогоне:"
-  echo "$newer" | sed 's/^/        /'
-  fail=1
-fi
+# ── 4. EVERY carrier of libhyperbridge.a must be current, not just the one you remembered. ────
+# This is the check that cost a day. libhyperbridge.a is linked into THREE modules -- ntdll.so,
+# xtajit.so and xtajit64.so -- and deploying only xtajit64.so leaves the engine code that actually
+# executes (ntdll's copy) at whatever version it was. Every run then silently exercises old code
+# while the dist looks freshly deployed. Verified by tagging a print: the log carried the untagged
+# text 7232 times while the deployed xtajit64.so contained only the tagged one.
+CARRIERS=$(grep -rls "libhyperbridge.a" engine/wine/dlls/*/Makefile.in 2>/dev/null \
+           | sed 's|engine/wine/dlls/||; s|/Makefile.in||')
+[ -n "$CARRIERS" ] || { note "FAIL: не нашёл ни одного модуля, линкующего libhyperbridge.a"; fail=1; }
+for m in $CARRIERS; do
+  so="engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/$m.so"
+  if [ ! -f "$so" ]; then note "FAIL: носитель $m.so отсутствует в dist"; fail=1; continue; fi
+  stale=$(find "$SRC" engine/hyperbridge/include \( -name '*.c' -o -name '*.h' \) 2>/dev/null \
+          | while read -r f; do [ "$f" -nt "$so" ] && echo "$f" && break; done)
+  if [ -n "$stale" ]; then
+    note "FAIL: $m.so СТАРШЕ исходников — этот носитель не пересобран (правки не в прогоне)"
+    note "      первый новее: $stale"
+    fail=1
+  else
+    note "носитель $m.so: свежий ($(shasum -a256 "$so" | cut -c1-12))"
+  fi
+done
 
 [ "$fail" = 0 ] || { echo "── ПРОГОН НЕ ЗАПУЩЕН: устраните причины выше ──"; exit 2; }
 note "OK: гейты существуют, задеплоены, мастер-гейт на месте, бинарь свежее исходников"

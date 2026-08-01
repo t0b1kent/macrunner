@@ -1003,10 +1003,19 @@ static uint64_t g_chain_patches_installed;
  * corrupted and the loss is the per-dispatch host work a chained transition skips. */
 static int chain_edge_is_near(uint64_t a, uint64_t b);
 
+/* rax..r15: the 16 general-purpose guest registers, in hb_regs_x64_t order. */
+#define HB_TRACE_GPR_N 16
+
+static const char* const hb_trace_gpr_names[HB_TRACE_GPR_N] = {
+    "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rsp", "rbp",
+    "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15"
+};
+
 static void trace_chain_transition(const hb_context_t* ctx, const hb_block_cache_entry_t* cur,
                                    uint64_t block_delta, uint64_t step_delta,
                                    uint64_t before_rcx, uint64_t before_rdx,
-                                   uint64_t before_rbp, uint64_t before_rsp) {
+                                   uint64_t before_rbp, uint64_t before_rsp,
+                                   const uint64_t* before_gpr) {
     static uint64_t shown;
     int near;
     if (!trace_chain_edge_enabled() || !ctx || !cur) return;
@@ -1017,13 +1026,40 @@ static void trace_chain_transition(const hb_context_t* ctx, const hb_block_cache
      * subject to the 32-line cap below: the cap is why the first 32 transitions all looked clean while the
      * one that matters was never printed. */
     if (before_rbp >= 0x10000 && ctx->regs.x64.rbp < 0x10000) {
-        fprintf(stderr, "macrunner-hb-chain-RBP-VIOLATION: from=0x%llx pc_after=0x%llx blocks=%llu steps=%llu "
+        /* The "v2" tag settles a contradiction by evidence instead of by argument: GPRDIFF sits in
+         * this same branch, is present in the deployed .so, and printed 0 times while this line
+         * printed 7233. That is impossible if the running binary is the deployed one -- so tag the
+         * line that DOES print. A log carrying the untagged text proves the loaded module is not
+         * the one being deployed, and no further reasoning about the code is worth anything until
+         * that is settled. */
+        fprintf(stderr, "macrunner-hb-chain-RBP-VIOLATION-v2: from=0x%llx pc_after=0x%llx blocks=%llu steps=%llu "
                         "rbp %llx->%llx rsp %llx->%llx rcx %llx->%llx\n",
                 (unsigned long long)cur->guest_addr, (unsigned long long)ctx->pc,
                 (unsigned long long)block_delta, (unsigned long long)step_delta,
                 (unsigned long long)before_rbp, (unsigned long long)ctx->regs.x64.rbp,
                 (unsigned long long)before_rsp, (unsigned long long)ctx->regs.x64.rsp,
                 (unsigned long long)before_rcx, (unsigned long long)ctx->regs.x64.rcx);
+        /* WHICH registers the transition loses, not just the three an earlier hypothesis named.
+         * The point of the classification is that it discriminates between two causes that the
+         * rbp-only print could not tell apart: a wholesale wipe of the context (a memset, a restore
+         * from a zeroed pre-image) would zero EVERY register, while a specific store path would
+         * zero a small, repeatable subset. Printing survivors as well as casualties is what makes
+         * that readable -- "5 of 16 zeroed" is evidence, "rbp went to 0" is an anecdote. */
+        if (before_gpr) {
+            const uint64_t* after = &ctx->regs.x64.rax;
+            unsigned zeroed = 0, changed = 0, i;
+            fprintf(stderr, "macrunner-hb-chain-GPRDIFF: from=0x%llx",
+                    (unsigned long long)cur->guest_addr);
+            for (i = 0; i < HB_TRACE_GPR_N; i++) {
+                if (before_gpr[i] == after[i]) continue;
+                changed++;
+                if (after[i] == 0 && before_gpr[i] != 0) zeroed++;
+                fprintf(stderr, " %s=%llx->%llx", hb_trace_gpr_names[i],
+                        (unsigned long long)before_gpr[i], (unsigned long long)after[i]);
+            }
+            fprintf(stderr, " | changed=%u zeroed=%u of %u\n", changed, zeroed,
+                    (unsigned)HB_TRACE_GPR_N);
+        }
         fflush(stderr);
     }
 
@@ -6682,6 +6718,15 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             uint64_t before_rdx = ctx->regs.x64.rdx;
             uint64_t before_rbp = ctx->regs.x64.rbp;
             uint64_t before_rsp = ctx->regs.x64.rsp;
+            /* Whole GPR file, so the violation print can say WHICH registers a chained transition
+             * loses rather than only the three that an earlier hypothesis happened to name. rax..r15
+             * are 16 contiguous uint64_t in hb_regs_x64_t (rip and rflags follow), so one copy takes
+             * them all; the static assert keeps that true if the struct is ever reordered. */
+            uint64_t before_gpr[HB_TRACE_GPR_N];
+            _Static_assert(offsetof(hb_regs_x64_t, r15) - offsetof(hb_regs_x64_t, rax) ==
+                               (HB_TRACE_GPR_N - 1) * sizeof(uint64_t),
+                           "guest GPRs are no longer 16 contiguous words -- fix before_gpr");
+            memcpy(before_gpr, &ctx->regs.x64.rax, sizeof before_gpr);
             /* Entry-state probe for ONE guest block, so the same line can be compared with chaining on and
              * off. The chained arm shows rcx/rdx arriving as f0e0993f/320eec31 — the exact values the fault
              * reports — and this says what they are when the block is reached the ordinary way. */
@@ -6708,7 +6753,8 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                     steps += step_delta;
                     if (block_delta > 1)
                         trace_chain_transition(ctx, cached, block_delta, step_delta,
-                                               before_rcx, before_rdx, before_rbp, before_rsp);
+                                               before_rcx, before_rdx, before_rbp, before_rsp,
+                                               before_gpr);
                     if (dispatch_stats_enabled_run) dispatch_stats_add(1, block_delta, step_delta);
                 } else {
                     blocks_executed++;
@@ -6925,6 +6971,15 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
             uint64_t before_rdx = ctx->regs.x64.rdx;
             uint64_t before_rbp = ctx->regs.x64.rbp;
             uint64_t before_rsp = ctx->regs.x64.rsp;
+            /* Whole GPR file, so the violation print can say WHICH registers a chained transition
+             * loses rather than only the three that an earlier hypothesis happened to name. rax..r15
+             * are 16 contiguous uint64_t in hb_regs_x64_t (rip and rflags follow), so one copy takes
+             * them all; the static assert keeps that true if the struct is ever reordered. */
+            uint64_t before_gpr[HB_TRACE_GPR_N];
+            _Static_assert(offsetof(hb_regs_x64_t, r15) - offsetof(hb_regs_x64_t, rax) ==
+                               (HB_TRACE_GPR_N - 1) * sizeof(uint64_t),
+                           "guest GPRs are no longer 16 contiguous words -- fix before_gpr");
+            memcpy(before_gpr, &ctx->regs.x64.rax, sizeof before_gpr);
             /* Entry-state probe for ONE guest block, so the same line can be compared with chaining on and
              * off. The chained arm shows rcx/rdx arriving as f0e0993f/320eec31 — the exact values the fault
              * reports — and this says what they are when the block is reached the ordinary way. */
@@ -6951,7 +7006,8 @@ hb_result_t hb_jit_runtime_run(hb_jit_runtime_t* rt, const hb_ir_func_t* func, h
                     steps += step_delta;
                     if (block_delta > 1)
                         trace_chain_transition(ctx, cached, block_delta, step_delta,
-                                               before_rcx, before_rdx, before_rbp, before_rsp);
+                                               before_rcx, before_rdx, before_rbp, before_rsp,
+                                               before_gpr);
                     if (dispatch_stats_enabled_run) dispatch_stats_add(1, block_delta, step_delta);
                 } else {
                     blocks_executed++;

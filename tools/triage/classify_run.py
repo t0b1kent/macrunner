@@ -154,7 +154,18 @@ LADDER_RUNGS = [
                         "dxmt-hk-swaptrace: kind=SwapChain method=GetBuffer"]),
     ("rtv",            ["macrunner-hb-d3d-rtv: CreateRenderTargetView rc=0x0",
                         "dxmt-hk-swaptrace: kind=Device method=CreateRenderTargetView"]),
-    ("real-present",   ["macrunner-hb-dxgi-swapchain: method=Present slot=8"]),
+    # The DXMT twin is NOT optional here, and its absence cost a day of wrong verdicts.
+    # getbuffer and rtv above each carry both sides -- the HB vtable tracer and the DXMT one --
+    # while this rung carried only HB, and only the exact spelling "Present slot=8". Hollow Knight
+    # calls IDXGISwapChain1::Present1, so a run that cleared its render target, issued 39
+    # DrawIndexed calls and presented was still reported as "rung 13, PIXEL_MOMENT_REACHED: no".
+    # Every run in the archive is understated the same way.
+    #
+    # "method=Present" is left as a substring so it covers Present1 as well; inside a
+    # kind=SwapChain line both spellings are the real presentation call, which is the thing this
+    # rung is asking about.
+    ("real-present",   ["macrunner-hb-dxgi-swapchain: method=Present slot=8",
+                        "dxmt-hk-swaptrace: kind=SwapChain method=Present"]),
 ]
 
 # IAT-binding diagnostic lines (dlls/ntdll/loader.c ~3332-3488: iatentry/cpdecision/

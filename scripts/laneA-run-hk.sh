@@ -282,11 +282,21 @@ for try in $(seq 1 "$MAX"); do
   set -o pipefail
     MACRUNNER_RUN_DIR="$RUNDIR" MACRUNNER_HB_TRANSLATION_CACHE="$CACHE_ENABLED" \
     MACRUNNER_HB_TRANSLATION_CACHE_ROOT="$CACHE_ROOT" \
+    # ВНИМАНИЕ: список переменных ниже — не документация, а ФИЛЬТР. Всё, чего в нём нет,
+    # до процесса игры не доходит вовсе. Прогон с MACRUNNER_DXMT_SWAPCHAIN_TRACE=1,
+    # выставленным снаружи, дал ноль строк Present — и это едва не было прочитано как
+    # "игра не выводит кадры", хотя в архивном прогоне с проверенно включённым гейтом
+    # их 4090, все успешные. Доставку проверять по final-child.json: там фактическое
+    # окружение процесса. Умолчание 0, а не пусто: для getenv() пустая строка — это
+    # "переменная задана". Комментарии внутри продолжения строки ставить НЕЛЬЗЯ:
+    # обратная косая склеивает строки до обработки #, и остаток команды съедается.
     MACRUNNER_HB_TRACE_D3D_BOUNDARY="${MACRUNNER_HB_TRACE_D3D_BOUNDARY:-1}" \
     MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN="${MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN:-1}" \
     MACRUNNER_HB_DIRECT_MEM="${MACRUNNER_HB_DIRECT_MEM:-1}" \
     MACRUNNER_HB_SINGLE_LOOKUP="${MACRUNNER_HB_SINGLE_LOOKUP:-1}" \
     MACRUNNER_GRAPHICS_BACKEND="${MACRUNNER_GRAPHICS_BACKEND:-dxmt}" \
+    MACRUNNER_DXMT_SWAPCHAIN_TRACE="${MACRUNNER_DXMT_SWAPCHAIN_TRACE:-0}" \
+    MACRUNNER_DXMT_FRAME_DUMP="${MACRUNNER_DXMT_FRAME_DUMP:-0}" \
     MACRUNNER_DXMT_ROOT="$OVERLAY_DIR" \
     MACRUNNER_PREFIX_SYSTEM32_ARCH="$MACHINE_DIR" \
     MACRUNNER_MR_RUN_START_SERVICES="${MACRUNNER_MR_RUN_START_SERVICES:-1}" \

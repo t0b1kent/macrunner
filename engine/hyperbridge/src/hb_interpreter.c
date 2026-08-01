@@ -3292,8 +3292,53 @@ static hb_result_t exec_instr(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     return r;
 }
 
+/* СЧЁТЧИК ИНТЕРПРЕТИРУЕМЫХ ИНСТРУКЦИЙ (01.08).
+ *
+ * Зачем. Вопрос «какая доля гостевых инструкций исполняется интерпретатором, а не транслированным
+ * кодом» — центральный для разрыва с Rosetta: интерпретация примерно стократно дороже трансляции,
+ * поэтому даже пара процентов здесь весит больше, чем вся шлифовка кодогенерации. Ответить на него
+ * было НЕЧЕМ: счётчиков на этом пути не существовало ни одного (проверено grep'ом — ноль мест), и
+ * все прошлые нули в трассах интерпретатора означали «прибор не подключён», а не «интерпретации
+ * нет». Трёхкратный выигрыш от отключения промоции семейств нашли глазами в профиле, случайно.
+ *
+ * Что считается. Точка выбрана здесь, а не на входе в интерпретатор целиком: сюда сходятся ОБЕ
+ * ветви (exec_instr для locked и прямой вызов для остальных) И падения из транслированного кода в
+ * хелперы — живой путь hb_jit_helper_exec_block_instr_for_jit -> hb_interpreter_exec_one_for_jit.
+ * То есть число покрывает и «блок целиком интерпретируется», и «одна инструкция ушла в хелпер»,
+ * а это как раз те 134 млн вызовов хелпера, что остались после слияния CMP/Jcc.
+ *
+ * Знаменатель уже есть: t_dispatch_stats_steps в hb_runtime.c — инструкции, исполненные
+ * транслированными блоками. Печать отношения — там же, в переписи диспетчеризации.
+ *
+ * Цена. Инкремент потоковой переменной без атомарности на горячем пути; в общий итог складывается
+ * не чаще раза на 2^20 инструкций, как у t_guard_* рядом. Складывать при каждом инкременте нельзя:
+ * 64 потока дрались бы за одну строку кеша. */
+uint64_t g_hb_interp_instr_total;
+static __thread uint64_t t_hb_interp_instr;
+static __thread uint64_t t_hb_interp_flushed;
+
+#define HB_INTERP_CENSUS_PERIOD (1ull << 20)
+
+static void hb_interp_instr_fold(void) {
+    uint64_t add = t_hb_interp_instr - t_hb_interp_flushed;
+    if (!add) return;
+    t_hb_interp_flushed = t_hb_interp_instr;
+    __atomic_add_fetch(&g_hb_interp_instr_total, add, __ATOMIC_RELAXED);
+}
+
+/* Оба читателя живут в hb_runtime.c. Поток — про критический поток, итог — про процесс:
+ * по одному числу нельзя отличить «интерпретируем везде понемногу» от «один поток встал». */
+uint64_t hb_interp_instr_thread_count(void) { return t_hb_interp_instr; }
+
+uint64_t hb_interp_instr_total_count(void) {
+    hb_interp_instr_fold();
+    return __atomic_load_n(&g_hb_interp_instr_total, __ATOMIC_RELAXED);
+}
+
 static hb_result_t exec_instr_unlocked(hb_context_t* ctx, const hb_ir_instr_t* instr) {
     hb_result_t r;
+    if (!(++t_hb_interp_instr & (HB_INTERP_CENSUS_PERIOD - 1)))
+        hb_interp_instr_fold();
     switch (instr->op) {
         case HB_IR_NOP:
             return HB_OK;

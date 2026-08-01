@@ -214,6 +214,12 @@ static int runtime_block_chain_enabled(void);
 static int runtime_single_lookup_enabled(void);
 static int runtime_indirect_ic_enabled(void);
 
+/* Счётчик интерпретируемых инструкций живёт в hb_interpreter.c — там его горячая точка.
+ * Отдельного заголовка у интерпретатора нет, поэтому объявление здесь, рядом с прочими
+ * межмодульными. Обоснование самого счётчика — в комментарии у exec_instr_unlocked. */
+uint64_t hb_interp_instr_thread_count(void);
+uint64_t hb_interp_instr_total_count(void);
+
 static int translation_cache_trace_enabled(void) {
     return hb_contract_telemetry_enabled();
 }
@@ -429,6 +435,28 @@ static void dispatch_stats_flush_thread(int force) {
                                 (unsigned long long)t_chain_decline[i]);
                 fprintf(stderr, "\n");
             }
+        }
+        /* ИНТЕРПРЕТАЦИЯ ПРОТИВ ТРАНСЛЯЦИИ — доля, которой у нас до 01.08 не было ничем измерить.
+         *
+         * Числитель считается в hb_interpreter.c на exec_instr_unlocked: туда сходятся и блоки,
+         * исполняемые интерпретатором целиком, и одиночные инструкции, упавшие из транслированного
+         * кода в хелпер. Знаменатель — steps выше: инструкции, исполненные транслированными блоками.
+         * interp_pct считается от СУММЫ, поэтому это доля всех исполненных инструкций, а не
+         * отношение к трансляции: у второго нет верхней границы и его нельзя читать глазом.
+         *
+         * Печатается и поток, и процесс: интерпретация, размазанная по 64 потокам, и один вставший
+         * поток дают одно и то же общее число, а стоят совершенно разного. */
+        {
+            uint64_t ti = hb_interp_instr_thread_count();
+            uint64_t tot_i = hb_interp_instr_total_count();
+            uint64_t ts = t_dispatch_stats_steps;
+            fprintf(stderr,
+                    "macrunner-hb-interp-census: thread_interp=%llu thread_steps=%llu "
+                    "thread_interp_pct=%.4f total_interp=%llu total_steps=%llu total_interp_pct=%.4f\n",
+                    (unsigned long long)ti, (unsigned long long)ts,
+                    (ti + ts) ? 100.0 * (double)ti / (double)(ti + ts) : 0.0,
+                    (unsigned long long)tot_i, (unsigned long long)total_steps,
+                    (tot_i + total_steps) ? 100.0 * (double)tot_i / (double)(tot_i + total_steps) : 0.0);
         }
         /* The O(N) CFG scan every dispatch opens with on the default path — see find_block. */
         fprintf(stderr, "macrunner-hb-findblock: thread_calls=%llu thread_iters=%llu avg_scan=%.2f "

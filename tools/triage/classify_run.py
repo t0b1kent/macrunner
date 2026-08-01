@@ -159,7 +159,12 @@ LADDER_RUNGS = [
     # while this rung carried only HB, and only the exact spelling "Present slot=8". Hollow Knight
     # calls IDXGISwapChain1::Present1, so a run that cleared its render target, issued 39
     # DrawIndexed calls and presented was still reported as "rung 13, PIXEL_MOMENT_REACHED: no".
-    # Every run in the archive is understated the same way.
+    #
+    # Scope, measured rather than assumed: re-classifying the 40 most recent runs changes NOT ONE
+    # verdict. So this fixes the historical record for the runs that really did present -- so far
+    # only the BLACKFRAME-DRAWTRACE one -- and it does not mean the archive was full of hidden
+    # frames. The corollary is the uncomfortable half: today's runs stop at rung 11 for real, and
+    # the drop from 14 to 11 is a genuine regression, not a reporting artefact.
     #
     # "method=Present" is left as a substring so it covers Present1 as well; inside a
     # kind=SwapChain line both spellings are the real presentation call, which is the thing this

@@ -861,4 +861,6 @@ static inline int is_gdt_sel( WORD sel )
 
 #endif  /* defined(__i386__) || defined(__x86_64__) */
 
+extern int macrunner_hb_guest_image_for_pc( UINT64 pc, UINT64 *base, UINT64 *size );
+
 #endif /* __NTDLL_UNIX_PRIVATE_H */

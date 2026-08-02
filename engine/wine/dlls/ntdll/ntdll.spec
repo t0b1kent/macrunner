@@ -1755,6 +1755,7 @@
 @ extern -private __wine_syscall_dispatcher
 @ extern -private __wine_unix_call_dispatcher
 @ extern -private -arch=arm64ec __wine_unix_call_dispatcher_arm64ec
+@ extern -private macrunner_hb_guest_image_lookup
 @ extern -private __wine_unixlib_handle
 @ cdecl -private __wine_macrunner_hb_pe_call12(ptr ptr)
 @ cdecl -private __wine_macrunner_hb_pe_callback12(ptr)

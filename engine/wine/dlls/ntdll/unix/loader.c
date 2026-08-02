@@ -2637,6 +2637,15 @@ static void load_ntdll_functions( HMODULE module )
     }
     else *p__wine_unix_call_dispatcher = __wine_unix_call_dispatcher;
 #undef GET_FUNC
+
+    /* MacRunner 2026-08-03 — hand the PE side a lock-free guest-image lookup.  Resolved WITHOUT
+     * GET_FUNC on purpose: GET_FUNC calls fatal_error, and a diagnostic aid must never be able to
+     * kill the process at startup just because a stale PE ntdll lacks the export. */
+    {
+        void **p = (void *)find_named_export( module, image_size, exports,
+                                              "macrunner_hb_guest_image_lookup" );
+        if (p) *p = macrunner_hb_guest_image_for_pc;
+    }
 }
 
 

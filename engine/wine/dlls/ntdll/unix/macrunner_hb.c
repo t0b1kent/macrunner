@@ -1315,6 +1315,38 @@ static void macrunner_hb_module_from_pc_cache_put( uintptr_t start, size_t size,
     entry->module = module;
 }
 
+/* MacRunner 2026-08-03 — a guest-image lookup the PE side can call from inside the exception path.
+ *
+ * Why this exists: the PE side has two ways to ask "which module owns this address" and BOTH are
+ * blind to guest images.  LdrFindEntryForAddress walks InLoadOrderModuleList, where guest modules
+ * loaded above HOST_BOUNDARY_MAX are not listed; NtQueryVirtualMemory is no better — measured on
+ * PATHB31, an address inside a running UnityPlayer came back state=MEM_FREE alloc_base=0, because
+ * our engine maps guest images outside the Windows-side VM bookkeeping.  The consequence is not
+ * cosmetic: macrunner-hb-nullcall-vtable, the diagnostic that would NAME the null method behind the
+ * pc=0 faults, sits under `if (upbase)` and has therefore never printed.
+ *
+ * Deliberately restricted to the thread-local cache: it is lock-free, and taking a lock from an
+ * exception path is how you turn a diagnostic into a deadlock.  The faulting thread is the one that
+ * was executing in the guest image, so its own cache is exactly where the entry is warm.  Returns 0
+ * and touches nothing when it does not know — a miss must stay cheaper than a wrong answer. */
+int macrunner_hb_guest_image_for_pc( UINT64 pc, UINT64 *base, UINT64 *size )
+{
+    uintptr_t addr = (uintptr_t)pc;
+    unsigned int i;
+
+    for (i = 0; i < MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE; i++)
+    {
+        const struct macrunner_hb_module_from_pc_cache_entry *entry = &macrunner_hb_module_from_pc_cache[i];
+
+        if (!entry->module || !entry->start || entry->end <= entry->start) continue;
+        if (addr < entry->start || addr >= entry->end) continue;
+        if (base) *base = (UINT64)(uintptr_t)entry->module;
+        if (size) *size = (UINT64)(entry->end - entry->start);
+        return 1;
+    }
+    return 0;
+}
+
 static void *macrunner_hb_module_from_pc( void *pc )
 {
     uintptr_t addr = (uintptr_t)pc;

@@ -48,6 +48,8 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
 #define MACRUNNER_HB_SYSCALL_FRAME_SIZE 0x330ULL
 
 extern void *__wine_syscall_dispatcher;
+/* Filled by the unix side at load time; NULL when unavailable, so every use must check. */
+extern int (*macrunner_hb_guest_image_lookup)( UINT64 pc, UINT64 *base, UINT64 *size );
 
 static const EXCEPTION_RECORD *macrunner_hb_current_exception_record;
 
@@ -125,6 +127,7 @@ static LONG CALLBACK macrunner_hb_pe_scan_fault( EXCEPTION_POINTERS *ep );
 static BOOL macrunner_hb_find_pc_section( DWORD64 pc, char section_name[9],
                                           DWORD *section_characteristics );
 static int macrunner_hb_arm64x_code_range_kind( ULONG_PTR base, DWORD64 pc );
+static void macrunner_hb_nullcall_diagnose( CONTEXT *context );
 
 static inline BOOL macrunner_hb_is_unix_dispatcher_boundary_pc( DWORD64 pc )
 {
@@ -339,6 +342,85 @@ static BOOL macrunner_hb_unwind_syscall_data_boundary( DISPATCHER_CONTEXT *dispa
     return TRUE;
 }
 
+/* MacRunner 2026-08-02 — the resume candidate at a native-dispatch boundary can legitimately be a
+ * HOST address, and until now every acceptance test below refused one.
+ *
+ * Measured, not inferred: HK dies at +670.9 s with `prev_frame == NULL`, so the recovery falls back
+ * to the current frame (source=current-frame).  That frame's pc is 0x107092d40, which resolves to
+ * `macrunner_hb_call_direct_native_target+0x8e0` in our own unix ntdll.so — the return site of
+ * `bl __wine_unix_call_dispatcher`.  A perfectly ordinary place for the thread to be.  But every
+ * test recognises code only through LdrFindEntryForAddress, i.e. only PE modules, so a host Mach-O
+ * address falls through to "pc-not-code" and the recovery is refused.  Score across the whole run
+ * history before this change: 360 rejects, 0 recoveries — the Fix-C machinery specified on
+ * 2026-06-24 has shipped in every build since and has never once fired.
+ *
+ * macrunner_hb_is_unix_dispatcher_boundary_pc() misses this by margin, not by intent: its window is
+ * 0x20000 and this call site sits 0x2e3f0 below the dispatcher.  Rather than widen that constant —
+ * it guards other decisions — this uses its own, wider window and its own marker.
+ *
+ * The TEB stack check further down is skipped for such a frame on purpose: Tib.StackLimit/StackBase
+ * describe the GUEST stack, while a thread inside a unix call is legitimately on the HOST stack.
+ * The same run shows sp=0x112bcc880 against stack=0x115ec0000-0x116ec0000 — not corruption, just two
+ * different stacks being compared.
+ *
+ * Gated so ONE binary runs both arms: MACRUNNER_HB_RECOVER_HOST_FRAME=0 restores the old refusal. */
+#define MACRUNNER_HB_HOST_FRAME_WINDOW 0x80000ULL
+
+static BOOL macrunner_hb_query_env_uint( const WCHAR *nameW, unsigned int *value );
+
+static BOOL macrunner_hb_recover_host_frame_enabled(void)
+{
+    static const WCHAR gateW[] =
+        {'M','A','C','R','U','N','N','E','R','_','H','B','_','R','E','C','O','V','E','R',
+         '_','H','O','S','T','_','F','R','A','M','E',0};
+    static BOOL initialized, enabled;
+    unsigned int value;
+
+    if (!initialized)
+    {
+        enabled = macrunner_hb_query_env_uint( gateW, &value ) ? (value != 0) : TRUE;
+        initialized = TRUE;
+    }
+    return enabled;
+}
+
+/* Kill switch for the MZ back-scan in the nullcall diagnostic below:
+ * MACRUNNER_HB_NULLCALL_MZSCAN=0 disables it. */
+static BOOL macrunner_hb_nullcall_mzscan_enabled(void)
+{
+    static const WCHAR gateW[] =
+        {'M','A','C','R','U','N','N','E','R','_','H','B','_','N','U','L','L','C','A','L','L',
+         '_','M','Z','S','C','A','N',0};
+    static BOOL initialized, enabled;
+    unsigned int value;
+
+    if (!initialized)
+    {
+        enabled = macrunner_hb_query_env_uint( gateW, &value ) ? (value != 0) : TRUE;
+        initialized = TRUE;
+    }
+    return enabled;
+}
+
+static BOOL macrunner_hb_pc_in_host_unix_window( DWORD64 pc )
+{
+    ULONG_PTR centres[2];
+    unsigned int i;
+
+    centres[0] = (ULONG_PTR)__wine_syscall_dispatcher;
+    centres[1] = (ULONG_PTR)__wine_unix_call_dispatcher;
+    for (i = 0; i < ARRAY_SIZE(centres); i++)
+    {
+        ULONG_PTR centre = centres[i];
+
+        if (centre <= MACRUNNER_HB_HOST_FRAME_WINDOW) continue;
+        if (pc >= centre - MACRUNNER_HB_HOST_FRAME_WINDOW &&
+            pc < centre + MACRUNNER_HB_HOST_FRAME_WINDOW)
+            return TRUE;
+    }
+    return FALSE;
+}
+
 static BOOL macrunner_hb_recover_native_dispatch_boundary( DISPATCHER_CONTEXT *dispatch,
                                                            CONTEXT *context, DWORD64 pc )
 {
@@ -347,6 +429,7 @@ static BOOL macrunner_hb_recover_native_dispatch_boundary( DISPATCHER_CONTEXT *d
     ULONG_PTR stack_lo = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
     ULONG_PTR stack_hi = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
     const char *bad_pc = NULL, *source = "current-frame";
+    BOOL host_frame = FALSE;
     static unsigned int report_count, reject_count;
     DWORD tid = teb ? HandleToULong( teb->ClientId.UniqueThread ) : 0;
     LDR_DATA_TABLE_ENTRY *module = NULL;
@@ -421,6 +504,21 @@ static BOOL macrunner_hb_recover_native_dispatch_boundary( DISPATCHER_CONTEXT *d
             bad_pc = "pc-not-recoverable-code";
     }
 
+    if (bad_pc && macrunner_hb_recover_host_frame_enabled() &&
+        macrunner_hb_pc_in_host_unix_window( resume->pc ))
+    {
+        static unsigned int host_accept_count;
+
+        if (host_accept_count++ < 32)
+            MESSAGE( "macrunner-hb-native-dispatch-host-frame-accept: tid=%04lx pc=%p "
+                     "resume_pc=%p resume_lr=%p resume_sp=%p source=%s was=%s\n",
+                     tid, (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)resume->pc,
+                     (void *)(ULONG_PTR)resume->lr, (void *)(ULONG_PTR)resume->sp,
+                     source, bad_pc );
+        bad_pc = NULL;
+        host_frame = TRUE;
+    }
+
     if (bad_pc)
     {
         if (reject_count++ < 16)
@@ -434,8 +532,9 @@ static BOOL macrunner_hb_recover_native_dispatch_boundary( DISPATCHER_CONTEXT *d
                      bad_pc ? bad_pc : "bad-prev-pc" );
         return FALSE;
     }
-    if (stack_lo && stack_hi && (resume->sp < stack_lo || resume->sp + 0x10 < resume->sp ||
-                                 resume->sp + 0x10 > stack_hi))
+    if (!host_frame && stack_lo && stack_hi &&
+        (resume->sp < stack_lo || resume->sp + 0x10 < resume->sp ||
+         resume->sp + 0x10 > stack_hi))
     {
         if (reject_count++ < 16)
             MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
@@ -456,6 +555,21 @@ static BOOL macrunner_hb_recover_native_dispatch_boundary( DISPATCHER_CONTEXT *d
                  frame, (void *)(ULONG_PTR)frame->pc, (void *)(ULONG_PTR)frame->lr,
                  frame->prev_frame, (void *)(ULONG_PTR)resume->pc, (void *)(ULONG_PTR)resume->lr,
                  (void *)(ULONG_PTR)resume->sp, source, (void *)stack_lo, (void *)stack_hi );
+
+    /* PATHB33 2026-08-03: with the host-frame acceptance a NULL-call incident recovers here
+     * and never reaches the stop-unwind path where the naming dump lived — and the process
+     * still died unhandled 2.2 s later with nothing printed.  Name the NULL slot from this
+     * path too.  Fault-time registers are still in *context (the restore below overwrites
+     * them), and pc==0 keeps this off every non-NULL-call recovery.  Fire-once per process:
+     * one incident is enough and the dump is ~40 lines. */
+    if (!pc && macrunner_hb_current_exception_record &&
+        macrunner_hb_current_exception_record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        !macrunner_hb_current_exception_record->ExceptionAddress)
+    {
+        static unsigned int nullcall_diag_fired;
+        if (!nullcall_diag_fired++)
+            macrunner_hb_nullcall_diagnose( context );
+    }
 
     macrunner_hb_restore_syscall_prev_frame_context( context, resume );
     context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
@@ -1701,194 +1815,12 @@ static BOOL macrunner_hb_arm64_no_pdata_frameless_unwind( DISPATCHER_CONTEXT *di
     return FALSE;
 }
 
-static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEXT *context )
-{
-    DISPATCHER_CONTEXT_NONVOLREG_ARM64 *nonvol_regs;
-    DWORD64 pc;
-    DWORD64 raw_pc;
-    DWORD64 lookup_pc;
-    DWORD64 unwind_lr, unwind_sp, unwind_fp;
-    CONTEXT unwind_context;
-    void *unwind_entry;
-    NTSTATUS status;
-    int i;
-
-restart:
-    pc = context->Pc;
-    raw_pc = pc;
-    dispatch->ScopeIndex = 0;
-    dispatch->ControlPc  = pc;
-    dispatch->ControlPcIsUnwound = (context->ContextFlags & CONTEXT_UNWOUND_TO_CALL) != 0;
-    if (dispatch->ControlPcIsUnwound) pc -= 4;
-    lookup_pc = macrunner_hb_normalize_arm64ec_host_pc( pc );
-
-    nonvol_regs = (DISPATCHER_CONTEXT_NONVOLREG_ARM64 *)dispatch->NonVolatileRegisters;
-    memcpy( nonvol_regs->GpNvRegs, &context->X19, sizeof(nonvol_regs->GpNvRegs) );
-    for (i = 0; i < 8; i++) nonvol_regs->FpNvRegs[i] = context->V[i + 8].D[0];
-
-    if (lookup_pc != pc)
-    {
-        dispatch->FunctionEntry = RtlLookupFunctionEntry( lookup_pc, &dispatch->ImageBase, dispatch->HistoryTable );
-        if (dispatch->FunctionEntry || dispatch->ImageBase)
-        {
-            dispatch->ControlPc = lookup_pc;
-            pc = lookup_pc;
-            goto unwind_with_function_entry;
-        }
-    }
-
-    if (macrunner_hb_is_import_thunk_pc( pc ))
-    {
-        TRACE( "stopping at MacRunner HyperBridge import thunk pc %p lr %p\n",
-               (void *)pc, (void *)context->Lr );
-        macrunner_hb_stop_unwind_at_boundary( dispatch, context );
-        return STATUS_SUCCESS;
-    }
-
-    if (macrunner_hb_is_unix_dispatcher_boundary_pc( pc ))
-    {
-        TRACE( "stopping at MacRunner HyperBridge Unix dispatcher boundary pc %p lr %p syscall=%p unix=%p\n",
-               (void *)pc, (void *)context->Lr, __wine_syscall_dispatcher, __wine_unix_call_dispatcher );
-        macrunner_hb_stop_unwind_at_boundary( dispatch, context );
-        return STATUS_SUCCESS;
-    }
-
-    if (macrunner_hb_is_non_module_host_boundary_pc( pc ))
-    {
-        static unsigned int report_count;
-        const EXCEPTION_RECORD *rec = macrunner_hb_current_exception_record;
-        struct macrunner_hb_syscall_frame *frame = macrunner_hb_current_syscall_frame();
-        LDR_DATA_TABLE_ENTRY *module = NULL;
-        NTSTATUS ldr_status = LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module );
-        DWORD tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
-
-        if (report_count++ < 64)
-        {
-            MESSAGE( "macrunner-hb-seh-host-boundary: pc=%p lr=%p sp=%016I64x\n",
-                     (void *)pc, (void *)context->Lr, context->Sp );
-            MESSAGE( "macrunner-hb-seh-host-boundary-detail: side=arm64 tid=%04lx pc=%p lr=%p "
-                     "sp=%016I64x exception=%08lx flags=%08lx ldr_status=%08lx module=%p "
-                     "exc_addr=%p info0=%Ix info1=%p "
-                     "resume=stop-unwind frame=%p frame_pc=%p frame_lr=%p frame_sp=%p "
-                     "frame_prev=%p frame_cfa=%p frame_flags=%08lx\n",
-                     tid, (void *)pc, (void *)context->Lr, context->Sp,
-                     rec ? rec->ExceptionCode : 0, rec ? rec->ExceptionFlags : 0,
-                     ldr_status, module ? module->DllBase : NULL,
-                     rec ? rec->ExceptionAddress : NULL,
-                     (ULONG_PTR)(rec && rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0),
-                     (void *)(ULONG_PTR)(rec && rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0),
-                     frame,
-                     frame ? (void *)(ULONG_PTR)frame->pc : NULL,
-                     frame ? (void *)(ULONG_PTR)frame->lr : NULL,
-                     frame ? (void *)(ULONG_PTR)frame->sp : NULL,
-                      frame ? frame->prev_frame : NULL,
-                      frame ? frame->syscall_cfa : NULL,
-                      frame ? frame->restore_flags : 0 );
-            /* MacRunner diag: this boundary is a native libsystem_platform call (e.g.
-             * _platform_memmove) faulting on a guest pointer.  Dump x0..x8 (memmove
-             * dst=x0 src=x1 len=x2) + lr + a stack window so the bad buffer/length and
-             * the Wine caller can be recovered from the run log. */
-            {
-                const ULONG64 *stk = (const ULONG64 *)(ULONG_PTR)context->Sp;
-                unsigned si;
-                MESSAGE( "macrunner-hb-seh-nonmod-regs: x0=%p x1=%p x2=%p x3=%p x4=%p x5=%p "
-                         "x6=%p x7=%p x8=%p x9=%p x16=%p x17=%p x18=%p lr=%p fp=%p sp=%p\n",
-                         (void *)context->X[0], (void *)context->X[1], (void *)context->X[2],
-                         (void *)context->X[3], (void *)context->X[4], (void *)context->X[5],
-                         (void *)context->X[6], (void *)context->X[7], (void *)context->X[8],
-                         (void *)context->X[9], (void *)context->X[16], (void *)context->X[17],
-                         (void *)context->X[18], (void *)context->Lr, (void *)context->Fp,
-                         (void *)context->Sp );
-                for (si = 0; si < 24; si += 4)
-                    MESSAGE( "macrunner-hb-seh-nonmod-stk: +%02x %p %p %p %p\n",
-                             si * 8, (void *)stk[si], (void *)stk[si+1],
-                             (void *)stk[si+2], (void *)stk[si+3] );
-            }
-        }
-        if (macrunner_hb_unwind_syscall_data_boundary( dispatch, context, frame ))
-            return STATUS_SUCCESS;
-        macrunner_hb_stop_unwind_at_boundary( dispatch, context );
-        return STATUS_SUCCESS;
-    }
-
-    if (macrunner_hb_is_host_boundary_pc( raw_pc, context ) ||
-        macrunner_hb_is_null_lr_boundary( raw_pc, context ) ||
-        macrunner_hb_is_non_module_host_boundary_pc( pc ))
-    {
-        static unsigned int report_count;
-        const EXCEPTION_RECORD *rec = macrunner_hb_current_exception_record;
-        LDR_DATA_TABLE_ENTRY *module = NULL;
-        LDR_DATA_TABLE_ENTRY *lr_module = NULL;
-        LDR_DATA_TABLE_ENTRY *x17_module = NULL;
-        NTSTATUS ldr_status = LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module );
-        NTSTATUS lr_ldr_status = LdrFindEntryForAddress( (void *)(ULONG_PTR)context->Lr, &lr_module );
-        NTSTATUS x17_ldr_status =
-            LdrFindEntryForAddress( (void *)(ULONG_PTR)context->X[17], &x17_module );
-        DWORD tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
-
-        if (report_count++ < 64)
-        {
-            MESSAGE( "macrunner-hb-seh-host-boundary: pc=%p lr=%p sp=%016I64x\n",
-                     (void *)pc, (void *)context->Lr, context->Sp );
-            MESSAGE( "macrunner-hb-seh-host-boundary-detail: side=arm64 tid=%04lx pc=%p lr=%p "
-                     "sp=%016I64x exception=%08lx flags=%08lx ldr_status=%08lx module=%p "
-                     "exc_addr=%p info0=%Ix info1=%p resume=stop-unwind\n",
-                     tid, (void *)pc, (void *)context->Lr, context->Sp,
-                     rec ? rec->ExceptionCode : 0, rec ? rec->ExceptionFlags : 0,
-                     ldr_status, module ? module->DllBase : NULL,
-                     rec ? rec->ExceptionAddress : NULL,
-                     (ULONG_PTR)(rec && rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0),
-                     (void *)(ULONG_PTR)(rec && rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0) );
-            if (lr_module)
-            {
-                const ULONG *insn = (const ULONG *)(ULONG_PTR)context->Lr;
-                MESSAGE( "macrunner-hb-seh-nullcall-native: lr_status=%08lx module=%s base=%p "
-                         "lr_rva=%Ix insn[-4..0]=%08lx/%08lx/%08lx/%08lx/%08lx "
-                         "x17_status=%08lx x17_module=%s x17_base=%p x17_rva=%Ix x17_value=%p\n",
-                         lr_ldr_status, debugstr_w( lr_module->BaseDllName.Buffer ),
-                         lr_module->DllBase,
-                         context->Lr - (ULONG64)(ULONG_PTR)lr_module->DllBase,
-                         insn[-4], insn[-3], insn[-2], insn[-1], insn[0],
-                         x17_ldr_status,
-                         x17_module ? debugstr_w( x17_module->BaseDllName.Buffer ) : "(none)",
-                         x17_module ? x17_module->DllBase : NULL,
-                         x17_module ? context->X[17] - (ULONG64)(ULONG_PTR)x17_module->DllBase : 0,
-                         x17_module && context->X[17] + sizeof(ULONG64) <=
-                             (ULONG64)(ULONG_PTR)x17_module->DllBase + x17_module->SizeOfImage
-                             ? (void *)*(const ULONG64 *)(ULONG_PTR)context->X[17] : NULL );
-            }
-            /* MacRunner diag: a NULL-call boundary (exc_addr=0, EXECUTE) carries the
-             * original fault registers here (first unwind step).  Dump them + a stack
-             * window so the guest return address (a guest-range value, the call site)
-             * can be recovered from the run log. */
-            if (rec && rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
-                !rec->ExceptionAddress)
-            {
-                const ULONG64 *stk = (const ULONG64 *)(ULONG_PTR)context->Sp;
-                unsigned i;
-                MESSAGE( "macrunner-hb-seh-host-boundary-regs: x0=%p x1=%p x2=%p x3=%p x4=%p x5=%p "
-                         "x6=%p x7=%p x8=%p x9=%p x16=%p x17=%p x18=%p x19=%p x20=%p\n",
-                         (void *)context->X[0], (void *)context->X[1], (void *)context->X[2],
-                         (void *)context->X[3], (void *)context->X[4], (void *)context->X[5],
-                         (void *)context->X[6], (void *)context->X[7], (void *)context->X[8],
-                         (void *)context->X[9], (void *)context->X[16], (void *)context->X[17],
-                         (void *)context->X[18], (void *)context->X[19], (void *)context->X[20] );
-                MESSAGE( "macrunner-hb-seh-host-boundary-regs2: x21=%p x22=%p x23=%p x24=%p x25=%p "
-                         "x26=%p x27=%p x28=%p fp=%p lr=%p sp=%p\n",
-                         (void *)context->X[21], (void *)context->X[22], (void *)context->X[23],
-                         (void *)context->X[24], (void *)context->X[25], (void *)context->X[26],
-                         (void *)context->X[27], (void *)context->X[28], (void *)context->Fp,
-                         (void *)context->Lr, (void *)context->Sp );
-                for (i = 0; i < 32; i += 4)
-                    MESSAGE( "macrunner-hb-seh-host-boundary-stk: +%02x %p %p %p %p\n",
-                             i * 8, (void *)stk[i], (void *)stk[i+1],
-                             (void *)stk[i+2], (void *)stk[i+3] );
-            }
-            /* The NULL call is in UnityPlayer's WndProc (rva 0x7d5170), which calls
-             * USER32 imports through its IAT.  Resolve the UnityPlayer module from a
-             * guest pointer (x1/x5/x19 hold guest addresses) and dump the suspect
-             * IAT slots so a NULL (unresolved) import is identified directly. */
-            if (rec && rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && !rec->ExceptionAddress)
+/* PATHB33 2026-08-03: the host-frame acceptance moved the unwind past the boundary, so the
+ * stop-unwind path (which hosted this dump inline) no longer runs on a recovered NULL-call
+ * incident — yet the exception is still a call to 0 and still kills the process further up
+ * the stack.  Extracted so BOTH paths can name the NULL slot: the stop-unwind path in
+ * virtual_unwind and the recovery path in macrunner_hb_recover_native_dispatch_boundary. */
+static void macrunner_hb_nullcall_diagnose( CONTEXT *context )
             {
                 ULONG64 probes[3] = { context->X[5], context->X[1], context->X[19] };
                 PEB_LDR_DATA *pldr = NtCurrentTeb()->Peb->LdrData;
@@ -1905,6 +1837,141 @@ restart:
                         ULONG_PTR b = (ULONG_PTR)m->DllBase;
                         if (probes[pi] >= b && probes[pi] < b + m->SizeOfImage)
                         { upbase = m->DllBase; break; }
+                    }
+                }
+                /* MacRunner 2026-08-02 — the loader-list walk above finds nothing when the guest
+                 * module sits above HOST_BOUNDARY_MAX, which is exactly where UnityPlayer lives:
+                 * the comment further down already says "ARM64 PE modules loaded above
+                 * HOST_BOUNDARY_MAX are not always tracked by the PE-side LDR".  Measured case:
+                 * HOSTFRAME1 at +807.9 s printed "UnityPlayer module not found
+                 * (probes 0 0x87ef13f0000 0)" — a valid guest address that simply is not in
+                 * InLoadOrderModuleList — and the whole vtable dump that NAMES the null method was
+                 * skipped, so the second exit=5 path stayed anonymous.  Ask the memory manager
+                 * instead: for a mapped image AllocationBase IS the module base, and the query
+                 * cannot fault, which matters because this runs inside the exception path. */
+                /* Ask the ENGINE first.  It is the only party that actually knows where guest
+                 * images live: the loader list does not contain them and the Windows VM map calls
+                 * their pages MEM_FREE (measured, PATHB31).  Lock-free by construction — see
+                 * macrunner_hb_guest_image_for_pc in unix/macrunner_hb.c. */
+                if (!upbase && macrunner_hb_guest_image_lookup)
+                {
+                    for (pi = 0; pi < 3 && !upbase; pi++)
+                    {
+                        UINT64 gbase = 0, gsize = 0;
+
+                        if (!probes[pi]) continue;
+                        if (!macrunner_hb_guest_image_lookup( probes[pi], &gbase, &gsize )) continue;
+                        MESSAGE( "macrunner-hb-nullcall-engine: probe=%p base=%p size=%#llx\n",
+                                 (void *)(ULONG_PTR)probes[pi], (void *)(ULONG_PTR)gbase,
+                                 (unsigned long long)gsize );
+                        if (!gbase || gsize <= 0x1a02100) continue;
+                        upbase = (void *)(ULONG_PTR)gbase;
+                    }
+                }
+                if (!upbase)
+                {
+                    for (pi = 0; pi < 3 && !upbase; pi++)
+                    {
+                        MEMORY_BASIC_INFORMATION mbi;
+                        SIZE_T len = 0;
+
+                        if (!probes[pi]) continue;
+                        if (NtQueryVirtualMemory( NtCurrentProcess(),
+                                                  (void *)(ULONG_PTR)probes[pi],
+                                                  MemoryBasicInformation, &mbi,
+                                                  sizeof(mbi), &len ) != STATUS_SUCCESS)
+                            continue;
+                        /* Measured 2026-08-03 (PATHB1, +1183 s): requiring MEM_IMAGE here silently
+                         * skipped everything — the guest PE is mapped by OUR loader into ordinary
+                         * memory, so Type is not MEM_IMAGE.  Print what the map actually says, then
+                         * judge by the PE header rather than by the mapping type. */
+                        MESSAGE( "macrunner-hb-nullcall-map: probe=%p alloc_base=%p base=%p "
+                                 "state=%#lx type=%#lx protect=%#lx size=%#llx\n",
+                                 (void *)(ULONG_PTR)probes[pi], mbi.AllocationBase,
+                                 mbi.BaseAddress, (ULONG)mbi.State, (ULONG)mbi.Type,
+                                 (ULONG)mbi.Protect, (unsigned long long)mbi.RegionSize );
+                        if (!mbi.AllocationBase) continue;
+                        /* The header read below must not fault inside the exception path, so
+                         * confirm the first page of the allocation is actually committed first. */
+                        {
+                            MEMORY_BASIC_INFORMATION hb;
+
+                            if (NtQueryVirtualMemory( NtCurrentProcess(), mbi.AllocationBase,
+                                                      MemoryBasicInformation, &hb,
+                                                      sizeof(hb), &len ) != STATUS_SUCCESS ||
+                                hb.State != MEM_COMMIT)
+                                continue;
+                        }
+                        /* Everything below indexes fixed offsets up to 0x1a02100 with unguarded
+                         * loads.  Reaching them on a module that does not span that far would
+                         * fault INSIDE the exception path, which is strictly worse than printing
+                         * nothing — so admit the base only after the image header says it is big
+                         * enough.  RtlImageNtHeader validates the MZ/PE signatures itself. */
+                        {
+                            IMAGE_NT_HEADERS *unt = RtlImageNtHeader( mbi.AllocationBase );
+
+                            if (!unt || unt->OptionalHeader.SizeOfImage <= 0x1a02100)
+                            {
+                                MESSAGE( "macrunner-hb-nullcall-iat: memory-map base %p rejected "
+                                         "(nt=%p size=%#lx needs >0x1a02100)\n",
+                                         mbi.AllocationBase, unt,
+                                         (ULONG)(unt ? unt->OptionalHeader.SizeOfImage : 0) );
+                                continue;
+                            }
+                        }
+                        upbase = mbi.AllocationBase;
+                        MESSAGE( "macrunner-hb-nullcall-iat: module base recovered from the memory "
+                                 "map probe=%p base=%p (loader list did not list it)\n",
+                                 (void *)(ULONG_PTR)probes[pi], upbase );
+                    }
+                }
+                /* MacRunner 2026-08-03 — PATHB31 proved the memory-map fallback above is blind
+                 * too: for probe=0x87ef13f0000, inside a LIVE UnityPlayer that had just printed
+                 * "Loaded Objects now: 4274", NtQueryVirtualMemory said alloc_base=0
+                 * state=MEM_FREE.  Engine-mapped guest images are invisible to BOTH Windows-side
+                 * accountings (loader list and memory map), yet their bytes ARE readable.  So
+                 * walk DOWN from the probe on 64K allocation granularity looking for the 'MZ'
+                 * header directly.  Reads inside the image never fault, so the expected fault
+                 * count is 0-1 (the first access below the image start); the scan aborts after
+                 * 3 faults because repeated faults inside the exception path are the known
+                 * wedge class (probe_image_bytes). */
+                if (!upbase && macrunner_hb_nullcall_mzscan_enabled())
+                {
+                    for (pi = 0; pi < 3 && !upbase; pi++)
+                    {
+                        ULONG64 p = probes[pi] & ~0xffffULL;
+                        unsigned int step, faults = 0;
+
+                        if (probes[pi] < 0x10000) continue;
+                        for (step = 0; step < 1024 && faults < 3 && p >= 0x10000; step++, p -= 0x10000)
+                        {
+                            ULONG64 found = 0;
+                            __TRY
+                            {
+                                const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)(ULONG_PTR)p;
+                                if (dos->e_magic == IMAGE_DOS_SIGNATURE &&
+                                    dos->e_lfanew >= (LONG)sizeof(*dos) && dos->e_lfanew < 0x1000)
+                                {
+                                    const IMAGE_NT_HEADERS *nt =
+                                        (const IMAGE_NT_HEADERS *)((const char *)dos + dos->e_lfanew);
+                                    /* Downstream reads index fixed offsets up to 0x1a02100, so
+                                     * only a module that spans that far is safe to accept —
+                                     * same guard as the memory-map path above.  The probe must
+                                     * also fall inside the image, or this is some OTHER module
+                                     * below an unmapped hole. */
+                                    if (nt->Signature == IMAGE_NT_SIGNATURE &&
+                                        nt->OptionalHeader.SizeOfImage > 0x1a02100 &&
+                                        probes[pi] - p < nt->OptionalHeader.SizeOfImage)
+                                        found = p;
+                                }
+                            }
+                            __EXCEPT(macrunner_hb_pe_scan_fault) { faults++; }
+                            __ENDTRY
+                            if (found) upbase = (void *)(ULONG_PTR)found;
+                            if (found) break;
+                        }
+                        MESSAGE( "macrunner-hb-nullcall-mzscan: probe=%p base=%p steps=%u faults=%u\n",
+                                 (void *)(ULONG_PTR)probes[pi], upbase, step, faults );
                     }
                 }
                 if (upbase)
@@ -2028,6 +2095,232 @@ restart:
                              "(probes %p %p %p)\n",
                              (void *)probes[0], (void *)probes[1], (void *)probes[2] );
             }
+
+static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEXT *context )
+{
+    DISPATCHER_CONTEXT_NONVOLREG_ARM64 *nonvol_regs;
+    DWORD64 pc;
+    DWORD64 raw_pc;
+    DWORD64 lookup_pc;
+    DWORD64 unwind_lr, unwind_sp, unwind_fp;
+    CONTEXT unwind_context;
+    void *unwind_entry;
+    NTSTATUS status;
+    int i;
+
+restart:
+    pc = context->Pc;
+    raw_pc = pc;
+    dispatch->ScopeIndex = 0;
+    dispatch->ControlPc  = pc;
+    dispatch->ControlPcIsUnwound = (context->ContextFlags & CONTEXT_UNWOUND_TO_CALL) != 0;
+    if (dispatch->ControlPcIsUnwound) pc -= 4;
+    lookup_pc = macrunner_hb_normalize_arm64ec_host_pc( pc );
+
+    nonvol_regs = (DISPATCHER_CONTEXT_NONVOLREG_ARM64 *)dispatch->NonVolatileRegisters;
+    memcpy( nonvol_regs->GpNvRegs, &context->X19, sizeof(nonvol_regs->GpNvRegs) );
+    for (i = 0; i < 8; i++) nonvol_regs->FpNvRegs[i] = context->V[i + 8].D[0];
+
+    if (lookup_pc != pc)
+    {
+        dispatch->FunctionEntry = RtlLookupFunctionEntry( lookup_pc, &dispatch->ImageBase, dispatch->HistoryTable );
+        if (dispatch->FunctionEntry || dispatch->ImageBase)
+        {
+            dispatch->ControlPc = lookup_pc;
+            pc = lookup_pc;
+            goto unwind_with_function_entry;
+        }
+    }
+
+    if (macrunner_hb_is_import_thunk_pc( pc ))
+    {
+        TRACE( "stopping at MacRunner HyperBridge import thunk pc %p lr %p\n",
+               (void *)pc, (void *)context->Lr );
+        macrunner_hb_stop_unwind_at_boundary( dispatch, context );
+        return STATUS_SUCCESS;
+    }
+
+    if (macrunner_hb_is_unix_dispatcher_boundary_pc( pc ))
+    {
+        TRACE( "stopping at MacRunner HyperBridge Unix dispatcher boundary pc %p lr %p syscall=%p unix=%p\n",
+               (void *)pc, (void *)context->Lr, __wine_syscall_dispatcher, __wine_unix_call_dispatcher );
+        macrunner_hb_stop_unwind_at_boundary( dispatch, context );
+        return STATUS_SUCCESS;
+    }
+
+    if (macrunner_hb_is_non_module_host_boundary_pc( pc ))
+    {
+        static unsigned int report_count;
+        const EXCEPTION_RECORD *rec = macrunner_hb_current_exception_record;
+        struct macrunner_hb_syscall_frame *frame = macrunner_hb_current_syscall_frame();
+        LDR_DATA_TABLE_ENTRY *module = NULL;
+        NTSTATUS ldr_status = LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module );
+        DWORD tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
+
+        if (report_count++ < 64)
+        {
+            MESSAGE( "macrunner-hb-seh-host-boundary: pc=%p lr=%p sp=%016I64x\n",
+                     (void *)pc, (void *)context->Lr, context->Sp );
+            MESSAGE( "macrunner-hb-seh-host-boundary-detail: side=arm64 tid=%04lx pc=%p lr=%p "
+                     "sp=%016I64x exception=%08lx flags=%08lx ldr_status=%08lx module=%p "
+                     "exc_addr=%p info0=%Ix info1=%p "
+                     "resume=stop-unwind frame=%p frame_pc=%p frame_lr=%p frame_sp=%p "
+                     "frame_prev=%p frame_cfa=%p frame_flags=%08lx\n",
+                     tid, (void *)pc, (void *)context->Lr, context->Sp,
+                     rec ? rec->ExceptionCode : 0, rec ? rec->ExceptionFlags : 0,
+                     ldr_status, module ? module->DllBase : NULL,
+                     rec ? rec->ExceptionAddress : NULL,
+                     (ULONG_PTR)(rec && rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0),
+                     (void *)(ULONG_PTR)(rec && rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0),
+                     frame,
+                     frame ? (void *)(ULONG_PTR)frame->pc : NULL,
+                     frame ? (void *)(ULONG_PTR)frame->lr : NULL,
+                     frame ? (void *)(ULONG_PTR)frame->sp : NULL,
+                      frame ? frame->prev_frame : NULL,
+                      frame ? frame->syscall_cfa : NULL,
+                      frame ? frame->restore_flags : 0 );
+            /* MacRunner diag: this boundary is a native libsystem_platform call (e.g.
+             * _platform_memmove) faulting on a guest pointer.  Dump x0..x8 (memmove
+             * dst=x0 src=x1 len=x2) + lr + a stack window so the bad buffer/length and
+             * the Wine caller can be recovered from the run log. */
+            {
+                const ULONG64 *stk = (const ULONG64 *)(ULONG_PTR)context->Sp;
+                unsigned si;
+                MESSAGE( "macrunner-hb-seh-nonmod-regs: x0=%p x1=%p x2=%p x3=%p x4=%p x5=%p "
+                         "x6=%p x7=%p x8=%p x9=%p x16=%p x17=%p x18=%p lr=%p fp=%p sp=%p\n",
+                         (void *)context->X[0], (void *)context->X[1], (void *)context->X[2],
+                         (void *)context->X[3], (void *)context->X[4], (void *)context->X[5],
+                         (void *)context->X[6], (void *)context->X[7], (void *)context->X[8],
+                         (void *)context->X[9], (void *)context->X[16], (void *)context->X[17],
+                         (void *)context->X[18], (void *)context->Lr, (void *)context->Fp,
+                         (void *)context->Sp );
+                for (si = 0; si < 24; si += 4)
+                    MESSAGE( "macrunner-hb-seh-nonmod-stk: +%02x %p %p %p %p\n",
+                             si * 8, (void *)stk[si], (void *)stk[si+1],
+                             (void *)stk[si+2], (void *)stk[si+3] );
+                /* PATHB43 2026-08-03 — registers in this context can be SYNTHESIZED by the eh
+                 * dispatcher bridge (lr here already failed the bl-test twice), so the honest
+                 * signal is the frame chain.  Raw addresses only; offline resolution starts
+                 * from the macrunner-hb-host-image base printed by the unix side. */
+                {
+                    ULONG64 fp = context->Fp;
+                    unsigned int fi;
+                    /* Unconditional head: a zero or misaligned Fp must be VISIBLE, not silent —
+                     * silence already cost one run's worth of interpretation. */
+                    MESSAGE( "macrunner-hb-seh-fpchain: head fp=%p sp=%p lr=%p\n",
+                             (void *)(ULONG_PTR)fp, (void *)(ULONG_PTR)context->Sp,
+                             (void *)(ULONG_PTR)context->Lr );
+                    for (fi = 0; fi < 16 && fp && !(fp & 7); fi++)
+                    {
+                        ULONG64 pair[2] = { 0, 0 };
+                        BOOL ok = TRUE;
+                        __TRY
+                        {
+                            pair[0] = ((const ULONG64 *)(ULONG_PTR)fp)[0];
+                            pair[1] = ((const ULONG64 *)(ULONG_PTR)fp)[1];
+                        }
+                        __EXCEPT(macrunner_hb_pe_scan_fault) { ok = FALSE; }
+                        __ENDTRY
+                        if (!ok)
+                        {
+                            MESSAGE( "macrunner-hb-seh-fpchain: %u fp=%p <unreadable>\n",
+                                     fi, (void *)(ULONG_PTR)fp );
+                            break;
+                        }
+                        MESSAGE( "macrunner-hb-seh-fpchain: %u fp=%p prev=%p lr=%p\n",
+                                 fi, (void *)(ULONG_PTR)fp, (void *)(ULONG_PTR)pair[0],
+                                 (void *)(ULONG_PTR)pair[1] );
+                        if (pair[0] <= fp) break;
+                        fp = pair[0];
+                    }
+                }
+            }
+        }
+        if (macrunner_hb_unwind_syscall_data_boundary( dispatch, context, frame ))
+            return STATUS_SUCCESS;
+        macrunner_hb_stop_unwind_at_boundary( dispatch, context );
+        return STATUS_SUCCESS;
+    }
+
+    if (macrunner_hb_is_host_boundary_pc( raw_pc, context ) ||
+        macrunner_hb_is_null_lr_boundary( raw_pc, context ) ||
+        macrunner_hb_is_non_module_host_boundary_pc( pc ))
+    {
+        static unsigned int report_count;
+        const EXCEPTION_RECORD *rec = macrunner_hb_current_exception_record;
+        LDR_DATA_TABLE_ENTRY *module = NULL;
+        LDR_DATA_TABLE_ENTRY *lr_module = NULL;
+        LDR_DATA_TABLE_ENTRY *x17_module = NULL;
+        NTSTATUS ldr_status = LdrFindEntryForAddress( (void *)(ULONG_PTR)pc, &module );
+        NTSTATUS lr_ldr_status = LdrFindEntryForAddress( (void *)(ULONG_PTR)context->Lr, &lr_module );
+        NTSTATUS x17_ldr_status =
+            LdrFindEntryForAddress( (void *)(ULONG_PTR)context->X[17], &x17_module );
+        DWORD tid = HandleToULong( NtCurrentTeb()->ClientId.UniqueThread );
+
+        if (report_count++ < 64)
+        {
+            MESSAGE( "macrunner-hb-seh-host-boundary: pc=%p lr=%p sp=%016I64x\n",
+                     (void *)pc, (void *)context->Lr, context->Sp );
+            MESSAGE( "macrunner-hb-seh-host-boundary-detail: side=arm64 tid=%04lx pc=%p lr=%p "
+                     "sp=%016I64x exception=%08lx flags=%08lx ldr_status=%08lx module=%p "
+                     "exc_addr=%p info0=%Ix info1=%p resume=stop-unwind\n",
+                     tid, (void *)pc, (void *)context->Lr, context->Sp,
+                     rec ? rec->ExceptionCode : 0, rec ? rec->ExceptionFlags : 0,
+                     ldr_status, module ? module->DllBase : NULL,
+                     rec ? rec->ExceptionAddress : NULL,
+                     (ULONG_PTR)(rec && rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0),
+                     (void *)(ULONG_PTR)(rec && rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0) );
+            if (lr_module)
+            {
+                const ULONG *insn = (const ULONG *)(ULONG_PTR)context->Lr;
+                MESSAGE( "macrunner-hb-seh-nullcall-native: lr_status=%08lx module=%s base=%p "
+                         "lr_rva=%Ix insn[-4..0]=%08lx/%08lx/%08lx/%08lx/%08lx "
+                         "x17_status=%08lx x17_module=%s x17_base=%p x17_rva=%Ix x17_value=%p\n",
+                         lr_ldr_status, debugstr_w( lr_module->BaseDllName.Buffer ),
+                         lr_module->DllBase,
+                         context->Lr - (ULONG64)(ULONG_PTR)lr_module->DllBase,
+                         insn[-4], insn[-3], insn[-2], insn[-1], insn[0],
+                         x17_ldr_status,
+                         x17_module ? debugstr_w( x17_module->BaseDllName.Buffer ) : "(none)",
+                         x17_module ? x17_module->DllBase : NULL,
+                         x17_module ? context->X[17] - (ULONG64)(ULONG_PTR)x17_module->DllBase : 0,
+                         x17_module && context->X[17] + sizeof(ULONG64) <=
+                             (ULONG64)(ULONG_PTR)x17_module->DllBase + x17_module->SizeOfImage
+                             ? (void *)*(const ULONG64 *)(ULONG_PTR)context->X[17] : NULL );
+            }
+            /* MacRunner diag: a NULL-call boundary (exc_addr=0, EXECUTE) carries the
+             * original fault registers here (first unwind step).  Dump them + a stack
+             * window so the guest return address (a guest-range value, the call site)
+             * can be recovered from the run log. */
+            if (rec && rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+                !rec->ExceptionAddress)
+            {
+                const ULONG64 *stk = (const ULONG64 *)(ULONG_PTR)context->Sp;
+                unsigned i;
+                MESSAGE( "macrunner-hb-seh-host-boundary-regs: x0=%p x1=%p x2=%p x3=%p x4=%p x5=%p "
+                         "x6=%p x7=%p x8=%p x9=%p x16=%p x17=%p x18=%p x19=%p x20=%p\n",
+                         (void *)context->X[0], (void *)context->X[1], (void *)context->X[2],
+                         (void *)context->X[3], (void *)context->X[4], (void *)context->X[5],
+                         (void *)context->X[6], (void *)context->X[7], (void *)context->X[8],
+                         (void *)context->X[9], (void *)context->X[16], (void *)context->X[17],
+                         (void *)context->X[18], (void *)context->X[19], (void *)context->X[20] );
+                MESSAGE( "macrunner-hb-seh-host-boundary-regs2: x21=%p x22=%p x23=%p x24=%p x25=%p "
+                         "x26=%p x27=%p x28=%p fp=%p lr=%p sp=%p\n",
+                         (void *)context->X[21], (void *)context->X[22], (void *)context->X[23],
+                         (void *)context->X[24], (void *)context->X[25], (void *)context->X[26],
+                         (void *)context->X[27], (void *)context->X[28], (void *)context->Fp,
+                         (void *)context->Lr, (void *)context->Sp );
+                for (i = 0; i < 32; i += 4)
+                    MESSAGE( "macrunner-hb-seh-host-boundary-stk: +%02x %p %p %p %p\n",
+                             i * 8, (void *)stk[i], (void *)stk[i+1],
+                             (void *)stk[i+2], (void *)stk[i+3] );
+            }
+            /* The NULL call is in UnityPlayer's WndProc (rva 0x7d5170), which calls
+             * USER32 imports through its IAT.  Resolve the UnityPlayer module from a
+             * guest pointer (x1/x5/x19 hold guest addresses) and dump the suspect
+             * IAT slots so a NULL (unresolved) import is identified directly. */
+            if (rec && rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && !rec->ExceptionAddress)
+                macrunner_hb_nullcall_diagnose( context );
         }
         macrunner_hb_stop_unwind_at_boundary( dispatch, context );
         return STATUS_SUCCESS;

@@ -7540,6 +7540,8 @@ void hb_jit_helper_exec_mul_div_operand(hb_context_t* ctx, const hb_ir_instr_t* 
                 __int128 truncated_signed =
                     (__int128)hb_jit_sign_extend_from_size(result, size);
 
+                static int cached_census = -1;
+
                 hb_context_write_reg_value_sized(ctx, instr->dst.reg, result, size);
                 /* Gated so ONE binary can run both arms: this tree moved under me between turns
                  * (other lanes' commits landed), so "the run died earlier than before" cannot be
@@ -7561,14 +7563,25 @@ void hb_jit_helper_exec_mul_div_operand(hb_context_t* ctx, const hb_ir_instr_t* 
                         const char* e = getenv("MACRUNNER_HB_IMUL_FLAGS");
                         cached_gate = (e && *e) ? (*e != '0') : 1;
                     }
-                    ++t_imul_n;
-                    if (correct != stale) ++t_imul_disagree;
-                    if ((t_imul_n & 0xffffu) == 0 || t_imul_disagree == 1)
-                        fprintf(stderr,
-                                "macrunner-hb-imul-staleof: imuls=%llu disagree=%llu pct=%.2f\n",
-                                (unsigned long long)t_imul_n,
-                                (unsigned long long)t_imul_disagree,
-                                t_imul_n ? 100.0 * (double)t_imul_disagree / (double)t_imul_n : 0.0);
+                    /* The census runs INSIDE the imul helper, on guest threads, and formats a
+                     * double.  Leaving it always-on is what turned every run after 18:40 into a
+                     * 36-80 s abort while runs from the same tree at 18:32 lived 928 s — and it
+                     * fooled the gated control, because MACRUNNER_HB_IMUL_FLAGS=0 silences the
+                     * flag write but not this.  Diagnostics do not run by default. */
+                    if (cached_census < 0) {
+                        const char* c = getenv("MACRUNNER_HB_IMUL_CENSUS");
+                        cached_census = (c && *c && *c != '0') ? 1 : 0;
+                    }
+                    if (cached_census) {
+                        ++t_imul_n;
+                        if (correct != stale) ++t_imul_disagree;
+                        if ((t_imul_n & 0xffffu) == 0 || t_imul_disagree == 1)
+                            fprintf(stderr,
+                                    "macrunner-hb-imul-staleof: imuls=%llu disagree=%llu pct=%.2f\n",
+                                    (unsigned long long)t_imul_n,
+                                    (unsigned long long)t_imul_disagree,
+                                    t_imul_n ? 100.0 * (double)t_imul_disagree / (double)t_imul_n : 0.0);
+                    }
 
                     if (cached_gate)
                         ctx->flags.cf = ctx->flags.of = correct;
@@ -7584,7 +7597,7 @@ void hb_jit_helper_exec_mul_div_operand(hb_context_t* ctx, const hb_ir_instr_t* 
                  * to raise was invented by the missing flag write. */
                 {
                     static uint64_t t_imul_of;
-                    if (ctx->flags.of && (++t_imul_of <= 8 || (t_imul_of & 0xfffu) == 0))
+                    if (cached_census && ctx->flags.of && (++t_imul_of <= 8 || (t_imul_of & 0xfffu) == 0))
                         fprintf(stderr,
                                 "macrunner-hb-imul-of: n=%llu size=%d lhs=0x%llx rhs=0x%llx "
                                 "result=0x%llx\n",

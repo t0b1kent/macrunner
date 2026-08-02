@@ -76,6 +76,12 @@ typedef void  (CALLBACK *LDRENUMPROC)(LDR_DATA_TABLE_ENTRY *, void *, BOOLEAN *)
 static void __fastcall default_thread_init_func( DWORD unknown, LPTHREAD_START_ROUTINE entry, void *arg );
 void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *) = default_thread_init_func;
 NTSTATUS (WINAPI *__wine_unix_call_dispatcher)( unixlib_handle_t, unsigned int, void * ) = NULL;
+/* MacRunner 2026-08-03 — filled by the unix side (load_ntdll_functions) with a lock-free guest-image
+ * lookup.  The PE side otherwise cannot answer "which module owns this guest address": the loader
+ * list does not contain guest modules above HOST_BOUNDARY_MAX, and NtQueryVirtualMemory reports
+ * MEM_FREE for them because the engine maps them outside the Windows VM bookkeeping.  Stays NULL if
+ * the unix side is older than this symbol, so every caller must check it. */
+int (*macrunner_hb_guest_image_lookup)( UINT64 pc, UINT64 *base, UINT64 *size ) = NULL;
 
 static DWORD (WINAPI *pCtrlRoutine)(void *);
 

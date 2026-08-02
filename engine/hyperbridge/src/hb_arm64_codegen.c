@@ -7509,8 +7509,90 @@ void hb_jit_helper_exec_mul_div_operand(hb_context_t* ctx, const hb_ir_instr_t* 
             r = hb_flags_read_operand_value(ctx, &instr->src2, &rhs);
             if (r != HB_OK) break;
             hb_jit_helper_acquire_after_operand_read(&instr->src2);
+            /* MacRunner 2026-08-02 — two/three-operand IMUL MUST set CF/OF, and this did not.
+             *
+             * codegen_instr never emits inline code for MUL/IMUL/DIV/IDIV; it always calls this
+             * helper, so this branch is the ONLY implementation of `imul r, r/m[, imm]` on the JIT
+             * path. It wrote the result and then called hb_lazy_flags_clear(), which zeroes the
+             * lazy-flags record and thereby declares ctx->flags authoritative — so CF and OF kept
+             * whatever the PREVIOUS flag-setting instruction left there, and were then believed.
+             *
+             * x86 defines both for this form: set when the full signed product does not fit the
+             * destination width, cleared otherwise. The one-operand form below already did this,
+             * and so does the interpreter (hb_interpreter.c, HB_IR_IMUL) — this path was the odd
+             * one out, which is why the two engines disagreed only under the JIT.
+             *
+             * Observed consequence: .NET compiles `checked(a * b)` to imul + jo, so a stale OF
+             * throws OverflowException out of arithmetic that did not overflow. HK dies exactly
+             * there — System.Linq.Lookup`2.Resize(), `checked(_count * 2 + 1)`, reached from
+             * SerializableNamedList.OnAfterDeserialize() under Resources.Load — which is the wall
+             * that stops the boot before `Performing automatic level start`.
+             *
+             * Computed the same way as the interpreter so the two cannot drift again: sign-extend
+             * both operands from the operand width, take the full 128-bit product, and compare it
+             * against the sign-extension of the truncated result. */
             size = instr->dst.size ? instr->dst.size : HB_SIZE_64;
-            hb_context_write_reg_value_sized(ctx, instr->dst.reg, hb_jit_trunc_to_size(lhs * rhs, size), size);
+            {
+                int64_t slhs = hb_jit_sign_extend_from_size(hb_jit_trunc_to_size(lhs, size), size);
+                int64_t srhs = hb_jit_sign_extend_from_size(hb_jit_trunc_to_size(rhs, size), size);
+                __int128 full = (__int128)slhs * (__int128)srhs;
+                uint64_t result = hb_jit_trunc_to_size((uint64_t)full, size);
+                __int128 truncated_signed =
+                    (__int128)hb_jit_sign_extend_from_size(result, size);
+
+                hb_context_write_reg_value_sized(ctx, instr->dst.reg, result, size);
+                /* Gated so ONE binary can run both arms: this tree moved under me between turns
+                 * (other lanes' commits landed), so "the run died earlier than before" cannot be
+                 * charged to this change without a control from the SAME build.
+                 * MACRUNNER_HB_IMUL_FLAGS=0 restores the previous behaviour of leaving CF/OF
+                 * untouched — which is wrong, but is exactly the baseline to compare against. */
+                {
+                    static int cached_gate = -1;
+                    static uint64_t t_imul_n, t_imul_disagree;
+                    int correct = (full != truncated_signed);
+                    /* The flag the OLD code left in place: whatever the previous flag-setting
+                     * instruction wrote. Sampled before the fix overwrites it, so ONE run measures
+                     * the bug's actual exposure — how often a following `jo` would have read a
+                     * value that is simply not this multiply's overflow. This needs no menu and no
+                     * Resources.Load, which matters while the boot dies at ~65 s. */
+                    int stale = ctx->flags.of ? 1 : 0;
+
+                    if (cached_gate < 0) {
+                        const char* e = getenv("MACRUNNER_HB_IMUL_FLAGS");
+                        cached_gate = (e && *e) ? (*e != '0') : 1;
+                    }
+                    ++t_imul_n;
+                    if (correct != stale) ++t_imul_disagree;
+                    if ((t_imul_n & 0xffffu) == 0 || t_imul_disagree == 1)
+                        fprintf(stderr,
+                                "macrunner-hb-imul-staleof: imuls=%llu disagree=%llu pct=%.2f\n",
+                                (unsigned long long)t_imul_n,
+                                (unsigned long long)t_imul_disagree,
+                                t_imul_n ? 100.0 * (double)t_imul_disagree / (double)t_imul_n : 0.0);
+
+                    if (cached_gate)
+                        ctx->flags.cf = ctx->flags.of = correct;
+                }
+
+                /* Evidence, and the marker that proves this build is the one under test.
+                 *
+                 * fprintf(stderr) deliberately: ERR() does not reach these logs — no run in the
+                 * project's whole history contains an `err:` line. Bounded, and it reports the
+                 * TRUE case, because "a real overflow happened here" and "OF was stale garbage"
+                 * are the two readings this fix has to separate: if the count stays 0 across a
+                 * boot that now gets past Resources.Load, every OverflowException this code used
+                 * to raise was invented by the missing flag write. */
+                {
+                    static uint64_t t_imul_of;
+                    if (ctx->flags.of && (++t_imul_of <= 8 || (t_imul_of & 0xfffu) == 0))
+                        fprintf(stderr,
+                                "macrunner-hb-imul-of: n=%llu size=%d lhs=0x%llx rhs=0x%llx "
+                                "result=0x%llx\n",
+                                (unsigned long long)t_imul_of, (int)size,
+                                (unsigned long long)lhs, (unsigned long long)rhs,
+                                (unsigned long long)result);
+                }
+            }
             hb_lazy_flags_clear(ctx);
             break;
 

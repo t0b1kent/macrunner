@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dlfcn.h>
 #if defined(__APPLE__)
 #include <sys/ucontext.h>
 #include <mach/mach.h>
@@ -72,6 +73,10 @@ typedef struct hb_cached_helper_stub {
 
 typedef struct hb_jit_signal_fault_frame {
     struct hb_jit_signal_fault_frame* prev;
+    /* Liveness cookie for the stale-frame guard (see jit_signal_fault_claim): set when the
+     * frame is armed, cleared when it is popped.  A frame reached through a stale
+     * g_jit_signal_fault_frame whose stack slot was reused reads as garbage here. */
+    uint64_t stale_cookie;
     hb_jit_runtime_t* rt;
     hb_context_t* ctx;
     hb_block_cache_entry_t* entry;
@@ -113,6 +118,27 @@ typedef struct hb_jit_signal_fault_frame {
 
 static __thread hb_jit_signal_fault_frame_t* g_jit_signal_fault_frame;
 static unsigned int g_jit_signal_fault_reports;
+
+/* MacRunner 2026-08-03 — stale-guard-frame protection.
+ *
+ * g_jit_signal_fault_frame points into the guard function's STACK.  It is popped on exactly two
+ * paths: normal return from exec() and the siglongjmp recovery branch.  Any fault that leaves the
+ * guarded region through wine's exception machinery instead (declined claim -> forwarded SEH ->
+ * unwind past the guard) abandons the frame: the thread-local keeps pointing at dead stack.  The
+ * next fault anywhere in the JIT slab then passes the wide range check and siglongjmps into a dead
+ * sigsetjmp env on a reused stack — resurrecting execution mid-frame, smashing canaries
+ * (__stack_chk_fail in run_jit_block_with_signal_guard, wine-2026-08-02-044217.ips) and spraying a
+ * 2.6 KB snapshot restore over live memory.  Suspected feeder of the whole exit=5/exit=29 heap
+ * corruption class.
+ *
+ * Two conservative checks, both sound (no false stale-positives), both turn a guaranteed-
+ * catastrophe jump into an ordinary declined claim:
+ *   cookie — armed frames carry it, popped frames clear it, reused stack destroys it;
+ *   sp     — a legitimate claim faults DEEPER than the frame (descending stack: interrupted
+ *            sp < frame address).  interrupted sp above the frame ⇒ the frame is dead.
+ * Kill switch: MACRUNNER_HB_GUARD_STALE_CHECK=0 restores the old behaviour. */
+#define HB_GUARD_FRAME_COOKIE 0x4842475541524421ULL /* "HBGUARD!" */
+static uint64_t g_guard_stale_declines;
 
 /* Defined next to block_guest_span below; block_cache_put tracks every newly
  * cached translation for SMC reverify (HK Mono/JIT stale-translation fix). */
@@ -3137,6 +3163,24 @@ hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
     size_t jit_size = 128u * 1024u * 1024u;
     if (!rt) return NULL;
     hb_runtime_init_environment();
+    /* PATHB43 2026-08-03 — every host-base derivation from dispatcher cells proved unreliable
+     * (the cells hold inner labels, not nm symbols; one attribution was already retracted over
+     * it).  Print the authoritative image base ONCE per process, straight from dyld, so offline
+     * resolution of any host pc/lr in a run log starts from truth instead of anchor guessing. */
+    {
+        static unsigned int host_image_printed;
+        if (!host_image_printed++) {
+            Dl_info di;
+            if (dladdr((void*)(uintptr_t)hb_jit_runtime_create, &di))
+                fprintf(stderr, "macrunner-hb-host-image: base=%p path=%s\n",
+                        di.dli_fbase, di.dli_fname ? di.dli_fname : "?");
+            else
+                /* Silence must stay distinguishable from "code never ran". */
+                fprintf(stderr, "macrunner-hb-host-image: dladdr-failed fn=%p\n",
+                        (void*)(uintptr_t)hb_jit_runtime_create);
+            fflush(stderr);
+        }
+    }
     rt->ctx = ctx;
     rt->persistent_cache_flags = macrunner_hb_runtime_persistent_cache_flags;
     size_env = getenv("MACRUNNER_HB_JIT_BUFFER_SIZE");
@@ -3178,11 +3222,19 @@ hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
         unsigned long long total = mm_rt_now_ns() - rt_t0;
         unsigned long long n = __atomic_add_fetch(&mm_rt_created, 1, __ATOMIC_RELAXED);
         unsigned long long sum = __atomic_add_fetch(&mm_rt_total_ns, total, __ATOMIC_RELAXED);
+        /* 2026-08-03 — the paradox probe.  Six runs printed this line 20-28 times while the
+         * host-image block ABOVE in this same function printed zero, on carriers whose files
+         * verifiably contain both strings.  Embedding dladdr into THIS line removes every
+         * degree of freedom: same call site, same fprintf.  The path names the file the
+         * EXECUTING copy of hb lives in — which no strings/mtime check on dist can do. */
+        Dl_info rt_di;
+        const char* rt_img = dladdr((void*)(uintptr_t)hb_jit_runtime_create, &rt_di)
+                             ? (rt_di.dli_fname ? rt_di.dli_fname : "noname") : "dladdr-failed";
         fprintf(stderr,
                 "macrunner-hb-rtmeter: n=%llu total_ms=%.2f jitbuf_ms=%.2f cacheopen_ms=%.2f "
-                "cum_total_ms=%.2f jit_size=%zu\n",
+                "cum_total_ms=%.2f jit_size=%zu img=%s\n",
                 n, (double)total / 1e6, (double)rt_buf_ns / 1e6,
-                (double)rt_cache_ns / 1e6, (double)sum / 1e6, jit_size);
+                (double)rt_cache_ns / 1e6, (double)sum / 1e6, jit_size, rt_img);
         fflush(stderr);
     }
     return rt;
@@ -4182,6 +4234,7 @@ static void jit_aa_mono_4ee14b_transparency_probe(hb_jit_runtime_t* rt,
     frame.steps = steps;
     frame.blocks_executed = blocks_executed;
     frame.aa_enabled = false;
+    frame.stale_cookie = HB_GUARD_FRAME_COOKIE;
     g_jit_signal_fault_frame = &frame;
     if (sigsetjmp(frame.env, 0) == 0) {
         jit_block_t exec = (jit_block_t)(void*)cached->native_code;
@@ -4191,6 +4244,7 @@ static void jit_aa_mono_4ee14b_transparency_probe(hb_jit_runtime_t* rt,
         *ctx = pre_ctx;
     }
     g_jit_signal_fault_frame = frame.prev;
+    frame.stale_cookie = 0;
     jit_ctx = *ctx;
     jit_aa_mono_4ee14b_capture_window(pre_ctx.memory, dst, window, &jit_dst);
     jit_aa_mono_4ee14b_capture_window(pre_ctx.memory, src, window, &jit_src);
@@ -4326,6 +4380,11 @@ static bool jit_signal_quarantine_add(hb_jit_runtime_t* rt, uint64_t guest_addr)
     return true;
 }
 
+static int guard_stale_check_enabled(void) {
+    static int cached = -1;
+    return runtime_env_flag_cached(&cached, "MACRUNNER_HB_GUARD_STALE_CHECK", 1);
+}
+
 static int jit_signal_fault_claim(hb_jit_signal_fault_frame_t* frame,
                                   uint64_t pc, uint64_t fault_addr, int signal,
                                   uint32_t native_word, bool native_word_valid,
@@ -4334,6 +4393,38 @@ static int jit_signal_fault_claim(hb_jit_signal_fault_frame_t* frame,
     if (!frame || !frame->rt || !frame->rt->jit_mem || !frame->entry ||
         !frame->entry->native_code || !frame->entry->native_size)
         return 0;
+
+    /* Stale-frame guard — see the HB_GUARD_FRAME_COOKIE comment at the top of the file.
+     * Both checks are sound: a live claim always carries the cookie and always faults DEEPER
+     * than the frame, so declining here can only suppress a jump into dead stack. */
+    if (guard_stale_check_enabled()) {
+        const char* stale_kind = NULL;
+        uint64_t isp = 0;
+
+        if (frame->stale_cookie != HB_GUARD_FRAME_COOKIE)
+            stale_kind = "cookie";
+#if defined(__APPLE__) && defined(__aarch64__)
+        if (!stale_kind && host_context) {
+            const ucontext_t* uc = (const ucontext_t*)host_context;
+            if (uc->uc_mcontext) {
+                isp = uc->uc_mcontext->__ss.__sp;
+                if (isp > (uint64_t)(uintptr_t)frame)
+                    stale_kind = "sp";
+            }
+        }
+#endif
+        if (stale_kind) {
+            uint64_t n = __atomic_add_fetch(&g_guard_stale_declines, 1, __ATOMIC_RELAXED);
+            if (n <= 8 || (n & 0xfffu) == 0)
+                fprintf(stderr,
+                        "macrunner-hb-guard-stale-frame: kind=%s n=%llu frame=%p cookie=%016llx "
+                        "isp=%016llx pc=%016llx sig=%d\n",
+                        stale_kind, (unsigned long long)n, (void*)frame,
+                        (unsigned long long)frame->stale_cookie,
+                        (unsigned long long)isp, (unsigned long long)pc, signal);
+            return 0;
+        }
+    }
 
     frame->host_pc = pc;
     frame->fault_addr = fault_addr;
@@ -4731,6 +4822,7 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         frame.aa_src_pre_valid = jit_aa_capture_window(
             frame.snapshot.memory, frame.snapshot.regs.x64.rdx, frame.aa_src_pre);
     }
+    frame.stale_cookie = HB_GUARD_FRAME_COOKIE;
     g_jit_signal_fault_frame = &frame;
 
     /* Counted here, before sigsetjmp, so it is one increment per dispatch on both the returning
@@ -4750,6 +4842,7 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         if (trace_null_pc_enabled_rt()) hb_trace_current_block_addr = cached->guest_addr;
         exec(ctx);
         g_jit_signal_fault_frame = frame.prev;
+        frame.stale_cookie = 0;
         return HB_OK;
     }
 
@@ -4762,6 +4855,7 @@ static hb_result_t run_jit_block_with_signal_guard(hb_jit_runtime_t* rt,
         guard_census_flush("recover");
 
     g_jit_signal_fault_frame = frame.prev;
+    frame.stale_cookie = 0;
     if (frame.aa_enabled && frame.signal == SIGBUS) {
         frame.aa_dst_post_valid = jit_aa_capture_window(
             frame.snapshot.memory, frame.snapshot.regs.x64.rcx, frame.aa_dst_post);

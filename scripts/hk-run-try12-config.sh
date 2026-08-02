@@ -106,7 +106,14 @@ export MACRUNNER_HB_TRACE_TRANSLATION_CACHE=1
 export MACRUNNER_FLIGHT_RECORDER=1
 export MACRUNNER_MR_RUN_PREFIX_TEMPLATE="$ROOT/artifacts/hk-prefix-template-NOSERVICES"
 export MACRUNNER_MR_RUN_SKIP_WINEBOOT=1
-export MACRUNNER_MR_RUN_START_SERVICES=0
+# Overridable for ONE experiment class: Galaxy64.dll detects its GalaxyCommunication service via
+# OpenSCManagerA/QueryServiceStatus (verified by strings on the DLL). On real Windows the SCM
+# answers "no such service" instantly and the game logs `GOG authorization failed ...
+# GALAXY_SERVICE_NOT_AVAILABLE` and proceeds to `Performing automatic level start`. In our
+# NOSERVICES prefix there is no SCM endpoint at all, and in 341/341 runs the auth never resolves —
+# no failure line, no PlayerPrefs line, no automatic level start. MACRUNNER_HK_START_SERVICES=1
+# runs the same config WITH services so that hypothesis is testable by environment only.
+export MACRUNNER_MR_RUN_START_SERVICES="${MACRUNNER_HK_START_SERVICES:-0}"
 export WINEDLLOVERRIDES='mono-profiler-hk_language=n;d3d9=n,b;d3d11,dxgi,d3d10core,winemetal=n,b'
 # try12 ran WINEDEBUG=-all and that stays the default: the boot is throughput-starved and any
 # broad channel both slows it and buries the run log.  But a NARROW channel is sometimes the

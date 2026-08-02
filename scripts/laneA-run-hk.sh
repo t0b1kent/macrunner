@@ -292,6 +292,7 @@ for try in $(seq 1 "$MAX"); do
     # обратная косая склеивает строки до обработки #, и остаток команды съедается.
     MACRUNNER_HB_TRACE_D3D_BOUNDARY="${MACRUNNER_HB_TRACE_D3D_BOUNDARY:-1}" \
     MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN="${MACRUNNER_HB_TRACE_DXGI_SWAPCHAIN:-1}" \
+    MACRUNNER_HB_WP_ADDR="${MACRUNNER_HB_WP_ADDR:-}" \
     MACRUNNER_HB_DIRECT_MEM="${MACRUNNER_HB_DIRECT_MEM:-1}" \
     MACRUNNER_HB_SINGLE_LOOKUP="${MACRUNNER_HB_SINGLE_LOOKUP:-1}" \
     MACRUNNER_GRAPHICS_BACKEND="${MACRUNNER_GRAPHICS_BACKEND:-dxmt}" \
@@ -313,6 +314,12 @@ for try in $(seq 1 "$MAX"); do
   append_time_to_swapchain "$RUNDIR/run.log"
   lines=$(wc -l < "$RUNDIR/run.log")
   echo "try$try rc=$rc lines=$lines $RUNDIR"
+  # Оверлей DXMT нужен ТОЛЬКО во время прогона: после него это 68 МБ мёртвого веса, побайтово
+  # одинаковых во всех прогонах. За 02.08 накопилось 342 копии = 22 ГБ, съевших почти весь
+  # свободный диск. Логи (0.7 ГБ на все прогоны) сохраняются целиком — ценность в них, а сборка
+  # DXMT и так лежит в engine/graphics/dist.
+  rm -rf "$RUNDIR/dxmt-builtin-overlay" 2>/dev/null || true
+
   if grep -q 'Mono path' "$RUNDIR/run.log" 2>/dev/null; then
     echo "VALID_RUN=$RUNDIR"; exit 0
   fi

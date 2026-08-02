@@ -48,9 +48,18 @@ static void* hb_jit_next_hint(size_t size) {
     return (void*)__atomic_fetch_add(&hb_jit_arena_hint, step, __ATOMIC_RELAXED);
 }
 
+/* MacRunner 2026-08-03 — cached: this is called from hb_jit_buffer_commit on EVERY commit, on
+ * guest threads.  Crash report wine-2026-08-02-191517.ips caught the uncached getenv holding
+ * libc's environ unfair lock when SIGQUIT arrived; the quit path re-entered libc on the same
+ * lock and died in _os_unfair_lock_recursive_abort.  A test-only flag does not change mid-run,
+ * so read it once. */
 static bool force_jit_verify_failure(void) {
-    const char* value = getenv("MACRUNNER_HB_TEST_FORCE_JIT_VERIFY_FAIL");
-    return value && value[0] && value[0] != '0';
+    static int cached = -1;
+    if (cached < 0) {
+        const char* value = getenv("MACRUNNER_HB_TEST_FORCE_JIT_VERIFY_FAIL");
+        cached = (value && value[0] && value[0] != '0') ? 1 : 0;
+    }
+    return cached != 0;
 }
 
 static bool jit_addr_has_prot(uintptr_t p, int required) {

@@ -58,7 +58,12 @@ done
 have() { for kv in "${ENVS[@]}"; do [ "${kv%%=*}" = "$1" ] && [ "${kv#*=}" != "0" ] && return 0; done; return 1; }
 uses_chain=0
 for kv in "${ENVS[@]}"; do case "${kv%%=*}" in MACRUNNER_HB_CHAIN_*) uses_chain=1;; esac; done
-if [ "$uses_chain" = 1 ] && ! have MACRUNNER_HB_BLOCK_CHAIN; then
+# A control arm that disables chaining ON PURPOSE is legitimate, and must be distinguishable from
+# forgetting the master gate -- which is the whole point of this check. PREFLIGHT_CHAIN_OFF_OK=1
+# is that distinction: intent has to be stated, not inferred.
+if [ "${PREFLIGHT_CHAIN_OFF_OK:-0}" = 1 ]; then
+  note "контрольная рука: сцепление выключено НАМЕРЕННО (PREFLIGHT_CHAIN_OFF_OK=1)"
+elif [ "$uses_chain" = 1 ] && ! have MACRUNNER_HB_BLOCK_CHAIN; then
   note "FAIL: выставлены MACRUNNER_HB_CHAIN_*, но мастер-гейт MACRUNNER_HB_BLOCK_CHAIN не включён."
   note "      Он по умолчанию 0. Без него сцепление не работает и прогон измерит выключенную функцию."
   fail=1

@@ -2132,6 +2132,28 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
         char *o_lo = w_lo > live_lo ? w_lo : live_lo;
         long long overlap = (w_hi > o_lo) ? (long long)(w_hi - o_lo) : 0;
         BOOL used_callback_stack = (delivery_stack_ptr != stack_ptr);
+        /* MacRunner 2026-08-04 — ВНУТРИ ЛИ МЫ ОКНА ПОДМЕНЫ ГРАНИЦ СТЕКА.
+         *
+         * Разбор Prism (reports/research/PRISM-RE-PROGRESS.md, 10:50) показал, что вход в его
+         * эмулятор проверяет, не находится ли поток УЖЕ на стеке эмулятора, сравнивая SP с
+         * EmulatorStackBase/Limit из области процессора. Мы решаем тот же вопрос иначе и, похоже,
+         * хуже: loader.c:408 ВРЕМЕННО подменяет teb->Tib.StackLimit/StackBase границами стека
+         * эмулятора, а macrunner_hb_get_callback_exception_stack() решает, на какой стек
+         * доставлять исключение, сравнивая SP именно с teb->Tib. Значит его решение зависит от
+         * того, попало исключение в окно подмены или нет. Upstream 11.14 так не делает — держит
+         * в блоке потока настоящий стек (unix/thread.c:1238).
+         *
+         * Признак вычисляется на месте, без новой памяти: если границы в блоке потока СОВПАДАЮТ
+         * с границами стека эмулятора, мы внутри окна. Если все сбойные доставки окажутся внутри
+         * него — гипотеза подтверждена; если разбросаны — снимается, и это тоже ответ. */
+        unsigned emu_swap = 0;
+        {
+            TEB *t = NtCurrentTeb();
+            CHPE_V2_CPU_AREA_INFO *ca = t ? t->ChpeV2CpuAreaInfo : NULL;
+            if (ca && (ULONG_PTR)teb_hi == (ULONG_PTR)ca->EmulatorStackBase &&
+                      (ULONG_PTR)teb_lo == (ULONG_PTR)ca->EmulatorStackLimit)
+                emu_swap = 1;
+        }
         /* Имя API по адресу в LR: он приходит из полосы гостевых thunk-ов (0x6f00…) и в двух
          * независимых прогонах 04.08 совпал побитово (0x6f00000057c0), но трасса импортов его не
          * называет.  Спрашиваем таблицу напрямую — это один индекс, читать её из обработчика
@@ -2166,7 +2188,7 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
                  * tells them apart. */
                 "macrunner-hb-exception-record-overlap: tid=%llx teb=%p code=%#lx write=%p-%p size=%u "
                 "interrupted_sp=%p delivery_sp=%p callback_stack=%u overlap=%lld "
-                "teb_stack=%p-%p sp_in_teb=%u lr_in=%p rec_addr=%p seen=%llu "
+                "teb_stack=%p-%p sp_in_teb=%u emu_swap=%u lr_in=%p rec_addr=%p seen=%llu "
                 /* MacRunner 04.08 — остаток unix-стека, а не догадка о нём.
                  *
                  * В прогоне 09:15 первая доставка легла по sp=0x117c90370 при TEB=0x117c90000, то
@@ -2181,6 +2203,7 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
                 live_lo, delivery_stack_ptr, used_callback_stack ? 1u : 0u, overlap,
                 teb_lo, teb_hi,
                 (teb_lo && teb_hi && live_lo >= teb_lo && live_lo < teb_hi) ? 1u : 0u,
+                emu_swap,
                 (void *)(ULONG_PTR)LR_sig(sigcontext),
                 (void *)(w_lo + offsetof(struct exc_stack_layout, rec)),
                 (unsigned long long)__atomic_load_n( &overlap_seen, __ATOMIC_RELAXED ),

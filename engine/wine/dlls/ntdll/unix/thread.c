@@ -1832,6 +1832,36 @@ NTSTATUS WINAPI NtRaiseException( EXCEPTION_RECORD *rec, CONTEXT *context, BOOL 
                  rec->NumberParameters > 2 ? (void *)(uintptr_t)rec->ExceptionInformation[2] : NULL,
                  rec->NumberParameters > 3 ? (void *)(uintptr_t)rec->ExceptionInformation[3] : NULL,
                  context );
+        /* MacRunner 2026-08-03 — name the guest call site of a jump to zero.
+         *
+         * The fault that kills these runs is an execute at address 0 (code=0xc0000005 addr=0x0
+         * info0=0x8, measured on LONGLIVE1), so ExceptionAddress IS the zero and says nothing about
+         * who jumped there.  The guest side does: guest_rip is where the emulated thread stands, and
+         * the qword at guest_rsp is the return address the `call` pushed — the call site itself.
+         * The read is guarded, because a wild rsp here would turn a diagnostic into a second fault;
+         * a miss prints zero, which is still an answer, and a returned guest_rip of 0 is told apart
+         * from "not found" by the guest_rsp beside it. */
+        {
+            UINT64 guest_rsp = 0;
+            UINT64 gpr6[6] = { 0 };
+            int guest_state = 0;
+            UINT64 guest_rip = macrunner_hb_guest_pc_for_tid( GetCurrentThreadId(), &guest_rsp, &guest_state, gpr6 );
+            ULONG_PTR ret_addr = 0;
+
+            if (guest_rsp && !(guest_rsp & 7) &&
+                virtual_check_buffer_for_read( (const void *)(ULONG_PTR)guest_rsp, sizeof(ret_addr) ))
+                memcpy( &ret_addr, (const void *)(ULONG_PTR)guest_rsp, sizeof(ret_addr) );
+
+            fprintf( stderr, "macrunner-process-exit: stage=guest-context tid=%lx "
+                     "state=%d guest_rip=0x%llx guest_rsp=0x%llx retaddr=0x%llx "
+                     "rax=0x%llx rcx=0x%llx r8=0x%llx r15=0x%llx rbx=0x%llx rdx=0x%llx\n",
+                     (unsigned long)GetCurrentThreadId(), guest_state,
+                     (unsigned long long)guest_rip, (unsigned long long)guest_rsp,
+                     (unsigned long long)ret_addr,
+                     (unsigned long long)gpr6[0], (unsigned long long)gpr6[1],
+                     (unsigned long long)gpr6[2], (unsigned long long)gpr6[3],
+                     (unsigned long long)gpr6[4], (unsigned long long)gpr6[5] );
+        }
         if (rec->ExceptionCode == 0xe06d7363 && rec->NumberParameters > 1)
         {
             const void *obj = (const void *)(uintptr_t)rec->ExceptionInformation[1];

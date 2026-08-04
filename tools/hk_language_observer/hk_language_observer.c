@@ -109,7 +109,9 @@ enum observed_method
     METHOD_OPENING_SEQUENCE_ON_CHANGING_SEQUENCES,
     METHOD_SCENE_LOAD,
     METHOD_SCENE_LOAD_ASYNC,
-    METHOD_CAMERA_TICK
+    METHOD_CAMERA_TICK,
+    METHOD_ASYNCOP_POLL,
+    METHOD_MANAGED_TICK
 };
 
 struct mono_api
@@ -253,6 +255,10 @@ static LONG newobj_probe_control_ok; /* aggregate: control passed */
  * or non-finite, independently of DXMT (whose constant-buffer probe classifies
  * arbitrary CB bytes and whose PE-side formatter cannot print floats at all). */
 static LONG camera_probe;
+static LONG asyncop_poll;        /* MACRUNNER_HB_ASYNCOP_POLL: hook AsyncOperation.get_isDone/get_progress */
+static LONG asyncop_poll_count;
+static LONG managed_tick;        /* MACRUNNER_HB_MANAGED_TICK: is the managed frame loop alive at all? */
+static LONG managed_tick_count;
 static LONG camera_probe_budget;
 static LONG camera_probe_stride = 1;
 static LONG camera_probe_dumps;      /* aggregate, never capped */
@@ -471,12 +477,38 @@ static enum observed_method classify_method(MonoMethod *method)
         strings_equal(class_name, "AsyncOperation") &&
         strings_equal(method_name, "set_allowSceneActivation"))
         return METHOD_ALLOW_SCENE_ACTIVATION;
+    /* MacRunner 2026-08-04 — is anybody still POLLING the load?
+     *
+     * Comparison with the 28.07 run that reached the menu puts the divergence at exactly one
+     * step: ours stops after `set_allowSceneActivation` returns (seq=7) while the healthy run
+     * goes on to PreselectOption.HighlightDefault.  Two very different defects produce that,
+     * and only a measurement separates them: either the coroutine that waits on the operation
+     * is no longer running (no polls at all), or it runs and the operation never completes
+     * (polls forever with progress stuck).  Hooking the two getters the wait loop uses answers
+     * it directly.  Gated: these fire every frame in a healthy game. */
+    if (asyncop_poll && namespace_name && strings_equal(namespace_name, "UnityEngine") &&
+        strings_equal(class_name, "AsyncOperation") &&
+        (strings_equal(method_name, "get_isDone") || strings_equal(method_name, "get_progress")))
+        return METHOD_ASYNCOP_POLL;
     if (namespace_name && strings_equal(namespace_name, "UnityEngine.SceneManagement") &&
         strings_equal(class_name, "SceneManager"))
     {
         if (strings_equal(method_name, "LoadScene")) return METHOD_SCENE_LOAD;
         if (strings_equal(method_name, "LoadSceneAsync")) return METHOD_SCENE_LOAD_ASYNC;
     }
+    /* MacRunner 2026-08-04 — is the MANAGED frame loop alive after seq=7?
+     *
+     * The stall sits exactly one step past set_allowSceneActivation, and two very different
+     * defects fit: the Unity scripting loop stopped ticking entirely, or it ticks and only the
+     * scene activation never lands.  Nothing measured so far separates them — the AsyncOperation
+     * getters are not called even in a healthy Unity (yield on an operation resumes natively).
+     * A per-frame Update of a manager that certainly exists at this stage does separate them:
+     * no ticks after seq=7 means the loop is dead and the load is a symptom. */
+    if (managed_tick && strings_equal(method_name, "Update") &&
+        (strings_equal(class_name, "GameManager") || strings_equal(class_name, "UIManager") ||
+         strings_equal(class_name, "StartManager") || strings_equal(class_name, "InputHandler") ||
+         strings_equal(class_name, "CameraController")))
+        return METHOD_MANAGED_TICK;
     if (strings_equal(method_name, "Awake"))
     {
         if (strings_equal(class_name, "GameManager")) return METHOD_GAME_MANAGER_AWAKE;
@@ -565,6 +597,12 @@ static int language_method_instrumentation(enum observed_method observed)
     if (observed == METHOD_OTHER) return MONO_PROFILER_CALL_INSTRUMENTATION_NONE;
     if (observed == METHOD_CAMERA_TICK)
         return camera_probe ? MONO_PROFILER_CALL_INSTRUMENTATION_ENTER
+                            : MONO_PROFILER_CALL_INSTRUMENTATION_NONE;
+    if (observed == METHOD_ASYNCOP_POLL)
+        return asyncop_poll ? MONO_PROFILER_CALL_INSTRUMENTATION_ENTER
+                            : MONO_PROFILER_CALL_INSTRUMENTATION_NONE;
+    if (observed == METHOD_MANAGED_TICK)
+        return managed_tick ? MONO_PROFILER_CALL_INSTRUMENTATION_ENTER
                             : MONO_PROFILER_CALL_INSTRUMENTATION_NONE;
     if (return_route_only && observed != METHOD_SET_LANGUAGE &&
         observed != METHOD_HIGHLIGHT_DEFAULT)
@@ -2286,6 +2324,47 @@ static void method_enter(MonoProfiler *profiler, MonoMethod *method,
     case METHOD_CAMERA_TICK:
         camera_probe_dump("camera-tick");
         break;
+    case METHOD_MANAGED_TICK:
+    {
+        LONG n = InterlockedIncrement(&managed_tick_count);
+        if (n <= 5 || (n % 512) == 0)
+        {
+            builder_init(&builder, detail, sizeof(detail));
+            builder_append(&builder, "class=");
+            builder_append(&builder, mono.class_get_name(mono.method_get_class(method)));
+            builder_append(&builder, " method=Update ticks=");
+            builder_append_signed(&builder, n);
+            observer_log("managed-tick", detail);
+        }
+        break;
+    }
+    case METHOD_ASYNCOP_POLL:
+    {
+        /* Rate-limited: the first few prove the loop is alive, then a sparse sample keeps the
+         * log honest without drowning it (a healthy game polls this every frame). */
+        LONG n = InterlockedIncrement(&asyncop_poll_count);
+        if (n <= 8 || (n % 512) == 0)
+        {
+            int a_value = -1;
+            const char *a_reason = NULL;
+            int a_ok = read_allow_scene_activation_property(&a_value, &a_reason);
+
+            builder_init(&builder, detail, sizeof(detail));
+            builder_append(&builder, "class=UnityEngine.AsyncOperation method=");
+            builder_append(&builder, mono.method_get_name(method));
+            builder_append(&builder, " polls=");
+            builder_append_signed(&builder, n);
+            builder_append(&builder, " allowSceneActivation=");
+            if (a_ok) builder_append_signed(&builder, a_value);
+            else
+            {
+                builder_append(&builder, "unavailable reason=");
+                builder_append(&builder, a_reason ? a_reason : "unknown");
+            }
+            observer_log("asyncop-poll", detail);
+        }
+        break;
+    }
     case METHOD_ALLOW_SCENE_ACTIVATION:
         state_value = -1;
         state_available =
@@ -2417,6 +2496,8 @@ static int configure_observer(void)
 {
     return_route_only = env_enabled("MACRUNNER_HB_RETURN_ROUTE_OBSERVER");
     language_flow_observer = env_enabled("MACRUNNER_HB_LANGUAGE_FLOW_OBSERVER");
+    asyncop_poll = env_enabled("MACRUNNER_HB_ASYNCOP_POLL");
+    managed_tick = env_enabled("MACRUNNER_HB_MANAGED_TICK");
     post_level_milestone_trace = env_enabled("MACRUNNER_HB_POST_LEVEL_MILESTONE_TRACE");
     if (!return_route_only && !language_flow_observer && !post_level_milestone_trace)
         return 0;
@@ -2539,8 +2620,21 @@ static void initialize_observer(HMODULE module, const char *description,
 
     if (!introspection_enabled && !mono.enable_call_context_introspection())
     {
-        observer_log("init-failed", "status=call-context-introspection-rejected");
-        return;
+        /* MacRunner 2026-08-04 — НЕ смертельно, и вот почему.
+         *
+         * Интроспекция контекста вызова нужна для чтения АРГУМЕНТОВ методов. Сама
+         * последовательность событий (вход/выход) от неё не зависит. Mono выдаёт это
+         * разрешение только когда профилировщик поднимается ВМЕСТЕ со средой исполнения;
+         * при подключении к уже запущенному Mono — отказывает. Именно так вышло на настоящей
+         * Windows 04.08: наблюдатель доставлен подставной version.dll, дошёл до этой строки и
+         * умирал здесь, хотя всё остальное работало.
+         *
+         * Раньше отказ означал полный отказ, и эталон было не снять в принципе. Теперь
+         * записываем предупреждение и продолжаем: поток событий важнее аргументов. В НАШИХ
+         * прогонах путь другой (движок передаёт introspection_enabled=1 и сюда не заходит),
+         * поэтому их поведение не меняется. */
+        observer_log("introspection-unavailable",
+                     "status=rejected impact=arguments-unavailable events=still-recorded");
     }
     if (diagnostic_direct_confirm && !mono.enable_allocations())
     {
@@ -2568,6 +2662,12 @@ static void initialize_observer(HMODULE module, const char *description,
     if (oneshot_sequence)
         builder_append(&builder,
                        " oneshot-sequence=armed source=accepted-145129 activation-control=excluded");
+    /* Positive control for the poll hook: a zero count means "nobody polls" only if the hook was
+     * armed at all.  Print the gate here, in the banner that always appears. */
+    builder_append(&builder, " asyncop-poll=");
+    builder_append_signed(&builder, asyncop_poll ? 1 : 0);
+    builder_append(&builder, " managed-tick=");
+    builder_append_signed(&builder, managed_tick ? 1 : 0);
     if (post_level_milestone_trace)
     {
         builder_append(&builder,
@@ -2613,7 +2713,29 @@ __declspec(dllexport) void __cdecl macrunner_hb_profiler_init_hk_language(
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
 {
     (void)instance;
-    (void)reason;
     (void)reserved;
+
+    /* MacRunner 2026-08-04 — самозацепление для ЭТАЛОННОГО захвата на Windows.
+     *
+     * Обычный путь (движок зовёт macrunner_hb_profiler_init_hk_language) на настоящей Windows
+     * недоступен: движка там нет. Инжектор пробовал позвать штатный экспорт удалённым потоком и
+     * умирал молча — под Prism и игра, и инжектор эмулируемые x64, у них РАЗНАЯ раскладка
+     * модулей, и адрес LoadLibraryW/экспорта, взятый в своём процессе, в чужом означает не то.
+     * Замер 04.08: журнал инжектора обрывается сразу после "Mono на месте", ни одна из четырёх
+     * последующих веток отказа не печатается — то есть он не возвращается, а падает.
+     *
+     * Здесь этой проблемы нет по построению: DllMain исполняется УЖЕ В ЦЕЛЕВОМ процессе, все
+     * адреса свои. Достаточно обычной LoadLibraryW, и два самых хрупких шага внедрения отпадают.
+     *
+     * Отдельный гейт, а не «всегда»: в НАШИХ прогонах наблюдателя инициализирует движок через
+     * бутстрап, и самозацепление дало бы двойную инициализацию. Переменная ставится только в
+     * эталонном захвате, поэтому поведение наших прогонов не меняется ни на бит. */
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        /* env_enabled — свой читатель переменных: библиотека собирается без стандартной
+         * библиотеки C, поэтому getenv здесь недоступен (ld.lld: undefined symbol). */
+        if (env_enabled("MACRUNNER_HB_OBSERVER_SELF_ATTACH"))
+            mono_profiler_init_hk_language("self-attach");
+    }
     return TRUE;
 }

@@ -9,6 +9,7 @@
 #include <time.h>
 #include <dlfcn.h>
 #if defined(__APPLE__)
+#include <malloc/malloc.h>
 #include <sys/ucontext.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
@@ -3218,6 +3219,34 @@ hb_jit_runtime_t* hb_jit_runtime_create(hb_context_t* ctx) {
             fflush(stderr);
         }
     }
+    /* MacRunner 2026-08-04 — WHEN does the heap go bad?  A time bracket, not another guess.
+     *
+     * libmalloc's own verdict is "memory corruption of free block", but its periodic MallocCheckHeap
+     * finds nothing (banners prove it was armed) — it does not cover the xzone allocator that
+     * actually traps.  malloc_zone_check() does validate the live zones, and it can be called from
+     * ORDINARY context, which matters: the trap fires ~25 s in, during a storm of ~40 runtime
+     * creations, and this is called once per creation.  The first creation that reports ok=0 brackets
+     * the corruption between two known points instead of leaving the whole run as the suspect.
+     *
+     * Gated (MACRUNNER_HB_ZONE_CHECK=1) and default OFF: a full zone walk is not free. */
+    {
+        static int zone_check_cached = -1;
+        if (zone_check_cached < 0) {
+            const char* e = getenv("MACRUNNER_HB_ZONE_CHECK");
+            zone_check_cached = (e && *e && *e != '0') ? 1 : 0;
+        }
+        if (zone_check_cached) {
+            static uint64_t zc_calls, zc_bad;
+            uint64_t k = __atomic_add_fetch(&zc_calls, 1, __ATOMIC_RELAXED);
+            int ok = malloc_zone_check(NULL) ? 1 : 0;
+            if (!ok) __atomic_add_fetch(&zc_bad, 1, __ATOMIC_RELAXED);
+            fprintf(stderr, "macrunner-hb-zonecheck: call=%llu ok=%d bad_total=%llu\n",
+                    (unsigned long long)k, ok,
+                    (unsigned long long)__atomic_load_n(&zc_bad, __ATOMIC_RELAXED));
+            fflush(stderr);
+        }
+    }
+
     {
         unsigned long long total = mm_rt_now_ns() - rt_t0;
         unsigned long long n = __atomic_add_fetch(&mm_rt_created, 1, __ATOMIC_RELAXED);
@@ -3789,9 +3818,36 @@ static bool patch_block_tail(hb_jit_runtime_t* rt, hb_block_cache_entry_t* cur,
         }
         if (trace_chain_edge_enabled() &&
             (n <= 64 || chain_edge_is_near(cur->guest_addr, next->guest_addr))) {
-            fprintf(stderr, "macrunner-hb-chainedge: n=%llu cur=0x%llx next=0x%llx tramp=%p\n",
+            /* MacRunner 2026-08-04 — печатаем ещё и гостевые байты обоих концов ребра.
+             *
+             * Бисект по MACRUNNER_HB_CHAIN_MAX_PATCHES показал, что ОДНОГО пропатченного ребра
+             * достаточно, чтобы загрузка умерла (exit=3 на +52 с), и это ребро детерминировано —
+             * одни и те же cur/next от прогона к прогону.  Адреса сами по себе ничего не
+             * называют: базы гостевых модулей в лог не попадают.  А байты называют — узор
+             * ищется по файлам игры и даёт модуль и функцию, как это уже дважды сработало
+             * (mono_sha1_update, микшер UnityPlayer).  Читаем охраняемо, тем же способом, что
+             * и hot-bytes, и только под гейтом трассы рёбер. */
+            fprintf(stderr, "macrunner-hb-chainedge: n=%llu cur=0x%llx next=0x%llx tramp=%p",
                     (unsigned long long)n, (unsigned long long)cur->guest_addr,
                     (unsigned long long)next->guest_addr, (void*)target);
+            if (rt->ctx && rt->ctx->memory) {
+                const char* label[2] = { " cur_bytes=", " next_bytes=" };
+                uint64_t addr[2] = { cur->guest_addr, next->guest_addr };
+                int k;
+                for (k = 0; k < 2; k++) {
+                    uint8_t byte;
+                    size_t i;
+                    fprintf(stderr, "%s", label[k]);
+                    for (i = 0; i < 16; i++) {
+                        if (hb_memory_read_u8(rt->ctx->memory, (hb_gva_t)(addr[k] + i), &byte) != HB_OK) {
+                            fprintf(stderr, "%s??", i ? " " : "");
+                            break;
+                        }
+                        fprintf(stderr, "%s%02x", i ? " " : "", byte);
+                    }
+                }
+            }
+            fprintf(stderr, "\n");
             fflush(stderr);
         }
     }
@@ -6358,6 +6414,38 @@ static hb_result_t hb_jit_runtime_run_legacy(hb_jit_runtime_t* rt, const hb_ir_f
                                             blocks_executed, "block limit reached");
         }
 
+        /* MacRunner 2026-08-03 — the one choke point every guest transition passes through.
+         *
+         * The fault that kills Hollow Knight is an execute at address 0 (code=0xc0000005 addr=0x0
+         * info0=0x8).  Instrumenting RET does not catch it: the interpreter's RET guard fired zero
+         * times across a full run, and on the translated path emit_native_ret bypasses the pop
+         * helper entirely, so there is no single RET to watch.  Here there is — native return,
+         * helper return and indirect jump all arrive at this dispatch with the new guest pc in
+         * ctx->pc.  Two comparisons, and nothing is formatted unless the pc is already impossible. */
+        if (!ctx->pc || (((int64_t)ctx->pc >> 47) != 0 && ((int64_t)ctx->pc >> 47) != -1)) {
+            static unsigned int null_pc_reports;
+            if (null_pc_reports++ < 16) {
+                uint64_t win[6] = { 0 };
+                unsigned int wi;
+                for (wi = 0; wi < 6; wi++)
+                    if (hb_memory_read_u64(ctx->memory, ctx->regs.x64.rsp + wi * 8, &win[wi]) != HB_OK)
+                        win[wi] = 0;
+                fprintf(stderr,
+                        "macrunner-hb-dispatch-null-pc: pc=0x%llx rsp=0x%llx rbp=0x%llx "
+                        "rax=0x%llx rcx=0x%llx r8=0x%llx r15=0x%llx "
+                        "stk=%llx,%llx,%llx,%llx,%llx,%llx\n",
+                        (unsigned long long)ctx->pc,
+                        (unsigned long long)ctx->regs.x64.rsp,
+                        (unsigned long long)ctx->regs.x64.rbp,
+                        (unsigned long long)ctx->regs.x64.rax,
+                        (unsigned long long)ctx->regs.x64.rcx,
+                        (unsigned long long)ctx->regs.x64.r8,
+                        (unsigned long long)ctx->regs.x64.r15,
+                        (unsigned long long)win[0], (unsigned long long)win[1],
+                        (unsigned long long)win[2], (unsigned long long)win[3],
+                        (unsigned long long)win[4], (unsigned long long)win[5]);
+            }
+        }
         hb_ir_block_t* block = find_block(func->cfg, ctx->pc);
         if (!block) {
             if (func->truncated) {

@@ -100,7 +100,21 @@ CORE_SYSTEM32_MODULES=(
 # They stay listed but OFF by default. Set MACRUNNER_SYNC_INCLUDE_AUDIO_DRV=1 to ship them once
 # endpoint enumeration actually works, so re-testing costs one variable rather than a revert.
 # Whoever turns them on: check `Begin MonoManager` in the same run, not just whether you hear it.
-if [[ -z "${MACRUNNER_SYNC_INCLUDE_AUDIO_DRV:-}" ]]; then
+# MacRunner 04.08 — проверка по ЗНАЧЕНИЮ, а не по наличию.
+#
+# Было `-z`, то есть достаточно было переменной быть непустой.  А `scripts/laneA-run-hk.sh` подаёт
+# в дочерний процесс весь свой список как `MACRUNNER_SYNC_INCLUDE_AUDIO_DRV="${...:-0}"` — значит
+# переменная ВСЕГДА непуста, и драйверы отгружались всегда, включая явное `=0`.  С этого и началась
+# регрессия загрузки: прогоны до появления строки в фильтре доходили до `Loaded Objects` за 222-291 с,
+# все последующие встают на 43-й секунде, а в затёртом кадре на хостовом стеке читается текст
+# `AUHAL.cpp` / `SelectDevice` / `device delegate` — код Apple CoreAudio.
+#
+# Значение-выключатель теперь работает как написано в комментарии выше: ship только при 1/yes/on.
+case "${MACRUNNER_SYNC_INCLUDE_AUDIO_DRV:-}" in
+    1|y|Y|yes|YES|true|TRUE|on|ON) _mr_ship_audio_drv=1 ;;
+    *)                             _mr_ship_audio_drv=0 ;;
+esac
+if [[ $_mr_ship_audio_drv -eq 0 ]]; then
     _keep=()
     for _m in "${CORE_SYSTEM32_MODULES[@]}"; do
         case "$_m" in

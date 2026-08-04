@@ -82,6 +82,8 @@ NTSTATUS (WINAPI *__wine_unix_call_dispatcher)( unixlib_handle_t, unsigned int, 
  * MEM_FREE for them because the engine maps them outside the Windows VM bookkeeping.  Stays NULL if
  * the unix side is older than this symbol, so every caller must check it. */
 int (*macrunner_hb_guest_image_lookup)( UINT64 pc, UINT64 *base, UINT64 *size ) = NULL;
+/* Filled by the unix side alongside the image lookup; NULL when unavailable. */
+int (*macrunner_hb_guest_ctx_lookup)( DWORD tid, UINT64 *guest_pc, UINT64 *guest_sp ) = NULL;
 
 static DWORD (WINAPI *pCtrlRoutine)(void *);
 

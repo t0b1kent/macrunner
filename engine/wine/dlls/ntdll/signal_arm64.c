@@ -50,6 +50,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
 extern void *__wine_syscall_dispatcher;
 /* Filled by the unix side at load time; NULL when unavailable, so every use must check. */
 extern int (*macrunner_hb_guest_image_lookup)( UINT64 pc, UINT64 *base, UINT64 *size );
+extern int (*macrunner_hb_guest_ctx_lookup)( DWORD tid, UINT64 *guest_pc, UINT64 *guest_sp );
 
 static const EXCEPTION_RECORD *macrunner_hb_current_exception_record;
 
@@ -260,10 +261,61 @@ static inline void macrunner_hb_stop_unwind_at_boundary( DISPATCHER_CONTEXT *dis
     context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
 }
 
+static BOOL macrunner_hb_is_plausible_recovered_pc( DWORD64 pc, const char **reason );
+static BOOL macrunner_hb_pc_in_host_unix_window( DWORD64 pc );
+
+static BOOL macrunner_hb_leaf_lr_guard_enabled(void);
+static BOOL macrunner_hb_recover_no_frame_enabled(void);
+
+/* MacRunner 2026-08-03 — which assignment produced an unusable resume PC.
+ *
+ * Three hypotheses about the source of the pc==lr stack resume have now been refuted by
+ * measurement (host-frame acceptance, the interpreter RET, the leaf-lr unwind), each costing a
+ * build and a run.  Guessing a fourth is worse value than making the code say it: every site that
+ * writes context->Pc calls this, and only a site that writes something which is NOT code prints.
+ * The site id is the marker — the next run names the line instead of confirming a guess. */
+static void macrunner_hb_note_pc_set( int site, DWORD64 newpc, DWORD64 sp )
+{
+    static unsigned int noted;
+
+    if (macrunner_hb_is_plausible_recovered_pc( newpc, NULL )) return;
+    if (macrunner_hb_pc_in_host_unix_window( newpc )) return;
+    if (noted++ >= 24) return;
+    MESSAGE( "macrunner-hb-pc-set-bad: site=%d pc=%p sp=%016I64x\n",
+             site, (void *)(ULONG_PTR)newpc, sp );
+}
+
 static inline BOOL macrunner_hb_unwind_leaf_via_lr( DISPATCHER_CONTEXT *dispatch, CONTEXT *context,
                                                     DWORD64 pc, DWORD64 lr )
 {
     if (!lr || lr == pc || lr == pc + 4 || lr == ~(DWORD64)3) return FALSE;
+
+    /* MacRunner 2026-08-03 — an lr that is not a code address must not become the resume point.
+     *
+     * This function resumes a "leaf" frame by trusting x30 wholesale: the four tests above reject
+     * only the degenerate values.  When the frame is not actually a leaf — or x30 has been reused
+     * as scratch — lr can hold an ordinary data pointer, and setting Pc from it resumes execution
+     * inside data.  Measured: 7.05 M faults on ONE page, 98 % of a run's total, every sample
+     * identical with pc == lr == 0x1111cada8, an address inside a 16 MB rw- region flanked by a
+     * 32 KB --- guard, i.e. a thread stack.  pc == lr is the tell: Pc was set FROM lr right here.
+     *
+     * The same file already knows how to judge this — macrunner_hb_is_plausible_recovered_pc
+     * rejects stack addresses and anything outside loaded code — it was simply never asked.  The
+     * host-window exemption keeps yesterday's fix intact: a return into our own unix ntdll.so is
+     * legitimate and is not a PE module, so the plain plausibility test would reject it too.
+     *
+     * Gated so one binary runs both arms; the storm makes the difference impossible to miss. */
+    if (macrunner_hb_leaf_lr_guard_enabled() &&
+        !macrunner_hb_is_plausible_recovered_pc( lr, NULL ) &&
+        !macrunner_hb_pc_in_host_unix_window( lr ))
+    {
+        static unsigned int leaf_lr_rejects;
+
+        if (leaf_lr_rejects++ < 16)
+            MESSAGE( "macrunner-hb-leaf-lr-reject: pc=%p lr=%p sp=%016I64x\n",
+                     (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)lr, context ? context->Sp : 0 );
+        return FALSE;
+    }
 
     dispatch->ImageBase = 0;
     dispatch->FunctionEntry = NULL;
@@ -271,6 +323,7 @@ static inline BOOL macrunner_hb_unwind_leaf_via_lr( DISPATCHER_CONTEXT *dispatch
     dispatch->EstablisherFrame = context->Sp;
     dispatch->LanguageHandler = NULL;
     context->Pc = lr;
+    macrunner_hb_note_pc_set( 1, context->Pc, context->Sp );
     context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
     return TRUE;
 }
@@ -308,6 +361,7 @@ static void macrunner_hb_restore_syscall_prev_frame_context( CONTEXT *context,
     context->Lr = prev->lr;
     context->Sp = prev->sp;
     context->Pc = prev->pc;
+    macrunner_hb_note_pc_set( 2, context->Pc, context->Sp );
     context->Cpsr = prev->cpsr;
     memcpy( &context->X19, &prev->x[19], 10 * sizeof(prev->x[0]) );
     context->ContextFlags |= CONTEXT_CONTROL | CONTEXT_INTEGER;
@@ -367,6 +421,38 @@ static BOOL macrunner_hb_unwind_syscall_data_boundary( DISPATCHER_CONTEXT *dispa
 #define MACRUNNER_HB_HOST_FRAME_WINDOW 0x80000ULL
 
 static BOOL macrunner_hb_query_env_uint( const WCHAR *nameW, unsigned int *value );
+
+static BOOL macrunner_hb_recover_no_frame_enabled(void)
+{
+    static const WCHAR gateW[] =
+        {'M','A','C','R','U','N','N','E','R','_','H','B','_','R','E','C','O','V','E','R',
+         '_','N','O','_','F','R','A','M','E',0};
+    static BOOL initialized, enabled;
+    unsigned int value;
+
+    if (!initialized)
+    {
+        enabled = macrunner_hb_query_env_uint( gateW, &value ) ? (value != 0) : TRUE;
+        initialized = TRUE;
+    }
+    return enabled;
+}
+
+static BOOL macrunner_hb_leaf_lr_guard_enabled(void)
+{
+    static const WCHAR gateW[] =
+        {'M','A','C','R','U','N','N','E','R','_','H','B','_','L','E','A','F','_','L','R',
+         '_','G','U','A','R','D',0};
+    static BOOL initialized, enabled;
+    unsigned int value;
+
+    if (!initialized)
+    {
+        enabled = macrunner_hb_query_env_uint( gateW, &value ) ? (value != 0) : TRUE;
+        initialized = TRUE;
+    }
+    return enabled;
+}
 
 static BOOL macrunner_hb_recover_host_frame_enabled(void)
 {
@@ -448,11 +534,46 @@ static BOOL macrunner_hb_recover_native_dispatch_boundary( DISPATCHER_CONTEXT *d
     }
     if (!(frame = macrunner_hb_current_syscall_frame()))
     {
-        if (reject_count++ < 16)
-            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
-                     "pc=%p frame=%p reason=no-current-syscall-frame\n",
-                     tid, (void *)(ULONG_PTR)pc, NULL );
-        return FALSE;
+        /* MacRunner 2026-08-03 — "no syscall frame" is not the same as "nothing to resume from".
+         *
+         * This early return is what stands between the scene activation and the menu.  Compared
+         * line by line against the run that reached the MAIN MENU on 2026-07-28: both emit the
+         * same eleven `Couldn't find a UIManager`, both start the same extra loader thread, both
+         * reopen the translation cache — and only ours carries, in that exact window,
+         * `reason=no-current-syscall-frame` followed by `action=stop-unwind`.  The exception is
+         * then never delivered, the thread that was about to drive PreselectOption.HighlightDefault
+         * dies, and the run stops at 7 of the 135 language-flow events the successful run produced.
+         *
+         * Today's host-frame acceptance cannot help here — it lives further down, past this
+         * return.  A thread faulting outside any unix call still has a link register, and that is
+         * the same kind of candidate this function already accepts when prev_frame is NULL and it
+         * falls back to the current frame.  So offer it to the SAME acceptance tests instead of
+         * refusing before them: if they reject it, behaviour is byte-identical to before.
+         *
+         * Gated; MACRUNNER_HB_RECOVER_NO_FRAME=0 restores the plain refusal. */
+        DWORD64 lr = context->Lr;
+
+        if (!macrunner_hb_recover_no_frame_enabled() || !lr || lr == pc ||
+            (!macrunner_hb_is_plausible_recovered_pc( lr, NULL ) &&
+             !macrunner_hb_pc_in_host_unix_window( lr )))
+        {
+            if (reject_count++ < 16)
+                MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
+                         "pc=%p frame=%p lr=%p reason=no-current-syscall-frame\n",
+                         tid, (void *)(ULONG_PTR)pc, NULL, (void *)(ULONG_PTR)lr );
+            return FALSE;
+        }
+        if (report_count++ < 32)
+            MESSAGE( "macrunner-hb-no-frame-resume: tid=%04lx pc=%p lr=%p sp=%016I64x\n",
+                     tid, (void *)(ULONG_PTR)pc, (void *)(ULONG_PTR)lr, context->Sp );
+        dispatch->ImageBase = 0;
+        dispatch->FunctionEntry = NULL;
+        dispatch->HandlerData = NULL;
+        dispatch->EstablisherFrame = context->Sp;
+        dispatch->LanguageHandler = NULL;
+        context->Pc = lr;
+        context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
+        return TRUE;
     }
 
     resume = frame->prev_frame;
@@ -475,6 +596,28 @@ static BOOL macrunner_hb_recover_native_dispatch_boundary( DISPATCHER_CONTEXT *d
         LdrFindEntryForAddress( (void *)(ULONG_PTR)resume->pc, &module ) == STATUS_SUCCESS &&
         module && macrunner_hb_arm64x_code_range_kind( (ULONG_PTR)module->DllBase, resume->pc ) == 0)
     {
+        /* MacRunner 2026-08-03 — the frame is real, its pc is guest x64 code, and there is no prev
+         * to unwind to.  This refusal is what drops the exception and kills the thread that would
+         * have driven PreselectOption.HighlightDefault: the run stops at 7 of the 135
+         * language-flow events the 2026-07-28 menu run produced, and this rejection sits in
+         * exactly that window while the July log has none.
+         *
+         * The engine knows where the guest stands even when the host frame chain ends; the PE side
+         * does not.  Ask it and report.  Reporting only, deliberately: resuming ARM64 execution at
+         * a guest x64 address would be wrong, and the correct target — delivering into the guest
+         * SEH chain, as the 2026-06-24 Fix-C spec describes — needs that position as its input.
+         * This measurement says whether the position is available at all before anything is built
+         * on top of it. */
+        if (macrunner_hb_guest_ctx_lookup)
+        {
+            UINT64 gpc = 0, gsp = 0;
+
+            if (macrunner_hb_guest_ctx_lookup( tid, &gpc, &gsp ) && report_count++ < 32)
+                MESSAGE( "macrunner-hb-guest-position: tid=%04lx frame_pc=%p "
+                         "guest_pc=%p guest_sp=%p\n",
+                         tid, (void *)(ULONG_PTR)frame->pc,
+                         (void *)(ULONG_PTR)gpc, (void *)(ULONG_PTR)gsp );
+        }
         if (reject_count++ < 16)
             MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
                      "pc=%p frame=%p frame_pc=%p frame_lr=%p prev=%p source=%s "
@@ -877,6 +1020,7 @@ static BOOL macrunner_hb_fix_tagged_arm64ec_misalignment( EXCEPTION_RECORD *rec,
                  rec->ExceptionCode, (void *)pc, (void *)context->Lr, (void *)fixed_pc, context->Sp );
 
     context->Pc = fixed_pc;
+    macrunner_hb_note_pc_set( 3, context->Pc, context->Sp );
     if (context->Lr == pc) context->Lr = fixed_pc;
     rec->ExceptionAddress = (void *)(ULONG_PTR)fixed_pc;
     return TRUE;
@@ -1219,6 +1363,7 @@ static BOOL macrunner_ec_virtual_unwind_frame( DISPATCHER_CONTEXT *dispatch, CON
 
     *context = walk;
     context->Pc = walk.Lr;
+    macrunner_hb_note_pc_set( 4, context->Pc, context->Sp );
     context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
 
     dispatch->EstablisherFrame = context->Sp;
@@ -1295,6 +1440,7 @@ static BOOL macrunner_ec_fp_chain_unwind( DISPATCHER_CONTEXT *dispatch, CONTEXT 
     context->Fp  = new_fp;
     context->Lr  = new_pc;
     context->Pc  = new_pc;
+    macrunner_hb_note_pc_set( 5, context->Pc, context->Sp );
     context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
     dispatch->EstablisherFrame = context->Sp;
     dispatch->LanguageHandler = NULL;
@@ -1792,6 +1938,7 @@ static BOOL macrunner_hb_arm64_no_pdata_frameless_unwind( DISPATCHER_CONTEXT *di
             context->Sp = sp + frame_size;
             context->Lr = saved_lr;
             context->Pc = saved_lr;
+            macrunner_hb_note_pc_set( 6, context->Pc, context->Sp );
             context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
             dispatch->EstablisherFrame = context->Sp;
             dispatch->LanguageHandler = NULL;
@@ -1822,11 +1969,39 @@ static BOOL macrunner_hb_arm64_no_pdata_frameless_unwind( DISPATCHER_CONTEXT *di
  * virtual_unwind and the recovery path in macrunner_hb_recover_native_dispatch_boundary. */
 static void macrunner_hb_nullcall_diagnose( CONTEXT *context )
             {
-                ULONG64 probes[3] = { context->X[5], context->X[1], context->X[19] };
+                /* MacRunner 2026-08-04 — probes by RANGE, not by three fixed registers.
+                 *
+                 * The old set {x5, x1, x19} was picked from one incident and does not generalise: the
+                 * 01:08 run carried x5=1 and x1=0x109AD3C1E (a HOST address), so nothing resolved and
+                 * the two instruments that actually NAME the empty slot never ran.  The guest image
+                 * lives in a known band, so sweep every general register and keep whatever falls in
+                 * it — that is stable across incidents in a way a hand-picked triple is not.  The
+                 * band is the one every guest module address in this lane's logs sits in
+                 * (0x87ef…, 0x87fff…); host pointers (0x1…) and small integers fall out by
+                 * construction.  Order is preserved so the first hit stays the most likely one. */
+                ULONG64 probes[8];
+                unsigned probe_count = 0;
                 PEB_LDR_DATA *pldr = NtCurrentTeb()->Peb->LdrData;
                 void *upbase = NULL;
                 unsigned pi;
-                for (pi = 0; pi < 3 && !upbase && pldr; pi++)
+
+                for (pi = 0; pi < 29 && probe_count < ARRAY_SIZE(probes); pi++)
+                {
+                    ULONG64 v = context->X[pi];
+
+                    /* Band fixed 2026-08-04: guest module addresses in this lane are ELEVEN hex
+                     * digits (0x87ef13c0000, 0x87fff5e0000), and the first cut wrote twelve —
+                     * a factor of sixteen too high, so the sweep reported guest_range_hits=0 on a
+                     * dump whose x1 was 0x87EF13C0000, plainly a guest base.  The zero was my
+                     * constant, not the process's state. */
+                    if (v < 0x87e00000000ULL || v >= 0x88000000000ULL) continue;
+                    probes[probe_count++] = v;
+                }
+                MESSAGE( "macrunner-hb-nullcall-probes: guest_range_hits=%u first=%p second=%p\n",
+                         probe_count, (void *)(ULONG_PTR)(probe_count > 0 ? probes[0] : 0),
+                         (void *)(ULONG_PTR)(probe_count > 1 ? probes[1] : 0) );
+
+                for (pi = 0; pi < probe_count && !upbase && pldr; pi++)
                 {
                     LIST_ENTRY *le;
                     for (le = pldr->InLoadOrderModuleList.Flink;
@@ -1855,7 +2030,7 @@ static void macrunner_hb_nullcall_diagnose( CONTEXT *context )
                  * macrunner_hb_guest_image_for_pc in unix/macrunner_hb.c. */
                 if (!upbase && macrunner_hb_guest_image_lookup)
                 {
-                    for (pi = 0; pi < 3 && !upbase; pi++)
+                    for (pi = 0; pi < probe_count && !upbase; pi++)
                     {
                         UINT64 gbase = 0, gsize = 0;
 
@@ -1870,7 +2045,7 @@ static void macrunner_hb_nullcall_diagnose( CONTEXT *context )
                 }
                 if (!upbase)
                 {
-                    for (pi = 0; pi < 3 && !upbase; pi++)
+                    for (pi = 0; pi < probe_count && !upbase; pi++)
                     {
                         MEMORY_BASIC_INFORMATION mbi;
                         SIZE_T len = 0;
@@ -1935,9 +2110,21 @@ static void macrunner_hb_nullcall_diagnose( CONTEXT *context )
                  * count is 0-1 (the first access below the image start); the scan aborts after
                  * 3 faults because repeated faults inside the exception path are the known
                  * wedge class (probe_image_bytes). */
+                /* MacRunner 2026-08-04 — WHICH PE ntdll is executing, and is the gate on?
+                 *
+                 * The mzscan block below printed nothing on a run where the map block above it —
+                 * same function, twenty lines earlier — printed twice.  Both are in the same source
+                 * commit and both dists carry the string, so either the gate reads 0 or the running
+                 * ntdll.dll is a THIRD copy (the prefix's system32 is seeded from a template and only
+                 * x86_64-windows dlls are synced per run).  A build stamp settles it: it names the
+                 * binary that is actually executing, which no strings/mtime check on a dist can do. */
+                MESSAGE( "macrunner-hb-nullcall-stamp: built=%s %s gate=%u upbase=%p\n",
+                         __DATE__, __TIME__, macrunner_hb_nullcall_mzscan_enabled() ? 1u : 0u,
+                         upbase );
+
                 if (!upbase && macrunner_hb_nullcall_mzscan_enabled())
                 {
-                    for (pi = 0; pi < 3 && !upbase; pi++)
+                    for (pi = 0; pi < probe_count && !upbase; pi++)
                     {
                         ULONG64 p = probes[pi] & ~0xffffULL;
                         unsigned int step, faults = 0;
@@ -2092,8 +2279,9 @@ static void macrunner_hb_nullcall_diagnose( CONTEXT *context )
                 }
                 else
                     MESSAGE( "macrunner-hb-nullcall-iat: UnityPlayer module not found "
-                             "(probes %p %p %p)\n",
-                             (void *)probes[0], (void *)probes[1], (void *)probes[2] );
+                             "(count=%u probes %p %p)\n", probe_count,
+                             (void *)(ULONG_PTR)(probe_count > 0 ? probes[0] : 0),
+                             (void *)(ULONG_PTR)(probe_count > 1 ? probes[1] : 0) );
             }
 
 static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEXT *context )
@@ -2926,6 +3114,7 @@ void CDECL RtlRestoreContext( CONTEXT *context, EXCEPTION_RECORD *rec )
         context->X28  = jmp->X28;
         context->Fp   = jmp->Fp;
         context->Pc   = jmp->Lr;
+        macrunner_hb_note_pc_set( 7, context->Pc, context->Sp );
         context->Sp   = jmp->Sp;
         context->Fpcr = jmp->Fpcr;
         context->Fpsr = jmp->Fpsr;
@@ -3097,7 +3286,10 @@ void WINAPI RtlUnwindEx( PVOID end_frame, PVOID target_ip, EXCEPTION_RECORD *rec
     }
 
     if (rec->ExceptionCode != STATUS_UNWIND_CONSOLIDATE)
+    {
         context->Pc = (ULONG64)target_ip;
+        macrunner_hb_note_pc_set( 8, context->Pc, context->Sp );
+    }
     else if (rec->ExceptionInformation[10] == -1)
         rec->ExceptionInformation[10] = (ULONG_PTR)&nonvol_regs;
 

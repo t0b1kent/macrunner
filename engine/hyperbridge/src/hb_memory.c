@@ -1,4 +1,5 @@
 #include "hb_memory.h"
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -282,16 +283,65 @@ typedef struct hb_hot_cache_tls {
     hb_region_t* slot[HB_MEMORY_HOT_CACHE_SLOTS];
 } hb_hot_cache_tls_t;
 
-static __thread hb_hot_cache_tls_t g_hot_cache_tls;
+/* MacRunner 2026-08-03 — the per-thread hot cache without dynamic TLS.
+ *
+ * Measured on a live boot (10 s sample, storm phase): the busiest thread spent 8484 of its 8521
+ * samples at `_tlv_get_addr + 0`, reached from hb_memory_read on EVERY guest memory read, itself
+ * reached from the interpreter.  That is not "called often" — offset 0 with 99.6 % of a thread's
+ * samples is a stall.  On Darwin a `__thread` variable in a dynamically loaded dylib has no fast
+ * path: each access is a real call into libdyld, and this one sits on the hottest path we have.
+ *
+ * pthread_self() on arm64 reads TPIDRRO_EL0 — one instruction, no call, no lock.  A direct-mapped
+ * table keyed on it gives the same per-thread cache without ever entering libdyld.  A collision
+ * costs a cache reset (the entry carries its owner and is reset when it does not match), which is
+ * exactly what an epoch change already does, so a collision is a slow read and never a wrong one.
+ *
+ * Gate MACRUNNER_HB_TLS_HOTCACHE=0 restores the __thread version for A/B. */
+#define HB_HOT_CACHE_THREAD_SLOTS 256
+static hb_hot_cache_tls_t g_hot_cache_tab[HB_HOT_CACHE_THREAD_SLOTS];
+static uint64_t g_hot_cache_owner[HB_HOT_CACHE_THREAD_SLOTS];
+static __thread hb_hot_cache_tls_t g_hot_cache_tls_legacy;
+
+static int hb_tls_hotcache_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_TLS_HOTCACHE");
+        /* MacRunner 2026-08-03 — the gate used to read `(v && *v && *v != '0') ? 0 : 1`, which
+         * DISABLED the table for any value other than "0" — including "1".  Both comments above
+         * document the opposite contract ("=0 restores the __thread version"), so anyone who set
+         * the variable to 1 intending to turn the fast path ON silently turned it OFF, and got
+         * the __thread path this gate exists to avoid.  Only "0" disables now; the default when
+         * unset is unchanged, so no existing run changes behaviour. */
+        cached = (v && *v == '0') ? 0 : 1;   /* =0 restores the old __thread path */
+    }
+    return cached;
+}
+
+static hb_hot_cache_tls_t* hb_hot_cache_slot(void) {
+    uint64_t self;
+    size_t i;
+
+    if (!hb_tls_hotcache_enabled()) return &g_hot_cache_tls_legacy;
+    self = (uint64_t)(uintptr_t)pthread_self();
+    i = (size_t)((self >> 6) * 11400714819323198485ull >> 56) & (HB_HOT_CACHE_THREAD_SLOTS - 1);
+    if (g_hot_cache_owner[i] != self) {
+        g_hot_cache_owner[i] = self;
+        g_hot_cache_tab[i].mem = NULL;
+        g_hot_cache_tab[i].epoch = 0;
+        memset(g_hot_cache_tab[i].slot, 0, sizeof(g_hot_cache_tab[i].slot));
+    }
+    return &g_hot_cache_tab[i];
+}
 
 static uint64_t hot_cache_epoch(hb_memory_t* mem) {
     return __atomic_load_n(&mem->hot_gen, __ATOMIC_ACQUIRE);
 }
 
 static void hot_cache_reset_tls(hb_memory_t* mem, uint64_t epoch) {
-    g_hot_cache_tls.mem = mem;
-    g_hot_cache_tls.epoch = epoch;
-    memset(g_hot_cache_tls.slot, 0, sizeof(g_hot_cache_tls.slot));
+    hb_hot_cache_tls_t* const tls = hb_hot_cache_slot();
+    tls->mem = mem;
+    tls->epoch = epoch;
+    memset(tls->slot, 0, sizeof(tls->slot));
 }
 
 /* MacRunner 2026-07-31 — is the region hot cache actually working?
@@ -646,7 +696,7 @@ static void gap_insert(hb_memory_t* mem, hb_gva_t lo, hb_gva_t hi, uint64_t epoc
  * and then .slot[i] across a 16-iteration loop, so nothing but the optimiser was stopping it from paying that
  * call repeatedly. One local pointer makes the rest plain loads. */
 static hb_region_t* hot_cache_lookup(hb_memory_t* mem, hb_gva_t addr) {
-    hb_hot_cache_tls_t* const tls = &g_hot_cache_tls;
+    hb_hot_cache_tls_t* const tls = hb_hot_cache_slot();
     int did_reset = 0;
     if (macrunner_hb_disable_hot_cache_enabled()) return NULL;
     uint64_t epoch = hot_cache_epoch(mem);
@@ -671,7 +721,7 @@ static hb_region_t* hot_cache_lookup(hb_memory_t* mem, hb_gva_t addr) {
 }
 
 static void hot_cache_insert(hb_memory_t* mem, hb_region_t* region) {
-    hb_hot_cache_tls_t* const tls = &g_hot_cache_tls;
+    hb_hot_cache_tls_t* const tls = hb_hot_cache_slot();
     if (!region || macrunner_hb_disable_hot_cache_enabled()) return;
     uint64_t epoch = hot_cache_epoch(mem);
     if (tls->mem != mem || tls->epoch != epoch)
@@ -998,6 +1048,52 @@ static hb_result_t split_all_regions_at(hb_memory_t* mem, hb_gva_t addr) {
     return split_region_at(mem, addr);
 }
 
+/* MacRunner 2026-08-04 — MEASUREMENT ARM for the 25 s heap-corruption reproducer.
+ *
+ * libmalloc's own verdict is "BUG IN CLIENT OF LIBMALLOC: memory corruption of free block", and the
+ * value it finds in the free block is always an address in 0x8-0xC GB — the range HB maps guest
+ * memory into, i.e. exactly what `hb_region_t::host_base` holds.  Regions are unlinked and freed
+ * from several places while readers can still hold the node (hot cache, treap walkers), so a region
+ * is the prime suspect for the block that gets written after free.
+ *
+ * This gate answers ONE question and nothing else: with region nodes never returned to the
+ * allocator, does the corruption still happen?  It LEAKS by design and is DEFAULT OFF; it is a
+ * measurement, not a fix.  If the death disappears the writer is a stale region pointer and the
+ * real work is lifetime management; if it persists, regions are exonerated for a run's cost. */
+static int region_free_quarantine(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = getenv("MACRUNNER_HB_REGION_FREE_QUARANTINE");
+        cached = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
+static uint64_t g_region_quarantined;
+
+static void region_free(hb_region_t* r) {
+    if (!r) return;
+    /* Positive control. The first quarantine run printed nothing, which is ambiguous by
+     * construction: "the gate never reached the child" and "no region is ever freed in the first
+     * 25 s" look identical from the log. This one-shot fires on the FIRST region free whatever the
+     * gate says, so the next run can tell those apart instead of guessing. */
+    {
+        static uint64_t seen;
+        uint64_t n = __atomic_add_fetch(&seen, 1, __ATOMIC_RELAXED);
+        if (n == 1 || (n & 0xffffu) == 0)
+            fprintf(stderr, "macrunner-hb-region-free-seen: n=%llu gate=%d r=%p host_base=%p\n",
+                    (unsigned long long)n, region_free_quarantine(), (void*)r, r->host_base);
+    }
+    if (region_free_quarantine()) {
+        uint64_t n = __atomic_add_fetch(&g_region_quarantined, 1, __ATOMIC_RELAXED);
+        if (n == 1 || (n & 0xffffu) == 0)
+            fprintf(stderr, "macrunner-hb-region-quarantine: leaked=%llu last=%p host_base=%p\n",
+                    (unsigned long long)n, (void*)r, r->host_base);
+        return;
+    }
+    free(r);
+}
+
 static hb_result_t remove_region_node(hb_memory_t* mem, hb_region_t* target) {
     hb_region_t** p;
 
@@ -1008,7 +1104,7 @@ static hb_result_t remove_region_node(hb_memory_t* mem, hb_region_t* target) {
             *p = target->next;
             mem->total_size -= target->size;
             clear_hot_cache(mem);
-            free(target);
+            region_free(target);
             rebuild_region_tree(mem);
             return HB_OK;
         }
@@ -1198,7 +1294,7 @@ void hb_memory_destroy(hb_memory_t* mem) {
     while (r) {
         hb_region_t* n = r->next;
         if (r->allocated) munmap(r->host_base, r->size);
-        free(r);
+        region_free(r);
         r = n;
     }
     if (mem->guest32_base && mem->guest32_owned) munmap(mem->guest32_base, mem->guest32_size);
@@ -1308,13 +1404,13 @@ static hb_result_t hb_memory_sync_live_range_inner(hb_memory_t* mem, hb_gva_t ba
 
     res = split_all_regions_at(mem, base);
     if (res != HB_OK) {
-        free(replacement);
+        region_free(replacement);
         rebuild_region_tree(mem);
         return res;
     }
     res = split_all_regions_at(mem, top);
     if (res != HB_OK) {
-        free(replacement);
+        region_free(replacement);
         rebuild_region_tree(mem);
         return res;
     }
@@ -1331,7 +1427,7 @@ static hb_result_t hb_memory_sync_live_range_inner(hb_memory_t* mem, hb_gva_t ba
             *link = r->next;
             mem->total_size -= r->size;
             clear_hot_cache(mem);
-            free(r);
+            region_free(r);
             continue;
         }
         link = &r->next;

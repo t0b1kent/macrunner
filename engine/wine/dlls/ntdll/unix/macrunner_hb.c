@@ -1161,8 +1161,20 @@ static BOOL macrunner_hb_safe_header_probe_enabled(void)
 
     if (mode < 0)
     {
+        /* MacRunner 2026-08-03 — DEFAULT FLIPPED TO ON.  The 2026-07-29 A/B that was supposed to
+         * settle this was recorded VOID: neither arm carried the gate and neither reached
+         * `Begin MonoManager`, so the fix shipped switched off and untested for five days.  Re-run
+         * tonight against the falsifiers pre-registered on 07-29, verbatim:
+         *   refusals >= 1                         -> 1, at +350.9 s ("unreadable PE header on the
+         *                                            fault path — refused instead of faulting")
+         *   zero threads pinned in the classifier -> 2 live samples, 60 threads: worst thread is
+         *                                            4/5544 in the classifier and 129/5544 in the
+         *                                            probe.  The OFF arm on the SAME binary pinned
+         *                                            one thread 2112/2112 in exactly that chain.
+         * That is the pre-registered PASS.  Set the variable to 0 to get the old wedging read back
+         * for an A/B; any other value, or unset, keeps the safe probe. */
         const char *s = getenv( "MACRUNNER_HB_FAULT_SAFE_HEADER_PROBE" );
-        mode = (s && *s && *s != '0') ? 1 : 0;
+        mode = (s && *s == '0') ? 0 : 1;
     }
     return mode != 0;
 }
@@ -1329,6 +1341,90 @@ static void macrunner_hb_module_from_pc_cache_put( uintptr_t start, size_t size,
  * exception path is how you turn a diagnostic into a deadlock.  The faulting thread is the one that
  * was executing in the guest image, so its own cache is exactly where the entry is warm.  Returns 0
  * and touches nothing when it does not know — a miss must stay cheaper than a wrong answer. */
+/* MacRunner 2026-08-03 — guest RIP/RSP of a thread, for the moment the process dies.
+ *
+ * The unhandled fault is an execute at address 0 (addr=0x0 info0=0x8, measured on LONGLIVE1), so
+ * the host-side ExceptionAddress tells us nothing: it IS the zero we jumped to.  What names the
+ * culprit is the guest side — ctx->pc is the guest RIP of the same thread, and the qword at
+ * ctx->regs.x64.rsp is the return address the `call` pushed, i.e. the call site itself.
+ *
+ * LOCK-FREE ON PURPOSE.  The regular lookup runs under a mutex, and this is called from the
+ * exception path: taking that mutex risks a deadlock stacked on top of a fault that already
+ * happened.  The array is flat and entries are published as a whole, so the worst a torn read can
+ * cost is a miss and a zero in the dump.  A returned zero means "not found", not "the guest stood
+ * at zero" — the two are told apart by the guest_rsp printed beside it. */
+/* MacRunner 2026-08-03 — the PE side needs the guest position when its own frame chain ends.
+ *
+ * Measured: at the point where the run stops (7 of the 135 language-flow events the 2026-07-28
+ * menu run produced) the boundary recovery rejects with reason=current-x64-frame-no-prev — the
+ * syscall frame IS found, its pc is guest x64 code (0x87fff9c6760), and prev_frame is NULL.  There
+ * is nothing to unwind TO on the host side, so the exception is dropped and the thread that would
+ * have driven PreselectOption.HighlightDefault dies.  The engine knows where the guest actually
+ * is; the PE side does not.  This hands it over, in the same lock-free style and for the same
+ * reason as macrunner_hb_guest_image_for_pc: a mutex on the exception path is a deadlock. */
+int macrunner_hb_guest_ctx_for_tid( DWORD tid, UINT64 *guest_pc, UINT64 *guest_sp )
+{
+    unsigned int i;
+
+    if (guest_pc) *guest_pc = 0;
+    if (guest_sp) *guest_sp = 0;
+    if (!tid) return 0;
+    for (i = 0; i < MACRUNNER_HB_X64_THREAD_CONTEXT_MAX; i++)
+    {
+        const struct macrunner_hb_x64_thread_context_entry *entry =
+            &macrunner_hb_x64_thread_contexts[i];
+        const hb_context_t *ctx;
+
+        if (entry->tid != tid) continue;
+        if (!(ctx = entry->ctx)) return 0;
+        if (!ctx->pc) return 0;
+        if (guest_pc) *guest_pc = (UINT64)ctx->pc;
+        if (guest_sp) *guest_sp = (UINT64)ctx->regs.x64.rsp;
+        return 1;
+    }
+    return 0;
+}
+
+UINT64 macrunner_hb_guest_pc_for_tid( DWORD tid, UINT64 *guest_rsp, int *state, UINT64 *gpr6 )
+{
+    unsigned int i;
+
+    if (guest_rsp) *guest_rsp = 0;
+    /* 0 = no entry for this thread, 1 = entry but no live context, 2 = answered.  Measured need:
+     * GUESTCTX1 printed guest_rip=0 guest_rsp=0 and the two cases were indistinguishable, so the
+     * dump could not say whether the dying thread is unknown to the engine or merely unregistered
+     * at that instant. */
+    if (state) *state = 0;
+    if (!tid) return 0;
+    for (i = 0; i < MACRUNNER_HB_X64_THREAD_CONTEXT_MAX; i++)
+    {
+        const struct macrunner_hb_x64_thread_context_entry *entry =
+            &macrunner_hb_x64_thread_contexts[i];
+        const hb_context_t *ctx;
+
+        if (entry->tid != tid) continue;
+        ctx = entry->ctx;
+        if (!ctx) { if (state) *state = 1; return 0; }
+        if (state) *state = 2;
+        if (guest_rsp) *guest_rsp = (UINT64)ctx->regs.x64.rsp;
+        /* rax/rcx/r8/r15/rbx/rdx — the registers of the backward array scan the guest was standing
+         * in when GUESTCTX1 caught it (UnityPlayer+0x1403714: cmp qword [rax],0 / jne / sub rax,8 /
+         * sub rcx,1 / jne).  A poisoned count or base is exactly what would walk that loop off the
+         * end, and no amount of host-side context can show it. */
+        if (gpr6)
+        {
+            gpr6[0] = (UINT64)ctx->regs.x64.rax;
+            gpr6[1] = (UINT64)ctx->regs.x64.rcx;
+            gpr6[2] = (UINT64)ctx->regs.x64.r8;
+            gpr6[3] = (UINT64)ctx->regs.x64.r15;
+            gpr6[4] = (UINT64)ctx->regs.x64.rbx;
+            gpr6[5] = (UINT64)ctx->regs.x64.rdx;
+        }
+        return (UINT64)ctx->pc;
+    }
+    return 0;
+}
+
 int macrunner_hb_guest_image_for_pc( UINT64 pc, UINT64 *base, UINT64 *size )
 {
     uintptr_t addr = (uintptr_t)pc;
@@ -5566,6 +5662,7 @@ static struct macrunner_hb_import_thunk *macrunner_hb_find_import_thunk( uint64_
         for (i = 0; i < macrunner_hb_import_count; i++)
         {
             if (macrunner_hb_imports[i].guest_target != guest_target) continue;
+            /* см. macrunner_hb_import_name_for_guest ниже */
             {
                 static int reported;
                 if (reported < 8)
@@ -5584,6 +5681,25 @@ static struct macrunner_hb_import_thunk *macrunner_hb_find_import_thunk( uint64_
         }
     }
     return NULL;
+}
+
+/* Имя импорта по адресу гостевого thunk-а — чтобы диагностика из обработчика сигнала могла назвать
+ * API, а не печатать голый адрес.
+ *
+ * Понадобилось 04.08: доставка исключения дважды подряд, в двух независимых прогонах, приходит с
+ * `lr_in=0x6f00000057c0` — адрес побитово один и тот же, то есть место детерминированное, но в
+ * трассе `dynamic-import-target` оно не названо (та печатает лишь часть таблицы).  Поиск здесь уже
+ * есть и стоит один индекс, так что дешевле открыть его наружу, чем городить второй.
+ *
+ * Только чтение готового массива — вызывать из обработчика сигнала безопасно. */
+int macrunner_hb_import_name_for_guest( UINT64 guest_target, const char **dll, const char **api )
+{
+    const struct macrunner_hb_import_thunk *thunk = macrunner_hb_find_import_thunk( guest_target );
+
+    if (!thunk) return 0;
+    if (dll) *dll = thunk->dll_name;
+    if (api) *api = thunk->import_name;
+    return 1;
 }
 
 static size_t macrunner_hb_import_target_hash( uint64_t target )

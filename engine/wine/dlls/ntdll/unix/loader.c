@@ -2646,6 +2646,11 @@ static void load_ntdll_functions( HMODULE module )
                                               "macrunner_hb_guest_image_lookup" );
         if (p) *p = macrunner_hb_guest_image_for_pc;
     }
+    {
+        void **p = (void *)find_named_export( module, image_size, exports,
+                                              "macrunner_hb_guest_ctx_lookup" );
+        if (p) *p = macrunner_hb_guest_ctx_for_tid;
+    }
 }
 
 

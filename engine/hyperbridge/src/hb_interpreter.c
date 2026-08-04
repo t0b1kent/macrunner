@@ -4745,6 +4745,46 @@ static hb_result_t exec_instr_unlocked(hb_context_t* ctx, const hb_ir_instr_t* i
                 if (r != HB_OK) return r;
                 ctx->regs.x64.rsp += 8 + ret_imm;
             }
+            /* MacRunner 2026-08-03 — catch a poisoned return address WHERE IT IS POPPED.
+             *
+             * The fault that kills Hollow Knight is an execute at address 0 (code=0xc0000005
+             * addr=0x0 info0=0x8, measured on LONGLIVE1), and by the time it is reported the host
+             * ExceptionAddress IS the zero — it names nothing.  A `jmp` to null already had this
+             * diagnostic a few lines below; `ret` did not, even though a return is the likelier way
+             * to reach zero, because the value comes off the stack.  Printing here gives the guest
+             * address of the RET itself plus the stack window around the slot, which together name
+             * the caller.
+             *
+             * Two comparisons on a value already loaded, and nothing is formatted on the normal
+             * path — unlike the imul census, which formatted a double on every multiply and turned
+             * every run into a 36-80 s abort.  Non-canonical is included because a half-overwritten
+             * slot lands there rather than on exactly zero. */
+            if (ctx->mode != HB_MODE_32BIT &&
+                (!ret_addr ||
+                 (((int64_t)ret_addr >> 47) != 0 && ((int64_t)ret_addr >> 47) != -1)))
+            {
+                static unsigned int ret_guard_reports;
+
+                if (ret_guard_reports++ < 16)
+                {
+                    uint64_t win[6] = { 0 };
+                    unsigned int i;
+
+                    for (i = 0; i < 6; i++)
+                        if (hb_memory_read_u64(ctx->memory, rsp_before + i * 8, &win[i]) != HB_OK)
+                            win[i] = 0;
+                    fprintf(stderr,
+                            "macrunner-hb-ret-poisoned: ret_addr=0x%llx guest_ret_at=0x%llx "
+                            "rsp=0x%llx rbp=0x%llx stk=%llx,%llx,%llx,%llx,%llx,%llx\n",
+                            (unsigned long long)ret_addr,
+                            (unsigned long long)instr->guest_addr,
+                            (unsigned long long)rsp_before,
+                            (unsigned long long)ctx->regs.x64.rbp,
+                            (unsigned long long)win[0], (unsigned long long)win[1],
+                            (unsigned long long)win[2], (unsigned long long)win[3],
+                            (unsigned long long)win[4], (unsigned long long)win[5]);
+                }
+            }
             ctx->pc = ret_addr;
             sync_arch_pc(ctx);
             trace_branch_event(ctx, instr, "ret", rsp_before, ret_addr, ret_addr);

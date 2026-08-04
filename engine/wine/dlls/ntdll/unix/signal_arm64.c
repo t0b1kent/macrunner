@@ -35,6 +35,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <dlfcn.h>
 #ifdef __APPLE__
 # include <dlfcn.h>
 # include <mach/arm/thread_status.h>
@@ -891,6 +892,23 @@ static BOOL macrunner_hb_trace_bus_fault_enabled(void)
     static int enabled = -1;
 
     if (enabled < 0) enabled = getenv( "MACRUNNER_HB_TRACE_BUS_FAULT" ) ? 1 : 0;
+    return enabled != 0;
+}
+
+/* Периодическая проба ШТОРМА accerr, а не только его первых шести отказов.
+ *
+ * 04.08: с MACRUNNER_HB_BLOCK_CHAIN=1 счётчик отказов уходит с базовых 110-160/с на 405 000/с,
+ * скачком за 0.1 с на t~43-46 с, и держится так до конца прогона (171 млн отказов за 424 с,
+ * воспроизведено 2/2).  При этом pages_distinct=32, а same_page равен почти всему счётчику,
+ * то есть штормит ОДНА страница.  Назвать её нечем: существующая проба ограничена шестью
+ * дампами, и все шесть снимаются задолго до начала шторма.  Поэтому — редкая выборка ВНУТРИ
+ * шторма: одна строка на миллион отказов (при 405 000/с это строка раз в 2.5 с), чего хватает,
+ * чтобы получить гостевой pc и адрес и опознать модуль по байтам, как это уже дважды сработало. */
+static BOOL macrunner_hb_accerr_storm_sample_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0) enabled = getenv( "MACRUNNER_HB_ACCERR_STORM_SAMPLE" ) ? 1 : 0;
     return enabled != 0;
 }
 
@@ -1964,6 +1982,71 @@ static BOOL macrunner_hb_get_callback_exception_stack( ucontext_t *context, void
 /***********************************************************************
  *           setup_raise_exception
  */
+/* MacRunner 2026-08-03 night — WAS THE LR SLOT INSIDE A DELIVERY WRITE?
+ *
+ * Everything measured so far says the stalled thread RETs to &rec of a delivery layout (x30 == pc,
+ * pc == rec_addr, pc - sp == 0x1020 bit-for-bit across three runs).  Two stories survive and they
+ * are told apart by ONE fact: whether the stack slot the epilogue loaded LR from was inside a range
+ * that this process's own delivery wrote.  Reasoning cannot settle it — the delivery that did it
+ * happened long before the fault — so remember every delivery write range per thread and ask the
+ * question at fault time.  Eight entries is enough: the stall follows the delivery closely, and a
+ * fixed ring costs nothing on a path that already writes 1 136 bytes. */
+static ULONG64 macrunner_hb_current_thread_id(void)
+{
+    uint64_t tid = 0;
+    pthread_threadid_np( NULL, &tid );
+    return (ULONG64)tid;
+}
+
+#define MACRUNNER_HB_DELIVERY_RING 8
+struct macrunner_hb_delivery_note
+{
+    ULONG64 lo, hi, rec_addr, code, interrupted_sp, seq;
+};
+static __thread struct macrunner_hb_delivery_note macrunner_hb_delivery_ring[MACRUNNER_HB_DELIVERY_RING];
+static __thread ULONG64 macrunner_hb_delivery_seq;
+
+static void macrunner_hb_note_delivery( const void *lo, size_t size, const void *rec_addr,
+                                        ULONG64 code, ULONG64 interrupted_sp )
+{
+    ULONG64 n = ++macrunner_hb_delivery_seq;
+    struct macrunner_hb_delivery_note *slot =
+        &macrunner_hb_delivery_ring[(n - 1) % MACRUNNER_HB_DELIVERY_RING];
+
+    slot->lo = (ULONG64)(ULONG_PTR)lo;
+    slot->hi = slot->lo + size;
+    slot->rec_addr = (ULONG64)(ULONG_PTR)rec_addr;
+    slot->code = code;
+    slot->interrupted_sp = interrupted_sp;
+    slot->seq = n;
+}
+
+/* MacRunner 2026-08-04 — the host image base, printed ONCE, from dyld itself.
+ *
+ * Every host address in this log (lr, saved return addresses, the stack windows) only means
+ * something against ntdll.so's load base, and deriving that base from the dispatcher cells is
+ * WRONG in this build — it yields an unaligned value and already produced one retracted
+ * attribution.  Recovering it by hand cost a 25 s run plus a `sample`; printing it costs one line.
+ *
+ * It runs as a CONSTRUCTOR, on a normal thread at load time, and deliberately NOT from the signal
+ * handler: dladdr takes dyld's locks, so calling it from a handler can deadlock against a signal
+ * that arrived while those locks were held.  The first attempt did exactly that and the run was
+ * SIGKILLed at +26 s with the line never printed — a diagnostic must not be able to kill the
+ * measurement it serves. */
+static void macrunner_hb_print_host_base(void) __attribute__((constructor));
+static void macrunner_hb_print_host_base(void)
+{
+    Dl_info di;
+
+    if (dladdr( (void *)(ULONG_PTR)macrunner_hb_print_host_base, &di ))
+        fprintf( stderr, "macrunner-hb-host-base: ntdll_so=%p path=%s\n",
+                 di.dli_fbase, di.dli_fname ? di.dli_fname : "?" );
+    else
+        fprintf( stderr, "macrunner-hb-host-base: dladdr-failed fn=%p\n",
+                 (void *)(ULONG_PTR)macrunner_hb_print_host_base );
+    fflush( stderr );
+}
+
 static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec, CONTEXT *context )
 {
     struct exc_stack_layout layout;
@@ -2020,6 +2103,96 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
                                      NtCurrentTeb() ? NtCurrentTeb()->Tib.StackBase : NULL );
     }
     stack = virtual_setup_exception( delivery_stack_ptr, sizeof(*stack), rec );
+
+    /* MacRunner 2026-08-03 — DOES THE DELIVERY RECORD LAND ON LIVE FRAMES?
+     *
+     * The measurement this exists to settle.  A translated block's prologue saves X23 and LR as a
+     * PAIR at [SP,#32]; its epilogue restores that pair and RETs (hb_arm64_codegen.c:756/809).  At
+     * the stall the restored values are X23 = 0x00000000c0000005 and LR = a stack address — which
+     * is byte-for-byte EXCEPTION_RECORD.ExceptionCode|ExceptionFlags followed by .ExceptionRecord.
+     * So the block's register-save area is being overwritten by a delivery record, and the block
+     * then RETs into its own stack and faults there forever (62 M faults on one page, 37 k/s).
+     *
+     * Two candidate sources, and they are told apart by arithmetic, not by argument:
+     *   · the record is written at the interrupted SP with no reservation, so it sits ON the frame;
+     *   · the record is written at frame->sp — the SP saved at an EARLIER syscall boundary, handed
+     *     back by macrunner_hb_get_callback_exception_stack() above — which is HIGHER up the stack,
+     *     so everything between the interrupted SP and it is live and gets flattened.
+     *
+     * Print the write range against the interrupted SP and let the numbers say which.  The first
+     * few are printed with overlap=0 as well, deliberately: a silent instrument and an instrument
+     * that found nothing are indistinguishable, and this lane has lost days to that difference. */
+    {
+        static ULONG64 overlap_seen, overlap_printed, any_printed;
+        char *w_lo = (char *)stack;
+        char *w_hi = w_lo + sizeof(*stack);
+        char *live_lo = (char *)stack_ptr;   /* interrupted SP — the lowest live address */
+        char *teb_lo = NtCurrentTeb() ? (char *)NtCurrentTeb()->Tib.StackLimit : NULL;
+        char *teb_hi = NtCurrentTeb() ? (char *)NtCurrentTeb()->Tib.StackBase : NULL;
+        char *o_lo = w_lo > live_lo ? w_lo : live_lo;
+        long long overlap = (w_hi > o_lo) ? (long long)(w_hi - o_lo) : 0;
+        BOOL used_callback_stack = (delivery_stack_ptr != stack_ptr);
+        /* Имя API по адресу в LR: он приходит из полосы гостевых thunk-ов (0x6f00…) и в двух
+         * независимых прогонах 04.08 совпал побитово (0x6f00000057c0), но трасса импортов его не
+         * называет.  Спрашиваем таблицу напрямую — это один индекс, читать её из обработчика
+         * сигнала безопасно. */
+        const char *lr_dll = "-", *lr_api = "-";
+
+        macrunner_hb_import_name_for_guest( (UINT64)(ULONG_PTR)LR_sig(sigcontext), &lr_dll, &lr_api );
+
+        if (overlap > 0) __atomic_add_fetch( &overlap_seen, 1, __ATOMIC_RELAXED );
+        if ((overlap > 0 && __atomic_fetch_add( &overlap_printed, 1, __ATOMIC_RELAXED ) < 16) ||
+            __atomic_fetch_add( &any_printed, 1, __ATOMIC_RELAXED ) < 8)
+            macrunner_signal_writef(
+                /* MacRunner 2026-08-03 — `lr_in` is the whole question now.
+                 *
+                 * Measured: the faulting branch is a RET (x30 == PC in all 24 dumps, while x0, x9,
+                 * x16 and x17 hold unrelated values), and the target is &rec of a delivery layout.
+                 * This delivery sets SP, PC, x10 and x16 but never touches x30, so the dispatcher
+                 * starts on whatever LR the interrupted code happened to hold.  Print it: if lr_in
+                 * already equals rec_addr, the bad value was carried IN and the earlier delivery is
+                 * where to look; if lr_in is sane, LR is being corrupted inside the dispatcher and
+                 * the search moves there.  One value separates the two, so measure it rather than
+                 * reason about it. */
+                /* MacRunner 2026-08-03 night — WHOSE stack is this?
+                 *
+                 * Measured this run: three deliveries, and two of them report sp_in_teb=0 with a
+                 * teb_stack (0x118f40000-0x119f40000) that does not contain the interrupted SP
+                 * (0x1119cc880) — while the FIRST delivery reports a different teb_stack
+                 * (0x1109d8000-0x1119d0000) that does.  So the frame is being written onto a stack
+                 * that is not the current TEB's, and lr_in is 0 on exactly those two.  Print the
+                 * thread id and the TEB pointer: "delivered on another thread's stack" and "this
+                 * thread's TEB is wrong" are different bugs with the same symptom, and only the tid
+                 * tells them apart. */
+                "macrunner-hb-exception-record-overlap: tid=%llx teb=%p code=%#lx write=%p-%p size=%u "
+                "interrupted_sp=%p delivery_sp=%p callback_stack=%u overlap=%lld "
+                "teb_stack=%p-%p sp_in_teb=%u lr_in=%p rec_addr=%p seen=%llu "
+                /* MacRunner 04.08 — остаток unix-стека, а не догадка о нём.
+                 *
+                 * В прогоне 09:15 первая доставка легла по sp=0x117c90370 при TEB=0x117c90000, то
+                 * есть кадр размером 1136 байт пишется вниз от sp и накрывает первые 880 байт TEB;
+                 * к восьмому шагу каскада поля стека в TEB читаются как 0x1-0x0, то есть затёрты.
+                 * Это похоже на исчерпание unix-стека, но «похоже» здесь не годится: у потока есть
+                 * готовое поле kernel_stack, и остаток считается точно.  Отрицательный room и есть
+                 * доказательство выхода за нижнюю границу. */
+                "kstack=%p kstack_size=%#lx room=%lld lr_dll=%s lr_api=%s\n",
+                (unsigned long long)macrunner_hb_current_thread_id(), NtCurrentTeb(),
+                (unsigned long)rec->ExceptionCode, w_lo, w_hi, (unsigned)sizeof(*stack),
+                live_lo, delivery_stack_ptr, used_callback_stack ? 1u : 0u, overlap,
+                teb_lo, teb_hi,
+                (teb_lo && teb_hi && live_lo >= teb_lo && live_lo < teb_hi) ? 1u : 0u,
+                (void *)(ULONG_PTR)LR_sig(sigcontext),
+                (void *)(w_lo + offsetof(struct exc_stack_layout, rec)),
+                (unsigned long long)__atomic_load_n( &overlap_seen, __ATOMIC_RELAXED ),
+                ntdll_get_thread_data()->kernel_stack, (unsigned long)kernel_stack_size,
+                (long long)((char *)live_lo - (char *)ntdll_get_thread_data()->kernel_stack),
+                lr_dll, lr_api );
+    }
+
+    macrunner_hb_note_delivery( stack, sizeof(*stack),
+                                (const char *)stack + offsetof(struct exc_stack_layout, rec),
+                                rec->ExceptionCode, (ULONG64)(ULONG_PTR)stack_ptr );
+
     memset( &layout, 0, sizeof(layout) );
     macrunner_signal_copy_bytes( &layout.rec, rec, sizeof(layout.rec) );
     macrunner_signal_copy_bytes( &layout.context, context, sizeof(layout.context) );
@@ -4110,12 +4283,88 @@ static ULONG64 macrunner_hb_fault_page_tab[MACRUNNER_HB_FAULT_PAGE_SLOTS];
 static ULONG64 macrunner_hb_fault_pages_distinct;
 static ULONG64 macrunner_hb_fault_same_page_repeat;
 
-static void macrunner_hb_fault_note_page( ULONG_PTR addr )
+/* MacRunner 2026-08-03 — WHICH pages, not just how many.
+ *
+ * The counter above says 43 distinct pages carry 90 M faults and that 99.97 % of them are
+ * BUS_ADRALN, which is enough to prove a storm and not enough to act on.  The storm ignites right
+ * after `Restored language code` (+312 s in GPRDUMP2: 1.6 M faults at +377 s, 8.2 M by +433 s) and
+ * is the signature of the stuck phase rather than a background tax — so naming the pages names the
+ * thing the guest is grinding against.
+ *
+ * A 64-entry table with a linear scan: at the observed ~100 k faults/s worst case that is a few
+ * million compares per second against a handler that already costs 6 µs per fault, i.e. noise.
+ * Bounded and lossy on purpose — once full it stops learning rather than evicting, because the
+ * hot pages arrive early and an eviction policy on a signal path buys nothing. */
+#define MACRUNNER_HB_FAULT_TOP_SLOTS 64
+static ULONG64 macrunner_hb_fault_top_page[MACRUNNER_HB_FAULT_TOP_SLOTS];
+static ULONG64 macrunner_hb_fault_top_count[MACRUNNER_HB_FAULT_TOP_SLOTS];
+static ULONG64 macrunner_hb_fault_top_pc[MACRUNNER_HB_FAULT_TOP_SLOTS];
+
+static void macrunner_hb_fault_note_top( ULONG64 page, ULONG_PTR pc )
+{
+    unsigned int i;
+
+    for (i = 0; i < MACRUNNER_HB_FAULT_TOP_SLOTS; i++)
+    {
+        ULONG64 have = __atomic_load_n( &macrunner_hb_fault_top_page[i], __ATOMIC_RELAXED );
+
+        if (have == page)
+        {
+            __atomic_add_fetch( &macrunner_hb_fault_top_count[i], 1, __ATOMIC_RELAXED );
+            return;
+        }
+        if (!have)
+        {
+            __atomic_store_n( &macrunner_hb_fault_top_pc[i], (ULONG64)pc, __ATOMIC_RELAXED );
+            __atomic_store_n( &macrunner_hb_fault_top_page[i], page, __ATOMIC_RELAXED );
+            __atomic_add_fetch( &macrunner_hb_fault_top_count[i], 1, __ATOMIC_RELAXED );
+            return;
+        }
+    }
+}
+
+static void macrunner_hb_fault_top_emit(void)
+{
+    unsigned int i;
+
+    for (i = 0; i < MACRUNNER_HB_FAULT_TOP_SLOTS; i++)
+    {
+        ULONG64 page = __atomic_load_n( &macrunner_hb_fault_top_page[i], __ATOMIC_RELAXED );
+        ULONG64 count = __atomic_load_n( &macrunner_hb_fault_top_count[i], __ATOMIC_RELAXED );
+
+        if (!page || count < 1024) continue;
+        macrunner_signal_writef( "macrunner-hb-fault-page: addr=%p faults=%llu pc=%p\n",
+                                 (void *)(ULONG_PTR)(page << 14),
+                                 (unsigned long long)count,
+                                 (void *)(ULONG_PTR)__atomic_load_n( &macrunner_hb_fault_top_pc[i],
+                                                                    __ATOMIC_RELAXED ) );
+    }
+}
+
+/* How many faults this page has already taken.  Used to spend the detail budget on the page the
+ * census has already proven hot, instead of on the first arrivals: the storm ignites only after
+ * `Restored language code` (+312 s), while the ordinary guest-code-entry faults start immediately,
+ * so a plain "first 24" bound is exhausted in ninety seconds on exactly the traffic we do not care
+ * about.  Measured that way once — 24 samples, all of them routine, none from the storm. */
+static ULONG64 macrunner_hb_fault_page_count( ULONG64 page )
+{
+    unsigned int i;
+
+    for (i = 0; i < MACRUNNER_HB_FAULT_TOP_SLOTS; i++)
+    {
+        if (__atomic_load_n( &macrunner_hb_fault_top_page[i], __ATOMIC_RELAXED ) != page) continue;
+        return __atomic_load_n( &macrunner_hb_fault_top_count[i], __ATOMIC_RELAXED );
+    }
+    return 0;
+}
+
+static void macrunner_hb_fault_note_page( ULONG_PTR addr, ULONG_PTR pc )
 {
     ULONG64 page = (ULONG64)(addr >> 14);  /* 16 KB pages on this platform */
     size_t slot = (size_t)((page * 2654435761u) & (MACRUNNER_HB_FAULT_PAGE_SLOTS - 1));
     ULONG64 prev = __atomic_load_n( &macrunner_hb_fault_page_tab[slot], __ATOMIC_RELAXED );
 
+    macrunner_hb_fault_note_top( page, pc );
     if (prev == page)
     {
         __atomic_add_fetch( &macrunner_hb_fault_same_page_repeat, 1, __ATOMIC_RELAXED );
@@ -4177,7 +4426,7 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
         ULONG64 n = __atomic_add_fetch( &macrunner_hb_fault_entries, 1, __ATOMIC_RELAXED );
         int code = siginfo ? siginfo->si_code : 0;
 
-        if (fault_addr) macrunner_hb_fault_note_page( fault_addr );
+        if (fault_addr) macrunner_hb_fault_note_page( fault_addr, (ULONG_PTR)PC_sig(context) );
 
         if (sig == SIGSEGV && code == SEGV_ACCERR)
         {
@@ -4188,13 +4437,121 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
              * two counters are ONE phenomenon the kernel labels inconsistently, and an instrument
              * that only watches bus_handler is blind whenever the coin lands the other way. */
             static int accerr_dumped;
+            ULONG64 an = __atomic_add_fetch( &macrunner_hb_fault_accerr, 1, __ATOMIC_RELAXED );
 
-            __atomic_add_fetch( &macrunner_hb_fault_accerr, 1, __ATOMIC_RELAXED );
-            if (__atomic_fetch_add( &accerr_dumped, 1, __ATOMIC_RELAXED ) < 6)
-                macrunner_signal_writef( "macrunner-hb-accerr-sample: pc=%p fault=%p lr=%p esr=0x%llx\n",
+            if (__atomic_fetch_add( &accerr_dumped, 1, __ATOMIC_RELAXED ) < 6 ||
+                (macrunner_hb_accerr_storm_sample_enabled() && (an & 0xfffffull) == 0))
+                macrunner_signal_writef( "macrunner-hb-accerr-sample: n=%llu pc=%p fault=%p lr=%p esr=0x%llx\n",
+                                         (unsigned long long)an,
                                          (void *)(ULONG_PTR)PC_sig(context), (void *)fault_addr,
                                          (void *)(ULONG_PTR)LR_sig(context),
                                          (unsigned long long)get_fault_esr( context ) );
+
+            /* MacRunner 04.08 — попытка ИСПОЛНЕНИЯ по неотображаемому адресу, названная поимённо.
+             *
+             * Ниже в bus_handler такой прибор уже есть (`macrunner-hb-exec-into-stack`), но он
+             * висит на ветке SIGBUS, а этот шторм приходит как SEGV_ACCERR — ровно та
+             * нестабильность метки, о которой предупреждает комментарий выше.  Прогон 08:20 дал
+             * 172.9 млн отказов при 394 тыс/с, у всех pc == fault == lr == 0x6001c04420000 и
+             * esr EC=0x20 (отказ выборки инструкции), а загрузка встала на 43.5 с.  Адрес занимает
+             * 52 бита при 47-битном пользовательском пространстве macOS, то есть это не
+             * «неотображённая страница», а испорченный указатель, по которому кто-то прыгнул.
+             *
+             * Печатаем ПЕРВЫЕ 24 попытки — не под условием горячей страницы, потому что назвать
+             * нужно самый первый прыжок, до того как цикл установится.  x16/x17 добавлены к
+             * обычным x0-x2: непрямая ветвь идёт именно через них. */
+            if (fault_addr && (ULONG_PTR)fault_addr == (ULONG_PTR)PC_sig(context))
+            {
+                static ULONG64 exec_accerr_dumped;
+
+                if (__atomic_fetch_add( &exec_accerr_dumped, 1, __ATOMIC_RELAXED ) < 24)
+                {
+                    UINT64 grsp = 0;
+                    int gstate = 0;
+                    UINT64 grip = macrunner_hb_guest_pc_for_tid( GetCurrentThreadId(),
+                                                                 &grsp, &gstate, NULL );
+
+                    macrunner_signal_writef(
+                        "macrunner-hb-exec-unmappable: n=%llu pc=%p lr=%p sp=%p x0=%p x1=%p x2=%p "
+                        "x16=%p x17=%p gstate=%d guest_rip=%p guest_rsp=%p\n",
+                        (unsigned long long)an,
+                        (void *)(ULONG_PTR)PC_sig(context),
+                        (void *)(ULONG_PTR)LR_sig(context),
+                        (void *)(ULONG_PTR)SP_sig(context),
+                        (void *)(ULONG_PTR)REGn_sig(0, context),
+                        (void *)(ULONG_PTR)REGn_sig(1, context),
+                        (void *)(ULONG_PTR)REGn_sig(2, context),
+                        (void *)(ULONG_PTR)REGn_sig(16, context),
+                        (void *)(ULONG_PTR)REGn_sig(17, context),
+                        gstate, (void *)(ULONG_PTR)grip, (void *)(ULONG_PTR)grsp );
+
+                    /* Кто прыгнул — ищется по хостовому кадру, а не по гостевому.
+                     *
+                     * Счётчики HyperBridge говорят, что у потока НЕТ взведённого кадра защиты
+                     * (claim_declined_frame=41608 из 41608), то есть в момент прыжка он не
+                     * исполнял транслированный код под охраной.  Значит назвать источник может
+                     * только хостовая сторона: x19 — указатель контекста в коде HB, x18 — TEB,
+                     * x29/x30 — кадр и адрес возврата, а восемь слов у sp содержат цепочку
+                     * вызовов.  Стек читаем ТОЛЬКО если он выглядит как стек (выровнен и
+                     * непустой): в обработчике сигнала любое неудачное чтение стоит прогона. */
+                    {
+                        ULONG_PTR hsp = (ULONG_PTR)SP_sig(context);
+
+                        ULONG_PTR teb = (ULONG_PTR)REGn_sig(18, context);
+                        ULONG64 stack_base = 0, stack_limit = 0;
+
+                        /* Границы стека берём из TEB (NtTib.StackBase +0x08, StackLimit +0x10):
+                         * если sp прижат к пределу, это переполнение хостового стека, и тогда
+                         * область сохранения кадра затирается просто потому, что её некуда класть.
+                         * Проверяем ту же гипотезу целиком: пролог блока HB кладёт x19-x23 и LR,
+                         * поэтому печатаем ВЕСЬ набор — если мусор во всех, затёрта вся область,
+                         * а не отдельный регистр. */
+                        if (teb && !(teb & 7))
+                        {
+                            stack_base  = ((const ULONG64 *)teb)[1];
+                            stack_limit = ((const ULONG64 *)teb)[2];
+                        }
+
+                        macrunner_signal_writef(
+                            "macrunner-hb-exec-unmappable-frame: x18=%p x19=%p x20=%p x21=%p "
+                            "x22=%p x23=%p x29=%p x30=%p stack_base=%p stack_limit=%p\n",
+                            (void *)teb,
+                            (void *)(ULONG_PTR)REGn_sig(19, context),
+                            (void *)(ULONG_PTR)REGn_sig(20, context),
+                            (void *)(ULONG_PTR)REGn_sig(21, context),
+                            (void *)(ULONG_PTR)REGn_sig(22, context),
+                            (void *)(ULONG_PTR)REGn_sig(23, context),
+                            (void *)(ULONG_PTR)REGn_sig(29, context),
+                            (void *)(ULONG_PTR)REGn_sig(30, context),
+                            (void *)(ULONG_PTR)stack_base, (void *)(ULONG_PTR)stack_limit );
+
+                        if (hsp && !(hsp & 15))
+                        {
+                            /* Окно шире и НИЖЕ sp тоже.
+                             *
+                             * В прошлом заходе на самой вершине уже лежало w0=0xa0802 — член того
+                             * же семейства, что и мусор в регистрах (0402/0422/0442/0522/0802,
+                             * шаг 0x20).  Значит источник узора где-то рядом с кадром, и его надо
+                             * не угадывать, а увидеть: печатаем 24 слова начиная с sp-0x40, чтобы
+                             * захватить и область, куда пролог блока HB кладёт x19-x23 и LR.
+                             * Три строки по восемь слов — писатель асинхронно-безопасный, но
+                             * форматная строка у него не резиновая. */
+                            const ULONG64 *w = (const ULONG64 *)(hsp - 0x100);
+                            int row;
+
+                            for (row = 0; row < 6; row++)
+                                macrunner_signal_writef(
+                                    "macrunner-hb-exec-unmappable-stack: at=%p "
+                                    "%p %p %p %p %p %p %p %p\n",
+                                    (void *)(hsp - 0x100 + (ULONG_PTR)row * 64),
+                                    (void *)(ULONG_PTR)w[row * 8 + 0], (void *)(ULONG_PTR)w[row * 8 + 1],
+                                    (void *)(ULONG_PTR)w[row * 8 + 2], (void *)(ULONG_PTR)w[row * 8 + 3],
+                                    (void *)(ULONG_PTR)w[row * 8 + 4], (void *)(ULONG_PTR)w[row * 8 + 5],
+                                    (void *)(ULONG_PTR)w[row * 8 + 6], (void *)(ULONG_PTR)w[row * 8 + 7] );
+                        }
+                    }
+                }
+            }
         }
         else if (sig == SIGSEGV && code == SEGV_MAPERR)
             __atomic_add_fetch( &macrunner_hb_fault_maperr, 1, __ATOMIC_RELAXED );
@@ -4216,6 +4573,399 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
                     macrunner_signal_writef( "macrunner-hb-bus-sample: code=%d pc=%p fault=%p lr=%p\n",
                                              code, (void *)(ULONG_PTR)PC_sig(context),
                                              (void *)fault_addr, (void *)(ULONG_PTR)LR_sig(context) );
+
+                /* MacRunner 2026-08-03 — the execute-attempt case, named rather than counted.
+                 *
+                 * The page census says one page carries 79 % of a 90 M-fault storm and that the
+                 * faulting address and the pc are THE SAME (addr=0x110ac8000 pc=0x110acada8), while
+                 * the surrounding traces show sp=0x110ace210 — the thread keeps branching into its
+                 * own stack and faulting on the instruction fetch.  That is exactly the signature
+                 * already on file for exit=5 (pc == lr == fault, info0=0x8), which makes the storm
+                 * and the fatal fault one phenomenon at two magnifications: ~237 k survivable
+                 * attempts, then one that is not.
+                 *
+                 * Six samples cannot show WHO branches there.  x30 is the link register the branch
+                 * came through, x0-x2 carry the usual dispatch operands, and the guest pc says where
+                 * the emulated thread believed it was.  Bounded to 24: under this storm an unbounded
+                 * print would become the bottleneck it is measuring. */
+                if (fault_addr && (ULONG_PTR)fault_addr == (ULONG_PTR)PC_sig(context) &&
+                    macrunner_hb_fault_page_count( (ULONG64)((ULONG_PTR)fault_addr >> 14) ) > 65536)
+                {
+                    static ULONG64 exec_dumped;
+
+                    if (__atomic_fetch_add( &exec_dumped, 1, __ATOMIC_RELAXED ) < 24)
+                    {
+                        UINT64 grsp = 0;
+                        int gstate = 0;
+                        UINT64 grip = macrunner_hb_guest_pc_for_tid( GetCurrentThreadId(),
+                                                                     &grsp, &gstate, NULL );
+
+                        macrunner_signal_writef(
+                            "macrunner-hb-exec-into-stack: pc=%p lr=%p sp=%p x0=%p x1=%p x2=%p "
+                            "gstate=%d guest_rip=%p guest_rsp=%p\n",
+                            (void *)(ULONG_PTR)PC_sig(context),
+                            (void *)(ULONG_PTR)LR_sig(context),
+                            (void *)(ULONG_PTR)SP_sig(context),
+                            (void *)(ULONG_PTR)REGn_sig(0, context),
+                            (void *)(ULONG_PTR)REGn_sig(1, context),
+                            (void *)(ULONG_PTR)REGn_sig(2, context),
+                            gstate, (void *)(ULONG_PTR)grip, (void *)(ULONG_PTR)grsp );
+
+                        /* MacRunner 2026-08-03 — WHO returned into the stack.
+                         *
+                         * pc == lr is the signature of a `ret` taken with x30 holding a stack
+                         * address instead of a code address, and the address itself
+                         * (0x1155ca8f8, inside a 16 MB rw- region flanked by a 32 KB --- guard,
+                         * i.e. a thread stack) cannot name the culprit.  The callee-saved
+                         * registers can: this translator keeps its context in the x19-x28 range,
+                         * so their values say which layer was running.  x29 is the frame pointer,
+                         * and the qwords around sp are the frame whose saved lr was consumed —
+                         * an epilogue's `ldp x29, x30, [sp], #N` leaves its source right there.
+                         *
+                         * Reading the host stack here is safe: it is our own mapping, rw- and
+                         * resident, and the window is small and bounded. */
+                        {
+                            const ULONG64 *hs = (const ULONG64 *)(ULONG_PTR)SP_sig(context);
+
+                            macrunner_signal_writef(
+                                "macrunner-hb-exec-into-stack-regs: fp=%p x19=%p x20=%p x21=%p "
+                                "x22=%p x23=%p x24=%p x25=%p x26=%p x27=%p x28=%p\n",
+                                (void *)(ULONG_PTR)REGn_sig(29, context),
+                                (void *)(ULONG_PTR)REGn_sig(19, context),
+                                (void *)(ULONG_PTR)REGn_sig(20, context),
+                                (void *)(ULONG_PTR)REGn_sig(21, context),
+                                (void *)(ULONG_PTR)REGn_sig(22, context),
+                                (void *)(ULONG_PTR)REGn_sig(23, context),
+                                (void *)(ULONG_PTR)REGn_sig(24, context),
+                                (void *)(ULONG_PTR)REGn_sig(25, context),
+                                (void *)(ULONG_PTR)REGn_sig(26, context),
+                                (void *)(ULONG_PTR)REGn_sig(27, context),
+                                (void *)(ULONG_PTR)REGn_sig(28, context) );
+                            macrunner_signal_writef(
+                                "macrunner-hb-exec-into-stack-frame: sp+00=%p +08=%p +10=%p "
+                                "+18=%p +20=%p +28=%p +30=%p +38=%p\n",
+                                (void *)(ULONG_PTR)hs[0], (void *)(ULONG_PTR)hs[1],
+                                (void *)(ULONG_PTR)hs[2], (void *)(ULONG_PTR)hs[3],
+                                (void *)(ULONG_PTR)hs[4], (void *)(ULONG_PTR)hs[5],
+                                (void *)(ULONG_PTR)hs[6], (void *)(ULONG_PTR)hs[7] );
+
+                            /* MacRunner 2026-08-03 — WHERE IS THE RECORD, measured instead of hunted.
+                             *
+                             * A translated block saves X23 and LR as a PAIR at [SP,#32] and restores
+                             * that pair before RET (hb_arm64_codegen.c:756/809).  At the stall the
+                             * restored values are X23 = 0x00000000c0000005 and LR = a stack address —
+                             * byte-for-byte EXCEPTION_RECORD.ExceptionCode|ExceptionFlags followed by
+                             * .ExceptionRecord.  So a delivery record is sitting on the block's
+                             * register-save area, and the epilogue loads its fields as registers.
+                             *
+                             * Two attempts to find the WRITER by reading code both missed: wine's
+                             * setup_raise_exception() is never reached in these runs (its own trace is
+                             * 0 while the helper it calls printed 16 times from a DIFFERENT caller —
+                             * the low-stack predicate), and the guest x64-domain dispatcher keeps its
+                             * state on the heap, not the stack.  So stop hunting the writer and locate
+                             * the record itself: scan the frame window for the 8-byte signature and
+                             * print every hit with its offset from SP and the three qwords that follow.
+                             *
+                             * A fixed offset across hits means the writer computed the address from
+                             * SP; scattered offsets mean it did not.  Either way it is an answer, and
+                             * it costs a bounded read of our own resident stack on a path already
+                             * capped at 24. */
+                            {
+                                const ULONG64 SIG = 0x00000000c0000005ull;
+                                unsigned int i, hits = 0;
+
+                                for (i = 0; i < 2048 && hits < 4; i++)
+                                {
+                                    if (hs[i] != SIG) continue;
+                                    hits++;
+                                    macrunner_signal_writef(
+                                        "macrunner-hb-exec-into-stack-record: hit=%u at=%p sp_off=+0x%x "
+                                        "next=%p %p %p sp=%p\n",
+                                        hits, (void *)(ULONG_PTR)&hs[i], (unsigned)(i * 8),
+                                        (void *)(ULONG_PTR)hs[i + 1],
+                                        (void *)(ULONG_PTR)hs[i + 2],
+                                        (void *)(ULONG_PTR)hs[i + 3],
+                                        (void *)(ULONG_PTR)SP_sig(context) );
+                                }
+                                if (!hits)
+                                    macrunner_signal_writef(
+                                        "macrunner-hb-exec-into-stack-record: none in 16 KB above sp=%p"
+                                        " — the record is NOT in this window, x23 came from elsewhere\n",
+                                        (void *)(ULONG_PTR)SP_sig(context) );
+
+                                /* MacRunner 2026-08-03 — THE SLOTS THE EPILOGUE ACTUALLY READ.
+                                 *
+                                 * The first cut of this scan started at SP and walked UP, which is the
+                                 * wrong direction for this question: a block's 48-byte frame is built by
+                                 * `STP X19,X20,[SP,#-48]!` and torn down by `LDP X19,X20,[SP],#48`, so by
+                                 * the time the RET faults the frame sits BELOW the reported SP.  The pair
+                                 * that fed X23 and LR was at [SP-48+32] and [SP-48+40] — i.e. SP-16 and
+                                 * SP-8 — and the upward scan never covered them.  It found records at
+                                 * +0x1020/+0x11d0/+0x2230 instead, one of which happens to be exactly
+                                 * where the bad PC points, which is a real and useful fact but a
+                                 * different one.
+                                 *
+                                 * Print the popped frame verbatim.  Popped stack is still mapped and
+                                 * still holds its bytes; nothing else has run on this thread between the
+                                 * LDP and this handler.  If SP-16 reads 0xc0000005 and SP-8 reads the bad
+                                 * PC, then the pair is confirmed as the source and the question becomes
+                                 * who put them there — either the block was ENTERED with them live in
+                                 * X23/LR, or something wrote over the slots while the block ran. */
+                                macrunner_signal_writef(
+                                    "macrunner-hb-exec-into-stack-popped: sp-30=%p -28=%p -20=%p "
+                                    "-18=%p -10=%p(x23 slot) -08=%p(lr slot) sp=%p\n",
+                                    (void *)(ULONG_PTR)hs[-6], (void *)(ULONG_PTR)hs[-5],
+                                    (void *)(ULONG_PTR)hs[-4], (void *)(ULONG_PTR)hs[-3],
+                                    (void *)(ULONG_PTR)hs[-2], (void *)(ULONG_PTR)hs[-1],
+                                    (void *)(ULONG_PTR)SP_sig(context) );
+
+                                /* MacRunner 2026-08-03 — WHICH REGISTER CARRIED THE BRANCH.
+                                 *
+                                 * Settled so far, by measurement and not by reading: the bad PC is
+                                 * always exactly SP+0x1020, and it lands at offset 0x3b0 inside the
+                                 * delivery layout this same handler wrote (base and size are printed
+                                 * by -record-overlap).  0x3b0 is offsetof(struct exc_stack_layout,
+                                 * rec).  Only two instructions in the tree produce that address —
+                                 * `add x0, sp, #0x3b0` in the plain ARM64 KiUserExceptionDispatcher
+                                 * and `add x0, sp, #0x3b0+0x4d0` in the ARM64EC one — and both mean it
+                                 * as an ARGUMENT.  So &rec reached a branch instead.
+                                 *
+                                 * Each candidate leaves a different register equal to PC: x16 for the
+                                 * `br x16` in __wine_pe_x18_thunk and for the dispatcher's own
+                                 * `blr x16`; x9 for the ARM64EC dispatch-call path, which does
+                                 * `mov x9, x0` first; x0 if something branched on the argument
+                                 * directly; x17 is the scratch an EC exit thunk would use.  Print all
+                                 * of them and the answer names itself.  Three hypotheses today were
+                                 * each killed by one measurement after costing a run — this is the
+                                 * measurement that replaces the fourth. */
+                                macrunner_signal_writef(
+                                    "macrunner-hb-exec-into-stack-branch: pc=%p x0=%p x9=%p x10=%p "
+                                    "x16=%p x17=%p x30=%p sp=%p\n",
+                                    (void *)(ULONG_PTR)PC_sig(context),
+                                    (void *)(ULONG_PTR)REGn_sig(0, context),
+                                    (void *)(ULONG_PTR)REGn_sig(9, context),
+                                    (void *)(ULONG_PTR)REGn_sig(10, context),
+                                    (void *)(ULONG_PTR)REGn_sig(16, context),
+                                    (void *)(ULONG_PTR)REGn_sig(17, context),
+                                    (void *)(ULONG_PTR)LR_sig(context),
+                                    (void *)(ULONG_PTR)SP_sig(context) );
+
+                                /* MacRunner 2026-08-03 night — the SEH-handler argument registers.
+                                 *
+                                 * `sample` of the live hung process named the caller: the frame under
+                                 * the bad PC returns to dispatch_exception+0x8fc, and the instruction
+                                 * before that return address is `bl call_seh_handlers` (ntdll rva
+                                 * 0x29210, native ntdll base 0x87fff950000 this run).  Handlers are
+                                 * invoked one level down by call_seh_handler, which is
+                                 * `blr x4` with the ABI (rec=x0, frame=x1, context=x2, dispatch=x3,
+                                 * handler=x4) and which does NOT set x29, so the fp chain skips it —
+                                 * exactly what sample showed.
+                                 *
+                                 * x4 is therefore the handler pointer actually branched to, and x3
+                                 * the DISPATCHER_CONTEXT it came from.  Neither was ever printed.
+                                 * If x4 == pc == &rec, the handler pointer IS the exception record
+                                 * and the question becomes who put it in dispatch->LanguageHandler;
+                                 * if x4 is a sane handler, the branch was not this blr and the
+                                 * search moves on with one measurement instead of a guess. */
+                                /* The OTHER call_seh_handler call site takes its handler from the
+                                 * TEB registration list — `(PEXCEPTION_ROUTINE)teb_frame->Handler`,
+                                 * a linked list that lives ON THE STACK.  Three deliveries wrote
+                                 * 1 136 bytes each onto this stack this run, so a registration
+                                 * record inside those ranges would now yield whatever the delivery
+                                 * left there.  Print the head and the first few links: a Handler
+                                 * equal to the faulting PC names this path outright. */
+                                {
+                                    TEB *teb = NtCurrentTeb();
+                                    const ULONG64 *link = teb ? (const ULONG64 *)teb->Tib.ExceptionList : NULL;
+                                    unsigned int li;
+
+                                    for (li = 0; li < 4 && link; li++)
+                                    {
+                                        ULONG64 prev, handler;
+
+                                        if (((ULONG64)(ULONG_PTR)link & 7) ||
+                                            (ULONG64)(ULONG_PTR)link < 0x10000) break;
+                                        prev = link[0];
+                                        handler = link[1];
+                                        macrunner_signal_writef(
+                                            "macrunner-hb-exec-into-stack-tebseh: %u frame=%p prev=%p "
+                                            "handler=%p is_pc=%u\n",
+                                            li, (const void *)link, (void *)(ULONG_PTR)prev,
+                                            (void *)(ULONG_PTR)handler,
+                                            handler == (ULONG64)PC_sig(context) ? 1u : 0u );
+                                        link = (const ULONG64 *)(ULONG_PTR)prev;
+                                    }
+                                }
+
+                                macrunner_signal_writef(
+                                    "macrunner-hb-exec-into-stack-args: pc=%p x1=%p x2=%p x3=%p "
+                                    "x4=%p x5=%p x6=%p x7=%p x8=%p\n",
+                                    (void *)(ULONG_PTR)PC_sig(context),
+                                    (void *)(ULONG_PTR)REGn_sig(1, context),
+                                    (void *)(ULONG_PTR)REGn_sig(2, context),
+                                    (void *)(ULONG_PTR)REGn_sig(3, context),
+                                    (void *)(ULONG_PTR)REGn_sig(4, context),
+                                    (void *)(ULONG_PTR)REGn_sig(5, context),
+                                    (void *)(ULONG_PTR)REGn_sig(6, context),
+                                    (void *)(ULONG_PTR)REGn_sig(7, context),
+                                    (void *)(ULONG_PTR)REGn_sig(8, context) );
+
+                                /* MacRunner 2026-08-04 — WHO CALLED THE CODE THAT RETURNED INTO &rec.
+                                 *
+                                 * Settled by the NOGATES control run, and it moves the question:
+                                 * the popped frame is CLEAN (x23 slot = 0x87fff9bb860, lr slot =
+                                 * 0x87ef13c0000 — both guest addresses, both plausible), yet x30
+                                 * equals &rec of the THIRD nested delivery.  So LR was NOT read back
+                                 * from that frame; something set x30 = &rec directly, and only the
+                                 * dispatcher computes that address (`add x0, sp, #0x3b0`) — as an
+                                 * ARGUMENT, into x0.
+                                 *
+                                 * The one register the dump never printed is the frame pointer, and
+                                 * it is exactly what names the caller: on ARM64 every framed callee
+                                 * stores {caller FP, caller LR} at [x29].  Walk four links with
+                                 * guarded reads (this runs inside a signal handler; a fault here
+                                 * would replace one stall with a worse one), print raw addresses,
+                                 * and resolve them offline against macrunner-hb-host-image.
+                                 *
+                                 * Reading only, no behaviour change, capped by the same counter as
+                                 * the dumps above. */
+                                {
+                                    ULONG64 fp = REGn_sig(29, context);
+                                    unsigned int fi;
+
+                                    macrunner_signal_writef(
+                                        "macrunner-hb-exec-into-stack-fp: head fp=%p sp=%p pc=%p\n",
+                                        (void *)(ULONG_PTR)fp,
+                                        (void *)(ULONG_PTR)SP_sig(context),
+                                        (void *)(ULONG_PTR)PC_sig(context) );
+                                    for (fi = 0; fi < 4 && fp && !(fp & 7); fi++)
+                                    {
+                                        ULONG64 prev = 0, ret = 0;
+
+                                        if (!macrunner_signal_read_memory( &prev, (const void *)(ULONG_PTR)fp,
+                                                                           sizeof(prev) ) ||
+                                            !macrunner_signal_read_memory( &ret, (const void *)(ULONG_PTR)(fp + 8),
+                                                                           sizeof(ret) ))
+                                        {
+                                            macrunner_signal_writef(
+                                                "macrunner-hb-exec-into-stack-fp: %u fp=%p <unreadable>\n",
+                                                fi, (void *)(ULONG_PTR)fp );
+                                            break;
+                                        }
+                                        macrunner_signal_writef(
+                                            "macrunner-hb-exec-into-stack-fp: %u fp=%p prev=%p ret=%p\n",
+                                            fi, (void *)(ULONG_PTR)fp, (void *)(ULONG_PTR)prev,
+                                            (void *)(ULONG_PTR)ret );
+                                        if (prev <= fp) break;
+                                        fp = prev;
+                                    }
+                                }
+
+                                /* MacRunner 2026-08-03 night — the discriminator.
+                                 *
+                                 * The epilogue loaded LR from [SP-8] (the frame is popped by
+                                 * `LDP X19,X20,[SP],#48`, so its LR slot is 8 below the reported
+                                 * SP).  If that address lies inside a range THIS thread's delivery
+                                 * wrote, our own exception frame flattened a live block frame and
+                                 * the fix belongs in the delivery's stack reservation.  If it lies
+                                 * in none of them, the delivery is exonerated for a second time and
+                                 * the slot was never written by the block either — which points at
+                                 * block entry, not at delivery.  Printed even when the ring is
+                                 * empty: a silent instrument and one that found nothing must stay
+                                 * distinguishable (this lane has lost days to that difference). */
+                                {
+                                    ULONG64 lr_slot = (ULONG64)(ULONG_PTR)SP_sig(context) - 8;
+                                    ULONG64 x23_slot = lr_slot - 8;
+                                    unsigned int k, hit = 0;
+
+                                    for (k = 0; k < MACRUNNER_HB_DELIVERY_RING; k++)
+                                    {
+                                        const struct macrunner_hb_delivery_note *e =
+                                            &macrunner_hb_delivery_ring[k];
+                                        unsigned int covers_lr, covers_x23;
+
+                                        if (!e->seq) continue;
+                                        covers_lr = (lr_slot >= e->lo && lr_slot < e->hi);
+                                        covers_x23 = (x23_slot >= e->lo && x23_slot < e->hi);
+                                        if (covers_lr || covers_x23) hit++;
+                                        macrunner_signal_writef(
+                                            "macrunner-hb-delivery-vs-slot: seq=%llu write=%p-%p "
+                                            "rec=%p code=%#llx interrupted_sp=%p lr_slot=%p "
+                                            "covers_lr=%u covers_x23=%u\n",
+                                            (unsigned long long)e->seq,
+                                            (void *)(ULONG_PTR)e->lo, (void *)(ULONG_PTR)e->hi,
+                                            (void *)(ULONG_PTR)e->rec_addr,
+                                            (unsigned long long)e->code,
+                                            (void *)(ULONG_PTR)e->interrupted_sp,
+                                            (void *)(ULONG_PTR)lr_slot, covers_lr, covers_x23 );
+                                    }
+                                    macrunner_signal_writef(
+                                        "macrunner-hb-delivery-vs-slot-summary: deliveries=%llu "
+                                        "hits=%u lr_slot=%p pc=%p sp=%p\n",
+                                        (unsigned long long)macrunner_hb_delivery_seq, hit,
+                                        (void *)(ULONG_PTR)lr_slot,
+                                        (void *)(ULONG_PTR)PC_sig(context),
+                                        (void *)(ULONG_PTR)SP_sig(context) );
+                                }
+
+                                /* MacRunner 2026-08-03 night — WHO RETURNED TO &rec.
+                                 *
+                                 * Measured this run, three deliveries deep on one stack: delivery #3
+                                 * set SP=0x1119cb200, and `add x0, sp, #0x3b0` in
+                                 * KiUserExceptionDispatcher makes &rec = 0x1119cb5b0 — bit-for-bit
+                                 * the faulting PC.  SP at the fault is 0xC70 BELOW the dispatcher's,
+                                 * so dispatch_exception and its callees really ran; one of them
+                                 * returned to x30 = &rec, i.e. its saved LR was replaced by the very
+                                 * pointer the dispatcher passes in x0.  The popped frame is NOT the
+                                 * source (its LR slot holds 0x87ef13c0000, a sane guest base), so the
+                                 * useful question is which frame is on the stack right now.
+                                 *
+                                 * Walk the frame-pointer chain — the one structure that survives a
+                                 * corrupted LR — and print each frame's saved LR.  The first entry
+                                 * that is neither host nor guest code names the function whose return
+                                 * address was overwritten, and the frame ABOVE it is the writer's
+                                 * neighbourhood.  Reads are bounded (16 frames, ascending, aligned)
+                                 * and this path is already capped at 24 dumps. */
+                                {
+                                    ULONG64 fp = REGn_sig(29, context);
+                                    ULONG64 sp_now = (ULONG64)(ULONG_PTR)SP_sig(context);
+                                    unsigned int fi;
+
+                                    macrunner_signal_writef(
+                                        "macrunner-hb-exec-into-stack-fp: head fp=%p sp=%p "
+                                        "x19=%p x20=%p x21=%p x22=%p x23=%p x28=%p\n",
+                                        (void *)(ULONG_PTR)fp, (void *)(ULONG_PTR)sp_now,
+                                        (void *)(ULONG_PTR)REGn_sig(19, context),
+                                        (void *)(ULONG_PTR)REGn_sig(20, context),
+                                        (void *)(ULONG_PTR)REGn_sig(21, context),
+                                        (void *)(ULONG_PTR)REGn_sig(22, context),
+                                        (void *)(ULONG_PTR)REGn_sig(23, context),
+                                        (void *)(ULONG_PTR)REGn_sig(28, context) );
+
+                                    for (fi = 0; fi < 16; fi++)
+                                    {
+                                        const ULONG64 *frame = (const ULONG64 *)(ULONG_PTR)fp;
+                                        ULONG64 prev, lr;
+
+                                        /* Ascending and aligned, or the chain is over. Staying inside
+                                         * the interrupted stack keeps every read on memory this thread
+                                         * demonstrably owns. */
+                                        if (!fp || (fp & 7) || fp < sp_now || fp - sp_now > 0x40000)
+                                            break;
+                                        prev = frame[0];
+                                        lr = frame[1];
+                                        macrunner_signal_writef(
+                                            "macrunner-hb-exec-into-stack-fp: %u fp=%p prev=%p lr=%p\n",
+                                            fi, (void *)(ULONG_PTR)fp, (void *)(ULONG_PTR)prev,
+                                            (void *)(ULONG_PTR)lr );
+                                        if (prev <= fp) break;
+                                        fp = prev;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             else if (sig == SIGTRAP) __atomic_add_fetch( &macrunner_hb_fault_sigtrap, 1, __ATOMIC_RELAXED );
             else if (sig == SIGSEGV) __atomic_add_fetch( &macrunner_hb_fault_sigsegv_other, 1, __ATOMIC_RELAXED );
@@ -4255,6 +5005,9 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_bus_othercode, __ATOMIC_RELAXED ),
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_pages_distinct, __ATOMIC_RELAXED ),
                 (unsigned long long)__atomic_load_n( &macrunner_hb_fault_same_page_repeat, __ATOMIC_RELAXED ) );
+            /* The page census is bulky, so it rides the summary at a coarser cadence: often enough
+             * to catch the storm's shape, rare enough not to become the storm's own cost. */
+            if (!(n & 0x3ffff)) macrunner_hb_fault_top_emit();
         }
     }
 

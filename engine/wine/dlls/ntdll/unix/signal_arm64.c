@@ -68,6 +68,51 @@
 #include "winternl.h"
 #include "wine/asm.h"
 #include "unix_private.h"
+
+/* MacRunner 2026-08-04 — РАЗРЫВ КРУГА x18/TEB.
+ *
+ * На ARM64 inline `NtCurrentTeb()` из winnt.h — это БУКВАЛЬНО регистр x18:
+ *     register struct _TEB *__wine_current_teb __asm__("x18");
+ * Поэтому строка вида `REGn_sig(18, ctx) = (ULONG_PTR)NtCurrentTeb()` означает
+ * «положить в x18 то, что сейчас в x18»: при целом x18 это пустая операция,
+ * а при затёртом (macOS стирает x18 при переключении контекста) мусор
+ * сохраняется как есть. Отсюда месяцы безрезультатных «восстановлений x18».
+ *
+ * Wine 11.14 решил это, перенеся данные потока на pthread TLS
+ * (unix_private.h: get_thread_data() = pthread_getspecific(thread_data_key))
+ * и таща teb по цепочке обработчиков явным параметром.
+ *
+ * У нас ключ уже есть — `teb_key` (unix_private.h), его заполняют
+ * virtual.c:5223 и thread.c:1223, и через него же работает ЭКСПОРТИРУЕМЫЙ
+ * NtCurrentTeb() в thread.c. Внутри ntdll его перекрывает inline-версия,
+ * поэтому берём из ключа напрямую.
+ *
+ * Гейт MACRUNNER_HB_TEB_FROM_TLS, умолчание ВКЛ (=0 чтобы вернуть старое
+ * поведение для A/B). Умолчание именно ВКЛ: правки пути к пикселю уже один раз
+ * потерялись из-за выключенного по умолчанию гейта.
+ */
+static int macrunner_teb_from_tls_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0)
+    {
+        const char *v = getenv( "MACRUNNER_HB_TEB_FROM_TLS" );
+        enabled = (v && *v == '0') ? 0 : 1;
+    }
+    return enabled;
+}
+
+static inline TEB *macrunner_teb_reliable(void)
+{
+    if (macrunner_teb_from_tls_enabled())
+    {
+        TEB *t = pthread_getspecific( teb_key );
+        if (t) return t;
+    }
+    return NtCurrentTeb();
+}
+
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(seh);
@@ -920,6 +965,20 @@ static BOOL macrunner_hb_trace_signal_chain_enabled(void)
     return enabled != 0;
 }
 
+/* MacRunner 2026-08-04 — ЗДЕСЬ СТОЯЛ ГЕЙТ MACRUNNER_HB_DELIVERY_STACK_BY_KSTACK, СНЯТ.
+ *
+ * Он уводил кадр доставки на вершину unix-стека потока, когда прерванный SP оказывался ниже
+ * базы этого стека.  Правка неверна ПО РОДУ, и это выяснилось до прогонов: `frame->sp`
+ * присваивается из windows-ского `context->Sp` (signal_arm64.c:458, NtSetContextThread), то
+ * есть кадр доставки строится на WINDOWS-стеке, потому что по нему пойдёт PE-код
+ * `KiUserExceptionDispatcher`.  Положить его на unix-стек значит запустить PE-диспетчер на
+ * хостовом стеке — ровно то, чего вся проверка `is_inside_thread_stack` и избегает.
+ *
+ * Правильная цель уже реализована: macrunner_hb_get_callback_exception_stack() отдаёт
+ * последний известный windows-SP с границы системного вызова.  Чинить надо ЕГО ОТКАЗ
+ * (см. macrunner_hb_cbstack_decline), а не изобретать новую цель.  Измерено: за 25 прогонов
+ * и 26 записей наложения этот механизм не сработал НИ РАЗУ (callback_stack=1 — ноль). */
+
 static void macrunner_hb_trace_callback_target_module( const char *source, ULONG_PTR pc );
 
 static ULONG_PTR macrunner_hb_normalize_x64_callback_target( ucontext_t *context,
@@ -1750,7 +1809,7 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
     }
 
     REGn_sig(16, context) = pc;
-    REGn_sig(18, context) = (ULONG_PTR)NtCurrentTeb();
+    REGn_sig(18, context) = (ULONG_PTR)macrunner_teb_reliable();
     PC_sig(context) = (ULONG_PTR)macrunner_hb_x64_callback_trampoline;
     callback_loop_scope.target = pc;
     callback_loop_scope.handled = TRUE;
@@ -1881,7 +1940,7 @@ static BOOL macrunner_hb_x64_loader_enabled(void)
 
 static void setup_x18_resume_from_sigcontext( ucontext_t *context )
 {
-    TEB *teb = NtCurrentTeb();
+    TEB *teb = macrunner_teb_reliable();  /* НЕ NtCurrentTeb(): на ARM64 это x18, который здесь и затёрт */
     struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
     ULONG_PTR pc = PC_sig(context);
 
@@ -1909,23 +1968,49 @@ static void setup_x18_resume_from_sigcontext( ucontext_t *context )
 }
 #endif
 
+/* MacRunner 04.08 16:50 — ПОЧЕМУ ВЫБОР СТЕКА ОТКАЗАЛ.
+ *
+ * Измерено по логам 04.08: перенаправление на стек обратного вызова срабатывает 111 раз, но из
+ * 25 доставок, печатающих -record-overlap, им не воспользовалась НИ ОДНА (`callback_stack=1` — 0
+ * штук). То есть на всех сбойных доставках эта функция вернула FALSE, и кадр лёг на сырой SP —
+ * который в 13 случаях из 25 указывает в сам TEB. Отказов здесь четыре разных, и лечатся они
+ * по-разному, поэтому нужен не факт отказа, а его причина. Код причины кладём в переменную
+ * потока и печатаем в уже существующей строке. */
+enum
+{
+    MACRUNNER_HB_CBSTACK_OK = 0,
+    MACRUNNER_HB_CBSTACK_NO_TEB,        /* нет TEB */
+    MACRUNNER_HB_CBSTACK_NO_FRAME,      /* нет кадра системного вызова */
+    MACRUNNER_HB_CBSTACK_NO_FRAME_SP,   /* кадр есть, сохранённый SP нулевой */
+    MACRUNNER_HB_CBSTACK_BAD_BOUNDS,    /* границы стека в TEB испорчены — уже затёрты */
+    MACRUNNER_HB_CBSTACK_SP_IN_STACK,   /* SP на своём стеке, перенаправлять незачем */
+    MACRUNNER_HB_CBSTACK_SAVED_OUT,     /* сохранённый SP вне границ стека */
+};
+static __thread int macrunner_hb_cbstack_decline;
+
 static BOOL macrunner_hb_get_callback_exception_stack( ucontext_t *context, void **stack_ptr )
 {
     static int report_count;
-    TEB *teb = NtCurrentTeb();
+    TEB *teb = macrunner_teb_reliable();  /* НЕ NtCurrentTeb(): на ARM64 это x18, который здесь и затёрт */
     struct syscall_frame *frame = get_syscall_frame();
     char *sp = (char *)SP_sig( context );
     char *limit, *base, *saved_sp;
 
-    if (!teb || !frame || !frame->sp) return FALSE;
+    if (!teb)        { macrunner_hb_cbstack_decline = MACRUNNER_HB_CBSTACK_NO_TEB;      return FALSE; }
+    if (!frame)      { macrunner_hb_cbstack_decline = MACRUNNER_HB_CBSTACK_NO_FRAME;    return FALSE; }
+    if (!frame->sp)  { macrunner_hb_cbstack_decline = MACRUNNER_HB_CBSTACK_NO_FRAME_SP; return FALSE; }
     limit = teb->Tib.StackLimit;
     base = teb->Tib.StackBase;
-    if (!limit || !base || limit >= base) return FALSE;
+    if (!limit || !base || limit >= base)
+    { macrunner_hb_cbstack_decline = MACRUNNER_HB_CBSTACK_BAD_BOUNDS; return FALSE; }
 
-    if (sp >= limit && sp < base) return FALSE;
+    if (sp >= limit && sp < base)
+    { macrunner_hb_cbstack_decline = MACRUNNER_HB_CBSTACK_SP_IN_STACK; return FALSE; }
     saved_sp = (char *)(ULONG_PTR)frame->sp;
-    if (saved_sp <= limit || saved_sp > base) return FALSE;
+    if (saved_sp <= limit || saved_sp > base)
+    { macrunner_hb_cbstack_decline = MACRUNNER_HB_CBSTACK_SAVED_OUT; return FALSE; }
 
+    macrunner_hb_cbstack_decline = MACRUNNER_HB_CBSTACK_OK;
     if (stack_ptr) *stack_ptr = saved_sp;
     if (report_count++ < 16)
     {
@@ -2122,6 +2207,26 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
      * Print the write range against the interrupted SP and let the numbers say which.  The first
      * few are printed with overlap=0 as well, deliberately: a silent instrument and an instrument
      * that found nothing are indistinguishable, and this lane has lost days to that difference. */
+    /* MacRunner 04.08 16:45 — ★ ВОПРОС ВЫШЕ ЗАКРЫТ, И ОТВЕТ «НЕТ». Перепись всех 25 строк за 15
+     * прогонов 04.08: `overlap=0` и `seen=0` в КАЖДОЙ. Запись кадра ни разу не легла на живые
+     * кадры выше SP — да и не может: она идёт ВНИЗ от SP, а `overlap` считается против SP как
+     * нижней живой границы. Прибор мерил не ту величину.
+     *
+     * Те же 25 строк показывают настоящую беду. В 13 случаях из 25 SP на момент сбоя лежит
+     * В САМОМ TEB или сразу под ним, тогда как `teb_stack` указывает совсем другую область:
+     *   · ровно `sp == teb` — в четырёх НЕЗАВИСИМЫХ прогонах (13:50, 16:07, 16:13, 16:21);
+     *   · `sp == teb + 0x370` — это `&ntdll_thread_data.syscall_table` (unix_private.h:231).
+     * Кадр в 1136 байт пишется вниз от SP и накрывает первые 880 байт TEB, включая
+     * `Tib.StackBase/StackLimit` по смещениям 8 и 16. Доказательство прямое: в каскаде 14:11
+     * первая доставка идёт при `teb_stack=0x75ea400000-0x75eb410000`, а СЛЕДУЮЩАЯ читает
+     * `teb_stack=0x1-0x0` — границы уже затёрты. Дальше каскад из восьми доставок с шагом
+     * ровно -3392 байта на одном потоке.
+     *
+     * Отсюда же снимается чтение «отрицательный room = вышли за нижнюю границу unix-стека»
+     * (см. ниже): room считается против `kernel_stack`, а он у этих потоков в другой области
+     * вовсе, поэтому -458 ГБ означает «другая область», а не исчерпание.
+     *
+     * Следующий вопрос — ПОЧЕМУ SP равен базе TEB на момент сбоя. Это замер, а не правка. */
     {
         static ULONG64 overlap_seen, overlap_printed, any_printed;
         char *w_lo = (char *)stack;
@@ -2159,8 +2264,10 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
          * называет.  Спрашиваем таблицу напрямую — это один индекс, читать её из обработчика
          * сигнала безопасно. */
         const char *lr_dll = "-", *lr_api = "-";
+        UINT64 lr_target = 0;
 
-        macrunner_hb_import_name_for_guest( (UINT64)(ULONG_PTR)LR_sig(sigcontext), &lr_dll, &lr_api );
+        macrunner_hb_import_name_for_guest( (UINT64)(ULONG_PTR)LR_sig(sigcontext), &lr_dll, &lr_api,
+                                            &lr_target );
 
         if (overlap > 0) __atomic_add_fetch( &overlap_seen, 1, __ATOMIC_RELAXED );
         if ((overlap > 0 && __atomic_fetch_add( &overlap_printed, 1, __ATOMIC_RELAXED ) < 16) ||
@@ -2197,7 +2304,22 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
                  * Это похоже на исчерпание unix-стека, но «похоже» здесь не годится: у потока есть
                  * готовое поле kernel_stack, и остаток считается точно.  Отрицательный room и есть
                  * доказательство выхода за нижнюю границу. */
-                "kstack=%p kstack_size=%#lx room=%lld lr_dll=%s lr_api=%s\n",
+                /* MacRunner 04.08 — ВЛОЖЕННАЯ ЛИ ЭТО ДОСТАВКА.
+                 *
+                 * Разбор Prism закрыл вопрос о поле TEB+0x1490: четвёрку туда кладёт функция
+                 * 0x6838 в wow64.dll, а доходят до неё только Wow64RaiseException и
+                 * Wow64PassExceptionToGuest.  Wow64PrepareForException читает это поле ПЕРВОЙ
+                 * операцией и при четвёрке выходит, не готовя ничего.  То есть у Prism стоит
+                 * защёлка повторного входа в доставку исключения — ровно против того каскада,
+                 * который мы здесь и ловим.
+                 *
+                 * У нас учёт на поток есть (signal_depth/route_depth растут и падают парой), но
+                 * ни один счётчик НЕ читается как условие — они только печатаются.  Прежде чем
+                 * ставить защёлку, надо знать, случается ли смертельное наложение именно на
+                 * вложенной доставке: если все записи с overlap>0 идут при глубине 1, защёлка
+                 * лечила бы не ту болезнь.  Печатаем глубину прямо в этой строке. */
+                "kstack=%p kstack_size=%#lx room=%lld lr_dll=%s lr_api=%s lr_target=%p "
+                "sig_depth=%u route_depth=%u cbstack_decline=%d\n",
                 (unsigned long long)macrunner_hb_current_thread_id(), NtCurrentTeb(),
                 (unsigned long)rec->ExceptionCode, w_lo, w_hi, (unsigned)sizeof(*stack),
                 live_lo, delivery_stack_ptr, used_callback_stack ? 1u : 0u, overlap,
@@ -2209,7 +2331,10 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
                 (unsigned long long)__atomic_load_n( &overlap_seen, __ATOMIC_RELAXED ),
                 ntdll_get_thread_data()->kernel_stack, (unsigned long)kernel_stack_size,
                 (long long)((char *)live_lo - (char *)ntdll_get_thread_data()->kernel_stack),
-                lr_dll, lr_api );
+                lr_dll, lr_api, (void *)(ULONG_PTR)lr_target,
+                macrunner_hb_callback_loop_tls.signal_depth,
+                macrunner_hb_callback_loop_tls.route_depth,
+                macrunner_hb_cbstack_decline );
     }
 
     macrunner_hb_note_delivery( stack, sizeof(*stack),
@@ -2243,7 +2368,7 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
 #else
     PC_sig(sigcontext) = (ULONG_PTR)pKiUserExceptionDispatcher;
 #endif
-    REGn_sig(18, sigcontext) = (ULONG_PTR)NtCurrentTeb();
+    REGn_sig(18, sigcontext) = (ULONG_PTR)macrunner_teb_reliable();
     if (rec->ExceptionCode == STATUS_STACK_OVERFLOW && macrunner_hb_trace_stack_setup_enabled())
         ERR( "macrunner-hb-stack-setup: pid=%d stack=%p sig_sp=%p saved_sp=%p "
              "stack_sp=%p stack_pc=%p teb_stack=%p-%p dealloc=%p\n",
@@ -2672,7 +2797,7 @@ static BOOL handle_syscall_fault( ucontext_t *context, EXCEPTION_RECORD *rec )
         REGn_sig(16, context) = (ULONG_PTR)__wine_syscall_dispatcher_return;
         PC_sig(context)       = (ULONG_PTR)__wine_pe_x18_thunk;
 #else
-        REGn_sig(18, context) = (ULONG_PTR)NtCurrentTeb();
+        REGn_sig(18, context) = (ULONG_PTR)macrunner_teb_reliable();
         PC_sig(context)       = (ULONG_PTR)__wine_syscall_dispatcher_return;
 #endif
     }
@@ -2889,6 +3014,45 @@ static void macrunner_hb_trace_callback_target_module( const char *source, ULONG
              source, (void *)pc, module_name, module, (unsigned long long)rva, hex );
 }
 
+/* Счётчики пути hexpthk — чтобы быстрый выход можно было доказать, а не предположить.
+ *
+ * Обе трассы внутри этой функции сидят под гейтами, поэтому в 24 прогонах истории у неё НОЛЬ
+ * упоминаний — и это ноль от выключенного прибора, он не говорит ни что путь работает, ни что он
+ * мёртв.  Между тем на чужом длинном прогоне 04.08 именно он съел 143 отсчёта из 263 внутри
+ * segv_handler при шторме в 295.6 млн отказов, где адрес отказа был в libsystem_platform, то есть
+ * ВНЕ гостевой полосы.
+ *
+ * Счётчики отвечают на два вопроса разом: как часто путь зовут вообще и какова доля вызовов вне
+ * полосы (их и срезает `MACRUNNER_HB_HEXPTHK_FAST_SKIP`), а `hits` показывает, срабатывает ли
+ * перенаправление хоть когда-нибудь.  Если при сотнях миллионов вызовов `hits=0`, вопрос о
+ * стоимости решается сам собой.  Печать раз на 4 млн вызовов плюс первое срабатывание. */
+static uint64_t macrunner_hb_hexpthk_calls;
+static uint64_t macrunner_hb_hexpthk_out_of_band;
+static uint64_t macrunner_hb_hexpthk_hits;
+
+static void macrunner_hb_hexpthk_note_call( ULONG_PTR pc )
+{
+    uint64_t n = __atomic_add_fetch( &macrunner_hb_hexpthk_calls, 1, __ATOMIC_RELAXED );
+
+    if (pc < 0x87e00000000ull || pc >= 0x88000000000ull)
+        __atomic_add_fetch( &macrunner_hb_hexpthk_out_of_band, 1, __ATOMIC_RELAXED );
+    if ((n & 0x3fffffull) == 0)
+        macrunner_signal_writef( "macrunner-hb-hexpthk-census: calls=%llu out_of_band=%llu hits=%llu\n",
+                                 (unsigned long long)n,
+                                 (unsigned long long)__atomic_load_n( &macrunner_hb_hexpthk_out_of_band, __ATOMIC_RELAXED ),
+                                 (unsigned long long)__atomic_load_n( &macrunner_hb_hexpthk_hits, __ATOMIC_RELAXED ) );
+}
+
+static void macrunner_hb_hexpthk_note_hit( ULONG_PTR pc )
+{
+    uint64_t n = __atomic_add_fetch( &macrunner_hb_hexpthk_hits, 1, __ATOMIC_RELAXED );
+
+    if (n <= 8)
+        macrunner_signal_writef( "macrunner-hb-hexpthk-hit: n=%llu pc=%p in_band=%d\n",
+                                 (unsigned long long)n, (void *)pc,
+                                 (pc >= 0x87e00000000ull && pc < 0x88000000000ull) ? 1 : 0 );
+}
+
 static BOOL macrunner_hb_redirect_arm64x_hexpthk_sigill( ucontext_t *context )
 {
     static const unsigned char thunk_prefix[] = { 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x20, 0x55, 0x5d, 0xe9 };
@@ -2905,6 +3069,36 @@ static BOOL macrunner_hb_redirect_arm64x_hexpthk_sigill( ucontext_t *context )
 
     if (trace_candidates < 0)
         trace_candidates = getenv( "MACRUNNER_HB_TRACE_HEXPTHK_CANDIDATE" ) ? 1 : 0;
+
+    macrunner_hb_hexpthk_note_call( pc );
+
+    /* MacRunner 04.08 — O(1)-выход, когда переходник невозможен по построению.
+     *
+     * Замер на ЧУЖОМ живом прогоне (INPUT-TEST, 59 минут): 295.6 млн отказов при 82 536/с и
+     * busy_pct=30, причём перепись страниц отдаёт 100.0 % одной гостевой странице
+     * 0x87ef13c0000, а обращается к ней хостовый pc=0x1841873f0, разрешённый через `sample` как
+     * libsystem_platform.dylib+0x33f0, то есть `_platform_memmove+0x90`.  По `sample` внутри
+     * segv_handler 143 отсчёта из 263 приходятся на эту функцию с `probe_image_bytes` под ней.
+     *
+     * Для такого отказа она НЕ МОЖЕТ сработать, и это следует из её же условий: принятый
+     * кандидат обязан удовлетворять `pc ∈ [c, c+14)` (см. цикл ниже) И быть PE-кодом.  Если pc
+     * лежит в системной библиотеке хоста, любой содержащий его кандидат лежит там же, PE-кодом
+     * не является, и функция гарантированно возвращает FALSE — но уже после классификации модуля
+     * и до пяти охраняемых чтений памяти, на каждом из 295 миллионов отказов.
+     *
+     * Проверка диапазона стоит одно сравнение: все наши PE-образы живут в гостевой полосе
+     * 0x87e00000000…0x88000000000 (та же константа, что в пробе nullcall), хостовые библиотеки —
+     * в разделяемом кеше dyld около 0x180000000.  Семантику это не меняет: выход даётся только
+     * там, где принятие кандидата невозможно.
+     *
+     * ЗА ГЕЙТОМ, дефолт ВЫКЛ, пока не измерено A/B — сегодня две правки уже проходили первый
+     * контроль и заваливались на следующих руках. */
+    {
+        static int fast_skip = -1;
+
+        if (fast_skip < 0) fast_skip = getenv( "MACRUNNER_HB_HEXPTHK_FAST_SKIP" ) ? 1 : 0;
+        if (fast_skip && (pc < 0x87e00000000ull || pc >= 0x88000000000ull)) return FALSE;
+    }
 
     if (macrunner_hb_pc_is_x64_guest_code_module_no_lock( (void *)pc ))
     {
@@ -2980,11 +3174,12 @@ static BOOL macrunner_hb_redirect_arm64x_hexpthk_sigill( ucontext_t *context )
     if ((target & 3) || macrunner_hb_pe_module_from_pc_no_lock( (void *)target ) != module) return FALSE;
     if (!macrunner_hb_pc_is_pe_code_module_no_lock( (void *)target )) return FALSE;
 
+    macrunner_hb_hexpthk_note_hit( pc );
     if (macrunner_hb_trace_callback_route_enabled())
         fprintf( stderr, "macrunner-hb-arm64x-hexpthk-redirect: pc=%p thunk=%p target=%p\n",
                  (void *)pc, (void *)thunk, (void *)target );
     REGn_sig(16, context) = target;
-    REGn_sig(18, context) = (ULONG_PTR)NtCurrentTeb();
+    REGn_sig(18, context) = (ULONG_PTR)macrunner_teb_reliable();
     PC_sig(context) = target;
     return TRUE;
 }
@@ -3171,7 +3366,7 @@ static void macrunner_hb_trace_low_stack_vm_region( const char *label, ULONG_PTR
 
 static BOOL macrunner_hb_is_low_stack_access_fault( ucontext_t *context, const EXCEPTION_RECORD *rec )
 {
-    TEB *teb = NtCurrentTeb();
+    TEB *teb = macrunner_teb_reliable();  /* НЕ NtCurrentTeb(): на ARM64 это x18, который здесь и затёрт */
     char *sp = (char *)SP_sig(context);
     char *fault;
 
@@ -4464,11 +4659,30 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
 
             if (__atomic_fetch_add( &accerr_dumped, 1, __ATOMIC_RELAXED ) < 6 ||
                 (macrunner_hb_accerr_storm_sample_enabled() && (an & 0xfffffull) == 0))
-                macrunner_signal_writef( "macrunner-hb-accerr-sample: n=%llu pc=%p fault=%p lr=%p esr=0x%llx\n",
+            {
+                /* MacRunner 04.08 16:58 — ИМЯ МОДУЛЯ, А НЕ ГОЛЫЙ АДРЕС.
+                 *
+                 * Прогон 162224 дал 66.16 млн отказов, из них 66 162 622 на ОДНОЙ странице, а все
+                 * шесть выборок — с адресами сбоя 0x60, 0x60, 0x3000, 0x3004, 0x17ee, 0x180c, то
+                 * есть на нулевой странице, при `pc` в полосе 0x87fff9…  Дальше нужно знать, ЧЕЙ
+                 * это код, и вот этого лог не даёт.  Попытка вычислить модуль арифметикой (взять
+                 * базу `native_module=0x87fff950000` из соседней строки и вычесть) провалилась
+                 * честно: ни один из 1819 модулей диста не имеет `EnterCriticalSection` на
+                 * полученном RVA 0x735d0 — значит база принадлежит другому модулю, а полоса
+                 * содержит их несколько.  Привязку должен печатать сам прибор, как это уже делают
+                 * соседние: `macrunner_hb_signal_find_loader_module` здесь доступна. */
+                struct macrunner_hb_signal_module_info pc_mod;
+                BOOL have_mod = macrunner_hb_signal_find_loader_module( (ULONG_PTR)PC_sig(context), &pc_mod );
+
+                macrunner_signal_writef( "macrunner-hb-accerr-sample: n=%llu pc=%p fault=%p lr=%p esr=0x%llx "
+                                         "pc_module=%s pc_base=%p pc_rva=0x%llx found=%u\n",
                                          (unsigned long long)an,
                                          (void *)(ULONG_PTR)PC_sig(context), (void *)fault_addr,
                                          (void *)(ULONG_PTR)LR_sig(context),
-                                         (unsigned long long)get_fault_esr( context ) );
+                                         (unsigned long long)get_fault_esr( context ),
+                                         pc_mod.name, pc_mod.base,
+                                         (unsigned long long)pc_mod.rva, have_mod );
+            }
 
             /* MacRunner 04.08 — попытка ИСПОЛНЕНИЯ по неотображаемому адресу, названная поимённо.
              *

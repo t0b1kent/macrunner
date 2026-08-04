@@ -5692,13 +5692,24 @@ static struct macrunner_hb_import_thunk *macrunner_hb_find_import_thunk( uint64_
  * есть и стоит один индекс, так что дешевле открыть его наружу, чем городить второй.
  *
  * Только чтение готового массива — вызывать из обработчика сигнала безопасно. */
-int macrunner_hb_import_name_for_guest( UINT64 guest_target, const char **dll, const char **api )
+int macrunner_hb_import_name_for_guest( UINT64 guest_target, const char **dll, const char **api,
+                                        UINT64 *target )
 {
     const struct macrunner_hb_import_thunk *thunk = macrunner_hb_find_import_thunk( guest_target );
 
     if (!thunk) return 0;
     if (dll) *dll = thunk->dll_name;
     if (api) *api = thunk->import_name;
+    /* Цель переходника — та самая величина, которую он грузит литералом и в которую переходит.
+     *
+     * Понадобилась 04.08.  Падение приходит с `pc=0`, а `lr` указывает на базу переходника, и по
+     * трём прогонам оператора адрес совпал ПОБИТОВО в двух из трёх (57C0, 57C0, 41C0).  Гонка так
+     * не воспроизводится, поэтому объяснение «переход опубликован раньше литерала» под вопросом, а
+     * трасса `dynamic-import-target` печатает лишь часть таблицы и этих двух переходников не
+     * называет.  Одна величина разделяет версии: если target ноль или не код — переходник выпущен
+     * с негодной целью, и искать надо в разрешении экспорта; если target здоров — ноль в pc пришёл
+     * не из литерала, и версия с порядком записи снимается.  Поэтому печатаем её, а не рассуждаем. */
+    if (target) *target = (UINT64)(uintptr_t)thunk->target;
     return 1;
 }
 
@@ -5763,9 +5774,27 @@ static BOOL macrunner_hb_emit_native_import_code_thunk( struct macrunner_hb_impo
 
     code = (uint32_t *)(uintptr_t)slot->guest_target;
     target = (uint64_t)(uintptr_t)slot->target;
-    code[0] = 0x58000050; /* ldr x16, #8 */
-    code[1] = 0xd61f0200; /* br x16 */
+
+    /* Порядок записи здесь несущий, а не косметический.
+     *
+     * Было: сперва `ldr x16,#8` и `br x16`, и только ПОТОМ литерал с адресом цели.  Страница
+     * получена свежим `mmap`, то есть до записи литерал равен нулю.  Поток, вошедший в переходник
+     * после того, как стал виден `br x16`, но до того, как лёг литерал, читает ноль и переходит
+     * по нулю.  Это ровно та подпись, что снята 04.08 в трёх независимых прогонах оператора
+     * (160533, 161145, 161717): `pc=0000000000000000`, `lr` = база переходника, `exception=c0000005`,
+     * а по имени переходник опознан как `KERNEL32.dll!WaitForSingleObjectEx`.
+     *
+     * Стало: сперва литерал и сброс кеша по нему, затем обе инструкции ОДНИМ выровненным
+     * восьмибайтовым store — так промежуточного состояния «переход есть, адреса нет» не
+     * существует ни для одного наблюдателя.  `guest_target` кратен MACRUNNER_HB_IMPORT_STRIDE,
+     * значит `code` выровнен, и такой store на ARM64 неделим. */
     memcpy( &code[2], &target, sizeof(target) );
+    __builtin___clear_cache( (char *)&code[2], (char *)&code[4] );
+    {
+        uint64_t insns = (uint64_t)0x58000050u |        /* ldr x16, #8 */
+                         ((uint64_t)0xd61f0200u << 32); /* br  x16     */
+        memcpy( code, &insns, sizeof(insns) );
+    }
     __builtin___clear_cache( (char *)code, (char *)code + MACRUNNER_HB_IMPORT_STRIDE );
 
     if (mprotect( base, MACRUNNER_HB_IMPORT_CODE_SIZE, PROT_READ | PROT_EXEC ))
@@ -5893,6 +5922,31 @@ static BOOL macrunner_hb_find_import_name_by_iat_slot( void *module, uint64_t sl
             !macrunner_hb_image_rva_range_valid( module, first_rva + thunk_idx * sizeof(*iat), sizeof(*iat) ) ||
             !iat[thunk_idx].u1.Function)
             continue;
+
+        /* MacRunner 04.08 — слот обязан лежать в массиве ИМЕННО ЭТОГО дескриптора.
+         *
+         * Проверялась только нижняя граница (`slot_addr < iat_addr` — пропустить), поэтому первый
+         * же дескриптор, чей IAT начинается ниже искомого слота, забирал его себе.  Массивы
+         * соседних DLL лежат в образе подряд, так что индекс уходил в чужой массив, а имя бралось
+         * из чужого `OriginalFirstThunk`.  Проверка на нулевую запись от этого не спасает: индекс
+         * попадает в ЖИВУЮ запись соседа, а не в терминатор.
+         *
+         * Измеренное последствие: `import=advapi32.dll!__wine_rpc_NtReadFile` — имя из ntdll,
+         * приписанное advapi32, — и `registered=0`, потому что thunk по такому имени не находится.
+         * Через 16 мс после этой строки прогон уходил в каскад доставки исключения и `exit=5`.
+         *
+         * Длина массива дескриптора — до терминирующей нулевой записи; слот за ней принадлежит
+         * следующей DLL, и такой дескриптор надо пропускать, а не отвечать за него. */
+        {
+            unsigned int count = 0;
+
+            while (count < 4096 &&
+                   macrunner_hb_image_rva_range_valid( module, first_rva + count * sizeof(*iat),
+                                                       sizeof(*iat) ) &&
+                   iat[count].u1.Function)
+                count++;
+            if (thunk_idx >= count) continue;
+        }
 
         orig_rva = desc->OriginalFirstThunk ? desc->OriginalFirstThunk : desc->FirstThunk;
         if (!macrunner_hb_image_rva_range_valid( module, orig_rva + thunk_idx * sizeof(*orig), sizeof(*orig) ))
@@ -34681,6 +34735,41 @@ static BOOL macrunner_hb_pc_is_native_pe_builtin( uint64_t pc, void **module_bas
     nt = macrunner_hb_image_nt_header( base );
     if (nt && macrunner_hb_get_arm64x_metadata( base ))
     {
+        /* MacRunner 04.08 — наличие метаданных ARM64X ещё НЕ делает адрес нативным.
+         *
+         * Здесь стоял безусловный `return TRUE`: любой исполняемый адрес в гибридном образе
+         * объявлялся нативным встроенным PE, после чего вызывающий код исполнял его как ARM64.
+         * Измерено на HK: цель `ntdll.dll!__wine_rpc_NtReadFile` получала `builtin=1 syscall=0`,
+         * а по её адресу в образе (machine=0x8664) лежит классическая x86-64 заглушка сисвызова —
+         *     4c 8b d1              mov r10, rcx
+         *     b8 02 01 00 00        mov eax, 0x102
+         *     f6 04 25 08 03 fe 7f 01 / 75 03 / 0f 05    test / jne / syscall
+         * то есть исполнялись x86-байты как ARM64-код.  Отсюда и `sp = teb + 0x370`, и `c0000005`,
+         * и каскад доставки, рушивший первые 880 байт TEB, и `exit=5`.
+         *
+         * В гибридном образе нативность решается АДРЕСОМ: карта кода CHPE говорит про каждый
+         * диапазон, нативный он или x64.  Разбор карты в проекте уже есть и написан ровно для
+         * этого — в его комментарии записано, что родственная ошибка давала «exit(5) вскоре после
+         * инициализации ввода Unity», ту же подпись, что мы и ловим.
+         *
+         * ПЕРЕГИБ, измеренный сразу же: с безусловной проверкой загрузка встаёт на +26 с.  Прибор
+         * поймал `ntdll.dll!__wine_dbg_header` (pc=0x87fff9c613c) с `builtin=0`, а по этому адресу
+         * лежит НАТИВНЫЙ ARM64 — `d101c3ff` = `sub sp, sp, #0x70`, `a90153f3` = `stp x19, x20,
+         * [sp,#16]`.  То есть разбор карты кода отвечает «x64» и для нативных диапазонов host-ntdll;
+         * ровно об этом предупреждает комментарий у соседнего, имя-ограниченного варианта: host
+         * ARM64X модули этим сырым тестом матчить нельзя.
+         *
+         * Поэтому проверка ЗА ГЕЙТОМ с дефолтом ВЫКЛ (долг записан в LANE-A-PROGRESS.md): дерево
+         * ведёт себя как раньше, а рука с `MACRUNNER_HB_ARM64X_X64_RANGE_STRICT=1` меряет отдельно.
+         * Правильный разделитель ещё не найден: обе цели — и заглушка сисвызова, и `__wine_dbg_header` —
+         * лежат в ОДНОМ модуле (0x87fff9…), так что различать их надо не модулем, а диапазоном,
+         * и сначала надо понять, почему карта врёт на нативном куске. */
+        {
+            static int strict = -1;
+
+            if (strict < 0) strict = getenv( "MACRUNNER_HB_ARM64X_X64_RANGE_STRICT" ) ? 1 : 0;
+            if (strict && macrunner_hb_pc_in_arm64x_x64_range( base, pc )) return FALSE;
+        }
         if (module_base) *module_base = base;
         return TRUE;
     }
@@ -34953,11 +35042,36 @@ static void macrunner_hb_ensure_win32u_syscall_table(void)
     if (funcs && funcs[0]) funcs[0]( NULL );
 }
 
+/* Заглушка сисвызова в загруженном aarch64 ntdll — узнаётся по двум первым словам.
+ *
+ * Форма проверена офлайн по самому образу, пять сисвызовов против двух обычных функций:
+ *     NtClose               d28001e8 aa1e03e9   movz x8,#0x0f ; mov x9,x30
+ *     NtReadFile            d28000c8 aa1e03e9   movz x8,#0x06
+ *     NtWriteFile           d2800108 aa1e03e9   movz x8,#0x08
+ *     NtCreateFile          d2800aa8 aa1e03e9   movz x8,#0x55
+ *     __wine_rpc_NtReadFile d2802048 aa1e03e9   movz x8,#0x102
+ *     RtlAllocateHeap       d10243ff a90353f3   sub sp,sp,#0x90 ; stp   <- обычная
+ *     __wine_dbg_header     d101c3ff a90153f3   sub sp,sp,#0x70 ; stp   <- обычная
+ * Номер сервиса — непосредственное поле movz, биты [20:5]. */
+static BOOL macrunner_hb_syscall_stub_id( uint64_t target, UINT *service )
+{
+    const uint32_t *w = (const uint32_t *)(uintptr_t)target;
+
+    if (!target || (target & 3)) return FALSE;
+    if ((w[0] & 0xffe0001fu) != 0xd2800008u) return FALSE;   /* movz x8, #imm16 */
+    if (w[1] != 0xaa1e03e9u) return FALSE;                   /* mov  x9, x30   */
+    if (service) *service = (UINT)((w[0] >> 5) & 0xffffu);
+    return TRUE;
+}
+
+/* Номер сервиса приходит параметром, а не читается из rax.
+ *
+ * Вход через x64-диспетчер даёт его в rax, но у ARM64-заглушки сисвызова он зашит в первую
+ * инструкцию (`movz x8, #imm`), и читать там rax бессмысленно — см. macrunner_hb_syscall_stub_id. */
 static hb_result_t macrunner_hb_dispatch_x64_syscall( hb_context_t *ctx, uint64_t target,
-                                                      uint64_t ret_addr )
+                                                      uint64_t ret_addr, UINT service )
 {
     struct macrunner_hb_import_thunk thunk;
-    const UINT service = (UINT)ctx->regs.x64.rax;
     const UINT id = service & 0xfff;
     const UINT table_idx = (service >> 12) & 3;
     SYSTEM_SERVICE_TABLE *table = &KeServiceDescriptorTable[table_idx];
@@ -35185,7 +35299,35 @@ static hb_result_t macrunner_hb_call_direct_native_target( hb_context_t *ctx, ui
         return macrunner_hb_dispatch_x64_unix_call( ctx, target, ret_addr );
 
     if (macrunner_hb_pc_is_syscall_dispatcher( target ))
-        return macrunner_hb_dispatch_x64_syscall( ctx, target, ret_addr );
+        return macrunner_hb_dispatch_x64_syscall( ctx, target, ret_addr, (UINT)ctx->regs.x64.rax );
+
+    /* MacRunner 04.08 — цель может быть не диспетчером, а ЗАГЛУШКОЙ сисвызова.
+     *
+     * Предикат выше знает только сам `__wine_syscall_dispatcher` по символу, поэтому заглушка
+     * проваливалась в общий нативный вызов ниже.  Измерено на HK: цель
+     * `ntdll.dll!__wine_rpc_NtReadFile` (RVA 0x69670 в загруженном aarch64 ntdll) — заглушка, и
+     * через 16 мс после её вызова процесс уходил в каскад доставки исключения и `exit=5`.
+     *
+     * Заглушка кладёт регистр связи вызывающего в `x9`, и диспетчер возвращается ЧЕРЕЗ него, тогда
+     * как на входе в доставку измерено `lr_in=0x0`.  Поэтому не зовём заглушку как обычную
+     * функцию, а берём номер сервиса прямо из неё и идём в ту же таблицу, что и для диспетчера.
+     *
+     * ЗА ГЕЙТОМ, дефолт ВЫКЛ (долг).  Измерено сразу после включения: две длинных руки из трёх
+     * перестали доходить до swapchain и умирали на ~190 с в ARM64-развёртывателе
+     * (`macrunner-hb-arm64-unwind-unsafe-boundary`, `native-dispatch-boundary-reject`) — картины,
+     * которой до правки не было ни разу.  Радиус у неё большой: через этот путь идут ВСЕ
+     * заглушки сисвызовов, а не только роковая, и раньше они звались нативно и работали.
+     * Поэтому правка ждёт руки, где событие `dynamic-iat-import-target` реально наступает: только
+     * там видно, лечит ли она каскад, и стоит ли того смена семантики для всех остальных. */
+    {
+        static int stub_dispatch = -1;
+        UINT stub_service;
+
+        if (stub_dispatch < 0)
+            stub_dispatch = getenv( "MACRUNNER_HB_SYSCALL_STUB_DISPATCH" ) ? 1 : 0;
+        if (stub_dispatch && macrunner_hb_syscall_stub_id( target, &stub_service ))
+            return macrunner_hb_dispatch_x64_syscall( ctx, target, ret_addr, stub_service );
+    }
 
     args[0] = ctx->regs.x64.rcx;
     args[1] = ctx->regs.x64.rdx;
@@ -37807,11 +37949,45 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
 
                     import_thunk = macrunner_hb_find_import_thunk_by_name( iat_dll_name, iat_import_name );
                     if (dynamic_iat_import_target_budget++ < 120)
+                    {
+                        /* MacRunner 04.08 — чем ЯВЛЯЕТСЯ цель, когда thunk-а нет.
+                         *
+                         * При `registered=0` ниже безусловно зовётся
+                         * `macrunner_hb_call_direct_native_target`, то есть цель исполняется как
+                         * обычная нативная функция.  Но у соседней ветки (строкой ниже по файлу)
+                         * для того же вопроса есть три предиката — встроенный PE, unix-диспетчер,
+                         * диспетчер сисвызовов, — и IAT-ветка их не спрашивает вовсе.  А цель,
+                         * которую мы поймали, это `ntdll.dll!__wine_rpc_NtReadFile`, объявленный в
+                         * `ntdll.spec` как `@ stdcall -syscall`: сисвызов, а не обычный экспорт.
+                         * Печатаем все три признака — они скажут, законен ли здесь прямой вызов,
+                         * вместо того чтобы рассуждать об этом. */
+                        void *probe_module = NULL;
+                        int is_builtin = macrunner_hb_pc_is_native_pe_builtin( ctx->pc, &probe_module ) ? 1 : 0;
+                        int is_unixdisp = macrunner_hb_pc_is_unix_call_dispatcher( ctx->pc ) ? 1 : 0;
+                        int is_syscall = macrunner_hb_pc_is_syscall_dispatcher( ctx->pc ) ? 1 : 0;
+
+                        /* Как ВЫГЛЯДИТ цель — чтобы предикат узнавал заглушку по коду, а не по
+                         * догадке о её виде.  Предыдущий прогон дал builtin=1 syscall=0 для
+                         * `ntdll.dll!__wine_rpc_NtReadFile`, объявленного `-syscall`; значит на
+                         * этом адресе стоит заглушка сисвызова, а узнаётся только сам диспетчер по
+                         * символу.  Восемь слов ARM64 назовут её форму (ожидаем `svc #0`,
+                         * 0xd4000001, либо переход на диспетчер) и дадут точный признак. */
+                        uint32_t code[8];
+                        int ci;
+
+                        memcpy( code, (const void *)(uintptr_t)ctx->pc, sizeof(code) );
+
                         fprintf( stderr, "macrunner-hb-dynamic-iat-import-target: label=%s "
-                                 "pc=%p last_block=%p import=%s!%s registered=%d\n",
+                                 "pc=%p last_block=%p import=%s!%s registered=%d "
+                                 "builtin=%d unixdisp=%d syscall=%d module=%p code=",
                                  label ? label : "entry", (void *)(uintptr_t)ctx->pc,
                                  (void *)(uintptr_t)last_block_pc, iat_dll_name, iat_import_name,
-                                 import_thunk != NULL );
+                                 import_thunk != NULL, is_builtin, is_unixdisp, is_syscall,
+                                 probe_module );
+                        for (ci = 0; ci < 8; ci++)
+                            fprintf( stderr, "%s%08x", ci ? "," : "", code[ci] );
+                        fprintf( stderr, "\n" );
+                    }
                     if (!import_thunk && macrunner_hb_native_direct_callback_split_enabled() &&
                         macrunner_hb_is_x64_stack_probe_import( iat_dll_name, iat_import_name ))
                     {

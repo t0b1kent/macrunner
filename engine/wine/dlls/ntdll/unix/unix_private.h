@@ -862,7 +862,8 @@ static inline int is_gdt_sel( WORD sel )
 #endif  /* defined(__i386__) || defined(__x86_64__) */
 
 extern UINT64 macrunner_hb_guest_pc_for_tid( DWORD tid, UINT64 *guest_rsp, int *state, UINT64 *gpr6 );
-extern int macrunner_hb_import_name_for_guest( UINT64 guest_target, const char **dll, const char **api );
+extern int macrunner_hb_import_name_for_guest( UINT64 guest_target, const char **dll, const char **api,
+                                               UINT64 *target );
 extern int macrunner_hb_guest_ctx_for_tid( DWORD tid, UINT64 *guest_pc, UINT64 *guest_sp );
 extern int macrunner_hb_guest_image_for_pc( UINT64 pc, UINT64 *base, UINT64 *size );
 

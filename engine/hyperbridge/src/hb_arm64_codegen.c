@@ -665,10 +665,48 @@ static bool jit_direct_mem_codegen_enabled(hb_codegen_buffer_t* buf) {
     return direct_mem_codegen_arch_enabled(buf) && jit_direct_mem_enabled();
 }
 
+static int jit_native_mem_shape_level(void);
+static int jit_native_mem_side(void);
+static bool jit_native_mem_ir_qword_loads_enabled(void);
+
+/* Счётчики нативного понижения памяти — без них любая рука бисекта несостоявшийся замер.
+ *
+ * 04.08: гейты `NATIVE_MEM_IR` / `SIDE` / `SHAPE` описаны в комментариях ниже вместе с бисектом,
+ * но у пути НЕТ ни одной печати, и рука «только записи» не смогла ни подтвердить, ни опровергнуть
+ * себя: объявленный контроль (смерть c000001d) не наступил, а доказать, что гейт вообще доехал до
+ * игры, было нечем.  Плюс сам предикат зависит ещё и от буфера, так что «включил» не равно
+ * «применилось».  Поэтому: одна строка при первом обращении к гейту — что именно он видит, — и
+ * счётчики реально сэмитированных загрузок и записей. */
+static uint64_t g_native_mem_loads_emitted;
+static uint64_t g_native_mem_stores_emitted;
+
+static void jit_native_mem_note_gates(int ir_on, int arch_ok) {
+    static int announced;
+
+    if (announced) return;
+    announced = 1;
+    fprintf(stderr, "macrunner-hb-native-mem-gates: ir=%d arch=%d side=%d shape=%d qword=%d\n",
+            ir_on, arch_ok, jit_native_mem_side(), jit_native_mem_shape_level(),
+            jit_native_mem_ir_qword_loads_enabled() ? 1 : 0);
+    fflush(stderr);
+}
+
+static void jit_native_mem_count(int is_store) {
+    uint64_t n = is_store ? ++g_native_mem_stores_emitted : ++g_native_mem_loads_emitted;
+
+    if ((n & 0xffffu) == 0)
+        fprintf(stderr, "macrunner-hb-native-mem-count: loads=%llu stores=%llu\n",
+                (unsigned long long)g_native_mem_loads_emitted,
+                (unsigned long long)g_native_mem_stores_emitted);
+}
+
 static bool jit_native_mem_ir_enabled(hb_codegen_buffer_t* buf) {
     static int cached = -1;
-    return direct_mem_codegen_arch_enabled(buf) &&
-           hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_JIT_NATIVE_MEM_IR", 0) != 0;
+    bool on = hb_jit_env_flag_cached(&cached, "MACRUNNER_HB_JIT_NATIVE_MEM_IR", 0) != 0;
+    bool arch = direct_mem_codegen_arch_enabled(buf);
+
+    jit_native_mem_note_gates(on ? 1 : 0, arch ? 1 : 0);
+    return arch && on;
 }
 
 static bool jit_native_mem_ir_qword_loads_enabled(void) {
@@ -5175,6 +5213,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
                 !wide_self_base_load_needs_helper(instr)) {
                 if (!emit_direct_mem_load_to_gpr_tso(buf, &instr->src1, &instr->dst))
                     return HB_ERR_INTERNAL;
+                jit_native_mem_count(0);
                 return HB_OK;
             }
             emit_mov_reg(buf, 0, 19);
@@ -5232,6 +5271,7 @@ static hb_result_t codegen_instr(hb_codegen_buffer_t* buf, const hb_ir_instr_t* 
                 }
                 if (!emit_direct_mem_store_from_x20_tso(buf, &instr->src1))
                     return HB_ERR_INTERNAL;
+                jit_native_mem_count(1);
                 return HB_OK;
             }
             emit_mov_reg(buf, 0, 19);
@@ -6053,7 +6093,29 @@ static void hb_jit_helper_op_note_slow(const hb_ir_instr_t* instr) {
     }
 }
 
+/* Счётчик ИСПОЛНЕННЫХ вызовов помощников загрузки и записи — единственная метрика, отвечающая на
+ * вопрос о нативном понижении памяти прямо.
+ *
+ * За 04.08 три метрики отброшены: секунды (одна конфигурация давала 100 и 243 с от одной только
+ * нагрузки), диспатчи (это входы в блок, а правка действует внутри блока) и шаги с долей
+ * интерпретации (по построению не меняются — обе руки дали 5.159 против 5.1591 %).  Правка убирает
+ * ровно ХОСТОВЫЙ ВЫЗОВ на каждой исполненной загрузке, поэтому считать надо его.  Печать раз на
+ * 16 млн вызовов: при 504 млн за прогон это три десятка строк, а нагрузка счётчика — один
+ * инкремент на вызов, который и так делает работу на порядок дороже. */
+static uint64_t g_helper_load_calls;
+static uint64_t g_helper_store_calls;
+
+static void jit_helper_mem_call_count(int is_store) {
+    uint64_t n = is_store ? ++g_helper_store_calls : ++g_helper_load_calls;
+
+    if ((n & 0xffffffu) == 0)
+        fprintf(stderr, "macrunner-hb-helper-mem-calls: loads=%llu stores=%llu\n",
+                (unsigned long long)g_helper_load_calls,
+                (unsigned long long)g_helper_store_calls);
+}
+
 void hb_jit_helper_exec_load_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    jit_helper_mem_call_count(0);
     hb_jit_helper_op_note(instr);
     uint64_t val = 0;
     hb_result_t r;
@@ -6065,6 +6127,7 @@ void hb_jit_helper_exec_load_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t
 }
 
 void hb_jit_helper_exec_store_operand_lazy(hb_context_t* ctx, const hb_ir_instr_t* instr) {
+    jit_helper_mem_call_count(1);
     hb_jit_helper_op_note(instr);
     uint64_t val = 0;
     hb_result_t r;

@@ -28,6 +28,11 @@ static uint64_t g_rl_hp_succ;
 static uint64_t g_rl_hp_pred;
 static uint64_t g_rl_hp_succ_instr;
 static uint64_t g_rl_hp_other;
+/* Сторож набора регистров перемещения — определён в hb_arm64_codegen.c.
+ * Ненулевой rl_unrecorded = таблица снова отстала от кода. */
+extern unsigned long hb_reloc_unrecorded_ptr;
+extern unsigned long hb_reloc_unrecorded_last_reg;
+
 static uint64_t g_rl_hostptr;
 static uint64_t g_rl_unknown_helper;
 static uint64_t g_rl_overflow;
@@ -237,6 +242,7 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     "rl_hostptr=%llu hp_succ=%llu hp_pred=%llu hp_succinstr=%llu hp_other=%llu "
                     "rl_unkhelper=%llu rl_overflow=%llu "
                     "rl_desync=%llu rl_collision=%llu rl_roundtrip=%llu "
+                    "rl_unrecorded=%llu rl_unrec_reg=%llu "
                     "bytes_loaded=%llu bytes_stored=%llu "
                     "t_codegen_ms=%llu t_store_ms=%llu "
                     "compile_count=%llu translation_count=%llu "
@@ -272,6 +278,8 @@ int hb_contract_telemetry_format_summary(char* buf, size_t size,
                     (unsigned long long)counts->rl_desync,
                     (unsigned long long)counts->rl_collision,
                     (unsigned long long)counts->rl_roundtrip,
+                    (unsigned long long)hb_reloc_unrecorded_ptr,
+                    (unsigned long long)hb_reloc_unrecorded_last_reg,
                     (unsigned long long)counts->bytes_loaded,
                     (unsigned long long)counts->bytes_stored,
                     (unsigned long long)(counts->t_codegen_ns / 1000000ull),

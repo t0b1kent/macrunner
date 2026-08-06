@@ -737,6 +737,26 @@ static void reserve_area( void *addr, void *end )
 
             ret = mach_vm_map( mach_task_self(), &alloc_address, hole_size, 0, VM_FLAGS_FIXED,
                                MEMORY_OBJECT_NULL, 0, 0, PROT_NONE, VM_PROT_ALL, VM_INHERIT_COPY );
+            /* MacRunner 2026-08-06 — какие дыры реально удалось зарезервировать.
+             *
+             * Зачем. Mono просит у гостя блоки под исполняемый код по КОНКРЕТНЫМ адресам
+             * (VirtualAlloc size=0x10000 type=0x3000 protect=0x40) и получает c0000018
+             * (конфликт адресов) 12 раз подряд, после чего поток умирает с c000007b.
+             * Занимают эти адреса области с меткой malloc (tag=1..3), то есть куча ХОСТА
+             * расползлась туда, где гость собирался разместить код: 4.2, 4.7, 15.7, 18.3 ГБ.
+             * В эталонном прогоне конфликтов было НОЛЬ — значит это регрессия расположения.
+             *
+             * Резервирование идёт один раз при старте и должно закрывать эти адреса заранее.
+             * Печатаем каждую дыру и исход попытки: молчащее резервирование неотличимо от
+             * несостоявшегося, а разница между ними и есть ответ. */
+            {
+                static unsigned reserve_n;
+                if (reserve_n++ < 64 || hole_size >= 0x40000000)
+                    fprintf( stderr, "macrunner-hb-reserve-hole: n=%u addr=%p size=%llx (%.1f ГБ) ret=%d %s\n",
+                             reserve_n, (void *)(ULONG_PTR)hole_address,
+                             (unsigned long long)hole_size, (double)hole_size / (1024.0*1024.0*1024.0),
+                             (int)ret, ret ? "НЕ ЗАРЕЗЕРВИРОВАНА" : "зарезервирована" );
+            }
             if (!ret) mmap_add_reserved_area( (void*)hole_address, hole_size );
             else if (ret == KERN_NO_SPACE)
             {
@@ -821,9 +841,49 @@ static void mmap_init( const struct preload_info *preload_info )
 
     if (preload_info) return;
     /* if we don't have a preloader, try to reserve the space now */
+#if defined(__APPLE__) && defined(__aarch64__)
+    /* MacRunner 2026-08-06 — на macOS эти три диапазона не работают, и вот почему.
+     *
+     * ЗАМЕР (прибор macrunner-hb-reserve-hole + отдельная проверка mach_vm_map):
+     *   0x00010000    ret=1  KERN_INVALID_ADDRESS
+     *   0x7f000000    ret=1  KERN_INVALID_ADDRESS
+     *   0x100000000   ret=1  KERN_INVALID_ADDRESS   (ровно 4 ГБ — тоже нельзя)
+     *   0x110000000   ret=0  ЗАРЕЗЕРВИРОВАНО
+     *   0x400000000   ret=0  ЗАРЕЗЕРВИРОВАНО
+     *
+     * ret=1 это НЕ «занято» (занято дало бы KERN_NO_SPACE=3), а «такого адреса в карте
+     * процесса нет»: у 64-битных программ macOS первые четыре гигабайта отрезаны насовсем
+     * (__PAGEZERO по умолчанию 4 ГБ). Значит два нижних диапазона — мёртвый код, перенесённый
+     * с Linux, где preloader занимает их ДО старта; на macOS preloader невозможен (это трюк
+     * с ELF-интерпретатором), поэтому preload_info здесь всегда пуст.
+     *
+     * ЧЕМ ЭТО ОБОРАЧИВАЛОСЬ. Середина адресного пространства не запрашивалась вовсе, и её
+     * забирала куча ХОСТА: распределитель malloc берёт крупные куски без фиксированного
+     * адреса, а ядро выдаёт первую свободную дыру над границей. Дальше Mono просил у гостя
+     * блоки под исполняемый код по конкретным адресам (VirtualAlloc size=0x10000 type=0x3000
+     * protect=0x40) и получал c0000018 (STATUS_CONFLICTING_ADDRESSES) — 12 раз подряд, после
+     * чего поток умирал. Занятые адреса: 4.2, 4.7, 15.7, 18.3, 18.4 ГБ, метки malloc (tag 1..3).
+     *
+     * ПРАВКА. Низкие диапазоны убраны как заведомо невозможные, вместо них обход дыр в той
+     * области, которая гостю и нужна. Обход (reserve_area) сам пропускает занятое и берёт
+     * свободное, поэтому одним куском брать не требуется — это проверено: запрос 4 ГБ одним
+     * блоком от 16 ГБ даёт KERN_NO_SPACE, а обход дыр проходит.
+     *
+     * Верхний диапазон 0x7ffffe000000 оставлен без изменений — он рабочий. */
+    /* Гейт добавлен 06.08 после того, как отказ выборки команды (ESR ec=0x20, dfsc=0x06,
+     * pc=0) пришёлся на адрес 0xeb11b4000 — ВНУТРИ пятого зарезервированного куска
+     * (0xc14000000 + 0x3ac000000, 14.7 ГБ), с правами prot=0 при max=7. То есть модуль
+     * гостя лёг в область, которую мы сами закрыли PROT_NONE. Резервирование дало
+     * конфликтов Mono 22 → 9, поэтому просто убирать его нельзя — нужна честная пара.
+     * MACRUNNER_HB_RESERVE_HOLES=0 отключает обход дыр целиком. */
+    if (!getenv( "MACRUNNER_HB_RESERVE_HOLES" ) || strcmp( getenv( "MACRUNNER_HB_RESERVE_HOLES" ), "0" ))
+        reserve_area( (void *)0x000110000000, (void *)0x001000000000 );  /* 4.3 ГБ … 64 ГБ */
+    reserve_area( (void *)0x7ffffe000000, (void *)0x7fffffff0000 );
+#else
     reserve_area( (void *)0x000000010000, (void *)0x000068000000 );
     reserve_area( (void *)0x00007f000000, (void *)0x00007fff0000 );
     reserve_area( (void *)0x7ffffe000000, (void *)0x7fffffff0000 );
+#endif
 
 #endif
 }
@@ -2213,6 +2273,38 @@ static BOOL macrunner_hb_x64_guest_fault_handlers_are_ready;
 /* MacRunner 2026-06-21: invalidate the HB special_read/write region cache on guest VM changes. */
 extern void macrunner_hb_vm_changed( void );
 
+/* MacRunner 2026-08-05 — RWX на Apple Silicon недостижим, а объединение его требует.
+ *
+ * Хостовая страница здесь 16 КБ, страница Windows 4 КБ, и `mprotect_range` применяет
+ * ОБЪЕДИНЕНИЕ прав всех четырёх подстраниц.  Когда таблица импорта делит хостовую
+ * страницу с кодом, запрос «дай записать» превращается в READ|WRITE|EXEC.  Замерено:
+ *
+ *     vprot4k =0x29  unix4k =0x3   (просили чтение+запись)
+ *     vprot16k=0x2d  unix16k=0x7   (ушло в mprotect: чтение+запись+исполнение)
+ *     actual  =0x5                 (ядро оставило чтение+исполнение)
+ *
+ * Apple Silicon RWX без MAP_JIT не выдаёт, поэтому запись не появляется, а
+ * NtProtectVirtualMemory при этом рапортует успех.  Дальше первая же запись падает
+ * SIGBUS, обработчик права не поднимает, и инструкция повторяется вечно:
+ * 254 635 651 отказ за прогон, 241 тыс/с, 40 % времени процесса.
+ *
+ * Лечение: не отдавать RWX как единственную попытку.  Пробуем как просили, а при
+ * отказе снимаем EXEC — запись важнее, потому что исполнение с этой хостовой страницы
+ * возобновится при следующей смене прав, а несостоявшаяся запись вешает процесс
+ * навсегда.  Гейт с умолчанием ВКЛ: выключается MACRUNNER_HB_RWX_FALLBACK=0. */
+static int macrunner_hb_rwx_fallback_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+        const char *v = getenv( "MACRUNNER_HB_RWX_FALLBACK" );
+        cached = (v && *v == '0') ? 0 : 1;
+    }
+    return cached;
+}
+
+static unsigned int macrunner_hb_rwx_fallback_hits;
+
 static inline int mprotect_exec( void *base, size_t size, int unix_prot )
 {
     struct file_view *view = find_view( base, size );
@@ -2222,6 +2314,33 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
     int rc;
 
     if (macrunner_x64_guest) unix_prot &= ~PROT_EXEC;
+
+#if defined(__APPLE__) && defined(__aarch64__)
+    /* Здесь и живёт лечение, описанное выше: запись важнее исполнения.
+     *
+     * Откат «попробовать RWX, при отказе снять EXEC» тут НЕ годится — замерено, что
+     * `mprotect` в этом случае возвращает 0 и просто не применяет запись, так что
+     * ошибки, на которую можно было бы откатиться, не бывает.  Значит EXEC снимаем
+     * сразу, как только видим сочетание записи с исполнением на хостовой странице,
+     * которая крупнее страницы Windows.
+     *
+     * Право исполнения не теряется: вызывающий закрывает скобку обратным
+     * `NtProtectVirtualMemory( ..., protect_old )`, и EXEC возвращается вместе с
+     * прежними правами.  А вот несостоявшаяся запись вешает процесс навсегда. */
+    if (macrunner_hb_rwx_fallback_enabled() && host_page_size > page_size &&
+        (unix_prot & PROT_WRITE) && (unix_prot & PROT_EXEC))
+    {
+        unsigned int n = __atomic_add_fetch( &macrunner_hb_rwx_fallback_hits, 1, __ATOMIC_RELAXED );
+
+        unix_prot &= ~PROT_EXEC;
+        if (n <= 8 || !(n & 0x3ff))
+        {
+            fprintf( stderr, "macrunner-hb-rwx-fallback: base=%p size=%zx requested=%#x final=%#x n=%u\n",
+                     base, size, requested_prot, unix_prot, n );
+            fflush( stderr );
+        }
+    }
+#endif
 
     if (macrunner_hb_trace_host_exec() && (macrunner_x64_guest || (requested_prot & PROT_EXEC)))
         fprintf( stderr, "macrunner-host-exec-mprotect: pid=%d base=%p size=%zx requested=%#x final=%#x "
@@ -2337,7 +2456,63 @@ static BOOL set_vprot( struct file_view *view, void *base, size_t size, BYTE vpr
         else if (use_kernel_writewatch && view->protect & VPROT_WRITEWATCH) vprot &= ~VPROT_WRITEWATCH;
         set_page_vprot( base, size, vprot );
     }
-    return !mprotect_range( base, size, 0, 0 );
+    {
+        BOOL ok = !mprotect_range( base, size, 0, 0 );
+        /* MacRunner 2026-08-05 — ЗАПРОСИЛИ ЗАПИСЬ, А ПОЛУЧИЛИ ЛИ?
+         *
+         * Замерено: `NtProtectVirtualMemory(PAGE_READWRITE)` возвращает успех, а
+         * следующая же запись падает, и `mach_vm_region` в тот момент показывает
+         * prot=5 (R-X) при max=7.  Ровно один отказ на каждое открытие скобки —
+         * 254 млн за прогон, 40 % времени процесса.
+         *
+         * Причин может быть две, и различить их можно только здесь, на слое, где
+         * права реально применяются: либо `PROT_WRITE` вырезан у нас
+         * (`get_unix_prot` снимает его для страниц с VPROT_WRITEWATCH, строка выше
+         * в этом же файле), либо `mprotect` соврал.  Печатаем ЗАПРОШЕННОЕ и
+         * ФАКТИЧЕСКОЕ рядом — тогда виновата будет названа сторона, а не версия.
+         *
+         * Печатаем только расхождения и только первые 32: совпадения не шумят. */
+#if defined(__APPLE__) && defined(__aarch64__)
+        if (ok && (get_unix_prot( get_page_vprot( base ) ) & PROT_WRITE))
+        {
+            mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)base;
+            mach_vm_size_t sz = 0;
+            vm_region_basic_info_data_64_t info;
+            mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+            mach_port_t obj = MACH_PORT_NULL;
+
+            if (!mach_vm_region( mach_task_self(), &a, &sz, VM_REGION_BASIC_INFO_64,
+                                 (vm_region_info_t)&info, &cnt, &obj ) &&
+                !(info.protection & VM_PROT_WRITE))
+            {
+                static unsigned mismatch_n;
+                if (mismatch_n++ < 32)
+                {
+                    /* MacRunner 2026-08-05 — печатаем ЧЕТЫРЕ величины, а не две.
+                     *
+                     * Раньше печатались права 4 КБ-страницы, а `mprotect_range` работает
+                     * ХОСТОВЫМИ страницами (на Apple Silicon 16 КБ) и берёт ОБЪЕДИНЕНИЕ
+                     * прав всех четырёх подстраниц.  Если рядом с таблицей импорта лежит
+                     * код, объединение получает EXEC, и запрос превращается в RWX, которого
+                     * Apple Silicon без MAP_JIT не даёт.  Без печати обоих значений отличить
+                     * «мы просили не то» от «ядро не дало» невозможно. */
+                    void *hpage = ROUND_ADDR( base, host_page_mask );
+                    fprintf( stderr, "macrunner-hb-prot-mismatch: base=%p size=%zx "
+                             "vprot4k=%#x unix4k=%#x  hpage=%p vprot16k=%#x unix16k=%#x  "
+                             "actual=%#x max=%#x n=%u\n",
+                             base, size, get_page_vprot( base ),
+                             get_unix_prot( get_page_vprot( base ) ),
+                             hpage, get_host_page_vprot( hpage ),
+                             get_unix_prot( get_host_page_vprot( hpage ) ),
+                             info.protection, info.max_protection, mismatch_n );
+                    fflush( stderr );
+                }
+            }
+            if (obj != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), obj );
+        }
+#endif
+        return ok;
+    }
 }
 
 

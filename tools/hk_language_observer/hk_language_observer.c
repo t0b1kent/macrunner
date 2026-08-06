@@ -104,6 +104,9 @@ enum observed_method
     METHOD_GAME_MANAGER_AWAKE,
     METHOD_GAME_CAMERAS_AWAKE,
     METHOD_UI_MANAGER_AWAKE,
+    METHOD_TITLE_LOGO_AWAKE,
+    METHOD_TITLE_LOGO_ANIM_FINISHED,
+    METHOD_ENGINE_CB,
     METHOD_LEVEL_ACTIVATED,
     METHOD_MAKE_MENU_LEAN,
     METHOD_OPENING_SEQUENCE_ON_CHANGING_SEQUENCES,
@@ -120,6 +123,33 @@ struct mono_api
     mono_profiler_enable_allocations_fn enable_allocations;
     mono_profiler_create_fn profiler_create;
     mono_profiler_set_call_instrumentation_filter_callback_fn set_filter;
+    /* MacRunner 2026-08-06 — РАННИЕ крючки профилировщика: карта стадий старта.
+     *
+     * ЗАЧЕМ. Наблюдатель ловил только method_enter — самый ПОЗДНИЙ крючок. Его тишина
+     * говорит «до исполнения не дошло», но не говорит ДОКУДА дошло. За сутки из-за этого
+     * восемь версий были выдвинуты и отброшены вслепую.
+     *
+     * Порядок срабатывания при старте плеера Unity (подтверждён устройством log-профилировщика
+     * Mono, mono/profiler/log.c): runtime_initialized → thread_started → domain_loaded →
+     * assembly_loading/loaded → image_loaded → class_loaded/vtable_loaded → jit_begin →
+     * jit_failed/jit_done → method_enter → exception_throw.
+     *
+     * ПЕРВЫЙ МОЛЧАЩИЙ = точка обрыва. Пары читаются так:
+     *   jit_begin без jit_done      → клин ВНУТРИ компиляции;
+     *   assembly_loaded без jit_begin → клин в нативной прослойке (icall/TypeCache);
+     *   всё есть, нет method_enter  → скомпилировано, но не исполнено. */
+    void *set_runtime_initialized;
+    void *set_thread_started;
+    void *set_domain_loaded;
+    void *set_assembly_loading;
+    void *set_assembly_loaded;
+    void *set_image_loaded;
+    void *set_class_loaded;
+    void *set_vtable_loaded;
+    void *set_jit_begin;
+    void *set_jit_failed;
+    void *set_jit_done;
+    void *set_exception_throw;
     mono_profiler_set_method_callback_fn set_method_enter;
     mono_profiler_set_method_callback_fn set_method_leave;
     mono_profiler_set_gc_allocation_callback_fn set_gc_allocation;
@@ -255,9 +285,23 @@ static LONG newobj_probe_control_ok; /* aggregate: control passed */
  * or non-finite, independently of DXMT (whose constant-buffer probe classifies
  * arbitrary CB bytes and whose PE-side formatter cannot print floats at all). */
 static LONG camera_probe;
+static LONG language_trigger_on_activation; /* MACRUNNER_HB_LANGUAGE_TRIGGER_ON_ACTIVATION:
+                                  * 04.08 — ConfirmLanguage() имеет НОЛЬ вызывающих в IL: её зовёт
+                                  * только кнопка языкового экрана. Экран показывался, пока реестровый
+                                  * W-шим был сломан; шим убрали — экрана нет, HighlightDefault не
+                                  * наступает, и ВСЕ ТРИ актуатора (oneshot / direct-confirm /
+                                  * start-game) остаются без единственного триггера, а игра вечно
+                                  * крутит while(!confirmedLanguage).
+                                  * Здесь даём им триггер, который НАСТУПАЕТ: возврат из
+                                  * set_allowSceneActivation. 28.07 HighlightDefault (seq=8) шёл
+                                  * сразу за первой парой активации (seq=6,7) — то же место.
+                                  * Умолчание ВЫКЛ: величина испытываемая, включать явно. */
 static LONG asyncop_poll;        /* MACRUNNER_HB_ASYNCOP_POLL: hook AsyncOperation.get_isDone/get_progress */
 static LONG asyncop_poll_count;
 static LONG managed_tick;        /* MACRUNNER_HB_MANAGED_TICK: is the managed frame loop alive at all? */
+static LONG engine_cb_probe;   /* MACRUNNER_HB_ENGINE_CALLBACK_PROBE */
+static LONG awake_census;        /* MACRUNNER_HB_AWAKE_CENSUS: настоящие имена классов, у которых есть Awake */
+static LONG awake_census_seen;
 static LONG managed_tick_count;
 static LONG camera_probe_budget;
 static LONG camera_probe_stride = 1;
@@ -465,6 +509,36 @@ static enum observed_method classify_method(MonoMethod *method)
         return METHOD_OTHER;
     namespace_name = mono.class_get_namespace(klass);
 
+    /* MacRunner 04.08 — перепись НАСТОЯЩИХ имён классов, у которых есть `Awake`.
+     *
+     * Зацепы METHOD_UI_MANAGER_AWAKE / GAME_MANAGER_AWAKE / GAME_CAMERAS_AWAKE печатают событие
+     * `manager-created`, и оно не встретилось НИ РАЗУ в 523 логах прогонов, включая 10 таких, где
+     * игра дошла до меню и `UIManager.Awake` заведомо исполнялся.  Прибор, молчащий там, где
+     * событие доказанно происходило, сломан — и чинить его вслепую нельзя: неизвестно, что именно
+     * возвращает `class_get_name` для этих типов (пространство имён, вложенность, иное имя).
+     * Поэтому сначала печатаем, что видим, и только потом правим сравнение.
+     *
+     * Ограничено 64 строками и гейтом (дефолт OFF): методов с именем `Awake` в Unity-игре сотни. */
+    if (awake_census && strings_equal(method_name, "Awake"))
+    {
+        LONG n = InterlockedIncrement(&awake_census_seen);
+
+        if (n <= 64)
+        {
+            char detail[256];
+            struct text_builder builder;
+
+            builder_init(&builder, detail, sizeof(detail));
+            builder_append(&builder, "n=");
+            builder_append_unsigned(&builder, (ULONGLONG)n);
+            builder_append(&builder, " ns=");
+            builder_append(&builder, namespace_name && *namespace_name ? namespace_name : "(none)");
+            builder_append(&builder, " class=");
+            builder_append(&builder, class_name);
+            observer_log("awake-census", detail);
+        }
+    }
+
     if (strings_equal(class_name, "StartManager"))
     {
         if (strings_equal(method_name, "SetLanguage")) return METHOD_SET_LANGUAGE;
@@ -509,11 +583,37 @@ static enum observed_method classify_method(MonoMethod *method)
          strings_equal(class_name, "StartManager") || strings_equal(class_name, "InputHandler") ||
          strings_equal(class_name, "CameraController")))
         return METHOD_MANAGED_TICK;
+    /* MacRunner 04.08 — у TitleLogo РОВНО ДВА метода по таблицам метаданных:
+     * AnimationFinished (RVA 0x416a8) и .ctor (RVA 0x416b5).  Ни Awake, ни Start, ни
+     * Update у него нет, поэтому зацеп на Awake не сработал бы НИКОГДА — объявленная
+     * до этого трёхисходная проверка была бы пустой рукой.  Существование объекта
+     * ловим конструктором. */
+    /* Положительный контроль на «движок вообще зовёт managed по имени».
+     *
+     * Эти обратные вызовы Unity выдаёт на КАЖДЫЙ кадр рендера камеры и тоже по имени, как и
+     * событие анимации.  Если они идут, а TitleLogo::AnimationFinished молчит — дефект узкий,
+     * в самом клипе или его событии.  Если молчат и они — сломана доставка движковых вызовов
+     * целиком, и это куда более крупная рыба.  Гейт, дефолт ВЫКЛ. */
+    if (engine_cb_probe &&
+        (strings_equal(method_name, "OnRenderImage") || strings_equal(method_name, "OnPostRender") ||
+         strings_equal(method_name, "OnPreRender") || strings_equal(method_name, "OnWillRenderObject")))
+        return METHOD_ENGINE_CB;
+
+    if (strings_equal(class_name, "TitleLogo")) {
+        if (strings_equal(method_name, ".ctor")) return METHOD_TITLE_LOGO_AWAKE;
+        if (strings_equal(method_name, "AnimationFinished")) return METHOD_TITLE_LOGO_ANIM_FINISHED;
+    }
     if (strings_equal(method_name, "Awake"))
     {
         if (strings_equal(class_name, "GameManager")) return METHOD_GAME_MANAGER_AWAKE;
         if (strings_equal(class_name, "GameCameras")) return METHOD_GAME_CAMERAS_AWAKE;
         if (strings_equal(class_name, "UIManager")) return METHOD_UI_MANAGER_AWAKE;
+        /* MacRunner 04.08 — TitleLogo.Awake отделяет «объекта логотипа нет» от
+         * «событие анимации не пришло»: см. разбор IL, единственный вызывающий
+         * StartManager::SwitchToMenuScene — это TitleLogo::AnimationFinished, а его
+         * самого не зовёт никто из managed-кода (0 call/callvirt/ldftn по токену
+         * 0x06000AA3), значит его дёргает движок по имени как событие анимации. */
+
     }
     /* The three managed callers of the Unity unprojection APIs that can emit
      * "Screen position out of view frustum" (from Assembly-CSharp IL). Which of
@@ -619,6 +719,108 @@ static int language_method_instrumentation(enum observed_method observed)
                MONO_PROFILER_CALL_INSTRUMENTATION_ENTER_CONTEXT |
                MONO_PROFILER_CALL_INSTRUMENTATION_LEAVE;
     return MONO_PROFILER_CALL_INSTRUMENTATION_ENTER;
+}
+
+/* ── КАРТА СТАДИЙ СТАРТА MONO (MacRunner 2026-08-06) ─────────────────────────────────────
+ *
+ * ЗАЧЕМ. Наблюдатель ловил только method_enter — САМЫЙ ПОЗДНИЙ крючок. Его тишина говорит
+ * «до исполнения не дошло», но не говорит ДОКУДА дошло. За сутки из-за этой слепоты восемь
+ * версий были выдвинуты и отброшены вслепую (кеш, арена JIT, права памяти, фокус,
+ * пробуждения, время). Замер, который наконец сузил место, был сравнением с эталоном:
+ * управляемых событий 1 против 320.
+ *
+ * Порядок срабатывания при старте плеера Unity (по устройству log-профилировщика Mono):
+ *   runtime_initialized → thread_started → domain_loaded → assembly_loading/loaded →
+ *   image_loaded → class_loaded/vtable_loaded → jit_begin → jit_failed/jit_done →
+ *   method_enter → exception_throw
+ *
+ * ПЕРВЫЙ МОЛЧАЩИЙ = точка обрыва. Пары:
+ *   jit_begin без jit_done        → клин ВНУТРИ компиляции;
+ *   assembly_loaded без jit_begin → клин в нативной прослойке (регистрация icall/TypeCache);
+ *   всё есть, нет method_enter    → скомпилировано, но не исполнено.
+ *
+ * Печать: первые 3 срабатывания и далее каждое 100000-е — шумные стадии (class_loaded,
+ * jit_done) иначе зальют журнал. */
+#define STAGE_DEF(tag)                                                                 \
+static LONG stage_n_##tag;                                                             \
+static void __cdecl stage_##tag( void *prof, void *a1, void *a2, void *a3 )            \
+{                                                                                      \
+    LONG n = InterlockedIncrement( &stage_n_##tag );                                   \
+    (void)prof; (void)a1; (void)a2; (void)a3;                                          \
+    if (n <= 3 || (n % 100000) == 0) {                                                 \
+        char d[64];                                                                    \
+        struct text_builder b;                                                         \
+        builder_init( &b, d, sizeof(d) );                                              \
+        builder_append( &b, "n=" );                                                    \
+        builder_append_signed( &b, n );                                                \
+        observer_log( "stage-" #tag, d );                                              \
+    }                                                                                  \
+}
+STAGE_DEF(runtime_initialized)
+STAGE_DEF(thread_started)
+STAGE_DEF(domain_loaded)
+STAGE_DEF(assembly_loading)
+STAGE_DEF(assembly_loaded)
+STAGE_DEF(image_loaded)
+STAGE_DEF(class_loaded)
+STAGE_DEF(vtable_loaded)
+STAGE_DEF(jit_begin)
+STAGE_DEF(jit_failed)
+STAGE_DEF(jit_done)
+#undef STAGE_DEF
+
+/* Исключения печатаем ОТДЕЛЬНО и с именем типа: в эталоне на этом месте летит
+ * DllNotFoundException(GalaxyCSharpGlue) → TypeInitializationException, игра его ЛОВИТ и
+ * идёт дальше. Нам нужно знать, то же ли самое у нас, или что-то своё. Первые 16 — с именем. */
+static LONG stage_n_exception_throw;
+static void __cdecl stage_exception_throw( void *prof, void *exc, void *a2, void *a3 )
+{
+    LONG n = InterlockedIncrement( &stage_n_exception_throw );
+    char detail[1024];
+    struct text_builder b;
+    const char *cname = NULL, *cns = NULL;
+    (void)prof; (void)a2; (void)a3;
+    if (n > 16 && (n % 100000) != 0) return;
+    if (exc && mono.object_get_class && mono.class_get_name) {
+        MonoClass *k = mono.object_get_class( (MonoObject *)exc );
+        if (k) {
+            cname = mono.class_get_name( k );
+            if (mono.class_get_namespace) cns = mono.class_get_namespace( k );
+        }
+    }
+    builder_init( &b, detail, sizeof(detail) );
+    builder_append( &b, "n=" );
+    builder_append_signed( &b, n );
+    builder_append( &b, " type=" );
+    builder_append( &b, cns && cns[0] ? cns : "?" );
+    builder_append( &b, "." );
+    builder_append( &b, cname ? cname : "?" );
+    /* Текст и место броска: без них тип исключения почти ничего не говорит. Оба поля —
+     * обычные MonoString*, читаются штатным field_get_value. stack_trace заполняется
+     * средой в момент броска, поэтому в этом обратном вызове он уже есть. */
+    if (exc && mono.object_get_class && mono.class_get_field_from_name &&
+        mono.field_get_value && mono.string_to_utf8)
+    {
+        MonoClass *k = mono.object_get_class( (MonoObject *)exc );
+        static const char *const fields[2] = { "_message", "stack_trace" };
+        static const char *const labels[2] = { " msg=", " at=" };
+        int i;
+        for (i = 0; k && i < 2; i++)
+        {
+            void *fld = mono.class_get_field_from_name( k, (char *)fields[i] );
+            void *str = NULL;
+            char *utf8;
+            if (!fld) continue;
+            mono.field_get_value( (MonoObject *)exc, fld, &str );
+            if (!str) continue;
+            utf8 = mono.string_to_utf8( str );
+            if (!utf8) continue;
+            builder_append( &b, labels[i] );
+            builder_append( &b, utf8 );
+            if (mono.mono_free) mono.mono_free( utf8 );
+        }
+    }
+    observer_log( "stage-exception_throw", detail );
 }
 
 static int method_filter(MonoProfiler *profiler, MonoMethod *method)
@@ -906,6 +1108,18 @@ static void append_scene_argument(struct text_builder *builder, MonoMethod *meth
     int ok, is_null, index;
     const char *reason;
 
+    /* MacRunner 04.08 — «unavailable» обязано называть ПРИЧИНУ.
+     *
+     * Имя сцены — ключ к потолку UIManager: в Assembly-CSharp.dll сцена меню называется
+     * `Menu_Title`, и вопрос «грузится ли она вообще» решается одной этой строкой.  А прибор
+     * во всех прогонах печатает голое `unavailable`, не различая три РАЗНЫХ случая: тип первого
+     * аргумента не строка и не число, чтение строки не удалось (причину функция вычисляет и
+     * ВЫБРАСЫВАЕТ), чтение числа не удалось.
+     *
+     * Проверенная и опровергнутая версия: «виноват гейт POST_LEVEL_MILESTONE_TRACE, без него не
+     * резолвятся mono_method_signature и mono_signature_get_param_count».  Нет: строки 2633-2636
+     * резолвят все четыре зависимости БЕЗУСЛОВНО через RESOLVE_OPTIONAL_API, а версия под гейтом
+     * лишь строже.  Значит причина другая, и назвать её может только сам прибор. */
     if (kind == SCENE_ARGUMENT_STRING)
     {
         if (read_mono_string_argument(context, 0, scene, sizeof(scene), &ok, &is_null, &reason) &&
@@ -914,7 +1128,8 @@ static void append_scene_argument(struct text_builder *builder, MonoMethod *meth
             builder_append(builder, scene);
             return;
         }
-        builder_append(builder, "unavailable");
+        builder_append(builder, "unavailable:str:");
+        builder_append(builder, is_null ? "null" : (reason ? reason : (ok ? "empty" : "read-failed")));
         return;
     }
     if (kind == SCENE_ARGUMENT_INT32)
@@ -925,10 +1140,15 @@ static void append_scene_argument(struct text_builder *builder, MonoMethod *meth
             builder_append_signed(builder, index);
             return;
         }
-        builder_append(builder, "unavailable");
+        builder_append(builder, "unavailable:int:read-failed");
         return;
     }
-    builder_append(builder, "unavailable");
+    builder_append(builder, "unavailable:kind-unknown:sig=");
+    builder_append(builder, mono.method_signature ? "yes" : "no");
+    builder_append(builder, ",params=");
+    builder_append(builder, mono.signature_get_params ? "yes" : "no");
+    builder_append(builder, ",typename=");
+    builder_append(builder, mono.type_get_name ? "yes" : "no");
 }
 
 static void log_scene_load(enum observed_method observed, MonoMethod *method,
@@ -2392,12 +2612,52 @@ static void method_enter(MonoProfiler *profiler, MonoMethod *method,
             builder_append(&builder,
                            state_unavailable_reason ? state_unavailable_reason : "unknown");
         }
+            /* 06.08: эталон Windows даёт ДВЕ пары set_allowSceneActivation, у нас одна,
+             * при том что запросов LoadSceneAsync поровну — два и два. Без адреса объекта
+             * нельзя сказать, какой из двух AsyncOperation получил разрешение. */
+            {
+                MonoObject *self_op = context_this(context);
+                builder_append(&builder, " op=");
+                builder_append_signed(&builder, (long long)(size_t)self_op);
+            }
         observer_log("allow-scene-activation", detail);
         break;
     case METHOD_SCENE_LOAD:
     case METHOD_SCENE_LOAD_ASYNC:
         log_scene_load(observed, method, context, "attempt");
         break;
+    case METHOD_ENGINE_CB: {
+        static LONG seen_cb;
+        if (InterlockedIncrement(&seen_cb) <= 8) {
+            char detail[128];
+            struct text_builder builder;
+            builder_init(&builder, detail, sizeof(detail));
+            builder_append(&builder, "class=");
+            builder_append(&builder, "engine-name-dispatch works");
+            observer_log("engine-callback", detail);
+        }
+        break;
+    }
+    case METHOD_TITLE_LOGO_AWAKE:
+    case METHOD_TITLE_LOGO_ANIM_FINISHED: {
+        /* Разделяет две причины потолка меню, и никакой другой прибор их не различает.
+         *
+         * По IK игры: StartManager::SwitchToMenuScene (вторая, недостающая у нас установка
+         * allowSceneActivation) вызывается РОВНО ОДИН раз во всей сборке — из
+         * TitleLogo::AnimationFinished, а того не зовёт никто из managed-кода вовсе
+         * (0 call/callvirt/ldftn по токену 0x06000AA3), значит его дёргает движок по имени,
+         * как событие анимации.  Поэтому: Awake сказал бы, что объект логотипа существует,
+         * а AnimationFinished — что событие дошло.  Молчат оба -> нет объекта; молчит только
+         * второй -> не доставляется событие анимации. */
+        char detail[128];
+        struct text_builder builder;
+
+        builder_init(&builder, detail, sizeof(detail));
+        builder_append(&builder, "class=TitleLogo method=");
+        builder_append(&builder, observed == METHOD_TITLE_LOGO_AWAKE ? ".ctor" : "AnimationFinished");
+        observer_log("title-logo", detail);
+        break;
+    }
     case METHOD_GAME_MANAGER_AWAKE:
     case METHOD_GAME_CAMERAS_AWAKE:
     case METHOD_UI_MANAGER_AWAKE:
@@ -2469,6 +2729,15 @@ static void method_leave(MonoProfiler *profiler, MonoMethod *method,
             before = InterlockedExchange(&allow_scene_activation, value);
         else
             before = InterlockedCompareExchange(&allow_scene_activation, 0, 0);
+
+        /* Триггер для актуаторов, который НАСТУПАЕТ (см. комментарий у
+         * language_trigger_on_activation). Порядок тот же, что на HighlightDefault. */
+        if (language_trigger_on_activation && !return_route_only)
+        {
+            invoke_oneshot_sequence();
+            invoke_diagnostic_direct_confirm();
+            invoke_start_game_actuator();
+        }
         builder_init(&builder, detail, sizeof(detail));
         builder_append(&builder,
                        "class=UnityEngine.AsyncOperation method=set_allowSceneActivation phase=return before=");
@@ -2484,6 +2753,14 @@ static void method_leave(MonoProfiler *profiler, MonoMethod *method,
             builder_append(&builder,
                            state_unavailable_reason ? state_unavailable_reason : "unknown");
         }
+            /* 06.08: эталон Windows даёт ДВЕ пары set_allowSceneActivation, у нас одна,
+             * при том что запросов LoadSceneAsync поровну — два и два. Без адреса объекта
+             * нельзя сказать, какой из двух AsyncOperation получил разрешение. */
+            {
+                MonoObject *self_op = context_this(context);
+                builder_append(&builder, " op=");
+                builder_append_signed(&builder, (long long)(size_t)self_op);
+            }
         observer_log("allow-scene-activation", detail);
     }
     else if (observed == METHOD_SCENE_LOAD || observed == METHOD_SCENE_LOAD_ASYNC)
@@ -2497,7 +2774,10 @@ static int configure_observer(void)
     return_route_only = env_enabled("MACRUNNER_HB_RETURN_ROUTE_OBSERVER");
     language_flow_observer = env_enabled("MACRUNNER_HB_LANGUAGE_FLOW_OBSERVER");
     asyncop_poll = env_enabled("MACRUNNER_HB_ASYNCOP_POLL");
+    language_trigger_on_activation = env_enabled("MACRUNNER_HB_LANGUAGE_TRIGGER_ON_ACTIVATION");
     managed_tick = env_enabled("MACRUNNER_HB_MANAGED_TICK");
+    awake_census = env_enabled("MACRUNNER_HB_AWAKE_CENSUS");
+    engine_cb_probe = env_enabled("MACRUNNER_HB_ENGINE_CALLBACK_PROBE");
     post_level_milestone_trace = env_enabled("MACRUNNER_HB_POST_LEVEL_MILESTONE_TRACE");
     if (!return_route_only && !language_flow_observer && !post_level_milestone_trace)
         return 0;
@@ -2553,6 +2833,21 @@ static void initialize_observer(HMODULE module, const char *description,
     RESOLVE_API(module, profiler_create, "mono_profiler_create");
     RESOLVE_API(module, set_filter, "mono_profiler_set_call_instrumentation_filter_callback");
     RESOLVE_API(module, set_method_enter, "mono_profiler_set_method_enter_callback");
+    /* Мягко: имя может отсутствовать в конкретной сборке Mono — это не повод падать. */
+#define RESOLVE_SOFT(fld, nm) mono.fld = (void *)GetProcAddress( module, nm )
+    RESOLVE_SOFT(set_runtime_initialized, "mono_profiler_set_runtime_initialized_callback");
+    RESOLVE_SOFT(set_thread_started,      "mono_profiler_set_thread_started_callback");
+    RESOLVE_SOFT(set_domain_loaded,       "mono_profiler_set_domain_loaded_callback");
+    RESOLVE_SOFT(set_assembly_loading,    "mono_profiler_set_assembly_loading_callback");
+    RESOLVE_SOFT(set_assembly_loaded,     "mono_profiler_set_assembly_loaded_callback");
+    RESOLVE_SOFT(set_image_loaded,        "mono_profiler_set_image_loaded_callback");
+    RESOLVE_SOFT(set_class_loaded,        "mono_profiler_set_class_loaded_callback");
+    RESOLVE_SOFT(set_vtable_loaded,       "mono_profiler_set_vtable_loaded_callback");
+    RESOLVE_SOFT(set_jit_begin,           "mono_profiler_set_jit_begin_callback");
+    RESOLVE_SOFT(set_jit_failed,          "mono_profiler_set_jit_failed_callback");
+    RESOLVE_SOFT(set_jit_done,            "mono_profiler_set_jit_done_callback");
+    RESOLVE_SOFT(set_exception_throw,     "mono_profiler_set_exception_throw_callback");
+#undef RESOLVE_SOFT
     RESOLVE_API(module, set_method_leave, "mono_profiler_set_method_leave_callback");
     RESOLVE_API(module, method_get_name, "mono_method_get_name");
     RESOLVE_API(module, method_get_class, "mono_method_get_class");
@@ -2647,6 +2942,28 @@ static void initialize_observer(HMODULE module, const char *description,
         observer_log("init-failed", "status=profiler-create-null");
         return;
     }
+    {
+        typedef void (__cdecl *set_simple_fn)( MonoProfilerHandle, void * );
+#define STAGE_HOOK(field, tag)                                                        \
+        if (mono.field) {                                                             \
+            ((set_simple_fn)mono.field)( handle, (void *)stage_##tag );                \
+        } else {                                                                       \
+            observer_log( "stage-missing", #tag );                                     \
+        }
+        STAGE_HOOK(set_runtime_initialized, runtime_initialized)
+        STAGE_HOOK(set_thread_started,      thread_started)
+        STAGE_HOOK(set_domain_loaded,       domain_loaded)
+        STAGE_HOOK(set_assembly_loading,    assembly_loading)
+        STAGE_HOOK(set_assembly_loaded,     assembly_loaded)
+        STAGE_HOOK(set_image_loaded,        image_loaded)
+        STAGE_HOOK(set_class_loaded,        class_loaded)
+        STAGE_HOOK(set_vtable_loaded,       vtable_loaded)
+        STAGE_HOOK(set_jit_begin,           jit_begin)
+        STAGE_HOOK(set_jit_failed,          jit_failed)
+        STAGE_HOOK(set_jit_done,            jit_done)
+        STAGE_HOOK(set_exception_throw,     exception_throw)
+#undef STAGE_HOOK
+    }
     mono.set_filter(handle, method_filter);
     mono.set_method_enter(handle, method_enter);
     mono.set_method_leave(handle, method_leave);
@@ -2668,6 +2985,8 @@ static void initialize_observer(HMODULE module, const char *description,
     builder_append_signed(&builder, asyncop_poll ? 1 : 0);
     builder_append(&builder, " managed-tick=");
     builder_append_signed(&builder, managed_tick ? 1 : 0);
+    builder_append(&builder, " awake-census=");
+    builder_append_unsigned(&builder, (ULONGLONG)(awake_census ? 1 : 0));
     if (post_level_milestone_trace)
     {
         builder_append(&builder,

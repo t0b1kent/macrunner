@@ -13,6 +13,7 @@
 #include <sys/ucontext.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include "hb_alloc_count.h"
 #endif
 
 #define HB_RUNTIME_PERSISTENT_CACHE_VERSION 21u

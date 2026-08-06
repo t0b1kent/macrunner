@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "hb_alloc_count.h"
 
 /* --- IR Function --- */
 hb_ir_func_t* hb_ir_func_create(uint64_t guest_addr, size_t guest_len) {
@@ -28,6 +29,21 @@ void hb_ir_func_destroy(hb_ir_func_t* func) {
 }
 
 /* --- IR Block --- */
+/* MacRunner 2026-08-06 — учёт блоков ИР.
+ *
+ * Зачем. Разбор кучи живого процесса (heap PID) на 90-й секунде прогона HK показал
+ * 73 576 196 ЖИВЫХ выделений на 22.6 ГБ, средний размер 307.7 байт, все "non-object",
+ * то есть обычный malloc нашего кода. Скорость роста — около 800 тысяч выделений в
+ * секунду. Физический след процесса 7.3 ГБ за 31 секунду, подкачка раздувалась до 68 ГБ,
+ * свободное место на диске падало с 80 до 18 ГБ.
+ *
+ * hb_ir_block_create делает ДВА выделения на блок: сам блок (80 байт) и массив из 16
+ * инструкций (16 * 184 = 2944 байта). Если создания не уравновешены уничтожениями,
+ * это и есть источник. Счётчики отвечают на вопрос однозначно: разница между ними —
+ * количество утёкших блоков, а не предположение о нём. */
+unsigned long long hb_ir_blocks_created;
+unsigned long long hb_ir_blocks_destroyed;
+
 hb_ir_block_t* hb_ir_block_create(uint64_t id, uint64_t guest_addr) {
     hb_ir_block_t* block = calloc(1, sizeof(hb_ir_block_t));
     if (!block) return NULL;
@@ -42,10 +58,12 @@ hb_ir_block_t* hb_ir_block_create(uint64_t id, uint64_t guest_addr) {
         free(block);
         return NULL;
     }
+    __atomic_add_fetch(&hb_ir_blocks_created, 1, __ATOMIC_RELAXED);
     return block;
 }
 
 void hb_ir_block_destroy(hb_ir_block_t* block) {
+    if (block) __atomic_add_fetch(&hb_ir_blocks_destroyed, 1, __ATOMIC_RELAXED);
     if (!block) return;
     free(block->instrs);
     free(block->succ);

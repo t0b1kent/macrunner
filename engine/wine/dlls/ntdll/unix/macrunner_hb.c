@@ -30513,6 +30513,7 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
     {
         HANDLE process = NtCurrentProcess();
         void *base;
+        void *requested_base;
         SIZE_T size;
         ULONG type, protect;
         BOOL executable, exec_registered;
@@ -30533,6 +30534,9 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
             protect = (ULONG)args[3];
         }
 
+        /* NtAllocateVirtualMemory rewrites *base, so keep what the guest actually asked for:
+         * on STATUS_CONFLICTING_ADDRESSES that address is the whole story. */
+        requested_base = base;
         status = NtAllocateVirtualMemory( process, &base, 0, &size, type, protect );
         executable = macrunner_hb_page_protect_executable( protect );
         exec_registered = !status && process == NtCurrentProcess() && executable &&
@@ -30551,6 +30555,31 @@ static BOOL macrunner_hb_try_kernel32_handle_semantic( hb_context_t *ctx,
                          "base=%p size=%#zx type=%#lx protect=%#lx n=%lu\n",
                          thunk->import_name, (unsigned long)status, base, (size_t)size,
                          (unsigned long)type, (unsigned long)protect, fail_n );
+                /* Name the squatter.  STATUS_CONFLICTING_ADDRESSES means something already
+                 * owns the range the guest asked for by explicit base; without this we can
+                 * only guess which of our own mappings it is.  user_tag distinguishes a
+                 * MAP_JIT arena from malloc from a mapped image, and start/size identify
+                 * the reservation (8 GB = guest32 reserve, 128 MB = JIT arena). */
+                if (status == STATUS_CONFLICTING_ADDRESSES && requested_base)
+                {
+                    mach_vm_address_t addr = (mach_vm_address_t)(uintptr_t)requested_base;
+                    mach_vm_size_t rsize = 0;
+                    vm_region_submap_info_data_64_t rinfo;
+                    mach_msg_type_number_t rcount = VM_REGION_SUBMAP_INFO_COUNT_64;
+                    natural_t depth = 0;
+                    kern_return_t kr = mach_vm_region_recurse( mach_task_self(), &addr, &rsize,
+                                                              &depth, (vm_region_recurse_info_t)&rinfo,
+                                                              &rcount );
+                    if (!kr)
+                        fprintf( stderr, "macrunner-hb-guest-alloc-conflict: want=%p occupied_by "
+                                 "start=%#llx size=%#llx prot=%d/%d tag=%u depth=%u n=%lu\n",
+                                 requested_base, (unsigned long long)addr,
+                                 (unsigned long long)rsize, rinfo.protection,
+                                 rinfo.max_protection, rinfo.user_tag, depth, fail_n );
+                    else
+                        fprintf( stderr, "macrunner-hb-guest-alloc-conflict: want=%p region_query "
+                                 "failed kr=%d n=%lu\n", requested_base, kr, fail_n );
+                }
                 fflush( stderr );
             }
             RtlSetLastWin32Error( RtlNtStatusToDosError( status ) );

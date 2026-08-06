@@ -12,6 +12,7 @@
 #include <mach/mach_vm.h>
 #include <setjmp.h>
 #include <signal.h>
+#include "hb_alloc_count.h"
 
 static __thread sigjmp_buf* g_safe_copy_jmp = NULL;
 static struct sigaction g_prev_segv;
@@ -161,7 +162,49 @@ void hb_memory_init_environment(void) {
  *                           merges back, so N only grows.
  */
 static unsigned long long mm_mp_calls;      /* hb_memory_protect entries          */
-static unsigned long long mm_mp_fast;       /* exact region, perm already correct */
+static unsigned long long mm_mp_fast;
+extern unsigned long long hb_ir_blocks_created;
+extern unsigned long long hb_ir_blocks_destroyed;
+unsigned long long hb_alloc_calls;
+unsigned long long hb_free_calls;
+uintptr_t          hb_alloc_site_pc[HB_ALLOC_SITES];
+unsigned long long hb_alloc_site_n[HB_ALLOC_SITES];
+unsigned long long hb_alloc_site_bytes[HB_ALLOC_SITES];
+
+/* Верхняя пятёрка мест выделения: адрес возврата разрешается в имя оффлайн через
+ * `atos -o ntdll.so -l <база>`, как и прочие хостовые адреса в этом проекте. */
+static void hb_dump_alloc_sites(void) {
+    unsigned top[5] = {0,0,0,0,0};
+    for (size_t i = 0; i < HB_ALLOC_SITES; i++) {
+        unsigned long long n = __atomic_load_n(&hb_alloc_site_n[i], __ATOMIC_RELAXED);
+        if (!n) continue;
+        for (int k = 0; k < 5; k++) {
+            if (n > __atomic_load_n(&hb_alloc_site_n[top[k]], __ATOMIC_RELAXED)) {
+                for (int j = 4; j > k; j--) top[j] = top[j-1];
+                top[k] = (unsigned)i; break;
+            }
+        }
+    }
+    for (int k = 0; k < 5; k++) {
+        unsigned long long n = __atomic_load_n(&hb_alloc_site_n[top[k]], __ATOMIC_RELAXED);
+        if (!n) continue;
+        fprintf(stderr, "macrunner-hb-alloc-site: rank=%d pc=%p calls=%llu bytes=%llu\n",
+                k, (void*)__atomic_load_n(&hb_alloc_site_pc[top[k]], __ATOMIC_RELAXED), n,
+                __atomic_load_n(&hb_alloc_site_bytes[top[k]], __ATOMIC_RELAXED));
+    }
+    fflush(stderr);
+}
+static unsigned long long mm_mp_skipped;    /* сэкономленные вызовы mprotect */
+
+/* MACRUNNER_HB_REDUNDANT_MPROTECT=1 возвращает прежнее поведение (звать ядро всегда). */
+static int hb_memory_skip_redundant_protect(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_REDUNDANT_MPROTECT");
+        cached = (v && *v && *v != '0') ? 0 : 1;
+    }
+    return cached;
+}       /* exact region, perm already correct */
 static unsigned long long mm_mp_reenter;    /* contained-in-one-region split path */
 static unsigned long long mm_mp_exact;      /* exact base+size region             */
 static unsigned long long mm_mp_walk;       /* reached the multi-region walk      */
@@ -232,7 +275,9 @@ static void mm_report(hb_memory_t* mem, const char* where) {
      * without an identity a growth curve would silently interleave 115 of them. */
     fprintf(stderr,
             "macrunner-hb-memmeter: where=%s mem=%p maps=%llu epoch=%lld.%03d regions=%llu "
-            "mp_calls=%llu mp_fast=%llu mp_reenter=%llu mp_exact=%llu mp_walk=%llu "
+            "mp_calls=%llu mp_fast=%llu mp_skipped=%llu hb_alloc=%llu hb_free=%llu hb_live=%lld "
+            "ir_created=%llu ir_destroyed=%llu ir_live=%lld "
+            "mp_reenter=%llu mp_exact=%llu mp_walk=%llu "
             "mp_visit=%llu mp_apply=%llu mp_notfound=%llu mp_ns=%llu mp_ns_n=%llu "
             "slr_calls=%llu slr_fast=%llu slr_scan=%llu slr_repl=%llu slr_ns=%llu slr_ns_n=%llu "
             "ovl_calls=%llu ovl_scan=%llu "
@@ -241,6 +286,15 @@ static void mm_report(hb_memory_t* mem, const char* where) {
             (long long)tv.tv_sec, (int)(tv.tv_usec / 1000), n,
             __atomic_load_n(&mm_mp_calls, __ATOMIC_RELAXED),
             __atomic_load_n(&mm_mp_fast, __ATOMIC_RELAXED),
+            __atomic_load_n(&mm_mp_skipped, __ATOMIC_RELAXED),
+            __atomic_load_n(&hb_alloc_calls, __ATOMIC_RELAXED),
+            __atomic_load_n(&hb_free_calls, __ATOMIC_RELAXED),
+            (long long)(__atomic_load_n(&hb_alloc_calls, __ATOMIC_RELAXED) -
+                        __atomic_load_n(&hb_free_calls, __ATOMIC_RELAXED)),
+            __atomic_load_n(&hb_ir_blocks_created, __ATOMIC_RELAXED),
+            __atomic_load_n(&hb_ir_blocks_destroyed, __ATOMIC_RELAXED),
+            (long long)(__atomic_load_n(&hb_ir_blocks_created, __ATOMIC_RELAXED) -
+                        __atomic_load_n(&hb_ir_blocks_destroyed, __ATOMIC_RELAXED)),
             __atomic_load_n(&mm_mp_reenter, __ATOMIC_RELAXED),
             __atomic_load_n(&mm_mp_exact, __ATOMIC_RELAXED),
             __atomic_load_n(&mm_mp_walk, __ATOMIC_RELAXED),
@@ -261,6 +315,7 @@ static void mm_report(hb_memory_t* mem, const char* where) {
             __atomic_load_n(&mm_rebuilds, __ATOMIC_RELAXED),
             __atomic_load_n(&mm_rebuild_nodes, __ATOMIC_RELAXED),
             macrunner_hb_memory_environment.memprotect_walk_list ? "list" : "tree");
+    hb_dump_alloc_sites();
     fflush(stderr);
 }
 
@@ -1794,7 +1849,26 @@ static hb_result_t hb_memory_protect_inner(hb_memory_t* mem, hb_gva_t base, size
         }
         if (exact->host_base) {
             int prot = prot_from_perm(perm, false);
-            if (mprotect(exact->host_base, exact->size, prot) != 0) return HB_ERR_MEMORY_FAULT;
+            /* MacRunner 2026-08-06 — не звать ядро, когда менять нечего.
+             *
+             * Сюда мы попадаем ровно потому, что exact->perm УЖЕ равен запрошенному perm
+             * (условие входа в быстрый путь). Значит защита хостовой области уже та, что
+             * нужна, и mprotect ничего не изменит — но заплатит полную цену: ядро режет и
+             * сшивает карту областей на каждый вызов.
+             *
+             * Замерено на прогоне HK 06.08: 1 823 296 вызовов hb_memory_protect, из них
+             * 991 044 (54%) — этот самый быстрый путь. Отображений памяти у процесса
+             * выросло с 8 до 643, подкачка раздулась до двадцати файлов по гигабайту, и
+             * при живом прогоне свободного места на диске оставалось 20 ГБ из 53.
+             * Розетта и Призм так не делают — они не переключают права тысячи раз в секунду.
+             *
+             * Выключатель на случай, если где-то защиту меняют мимо нашего учёта и
+             * повторный mprotect служил незаметной починкой. */
+            if (hb_memory_skip_redundant_protect()) {
+                __atomic_add_fetch(&mm_mp_skipped, 1, __ATOMIC_RELAXED);
+            } else if (mprotect(exact->host_base, exact->size, prot) != 0) {
+                return HB_ERR_MEMORY_FAULT;
+            }
         }
         return HB_OK;
     }

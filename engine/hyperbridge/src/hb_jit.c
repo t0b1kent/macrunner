@@ -1,5 +1,6 @@
 #include "hb_codegen.h"
 #include "hb_runtime.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,6 +108,18 @@ static hb_result_t hb_jit_buffer_invalid(const char* fn, const hb_jit_buffer_t* 
     return HB_ERR_INVALID_ARG;
 }
 
+#ifdef __APPLE__
+/* Прежнее (молчаливое) поведение: отдать неисполняемую арену и надеяться. Только для замеров. */
+static int hb_jit_allow_noexec_arena(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_JIT_ALLOW_NOEXEC_ARENA");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+#endif
+
 hb_jit_buffer_t* hb_jit_buffer_create(size_t size) {
     hb_jit_buffer_t* buf = calloc(1, sizeof(hb_jit_buffer_t));
     if (!buf) return NULL;
@@ -122,9 +135,35 @@ hb_jit_buffer_t* hb_jit_buffer_create(size_t size) {
         buf->writable = mmap(NULL, size, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
     if (buf->writable == MAP_FAILED) {
 #ifdef __APPLE__
-        /* Retry without MAP_JIT if hardened runtime lacks JIT entitlement */
+        /* Retry without MAP_JIT if hardened runtime lacks JIT entitlement.
+         *
+         * ВНИМАНИЕ (найдено 05.08.2026). Эта ветка отводит память БЕЗ PROT_EXEC и БЕЗ MAP_JIT,
+         * то есть арену, из которой исполнять нельзя НИКОГДА (в vmmap видна как rw-/rw-).
+         * Дальше по коду buf->executable = buf->writable, кодогенератор спокойно пишет туда
+         * трансляции и прыгает в них — получаем c0000005 по адресу, не принадлежащему ни одному
+         * загруженному образу (LdrFindEntryForAddress → STATUS_NO_MORE_ENTRIES, module=0).
+         * Именно так игра умирала сразу после Initialize engine version: отказ приходил из
+         * области "Memory Tag 22  10398c000-107990000  64.0M  rw-/rw-".
+         *
+         * Раньше эта ветка молчала. Теперь она кричит: молчаливая подмена рабочей арены на
+         * заведомо неисполняемую — худший из возможных исходов, отказ на месте лучше.
+         */
+        int jit_errno = errno;
         buf->writable = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        fprintf(stderr, "macrunner-hb-jit-arena-no-mapjit: size=%zu errno=%d (%s) fallback=%p "
+                        "prot=RW NOEXEC — исполнение из этой арены НЕВОЗМОЖНО\n",
+                size, jit_errno, strerror(jit_errno),
+                buf->writable == MAP_FAILED ? NULL : buf->writable);
+        fflush(stderr);
         if (buf->writable == MAP_FAILED) {
+            free(buf);
+            return NULL;
+        }
+        if (!hb_jit_allow_noexec_arena()) {
+            /* По умолчанию отказываемся: пусть вызывающий увидит NULL и упадёт осмысленно,
+             * а не через сотню кадров в чужой памяти. MACRUNNER_HB_JIT_ALLOW_NOEXEC_ARENA=1
+             * возвращает прежнее поведение, если оно вдруг понадобится для замера. */
+            munmap(buf->writable, size);
             free(buf);
             return NULL;
         }

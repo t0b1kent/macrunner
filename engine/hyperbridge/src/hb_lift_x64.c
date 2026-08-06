@@ -1,6 +1,7 @@
 #include "hb_lifter.h"
 #include "hb_ir.h"
 #include <string.h>
+#include "hb_alloc_count.h"
 
 static hb_size_t size_from_dec(uint8_t sz) {
     switch (sz) {

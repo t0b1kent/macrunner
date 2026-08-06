@@ -180,6 +180,84 @@ static void emit_dmb_ish(hb_codegen_buffer_t* buf) {
     emit_u32(buf, 0xd5033bbf);
 }
 
+/* MacRunner 2026-08-06 — атомарные команды ARMv8.1 (LSE) для блокирующих RMW x86.
+ *
+ * ЗАЧЕМ. Блокирующие операции x86 (`lock add/or/and/xor/inc/dec/bts/btr/btc`) у нас до сих пор
+ * транслировались в НЕатомарную последовательность «загрузить → изменить → сохранить», обёрнутую
+ * барьерами DMB ISH. Барьер упорядочивает, но НЕ делает операцию неделимой: одновременные
+ * приращения из двух потоков теряют обновления. Замерено на Hollow Knight: поток Mono умирает с
+ * c000007b при вызове управляемого метода. Обход `MACRUNNER_HB_LOCK_RMW_ATOMIC=1` (сериализация
+ * через ОДНУ общую блокировку процесса) смерть убирает — c000007b 1 → 0 — но игра начинает
+ * зависать: правильность есть, скорости нет.
+ *
+ * Настоящее решение — атомарные команды одной инструкцией. Apple Silicon поддерживает LSE
+ * начиная с M1, то есть на нашей платформе они есть всегда.
+ *
+ * Соответствие (подтверждено исходниками box64, `dynarec_arm64_f0.c`):
+ *   lock add  → LDADDAL
+ *   lock or   → LDSETAL
+ *   lock xor  → LDEORAL
+ *   lock and  → MVN маски + LDCLRAL
+ *   lock inc/dec → LDADDAL с ±1 (флаг переноса НЕ трогается, как и в x86)
+ *   lock bts/btr/btc → LDSETAL/LDCLRAL/LDEORAL по маске бита; CF = бит из СТАРОГО значения
+ *   lock sub  → НЕ через LDADDAL с отрицанием: у 0x80000000 нет отрицания. box64 этот путь
+ *               отключил и оставил цикл LDAXR/STLXR. Мы поступаем так же.
+ *
+ * Суффикс AL (Acquire+Release) даёт полное упорядочивание и заменяет ОБА барьера DMB.
+ * Команда возвращает СТАРОЕ значение — из него и операнда вычисляются все флаги x86
+ * (ZF, SF, CF, OF, PF, AF). Операций, где флаги из старого значения восстановить нельзя, нет.
+ *
+ * Кодировка сверена с эталонными значениями 5 из 5 (ldaddal/ldsetal/ldclral/ldeoral,
+ * 32- и 64-битные формы).
+ */
+typedef enum {
+    HB_LSE_ADD = 0,   /* LDADD */
+    HB_LSE_CLR = 1,   /* LDCLR — сброс битов по маске */
+    HB_LSE_EOR = 2,   /* LDEOR */
+    HB_LSE_SET = 3    /* LDSET — установка битов по маске */
+} hb_lse_op_t;
+
+/* Rs — операнд, Rt — куда лечь старому значению, Rn — адрес. Всегда Acquire+Release. */
+static void emit_lse_al(hb_codegen_buffer_t* buf, hb_lse_op_t op, bool is64,
+                        int rs, int rn, int rt) {
+    uint32_t v = (uint32_t)(is64 ? 0b11 : 0b10) << 30;
+    v |= 0b111u << 27;
+    v |= 1u << 23;              /* A — acquire */
+    v |= 1u << 22;              /* R — release */
+    v |= 1u << 21;
+    v |= (uint32_t)(rs & 31) << 16;
+    v |= (uint32_t)(op & 7) << 12;
+    v |= (uint32_t)(rn & 31) << 5;
+    v |= (uint32_t)(rt & 31);
+    emit_u32(buf, v);
+}
+
+/* MVN Rd, Rm — инверсия. Нужна для `lock and`: LDCLRAL сбрасывает биты ПО МАСКЕ,
+ * то есть маску сначала надо инвертировать (box64 делает ровно так). */
+static void emit_mvn_reg(hb_codegen_buffer_t* buf, bool is64, int rd, int rm) {
+    uint32_t v = (is64 ? (1u << 31) : 0u) | (0b01u << 29) | (0b01010u << 24) | (1u << 21);
+    v |= (uint32_t)(rm & 31) << 16;
+    v |= 31u << 5;                 /* Rn = XZR */
+    v |= (uint32_t)(rd & 31);
+    emit_u32(buf, v);
+}
+
+/* Пара LDAXR/STLXR — эксклюзивный доступ. Нужна для `lock sub`: у 0x80000000 нет
+ * отрицания, поэтому LDADDAL с отрицанием даёт неверный результат, и box64 этот путь
+ * у себя отключил («disabled because 0x80000000 has no negative»), оставив цикл. */
+static void emit_ldaxr(hb_codegen_buffer_t* buf, bool is64, int rt, int rn) {
+    emit_u32(buf, (is64 ? 0xC85FFC00u : 0x885FFC00u) | ((uint32_t)(rn & 31) << 5) | (uint32_t)(rt & 31));
+}
+static void emit_stlxr(hb_codegen_buffer_t* buf, bool is64, int rs, int rt, int rn) {
+    emit_u32(buf, (is64 ? 0xC800FC00u : 0x8800FC00u) | ((uint32_t)(rs & 31) << 16) |
+                  ((uint32_t)(rn & 31) << 5) | (uint32_t)(rt & 31));
+}
+/* CBNZ Wt, <смещение в байтах> — назад к метке цикла при неудачной записи. */
+static void emit_cbnz_w(hb_codegen_buffer_t* buf, int rt, int32_t byte_off) {
+    uint32_t imm19 = (uint32_t)((byte_off >> 2) & 0x7FFFF);
+    emit_u32(buf, 0x34000000u | (1u << 24) | (imm19 << 5) | (uint32_t)(rt & 31));
+}
+
 static void emit_dmb_ishld(hb_codegen_buffer_t* buf) {
     emit_u32(buf, 0xd50339bf);
 }
@@ -338,7 +416,20 @@ static void emit_stlr_from_reg(hb_codegen_buffer_t* buf, int rt, int rn, hb_size
  * Recording here rather than at the 103 call sites keeps the change to one function and cannot
  * drift out of sync with them.
  *
- * WHY THESE FIVE REGISTERS, AND WHY THAT IS THE WHOLE SET.  A value has to be rewritten when the
+ * ★ 2026-08-04 — ПОСЫЛКА НИЖЕ УСТАРЕЛА И ЭТО СТОИЛО ДВУХ УПАВШИХ ПРОГОНОВ.
+ *
+ * Комментарий писался по 103 местам вызова, сейчас их 112: код правили, а посылку
+ * не пересчитывали. Пересчёт 04.08 дал приведения к указателю ТАКЖЕ в x5(2), x6(2),
+ * x20(6), x21(4), x22(3) — 17 мест, которых таблица НЕ ВИДЕЛА. Адрес host, попавший
+ * в такой регистр, ложился в кеш как есть, и следующий запуск прыгал по адресу
+ * прошлого. Оба прогона с MACRUNNER_HB_CACHE_RELOC=1 умерли на 215 и 265 секундах
+ * с мусором ровно в x21/x22, при rl_desync=0 — сторож этот случай не ловил.
+ *
+ * Набор расширен до одиннадцати регистров, а вместо сплошного поиска в комментарии
+ * поставлена ПРОВЕРКА ВО ВРЕМЯ ИСПОЛНЕНИЯ (см. счётчик reloc_unrecorded ниже):
+ * посылка, которую держит только текст комментария, устаревает молча.
+ *
+ * WHY THESE FIVE REGISTERS, AND WHY THAT IS THE WHOLE SET (историческая запись).  A value has to be rewritten when the
  * persistent cache reloads a block only if it differs between the run that stored it and the run
  * that loads it — in practice, a host pointer.  Grepping every `(uint64_t)(uintptr_t)` argument
  * to this function gives 46 sites: x1=38 (`instr`, `block`, and pointers to OTHER blocks —
@@ -356,9 +447,37 @@ static void emit_stlr_from_reg(hb_codegen_buffer_t* buf, int rt, int rn, hb_size
  * Recorded unconditionally, including values that turn out not to be pointers — resolution
  * happens at store time against the block, where the answer is knowable. Over-recording costs a
  * table slot; under-recording would silently produce a block that cannot be restored. */
+/* Регистры, в которые emit_mov_imm64 кладёт приведения к указателю host.
+ * Пересчитано 04.08 по 112 местам вызова. Держать в согласии с проверкой ниже. */
+static inline int codegen_reloc_reg_covered(int rd) {
+    switch (rd) {
+    case 1: case 2: case 3: case 4:
+    case 5: case 6: case 20: case 21: case 22:
+    case 23:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* Сторож: сколько раз пришёл адрес, похожий на указатель host, в НЕПОКРЫТЫЙ регистр.
+ * Любое ненулевое значение означает, что набор снова отстал от кода — ровно то,
+ * что 04.08 прошло молча при rl_desync=0. */
+unsigned long hb_reloc_unrecorded_ptr = 0;
+unsigned long hb_reloc_unrecorded_last_reg = 0;
+
 static void codegen_note_reloc(hb_codegen_buffer_t* buf, int rd, uint64_t val, int kind) {
     if (!buf) return;
-    if (rd != 1 && rd != 2 && rd != 3 && rd != 4 && rd != 23) return;
+    if (!codegen_reloc_reg_covered(rd)) {
+        /* Похоже на указатель host? Низ отсекает PAGEZERO (macOS отображает его
+         * на нижние 4 ГБ), верх — 47-битные пользовательские адреса. Те же пороги,
+         * что у пути сохранения, чтобы сторож и отбор говорили об одном. */
+        if (val >= 0x100000000ull && val < 0x1000000000000ull) {
+            hb_reloc_unrecorded_ptr++;
+            hb_reloc_unrecorded_last_reg = (unsigned long)rd;
+        }
+        return;
+    }
     if (buf->reloc_count >= HB_CODEGEN_MAX_RELOCS) { buf->reloc_overflow = true; return; }
     buf->relocs[buf->reloc_count].off = buf->size;  /* before the first MOVZ is emitted */
     buf->relocs[buf->reloc_count].reg = (uint8_t)rd;
@@ -516,6 +635,7 @@ static void emit_sbfm(hb_codegen_buffer_t* buf, int rd, int rn, uint32_t imms) {
 
 /* MacRunner 2026-06-23 (ABZU native-twin probe): trace the .data global window. */
 #include <stdio.h>
+#include "hb_alloc_count.h"
 static int macrunner_hb_codegendv_enabled(void) {
     static int cache = -1;
     int v = __atomic_load_n(&cache, __ATOMIC_RELAXED);
@@ -11326,11 +11446,125 @@ static bool hb_lock_rmw_uses_atomic_helper(const hb_ir_instr_t* instr) {
     }
 }
 
+/* MACRUNNER_HB_LSE_ATOMICS — атомарные RMW одной командой вместо неатомарной
+ * последовательности в скобках из барьеров. По умолчанию ВЫКЛЮЧЕНО: это горячий путь
+ * кодогенерации, и включать его надо замером, а не верой. */
+static int hb_lse_atomics_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = getenv("MACRUNNER_HB_LSE_ATOMICS");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
+/* Ложится ли блокирующая операция на одну команду LSE.
+ *
+ * SUB намеренно НЕ входит: у 0x80000000 нет отрицания, и LDADDAL с отрицанием даёт неверный
+ * результат — box64 этот путь у себя отключил (комментарий «disabled because 0x80000000 has
+ * no negative») и оставил цикл LDAXR/STLXR. AND пока тоже не входит: ему нужна инверсия
+ * маски перед LDCLRAL, а отдельной команды инверсии в этом кодогенераторе нет.
+ * Приёмник обязан быть в памяти — иначе это не блокирующая операция над общей ячейкой. */
+static bool hb_lse_op_for(const hb_ir_instr_t* instr, hb_lse_op_t* out_op,
+                          hb_lazy_flags_kind_t* out_kind) {
+    if (!instr || instr->dst.type != HB_OP_MEM) return false;
+    if (instr->dst.size != HB_SIZE_32 && instr->dst.size != HB_SIZE_64) return false;
+    switch (instr->op) {
+        case HB_IR_ADD: *out_op = HB_LSE_ADD; *out_kind = HB_LAZY_FLAGS_ADD; return true;
+        case HB_IR_OR:  *out_op = HB_LSE_SET; *out_kind = HB_LAZY_FLAGS_OR;  return true;
+        case HB_IR_XOR: *out_op = HB_LSE_EOR; *out_kind = HB_LAZY_FLAGS_XOR; return true;
+        /* AND идёт через LDCLRAL, но маску надо инвертировать — см. emit_locked_rmw_lse. */
+        case HB_IR_AND: *out_op = HB_LSE_CLR; *out_kind = HB_LAZY_FLAGS_AND; return true;
+        default: return false;
+    }
+}
+
+/* Атомарная форма: адрес в x23, операнд в x20, СТАРОЕ значение приходит в x22.
+ * Дальше регистры расставляются под запись ленивых флагов: x20=старое (левый операнд),
+ * x21=операнд (правый), x22=результат. Флаги x86 полностью восстановимы из старого
+ * значения и операнда — команда LSE их не трогает, но и не теряет нужных данных. */
+/* `lock sub` через эксклюзивную пару LDAXR/STLXR.
+ *
+ * Почему не LDADDAL с отрицанием: у 0x80000000 (и 0x8000000000000000) нет отрицания —
+ * отрицание переполняется и даёт то же самое число, то есть вычитание превращается в
+ * сложение. box64 наткнулся на это и путь у себя отключил, оставив цикл; поступаем так же.
+ *
+ * Цикл: загрузить с захватом → вычесть → попытаться записать с освобождением → при неудаче
+ * повторить. Пара LDAXR/STLXR несёт то же упорядочивание, что и суффикс AL у LSE. */
+static bool emit_locked_sub_ldxr(hb_codegen_buffer_t* out, const hb_ir_instr_t* instr) {
+    bool is64;
+    if (!instr || instr->dst.type != HB_OP_MEM) return false;
+    if (instr->dst.size != HB_SIZE_32 && instr->dst.size != HB_SIZE_64) return false;
+    if (!jit_direct_mem_codegen_enabled(out) || !direct_user_mem_load_allowed(out, &instr->dst))
+        return false;
+    is64 = (instr->dst.size == HB_SIZE_64);
+
+    emit_direct_mem_addr(out, &instr->dst);   /* адрес → x21 */
+    emit_mov_reg(out, 23, 21);                /* адрес → x23 */
+    if (!emit_scalar_operand_to_x20(out, &instr->src2, instr->dst.size)) return false;
+
+    /* метка цикла — три инструкции, возврат на -12 байт */
+    emit_ldaxr(out, is64, 22, 23);            /* x22 = старое значение */
+    emit_sub_reg(out, 24, 22, 20);            /* x24 = старое - операнд */
+    emit_stlxr(out, is64, 16, 24, 23);        /* w16 = 0 при удаче */
+    emit_cbnz_w(out, 16, -12);                /* не вышло — повторить */
+
+    emit_mov_reg(out, 21, 20);                /* правый операнд */
+    emit_mov_reg(out, 20, 22);                /* левый = старое значение */
+    emit_mov_reg(out, 22, 24);                /* результат */
+    emit_mask_x_reg_to_size(out, 22, 23, instr->dst.size);
+    emit_note_lazy_from_x20_x21_x22(out, HB_LAZY_FLAGS_SUB, instr->dst.size);
+    return true;
+}
+
+static bool emit_locked_rmw_lse(hb_codegen_buffer_t* out, const hb_ir_instr_t* instr) {
+    hb_lse_op_t lop;
+    hb_lazy_flags_kind_t kind;
+    bool is64;
+    if (!hb_lse_op_for(instr, &lop, &kind)) return false;
+    if (!jit_direct_mem_codegen_enabled(out) || !direct_user_mem_load_allowed(out, &instr->dst))
+        return false;
+    is64 = (instr->dst.size == HB_SIZE_64);
+
+    emit_direct_mem_addr(out, &instr->dst);   /* адрес → x21 */
+    emit_mov_reg(out, 23, 21);                /* адрес → x23 (x21 нужен под правый операнд) */
+    if (!emit_scalar_operand_to_x20(out, &instr->src2, instr->dst.size)) return false;
+
+    if (instr->op == HB_IR_AND) {
+        /* LDCLRAL сбрасывает биты, ВЫСТАВЛЕННЫЕ в маске. Чтобы получить AND, маску надо
+         * инвертировать: сбросить те биты, которых в операнде НЕТ. Для флагов нужен
+         * исходный операнд, поэтому его копия сохраняется в x24 до инверсии. */
+        emit_mov_reg(out, 24, 20);
+        emit_mvn_reg(out, is64, 20, 20);
+    }
+    emit_lse_al(out, lop, is64, 20, 23, 22);  /* x22 = старое значение, память изменена атомарно */
+    if (instr->op == HB_IR_AND) emit_mov_reg(out, 20, 24);   /* вернуть исходный операнд */
+
+    emit_mov_reg(out, 21, 20);                /* правый операнд */
+    emit_mov_reg(out, 20, 22);                /* левый операнд = старое значение */
+    switch (lop) {
+        case HB_LSE_ADD: emit_add_reg(out, 22, 20, 21); break;
+        case HB_LSE_SET: emit_orr_reg(out, 22, 20, 21); break;
+        case HB_LSE_EOR: emit_eor_reg(out, 22, 20, 21); break;
+        case HB_LSE_CLR: emit_and_reg(out, 22, 20, 21); break;   /* AND: результат из исходной маски */
+        default: return false;
+    }
+    emit_mask_x_reg_to_size(out, 22, 23, instr->dst.size);
+    emit_note_lazy_from_x20_x21_x22(out, kind, instr->dst.size);
+    return true;
+}
+
 hb_result_t hb_arm64_codegen_instr(hb_arm64_codegen_t* cg, const hb_ir_instr_t* instr, hb_codegen_buffer_t* out) {
     bool lk_serialize;
     hb_result_t r;
     if (!instr || !out) return HB_ERR_INVALID_ARG;
     if (cg && cg->ctx) out->arch = cg->ctx->arch;
+    /* Атомарная команда содержит упорядочивание в себе (суффикс AL), поэтому ни барьеры,
+     * ни общая блокировка ей не нужны — в отличие от неатомарного пути ниже. */
+    if (instr->is_locked && hb_lse_atomics_enabled()) {
+        if (instr->op == HB_IR_SUB) { if (emit_locked_sub_ldxr(out, instr)) return HB_OK; }
+        else if (emit_locked_rmw_lse(out, instr)) return HB_OK;
+    }
     lk_serialize = instr->is_locked && hb_lock_rmw_serialize_enabled() &&
                    !hb_lock_rmw_uses_atomic_helper(instr);
     if (instr->is_locked) {

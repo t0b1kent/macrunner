@@ -2349,14 +2349,26 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
     layout.pc = layout.context.Pc;
     if (!macrunner_signal_write_memory( stack, &layout, sizeof(layout) ))
     {
+        /* MacRunner 2026-08-05 — ПРИБОР НЕ ДОЛЖЕН ВРАТЬ.
+         *
+         * Здесь стоял NtCurrentTeb(), а он на ARM64 И ЕСТЬ x18 — тот самый регистр, который
+         * macOS затирает и ради которого написан macrunner_teb_reliable().  То есть строка,
+         * по которой мы диагностируем срыв доставки, читала TEB ровно тем способом, чью
+         * поломку и расследует: наблюдаемое teb_stack=0 могло быть не состоянием потока, а
+         * ошибкой самой печати.  Печатаем ОБА значения: надёжное (pthread TLS) и сырое из
+         * x18.  Их расхождение — прямая улика затёртого x18, а не косвенная. */
+        TEB *rel_teb = macrunner_teb_reliable();
+        TEB *raw_teb = NtCurrentTeb();
         macrunner_signal_writef( "macrunner-hb-exception-stack-write-failed: pid=%d "
                                  "code=%#lx flags=%#lx addr=%p pc=%p sp=%p "
-                                 "stack=%p stack_ptr=%p teb_stack=%p-%p\n",
+                                 "stack=%p stack_ptr=%p teb_stack=%p-%p "
+                                 "teb_rel=%p teb_x18=%p teb_mismatch=%d\n",
                                  getpid(), rec->ExceptionCode, rec->ExceptionFlags,
                                  rec->ExceptionAddress, (void *)(ULONG_PTR)context->Pc,
                                  (void *)(ULONG_PTR)context->Sp, stack, stack_ptr,
-                                 NtCurrentTeb() ? NtCurrentTeb()->Tib.StackLimit : NULL,
-                                 NtCurrentTeb() ? NtCurrentTeb()->Tib.StackBase : NULL );
+                                 rel_teb ? rel_teb->Tib.StackLimit : NULL,
+                                 rel_teb ? rel_teb->Tib.StackBase : NULL,
+                                 rel_teb, raw_teb, rel_teb != raw_teb );
         abort_thread(1);
     }
 
@@ -3528,6 +3540,24 @@ static BOOL macrunner_hb_trace_low_stack_fault_enabled(void)
  *
  * Handler for SIGSEGV.
  */
+
+/* MacRunner 2026-08-05 — есть ли право на исполнение у области под адресом.
+ * Вынесено отдельно, чтобы прибор pc-region мог отфильтровать штатные страничные отказы
+ * (у них PC исполняемый) и потратить бюджет печати на единственный интересный случай. */
+static BOOL macrunner_pc_region_is_exec( ULONG_PTR addr )
+{
+    mach_vm_address_t a = (mach_vm_address_t)addr;
+    mach_vm_size_t sz = 0;
+    vm_region_submap_short_info_data_64_t info;
+    mach_msg_type_number_t cnt = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+    natural_t depth = 0;
+    if (mach_vm_region_recurse( mach_task_self(), &a, &sz, &depth,
+                                (vm_region_recurse_info_t)&info, &cnt ) != KERN_SUCCESS)
+        return FALSE;
+    if (addr < (ULONG_PTR)a || addr >= (ULONG_PTR)(a + sz)) return FALSE;
+    return (info.protection & VM_PROT_EXECUTE) != 0;
+}
+
 static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     struct macrunner_hb_callback_loop_signal_scope callback_loop_scope
@@ -3537,6 +3567,83 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     ucontext_t *context = sigcontext;
     DWORD64 esr = get_fault_esr( context );
 #if defined(__APPLE__)
+    /* MacRunner 2026-08-05 — САМЫЙ РАННИЙ ЗАМЕР, до единой нашей строки.
+     *
+     * Спор, который надо решить: доставка срывается с pc=0 sp=0, но отдельная программа
+     * показала, что macOS отдаёт заполненный контекст даже на вложенном отказе.  Значит
+     * либо ядро всё же даёт нули ИМЕННО нам (в потоке, исполняющем MAP_JIT-код), либо
+     * нули появляются позже — от нашего же кода.  Прибор различает эти два случая: он
+     * печатает состояние ДО того, как sigcontext увидит хоть одна наша функция.
+     *
+     * Печатаем только нулевые случаи и только первые 32 — обычный отказ не шумит. */
+    if (!PC_sig(context) || !SP_sig(context))
+    {
+        static unsigned zero_entry_n;
+        if (zero_entry_n++ < 32)
+        {
+            macrunner_signal_writef( "macrunner-hb-sigctx-zero-at-entry: n=%u sig=%d "
+                                     "pc=%p sp=%p lr=%p fp=%p x0=%p si_addr=%p esr=%#llx "
+                                     "uc=%p mc=%p\n",
+                                     zero_entry_n, signal,
+                                     (void *)(ULONG_PTR)PC_sig(context),
+                                     (void *)(ULONG_PTR)SP_sig(context),
+                                     (void *)(ULONG_PTR)LR_sig(context),
+                                     (void *)(ULONG_PTR)REGn_sig(29, context),
+                                     (void *)(ULONG_PTR)REGn_sig(0, context),
+                                     siginfo ? siginfo->si_addr : NULL,
+                                     (unsigned long long)esr,
+                                     (void *)context, (void *)context->uc_mcontext );
+        }
+    }
+
+    /* MacRunner 2026-08-05 — права области ПОД PC, снятые в момент отказа.
+     *
+     * Зачем отдельный прибор.  Игра умирает сразу после `Initialize engine version` с
+     * c0000005 по адресу вроде 0x104C0FA8C.  На стороне PE он неопознаваем: и
+     * LdrFindEntryForAddress (STATUS_NO_MORE_ENTRIES), и NtQueryVirtualMemory (MEM_FREE)
+     * его не видят — это не PE-образ.  Карта, снятая снаружи через vmmap, показала область
+     * "Memory Tag 22  10398c000-107990000  64.0M  rw-/rw-", то есть исполнять оттуда нельзя
+     * и стать исполняемой она не может.  Но vmmap снимался не в момент отказа, поэтому
+     * доказательством не является.
+     *
+     * Здесь права читаются РОВНО в момент отказа и ровно под PC.  Это отличает
+     * "прыгнули в неисполняемую память" от "адрес был исполняемым, дело в другом" —
+     * различить их иначе нечем.  Проверенная ранее версия (запасной путь mmap без MAP_JIT
+     * в hb_jit_buffer_create) опровергнута: прибор там дал 0 срабатываний.
+     *
+     * Печатаем только первые 16 — обработчик обязан оставаться дешёвым. */
+    if (signal == SIGSEGV || signal == SIGBUS)
+    {
+        static unsigned pc_region_n;
+        ULONG_PTR fault_pc = (ULONG_PTR)PC_sig(context);
+        /* Печатать ТОЛЬКО неисполняемый PC.  Первая версия прибора печатала любой отказ и
+         * весь бюджет уходил на штатные страничные отказы Wine (prot=0x5, exec есть) —
+         * интересный случай до печати не доживал.  Условие ниже оставляет ровно его. */
+        if (fault_pc && pc_region_n < 16 && !macrunner_pc_region_is_exec( fault_pc ))
+        {
+            pc_region_n++;
+            mach_vm_address_t r_addr = (mach_vm_address_t)fault_pc;
+            mach_vm_size_t r_size = 0;
+            vm_region_submap_short_info_data_64_t r_info;
+            mach_msg_type_number_t r_count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+            natural_t r_depth = 0;
+            kern_return_t r_kr = mach_vm_region_recurse( mach_task_self(), &r_addr, &r_size,
+                                                        &r_depth, (vm_region_recurse_info_t)&r_info,
+                                                        &r_count );
+            macrunner_signal_writef( "macrunner-hb-pc-region: n=%u sig=%d pc=%p kr=%d "
+                                     "region=%p-%p prot=%#x max=%#x tag=%u share=%u "
+                                     "exec=%s\n",
+                                     pc_region_n, signal, (void *)fault_pc, (int)r_kr,
+                                     (void *)(ULONG_PTR)r_addr,
+                                     (void *)(ULONG_PTR)(r_addr + r_size),
+                                     r_kr == KERN_SUCCESS ? r_info.protection : 0,
+                                     r_kr == KERN_SUCCESS ? r_info.max_protection : 0,
+                                     r_kr == KERN_SUCCESS ? r_info.user_tag : 0,
+                                     r_kr == KERN_SUCCESS ? r_info.share_mode : 0,
+                                     (r_kr == KERN_SUCCESS && (r_info.protection & VM_PROT_EXECUTE))
+                                         ? "ДА" : "НЕТ" );
+        }
+    }
     BOOL low_stack_fault;
     void *virtual_stack;
     TEB *teb = NtCurrentTeb();
@@ -4517,8 +4624,14 @@ static ULONG64 macrunner_hb_fault_same_page_repeat;
 static ULONG64 macrunner_hb_fault_top_page[MACRUNNER_HB_FAULT_TOP_SLOTS];
 static ULONG64 macrunner_hb_fault_top_count[MACRUNNER_HB_FAULT_TOP_SLOTS];
 static ULONG64 macrunner_hb_fault_top_pc[MACRUNNER_HB_FAULT_TOP_SLOTS];
+/* DFSC из ESR. На ARM64 si_code=BUS_ADRALN выставляется безусловно и причину НЕ сообщает —
+ * различает её только Data Fault Status Code: 0x04-0x07 трансляция, 0x08-0x0B флаг доступа,
+ * 0x0C-0x0F права, 0x21 невыровненный доступ. Без него шторм в 130 млн отказов на одну
+ * страницу неотличим от «кривой атомик» до «хвост секции PE за концом файла», а лечатся они
+ * в разных местах. get_fault_esr() на macOS уже есть (uc_mcontext->__es.__esr). */
+static ULONG64 macrunner_hb_fault_top_esr[MACRUNNER_HB_FAULT_TOP_SLOTS];
 
-static void macrunner_hb_fault_note_top( ULONG64 page, ULONG_PTR pc )
+static void macrunner_hb_fault_note_top( ULONG64 page, ULONG_PTR pc, ULONG64 esr )
 {
     unsigned int i;
 
@@ -4534,6 +4647,7 @@ static void macrunner_hb_fault_note_top( ULONG64 page, ULONG_PTR pc )
         if (!have)
         {
             __atomic_store_n( &macrunner_hb_fault_top_pc[i], (ULONG64)pc, __ATOMIC_RELAXED );
+            __atomic_store_n( &macrunner_hb_fault_top_esr[i], esr, __ATOMIC_RELAXED );
             __atomic_store_n( &macrunner_hb_fault_top_page[i], page, __ATOMIC_RELAXED );
             __atomic_add_fetch( &macrunner_hb_fault_top_count[i], 1, __ATOMIC_RELAXED );
             return;
@@ -4551,11 +4665,17 @@ static void macrunner_hb_fault_top_emit(void)
         ULONG64 count = __atomic_load_n( &macrunner_hb_fault_top_count[i], __ATOMIC_RELAXED );
 
         if (!page || count < 1024) continue;
-        macrunner_signal_writef( "macrunner-hb-fault-page: addr=%p faults=%llu pc=%p\n",
-                                 (void *)(ULONG_PTR)(page << 14),
-                                 (unsigned long long)count,
-                                 (void *)(ULONG_PTR)__atomic_load_n( &macrunner_hb_fault_top_pc[i],
-                                                                    __ATOMIC_RELAXED ) );
+        {
+            ULONG64 esr = __atomic_load_n( &macrunner_hb_fault_top_esr[i], __ATOMIC_RELAXED );
+            macrunner_signal_writef( "macrunner-hb-fault-page: addr=%p faults=%llu pc=%p esr=%llx ec=%llx dfsc=%llx\n",
+                                     (void *)(ULONG_PTR)(page << 14),
+                                     (unsigned long long)count,
+                                     (void *)(ULONG_PTR)__atomic_load_n( &macrunner_hb_fault_top_pc[i],
+                                                                        __ATOMIC_RELAXED ),
+                                     (unsigned long long)esr,
+                                     (unsigned long long)((esr >> 26) & 0x3f),
+                                     (unsigned long long)(esr & 0x3f) );
+        }
     }
 }
 
@@ -4576,13 +4696,13 @@ static ULONG64 macrunner_hb_fault_page_count( ULONG64 page )
     return 0;
 }
 
-static void macrunner_hb_fault_note_page( ULONG_PTR addr, ULONG_PTR pc )
+static void macrunner_hb_fault_note_page( ULONG_PTR addr, ULONG_PTR pc, ULONG64 esr )
 {
     ULONG64 page = (ULONG64)(addr >> 14);  /* 16 KB pages on this platform */
     size_t slot = (size_t)((page * 2654435761u) & (MACRUNNER_HB_FAULT_PAGE_SLOTS - 1));
     ULONG64 prev = __atomic_load_n( &macrunner_hb_fault_page_tab[slot], __ATOMIC_RELAXED );
 
-    macrunner_hb_fault_note_top( page, pc );
+    macrunner_hb_fault_note_top( page, pc, esr );
     if (prev == page)
     {
         __atomic_add_fetch( &macrunner_hb_fault_same_page_repeat, 1, __ATOMIC_RELAXED );
@@ -4644,7 +4764,8 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
         ULONG64 n = __atomic_add_fetch( &macrunner_hb_fault_entries, 1, __ATOMIC_RELAXED );
         int code = siginfo ? siginfo->si_code : 0;
 
-        if (fault_addr) macrunner_hb_fault_note_page( fault_addr, (ULONG_PTR)PC_sig(context) );
+        if (fault_addr) macrunner_hb_fault_note_page( fault_addr, (ULONG_PTR)PC_sig(context),
+                                              (ULONG64)get_fault_esr( context ) );
 
         if (sig == SIGSEGV && code == SEGV_ACCERR)
         {
@@ -4807,9 +4928,69 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
                 else                         __atomic_add_fetch( &macrunner_hb_fault_bus_othercode, 1, __ATOMIC_RELAXED );
 
                 if (__atomic_fetch_add( &bus_dumped, 1, __ATOMIC_RELAXED ) < 6)
-                    macrunner_signal_writef( "macrunner-hb-bus-sample: code=%d pc=%p fault=%p lr=%p\n",
+                {
+                    /* MacRunner 2026-08-05 — печатаем ПРАВА страницы, а не только адрес.
+                     *
+                     * Замерено: 186 млн отказов BUS_ADRALN с ОДНОГО pc (ntdll RVA 0x3b944,
+                     * `str x0,[x20]` в fixup_imports), 230 тыс/с, 39 % времени.  Обычному
+                     * восьмибайтовому store выравнивание не нужно, значит дело не в нём:
+                     * так macOS отвечает на запись в страницу без права записи.  Без прав
+                     * в строке приходится гадать, какая из наших защит её сняла — с ними
+                     * виновник называется сразу (prot=1 R, 3 RW, 5 RX, 7 RWX; tag — чей
+                     * аллокатор). */
+                    mach_vm_address_t r_addr = (mach_vm_address_t)fault_addr;
+                    mach_vm_size_t r_size = 0;
+                    vm_region_submap_info_data_64_t r_info;
+                    mach_msg_type_number_t r_cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
+                    natural_t r_depth = 0;
+                    kern_return_t r_kr = mach_vm_region_recurse( mach_task_self(), &r_addr, &r_size,
+                                                                &r_depth, (vm_region_recurse_info_t)&r_info,
+                                                                &r_cnt );
+                    macrunner_signal_writef( "macrunner-hb-bus-sample: code=%d pc=%p fault=%p lr=%p "
+                                             "region=%#llx+%#llx prot=%d/%d tag=%u shared=%d kr=%d\n",
                                              code, (void *)(ULONG_PTR)PC_sig(context),
-                                             (void *)fault_addr, (void *)(ULONG_PTR)LR_sig(context) );
+                                             (void *)fault_addr, (void *)(ULONG_PTR)LR_sig(context),
+                                             (unsigned long long)r_addr, (unsigned long long)r_size,
+                                             r_kr ? -1 : r_info.protection,
+                                             r_kr ? -1 : r_info.max_protection,
+                                             r_kr ? 0 : r_info.user_tag,
+                                             r_kr ? -1 : (int)r_info.share_mode, r_kr );
+
+                    /* MacRunner 2026-08-05 — ЦЕПОЧКА ВЫЗОВОВ прямо из обработчика.
+                     *
+                     * Замер 51086 записей показал: в падающую страницу `import_dll` не
+                     * пишет НИ РАЗУ, хотя дизассемблер показывает `bl find_named_export`
+                     * прямо перед падающим `str`.  Символ `fixup_imports` занимает ~5 КБ —
+                     * в него заинлайнено многое, и соседство инструкций обмануло.
+                     * Значит надо не гадать по инлайну, а взять настоящих вызывающих.
+                     *
+                     * Идём по цепочке кадров через x29 (FP): [fp] = предыдущий fp,
+                     * [fp+8] = адрес возврата.  Async-signal-safe: только чтения, никаких
+                     * блокировок и аллокаций.  Каждый шаг проверяем — выравнивание,
+                     * монотонный рост (стек растёт вниз, значит fp должен увеличиваться)
+                     * и разумный предел, иначе на битом кадре уйдём в бесконечность или
+                     * вложенный отказ. */
+                    {
+                        ULONG_PTR fp = REGn_sig(29, context);
+                        ULONG_PTR prev = 0;
+                        unsigned lvl;
+
+                        for (lvl = 0; lvl < 8; lvl++)
+                        {
+                            ULONG_PTR next, ret;
+
+                            if (!fp || (fp & 7) || fp <= prev) break;
+                            if (prev && fp - prev > 0x100000) break;
+                            next = ((const ULONG_PTR *)fp)[0];
+                            ret  = ((const ULONG_PTR *)fp)[1];
+                            if (!ret) break;
+                            macrunner_signal_writef( "macrunner-hb-bus-frame: lvl=%u fp=%p ret=%p\n",
+                                                     lvl, (void *)fp, (void *)ret );
+                            prev = fp;
+                            fp = next;
+                        }
+                    }
+                }
 
                 /* MacRunner 2026-08-03 — the execute-attempt case, named rather than counted.
                  *

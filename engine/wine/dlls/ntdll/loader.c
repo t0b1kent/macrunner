@@ -4498,7 +4498,39 @@ static void macrunner_hb_resolve_arm64x_native_import_prefix( WINE_MODREF *wm, W
 
         target = (ULONG_PTR)macrunner_hb_resolve_arm64x_native_target( (void *)target );
         if (!target) continue;
-        dst->u1.Function = target;
+        /* MacRunner 2026-08-05 — СКОБКА ЗАЩИТЫ, без неё запись не проходит НИКОГДА.
+         *
+         * Слот импорта лежит на странице образа, отображённой R-X (замерено
+         * `mach_vm_region_recurse` в момент отказа: `prot=5/7` — чтения и исполнение есть,
+         * записи нет, при max_protection=RWX).  Прямая запись даёт SIGBUS; si_code приходит
+         * BUS_ADRALN и врёт — поле DFSC в ESR равно 0xf, то есть отказ ПО ПРАВАМ, а не по
+         * выравниванию (это уже разбирали 02.07 и починили тогда только классификацию).
+         * Обработчик права не поднимает и PC не двигает, поэтому инструкция повторяется
+         * вечно: замерено 186 млн отказов, 230 тыс/с, 39 % времени процесса — и прогон
+         * встаёт намертво на очередном модуле.
+         *
+         * Скобка ровно та же, что уже стоит у соседней нашей функции (см. синхронизацию
+         * alias-слотов COFF выше в этом же файле): снять защиту, записать, вернуть как было.
+         * При отказе снятия слот пропускается — молча писать мимо защиты нельзя. */
+        {
+            PVOID protect_base = dst;
+            SIZE_T protect_size = sizeof(dst->u1.Function);
+            ULONG old_prot;
+
+            if (NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size,
+                                        PAGE_READWRITE, &old_prot ))
+            {
+                static unsigned protect_fail_count;
+                if (protect_fail_count++ < 8)
+                    MESSAGE( "macrunner-hb-arm64x-native-import-protect-failed: module=%s dll=%s "
+                             "import=%s slot=%p\n",
+                             debugstr_w(wm->ldr.BaseDllName.Buffer), dll_name, import_name, dst );
+                continue;
+            }
+            dst->u1.Function = target;
+            NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size,
+                                    old_prot, &old_prot );
+        }
         if (report_count++ < 32)
             MESSAGE( "macrunner-hb-arm64x-native-import-prefix: module=%s dll=%s import=%s "
                      "slot=%p target=%p native=%p\n",
@@ -5042,6 +5074,30 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
         return FALSE;
     }
 
+    /* MacRunner 2026-08-05 — след скобки защиты IAT, обе стороны.
+     *
+     * Проверяемая версия: скобка сама по себе верна (диапазон покрывает записываемые
+     * слоты, статус проверяется), но NtProtectVirtualMemory работает СТРАНИЦАМИ.  Если
+     * импорты двух модулей попали на одну страницу и правятся по очереди, то возврат
+     * защиты вторым модулем делает страницу R-X ЦЕЛИКОМ — вместе со слотами первого,
+     * который ещё пишет.  Это укладывается в наблюдаемое: 186 млн отказов записи по
+     * одному адресу при формально корректной скобке.
+     *
+     * Печатаем округлённые ядром base/size (NtProtectVirtualMemory возвращает их
+     * выровненными по странице) и tid — по ним видно перекрытие диапазонов. */
+    {
+        static unsigned iat_trace_count;
+        if (iat_trace_count++ < 256)
+            MESSAGE( "macrunner-hb-iat-protect: phase=open tid=%04x dll=%s importer=%s "
+                     "base=%p size=%Ix pages=%p-%p old_prot=%lx\n",
+                     (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread,
+                     name, debugstr_w(wm->ldr.BaseDllName.Buffer),
+                     protect_base, protect_size,
+                     (void *)((ULONG_PTR)protect_base & ~(ULONG_PTR)0xfff),
+                     (void *)(((ULONG_PTR)protect_base + protect_size + 0xfff) & ~(ULONG_PTR)0xfff),
+                     protect_old );
+    }
+
     if (macrunner_hb_x64_main_requested() && !strcmp( name, "ntdll.dll" ) &&
         !macrunner_hb_importer_is_native_wine_builtin( wm ))
     {
@@ -5093,6 +5149,19 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
             int ordinal = IMAGE_ORDINAL(import_list->u1.Ordinal);
             char ordinal_name[24];
 
+            /* MacRunner 2026-08-05 — та же трассировка, что у ветки «по имени»: без неё
+             * множество записей неполно.  Замер по одной только именной ветке дал 50918
+             * записей и НИ ОДНОЙ в падающую страницу 0x87EFB727000, хотя скобку на неё
+             * import_dll открывает пять раз (mpr.dll импортирует из user32/advapi32/
+             * ucrtbase/kernel32/ntdll — все слоты на одной странице).  Значит запись идёт
+             * либо здесь, либо вообще вне loader.c, и различить это можно только полным
+             * множеством. */
+            {
+                static unsigned slot_trace_ord;
+                if (slot_trace_ord++ < 4096)
+                    MESSAGE( "macrunner-hb-iat-write: slot=%p dll=%s importer=%s ordinal=%d\n",
+                             thunk_list, name, debugstr_w(wm->ldr.BaseDllName.Buffer), ordinal );
+            }
             thunk_list->u1.Function = (ULONG_PTR)find_ordinal_export( imp_mod, exports, exp_size,
                                                                        ordinal - exports->Base, load_path, wm, FALSE );
             macrunner_hb_format_ordinal_import_name( ordinal_name, sizeof(ordinal_name), ordinal );
@@ -5115,6 +5184,24 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
         {
             const IMAGE_IMPORT_BY_NAME *pe_name;
             pe_name = image_import_by_name( module, (DWORD)import_list->u1.AddressOfData );
+            /* MacRunner 2026-08-05 — РЕШАЮЩИЙ ЗАМЕР: адрес КАЖДОЙ записи в слот.
+             *
+             * Отказ (SIGBUS, DFSC=0xf, права) приходит с PC ровно этой строки, а страница
+             * при этом формально накрыта скобкой `import_dll`.  Учёт скобок сошёлся:
+             * 1546 пар, 0 незакрытых, 0 случаев «внутренняя вернула READONLY под открытой
+             * внешней».  Значит либо запись идёт не отсюда, либо защиту снимает кто-то
+             * третий уже ПОСЛЕ открытия скобки.
+             *
+             * Сверка множеств решает спор: если адрес отказа есть в этом логе — писали мы
+             * внутри скобки, и защиту отобрали снаружи; если адреса нет — пишет другой код.
+             * Печать до записи, чтобы след остался даже если она упадёт. */
+            {
+                static unsigned slot_trace;
+                if (slot_trace++ < 4096)
+                    MESSAGE( "macrunner-hb-iat-write: slot=%p dll=%s importer=%s import=%s\n",
+                             thunk_list, name, debugstr_w(wm->ldr.BaseDllName.Buffer),
+                             (const char *)pe_name->Name );
+            }
             thunk_list->u1.Function = (ULONG_PTR)find_named_export( imp_mod, exports, exp_size,
                                                                      (const char*)pe_name->Name,
                                                                     pe_name->Hint, load_path, wm, FALSE );
@@ -5143,6 +5230,21 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
     }
 
 done:
+    /* MacRunner 2026-08-05 — вторая половина следа: КОГДА и ЧЕМ защиту вернули.
+     * Совпадение страниц этой строки с ещё не закрытым phase=open другого потока/модуля
+     * и есть доказательство перекрытия. */
+    {
+        static unsigned iat_close_count;
+        if (iat_close_count++ < 256)
+            MESSAGE( "macrunner-hb-iat-protect: phase=close tid=%04x dll=%s importer=%s "
+                     "base=%p size=%Ix pages=%p-%p restore_prot=%lx\n",
+                     (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread,
+                     name, debugstr_w(wm->ldr.BaseDllName.Buffer),
+                     protect_base, protect_size,
+                     (void *)((ULONG_PTR)protect_base & ~(ULONG_PTR)0xfff),
+                     (void *)(((ULONG_PTR)protect_base + protect_size + 0xfff) & ~(ULONG_PTR)0xfff),
+                     protect_old );
+    }
     /* restore old protection of the import address table */
     status = NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size, protect_old, &protect_old );
     if (status)
@@ -9584,7 +9686,40 @@ void* WINAPI LdrResolveDelayLoadedAPI( void* base, const IMAGE_DELAYLOAD_DESCRIP
         if (!import_by_ordinal) import_name = (char*)iibn->Name;
         fp = macrunner_hb_maybe_register_dynamic_import_thunk( base, *phmod, name, import_name,
                                                                LOWORD(pINT[id].u1.Ordinal), fp );
-        pIAT[id].u1.Function = (ULONG_PTR)fp;
+        /* MacRunner 2026-08-05 — СКОБКА ЗАЩИТЫ, иначе отложенный импорт не патчится НИКОГДА.
+         *
+         * Слот отложенного импорта лежит в секции образа, отображённой без права записи
+         * (замерено `mach_vm_region_recurse` в момент отказа: `prot=5/7`).  Без скобки
+         * запись даёт SIGBUS — причём `si_code` на ARM64 приходит `BUS_ADRALN` и врёт:
+         * XNU ставит его любому SIGBUS безусловно, а настоящую причину показывает DFSC
+         * в ESR, и он равен 0xf, то есть отказ ПО ПРАВАМ.
+         *
+         * Отличие от обычного импорта, из-за которого это дороже всего остального:
+         * отложенный импорт разрешается ПРИ КАЖДОМ ВЫЗОВЕ, пока слот не пропатчен.
+         * Запись не проходит -> слот пуст -> следующий вызов снова идёт сюда.  Замерено
+         * 186 млн отказов, 230 тыс/с, 39 % времени процесса — и прогон встаёт намертво.
+         *
+         * `import_dll` для обычных импортов такую скобку уже держит (см. выше по файлу);
+         * здесь её просто не было. */
+        {
+            PVOID protect_base = &pIAT[id];
+            SIZE_T protect_size = sizeof(pIAT[id].u1.Function);
+            ULONG old_prot;
+            NTSTATUS prot_status = NtProtectVirtualMemory( NtCurrentProcess(), &protect_base,
+                                                           &protect_size, PAGE_READWRITE, &old_prot );
+            if (prot_status)
+            {
+                static unsigned delay_protect_fail;
+                if (delay_protect_fail++ < 8)
+                    MESSAGE( "macrunner-hb-delay-resolve: stage=protect-failed dll=%s import=%s "
+                             "iat_slot=%p status=%lx\n", name,
+                             import_name ? import_name : "(ordinal)", &pIAT[id], prot_status );
+            }
+            pIAT[id].u1.Function = (ULONG_PTR)fp;
+            if (!prot_status)
+                NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size,
+                                        old_prot, &old_prot );
+        }
         if (trace_macrunner_delay)
             MESSAGE( "macrunner-hb-delay-resolve: stage=success dll=%s import=%s "
                      "iat_slot=%p target=%p\n", name,

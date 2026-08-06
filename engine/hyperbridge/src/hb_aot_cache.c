@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pthread.h>
+#include "hb_alloc_count.h"
 
 #define HB_AOT_MAGIC   "HBTC"
 #define HB_AOT_VERSION 2u

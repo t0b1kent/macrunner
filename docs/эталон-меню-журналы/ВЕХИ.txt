@@ -1,0 +1,33 @@
+движок=1 устройство=1 объекты=1 выгрузок=1 ввод=44
+
+═══ 06.08.2026 — ЭКРАН ВЫБОРА ЯЗЫКА ВИДЕН ═══
+Одиннадцать языков отрисованы, включая японский, китайский, корейский.
+Движок выдаёт кадры 1512x982 (dxmt-frame-dump, кадры 3,4,5...).
+
+Что открыло путь: ВЕРНУЛИ Galaxy64.dll (был переименован в .ОТКЛЮЧЁН
+в двух местах). GalaxyCSharpGlue.dll его ИМПОРТИРУЕТ, поэтому без него
+летел DllNotFoundException вместо штатного отказа GOG, и обработчик
+игры не отрабатывал — DesktopPlatform.Awake() не завершался.
+
+Цепочка в журнале теперь:
+  GOG signing in...
+  Selected online subsystem GOGGalaxyOnlineSubsystem
+  Discovered supported languages: DE, EN, ES, FR, IT, JA, KO, PT, RU, ZH, ZH_TW
+  Loaded system language 'English' -> Restored language code 'EN'
+  Unloading 49 unused Assets. Loaded Objects now: 4274.
+
+Доказательства: reports/phase4-hollow-knight/checkpoints/
+  20260806-LANGUAGE-SCREEN-VISIBLE-GALAXY64-RESTORED/
+Этаж: ~/Documents/MacRunner/dist-0806-floor26-ЭКРАН-ЯЗЫКА
+
+═══ 06.08 вечер ═══
+DFSC в журнале: шторм опознан — 257 млн отказов, dfsc=0x07 (страница
+НЕ отображена), pc в системном кеше macOS ⇒ бьёт наш memmove из
+сигнального ограждения, 35% времени процесса.
+
+MACRUNNER_HB_RESERVE_HOLES=0 добавлен в набор: с резервированием
+exit=5 приходил на 201-й секунде трижды подряд, без него — ноль за
+весь бюджет 1200 с. Конфликты Mono при этом 8 против 9.
+
+В профиль добавлен wine-dist/ — ВТОРОЙ дист, из которого грузится
+ntdll.so. Без него правки в прогон не попадают.

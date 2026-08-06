@@ -1191,10 +1191,46 @@ static BOOL macrunner_hb_header_probe_is_safe(void)
     return macrunner_hb_fault_header_probe_depth > 0;
 }
 
+/* MacRunner 2026-08-07 — РАСШИРЕНИЕ БЕЗОПАСНОГО ЧТЕНИЯ ЗА ПРЕДЕЛЫ ПУТИ ОТКАЗА.
+ *
+ * Найдено печатью LR рядом с PC в macrunner-hb-fault-page. Шторм неотображённой памяти —
+ * 184 786 432 отказа, dfsc=0x07, 35 % времени процесса — имел ОДИН адрес возврата на все 705
+ * записей: `macrunner_hb_probe_image_bytes + 132`, то есть memcpy ниже. PC при этом указывал в
+ * _platform_memmove системной библиотеки и виновника назвать не мог в принципе: виновен тот,
+ * кто позвал memcpy по неотображённому адресу.
+ *
+ * Безопасное чтение существовало и до этого, но `macrunner_hb_header_probe_is_safe()` требует
+ * `macrunner_hb_fault_header_probe_depth > 0`, то есть работает ТОЛЬКО внутри обработчика
+ * отказа. Шторм идёт при depth == 0 — обычные вызовы, мимо защиты.
+ *
+ * Цена честно меняется, а не исчезает: mach_vm_read_overwrite — синхронный вызов ядра вместо
+ * memcpy. Он дороже удачного memcpy и НАМНОГО дешевле отказа: в этом же файле записано, что
+ * обработчик стоит ~6 мкс на отказ, а отказов 184 млн. Поэтому размен считается выигрышным,
+ * но это ОЦЕНКА — подтверждает её только замер, критерий которого назван ниже.
+ *
+ * Проверка (зарегистрирована ДО прогона): строка `macrunner-hb-fault-page` с
+ * addr=0x87ef13b0000 обязана исчезнуть или упасть на порядки, а счётчик refusals — вырасти.
+ * Если refusals остался нулём, а шторм на месте — правка не на том пути, и её надо откатить,
+ * а не объяснять.
+ *
+ * Ставится 0, чтобы вернуть прежнее поведение для A/B. Любое другое значение или отсутствие —
+ * безопасное чтение всегда. */
+static BOOL macrunner_hb_safe_probe_always(void)
+{
+    static int mode = -1;
+
+    if (mode < 0)
+    {
+        const char *s = getenv( "MACRUNNER_HB_SAFE_PROBE_ALWAYS" );
+        mode = (s && *s == '0') ? 0 : 1;
+    }
+    return mode != 0;
+}
+
 static BOOL macrunner_hb_probe_image_bytes( const void *addr, void *buf, size_t size )
 {
     if (!addr || !buf || !size) return FALSE;
-    if (!macrunner_hb_header_probe_is_safe())
+    if (!macrunner_hb_safe_probe_always() && !macrunner_hb_header_probe_is_safe())
     {
         /* Byte-for-byte the previous behaviour, including the fault, so the gate-OFF arm of
          * the A/B is a true control. */

@@ -4630,8 +4630,16 @@ static ULONG64 macrunner_hb_fault_top_pc[MACRUNNER_HB_FAULT_TOP_SLOTS];
  * страницу неотличим от «кривой атомик» до «хвост секции PE за концом файла», а лечатся они
  * в разных местах. get_fault_esr() на macOS уже есть (uc_mcontext->__es.__esr). */
 static ULONG64 macrunner_hb_fault_top_esr[MACRUNNER_HB_FAULT_TOP_SLOTS];
+/* Адрес возврата на кадр выше. Без него диагноз упирается в тупик: pc шторма опознан через atos
+ * по живому процессу как _platform_memmove из libsystem_platform.dylib+144, то есть обычное
+ * копирование памяти — и оно НИКОГДА не назовёт виновника, потому что виновник тот, кто позвал
+ * memmove с указателем на несуществующую страницу. 188-257 млн отказов, dfsc=0x07 (записи в
+ * таблице страниц нет), 35 % времени процесса — и всё это указывает на системную библиотеку,
+ * в которой чинить нечего. LR даёт НАШ кадр, а с ним место в коде, где указатель или длина
+ * посчитаны неверно. */
+static ULONG64 macrunner_hb_fault_top_lr[MACRUNNER_HB_FAULT_TOP_SLOTS];
 
-static void macrunner_hb_fault_note_top( ULONG64 page, ULONG_PTR pc, ULONG64 esr )
+static void macrunner_hb_fault_note_top( ULONG64 page, ULONG_PTR pc, ULONG64 esr, ULONG_PTR lr )
 {
     unsigned int i;
 
@@ -4647,6 +4655,7 @@ static void macrunner_hb_fault_note_top( ULONG64 page, ULONG_PTR pc, ULONG64 esr
         if (!have)
         {
             __atomic_store_n( &macrunner_hb_fault_top_pc[i], (ULONG64)pc, __ATOMIC_RELAXED );
+            __atomic_store_n( &macrunner_hb_fault_top_lr[i], (ULONG64)lr, __ATOMIC_RELAXED );
             __atomic_store_n( &macrunner_hb_fault_top_esr[i], esr, __ATOMIC_RELAXED );
             __atomic_store_n( &macrunner_hb_fault_top_page[i], page, __ATOMIC_RELAXED );
             __atomic_add_fetch( &macrunner_hb_fault_top_count[i], 1, __ATOMIC_RELAXED );
@@ -4667,10 +4676,12 @@ static void macrunner_hb_fault_top_emit(void)
         if (!page || count < 1024) continue;
         {
             ULONG64 esr = __atomic_load_n( &macrunner_hb_fault_top_esr[i], __ATOMIC_RELAXED );
-            macrunner_signal_writef( "macrunner-hb-fault-page: addr=%p faults=%llu pc=%p esr=%llx ec=%llx dfsc=%llx\n",
+            macrunner_signal_writef( "macrunner-hb-fault-page: addr=%p faults=%llu pc=%p lr=%p esr=%llx ec=%llx dfsc=%llx\n",
                                      (void *)(ULONG_PTR)(page << 14),
                                      (unsigned long long)count,
                                      (void *)(ULONG_PTR)__atomic_load_n( &macrunner_hb_fault_top_pc[i],
+                                                                        __ATOMIC_RELAXED ),
+                                     (void *)(ULONG_PTR)__atomic_load_n( &macrunner_hb_fault_top_lr[i],
                                                                         __ATOMIC_RELAXED ),
                                      (unsigned long long)esr,
                                      (unsigned long long)((esr >> 26) & 0x3f),
@@ -4696,13 +4707,13 @@ static ULONG64 macrunner_hb_fault_page_count( ULONG64 page )
     return 0;
 }
 
-static void macrunner_hb_fault_note_page( ULONG_PTR addr, ULONG_PTR pc, ULONG64 esr )
+static void macrunner_hb_fault_note_page( ULONG_PTR addr, ULONG_PTR pc, ULONG64 esr, ULONG_PTR lr )
 {
     ULONG64 page = (ULONG64)(addr >> 14);  /* 16 KB pages on this platform */
     size_t slot = (size_t)((page * 2654435761u) & (MACRUNNER_HB_FAULT_PAGE_SLOTS - 1));
     ULONG64 prev = __atomic_load_n( &macrunner_hb_fault_page_tab[slot], __ATOMIC_RELAXED );
 
-    macrunner_hb_fault_note_top( page, pc, esr );
+    macrunner_hb_fault_note_top( page, pc, esr, lr );
     if (prev == page)
     {
         __atomic_add_fetch( &macrunner_hb_fault_same_page_repeat, 1, __ATOMIC_RELAXED );
@@ -4765,7 +4776,8 @@ static void macrunner_hb_primary_signal_handler( int sig, siginfo_t *siginfo, vo
         int code = siginfo ? siginfo->si_code : 0;
 
         if (fault_addr) macrunner_hb_fault_note_page( fault_addr, (ULONG_PTR)PC_sig(context),
-                                              (ULONG64)get_fault_esr( context ) );
+                                              (ULONG64)get_fault_esr( context ),
+                                              (ULONG_PTR)LR_sig(context) );
 
         if (sig == SIGSEGV && code == SEGV_ACCERR)
         {

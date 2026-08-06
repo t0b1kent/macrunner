@@ -1,0 +1,57 @@
+профиль: эталон-меню
+обновлён: 2026-08-06 11:00:36
+источник: reports/phase4-hollow-knight/laneA-INPUT-TEST-manual-language-FAST4of5-LONG-224430 (эталон), дист пересобран 06.08
+дист:     собственный (/Users/timurtoby/Documents/MacRunner/Main/MacRunner/profiles/эталон-меню/dist)
+ntdll.so: 5746c84acb41b6d4  08-06 10:47
+выравнивание секций: 16384
+правки в двоичных:
+  ntdll      LSE=1 приборы=1
+  xtajit     LSE=1 приборы=1
+  xtajit64   LSE=1 приборы=1
+содержимое: dist=да graphics=да prefix=да
+размер:     1.8G
+переключатели профиля:
+  MACRUNNER_WINEMAC_GAROOT_FALLBACK=1
+  MACRUNNER_HB_START_GAME_ACTUATOR=1
+  MACRUNNER_HB_START_GAME_ACTUATOR_MAX=64
+  MACRUNNER_HB_CACHE_SHARED=1
+  MACRUNNER_HB_LSE_ATOMICS=1
+последние вехи: движок=1 устройство=1 объекты=1 выгрузок=1 ввод=44
+
+── 06.08 добавлено ───────────────────────────────────────────
+ШРИФТЫ. В дист профиля положены libfreetype/libpng/libfontconfig/libintl
+(dist/lib/wine/aarch64-unix). До этого wine трижды за прогон писал
+«cannot find the FreeType font library»: он зовёт библиотеку dlopen'ом
+по голому имени, а она была только в Homebrew, куда dyld не смотрит.
+Проверка: scripts/mr-fonts.sh --check <дист>. Стало жалоб: 0.
+
+НАБЛЮДАТЕЛЬ MONO. Обновлён: печатает стадии запуска среды и ТЕКСТ
+брошенных исключений. Именно он показал
+  System.ArgumentException: 'CP1252' is not a supported encoding name
+  System.DllNotFoundException
+Старая версия сохранена рядом с суффиксом .до-имени-исключения.bak
+
+БЕГУЩАЯ СТРОКА в ярлыке теперь показывает «шрифтов-нет» и «искл»
+вместо веху «меню», которая врала: строка Unity «automatic level»
+в эталоне Windows не встречается ни разу.
+
+★★★ 06.08 — ЭКРАН ВЫБОРА ЯЗЫКА НА ЭКРАНЕ.
+Условие, без которого не повторится: в каталоге игры НЕ должно быть
+файлов *.dll.ОТКЛЮЧЁН. Особенно Galaxy64.dll — его импортирует
+GalaxyCSharpGlue.dll. Преполётная проверка это теперь стережёт (3e).
+
+06.08 добавлен MACRUNNER_MACDRV_FORCE_KEY_WINDOW=1.
+Почему: в журнале было policy=2 (Prohibited — приложению ЗАПРЕЩЕНО
+становиться активным), active=0, keyWindow=0x0, APP_ACTIVATED=0,
+send_mouse_input=0. Драйвер поднимается на +86 с, ПОСЛЕ того как USER
+создал окно, поэтому обмен фокусом ни разу не отработал против живого
+драйвера. Cocoa мышь при этом видит (CoreDragRequestDragCompleteMessage),
+а в гостя она не доходит. Гейт форсирует передачу фокуса окну Cocoa.
+Признак, что помогло: в журнале появятся APP_ACTIVATED и send_mouse_input.
+
+★★★ ДИСТОВ ДВА, И ОБА ОБЯЗАТЕЛЬНЫ.
+  dist/       — запуск (bin/wine), это dist-arm64ec-spike
+  wine-dist/  — отсюда грузится ntdll.so (MACRUNNER_WINE_DIST)
+06.08 полдня правки разворачивались только в первый, а мерился второй —
+DFSC не печатался, гейт не срабатывал, замеры оказались недействительны.
+Проверка: строка должна быть В ТОМ файле, что реально грузится.

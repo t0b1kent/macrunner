@@ -250,7 +250,13 @@ CARRIERS=$(grep -rls "libhyperbridge.a" engine/wine/dlls/*/Makefile.in 2>/dev/nu
            | sed 's|engine/wine/dlls/||; s|/Makefile.in||')
 [ -n "$CARRIERS" ] || { note "FAIL: не нашёл ни одного модуля, линкующего libhyperbridge.a"; fail=1; }
 for m in $CARRIERS; do
-  so="engine/wine/dist-arm64ec-spike/lib/wine/aarch64-unix/$m.so"
+  # Дист берём ТОТ, что реально грузится, а не жёсткую строку. 07.08 здесь стояло
+  # dist-arm64ec-spike, и при запуске профиля префлайт печатал «носитель свежий
+  # (e830c351be60)» — хеш рабочего дерева, тогда как прогон грузил ntdll.so профиля
+  # (eb15de3eb61a). То есть проверка ручалась за файл, которого в прогоне не было:
+  # ровно та ошибка, ради которой раздел 3f выше и написан. Оператор заметил по
+  # несовпадению хешей в выводе.
+  so="$PF_DIST/lib/wine/aarch64-unix/$m.so"
   if [ ! -f "$so" ]; then note "FAIL: носитель $m.so отсутствует в dist"; fail=1; continue; fi
   stale=$(find "$SRC" engine/hyperbridge/include \( -name '*.c' -o -name '*.h' \) 2>/dev/null \
           | while read -r f; do [ "$f" -nt "$so" ] && echo "$f" && break; done)

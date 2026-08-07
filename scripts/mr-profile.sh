@@ -279,11 +279,21 @@ if _eff:
 # трансляций она не увидит. Каталог код создаёт сам (hb_aot_cache.c:312).
 import hashlib
 def _cache_tag(dist):
-    for rel in ("lib/wine/aarch64-unix/xtajit64.so","lib/wine/aarch64-unix/ntdll.so"):
-        f=os.path.join(dist,rel)
-        try: return hashlib.sha256(open(f,'rb').read()).hexdigest()[:12]
-        except OSError: continue
-    return hashlib.sha256(dist.encode()).hexdigest()[:12]
+    # Метка берётся из ВСЕХ ТРЁХ носителей, а не из одного xtajit64.
+    # libhyperbridge.a линкуется в ntdll.so, xtajit.so и xtajit64.so — то есть код JIT лежит во
+    # всех трёх. 07.08 floor26 и «убран шторм» несут ОДИНАКОВЫЙ xtajit64 (cc8a008d666b) и
+    # РАЗНЫЙ ntdll (5746c84a против eb15de3e): по одному xtajit64 они получили бы общий кеш,
+    # и сборка со штормом читала бы трансляции сборки без него. Ровно то отравление, ради
+    # предотвращения которого кеш и разделён.
+    h=hashlib.sha256()
+    found=False
+    for name in ("ntdll","xtajit","xtajit64"):
+        f=os.path.join(dist,"lib/wine/aarch64-unix",name+".so")
+        try:
+            h.update(open(f,'rb').read()); found=True
+        except OSError: pass
+    if not found: h.update(dist.encode())
+    return h.hexdigest()[:12]
 _dist_for_cache = override or (os.path.join(PROF,"dist") if PROF else "")
 if _dist_for_cache and os.path.isdir(_dist_for_cache):
     env["MACRUNNER_HB_TRANSLATION_CACHE_ROOT"]=os.path.join(

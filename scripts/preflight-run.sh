@@ -349,7 +349,9 @@ done
 
 [ "$fail" = 0 ] || { echo "── ПРОГОН НЕ ЗАПУЩЕН: устраните причины выше ──"; exit 2; }
 note "OK: гейты существуют, задеплоены, мастер-гейт на месте, бинарь свежее исходников"
-note "dist=$(shasum -a256 "$DIST" | cut -c1-16)"
+# Тоже жёсткая строка была (третий экземпляр за день): при запуске профиля печаталось
+# dist=864011b797375b67 — хеш рабочего дерева, тогда как прогон шёл на cc8a008d666b.
+note "dist=$(shasum -a256 "$PF_DIST/lib/wine/aarch64-unix/xtajit64.so" | cut -c1-16)"
 
 # ── 5. Run, then prove the evidence markers actually appeared. ────────────────────────────────
 while [ "$(ps -Ao comm | grep -cE 'Hollow Knight\.exe|AbzuGame')" -gt 0 ]; do sleep 10; done

@@ -61,3 +61,4 @@ engine/
 licensing/signing.key
 __pycache__/
 _air-bulk-isa-kit/
+docs/rosetta-aot/*.aot

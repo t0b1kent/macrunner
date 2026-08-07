@@ -1,0 +1,2 @@
+83180 83144       01:45 bash /Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/mr-run.sh /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike /Users/timurtoby/Documents/MacRunner/Main/MacRunner/../game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/Hollow Knight.exe 600
+89421 83180       01:20 /Users/timurtoby/Documents/MacRunner/Main/MacRunner/../game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/Hollow Knight.exe 

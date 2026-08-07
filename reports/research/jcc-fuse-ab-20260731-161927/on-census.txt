@@ -1,0 +1,1 @@
+[laneA-ts epoch=1785479647.542 +607.301s] macrunner-hb-jcc-cc-census: total=121634816macrunner-hb-faultrate: entries=1318912 elapsed_ms=589045 rate=2239/s avg_us=31 busy_pct=7 accerr=24096 maperr=0 other=1294816 ill=0 bus=1294816 trap=0 segv_other=0 adraln=1294816 adrerr=0 objerr=0 buscode_other=0 pages_distinct=43 same_page=1318848

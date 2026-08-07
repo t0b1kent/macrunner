@@ -1,0 +1,21 @@
+{
+  "rung_idx": 9,
+  "rung_name": "dxgi-factory",
+  "run": "laneA-syscall-stall-probe-20260614-044900",
+  "ladder": [
+    "after-loader",
+    "xtajit64-init",
+    "ldr-entry",
+    "after-xlat",
+    "loader-init",
+    "thread-start",
+    "mono-init",
+    "create-window",
+    "gfxdevice",
+    "dxgi-factory",
+    "d3d11-device",
+    "swapchain",
+    "present",
+    "window-visible"
+  ]
+}

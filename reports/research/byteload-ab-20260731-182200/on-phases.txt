@@ -1,0 +1,24 @@
+=== reports/phase4-hollow-knight/laneA-byte-on-a1-try1-183321/run.log ===
+  last_activity_s            466.6
+  to_guest_s                 30.287
+  mono_begin                 42.068
+  reload_assembly_s          18.3
+  physx_to_xinput_s          28.8
+  xinput                     89.159
+  post_init_s                377.4
+  compiles                   215000
+  compiles_pct_in_first_50s  51.2
+  RETENTION_PCT              95.9
+  rl_stores                  206201
+  rl_patched                 927328
+  rl_hostptr                 8798
+  rl_highhalf                0
+  rl_collision               0
+  rl_desync                  0
+  rl_roundtrip               0
+  mh_argshape                0
+  mh_widearg                 0
+  mh_toomany                 0
+  sync_ops                   0
+  sync_blocked_s             0.0
+

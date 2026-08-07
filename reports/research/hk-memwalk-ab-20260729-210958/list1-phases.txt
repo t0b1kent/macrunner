@@ -1,0 +1,24 @@
+=== /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-memwalk2-list1-a1-try1-211310/run.log ===
+  last_activity_s            747.0
+  to_guest_s                 42.367
+  mono_begin                 55.326
+  reload_assembly_s          32.8
+  physx_to_xinput_s          59.9
+  xinput                     147.976
+  post_init_s                599.0
+  compiles                   165873
+  compiles_pct_in_first_50s  62.8
+  RETENTION_PCT              72.0
+  rl_stores                  119367
+  rl_patched                 472255
+  rl_hostptr                 4606
+  rl_highhalf                0
+  rl_collision               0
+  rl_desync                  0
+  rl_roundtrip               0
+  mh_argshape                0
+  mh_widearg                 0
+  mh_toomany                 0
+  sync_ops                   0
+  sync_blocked_s             0.0
+

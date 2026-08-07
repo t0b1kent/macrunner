@@ -1,0 +1,24 @@
+=== reports/phase4-hollow-knight/laneA-smcab-on-a1-try1-141401/run.log ===
+  last_activity_s            486.6
+  to_guest_s                 32.953
+  mono_begin                 44.757
+  reload_assembly_s          17.7
+  physx_to_xinput_s          29.0
+  xinput                     91.439
+  post_init_s                395.2
+  compiles                   215000
+  compiles_pct_in_first_50s  51.2
+  RETENTION_PCT              96.1
+  rl_stores                  206549
+  rl_patched                 942116
+  rl_hostptr                 8450
+  rl_highhalf                0
+  rl_collision               0
+  rl_desync                  0
+  rl_roundtrip               0
+  mh_argshape                0
+  mh_widearg                 0
+  mh_toomany                 0
+  sync_ops                   0
+  sync_blocked_s             0.0
+

@@ -1,0 +1,1 @@
+PREFIX=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/_mr-run.ke82Om

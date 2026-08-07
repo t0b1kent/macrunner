@@ -1,0 +1,23 @@
+file=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/hk-hdrprobe-speed-ab-20260729-221740/off3-sample-1.txt
+threads=55
+PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler)
+PARTIAL=0  (in the handler for part of the sample)
+NONIDLE_SAMPLES=9524
+MEMMOVE_PCT_OF_NONIDLE=10.7
+--- top non-idle leaves ---
+      1339   14.1%  macrunner_hb_run_x64
+      1018   10.7%  _platform_memmove
+       966   10.1%  _platform_memset
+       691    7.3%  hb_jit_runtime_run
+       492    5.2%  try_promote_hot_block_families
+       492    5.2%  hb_memory_read
+       474    5.0%  find_region_normalized
+       430    4.5%  _tlv_get_addr
+       261    2.7%  hb_flags_read_operand_value
+       258    2.7%  exec_instr_unlocked
+       250    2.6%  run_jit_block_with_signal_guard
+       239    2.5%  hb_memory_write
+       217    2.3%  hb_jit_helper_exec_ir_block_once
+       118    1.2%  hb_jit_helper_exec_two_block_loop
+       116    1.2%  hb_context_read_reg_value
+       110    1.2%  normalize_guest32_mirror_addr

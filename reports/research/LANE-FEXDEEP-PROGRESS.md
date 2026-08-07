@@ -1,0 +1,2 @@
+ 04:19 · fexdeep lane started · read ROSETTA-DEEP-ANALYSIS (FEX section done there), no local FEX checkout · next: clone FEX shallowly, read own dispatcher
+ · контекст session restart · local FEX checkout FOUND at cache/FEX @ 1240a00fa (2026-05-23), engine headers listed · итерация 1: запускаю 6 параллельных субагентов (IR design, SRA register allocation, flags/x87, SMC invalidation, Arm64 EmitEntryPoint/SpillSlots, WOW64/arm64ecfex+JITCodeTail-perenosimost)

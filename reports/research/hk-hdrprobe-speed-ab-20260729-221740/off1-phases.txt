@@ -1,0 +1,24 @@
+=== /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-hdrspeed2-off1-a1-try1-221846/run.log ===
+  last_activity_s            774.3
+  to_guest_s                 42.802
+  mono_begin                 55.287
+  reload_assembly_s          28.5
+  physx_to_xinput_s          50.0
+  xinput                     133.812
+  post_init_s                640.5
+  compiles                   217790
+  compiles_pct_in_first_50s  49.9
+  RETENTION_PCT              72.4
+  rl_stores                  157665
+  rl_patched                 621601
+  rl_hostptr                 6269
+  rl_highhalf                0
+  rl_collision               0
+  rl_desync                  0
+  rl_roundtrip               0
+  mh_argshape                0
+  mh_widearg                 0
+  mh_toomany                 0
+  sync_ops                   0
+  sync_blocked_s             0.0
+

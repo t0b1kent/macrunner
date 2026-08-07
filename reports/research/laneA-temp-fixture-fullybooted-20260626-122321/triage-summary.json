@@ -1,0 +1,181 @@
+{
+  "final_verdict": "BLOCKED",
+  "final_owner": "Lane A",
+  "final_class": "GENERIC_WOW64_FAULT",
+  "final_confidence": 0.5,
+  "final_next_action": "WOW64 subsystem initialisation or thunking issue. Check that wow64cpu.dll/xtajit.dll are deployed to syswow64 in the prefix. Enable MACRUNNER_HB_TRACE_WOW64=1.",
+  "why_primary_won": "Primary class 'GENERIC_WOW64_FAULT' (priority 30) outranked secondary classes: ARM64EC_CALLBACK_TRACE_INSUFFICIENT, WAIT_TRACE_INSUFFICIENT, WINDOW_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, D3D_TRACE_INSUFFICIENT, PE32_HANDOFF_TRACE_INSUFFICIENT.",
+  "ladder_rung": {
+    "idx": 1,
+    "name": "xtajit64-init"
+  },
+  "ladder_best": {
+    "idx": 9,
+    "name": "dxgi-factory",
+    "run": "laneA-syscall-stall-probe-20260614-044900"
+  },
+  "ladder_regression": true,
+  "secondary_classes": [
+    "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+    "WAIT_TRACE_INSUFFICIENT",
+    "WINDOW_TRACE_INSUFFICIENT",
+    "SMC_TRACE_INSUFFICIENT",
+    "D3D_TRACE_INSUFFICIENT",
+    "PE32_HANDOFF_TRACE_INSUFFICIENT"
+  ],
+  "missing_markers": {
+    "critical": [],
+    "secondary": []
+  },
+  "next_run_env": {},
+  "analyzers": {
+    "analyze_waits.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "WAIT_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with synchronization object tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "WAIT_OBJECT",
+          "SET_EVENT"
+        ],
+        "secondary": [
+          "RELEASE_SEMAPHORE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SYNCHRONIZATION": "1"
+      }
+    },
+    "analyze_window_gate.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "WINDOW_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with window and message gate logging active.",
+      "missing_markers": {
+        "critical": [
+          "WM_NCCREATE_RETURN",
+          "THREAD_DESKTOP"
+        ],
+        "secondary": [
+          "CREATESTRUCT_VALID",
+          "REGISTER_CLASS_HINSTANCE",
+          "CREATE_WINDOW_HINSTANCE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_NCCREATE": "1",
+        "MACRUNNER_HB_TRACE_CREATEWINDOW": "1"
+      }
+    },
+    "analyze_arm64ec_callbacks.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+      "confidence": 0.35,
+      "evidence": [],
+      "next_action": "Investigate early exit or missing callback return traces.",
+      "missing_markers": {
+        "critical": [
+          "ARM64EC_CALLBACK",
+          "ARM64EC_CALLBACK_RETURN"
+        ],
+        "secondary": []
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_CALLBACKS": "1"
+      }
+    },
+    "analyze_smc.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "SMC_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with self-modifying code (SMC) tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "TB_GENERATE",
+          "TB_INVALIDATE"
+        ],
+        "secondary": [
+          "SMC_WRITE",
+          "FLUSH_ICACHE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SMC": "1"
+      }
+    },
+    "analyze_d3d_gate.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane C",
+      "class": "D3D_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with D3D and graphics gate logging enabled.",
+      "missing_markers": {
+        "critical": [
+          "D3D_ENTRY",
+          "MODULE_MAP"
+        ],
+        "secondary": []
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_D3D": "1"
+      }
+    },
+    "analyze_pe32_wow64_handoff.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "PE32_HANDOFF_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFED10000 delta=FFFF988000A90000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF590000 image_base=00006FFFFEAF0000 delta=FFFF988000AA0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF440000 image_base=00006FFFFE990000 delta=FFFF988000AB0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFEDA0000 image_base=00006FFFFE2E0000 delta=FFFF988000AC0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFE800000 image_base=00006FFFFDD30000 delta=FFFF988000AD0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFE650000 image_base=00006FFFFDB70000 delta=FFFF988000AE0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFED10000 delta=FFFF988000A90000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF330000 image_base=00006FFFFD6F0000 delta=FFFF988001C40000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF120000 image_base=00006FFFFEAF0000 delta=FFFF988000630000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFEFD0000 image_base=00006FFFFE990000 delta=FFFF988000640000 machine=0xaa64"
+      ],
+      "next_action": "Capture a flight recorder log with WOW64 and BTCPU handoff tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "PE32_HANDOFF",
+          "WOW64_INIT"
+        ],
+        "secondary": [
+          "MODULE_MAP"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_WOW64": "1"
+      }
+    },
+    "analyze_generic_fallback.py": {
+      "verdict": "BLOCKED",
+      "owner": "Lane A",
+      "class": "GENERIC_WOW64_FAULT",
+      "confidence": 0.5,
+      "evidence": [
+        "synced artifacts/_mr-run.0brghu/drive_c/windows/system32/wow64.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64.dll",
+        "synced artifacts/_mr-run.0brghu/drive_c/windows/system32/xtajit64.dll <= engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/xtajit64.dll",
+        "synced artifacts/_mr-run.0brghu/drive_c/windows/system32/wow64cpu.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64cpu.dll"
+      ],
+      "next_action": "WOW64 subsystem initialisation or thunking issue. Check that wow64cpu.dll/xtajit.dll are deployed to syswow64 in the prefix. Enable MACRUNNER_HB_TRACE_WOW64=1.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    }
+  }
+}

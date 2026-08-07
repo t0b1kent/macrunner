@@ -1,0 +1,8 @@
+[hk] unsetting inherited MACRUNNER_WINE_BIN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist/bin/wine (would force the stale dist)
+[hk] slot free after 0s
+[hk] === attempt 1/1 ===
+[laneA] live spike wine persisted ~60s and NO live slot owner — force-cleaning orphaned spike wine (scoped) and proceeding
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/laneA-run-hk.sh: line 131: 51939 Terminated: 15          pipe_watchdog "$RUNDIR"
+try1 rc=124 lines=    2481 /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-on-warm-a1-try1-024835
+VALID_RUN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-on-warm-a1-try1-024835
+[hk] GOOD BOOT on attempt 1 (marker: Restored language): /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-on-warm-a1-try1-024835

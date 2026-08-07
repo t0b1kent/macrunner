@@ -1,0 +1,16 @@
+OWNER: Lane A
+CLASS: WINDOW_SERVER_ERROR
+CONFIDENCE: 0.85
+LADDER_RUNG: 0 (after-loader)
+LADDER_BEST: 0 (after-loader) run=pe32-c00000fd-unwind-gate-20260613-121648
+LADDER_REGRESSION: no
+WHY_PRIMARY_WON: Primary class 'WINDOW_SERVER_ERROR' (priority 90) outranked secondary classes: ARM64EC_CALLBACK_TRACE_INSUFFICIENT, WAIT_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, D3D_TRACE_INSUFFICIENT.
+EVIDENCE:
+  [0] tid=0 Window server error c0000022: macrunner-wow64: guest32-write ntwrite dst=0000000B7AC24020 size=4 status=c0000022 written=0
+  [0] tid=0 Window server error c0000139: macrunner-wow64: MemoryWineUnixFuncs native status=c0000139 funcs=0000000000000000 res_len=0
+  [0] tid=0 Window server error c0000139: macrunner-wow64: MemoryWineUnixFuncs leave status=c0000139 out=0000000B7AC24028
+  [0] tid=0 Window server error c0000139: macrunner-wow64: MemoryWineUnixFuncs return status=c0000139 retlen=0000000000000000 res_len=0
+  [0] tid=0 Window server error c0000139: macrunner-wow64: Wow64SystemServiceEx after-syscall num=00000023 status=c0000139 templist=0000000000000000
+  [0] tid=0 Window server error c0000139: macrunner-wow64: Wow64SystemServiceEx leave num=00000023 status=c0000139 templist=0000000000000000
+NEXT_ACTION: Diagnose window server error code in NtUserCreateWindowEx routing.
+SECONDARY_CLASSES: ARM64EC_CALLBACK_TRACE_INSUFFICIENT, WAIT_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, D3D_TRACE_INSUFFICIENT

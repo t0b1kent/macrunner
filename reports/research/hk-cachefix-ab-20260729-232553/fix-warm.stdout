@@ -1,0 +1,15 @@
+[hk] unsetting inherited MACRUNNER_WINE_BIN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist/bin/wine (would force the stale dist)
+[hk] slot free after 0s
+[hk] === attempt 1/1 ===
+[laneA] title slot held by LIVE pid 17830 — waiting 300s, NOT force-cleaning
+[laneA] title slot held by LIVE pid 17830 — waiting 600s, NOT force-cleaning
+[laneA] title slot held by LIVE pid 17830 — waiting 900s, NOT force-cleaning
+[laneA] title slot held by LIVE pid 17830 — waiting 1200s, NOT force-cleaning
+[laneA] title slot held by LIVE pid 17830 — waiting 1500s, NOT force-cleaning
+[laneA] title slot held by LIVE pid 17830 — waiting 1800s, NOT force-cleaning
+[laneA] live spike wine persisted ~60s and NO live slot owner — force-cleaning orphaned spike wine (scoped) and proceeding
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/laneA-run-hk.sh: line 131: 58563 Terminated: 15          pipe_watchdog "$RUNDIR"
+try1 rc=5 lines=    2386 /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-cachefix-fix-warm-a1-try1-015219
+VALID_RUN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-cachefix-fix-warm-a1-try1-015219
+[hk] attempt 1 did not reach the menu (rc=0, marker 'Restored language' absent) — retrying
+[hk] no attempt reached Mono init in 1 tries

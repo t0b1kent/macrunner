@@ -1,0 +1,3 @@
+[hk] unsetting inherited MACRUNNER_WINE_BIN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist/bin/wine (would force the stale dist)
+[hk] slot free after 0s
+[hk] === attempt 1/1 ===

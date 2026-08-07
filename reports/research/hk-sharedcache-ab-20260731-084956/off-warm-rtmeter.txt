@@ -1,0 +1,11 @@
+## /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-off-warm-a1-try1-090252/run.log
+  runtimes=69 (lines=132)  jit_size=128 MB  -> address space 8.6 GB
+  cumulative create cost = 6197 ms   of which cacheopen 11901 ms (192.0 %)   jitbuf 1 ms
+  cacheopen_ms  first quarter mean=39.11  last quarter mean=217.14   ratio=5.6x   median=49.53   max=395.43
+  runtimes created between t=31.8s and t=561.3s
+   n     t(s)   total_ms  jitbuf  cacheopen
+     1     31.8     43.43    0.02      43.33
+    18     55.5     38.84    0.00      38.83
+    33     57.5     46.77    0.01      46.75
+    51    112.3     53.97    0.00      53.96
+    69    561.3    312.50    0.01     312.40

@@ -1,0 +1,6 @@
+codesign_verify=OK
+callback-native-route=0
+CALLBACK_ROUTE=1
+arm64ec-callback=0
+route-non-amd64=0
+arm64x-native-dispatch=0

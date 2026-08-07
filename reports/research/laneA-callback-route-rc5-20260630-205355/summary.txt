@@ -1,0 +1,16 @@
+run=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-callback-route-rc5-20260630-205355-try1-205355
+rc=1
+callback_stack=4
+callback_record=0
+callback_dispatch=3
+callback_return=0
+callback_target_ldr=3
+callback12=0
+pe_call12=0
+unsafe_boundary=1
+syscall_boundary=0
+native_recovered=0
+D3D11CreateDevice=1
+Mono=0
+exit5=2
+exit143=1

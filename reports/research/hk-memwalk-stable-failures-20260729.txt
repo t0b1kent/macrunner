@@ -1,0 +1,26 @@
+tests/hb_test_runner.c:10023: hb_memory_guest32_map(ctx->memory, code_base, 0x1000, HB_PER
+tests/hb_test_runner.c:13829: code_buf->size <= 188
+tests/hb_test_runner.c:13889: out.result == HB_OK
+tests/hb_test_runner.c:15043: out.result == HB_OK
+tests/hb_test_runner.c:15107: code_buf->size <= 220
+tests/hb_test_runner.c:15378: code_buf->size <= 260
+tests/hb_test_runner.c:15505: expected 1, got 3
+tests/hb_test_runner.c:15592: expected 1, got 3
+tests/hb_test_runner.c:16972: code_buf->size <= 192
+tests/hb_test_runner.c:17026: code_buf->size <= 188
+tests/hb_test_runner.c:17135: code_buf->size <= 196
+tests/hb_test_runner.c:17394: code_buf->size <= 132
+tests/hb_test_runner.c:17458: code_buf->size <= 164
+tests/hb_test_runner.c:17550: code_buf->size <= 220
+tests/hb_test_runner.c:17653: code_buf->size <= 80
+tests/hb_test_runner.c:17717: code_buf->size <= 160
+tests/hb_test_runner.c:17874: code_buf->size <= 144
+tests/hb_test_runner.c:17985: code_buf->size <= 220
+tests/hb_test_runner.c:18161: out.result == HB_OK
+tests/hb_test_runner.c:19316: out.result == HB_OK
+tests/hb_test_runner.c:24586: out.result == HB_OK
+tests/hb_test_runner.c:6785: code_buf->size <= 180
+tests/hb_test_runner.c:6838: code_buf->size <= 96
+tests/hb_test_runner.c:7305: code_buf->size <= 180
+tests/hb_test_runner.c:7682: out.result == HB_OK
+tests/hb_test_runner.c:9974: hb_memory_guest32_map(ctx->memory, code_base, 0x1000, HB_PERM

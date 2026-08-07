@@ -1,0 +1,192 @@
+{
+  "final_verdict": "BLOCKED",
+  "final_owner": "Lane C",
+  "final_class": "WINED3D_FALLBACK",
+  "final_confidence": 0.8,
+  "final_next_action": "Ensure the Metal/DXMT backend is selected instead of falling back to WineD3D.",
+  "why_primary_won": "Primary class 'WINED3D_FALLBACK' (priority 70) outranked secondary classes: GENERIC_GRAPHICS_FAULT, ARM64EC_CALLBACK_TRACE_INSUFFICIENT, WAIT_TRACE_INSUFFICIENT, WINDOW_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, DLL_LOAD_TRACE_INSUFFICIENT.",
+  "ladder_rung": {
+    "idx": 9,
+    "name": "dxgi-factory"
+  },
+  "ladder_best": {
+    "idx": 9,
+    "name": "dxgi-factory",
+    "run": "laneA-syscall-stall-probe-20260614-044900"
+  },
+  "ladder_regression": false,
+  "pixel_truth": {
+    "confirmed": false,
+    "artifact": null,
+    "verdict": null
+  },
+  "pixel_moment_reached": false,
+  "secondary_classes": [
+    "GENERIC_GRAPHICS_FAULT",
+    "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+    "WAIT_TRACE_INSUFFICIENT",
+    "WINDOW_TRACE_INSUFFICIENT",
+    "SMC_TRACE_INSUFFICIENT",
+    "DLL_LOAD_TRACE_INSUFFICIENT"
+  ],
+  "missing_markers": {
+    "critical": [],
+    "secondary": []
+  },
+  "next_run_env": {},
+  "analyzers": {
+    "analyze_dll_load.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane C",
+      "class": "DLL_LOAD_TRACE_INSUFFICIENT",
+      "confidence": 0.2,
+      "evidence": [
+        "non-graphics c0000135 load failure seen, but no map_fixed_area OOM and no >=3-helper init cascade \u2014 not enough for DLL_LOAD_FAILURE."
+      ],
+      "next_action": "No DLL-load/init blocker matched; defer to other analyzers.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    },
+    "analyze_waits.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "WAIT_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with synchronization object tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "WAIT_OBJECT",
+          "SET_EVENT"
+        ],
+        "secondary": [
+          "RELEASE_SEMAPHORE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SYNCHRONIZATION": "1"
+      }
+    },
+    "analyze_window_gate.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "WINDOW_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with window and message gate logging active.",
+      "missing_markers": {
+        "critical": [
+          "WM_NCCREATE_RETURN",
+          "THREAD_DESKTOP"
+        ],
+        "secondary": [
+          "CREATESTRUCT_VALID",
+          "REGISTER_CLASS_HINSTANCE",
+          "CREATE_WINDOW_HINSTANCE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_NCCREATE": "1",
+        "MACRUNNER_HB_TRACE_CREATEWINDOW": "1"
+      }
+    },
+    "analyze_arm64ec_callbacks.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+      "confidence": 0.35,
+      "evidence": [],
+      "next_action": "Investigate early exit or missing callback return traces.",
+      "missing_markers": {
+        "critical": [
+          "ARM64EC_CALLBACK",
+          "ARM64EC_CALLBACK_RETURN"
+        ],
+        "secondary": []
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_CALLBACKS": "1"
+      }
+    },
+    "analyze_smc.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "SMC_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with self-modifying code (SMC) tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "TB_GENERATE",
+          "TB_INVALIDATE"
+        ],
+        "secondary": [
+          "SMC_WRITE",
+          "FLUSH_ICACHE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SMC": "1"
+      }
+    },
+    "analyze_d3d_gate.py": {
+      "verdict": "BLOCKED",
+      "owner": "Lane C",
+      "class": "WINED3D_FALLBACK",
+      "confidence": 0.8,
+      "evidence": [
+        "raw D3D gate counts: dxgi_iat=0 real_factory=0 d3d11_iat=0 d3d11_device_markers=0 swapchain=0 present=0"
+      ],
+      "next_action": "Ensure the Metal/DXMT backend is selected instead of falling back to WineD3D.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    },
+    "analyze_pe32_wow64_handoff.py": {
+      "verdict": "PASS",
+      "owner": "Lane A",
+      "class": "PE32_I386_EXECUTING",
+      "confidence": 0.9,
+      "evidence": [
+        "[0] signal init: macrunner-hb-signal-init: pid=95191 stage=x64-image-map-start trace=0",
+        "[0] signal init: macrunner-hb-signal-init: pid=95191 stage=x64-image-map-primary-installed rc=0/0/0",
+        "[0] signal init: macrunner-hb-signal-init: pid=95191 stage=wine-process-start trace=0",
+        "[0] signal init: macrunner-hb-signal-init: pid=95191 stage=wine-process-primary-installed rc=0/0/0",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFED10000 delta=FFFF988000A90000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF330000 image_base=00006FFFFE890000 delta=FFFF988000AA0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF120000 image_base=00006FFFFE670000 delta=FFFF988000AB0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFEFD0000 image_base=00006FFFFE510000 delta=FFFF988000AC0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFE930000 image_base=00006FFFFDE60000 delta=FFFF988000AD0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFE390000 image_base=00006FFFFD8B0000 delta=FFFF988000AE0000 machine=0xaa64"
+      ],
+      "next_action": "i386/WOW64 CPU is loaded and EXECUTING guest code (JIT blocks translated / guest EIP advancing). This is NOT a CPU-load failure. Next: profile where i386 execution stalls and cover ISA-opcode gaps (reports/research/HB-X86-32-ISA-COVERAGE-matrix.md) + Win32-API as they surface.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    },
+    "analyze_generic_fallback.py": {
+      "verdict": "BLOCKED",
+      "owner": "Lane D",
+      "class": "GENERIC_GRAPHICS_FAULT",
+      "confidence": 0.45,
+      "evidence": [
+        "synced artifacts/_mr-run.ffizdl/drive_c/windows/system32/vulkan-1.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/vulkan-1.dll",
+        "synced artifacts/_mr-run.ffizdl/drive_c/windows/system32/winemetal.dll <= engine/graphics/dist/dxmt/x86_64-windows/winemetal.dll",
+        "synced artifacts/_mr-run.ffizdl/drive_c/windows/system32/wined3d.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/wined3d.dll"
+      ],
+      "next_action": "Graphics API translation or pipeline issue. Identify the failing Metal/D3D11 call and check the DXMT/winemetal translation layer. Enable MACRUNNER_HB_TRACE_D3D=1.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    }
+  }
+}

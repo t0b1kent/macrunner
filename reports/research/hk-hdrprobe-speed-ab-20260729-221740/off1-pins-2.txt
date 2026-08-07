@@ -1,0 +1,22 @@
+file=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/hk-hdrprobe-speed-ab-20260729-221740/off1-sample-2.txt
+threads=58
+PINNED=1   (100% of samples inside macrunner_hb_primary_signal_handler)
+PARTIAL=1  (in the handler for part of the sample)
+  pinned tids: 63386810
+  PINNED_SITE=_platform_memmove                              n=1
+  (only the probe_image_bytes/memmove site is addressed by MACRUNNER_HB_FAULT_SAFE_HEADER_PROBE)
+NONIDLE_SAMPLES=27787
+MEMMOVE_PCT_OF_NONIDLE=30.0
+--- top non-idle leaves ---
+      8346   30.0%  _platform_memmove
+      5214   18.8%  _sigtramp
+      1366    4.9%  macrunner_hb_run_x64
+      1136    4.1%  __wine_pe_x18_thunk
+      1099    4.0%  try_promote_hot_block_families
+      1086    3.9%  _platform_memset
+       782    2.8%  hb_jit_runtime_run
+       720    2.6%  hb_memory_read
+       533    1.9%  _tlv_get_addr
+       532    1.9%  __pthread_sigmask
+       521    1.9%  exec_instr_unlocked
+       370    1.3%  hb_memory_write

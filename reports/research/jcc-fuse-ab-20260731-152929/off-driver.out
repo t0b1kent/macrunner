@@ -1,0 +1,6 @@
+[hk] slot free after 0s
+[hk] === attempt 1/1 ===
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/laneA-run-hk.sh: line 131: 88314 Terminated: 15          pipe_watchdog "$RUNDIR"
+try1 rc=124 lines=    3271 /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-fuse-off-a1-try1-152929
+VALID_RUN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-fuse-off-a1-try1-152929
+[hk] GOOD BOOT on attempt 1 (marker: Restored language): /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-fuse-off-a1-try1-152929

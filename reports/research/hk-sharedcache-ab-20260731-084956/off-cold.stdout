@@ -1,0 +1,7 @@
+[hk] slot free after 0s
+[hk] === attempt 1/1 ===
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/laneA-run-hk.sh: line 131: 55844 Terminated: 15          pipe_watchdog "$RUNDIR"
+try1 rc=186 lines=    2409 /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-off-cold-a1-try1-085006
+VALID_RUN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-off-cold-a1-try1-085006
+[hk] attempt 1 did not reach the menu (rc=0, marker 'Restored language' absent) — retrying
+[hk] no attempt reached Mono init in 1 tries

@@ -1,0 +1,2 @@
+ 5521       07:45 /var/folders/48/2f66hmz52n5738l03xhspcyw0000gn/T//winetemp-39229755-51232-1783446039-780380645/wine /Users/timurtoby/Documents/MacRunner/Main/MacRunner-abzu/artifacts/_abzu-guest-pc-movement-overlay-runtime-20260713/dist/lib/wine/aarch64-windows/regedit.exe /S C:\macrunner-com-rpcss.reg 
+ 5523       07:45 /Users/timurtoby/Documents/MacRunner/Main/MacRunner-abzu/artifacts/_abzu-guest-pc-movement-overlay-runtime-20260713/dist/lib/wine/../../bin/wineserver

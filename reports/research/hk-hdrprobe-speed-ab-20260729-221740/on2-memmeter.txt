@@ -1,0 +1,42 @@
+file=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-hdrspeed2-on2-a1-try1-223540/run.log
+rtmeter runtimes=77 cum_total_s=3.53 jit_size_mb=128
+  per_runtime_ms  mean=45.89 p50=9.99 max=213.58
+  of which jitbuf_ms sum=0.3  cacheopen_ms sum=3531.5
+  TOTAL_RUNTIME_CONSTRUCTION_S=3.53 (against a 58.5 s PhysX->XInput block and a 144 s deterministic prefix)
+memmeter_lines=163 arm=tree span_s=880.8
+regions_first=12 regions_last=94172 regions_max=94172
+mp_calls=2170688 mp_walk=1105371 mp_visit=18799808 mp_apply=1403111
+mp_fast=1064331 mp_reenter=985 mp_exact=986 mp_notfound=81
+WALK_LEN=17.0 (nodes touched per multi-region protect)
+WALK_SHARE=50.92% of protect calls reach the walk at all
+APPLY_PER_WALK=1.27 (regions actually modified per walk — MUST match across arms)
+MP_NS_PER_CALL=362 (sampled n=33917)
+MP_CALLS_PER_S=2464
+slr_calls=48 slr_fast=0 slr_repl=48 slr_scan=3183292
+SLR_SCAN_LEN=66318.6 (list nodes scanned per sync_live_range call)
+SLR_NS_PER_CALL=nan (sampled n=0)
+ovl_calls=ABSENT (this ntdll predates the any_overlap counter — not a measured zero)
+splits=48452 rebuilds=48 rebuild_nodes=1591690
+REBUILD_LEN=33160.2 (nodes reinserted per whole-tree rebuild)
+EST_TOTAL_PROTECT_S=0.8  EST_TOTAL_SYNCLIVE_S=nan (summed across ALL threads, over span_s=880.8)
+--- protect cost by boot phase (summed across ALL threads) ---
+  phase             wall_s  protect_s   share      calls
+  pre-mono            11.6        0.0    0.1%      63360
+  ReloadAssembly      30.0        0.0    0.2%     246528
+  PhysX->XInput       45.1        0.1    0.2%     732352
+  post-XInput        794.1        0.7    0.1%    1128384
+  PROTECT_S_BEFORE_XINPUT=0.1 (the entire budget a protect fix can recover from the deterministic prefix)
+  PROTECT_S_AFTER_XINPUT=0.7  TIME_RESOLVED_TOTAL_S=0.8
+  markers: mono_begin=54.3s physx=82.8s xinput=131.5s
+distinct_maps_seen=1 maps_created=?
+--- map ?: 163 reports, peak regions=94172 ---
+  t=    0.0s regions=     12 mp_calls=        64 walk_len=     4.7 splits=       16
+  t=  105.6s regions=  34293 mp_calls=   1133824 walk_len=    15.6 splits=    17876
+  t=  206.2s regions=  61899 mp_calls=   1417216 walk_len=    16.6 splits=    31410
+  t=  308.9s regions=  63574 mp_calls=   1758656 walk_len=    16.5 splits=    32836
+  t=  410.5s regions=  70081 mp_calls=   1792448 walk_len=    16.5 splits=    35944
+  t=  512.5s regions=  77491 mp_calls=   1885888 walk_len=    16.5 splits=    40350
+  t=  615.3s regions=  84337 mp_calls=   1968128 walk_len=    16.7 splits=    43641
+  t=  736.8s regions=  89735 mp_calls=   2018560 walk_len=    16.8 splits=    46240
+  t=  870.7s regions=  93272 mp_calls=   2159040 walk_len=    17.0 splits=    48006
+

@@ -1,0 +1,5 @@
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND                                   
+timurtoby 46421 s003    0.0 S    31T   0:00.03   0:00.07 /var/fo 46421 39964 S    00:58   0:28.15  /var/folders/48/2f66hmz52n5738l03xhspcyw0000gn/T//winetemp-39229755-51232-1783446039-780380645/wine /Users/timurtoby/Documents/MacRunner/Main/ABZU/game/AbzuGame/Binaries/Win64/AbzuGame-Win64-Shipping.exe 
+          46421         0.0 S    31T   0:19.88   0:08.17         46421 39964 S    00:58   0:28.15  
+          46421         0.0 S    31T   0:00.00   0:00.00         46421 39964 S    00:58   0:28.15  
+          46421         0.0 S    27T   0:00.00   0:00.00         46421 39964 S    00:58   0:28.15  

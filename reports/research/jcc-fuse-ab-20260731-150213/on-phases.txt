@@ -1,0 +1,5 @@
+=== reports/phase4-hollow-knight/laneA-fuse-on-a1-try1-151230/run.log ===
+  last_activity_s            6.4
+  sync_ops                   0
+  sync_blocked_s             0.0
+

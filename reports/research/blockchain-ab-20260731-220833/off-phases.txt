@@ -1,0 +1,24 @@
+=== reports/phase4-hollow-knight/laneA-chain-off-a1-try1-220833/run.log ===
+  last_activity_s            488.5
+  to_guest_s                 28.873
+  mono_begin                 40.282
+  reload_assembly_s          17.1
+  physx_to_xinput_s          28.4
+  xinput                     85.777
+  post_init_s                402.7
+  compiles                   200000
+  compiles_pct_in_first_50s  55.0
+  RETENTION_PCT              95.9
+  rl_stores                  191804
+  rl_patched                 874572
+  rl_hostptr                 8195
+  rl_highhalf                0
+  rl_collision               0
+  rl_desync                  0
+  rl_roundtrip               0
+  mh_argshape                0
+  mh_widearg                 0
+  mh_toomany                 0
+  sync_ops                   0
+  sync_blocked_s             0.0
+

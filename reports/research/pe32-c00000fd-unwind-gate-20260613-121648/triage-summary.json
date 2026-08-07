@@ -1,0 +1,165 @@
+{
+  "final_verdict": "BLOCKED",
+  "final_owner": "Lane A",
+  "final_class": "WINDOW_SERVER_ERROR",
+  "final_confidence": 0.85,
+  "final_next_action": "Diagnose window server error code in NtUserCreateWindowEx routing.",
+  "why_primary_won": "Primary class 'WINDOW_SERVER_ERROR' (priority 90) outranked secondary classes: ARM64EC_CALLBACK_TRACE_INSUFFICIENT, WAIT_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, D3D_TRACE_INSUFFICIENT.",
+  "ladder_rung": {
+    "idx": 0,
+    "name": "after-loader"
+  },
+  "ladder_best": {
+    "idx": 0,
+    "name": "after-loader",
+    "run": "pe32-c00000fd-unwind-gate-20260613-121648"
+  },
+  "ladder_regression": false,
+  "secondary_classes": [
+    "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+    "WAIT_TRACE_INSUFFICIENT",
+    "SMC_TRACE_INSUFFICIENT",
+    "D3D_TRACE_INSUFFICIENT"
+  ],
+  "missing_markers": {
+    "critical": [],
+    "secondary": []
+  },
+  "next_run_env": {},
+  "analyzers": {
+    "analyze_waits.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "WAIT_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with synchronization object tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "WAIT_OBJECT",
+          "SET_EVENT"
+        ],
+        "secondary": [
+          "RELEASE_SEMAPHORE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SYNCHRONIZATION": "1"
+      }
+    },
+    "analyze_window_gate.py": {
+      "verdict": "BLOCKED",
+      "owner": "Lane A",
+      "class": "WINDOW_SERVER_ERROR",
+      "confidence": 0.85,
+      "evidence": [
+        "[0] tid=0 Window server error c0000022: macrunner-wow64: guest32-write ntwrite dst=0000000B7AC24020 size=4 status=c0000022 written=0",
+        "[0] tid=0 Window server error c0000139: macrunner-wow64: MemoryWineUnixFuncs native status=c0000139 funcs=0000000000000000 res_len=0",
+        "[0] tid=0 Window server error c0000139: macrunner-wow64: MemoryWineUnixFuncs leave status=c0000139 out=0000000B7AC24028",
+        "[0] tid=0 Window server error c0000139: macrunner-wow64: MemoryWineUnixFuncs return status=c0000139 retlen=0000000000000000 res_len=0",
+        "[0] tid=0 Window server error c0000139: macrunner-wow64: Wow64SystemServiceEx after-syscall num=00000023 status=c0000139 templist=0000000000000000",
+        "[0] tid=0 Window server error c0000139: macrunner-wow64: Wow64SystemServiceEx leave num=00000023 status=c0000139 templist=0000000000000000"
+      ],
+      "next_action": "Diagnose window server error code in NtUserCreateWindowEx routing.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    },
+    "analyze_arm64ec_callbacks.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "ARM64EC_CALLBACK_TRACE_INSUFFICIENT",
+      "confidence": 0.35,
+      "evidence": [],
+      "next_action": "Investigate early exit or missing callback return traces.",
+      "missing_markers": {
+        "critical": [
+          "ARM64EC_CALLBACK",
+          "ARM64EC_CALLBACK_RETURN"
+        ],
+        "secondary": []
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_CALLBACKS": "1"
+      }
+    },
+    "analyze_smc.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane A",
+      "class": "SMC_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with self-modifying code (SMC) tracing enabled.",
+      "missing_markers": {
+        "critical": [
+          "TB_GENERATE",
+          "TB_INVALIDATE"
+        ],
+        "secondary": [
+          "SMC_WRITE",
+          "FLUSH_ICACHE"
+        ]
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_SMC": "1"
+      }
+    },
+    "analyze_d3d_gate.py": {
+      "verdict": "UNKNOWN",
+      "owner": "Lane C",
+      "class": "D3D_TRACE_INSUFFICIENT",
+      "confidence": 0.3,
+      "evidence": [],
+      "next_action": "Capture a flight recorder log with D3D and graphics gate logging enabled.",
+      "missing_markers": {
+        "critical": [
+          "D3D_ENTRY",
+          "MODULE_MAP"
+        ],
+        "secondary": []
+      },
+      "next_run_env": {
+        "MACRUNNER_HB_TRACE_D3D": "1"
+      }
+    },
+    "analyze_pe32_wow64_handoff.py": {
+      "verdict": "PASS",
+      "owner": "Lane A",
+      "class": "PE32_I386_EXECUTING",
+      "confidence": 0.9,
+      "evidence": [
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFED70000 delta=FFFF988000A30000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF590000 image_base=00006FFFFEB50000 delta=FFFF988000A40000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF440000 image_base=00006FFFFE9F0000 delta=FFFF988000A50000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFEDA0000 image_base=00006FFFFE340000 delta=FFFF988000A60000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFE800000 image_base=00006FFFFDD90000 delta=FFFF988000A70000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFE650000 image_base=00006FFFFDBD0000 delta=FFFF988000A80000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF7A0000 image_base=00006FFFFED70000 delta=FFFF988000A30000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF330000 image_base=00006FFFFD750000 delta=FFFF988001BE0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFF120000 image_base=00006FFFFEB50000 delta=FFFF9880005D0000 machine=0xaa64",
+        "[0] PE relocation: macrunner-hb-pe-relocate: module=0000087FFEFD0000 image_base=00006FFFFE9F0000 delta=FFFF9880005E0000 machine=0xaa64"
+      ],
+      "next_action": "i386/WOW64 CPU is loaded and EXECUTING guest code (JIT blocks translated / guest EIP advancing). This is NOT a CPU-load failure. Next: profile where i386 execution stalls and cover ISA-opcode gaps (reports/research/HB-X86-32-ISA-COVERAGE-matrix.md) + Win32-API as they surface.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    },
+    "analyze_generic_fallback.py": {
+      "verdict": "PASS",
+      "owner": "Lane A",
+      "class": "PE32_I386_EXECUTING",
+      "confidence": 0.85,
+      "evidence": [],
+      "next_action": "i386/WOW64 CPU is executing guest code; no generic fault detected. Defer to the PE32 handoff analyzer; profile where i386 execution stalls + cover ISA gaps.",
+      "missing_markers": {
+        "critical": [],
+        "secondary": []
+      },
+      "next_run_env": {}
+    }
+  }
+}

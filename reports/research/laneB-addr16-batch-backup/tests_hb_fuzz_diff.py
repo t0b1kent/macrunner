@@ -1,0 +1,693 @@
+#!/usr/bin/env python3
+"""Differential correctness fuzzer for HyperBridge x86/x64 interpreter semantics.
+
+Unicorn is the primary oracle. SDE support is detected but not faked. When an
+opcode is not supported by Unicorn, this harness reports that explicitly and
+only uses exact Python oracles for the small scalar subset modeled below.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+HB_ROOT = Path(__file__).resolve().parents[1]
+KIT_ROOT = HB_ROOT.parents[1]
+RUNNER_C = HB_ROOT / "tests" / "hb_diff_case_runner.c"
+RUNNER = HB_ROOT / "tests" / "hb_diff_case_runner"
+REPORT_JSON = HB_ROOT / "reports" / "hb_fuzz_diff_last.json"
+sys.path.insert(0, str(KIT_ROOT))
+
+from tools.hb_oracle.unicorn_adapter import diff_interpreter as unicorn_diff_interpreter
+from tools.hb_oracle.unicorn_adapter import run_case as run_unicorn_case
+
+MASK64 = (1 << 64) - 1
+SIGN64 = 1 << 63
+
+
+@dataclass(frozen=True)
+class Template:
+    name: str
+    family: str
+    code: str
+    oracle: str | None = None
+    defined_flags: frozenset[str] | None = None
+
+
+TEMPLATES: list[Template] = [
+    Template("add_r8_r9", "int_arith_flags", "4d01c8", "add"),
+    Template("adc_r8_r9", "int_arith_flags", "4d11c8", "adc"),
+    Template("sub_r8_r9", "int_arith_flags", "4d29c8", "sub"),
+    Template("sbb_r8_r9", "int_arith_flags", "4d19c8", "sbb"),
+    Template("cmp_r8_r9", "int_arith_flags", "4d39c8", "cmp"),
+    Template("inc_r8", "inc_dec_flags", "49ffc0", None, frozenset({"of", "sf", "zf", "af", "pf"})),
+    Template("dec_r8", "inc_dec_flags", "49ffc8", None, frozenset({"of", "sf", "zf", "af", "pf"})),
+    Template("and_r8_r9", "int_logic_flags", "4d21c8", "and"),
+    Template("or_r8_r9", "int_logic_flags", "4d09c8", "or"),
+    Template("xor_r8_r9", "int_logic_flags", "4d31c8", "xor"),
+    Template("test_r8_r9", "int_logic_flags", "4d85c8", "test"),
+    Template("neg_r8", "int_arith_flags", "49f7d8", "neg"),
+    Template("imul_r8_r9", "mul_div", "4d0fafc1", None, frozenset({"cf", "of"})),
+    Template("mul_r9", "mul_div", "49f7e1", None, frozenset({"cf", "of"})),
+    Template("div_r9", "mul_div", "49f7f1", None, frozenset()),
+    Template("shl_r8_cl", "shift_rotate_flags", "49d3e0", "shl"),
+    Template("shr_r8_cl", "shift_rotate_flags", "49d3e8", None),
+    Template("sar_r8_cl", "shift_rotate_flags", "49d3f8", None),
+    Template("rol_r8_cl", "shift_rotate_flags", "49d3c0", None, frozenset({"cf"})),
+    Template("ror_r8_cl", "shift_rotate_flags", "49d3c8", None, frozenset({"cf"})),
+    Template("rcl_r8_cl", "rcl_rcr", "49d3d0", None, frozenset({"cf"})),
+    Template("rcr_r8_cl", "rcl_rcr", "49d3d8", None, frozenset({"cf"})),
+    Template("cmovne_r8_r9", "cmov_setcc", "4d0f45c1", "cmovne"),
+    Template("setne_r8b", "cmov_setcc", "410f95c0", "setne"),
+    Template("bt_r8_r9", "bt_family", "4d0fa3c8", None, frozenset({"cf"})),
+    Template("bts_r8_r9", "bt_family", "4d0fabc8", None, frozenset({"cf"})),
+    Template("btr_r8_r9", "bt_family", "4d0fb3c8", None, frozenset({"cf"})),
+    Template("btc_r8_r9", "bt_family", "4d0fbbc8", None, frozenset({"cf"})),
+    Template("bsf_r8_r9", "bit_scan", "4d0fbcc1", None, frozenset({"zf"})),
+    Template("bsr_r8_r9", "bit_scan", "4d0fbdc1", None, frozenset({"zf"})),
+    Template("bsf_zero_r8", "bit_scan_zero", "4d31c94d0fbcc1", None, frozenset({"zf"})),
+    Template("bsr_zero_r8", "bit_scan_zero", "4d31c94d0fbdc1", None, frozenset({"zf"})),
+    Template("tzcnt_r8_r9", "bmi", "f34d0fbcc1", "tzcnt", frozenset({"cf", "zf"})),
+    Template("lzcnt_r8_r9", "bmi", "f34d0fbdc1", "lzcnt", frozenset({"cf", "zf"})),
+    Template("popcnt_r8_r9", "bmi", "f34d0fb8c1", "popcnt", frozenset({"cf", "pf", "af", "zf", "sf", "of"})),
+    Template("xchg_r8_r9", "xchg_cmpxchg", "4d87c8", None),
+    Template("xadd_r8_r9", "xchg_cmpxchg", "4d0fc1c8", None),
+    Template("cmpxchg_r8_r9", "xchg_cmpxchg", "4d0fb1c8", None),
+    Template("lea_r8_rax_r9_4", "lea", "4e8d0488", None),
+    Template("ds_mov_eax_ptr_rsi", "segment_override", "3e8b06", None),
+    Template("ss_mov_eax_ptr_rbp", "segment_override", "368b4500", None),
+    Template("xorps_xmm0_xmm0", "sse", "0f57c0", None),
+    Template("addps_xmm0_xmm1", "sse", "0f58c1", None),
+    Template("subps_xmm0_xmm1", "sse", "0f5cc1", None),
+    Template("mulps_xmm0_xmm1", "sse", "0f59c1", None),
+    Template("divps_xmm0_xmm1", "sse", "0f5ec1", None),
+    Template("minps_xmm0_xmm1", "sse", "0f5dc1", None),
+    Template("maxps_xmm0_xmm1", "sse", "0f5fc1", None),
+    Template("addss_xmm0_xmm1", "sse", "f30f58c1", None),
+    Template("subss_xmm0_xmm1", "sse", "f30f5cc1", None),
+    Template("mulss_xmm0_xmm1", "sse", "f30f59c1", None),
+    Template("divss_xmm0_xmm1", "sse", "f30f5ec1", None),
+    Template("comiss_xmm0_xmm1", "sse", "0f2fc1", None, frozenset({"cf", "pf", "af", "zf", "sf", "of"})),
+    Template("pxor_xmm0_xmm1", "sse2", "660fefc1", None),
+    Template("addpd_xmm0_xmm1", "sse2", "660f58c1", None),
+    Template("subpd_xmm0_xmm1", "sse2", "660f5cc1", None),
+    Template("mulpd_xmm0_xmm1", "sse2", "660f59c1", None),
+    Template("divpd_xmm0_xmm1", "sse2", "660f5ec1", None),
+    Template("paddb_xmm0_xmm1", "sse2", "660ffcc1", None),
+    Template("paddw_xmm0_xmm1", "sse2", "660ffdc1", None),
+    Template("paddd_xmm0_xmm1", "sse2", "660ffec1", None),
+    Template("paddq_xmm0_xmm1", "sse2", "660fd4c1", None),
+    Template("psubb_xmm0_xmm1", "sse2", "660ff8c1", None),
+    Template("psubw_xmm0_xmm1", "sse2", "660ff9c1", None),
+    Template("psubd_xmm0_xmm1", "sse2", "660ffac1", None),
+    Template("psubq_xmm0_xmm1", "sse2", "660ffbc1", None),
+    Template("pmullw_xmm0_xmm1", "sse2", "660fd5c1", None),
+    Template("pshufd_xmm0_xmm1", "sse2", "660f70c11b", None),
+    Template("phaddw_xmm0_xmm1", "ssse3", "660f3801c1", None),
+    Template("pshufb_xmm0_xmm1", "ssse3", "660f3800c1", None),
+    Template("pblendw_xmm0_xmm1", "sse41", "660f3a0ec11b", None),
+    Template("pcmpeqq_xmm0_xmm1", "sse41", "660f3829c1", None),
+    Template("pcmpestrm_xmm0_xmm1", "sse42", "660f3a60c100", None, frozenset({"cf", "zf", "sf", "of"})),
+    Template("pcmpestri_xmm0_xmm1", "sse42", "660f3a61c100", None, frozenset({"cf", "zf", "sf", "of"})),
+    Template("pcmpistrm_xmm0_xmm1", "sse42", "660f3a62c100", None, frozenset({"cf", "zf", "sf", "of"})),
+    Template("pcmpistri_xmm0_xmm1", "sse42", "660f3a63c100", None, frozenset({"cf", "zf", "sf", "of"})),
+    Template("pclmulqdq_xmm0_xmm1", "aes_pclmul", "660f3a44c110", None),
+    Template("aesenc_xmm0_xmm1", "aes_pclmul", "660f38dcc1", None),
+    Template("aesenclast_xmm0_xmm1", "aes_pclmul", "660f38ddc1", None),
+    Template("aesdec_xmm0_xmm1", "aes_pclmul", "660f38dec1", None),
+    Template("aesdeclast_xmm0_xmm1", "aes_pclmul", "660f38dfc1", None),
+    Template("aesimc_xmm0_xmm1", "aes_pclmul", "660f38dbc1", None),
+    Template("aeskeygenassist_xmm0_xmm1", "aes_pclmul", "660f3adfc11b", None),
+    Template("vaddps_ymm0_ymm1_ymm2", "avx_avx2", "c5f458c2", None),
+    Template("vaddpd_ymm0_ymm1_ymm2", "avx_avx2", "c5f558c2", None),
+    Template("vpxor_xmm3_xmm1_xmm2", "avx_avx2", "c5f1efda", None),
+    Template("vpaddb_xmm4_xmm1_xmm2", "avx_avx2", "c5f1fce2", None),
+    Template("vpaddd_ymm0_ymm1_ymm2", "avx_avx2", "c5f5fec2", None),
+    Template("vpcmpeqb_ymm0_ymm1_ymm2", "avx_avx2", "c5f574c2", None),
+    Template("vpcmpgtw_ymm3_ymm4_ymm5", "avx_avx2", "c5dd65dd", None),
+    Template("vmovups_xmm7_xmm1", "avx_avx2", "c5f810f9", None),
+    Template("vmovdqu_xmm0_xmm1", "avx_avx2", "c5fa6fc1", None),
+    Template("vpclmulqdq_xmm3_xmm4_xmm0", "avx_aes_pclmul", "c4e35944d811", None),
+    Template("vaesenc_ymm0_ymm1_ymm2", "avx_aes_pclmul", "c4e275dcc2", None),
+    Template("vfmadd132ps_ymm0_ymm1_ymm2", "fma3", "c4e27598c2", None),
+    Template("vfmadd213pd_ymm0_ymm1_ymm2", "fma3", "c4e2f5a8c2", None),
+    Template("vfmadd231ss_xmm0_xmm1_xmm2", "fma3", "c4e271b9c2", None),
+    Template("vfmsub132sd_xmm0_xmm1_xmm2", "fma3", "c4e2f19bc2", None),
+    Template("vcvtph2ps_xmm0_xmm1", "f16c", "c4e27913c1", None),
+    Template("vcvtph2ps_ymm0_xmm1", "f16c", "c4e27d13c1", None),
+    Template("vcvtps2ph_xmm1_xmm0", "f16c", "c4e3791dc100", None),
+    Template("vcvtps2ph_xmm1_ymm0", "f16c", "c4e37d1dc100", None),
+    Template("rep_movsb", "string_ops", "f3a4", None),
+    Template("rep_movsw", "string_ops", "66f3a5", None),
+    Template("rep_movsd", "string_ops", "f3a5", None),
+    Template("rep_movsq", "string_ops", "f348a5", None),
+    Template("rep_cmpsb", "string_ops", "f3a6", None),
+    Template("repe_cmpsw", "string_ops", "66f3a7", None),
+    Template("repe_cmpsd", "string_ops", "f3a7", None),
+    Template("repe_cmpsq", "string_ops", "f348a7", None),
+    Template("rep_stosb", "string_ops", "f3aa", None),
+    Template("rep_stosw", "string_ops", "66f3ab", None),
+    Template("rep_stosd", "string_ops", "f3ab", None),
+    Template("rep_stosq", "string_ops", "f348ab", None),
+    Template("lodsb", "string_ops", "ac", None),
+    Template("lodsw", "string_ops", "66ad", None),
+    Template("lodsd", "string_ops", "ad", None),
+    Template("lodsq", "string_ops", "48ad", None),
+    Template("scasb", "string_ops", "ae", None),
+    Template("scasw", "string_ops", "66af", None),
+    Template("scasd", "string_ops", "af", None),
+    Template("scasq", "string_ops", "48af", None),
+    Template("repne_scasw", "string_ops", "66f2af", None),
+    Template("repne_scasd", "string_ops", "f2af", None),
+    Template("repne_scasq", "string_ops", "f248af", None),
+]
+
+X64_TEMPLATES = TEMPLATES
+
+I386_TEMPLATES: list[Template] = [
+    Template("add_eax_ecx", "int_arith_flags", "01c8"),
+    Template("adc_eax_ecx", "int_arith_flags", "11c8"),
+    Template("sub_eax_ecx", "int_arith_flags", "29c8"),
+    Template("sbb_eax_ecx", "int_arith_flags", "19c8"),
+    Template("cmp_eax_ecx", "int_arith_flags", "39c8"),
+    Template("inc_eax", "inc_dec_flags", "40", None, frozenset({"of", "sf", "zf", "af", "pf"})),
+    Template("dec_eax", "inc_dec_flags", "48", None, frozenset({"of", "sf", "zf", "af", "pf"})),
+    Template("and_eax_ecx", "int_logic_flags", "21c8"),
+    Template("or_eax_ecx", "int_logic_flags", "09c8"),
+    Template("xor_eax_ecx", "int_logic_flags", "31c8"),
+    Template("test_eax_ecx", "int_logic_flags", "85c8"),
+    Template("neg_eax", "int_arith_flags", "f7d8"),
+    Template("mul_ecx", "mul_div", "f7e1", None, frozenset({"cf", "of"})),
+    Template("imul_ecx", "mul_div", "f7e9", None, frozenset({"cf", "of"})),
+    Template("imul_eax_ecx", "imul_flags", "0fafc1", None, frozenset({"cf", "of"})),
+    Template("imul_eax_ecx_imm8", "imul_flags", "6bc17f", None, frozenset({"cf", "of"})),
+    Template("imul_eax_ecx_imm32", "imul_flags", "69c178563412", None, frozenset({"cf", "of"})),
+    Template("div_ecx", "mul_div", "f7f1", None, frozenset()),
+    Template("idiv_ecx", "mul_div", "f7f9", None, frozenset()),
+    Template("shl_eax_cl", "shift_rotate_flags", "d3e0"),
+    Template("shr_eax_cl", "shift_rotate_flags", "d3e8"),
+    Template("sar_eax_cl", "shift_rotate_flags", "d3f8"),
+    Template("rol_eax_cl", "shift_rotate_flags", "d3c0", None, frozenset({"cf"})),
+    Template("ror_eax_cl", "shift_rotate_flags", "d3c8", None, frozenset({"cf"})),
+    Template("rcl_eax_cl", "rcl_rcr", "d3d0", None, frozenset({"cf"})),
+    Template("rcr_eax_cl", "rcl_rcr", "d3d8", None, frozenset({"cf"})),
+    Template("bt_eax_ecx", "bt_family", "0fa3c8", None, frozenset({"cf"})),
+    Template("bts_eax_ecx", "bt_family", "0fabc8", None, frozenset({"cf"})),
+    Template("btr_eax_ecx", "bt_family", "0fb3c8", None, frozenset({"cf"})),
+    Template("btc_eax_ecx", "bt_family", "0fbbc8", None, frozenset({"cf"})),
+    Template("bsf_eax_ecx", "bit_scan", "0fbcc1", None, frozenset({"zf"})),
+    Template("bsr_eax_ecx", "bit_scan", "0fbdc1", None, frozenset({"zf"})),
+    Template("bsf_zero_eax", "bit_scan_zero", "31c90fbcc1", None, frozenset({"zf"})),
+    Template("bsr_zero_eax", "bit_scan_zero", "31c90fbdc1", None, frozenset({"zf"})),
+    Template("cmovne_eax_ecx", "cmov_setcc", "0f45c1"),
+    Template("cmove_eax_ecx", "cmov_setcc", "0f44c1"),
+    Template("setne_al", "cmov_setcc", "0f95c0"),
+    Template("sete_al", "cmov_setcc", "0f94c0"),
+    Template("xchg_eax_ecx", "xchg_cmpxchg", "87c8"),
+    Template("xadd_eax_ecx", "xchg_cmpxchg", "0fc1c8"),
+    Template("cmpxchg_eax_ecx", "xchg_cmpxchg", "0fb1c8"),
+    Template("lea_eax_esi_edi4", "lea", "8d04be"),
+    Template("addr16_lea_eax_bx_si", "addr16", "678d00"),
+    Template("addr16_lea_eax_bx_di", "addr16", "678d01"),
+    Template("addr16_lea_eax_bp_si", "addr16", "678d02"),
+    Template("addr16_lea_eax_bp_di", "addr16", "678d03"),
+    Template("addr16_lea_eax_si", "addr16", "678d04"),
+    Template("addr16_lea_eax_di", "addr16", "678d05"),
+    Template("addr16_lea_eax_disp16", "addr16", "678d060080"),
+    Template("addr16_lea_eax_bx", "addr16", "678d07"),
+    Template("ds_mov_eax_ptr_esi", "segment_override", "3e8b06"),
+    Template("ss_mov_eax_ptr_ebp", "segment_override", "368b4500"),
+    Template("rep_movsb", "string_ops", "f3a4"),
+    Template("rep_movsw", "string_ops", "66f3a5"),
+    Template("rep_movsd", "string_ops", "f3a5"),
+    Template("repe_cmpsb", "string_ops", "f3a6"),
+    Template("repe_cmpsw", "string_ops", "66f3a7"),
+    Template("repe_cmpsd", "string_ops", "f3a7"),
+    Template("rep_stosb", "string_ops", "f3aa"),
+    Template("rep_stosw", "string_ops", "66f3ab"),
+    Template("rep_stosd", "string_ops", "f3ab"),
+    Template("lodsb", "string_ops", "ac"),
+    Template("lodsw", "string_ops", "66ad"),
+    Template("lodsd", "string_ops", "ad"),
+    Template("scasb", "string_ops", "ae"),
+    Template("scasw", "string_ops", "66af"),
+    Template("scasd", "string_ops", "af"),
+    Template("repne_scasw", "string_ops", "66f2af"),
+    Template("repne_scasd", "string_ops", "f2af"),
+    Template("xorps_xmm0_xmm0", "sse", "0f57c0"),
+    Template("addps_xmm0_xmm1", "sse", "0f58c1"),
+    Template("subps_xmm0_xmm1", "sse", "0f5cc1"),
+    Template("mulps_xmm0_xmm1", "sse", "0f59c1"),
+    Template("divps_xmm0_xmm1", "sse", "0f5ec1"),
+    Template("minps_xmm0_xmm1", "sse", "0f5dc1"),
+    Template("maxps_xmm0_xmm1", "sse", "0f5fc1"),
+    Template("addss_xmm0_xmm1", "sse", "f30f58c1"),
+    Template("subss_xmm0_xmm1", "sse", "f30f5cc1"),
+    Template("mulss_xmm0_xmm1", "sse", "f30f59c1"),
+    Template("divss_xmm0_xmm1", "sse", "f30f5ec1"),
+    Template("comiss_xmm0_xmm1", "sse", "0f2fc1", None, frozenset({"cf", "pf", "af", "zf", "sf", "of"})),
+    Template("movmskps_eax_xmm0", "sse", "0f50c0"),
+    Template("unpcklps_xmm0_xmm1", "sse", "0f14c1"),
+    Template("unpckhps_xmm0_xmm1", "sse", "0f15c1"),
+    Template("shufps_xmm0_xmm1", "sse", "0fc6c11b"),
+    Template("pxor_xmm0_xmm1", "sse2", "660fefc1"),
+    Template("addpd_xmm0_xmm1", "sse2", "660f58c1"),
+    Template("subpd_xmm0_xmm1", "sse2", "660f5cc1"),
+    Template("mulpd_xmm0_xmm1", "sse2", "660f59c1"),
+    Template("divpd_xmm0_xmm1", "sse2", "660f5ec1"),
+    Template("paddb_xmm0_xmm1", "sse2", "660ffcc1"),
+    Template("paddw_xmm0_xmm1", "sse2", "660ffdc1"),
+    Template("paddd_xmm0_xmm1", "sse2", "660ffec1"),
+    Template("paddq_xmm0_xmm1", "sse2", "660fd4c1"),
+    Template("psubb_xmm0_xmm1", "sse2", "660ff8c1"),
+    Template("psubw_xmm0_xmm1", "sse2", "660ff9c1"),
+    Template("psubd_xmm0_xmm1", "sse2", "660ffac1"),
+    Template("psubq_xmm0_xmm1", "sse2", "660ffbc1"),
+    Template("pmullw_xmm0_xmm1", "sse2", "660fd5c1"),
+    Template("movmskpd_eax_xmm0", "sse2", "660f50c0"),
+    Template("pmovmskb_eax_xmm0", "sse2", "660fd7c0"),
+    Template("unpcklpd_xmm0_xmm1", "sse2", "660f14c1"),
+    Template("unpckhpd_xmm0_xmm1", "sse2", "660f15c1"),
+    Template("pshufd_xmm0_xmm1", "sse2", "660f70c11b"),
+    Template("fninit", "x87", "dbe3"),
+    Template("fnclex", "x87", "dbe2"),
+    Template("fninit_fnstsw_ax", "x87", "dbe3dfe0"),
+    Template("fld1_fnstsw_ax", "x87", "d9e8dfe0"),
+    Template("fldz_fnstsw_ax", "x87", "d9eedfe0"),
+    Template("fld1_fstp_m64", "x87", "d9e8dd1f"),
+    # Legacy i386-only opcodes (removed in x64). CS_MODE_32-only.
+    Template("pusha", "legacy_pusha_popa", "60"),
+    Template("popa", "legacy_pusha_popa", "61"),
+    Template("daa", "legacy_bcd", "27"),
+    # NOTE: DAS/AAS are EXCLUDED from the Unicorn diff — HyperBridge follows the
+    # Intel SDM (real-silicon contract) and Unicorn 2.1.4 diverges (AAS: AH-=2 vs
+    # SDM AH-=1; DAS: drops the old_AL>99h second-adjust clause). Keeping them here
+    # would report false mismatches. See HB-I386-DECODE-COMPLETE "Oracle Divergences".
+    # Template("das", "legacy_bcd", "2f"),   # oracle-divergent (SDM-correct in HB)
+    Template("aaa", "legacy_bcd", "37"),
+    # Template("aas", "legacy_bcd", "3f"),   # oracle-divergent (SDM-correct in HB)
+    Template("aam_imm10", "legacy_bcd", "d40a"),
+    Template("aad_imm10", "legacy_bcd", "d50a"),
+    Template("bound_eax_mem", "legacy_bound_arpl", "6200", None, frozenset()),
+    Template("arpl_ax_cx", "legacy_bound_arpl", "63c8", None, frozenset({"zf"})),
+    # LDS/LES/LFS/LGS read a deterministic m16:32 far pointer at [ESI].
+    Template("les_eax_mem", "legacy_segreg_load", "c406"),
+    Template("lds_eax_mem", "legacy_segreg_load", "c506"),
+    Template("lfs_eax_mem", "legacy_segreg_load", "0fb406"),
+    Template("lgs_eax_mem", "legacy_segreg_load", "0fb506"),
+]
+
+SUITES: dict[str, dict[str, tuple[str, ...]]] = {
+    "lane-b-flags": {
+        "x64": (
+            "int_arith_flags", "inc_dec_flags", "int_logic_flags",
+            "shift_rotate_flags", "rcl_rcr", "mul_div", "bt_family",
+            "bit_scan", "bit_scan_zero", "bmi", "xchg_cmpxchg",
+        ),
+        "x86": (
+            "int_arith_flags", "inc_dec_flags", "int_logic_flags",
+            "shift_rotate_flags", "rcl_rcr", "mul_div", "imul_flags",
+            "bt_family", "bit_scan", "bit_scan_zero", "xchg_cmpxchg",
+        ),
+    },
+    "lane-b-sse-avx": {
+        "x64": (
+            "sse", "sse2", "ssse3", "sse41", "sse42", "aes_pclmul",
+            "avx_avx2", "avx_aes_pclmul", "fma3", "f16c",
+        ),
+        "x86": ("sse", "sse2"),
+    },
+    "lane-b-string-addressing": {
+        "x64": ("string_ops", "lea", "segment_override"),
+        "x86": ("string_ops", "lea", "addr16", "segment_override"),
+    },
+    "lane-b-verified": {
+        "x64": (
+            "int_arith_flags", "inc_dec_flags", "int_logic_flags",
+            "shift_rotate_flags", "rcl_rcr", "mul_div", "bt_family",
+            "bit_scan", "bit_scan_zero", "bmi", "xchg_cmpxchg", "cmov_setcc",
+            "lea", "segment_override", "string_ops", "sse", "sse2", "ssse3", "sse41", "sse42",
+            "aes_pclmul", "avx_avx2", "avx_aes_pclmul", "fma3", "f16c",
+        ),
+        "x86": (
+            "int_arith_flags", "inc_dec_flags", "int_logic_flags",
+            "shift_rotate_flags", "rcl_rcr", "mul_div", "imul_flags",
+            "bt_family", "bit_scan", "bit_scan_zero", "xchg_cmpxchg",
+            "cmov_setcc", "lea", "addr16", "segment_override", "string_ops", "sse", "sse2", "x87",
+            "legacy_pusha_popa", "legacy_bcd", "legacy_bound_arpl",
+            "legacy_segreg_load",
+        ),
+    },
+}
+
+
+def build_runner() -> None:
+    subprocess.run(["make", "libhyperbridge.a"], cwd=HB_ROOT, check=True, stdout=subprocess.PIPE)
+    subprocess.run(
+        [
+            "cc",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-std=c11",
+            "-I./include",
+            str(RUNNER_C.relative_to(HB_ROOT)),
+            "libhyperbridge.a",
+            "-o",
+            str(RUNNER.relative_to(HB_ROOT)),
+        ],
+        cwd=HB_ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+
+
+def as_u64(v: str) -> int:
+    return int(v, 16) & MASK64
+
+
+def parity_even(byte: int) -> int:
+    return 1 if (byte & 0xff).bit_count() % 2 == 0 else 0
+
+
+def flag_common(result: int) -> dict[str, int]:
+    result &= MASK64
+    return {
+        "zf": 1 if result == 0 else 0,
+        "sf": 1 if result & SIGN64 else 0,
+        "pf": parity_even(result),
+    }
+
+
+def add_flags(a: int, b: int, carry: int) -> tuple[int, dict[str, int]]:
+    total = a + b + carry
+    result = total & MASK64
+    flags = flag_common(result)
+    flags["cf"] = 1 if total >> 64 else 0
+    flags["of"] = 1 if ((~(a ^ b) & (a ^ result) & SIGN64) != 0) else 0
+    flags["af"] = 1 if ((a ^ b ^ result) & 0x10) != 0 else 0
+    return result, flags
+
+
+def sub_flags(a: int, b: int, borrow: int) -> tuple[int, dict[str, int]]:
+    subtrahend = b + borrow
+    result = (a - subtrahend) & MASK64
+    flags = flag_common(result)
+    flags["cf"] = 1 if a < subtrahend else 0
+    flags["of"] = 1 if (((a ^ b) & (a ^ result) & SIGN64) != 0) else 0
+    flags["af"] = 1 if ((a ^ b ^ result) & 0x10) != 0 else 0
+    return result, flags
+
+
+def logic_flags(result: int) -> dict[str, int]:
+    flags = flag_common(result)
+    flags["cf"] = 0
+    flags["of"] = 0
+    return flags
+
+
+def shl_flags(a: int, raw_count: int, initial_flags: dict[str, int]) -> tuple[int, dict[str, int]]:
+    count = raw_count & 0x3f
+    if count == 0:
+        return a, {k: int(v) for k, v in initial_flags.items()}
+    result = (a << count) & MASK64
+    flags = flag_common(result)
+    flags["cf"] = 1 if ((a >> (64 - count)) & 1) else 0
+    if count == 1:
+        flags["of"] = 1 if (((result >> 63) & 1) != flags["cf"]) else 0
+    return result, flags
+
+
+def exact_oracle(template: Template, row: dict[str, Any]) -> list[str]:
+    if not template.oracle:
+        return []
+    initial = row["initial"]
+    final = row["interp"]
+    regs_i = initial["regs"]
+    regs_f = final["regs"]
+    flags_i = initial["flags"]
+    flags_f = final["flags"]
+    a = as_u64(regs_i["r8"])
+    b = as_u64(regs_i["r9"])
+    rcx = as_u64(regs_i["rcx"])
+    op = template.oracle
+    expected_r8 = a
+    expected_flags: dict[str, int]
+    if op == "add":
+        expected_r8, expected_flags = add_flags(a, b, 0)
+    elif op == "adc":
+        expected_r8, expected_flags = add_flags(a, b, int(flags_i["cf"]))
+    elif op == "sub":
+        expected_r8, expected_flags = sub_flags(a, b, 0)
+    elif op == "sbb":
+        expected_r8, expected_flags = sub_flags(a, b, int(flags_i["cf"]))
+    elif op == "cmp":
+        _, expected_flags = sub_flags(a, b, 0)
+    elif op == "and":
+        expected_r8, expected_flags = a & b, logic_flags(a & b)
+    elif op == "or":
+        expected_r8, expected_flags = a | b, logic_flags(a | b)
+    elif op == "xor":
+        expected_r8, expected_flags = a ^ b, logic_flags(a ^ b)
+    elif op == "test":
+        _, expected_flags = a & b, logic_flags(a & b)
+    elif op == "shl":
+        expected_r8, expected_flags = shl_flags(a, rcx, flags_i)
+    elif op == "cmovne":
+        expected_r8 = b if int(flags_i["zf"]) == 0 else a
+        expected_flags = {k: int(v) for k, v in flags_i.items()}
+    elif op == "setne":
+        low = 1 if int(flags_i["zf"]) == 0 else 0
+        expected_r8 = (a & ~0xff) | low
+        expected_flags = {k: int(v) for k, v in flags_i.items()}
+    elif op == "tzcnt":
+        expected_r8 = 64 if b == 0 else (b & -b).bit_length() - 1
+        expected_flags = {"cf": 1 if b == 0 else 0, "zf": 1 if expected_r8 == 0 else 0}
+    elif op == "lzcnt":
+        expected_r8 = 64 if b == 0 else 64 - b.bit_length()
+        expected_flags = {"cf": 1 if b == 0 else 0, "zf": 1 if expected_r8 == 0 else 0}
+    elif op == "popcnt":
+        expected_r8 = b.bit_count()
+        expected_flags = {
+            "cf": 0,
+            "pf": 0,
+            "af": 0,
+            "zf": 1 if b == 0 else 0,
+            "sf": 0,
+            "of": 0,
+        }
+    else:
+        return []
+
+    mismatches: list[str] = []
+    if op not in {"cmp", "test"} and as_u64(regs_f["r8"]) != expected_r8:
+        mismatches.append(f"r8 expected=0x{expected_r8:016x} actual={regs_f['r8']}")
+    if op in {"cmp", "test"} and as_u64(regs_f["r8"]) != a:
+        mismatches.append(f"r8_modified expected=0x{a:016x} actual={regs_f['r8']}")
+
+    for flag, expected in expected_flags.items():
+        if int(flags_f[flag]) != expected:
+            mismatches.append(f"flag.{flag} expected={expected} actual={flags_f[flag]}")
+    return mismatches
+
+
+def run_batch(cases: list[tuple[int, Template]], *, backend_diff: bool, arch: str) -> list[dict[str, Any]]:
+    payload = "".join(f"0x{seed:016x} {template.code}\n" for seed, template in cases)
+    env = dict(**os.environ, HB_DIFF_ARCH=arch)
+    if not backend_diff:
+        env["HB_DIFF_INTERP_ONLY"] = "1"
+    proc = subprocess.run(
+        [str(RUNNER)],
+        cwd=HB_ROOT,
+        input=payload,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+        env=env,
+    )
+    rows = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    if len(rows) != len(cases):
+        raise RuntimeError(f"runner returned {len(rows)} rows for {len(cases)} cases")
+    return rows
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--cases", type=int, default=20000)
+    ap.add_argument("--arch", choices=("x64", "x86"), default="x64")
+    ap.add_argument("--seed", type=int, default=0x18BE487)
+    ap.add_argument("--batch", type=int, default=512)
+    ap.add_argument("--families", default="", help="comma-separated family filter")
+    ap.add_argument("--suite", choices=sorted(SUITES), help="named permanent family suite")
+    ap.add_argument("--seed-list", default="", help="comma-separated seeds; cases are split across them")
+    ap.add_argument("--report-json", default=str(REPORT_JSON), help="output JSON report path")
+    ap.add_argument("--no-build", action="store_true", help="use an already-built hb_diff_case_runner")
+    ap.add_argument("--run-jit-backend-diff", action="store_true", help="also run JIT backend comparison")
+    ap.add_argument("--stop-on-mismatch", action="store_true")
+    args = ap.parse_args()
+
+    if not args.no_build:
+        build_runner()
+    sde_path = shutil.which("sde64") or shutil.which("sde")
+    if args.suite and args.families:
+        raise SystemExit("--suite and --families are mutually exclusive")
+    family_filter = set(SUITES[args.suite][args.arch]) if args.suite else {x for x in args.families.split(",") if x}
+    template_pool = I386_TEMPLATES if args.arch == "x86" else X64_TEMPLATES
+    templates = [t for t in template_pool if not family_filter or t.family in family_filter]
+    if not templates:
+        raise SystemExit("no templates selected")
+
+    seeds = [int(x, 0) for x in args.seed_list.split(",") if x] or [args.seed]
+    counts: dict[str, int] = {}
+    backend_mismatches: list[dict[str, Any]] = []
+    oracle_mismatches: list[dict[str, Any]] = []
+    oracle_unsupported: dict[str, int] = {}
+    oracle_exclusions: dict[str, int] = {}
+    oracle_quirks: dict[str, int] = {}
+    shared_traps: dict[str, int] = {}
+    unsupported: dict[str, int] = {}
+    oracle_checked_count = 0
+    oracle_pass_count = 0
+
+    pending: list[tuple[int, Template]] = []
+    case_index = 0
+    cases_per_seed = [args.cases // len(seeds)] * len(seeds)
+    for i in range(args.cases % len(seeds)):
+        cases_per_seed[i] += 1
+    total_cases = 0
+    for seed_base, seed_cases in zip(seeds, cases_per_seed):
+        rng = random.Random(seed_base)
+        local_index = 0
+        while local_index < seed_cases:
+            template = templates[case_index % len(templates)]
+            seed = rng.getrandbits(64)
+            pending.append((seed, template))
+            local_index += 1
+            case_index += 1
+            total_cases += 1
+            if len(pending) < args.batch and total_cases < args.cases:
+                continue
+            rows = run_batch(pending, backend_diff=args.run_jit_backend_diff, arch=args.arch)
+            for (seed_i, template_i), row in zip(pending, rows):
+                counts[template_i.family] = counts.get(template_i.family, 0) + 1
+                interp_ok = row["interp"]["api"] == 0 and row["interp"]["result"] == 0
+                jit_ok = row["jit"]["api"] == 0 and row["jit"]["result"] == 0
+                unsupported_key: str | None = None
+                if not interp_ok or (args.run_jit_backend_diff and not jit_ok):
+                    unsupported_key = f"{template_i.family}:{template_i.name}:interp={row['interp']['api']}/{row['interp']['result']}:jit={row['jit']['api']}/{row['jit']['result']}"
+                    unsupported[unsupported_key] = unsupported.get(unsupported_key, 0) + 1
+                oracle = run_unicorn_case(seed_i, template_i.code, args.arch)
+                if not oracle.get("ok"):
+                    oracle_msg = oracle.get("message", oracle.get("error", "unknown"))
+                    if oracle.get("trap") == "invalid_instruction":
+                        key = f"{template_i.family}:{template_i.name}:{oracle_msg}"
+                        oracle_unsupported[key] = oracle_unsupported.get(key, 0) + 1
+                        oracle_exclusions[key] = oracle_exclusions.get(key, 0) + 1
+                        exact = exact_oracle(template_i, row) if args.arch == "x64" and interp_ok else []
+                        oracle_checked = bool(args.arch == "x64" and template_i.oracle and interp_ok)
+                    elif interp_ok:
+                        exact = [f"oracle_trap_but_interp_ok:{oracle_msg}"]
+                        oracle_checked = True
+                    elif oracle.get("trap") == "cpu_exception":
+                        key = f"{template_i.family}:{template_i.name}:{oracle_msg}:interp={row['interp']['api']}/{row['interp']['result']}"
+                        shared_traps[key] = shared_traps.get(key, 0) + 1
+                        if unsupported_key is not None:
+                            unsupported[unsupported_key] -= 1
+                            if unsupported[unsupported_key] == 0:
+                                del unsupported[unsupported_key]
+                        exact = []
+                        oracle_checked = True
+                    else:
+                        key = f"{template_i.family}:{template_i.name}:{oracle_msg}"
+                        oracle_unsupported[key] = oracle_unsupported.get(key, 0) + 1
+                        exact = exact_oracle(template_i, row) if args.arch == "x64" and interp_ok else []
+                        oracle_checked = bool(args.arch == "x64" and template_i.oracle and interp_ok)
+                else:
+                    exact = unicorn_diff_interpreter(row, oracle, template_i.defined_flags, args.arch)
+                    if exact and template_i.family == "bit_scan_zero":
+                        undef_dst = "reg.eax" if args.arch == "x86" else "reg.r8"
+                        filtered = [m for m in exact if not m.startswith(f"{undef_dst} ")]
+                        if len(filtered) != len(exact):
+                            key = f"{template_i.family}:{template_i.name}:zero_source_undefined_dest"
+                            oracle_exclusions[key] = oracle_exclusions.get(key, 0) + (len(exact) - len(filtered))
+                        exact = filtered
+                    if exact and template_i.family.startswith("avx"):
+                        key = f"{template_i.family}:{template_i.name}:unicorn_vex_avx_semantics"
+                        oracle_quirks[key] = oracle_quirks.get(key, 0) + 1
+                        oracle_exclusions[key] = oracle_exclusions.get(key, 0) + 1
+                        exact = []
+                    oracle_checked = interp_ok
+                if oracle_checked:
+                    oracle_checked_count += 1
+                    if not exact:
+                        oracle_pass_count += 1
+                if args.run_jit_backend_diff and interp_ok and jit_ok and not row["ok"]:
+                    backend_mismatches.append({
+                        "template": template_i.name,
+                        "family": template_i.family,
+                        "seed": f"0x{seed_i:016x}",
+                        "code": template_i.code,
+                        "diff": row["diff"],
+                        "interp_oracle": "pass" if oracle_checked and not exact else ("fail" if exact else "not_available"),
+                    })
+                if exact:
+                    oracle_mismatches.append({
+                        "template": template_i.name,
+                        "family": template_i.family,
+                        "seed": f"0x{seed_i:016x}",
+                        "code": template_i.code,
+                        "mismatches": exact,
+                    })
+                if args.stop_on_mismatch and (backend_mismatches or oracle_mismatches):
+                    break
+            pending = []
+            if args.stop_on_mismatch and (backend_mismatches or oracle_mismatches):
+                break
+        if args.stop_on_mismatch and (backend_mismatches or oracle_mismatches):
+            break
+
+    report_json = Path(args.report_json)
+    if not report_json.is_absolute():
+        report_json = HB_ROOT / report_json
+    report_json.parent.mkdir(parents=True, exist_ok=True)
+    result = {
+        "sde_available": bool(sde_path),
+        "sde_path": sde_path,
+        "unicorn_available": True,
+        "oracle_mode": "unicorn",
+        "arch": args.arch,
+        "backend_diff_enabled": args.run_jit_backend_diff,
+        "seeds": [f"0x{s:x}" for s in seeds],
+        "cases_requested": args.cases,
+        "cases_run": sum(counts.values()),
+        "families": counts,
+        "backend_mismatch_count": len(backend_mismatches),
+        "oracle_mismatch_count": len(oracle_mismatches),
+        "oracle_checked_count": oracle_checked_count,
+        "oracle_pass_count": oracle_pass_count,
+        "backend_mismatches": backend_mismatches[:50],
+        "oracle_mismatches": oracle_mismatches[:50],
+        "oracle_unsupported": oracle_unsupported,
+        "oracle_exclusions": oracle_exclusions,
+        "oracle_quirks": oracle_quirks,
+        "shared_traps": shared_traps,
+        "unsupported": unsupported,
+    }
+    report_json.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    print(json.dumps(result, indent=2))
+    return 1 if oracle_mismatches else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,89 @@
+23:14:01 === chain: waiting for pid 61989, then: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/hk-sharedcache-ab.sh sharedcache 900 off on ===
+23:24:02   pid 61989 still alive (10 min)
+23:34:02   pid 61989 still alive (20 min)
+23:44:02   pid 61989 still alive (30 min)
+23:54:02   pid 61989 still alive (40 min)
+00:04:02   pid 61989 still alive (50 min)
+00:14:02   pid 61989 still alive (60 min)
+00:24:03   pid 61989 still alive (70 min)
+00:34:03   pid 61989 still alive (80 min)
+00:44:03   pid 61989 still alive (90 min)
+00:54:03   pid 61989 still alive (100 min)
+01:04:03   pid 61989 still alive (110 min)
+01:14:03   pid 61989 still alive (120 min)
+01:24:03   pid 61989 still alive (130 min)
+01:34:04   pid 61989 still alive (140 min)
+01:44:04   pid 61989 still alive (150 min)
+01:54:04   pid 61989 still alive (160 min)
+01:57:04   pid 61989 exited after 163 min
+01:57:25   mr-clean done; launching
+01:57:27 TMPDIR=/var/folders/48/2f66hmz52n5738l03xhspcyw0000gn/T/
+01:57:27 artifact sha=95d51e959aba3ccb (carries MACRUNNER_HB_CACHE_SHARED)
+01:57:27 === sharedcache A/B stamp=20260730-015727 timeout=900 arms='off on' (cold then warm per arm) ===
+01:57:32   deployed sha=95d51e959aba3ccb gate_present=1
+01:57:32 === arm=off pass=cold ===
+01:57:37   cache root EMPTIED (cold)
+02:14:10   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-off-cold-a1-try1-015839
+02:14:10   REGIME_IN_GUEST: macrunner-hb-cache-shared lines=0 (expect on=1 off=0)
+02:14:10    cumulative create cost = 1116 ms of which cacheopen 2109 ms (189.0 %) jitbuf 0 ms  cacheopen_ms first quarter mean=5.36 last quarter mean=34.04 ratio=6.4x median=9.76 max=49.36 
+02:14:10    last_activity_s 678.5  xinput 135.293  compiles 251585  RETENTION_PCT 96.5 
+02:14:11 === arm=off pass=warm ===
+02:14:16   cache root REUSED (warm): 1 files
+02:30:49   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-off-warm-a1-try1-021518
+02:30:49   REGIME_IN_GUEST: macrunner-hb-cache-shared lines=0 (expect on=1 off=0)
+02:30:49    cumulative create cost = 4235 ms of which cacheopen 8170 ms (192.9 %) jitbuf 0 ms  cacheopen_ms first quarter mean=47.15 last quarter mean=93.88 ratio=2.0x median=52.16 max=162.78 
+02:30:49    last_activity_s 662.9  xinput 135.851  compiles 63868  RETENTION_PCT 86.1 
+02:30:50 === arm=on pass=cold ===
+02:30:55   cache root EMPTIED (cold)
+02:47:27   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-on-cold-a1-try1-023156
+02:47:27   REGIME_IN_GUEST: macrunner-hb-cache-shared lines=2 (expect on=1 off=0)
+02:47:27    cumulative create cost = 1 ms of which cacheopen 0 ms (27.4 %) jitbuf 0 ms  cacheopen_ms first quarter mean=0.01 last quarter mean=0.00 ratio=0.0x median=0.00 max=0.19 
+02:47:27    last_activity_s 663.1  xinput 133.991  compiles 232023  RETENTION_PCT 96.2 
+02:47:28 === arm=on pass=warm ===
+02:47:33   cache root REUSED (warm): 1 files
+03:04:04   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-on-warm-a1-try1-024835
+03:04:04   REGIME_IN_GUEST: macrunner-hb-cache-shared lines=2 (expect on=1 off=0)
+03:04:04    cumulative create cost = 44 ms of which cacheopen 87 ms (197.3 %) jitbuf 0 ms  cacheopen_ms first quarter mean=2.64 last quarter mean=0.00 ratio=0.0x median=0.00 max=43.88 
+03:04:04    last_activity_s 654.0  xinput 126.727  compiles 63510  RETENTION_PCT 86.2 
+03:04:05 ================ SUMMARY (read in the order in the header) ================
+--- off/cold ---
+  runtimes=70 (lines=134)  jit_size=128 MB  -> address space 8.8 GB
+  cumulative create cost = 1116 ms   of which cacheopen 2109 ms (189.0 %)   jitbuf 0 ms
+  cacheopen_ms  first quarter mean=5.36  last quarter mean=34.04   ratio=6.4x   median=9.76   max=49.36
+  last_activity_s            678.5
+  to_guest_s                 43.186
+  physx_to_xinput_s          49.2
+  xinput                     135.293
+  RETENTION_PCT              96.5
+  hits=83451 misses=251585
+--- off/warm ---
+  runtimes=70 (lines=134)  jit_size=128 MB  -> address space 8.8 GB
+  cumulative create cost = 4235 ms   of which cacheopen 8170 ms (192.9 %)   jitbuf 0 ms
+  cacheopen_ms  first quarter mean=47.15  last quarter mean=93.88   ratio=2.0x   median=52.16   max=162.78
+  last_activity_s            662.9
+  to_guest_s                 43.347
+  physx_to_xinput_s          48.5
+  xinput                     135.851
+  RETENTION_PCT              86.1
+  hits=266182 misses=63868
+--- on/cold ---
+  runtimes=70 (lines=134)  jit_size=128 MB  -> address space 8.8 GB
+  cumulative create cost = 1 ms   of which cacheopen 0 ms (27.4 %)   jitbuf 0 ms
+  cacheopen_ms  first quarter mean=0.01  last quarter mean=0.00   ratio=0.0x   median=0.00   max=0.19
+  last_activity_s            663.1
+  to_guest_s                 42.176
+  physx_to_xinput_s          49.0
+  xinput                     133.991
+  RETENTION_PCT              96.2
+  hits=102076 misses=232023
+--- on/warm ---
+  runtimes=70 (lines=134)  jit_size=128 MB  -> address space 8.8 GB
+  cumulative create cost = 44 ms   of which cacheopen 87 ms (197.3 %)   jitbuf 0 ms
+  cacheopen_ms  first quarter mean=2.64  last quarter mean=0.00   ratio=0.0x   median=0.00   max=43.88
+  last_activity_s            654.0
+  to_guest_s                 40.106
+  physx_to_xinput_s          48.3
+  xinput                     126.727
+  RETENTION_PCT              86.2
+  hits=265320 misses=63510
+03:04:05 full output: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/hk-sharedcache-ab-20260730-015727

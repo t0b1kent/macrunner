@@ -1,0 +1,29 @@
+ M engine/graphics/d3d9_to_d3d11.py
+ M engine/graphics/dist/manifest/dxmt.json
+ M engine/graphics/runtime_backend/mock_executor.py
+ M engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh
+ M engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh
+ M engine/graphics/tests/test_d3d9_metal_request.py
+ M engine/graphics/tests/test_d3d9_translation.py
+ M engine/wine/dlls/ntdll/unix/signal_arm64.c
+?? artifacts/ai-war2-unity-shader-dxbc/
+?? artifacts/d3d9-present-logs/
+?? artifacts/d3d9-present-prefix/
+?? artifacts/dxmt-direct-warm-visible-prefix/
+?? artifacts/dxmt-direct-window-prefix-xtrace/
+?? artifacts/dxmt-hk-present-logs/
+?? artifacts/dxmt-hk-present-prefix/
+?? artifacts/dxmt-live-window-prefix/
+?? artifacts/dxmt-live-window/
+?? artifacts/dxmt-smoke-prefix/
+?? artifacts/hk-regression-unity-shader-dxbc/
+?? artifacts/hk-unity-shader-dxbc/
+?? artifacts/laneD-hk-unity-shader-blobs-128/
+?? artifacts/x64-present-dxmt-app/
+?? reports/phase4-hollow-knight/laneD-frozen-rung9-d1-20260612-101132/
+?? reports/phase5-dxmt-x64-present/
+?? reports/research/LANE-D-MISSION.md
+?? scripts/disk-guard.sh
+?? tests/
+?? tools/cg_window_capture.swift
+?? tools/cg_window_probe.swift

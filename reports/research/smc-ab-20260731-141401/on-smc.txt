@@ -1,0 +1,2 @@
+[laneA-ts epoch=1785471289.629 +47.778s] macrunner-hb-smc-reverify: evict guest=0x116e35990 span=51 old=3af09c6f7b20fb51 new=1775fe6cbcc30fd6 evicted=16 reverified=2593
+[laneA-ts epoch=1785471716.739 +474.888s] macrunner-hb-smc-reverify: progress tracked=45925 reverified=16777216 evicted=2364 unreadable=0

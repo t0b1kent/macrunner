@@ -1,0 +1,24 @@
+=== /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-cachefix-fix-warm-a1-try1-015219/run.log ===
+  last_activity_s            271.0
+  to_guest_s                 40.949
+  mono_begin                 56.564
+  reload_assembly_s          30.8
+  physx_to_xinput_s          49.0
+  xinput                     136.327
+  post_init_s                134.7
+  compiles                   50020
+  compiles_pct_in_first_50s  18.7
+  RETENTION_PCT              83.2
+  rl_stores                  41630
+  rl_patched                 198098
+  rl_hostptr                 8390
+  rl_highhalf                0
+  rl_collision               0
+  rl_desync                  0
+  rl_roundtrip               0
+  mh_argshape                0
+  mh_widearg                 0
+  mh_toomany                 0
+  sync_ops                   0
+  sync_blocked_s             0.0
+

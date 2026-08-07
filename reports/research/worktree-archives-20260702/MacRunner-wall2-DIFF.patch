@@ -1,0 +1,408 @@
+diff --git a/engine/hyperbridge/include/hb_memory.h b/engine/hyperbridge/include/hb_memory.h
+index 812119f..63111dc 100644
+--- a/engine/hyperbridge/include/hb_memory.h
++++ b/engine/hyperbridge/include/hb_memory.h
+@@ -76,6 +76,7 @@ void hb_memory_destroy(hb_memory_t* mem);
+ 
+ hb_result_t hb_memory_map(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
+ hb_result_t hb_memory_map_private(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
++hb_result_t hb_memory_sync_live_range(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
+ hb_result_t hb_memory_unmap(hb_memory_t* mem, hb_gva_t base);
+ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm);
+ 
+diff --git a/engine/hyperbridge/src/hb_memory.c b/engine/hyperbridge/src/hb_memory.c
+index b9cb0fa..fca6370 100644
+--- a/engine/hyperbridge/src/hb_memory.c
++++ b/engine/hyperbridge/src/hb_memory.c
+@@ -327,6 +327,34 @@ static hb_result_t split_region_at(hb_memory_t* mem, hb_gva_t addr) {
+     return HB_OK;
+ }
+ 
++static hb_result_t split_all_regions_at(hb_memory_t* mem, hb_gva_t addr) {
++    hb_region_t* r;
++
++    if (!mem) return HB_ERR_INVALID_ARG;
++    for (r = mem->regions; r; r = r->next) {
++        hb_gva_t top = r->base + r->size;
++        if (addr > r->base && addr < top) {
++            hb_region_t* n = calloc(1, sizeof(*n));
++            if (!n) {
++                rebuild_region_tree(mem);
++                return HB_ERR_OUT_OF_MEMORY;
++            }
++            *n = *r;
++            n->base = addr;
++            n->size = (size_t)(top - addr);
++            if (r->host_base) n->host_base = region_host_ptr(r, addr);
++            n->tree_left = NULL;
++            n->tree_right = NULL;
++            n->next = r->next;
++            r->size = (size_t)(addr - r->base);
++            r->next = n;
++            r = n;
++        }
++    }
++    rebuild_region_tree(mem);
++    return HB_OK;
++}
++
+ static hb_result_t remove_region_node(hb_memory_t* mem, hb_region_t* target) {
+     hb_region_t** p;
+ 
+@@ -599,6 +627,57 @@ hb_result_t hb_memory_map_private(hb_memory_t* mem, hb_gva_t base, size_t size,
+     return HB_OK;
+ }
+ 
++hb_result_t hb_memory_sync_live_range(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm) {
++    hb_gva_t start;
++    hb_gva_t top;
++    hb_region_t* r;
++    hb_region_t* replacement = NULL;
++    hb_result_t res;
++
++    if (!mem || !size) return HB_ERR_INVALID_ARG;
++    start = page_floor_gva(base);
++    top = page_ceil_gva(base + (hb_gva_t)size);
++    if (top <= start) return HB_ERR_INVALID_ARG;
++
++    /*
++     * This is only for live process address-space metadata.  Do not use it for
++     * HyperBridge-owned private backing or guest32 mirrors, because those have
++     * real host protection that must be synchronized with mprotect().
++     */
++    for (r = mem->regions; r; r = r->next) {
++        if (!range_overlaps(start, (size_t)(top - start), r->base, r->size)) continue;
++        if (r->allocated || r->is_guest32) return HB_ERR_INVALID_ARG;
++    }
++
++    res = split_all_regions_at(mem, start);
++    if (res != HB_OK) return res;
++    res = split_all_regions_at(mem, top);
++    if (res != HB_OK) return res;
++
++    r = mem->regions;
++    while (r) {
++        hb_region_t* next = r->next;
++        if (!r->allocated && !r->is_guest32 && r->base >= start && r->base < top)
++            remove_region_node(mem, r);
++        r = next;
++    }
++
++    replacement = calloc(1, sizeof(*replacement));
++    if (!replacement) return HB_ERR_OUT_OF_MEMORY;
++    replacement->base = start;
++    replacement->host_base = NULL;
++    replacement->size = (size_t)(top - start);
++    replacement->perm = perm;
++    replacement->allocated = false;
++    replacement->is_guest32 = false;
++    replacement->gen = mem->generation;
++    insert_region_head(mem, replacement);
++    mem->total_size += replacement->size;
++    if (perm & HB_PERM_EXEC) bump_generation(mem, replacement);
++    rebuild_region_tree(mem);
++    return HB_OK;
++}
++
+ hb_result_t hb_memory_guest32_reserve(hb_memory_t* mem) {
+     const size_t reserve_size = (size_t)(HB_GUEST32_SIZE * 2ULL);
+     uintptr_t raw_base;
+@@ -779,42 +858,64 @@ hb_result_t hb_memory_unmap(hb_memory_t* mem, hb_gva_t base) {
+ }
+ 
+ hb_result_t hb_memory_protect(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm) {
+-    if (!mem) return HB_ERR_INVALID_ARG;
+-    hb_region_t* r = hb_memory_find_region(mem, base);
+-    if (!r) return HB_ERR_NOT_FOUND;
++    hb_gva_t start;
++    hb_gva_t top;
++    hb_result_t res;
++    bool found = false;
++    bool touched_exec = false;
+ 
+-    /*
+-     * Non-allocated regions describe the live process address space.  Their
+-     * host VM protection is owned by Wine/macOS; HyperBridge permissions are
+-     * metadata used by the x64 interpreter.  Applying HB_PERM_EXEC back to the
+-     * host with mprotect() would make guest x64 code executable by the ARM64
+-     * CPU again, bypassing the signal bridge.
+-     */
+-    if (!r->allocated && !r->is_guest32) {
+-        if ((r->perm | perm) & HB_PERM_EXEC) bump_generation(mem, r);
+-        r->perm = perm;
+-        (void)size;
+-        return HB_OK;
+-    }
++    if (!mem || !size) return HB_ERR_INVALID_ARG;
++    if (range_overflows(base, (hb_gva_t)size)) return HB_ERR_INVALID_ARG;
++
++    start = page_floor_gva(base);
++    top = page_ceil_gva(base + (hb_gva_t)size);
++    if (top <= start) return HB_ERR_INVALID_ARG;
++
++    res = split_all_regions_at(mem, start);
++    if (res != HB_OK) return res;
++    res = split_all_regions_at(mem, top);
++    if (res != HB_OK) return res;
++
++    for (hb_region_t* r = mem->regions; r; r = r->next) {
++        hb_gva_t rtop = r->base + r->size;
++        uint32_t old_perm;
++
++        if (r->base < start || r->base >= top) continue;
++        if (rtop > top) continue;
++
++        found = true;
++        old_perm = r->perm;
++        if ((old_perm | perm) & HB_PERM_EXEC) touched_exec = true;
++
++        /*
++         * Non-allocated, non-guest32 regions describe Wine-owned live process
++         * views.  Their host VM protection is owned by Wine/macOS.  Keep this
++         * path metadata-only: applying HB_PERM_* with mprotect() would break
++         * Wine's view manager and can make guest x64 code host-executable.
++         */
++        if (!r->allocated && !r->is_guest32) {
++            r->perm = perm;
++            continue;
++        }
+ 
+-    if (r->is_guest32) {
+-        if ((r->perm | perm) & HB_PERM_EXEC) bump_generation(mem, r);
+         r->perm = perm;
++        if (r->is_guest32) {
+ #ifdef __APPLE__
+-        /* Sync host mprotect so perm metadata and actual page protection stay
+-         * consistent — skipping this can leave pages PROT_NONE while perm says
+-         * READ, which feeds the memcpy-on-PROT_NONE crash. */
+-        if (r->host_base) guest32_sync_host_protection(r, r->base, r->size);
++            if (r->host_base && guest32_sync_host_protection(r, r->base, r->size) != HB_OK)
++                return HB_ERR_MEMORY_FAULT;
+ #endif
+-        (void)size;
+-        return HB_OK;
++            continue;
++        }
++
++        if (r->host_base) {
++            int prot = prot_from_perm(perm, false);
++            if (mprotect(r->host_base, r->size, prot) != 0) return HB_ERR_MEMORY_FAULT;
++        }
+     }
+ 
+-    int prot = prot_from_perm(perm, r->is_guest32);
+-    if (mprotect(r->host_base, r->size, prot) != 0) return HB_ERR_MEMORY_FAULT;
+-    if ((r->perm | perm) & HB_PERM_EXEC) bump_generation(mem, r);
+-    r->perm = perm;
+-    (void)size;
++    if (!found) return HB_ERR_NOT_FOUND;
++    if (touched_exec) bump_generation(mem, NULL);
++    rebuild_region_tree(mem);
+     return HB_OK;
+ }
+ 
+diff --git a/engine/wine/dlls/ntdll/signal_arm64.c b/engine/wine/dlls/ntdll/signal_arm64.c
+index 47fae2d..3f41fa9 100644
+--- a/engine/wine/dlls/ntdll/signal_arm64.c
++++ b/engine/wine/dlls/ntdll/signal_arm64.c
+@@ -237,6 +237,7 @@ static BOOL macrunner_hb_find_pc_section( DWORD64 pc, char section_name[9],
+         }
+     }
+     __EXCEPT(macrunner_hb_pe_scan_fault) {}
++    __ENDTRY
+     return FALSE;
+ }
+ 
+@@ -329,6 +330,120 @@ static BOOL macrunner_hb_unwind_syscall_data_boundary( DISPATCHER_CONTEXT *dispa
+     return TRUE;
+ }
+ 
++static BOOL macrunner_hb_recover_native_dispatch_boundary( DISPATCHER_CONTEXT *dispatch,
++                                                           CONTEXT *context, DWORD64 pc )
++{
++    struct macrunner_hb_syscall_frame *frame, *resume;
++    TEB *teb = NtCurrentTeb();
++    ULONG_PTR stack_lo = teb ? (ULONG_PTR)teb->Tib.StackLimit : 0;
++    ULONG_PTR stack_hi = teb ? (ULONG_PTR)teb->Tib.StackBase : 0;
++    const char *bad_pc = NULL, *source = "current-frame";
++    static unsigned int report_count, reject_count;
++    DWORD tid = teb ? HandleToULong( teb->ClientId.UniqueThread ) : 0;
++    LDR_DATA_TABLE_ENTRY *module = NULL;
++    IMAGE_NT_HEADERS *nt;
++    char section_name[9];
++    DWORD section_characteristics = 0;
++
++    if (!context || !macrunner_hb_is_x64_main_process())
++    {
++        if (reject_count++ < 16)
++            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
++                     "pc=%p frame=%p reason=%s\n",
++                     tid, (void *)(ULONG_PTR)pc, NULL,
++                     context ? "not-x64-main-process" : "no-context" );
++        return FALSE;
++    }
++    if (!(frame = macrunner_hb_current_syscall_frame()))
++    {
++        if (reject_count++ < 16)
++            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
++                     "pc=%p frame=%p reason=no-current-syscall-frame\n",
++                     tid, (void *)(ULONG_PTR)pc, NULL );
++        return FALSE;
++    }
++
++    resume = frame->prev_frame;
++    if (resume && resume != frame && resume->pc && resume->sp)
++        source = "prev-frame";
++    else
++        resume = frame;
++
++    if (!resume->pc || !resume->sp)
++    {
++        if (reject_count++ < 16)
++            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
++                     "pc=%p frame=%p frame_pc=%p frame_lr=%p prev=%p source=%s reason=%s\n",
++                     tid, (void *)(ULONG_PTR)pc, frame, (void *)(ULONG_PTR)frame->pc,
++                     (void *)(ULONG_PTR)frame->lr, frame->prev_frame, source,
++                     !resume->pc ? "resume-pc-null" : "resume-sp-null" );
++        return FALSE;
++    }
++    if (resume != frame && macrunner_hb_pc_inside_syscall_frame( resume->pc, frame ))
++        return FALSE;
++
++    if (!macrunner_hb_is_plausible_recovered_pc( resume->pc, &bad_pc ))
++    {
++        if (!macrunner_hb_find_pc_section( resume->pc, section_name, &section_characteristics ))
++            bad_pc = "pc-not-code";
++        else if (!(section_characteristics & IMAGE_SCN_MEM_EXECUTE))
++            bad_pc = "pc-nonexec-section";
++        else if (LdrFindEntryForAddress( (void *)(ULONG_PTR)resume->pc, &module ) != STATUS_SUCCESS ||
++                 !module || !(nt = RtlImageNtHeader( module->DllBase )))
++            bad_pc = "pc-module-missing";
++        else if (nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 ||
++                 nt->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM64EC)
++            bad_pc = NULL;
++        else if (bad_pc && !strcmp( bad_pc, "pc-x64-code-range" ))
++            bad_pc = NULL;
++        else if (bad_pc && strcmp( bad_pc, "pc-x64-code-range" ))
++            bad_pc = "pc-not-recoverable-code";
++    }
++
++    if (bad_pc)
++    {
++        if (reject_count++ < 16)
++            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
++                     "pc=%p frame=%p frame_pc=%p frame_lr=%p prev=%p prev_pc=%p "
++                     "prev_lr=%p prev_sp=%p source=%s reason=%s\n",
++                     tid, (void *)(ULONG_PTR)pc, frame, (void *)(ULONG_PTR)frame->pc,
++                     (void *)(ULONG_PTR)frame->lr, frame->prev_frame,
++                     (void *)(ULONG_PTR)resume->pc, (void *)(ULONG_PTR)resume->lr,
++                     (void *)(ULONG_PTR)resume->sp, source,
++                     bad_pc ? bad_pc : "bad-prev-pc" );
++        return FALSE;
++    }
++    if (stack_lo && stack_hi && (resume->sp < stack_lo || resume->sp + 0x10 < resume->sp ||
++                                 resume->sp + 0x10 > stack_hi))
++    {
++        if (reject_count++ < 16)
++            MESSAGE( "macrunner-hb-native-dispatch-boundary-reject: tid=%04lx "
++                     "pc=%p frame=%p frame_pc=%p prev=%p prev_pc=%p prev_sp=%p "
++                     "stack=%p-%p source=%s reason=bad-prev-sp\n",
++                     tid, (void *)(ULONG_PTR)pc, frame, (void *)(ULONG_PTR)frame->pc,
++                     frame->prev_frame, (void *)(ULONG_PTR)resume->pc,
++                     (void *)(ULONG_PTR)resume->sp, (void *)stack_lo, (void *)stack_hi,
++                     source );
++        return FALSE;
++    }
++
++    if (report_count++ < 32)
++        MESSAGE( "macrunner-hb-native-dispatch-boundary-recovered: tid=%04lx "
++                 "pc=%p image=%p frame=%p frame_pc=%p frame_lr=%p prev=%p "
++                 "guest_pc=%p guest_lr=%p guest_sp=%p source=%s stack=%p-%p\n",
++                 tid, (void *)(ULONG_PTR)pc, dispatch ? (void *)(ULONG_PTR)dispatch->ImageBase : NULL,
++                 frame, (void *)(ULONG_PTR)frame->pc, (void *)(ULONG_PTR)frame->lr,
++                 frame->prev_frame, (void *)(ULONG_PTR)resume->pc, (void *)(ULONG_PTR)resume->lr,
++                 (void *)(ULONG_PTR)resume->sp, source, (void *)stack_lo, (void *)stack_hi );
++
++    macrunner_hb_restore_syscall_prev_frame_context( context, resume );
++    context->ContextFlags |= CONTEXT_UNWOUND_TO_CALL;
++    dispatch->EstablisherFrame = context->Sp;
++    dispatch->LanguageHandler = NULL;
++    dispatch->HandlerData = NULL;
++    return TRUE;
++}
++
+ static BOOL macrunner_hb_fix_syscall_data_boundary_exception( EXCEPTION_RECORD *rec, CONTEXT *context )
+ {
+     struct macrunner_hb_syscall_frame *frame, *prev;
+@@ -1025,6 +1140,9 @@ static BOOL macrunner_hb_try_arm64_unwind_methods( DISPATCHER_CONTEXT *dispatch,
+         int kind = dispatch && dispatch->ImageBase ?
+             macrunner_hb_arm64x_code_range_kind( dispatch->ImageBase, pc ) : -1;
+ 
++        if (macrunner_hb_recover_native_dispatch_boundary( dispatch, context, pc ))
++            return TRUE;
++
+         if (unsafe_count++ < 32)
+             MESSAGE( "macrunner-hb-arm64-unwind-unsafe-boundary: pc=%p image=%p "
+                      "kind=%d sp=%016I64x stack=%p-%p action=stop-unwind\n",
+@@ -1597,6 +1715,26 @@ restart:
+                       frame ? frame->prev_frame : NULL,
+                       frame ? frame->syscall_cfa : NULL,
+                       frame ? frame->restore_flags : 0 );
++            /* MacRunner diag: this boundary is a native libsystem_platform call (e.g.
++             * _platform_memmove) faulting on a guest pointer.  Dump x0..x8 (memmove
++             * dst=x0 src=x1 len=x2) + lr + a stack window so the bad buffer/length and
++             * the Wine caller can be recovered from the run log. */
++            {
++                const ULONG64 *stk = (const ULONG64 *)(ULONG_PTR)context->Sp;
++                unsigned si;
++                MESSAGE( "macrunner-hb-seh-nonmod-regs: x0=%p x1=%p x2=%p x3=%p x4=%p x5=%p "
++                         "x6=%p x7=%p x8=%p x9=%p x16=%p x17=%p x18=%p lr=%p fp=%p sp=%p\n",
++                         (void *)context->X[0], (void *)context->X[1], (void *)context->X[2],
++                         (void *)context->X[3], (void *)context->X[4], (void *)context->X[5],
++                         (void *)context->X[6], (void *)context->X[7], (void *)context->X[8],
++                         (void *)context->X[9], (void *)context->X[16], (void *)context->X[17],
++                         (void *)context->X[18], (void *)context->Lr, (void *)context->Fp,
++                         (void *)context->Sp );
++                for (si = 0; si < 24; si += 4)
++                    MESSAGE( "macrunner-hb-seh-nonmod-stk: +%02x %p %p %p %p\n",
++                             si * 8, (void *)stk[si], (void *)stk[si+1],
++                             (void *)stk[si+2], (void *)stk[si+3] );
++            }
+         }
+         if (macrunner_hb_unwind_syscall_data_boundary( dispatch, context, frame ))
+             return STATUS_SUCCESS;
+diff --git a/engine/wine/dlls/ntdll/unix/macrunner_hb.c b/engine/wine/dlls/ntdll/unix/macrunner_hb.c
+index d98bda4..6ff7ed0 100644
+--- a/engine/wine/dlls/ntdll/unix/macrunner_hb.c
++++ b/engine/wine/dlls/ntdll/unix/macrunner_hb.c
+@@ -5469,7 +5469,9 @@ static void macrunner_hb_sync_virtual_region( hb_context_t *ctx, void *base, SIZ
+     if (!ctx || !ctx->memory || !base || !size) return;
+     perm = macrunner_hb_protect_to_perm( protect );
+     existing = hb_memory_find_region( ctx->memory, (hb_gva_t)(uintptr_t)base );
+-    if (existing)
++    if (existing && !existing->allocated && !existing->is_guest32 && !(perm & HB_PERM_EXEC))
++        result = hb_memory_sync_live_range( ctx->memory, (hb_gva_t)(uintptr_t)base, size, perm );
++    else if (existing)
+         result = hb_memory_protect( ctx->memory, (hb_gva_t)(uintptr_t)base, size, perm );
+     else if (perm)
+         result = hb_memory_map( ctx->memory, (hb_gva_t)(uintptr_t)base, size, perm );
+diff --git a/engine/wine/dlls/ntdll/unix/signal_arm64.c b/engine/wine/dlls/ntdll/unix/signal_arm64.c
+index a74ee1b..074920c 100644
+--- a/engine/wine/dlls/ntdll/unix/signal_arm64.c
++++ b/engine/wine/dlls/ntdll/unix/signal_arm64.c
+@@ -3875,6 +3875,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    __ASM_CFI(".cfi_offset 28, -0x68\n\t")
+                    "and x20, x8, #0xfff\n\t"    /* syscall number */
+                    "ubfx x21, x8, #12, #2\n\t"  /* syscall table number */
++                   "mov x18, x17\n\t"            /* x18 is Apple-volatile; x17 holds TEB */
+                    "ldr x16, [x18, #0x370]\n\t" /* thread_data->syscall_table */
+                    "add x21, x16, x21, lsl #5\n\t"
+                    "ldr x16, [x21, #16]\n\t"    /* table->ServiceLimit */
+@@ -3893,6 +3894,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "cbnz x9, 1b\n"
+                    "2:\tldr x16, [x21]\n\t"     /* table->ServiceTable */
+                    "ldr x23, [x16, x20, lsl 3]\n\t"
++                   "mov x18, x17\n\t"            /* x18 is Apple-volatile; x17 holds TEB */
+                    "ldr w11, [x18, #0x380]\n\t" /* thread_data->syscall_trace */
+                    "cbnz x11, " __ASM_LOCAL_LABEL("trace_syscall") "\n\t"
+                    "blr x23\n\t"

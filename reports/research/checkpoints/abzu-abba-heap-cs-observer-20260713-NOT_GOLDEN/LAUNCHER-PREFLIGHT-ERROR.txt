@@ -1,0 +1,9 @@
+BSD awk rejected the slash inside the process-filter character class before the
+attempt was consumed:
+
+awk: nonterminated character class (^|[ 
+source line number 2
+context is /(^|[ >>> / <<<
+
+Because run-once.sh did not use `set -e`, the empty PRE-RUN-PROCESSES.txt was
+incorrectly accepted and the attempt continued. No retry was made.

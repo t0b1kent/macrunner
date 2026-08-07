@@ -1,0 +1,68 @@
+22:12:18 lines=NA bytes=NA last=no-run-yet
+22:12:23 lines=375 bytes=52488 last=synced artifacts/_mr-run.Cm9z5I/drive_c/windows/system32/psapi.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-win
+22:12:28 lines=778 bytes=109984 last=synced artifacts/_mr-run.Cm9z5I/drive_c/windows/syswow64/dwrite.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386-wind
+22:12:33 lines=1180 bytes=166266 last=synced artifacts/_mr-run.Cm9z5I/drive_c/windows/syswow64/x3daudio1_7.dll <= engine/wine/dist-arm64ec-spike/lib/wine/i386
+22:12:38 lines=1241 bytes=174698 last=[mr-run] starting services.exe + rpcss.exe (standalone) → epmapper + ncalrpc:[irpcss]
+22:12:43 lines=1315 bytes=183494 last=macrunner-hb-arm64x-native-import-prefix: module=L"kernel32.dll" dll=kernelbase.dll import=__chkstk slot=0000087EFC26000
+22:12:49 lines=1326 bytes=185471 last=macrunner-hb-arm64x-native-import-prefix: module=L"ole32.dll" dll=kernelbase.dll import=__chkstk slot=0000087EF8B505F8 t
+22:12:54 lines=1344 bytes=188730 last=macrunner-hb-callback-exception-frame-map: pid=15498 frame_pc=0x87fff928694 pc_module=ntdll.dll pc_native=0x87fff8d0000 
+22:12:59 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:04 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:09 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:14 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:19 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:24 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:29 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:34 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:39 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:44 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:49 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:54 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:13:59 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:04 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:09 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:14 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:19 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:24 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:29 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:34 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:39 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:44 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:49 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:14:55 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:00 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:05 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:10 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:15 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:20 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:25 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:30 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:35 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:40 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:45 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:50 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:15:55 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:00 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:05 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:10 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:15 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:20 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:25 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:30 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:35 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:41 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:46 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:51 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:16:56 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:17:01 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:17:06 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:17:11 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:17:16 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:17:21 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:17:26 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:17:31 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:17:36 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:17:41 lines=1391 bytes=193330 last=macrunner-hb-ldr-init: phase=after-loader index=1 ctx=00000001420AFC70 pc=0000087FFF92A810 lr=0000000000000000 sp=000000
+22:17:46 lines=1392 bytes=193378 last=[mr-run] exit=143 (prefix auto-removed on exit)
+22:17:51 lines=1392 bytes=193378 last=[mr-run] exit=143 (prefix auto-removed on exit)
+22:17:56 lines=1392 bytes=193378 last=[mr-run] exit=143 (prefix auto-removed on exit)

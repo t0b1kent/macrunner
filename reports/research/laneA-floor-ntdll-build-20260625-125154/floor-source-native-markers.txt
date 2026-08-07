@@ -1,0 +1,3 @@
+engine/wine/dlls/ntdll/unix/macrunner_hb.c:19712:    if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CALLBACK_ROUTE" ))
+engine/wine/dlls/ntdll/unix/macrunner_hb.c:19801:    if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CALLBACK_ROUTE" ))
+engine/wine/dlls/ntdll/unix/signal_arm64.c:792:    const char *value = getenv( "MACRUNNER_HB_TRACE_CALLBACK_ROUTE" );

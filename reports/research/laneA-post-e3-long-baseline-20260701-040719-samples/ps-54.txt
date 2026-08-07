@@ -1,0 +1,4 @@
+93452   0.4 Ss   /Users/timurtoby /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist-arm64ec-spike/lib/wine/../../bin/wineserver
+93463   0.0 Ss   /var/folders/48/ /var/folders/48/2f66hmz52n5738l03xhspcyw0000gn/T//winetemp-10216209-70208-1780491533-211324222/services.exe C:\windows\system32\services.exe 
+93514 181.8 R    /Users/timurtoby /Users/timurtoby/Documents/MacRunner/Main/MacRunner/../game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/Hollow Knight.exe 
+93729   0.0 Ss   /var/folders/48/ /var/folders/48/2f66hmz52n5738l03xhspcyw0000gn/T//winetemp-10216209-70208-1780491533-211324222/explorer.exe C:\windows\system32\explorer.exe /desktop 

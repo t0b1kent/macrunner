@@ -1,0 +1,2 @@
+picked=55798
+55798 /Users/timurtoby /Users/timurtoby/Documents/MacRunner/Main/MacRunner/../game-hollow.knight-(89718)/extracted-hollow-knight-1.5.12620/Hollow Knight.exe 

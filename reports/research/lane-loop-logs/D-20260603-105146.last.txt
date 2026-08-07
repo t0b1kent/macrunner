@@ -1,0 +1,18 @@
+Lane D run progressed through several backlog items and checkpointed them.
+
+Key additions:
+- Resource residency churn, stability duration mode, visible-window smoke mode.
+- MSAA resolve + Texture2DMS SRV, generated mip readback, typeless depth views.
+- Feature-level creation for `11_1/11_0/10_1/10_0`, `ID3D11Device1` probe.
+- Structured UAV counter/append, raw buffer SRV/UAV, no-overwrite dynamic mapping.
+- Typeless format matrix entries.
+- Phase 7 D3D8/D3D9 future-path note at `engine/graphics/docs/D3D8-D3D9-PATH-NOTE.md`.
+
+Validation:
+- Latest default smoke: `engine/graphics/scripts/run_dxmt_d3d11_headless_smoke.sh aarch64 -> exit_code=0`.
+- Visible smoke also passed with `SMOKE_VISIBLE_WINDOW=1`.
+- Duration smoke passed with `SMOKE_STABILITY_MIN_MS=2000`.
+
+Latest Lane D DXMT commit: `6100993 checkpoint(Lane D): cover typeless formats`.
+
+No `LANE-D.signal` was created. Root index is clean; unrelated dirty state remains outside Lane D scope.

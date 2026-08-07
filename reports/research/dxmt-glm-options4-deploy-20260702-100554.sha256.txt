@@ -1,0 +1,13 @@
+source=/Users/timurtoby/Documents/MacRunner/Main/MacRunner-graphics-prep/engine/graphics/dist/dxmt
+dest=engine/graphics/dist/dxmt
+source_head=8400e1e
+main_head=fbb6b25
+x86_64-windows/dxgi.dll                    before=066b27caf16eeac3 src=066b27caf16eeac3 after=066b27caf16eeac3
+x86_64-windows/d3d11.dll                   before=9516d5aa535ec9d3 src=9516d5aa535ec9d3 after=9516d5aa535ec9d3
+x86_64-windows/d3d10core.dll               before=ac49408f5a8258ce src=ac49408f5a8258ce after=ac49408f5a8258ce
+x86_64-windows/winemetal.dll               before=7aa914d654101470 src=7aa914d654101470 after=7aa914d654101470
+aarch64-windows/dxgi.dll                   before=0ef361fe48576b83 src=eda569b47f1a4aa5 after=eda569b47f1a4aa5
+aarch64-windows/d3d11.dll                  before=9517f38f896b1786 src=e356f424b7c4f931 after=e356f424b7c4f931
+aarch64-windows/d3d10core.dll              before=3cb9da3331f04887 src=6acfa5e7f166f32e after=6acfa5e7f166f32e
+aarch64-windows/winemetal.dll              before=8a0c3b539da1e59c src=8a0c3b539da1e59c after=8a0c3b539da1e59c
+aarch64-unix/winemetal.so                  before=c5c1417e98aa3a4e src=c5c1417e98aa3a4e after=c5c1417e98aa3a4e

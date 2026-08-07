@@ -1,0 +1,74 @@
+21:52:06 gate present by CONTENT in shipped ntdll sha=63c9691c0f8af97f
+21:52:06 === hdrprobe SPEED A/B stamp=20260729-215206 timeout=900 arms='off on off on' samples at +420s/+780s ===
+21:52:06 === arm=off pass=1 (gate unset) ===
+21:57:06   waiting for slot (5 min)
+22:02:07   waiting for slot (10 min)
+22:07:07   waiting for slot (15 min)
+22:08:07   slot free after 16 min
+22:17:40 TMPDIR=/var/folders/48/2f66hmz52n5738l03xhspcyw0000gn/T/ (exists, writable — slot lock will be shared with the sister lanes)
+22:17:40 gate present by CONTENT in shipped ntdll sha=63c9691c0f8af97f
+22:17:40 === hdrprobe SPEED A/B stamp=20260729-221740 timeout=900 arms='off on off on' samples at +420s/+780s ===
+22:17:40 === arm=off pass=1 (gate unset) ===
+22:26:19   off1 point1: PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=11.0 
+22:32:12   off1 point2: PINNED=1   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=30.0 
+22:34:32   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-hdrspeed2-off1-a1-try1-221846 (sampled: p1=1 p2=1)
+22:34:33    last_activity_s 774.3  xinput 133.812  compiles 217790 
+22:34:34 === arm=on pass=2 (gate 1) ===
+22:43:13   on2 point1: PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=10.1 
+22:49:07   on2 point2: PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=5.6 
+22:51:27   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-hdrspeed2-on2-a1-try1-223540 (sampled: p1=1 p2=1)
+22:51:27    last_activity_s 924.2  xinput 131.478  compiles 230674 
+22:51:28 === arm=off pass=3 (gate unset) ===
+23:00:07   off3 point1: PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=10.7 
+23:06:01   off3 point2: PINNED=3   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=52.9 
+23:08:21   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-hdrspeed2-off3-a1-try1-225235 (sampled: p1=1 p2=1)
+23:08:21    last_activity_s 924.1  xinput 136.038  compiles 217828 
+23:08:22 === arm=on pass=4 (gate 1) ===
+23:17:01   on4 point1: PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=10.0 
+23:22:54   on4 point2: PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=5.6 
+23:25:15   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-hdrspeed2-on4-a1-try1-230929 (sampled: p1=1 p2=1)
+23:25:15    last_activity_s 840.6  xinput 143.481  compiles 217991 
+23:25:16 ================ SUMMARY ================
+off1-pins-1                  PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=11.0 
+off1-pins-2                  PINNED=1   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=30.0 
+off3-pins-1                  PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=10.7 
+off3-pins-2                  PINNED=3   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=52.9 
+on2-pins-1                   PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=10.1 
+on2-pins-2                   PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=5.6 
+on4-pins-1                   PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=10.0 
+on4-pins-2                   PINNED=0   (100% of samples inside macrunner_hb_primary_signal_handler) MEMMOVE_PCT_OF_NONIDLE=5.6 
+--- off1 ---
+  last_activity_s            774.3
+  reload_assembly_s          28.5
+  physx_to_xinput_s          50.0
+  xinput                     133.812
+  compiles                   217790
+  RETENTION_PCT              72.4
+REFUSAL_MARKER_LINES=0
+0
+--- off3 ---
+  last_activity_s            924.1
+  reload_assembly_s          28.8
+  physx_to_xinput_s          49.0
+  xinput                     136.038
+  compiles                   217828
+  RETENTION_PCT              72.7
+REFUSAL_MARKER_LINES=0
+0
+--- on2 ---
+  last_activity_s            924.2
+  reload_assembly_s          28.5
+  physx_to_xinput_s          48.7
+  xinput                     131.478
+  compiles                   230674
+  RETENTION_PCT              72.8
+REFUSAL_MARKER_LINES=1
+--- on4 ---
+  last_activity_s            840.6
+  reload_assembly_s          30.5
+  physx_to_xinput_s          52.7
+  xinput                     143.481
+  compiles                   217991
+  RETENTION_PCT              72.5
+REFUSAL_MARKER_LINES=1
+23:25:16 full output: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/hk-hdrprobe-speed-ab-20260729-221740

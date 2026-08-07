@@ -1,0 +1,1 @@
+[laneA-ts epoch=1785484971.015 +257.645s] macrunner-hb-jcc-fuse-reasons: producer=4033 cc_nz=989 dst=27 loader=9100 fused=18619

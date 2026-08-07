@@ -1,0 +1,105 @@
+22:55:01 === chain: waiting for driver pid 67358 to exit, then cachefix A/B tag=cachefix tmo=900 ===
+22:55:01     TMPDIR=/var/folders/48/2f66hmz52n5738l03xhspcyw0000gn/T/
+23:00:01   driver 67358 still alive (5 min)
+23:05:01   driver 67358 still alive (10 min)
+23:10:02   driver 67358 still alive (15 min)
+23:15:02   driver 67358 still alive (20 min)
+23:20:02   driver 67358 still alive (25 min)
+23:25:02   driver 67358 still alive (30 min)
+23:25:32   driver 67358 exited after 30 min
+23:25:53   mr-clean done; launching cachefix A/B
+23:25:53 TMPDIR=/var/folders/48/2f66hmz52n5738l03xhspcyw0000gn/T/ (exists, writable — slot lock shared with the sister lanes)
+23:25:53 artifacts base=63c9691c0f8af97f fix=810c99a6de76bf20 (distinguishable by content)
+23:25:54 === cachefix A/B stamp=20260729-232553 timeout=900 arms='base fix' (cold then warm per arm) ===
+23:25:59   deployed base sha=63c9691c0f8af97f rl_x23val_marker=0
+23:25:59 === arm=base pass=cold ===
+23:26:04   cache root EMPTIED (cold)
+00:08:16   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-cachefix-base-cold-a1-try1-235245
+00:08:16    last_activity_s 671.8  xinput 134.03  compiles 267407  RETENTION_PCT 73.4 
+00:08:16   unkhelper=64623 x23val= promo=
+00:08:17 === arm=base pass=warm ===
+00:08:22   cache root REUSED (warm): 1 entries
+00:25:35   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-cachefix-base-warm-a1-try1-000924
+00:25:35    last_activity_s 210.2  xinput 138.207  compiles 66373  RETENTION_PCT 38.2 
+00:25:35   unkhelper=36529 x23val= promo=
+00:30:36   waiting for slot (5 min)
+00:35:37   waiting for slot (10 min)
+00:40:37   waiting for slot (15 min)
+00:45:38   waiting for slot (20 min)
+00:50:38   waiting for slot (25 min)
+00:55:38   waiting for slot (30 min)
+01:00:39   waiting for slot (35 min)
+01:00:39   slot free after 35 min
+01:00:44   deployed fix sha=810c99a6de76bf20 rl_x23val_marker=1
+01:00:44 === arm=fix pass=cold ===
+01:00:49   cache root EMPTIED (cold)
+01:17:22   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-cachefix-fix-cold-a1-try1-010150
+01:17:22    last_activity_s 740.6  xinput 134.775  compiles 251907  RETENTION_PCT 96.5 
+01:17:22   unkhelper=0 x23val=86703 promo=48092
+01:17:23 === arm=fix pass=warm ===
+01:17:29   cache root REUSED (warm): 1 entries
+01:57:00   rundir=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-cachefix-fix-warm-a1-try1-015219
+01:57:00    last_activity_s 271.0  xinput 136.327  compiles 50020  RETENTION_PCT 83.2 
+01:57:00   unkhelper=0 x23val=9443 promo=34979
+01:57:01 ================ SUMMARY (read in the order in the header) ================
+--- base/cold ---
+    <- step 1: present only in the fix build
+  rl_unkhelper=64623
+  rl_stores=196240
+  reloc_blocks=267406
+  
+  compile_count=315000
+  rl_hostptr=6543
+  stores=196240
+stores=196240
+  last_activity_s            671.8
+  to_guest_s                 41.673
+  physx_to_xinput_s          50.2
+  xinput                     134.03
+  RETENTION_PCT              73.4
+--- base/warm ---
+    <- step 1: present only in the fix build
+  rl_unkhelper=36529
+  rl_stores=25373
+  reloc_blocks=66372
+  
+  compile_count=90000
+  rl_hostptr=4470
+  stores=25373
+stores=25373
+  last_activity_s            210.2
+  to_guest_s                 44.151
+  physx_to_xinput_s          50.7
+  xinput                     138.207
+  RETENTION_PCT              38.2
+--- fix/cold ---
+  rl_x23val=86703  <- step 1: present only in the fix build
+  rl_unkhelper=0
+  rl_stores=242997
+  reloc_blocks=251907
+  promo_compiles=48092
+  compile_count=300000
+  rl_hostptr=8910
+  stores=242997
+stores=242997
+  last_activity_s            740.6
+  to_guest_s                 43.362
+  physx_to_xinput_s          48.8
+  xinput                     134.775
+  RETENTION_PCT              96.5
+--- fix/warm ---
+  rl_x23val=9443  <- step 1: present only in the fix build
+  rl_unkhelper=0
+  rl_stores=41630
+  reloc_blocks=50020
+  promo_compiles=34979
+  compile_count=85000
+  rl_hostptr=8390
+  stores=41630
+stores=41630
+  last_activity_s            271.0
+  to_guest_s                 40.949
+  physx_to_xinput_s          49.0
+  xinput                     136.327
+  RETENTION_PCT              83.2
+01:57:01 full output: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/hk-cachefix-ab-20260729-232553

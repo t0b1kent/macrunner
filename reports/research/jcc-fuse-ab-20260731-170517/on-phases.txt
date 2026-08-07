@@ -1,0 +1,24 @@
+=== reports/phase4-hollow-knight/laneA-fuse-on-a1-try1-171424/run.log ===
+  last_activity_s            467.1
+  to_guest_s                 29.2
+  mono_begin                 40.98
+  reload_assembly_s          18.5
+  physx_to_xinput_s          28.5
+  xinput                     88.031
+  post_init_s                379.0
+  compiles                   220000
+  compiles_pct_in_first_50s  50.0
+  RETENTION_PCT              96.0
+  rl_stores                  211109
+  rl_patched                 955110
+  rl_hostptr                 8890
+  rl_highhalf                0
+  rl_collision               0
+  rl_desync                  0
+  rl_roundtrip               0
+  mh_argshape                0
+  mh_widearg                 0
+  mh_toomany                 0
+  sync_ops                   0
+  sync_blocked_s             0.0
+

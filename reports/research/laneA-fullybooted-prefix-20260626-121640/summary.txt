@@ -1,0 +1,8 @@
+template=artifacts/warm-prefix/laneA-fullybooted-20260626-121640
+timeout_tool=fallback
+boot_rc=124
+system_reg=yes
+user_reg=yes
+temp_dir=yes
+valid=no
+wineboot_log_lines=     314

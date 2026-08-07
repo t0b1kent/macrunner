@@ -1,0 +1,15 @@
+[hk] unsetting inherited MACRUNNER_WINE_BIN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist/bin/wine (would force the stale dist)
+[hk] slot busy (0s) — waiting for the sister lane to release it
+[hk] slot busy (20s) — waiting for the sister lane to release it
+[hk] slot busy (40s) — waiting for the sister lane to release it
+[hk] slot busy (60s) — waiting for the sister lane to release it
+[hk] slot busy (80s) — waiting for the sister lane to release it
+[hk] slot busy (100s) — waiting for the sister lane to release it
+[hk] slot free after 120s
+[hk] === attempt 1/1 ===
+[laneA] live spike wine persisted ~60s and NO live slot owner — force-cleaning orphaned spike wine (scoped) and proceeding
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/laneA-run-hk.sh: line 131:  7611 Terminated: 15          pipe_watchdog "$RUNDIR"
+try1 rc=124 lines=    2229 /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-memwalk2-list1-a1-try1-211310
+VALID_RUN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-memwalk2-list1-a1-try1-211310
+[hk] attempt 1 did not reach the menu (rc=0, marker 'Restored language' absent) — retrying
+[hk] no attempt reached Mono init in 1 tries

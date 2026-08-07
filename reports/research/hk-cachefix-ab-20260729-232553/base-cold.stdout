@@ -1,0 +1,14 @@
+[hk] unsetting inherited MACRUNNER_WINE_BIN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dist/bin/wine (would force the stale dist)
+[hk] slot free after 0s
+[hk] === attempt 1/1 ===
+[laneA] title slot held by LIVE pid 69640 — waiting 300s, NOT force-cleaning
+[laneA] title slot held by LIVE pid 69640 — waiting 600s, NOT force-cleaning
+[laneA] title slot held by LIVE pid 69640 — waiting 900s, NOT force-cleaning
+[laneA] title slot held by LIVE pid 69640 — waiting 1200s, NOT force-cleaning
+[laneA] title slot held by LIVE pid 69640 — waiting 1500s, NOT force-cleaning
+[laneA] live spike wine persisted ~60s and NO live slot owner — force-cleaning orphaned spike wine (scoped) and proceeding
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/laneA-run-hk.sh: line 176: 27749 Terminated: 15          rm -rf "$ROOT"/artifacts/_mr-run.* 2> /dev/null
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/laneA-run-hk.sh: line 131: 27838 Terminated: 15          pipe_watchdog "$RUNDIR"
+try1 rc=124 lines=    2514 /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-cachefix-base-cold-a1-try1-235245
+VALID_RUN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-cachefix-base-cold-a1-try1-235245
+[hk] GOOD BOOT on attempt 1 (marker: Restored language): /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-cachefix-base-cold-a1-try1-235245

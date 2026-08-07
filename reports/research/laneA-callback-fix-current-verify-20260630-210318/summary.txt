@@ -1,0 +1,15 @@
+run=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-callback-fix-current-verify-20260630-210318-try1-210318
+rc=1
+callback_stack=3
+callback_dispatch=3
+callback_return=0
+unsafe_boundary=1
+native_recovered=0
+native_reject=1
+no_prev=1
+D3D11CreateDevice=1
+CreateSwapChain=0
+Mono=0
+wall2_markers=0
+exit5=2
+exit143=1

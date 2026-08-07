@@ -1,0 +1,4 @@
+t=110s НЕ снят: sample[56941]: sample cannot find any existing process you have access to which has a name like 'Hollow Knight.exe'; try running with `sudo`. 
+t=200s НЕ снят: sample[57368]: sample cannot find any existing process you have access to which has a name like 'Hollow Knight.exe'; try running with `sudo`. 
+t=300s НЕ снят: sample[57726]: sample cannot find any existing process you have access to which has a name like 'Hollow Knight.exe'; try running with `sudo`. 
+t=420s НЕ снят: sample[58165]: sample cannot find any existing process you have access to which has a name like 'Hollow Knight.exe'; try running with `sudo`. 

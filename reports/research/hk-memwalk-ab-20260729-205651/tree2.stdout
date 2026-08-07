@@ -1,0 +1,4 @@
+[laneA] live spike wine persisted ~60s and NO live slot owner — force-cleaning orphaned spike wine (scoped) and proceeding
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/laneA-run-hk.sh: line 131: 64790 Terminated: 15          pipe_watchdog "$RUNDIR"
+try1 rc=2 lines=    1255 /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-memwalk-tree2-try1-211208
+[laneA] title slot held by LIVE pid 7612 — waiting 300s, NOT force-cleaning

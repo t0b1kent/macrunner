@@ -1,0 +1,11 @@
+[ab 10:00:43] reps=3 secs=200 binary=70010edf1d9fb9d5
+[ab 10:03:58] ON  swapchain=94s  CLASS: GENERIC_GRAPHICS_FAULT  dir=laneA-abon1-a1-try1-100048
+[ab 10:07:42] OFF swapchain=92s  CLASS: GENERIC_GRAPHICS_FAULT  dir=laneA-aboff1-a1-try1-100403
+[ab 10:11:27] ON  swapchain=94s  CLASS: GENERIC_GRAPHICS_FAULT  dir=laneA-abon2-a1-try1-100747
+[ab 10:15:11] OFF swapchain=97s  CLASS: GENERIC_GRAPHICS_FAULT  dir=laneA-aboff2-a1-try1-101132
+[ab 10:18:56] ON  swapchain=95s  CLASS: GENERIC_GRAPHICS_FAULT  dir=laneA-abon3-a1-try1-101516
+[ab 10:22:40] OFF swapchain=97s  CLASS: GENERIC_GRAPHICS_FAULT  dir=laneA-aboff3-a1-try1-101901
+[ab 10:22:40] ---- сводка ----
+[ab 10:22:40] ON n=3 значения: 94 94 95  среднее: 94.3s
+[ab 10:22:40] OFF n=3 значения: 92 97 97  среднее: 95.3s
+[ab 10:22:40] ВАЖНО: разброс от нагрузки ранее измерен 87-121 s. Разница меньше этого — не результат.

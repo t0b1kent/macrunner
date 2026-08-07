@@ -1,0 +1,5 @@
+engine/wine/dlls/ntdll/unix/macrunner_hb.c:5347:static void macrunner_hb_note_x64_dynamic_exec_region( void *base, SIZE_T size, ULONG protect )
+engine/wine/dlls/ntdll/unix/macrunner_hb.c:15461:                macrunner_hb_note_x64_dynamic_exec_region( base, size, protect );
+engine/wine/dlls/ntdll/unix/macrunner_hb.c:15581:                macrunner_hb_note_x64_dynamic_exec_region( base, size, protect );
+engine/wine/dlls/ntdll/unix/macrunner_hb.c:19450:                    macrunner_hb_note_x64_dynamic_exec_region( (void *)(uintptr_t)base, (SIZE_T)size,
+engine/wine/dlls/ntdll/unix/macrunner_hb.c:19467:                    macrunner_hb_note_x64_dynamic_exec_region( (void *)(uintptr_t)base, (SIZE_T)size,

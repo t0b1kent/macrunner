@@ -1,0 +1,856 @@
+diff --git a/engine/wine/dlls/ntdll/unix/loader.c b/engine/wine/dlls/ntdll/unix/loader.c
+index ea9a626..0358caa 100644
+--- a/engine/wine/dlls/ntdll/unix/loader.c
++++ b/engine/wine/dlls/ntdll/unix/loader.c
+@@ -115,6 +115,7 @@ void *p__wine_ctrl_routine = NULL;
+ SYSTEM_DLL_INIT_BLOCK *pLdrSystemDllInitBlock = NULL;
+ 
+ extern typeof(NtReadFile) __wine_rpc_NtReadFile;
++extern void macrunner_hb_register_x64_original_exec_sections( void *module, const IMAGE_NT_HEADERS *nt );
+ 
+ static void stub_syscall( const char *name )
+ {
+@@ -1281,6 +1282,7 @@ static NTSTATUS map_so_dll( const IMAGE_NT_HEADERS *nt_descr, HMODULE module )
+     memcpy( dos + 1, builtin_signature, sizeof(builtin_signature) );
+ 
+     *nt = *nt_descr;
++    macrunner_hb_register_x64_original_exec_sections( addr, nt_descr );
+ 
+     delta_ptr = (INT_PTR)nt_descr - (INT_PTR)addr;
+     if (delta_ptr < 0 || delta_ptr > INT_MAX) return STATUS_INVALID_IMAGE_FORMAT;
+diff --git a/engine/wine/dlls/ntdll/unix/macrunner_hb.c b/engine/wine/dlls/ntdll/unix/macrunner_hb.c
+index f392dc0..49a741b 100644
+--- a/engine/wine/dlls/ntdll/unix/macrunner_hb.c
++++ b/engine/wine/dlls/ntdll/unix/macrunner_hb.c
+@@ -300,6 +300,16 @@ static pthread_mutex_t macrunner_hb_x64_dynamic_exec_region_mutex = PTHREAD_MUTE
+ static struct macrunner_hb_x64_dynamic_exec_region
+     macrunner_hb_x64_dynamic_exec_regions[MACRUNNER_HB_X64_DYNAMIC_EXEC_REGION_MAX];
+ static unsigned int macrunner_hb_x64_dynamic_exec_region_count;
++#define MACRUNNER_HB_X64_ORIGINAL_EXEC_RANGE_MAX 4096
++struct macrunner_hb_x64_original_exec_range
++{
++    void *module;
++    uint64_t start;
++    uint64_t end;
++};
++static struct macrunner_hb_x64_original_exec_range
++    macrunner_hb_x64_original_exec_ranges[MACRUNNER_HB_X64_ORIGINAL_EXEC_RANGE_MAX];
++static unsigned int macrunner_hb_x64_original_exec_range_count;
+ static __thread void *macrunner_hb_bridge_stack_limit;
+ static __thread void *macrunner_hb_bridge_stack_base;
+ static __thread size_t macrunner_hb_bridge_stack_size;
+@@ -617,6 +627,8 @@ struct macrunner_hb_module_from_pc_cache_entry
+ static __thread struct macrunner_hb_module_from_pc_cache_entry macrunner_hb_module_from_pc_cache[MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE];
+ static __thread unsigned int macrunner_hb_module_from_pc_cache_next;
+ 
++static LDR_DATA_TABLE_ENTRY *macrunner_hb_ldr_entry_from_pc( void *pc );
++
+ static void macrunner_hb_module_from_pc_cache_put( uintptr_t start, size_t size, void *module )
+ {
+     struct macrunner_hb_module_from_pc_cache_entry *entry;
+@@ -634,6 +646,7 @@ static void *macrunner_hb_module_from_pc( void *pc )
+ {
+     uintptr_t addr = (uintptr_t)pc;
+     uintptr_t p = (uintptr_t)pc & ~(uintptr_t)0xfff;
++    LDR_DATA_TABLE_ENTRY *ldr;
+     unsigned int i;
+ 
+     for (i = 0; i < MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE; i++)
+@@ -644,6 +657,18 @@ static void *macrunner_hb_module_from_pc( void *pc )
+             return entry->module;
+     }
+ 
++    if ((ldr = macrunner_hb_ldr_entry_from_pc( pc )))
++    {
++        uintptr_t start = (uintptr_t)ldr->DllBase;
++        size_t size = ldr->SizeOfImage;
++
++        if (start && size && addr >= start && addr < start + size)
++        {
++            macrunner_hb_module_from_pc_cache_put( start, size, ldr->DllBase );
++            return ldr->DllBase;
++        }
++    }
++
+     for (i = 0; i < 0x100000 && p >= 0x1000; i++, p -= 0x1000)
+     {
+         IMAGE_DOS_HEADER dos;
+@@ -984,6 +1009,57 @@ static int macrunner_hb_trace_wait_semantic_budget_allows(void)
+     return 0;
+ }
+ 
++static int macrunner_hb_trace_lift_probe_enabled(void)
++{
++    static int cache = -1;
++    int value = __atomic_load_n( &cache, __ATOMIC_RELAXED );
++
++    if (value < 0)
++    {
++        value = macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_LIFT_PROBE" );
++        __atomic_store_n( &cache, value, __ATOMIC_RELAXED );
++    }
++    return value;
++}
++
++static int macrunner_hb_trace_lift_probe_module_enabled(void)
++{
++    static int cache = -1;
++    int value = __atomic_load_n( &cache, __ATOMIC_RELAXED );
++
++    if (value < 0)
++    {
++        value = macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_LIFT_PROBE_MODULE" );
++        __atomic_store_n( &cache, value, __ATOMIC_RELAXED );
++    }
++    return value;
++}
++
++static int macrunner_hb_trace_lift_probe_budget_allows(void)
++{
++    static int count;
++    const char *val;
++    int limit;
++
++    if (!macrunner_hb_trace_lift_probe_enabled()) return 0;
++    val = getenv( "MACRUNNER_HB_TRACE_LIFT_PROBE_BUDGET" );
++    limit = val && val[0] ? atoi( val ) : 400;
++    if (limit <= 0) return 1;
++    if (count < limit)
++    {
++        count++;
++        return 1;
++    }
++    if (count == limit)
++    {
++        count++;
++        fprintf( stderr, "macrunner-hb-lift-probe: trace budget exhausted at %d entries, silencing\n",
++                 limit );
++        fflush( stderr );
++    }
++    return 0;
++}
++
+ static void macrunner_hb_trace_guest_amd64_context( hb_context_t *ctx,
+                                                     const struct macrunner_hb_import_thunk *thunk,
+                                                     const uint64_t args[MACRUNNER_HB_IMPORT_ARG_MAX],
+@@ -1850,6 +1926,35 @@ static int macrunner_hb_env_enabled( const char *name )
+     return val && val[0] && val[0] != '0';
+ }
+ 
++static int macrunner_hb_trace_mono_probe_any_enabled(void)
++{
++    static int cache = -1;
++    int value = __atomic_load_n( &cache, __ATOMIC_RELAXED );
++
++    if (value < 0)
++    {
++        value = macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_515" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_CLASS_FLAGS" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_CLASS_FLAGS_LATE" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_CLEANUP_LOOP" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_CLEANUP_LOOP_LATE" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_JITINFO_HELPER" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_METHOD_ENUM" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_METHOD_ENUM_ROW5907_ONLY" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_METHOD_OBJECT_FIELDS" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_OVERRIDE" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_OVERRIDE_GET_NAME_ONLY" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_OVERRIDE_RET_ONLY" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_SLOT16" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_SYNC_WRAPPER" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_VALIDATE" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_VTABLE" ) ||
++                macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_MONO_VTABLE_WRITES" );
++        __atomic_store_n( &cache, value, __ATOMIC_RELAXED );
++    }
++    return value;
++}
++
+ static void macrunner_hb_trace_mono_vtable_probe( const char *phase, const char *label,
+                                                   hb_context_t *ctx, uint64_t image_start,
+                                                   uint64_t block_pc, uint64_t blocks,
+@@ -5281,15 +5386,81 @@ static size_t macrunner_hb_x64_stack_size( void *module )
+     return (size + 0xffff) & ~(size_t)0xffff;
+ }
+ 
++void macrunner_hb_register_x64_original_exec_sections( void *module, const IMAGE_NT_HEADERS *nt )
++{
++    IMAGE_SECTION_HEADER *sec;
++    unsigned int i;
++
++    if (!module || !nt || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) return;
++    sec = IMAGE_FIRST_SECTION( nt );
++    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
++    {
++        uint64_t start, end;
++        DWORD size;
++        unsigned int count, j;
++
++        if (!(sec->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
++        size = sec->Misc.VirtualSize ? sec->Misc.VirtualSize : sec->SizeOfRawData;
++        if (!size) continue;
++        start = (uint64_t)(uintptr_t)module + sec->VirtualAddress;
++        end = start + size;
++        count = __atomic_load_n( &macrunner_hb_x64_original_exec_range_count, __ATOMIC_ACQUIRE );
++        for (j = 0; j < count; j++)
++        {
++            const struct macrunner_hb_x64_original_exec_range *range =
++                &macrunner_hb_x64_original_exec_ranges[j];
++
++            if (range->module == module && range->start == start && range->end == end)
++                break;
++        }
++        if (j < count) continue;
++        if (count >= MACRUNNER_HB_X64_ORIGINAL_EXEC_RANGE_MAX)
++        {
++            static int warned;
++
++            if (!warned++)
++                fprintf( stderr, "macrunner-hb-original-exec: range table full, dropping module=%p\n",
++                         module );
++            return;
++        }
++        macrunner_hb_x64_original_exec_ranges[count].module = module;
++        macrunner_hb_x64_original_exec_ranges[count].start = start;
++        macrunner_hb_x64_original_exec_ranges[count].end = end;
++        __atomic_store_n( &macrunner_hb_x64_original_exec_range_count, count + 1, __ATOMIC_RELEASE );
++    }
++}
++
++static int macrunner_hb_pc_in_original_exec_section( void *module, uint64_t pc )
++{
++    unsigned int count = __atomic_load_n( &macrunner_hb_x64_original_exec_range_count, __ATOMIC_ACQUIRE );
++    unsigned int i;
++    int saw_module = FALSE;
++
++    if (!module || !pc) return -1;
++    for (i = 0; i < count; i++)
++    {
++        const struct macrunner_hb_x64_original_exec_range *range =
++            &macrunner_hb_x64_original_exec_ranges[i];
++
++        if (range->module != module) continue;
++        saw_module = TRUE;
++        if (pc >= range->start && pc < range->end) return TRUE;
++    }
++    return saw_module ? FALSE : -1;
++}
++
+ static int macrunner_hb_pc_in_executable_section( void *module, uint64_t pc )
+ {
+     IMAGE_NT_HEADERS *nt = macrunner_hb_image_nt_header( module );
+     IMAGE_SECTION_HEADER *sec;
+     uint64_t base = (uint64_t)(uintptr_t)module;
+     DWORD rva;
++    int original_exec;
+     unsigned int i;
+ 
+     if (!nt || pc < base) return FALSE;
++    original_exec = macrunner_hb_pc_in_original_exec_section( module, pc );
++    if (original_exec >= 0) return original_exec;
+     rva = (DWORD)(pc - base);
+     sec = IMAGE_FIRST_SECTION( nt );
+     for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+@@ -5975,6 +6146,26 @@ static uint64_t macrunner_hb_call_arm64_pe_import12( const struct macrunner_hb_i
+     NTSTATUS status;
+ 
+     if (!target) return 0;
++    {
++        void *native_module = NULL;
++
++        if (!macrunner_hb_pc_is_native_pe_builtin( (uint64_t)(uintptr_t)target, &native_module ))
++        {
++            static int bad_target_count;
++            uintptr_t base = (uintptr_t)native_module;
++            uintptr_t addr = (uintptr_t)target;
++
++            if (!native_module) base = (uintptr_t)macrunner_hb_module_from_pc( target );
++            if (bad_target_count++ < 100)
++                ERR( "MacRunner HyperBridge refused non-executable ARM64 PE import target "
++                     "%s!%s target=%p module=%p rva=%p\\n",
++                     thunk ? thunk->dll_name : "(none)", thunk ? thunk->import_name : "(none)",
++                     target, (void *)base, base ? (void *)(addr - base) : NULL );
++            RtlSetLastWin32Error( ERROR_PROC_NOT_FOUND );
++            if (teb) teb->LastStatusValue = STATUS_ENTRYPOINT_NOT_FOUND;
++            return 0;
++        }
++    }
+     if (!teb || !macrunner_hb_bridge_stack_base || !macrunner_hb_bridge_stack_limit ||
+         macrunner_hb_bridge_stack_size < 0x2000)
+     {
+@@ -17730,6 +17921,8 @@ static BOOL macrunner_hb_pc_is_native_pe_builtin( uint64_t pc, void **module_bas
+     if (!pc) return FALSE;
+     base = macrunner_hb_module_from_pc( (void *)(uintptr_t)pc );
+     if (!base) return FALSE;
++    if (!macrunner_hb_pc_in_executable_section( base, pc ))
++        return FALSE;
+     nt = macrunner_hb_image_nt_header( base );
+     if (nt && macrunner_hb_get_arm64x_metadata( base ))
+     {
+@@ -18168,8 +18361,36 @@ uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t arg
+ 
+     if (!macrunner_hb_pc_is_x64_guest_code( (void *)(uintptr_t)target ))
+     {
++        static unsigned int reject_diag_count;
+         ERR( "MacRunner Phase F rejected non-x64 callback target=%p\n",
+              (void *)(uintptr_t)target );
++        /* MacRunner Lane A diag: which sub-check of pc_is_x64_guest_code rejected.
++         * NB (2026-06-11): the rejected targets ARE AMD64+exec-section (only
++         * registered=0); BUT simply ACCEPTING them (localized OR global) REGRESSES
++         * boot below Mono — global→pre-Mono OOM, localized→pre-Mono 99%-CPU spin on
++         * 0x87efb28eb64.  So the rejection is NOT safe to remove; the target is
++         * likely an invalid entry (mid-fn / wrong ABI) and the real cascade root is
++         * subtler.  Left as bounded diag for the verify-burst. */
++        if (reject_diag_count++ < 24)
++        {
++            void *mod = macrunner_hb_module_from_pc( (void *)(uintptr_t)target );
++            ERR( "macrunner-hb-callback-reject-diag: target=%p orig=%p module=%p machine=%#x "
++                 "cur_exec=%d registered=%d in_exec_sec=%d\n",
++                 (void *)(uintptr_t)target, (void *)(uintptr_t)original_target, mod,
++                 mod ? (unsigned)macrunner_hb_module_machine( mod ) : 0,
++                 macrunner_hb_is_current_x64_guest_exec_address( (void *)(uintptr_t)target ),
++                 macrunner_hb_is_registered_x64_guest_address( (void *)(uintptr_t)target ),
++                 mod ? macrunner_hb_pc_in_executable_section( mod, (uint64_t)(uintptr_t)target ) : -1 );
++            /* Args reveal the CALL'S PURPOSE: an SEH handler call has the x64 handler
++             * ABI rcx=ExceptionRecord rdx=EstablisherFrame r8=ContextRecord
++             * r9=DispatcherContext.  If args[0..3] look like those guest pointers, the
++             * bogus target is a CORRUPTED HANDLER ADDRESS (SEH scope-table / handler-RVA
++             * miscomputation) — the true upstream root, NOT the Phase-F gate. */
++            ERR( "macrunner-hb-callback-reject-args: a0=%p a1=%p a2=%p a3=%p a4=%p a5=%p\n",
++                 (void *)(uintptr_t)args[0], (void *)(uintptr_t)args[1],
++                 (void *)(uintptr_t)args[2], (void *)(uintptr_t)args[3],
++                 (void *)(uintptr_t)args[4], (void *)(uintptr_t)args[5] );
++        }
+         return 0;
+     }
+ 
+@@ -18630,6 +18851,16 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+             if (macrunner_hb_pc_in_image( ctx->pc, image_start, image_size ))
+                 goto in_guest_image;
+ 
++            if (macrunner_hb_x64_dynamic_exec_contains_no_lock( (void *)(uintptr_t)ctx->pc ))
++            {
++                hb_region_t *dynamic_region;
++
++                macrunner_hb_replay_virtual_regions( ctx );
++                dynamic_region = hb_memory_find_region( ctx->memory, (hb_gva_t)ctx->pc );
++                if (dynamic_region && (dynamic_region->perm & HB_PERM_EXEC))
++                    goto in_guest_image;
++            }
++
+             if (macrunner_hb_label_allows_direct_native( label ) &&
+                 (macrunner_hb_pc_is_native_pe_builtin( ctx->pc, &native_module ) ||
+                  macrunner_hb_pc_is_unix_call_dispatcher( ctx->pc )))
+@@ -18740,9 +18971,127 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+             status_reason = "block-limit";
+             break;
+         }
+-        if (!macrunner_hb_pc_in_executable_section( image_base, ctx->pc ))
+         {
++            static int exec_guard_probe_enabled = -1;
++            static unsigned int exec_guard_probe_count;
++            uint64_t image_rva_probe = image_start ? ctx->pc - image_start : 0;
++
++            if (exec_guard_probe_enabled < 0)
++                exec_guard_probe_enabled = macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_EXEC_GUARD" );
++            if (exec_guard_probe_enabled &&
++                (image_rva_probe >= 0x15000 && image_rva_probe < 0x2d000) &&
++                exec_guard_probe_count < 200)
++            {
++                void *module_probe = macrunner_hb_module_from_pc( (void *)(uintptr_t)ctx->pc );
++                LDR_DATA_TABLE_ENTRY *ldr_probe =
++                    macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)ctx->pc );
++                void *ldr_base_probe = ldr_probe ? ldr_probe->DllBase : NULL;
++                uint64_t module_rva_probe = module_probe ? ctx->pc - (uint64_t)(uintptr_t)module_probe : 0;
++                uint64_t ldr_rva_probe = ldr_base_probe ? ctx->pc - (uint64_t)(uintptr_t)ldr_base_probe : 0;
++                char ldr_name_probe[128];
++                IMAGE_NT_HEADERS *nt_probe = macrunner_hb_image_nt_header( image_base );
++                char sec_name_probe[9];
++                DWORD sec_start_probe = 0, sec_size_probe = 0, sec_chars_probe = 0;
++
++                ldr_name_probe[0] = 0;
++                sec_name_probe[0] = 0;
++                if (ldr_probe)
++                    macrunner_hb_copy_unicode_ascii( ldr_name_probe, sizeof(ldr_name_probe),
++                                                     &ldr_probe->BaseDllName );
++                if (nt_probe)
++                {
++                    IMAGE_SECTION_HEADER *sec_probe = IMAGE_FIRST_SECTION( nt_probe );
++                    unsigned int si;
++
++                    for (si = 0; si < nt_probe->FileHeader.NumberOfSections; si++, sec_probe++)
++                    {
++                        DWORD start = sec_probe->VirtualAddress;
++                        DWORD size = sec_probe->Misc.VirtualSize ? sec_probe->Misc.VirtualSize :
++                                      sec_probe->SizeOfRawData;
++
++                        if (image_rva_probe < start || image_rva_probe >= start + size) continue;
++                        memcpy( sec_name_probe, sec_probe->Name, 8 );
++                        sec_name_probe[8] = 0;
++                        sec_start_probe = start;
++                        sec_size_probe = size;
++                        sec_chars_probe = sec_probe->Characteristics;
++                        break;
++                    }
++                }
++                exec_guard_probe_count++;
++                fprintf( stderr, "macrunner-hb-exec-guard-probe: label=%s pc=%p image_base=%p "
++                         "image_rva=%p image_exec=%u module=%p module_rva=%p module_exec=%u "
++                         "ldr=%p ldr_rva=%p ldr_exec=%u strict=%u broad=%u registered=%u current_exec=%u "
++                         "sec=%s sec_start=%#x sec_size=%#x sec_chars=%#x ldr_name=%s\n",
++                         label ? label : "entry", (void *)(uintptr_t)ctx->pc,
++                         (void *)(uintptr_t)image_start, (void *)(uintptr_t)image_rva_probe,
++                         macrunner_hb_pc_in_executable_section( image_base, ctx->pc ),
++                         module_probe, (void *)(uintptr_t)module_rva_probe,
++                         module_probe ? macrunner_hb_pc_in_executable_section( module_probe, ctx->pc ) : 0,
++                         ldr_base_probe, (void *)(uintptr_t)ldr_rva_probe,
++                         ldr_base_probe ? macrunner_hb_pc_in_executable_section( ldr_base_probe, ctx->pc ) : 0,
++                         macrunner_hb_pc_is_x64_guest_code_module_no_lock( (void *)(uintptr_t)ctx->pc ),
++                         macrunner_hb_pc_is_x64_guest_code( (void *)(uintptr_t)ctx->pc ),
++                         macrunner_hb_is_registered_x64_guest_address( (void *)(uintptr_t)ctx->pc ),
++                         macrunner_hb_is_current_x64_guest_exec_address( (void *)(uintptr_t)ctx->pc ),
++                         sec_name_probe[0] ? sec_name_probe : "(none)", sec_start_probe,
++                         sec_size_probe, sec_chars_probe,
++                         ldr_name_probe[0] ? ldr_name_probe : "(none)" );
++                fflush( stderr );
++            }
++        }
++        if (!macrunner_hb_pc_is_x64_guest_code_no_lock( (void *)(uintptr_t)ctx->pc ))
++        {
++            LDR_DATA_TABLE_ENTRY *target_ldr =
++                macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)ctx->pc );
++            LDR_DATA_TABLE_ENTRY *from_ldr =
++                macrunner_hb_ldr_entry_from_pc( (void *)(uintptr_t)last_block_pc );
++            char target_base[128], target_full[256], from_base[128], target_bytes[64];
++            uintptr_t target_module = target_ldr ? (uintptr_t)target_ldr->DllBase : image_start;
++            uintptr_t from_module = from_ldr ? (uintptr_t)from_ldr->DllBase : image_start;
++            size_t target_rva = target_module ? (size_t)(ctx->pc - target_module) : 0;
++            size_t from_rva = from_module ? (size_t)(last_block_pc - from_module) : 0;
++            unsigned int i;
++            char *ptr;
++
++            target_base[0] = target_full[0] = from_base[0] = target_bytes[0] = 0;
++            if (target_ldr)
++            {
++                macrunner_hb_copy_unicode_ascii( target_base, sizeof(target_base),
++                                                 &target_ldr->BaseDllName );
++                macrunner_hb_copy_unicode_ascii( target_full, sizeof(target_full),
++                                                 &target_ldr->FullDllName );
++            }
++            if (from_ldr)
++                macrunner_hb_copy_unicode_ascii( from_base, sizeof(from_base),
++                                                 &from_ldr->BaseDllName );
++            if (target_ldr && ctx->pc >= target_module && ctx->pc + 16 <= target_module + target_ldr->SizeOfImage)
++            {
++                const BYTE *bytes = (const BYTE *)(uintptr_t)ctx->pc;
++
++                ptr = target_bytes;
++                for (i = 0; i < 16; i++)
++                    ptr += snprintf( ptr, sizeof(target_bytes) - (ptr - target_bytes),
++                                     "%s%02x", i ? " " : "", bytes[i] );
++            }
++            fprintf( stderr, "macrunner-hb-nonexec-target: label=%s from_pc=%p from_module=%s "
++                     "from_rva=%p next_pc=%p module=%s rva=%p bytes=%s blocks=%s steps=%s "
++                     "rax=%p rcx=%p rdx=%p rsi=%p rdi=%p rsp=%p full=%s\n",
++                     label ? label : "entry", (void *)(uintptr_t)last_block_pc,
++                     from_base[0] ? from_base : "(unknown)", (void *)from_rva,
++                     (void *)(uintptr_t)ctx->pc, target_base[0] ? target_base : "(unknown)",
++                     (void *)target_rva, target_bytes[0] ? target_bytes : "(none)",
++                     wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps),
++                     (void *)(uintptr_t)ctx->regs.x64.rax,
++                     (void *)(uintptr_t)ctx->regs.x64.rcx,
++                     (void *)(uintptr_t)ctx->regs.x64.rdx,
++                     (void *)(uintptr_t)ctx->regs.x64.rsi,
++                     (void *)(uintptr_t)ctx->regs.x64.rdi,
++                     (void *)(uintptr_t)ctx->regs.x64.rsp,
++                     target_full[0] ? target_full : "(unknown)" );
++            fflush( stderr );
+             macrunner_hb_trace_nonexec_pc( ctx, image_start, label, blocks, steps );
++            ret = HB_ERR_MEMORY_FAULT;
+             status = STATUS_INVALID_IMAGE_FORMAT;
+             status_reason = "nonexec-section";
+             break;
+@@ -18885,28 +19234,31 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+                 heartbeat_next_block = blocks + 1000;
+             }
+         }
+-        macrunner_hb_trace_mono_vtable_probe( "before", label, ctx, image_start, block_pc,
+-                                              blocks, steps, HB_OK, HB_OK, 0 );
+-        macrunner_hb_trace_mono_override_probe( "before", label, ctx, image_start, block_pc,
+-                                                blocks, steps, HB_OK, HB_OK, 0 );
+-        macrunner_hb_trace_mono_slot16_probe( "before", label, ctx, image_start, block_pc,
+-                                              blocks, steps, HB_OK, HB_OK, 0 );
+-        macrunner_hb_trace_mono_validate_probe( "before", label, ctx, image_start, block_pc,
+-                                                blocks, steps, HB_OK, HB_OK, 0 );
+-        macrunner_hb_trace_mono_vtable_write_probe( "before", label, ctx, image_start, block_pc,
+-                                                    blocks, steps, HB_OK, HB_OK, 0 );
+-        macrunner_hb_trace_mono_method_enum_probe( "before", label, ctx, image_start, block_pc,
+-                                                   blocks, steps, HB_OK, HB_OK, 0 );
+-        macrunner_hb_trace_mono_cleanup_loop_probe( "before", label, ctx, image_start, block_pc,
++        if (macrunner_hb_trace_mono_probe_any_enabled())
++        {
++            macrunner_hb_trace_mono_vtable_probe( "before", label, ctx, image_start, block_pc,
++                                                  blocks, steps, HB_OK, HB_OK, 0 );
++            macrunner_hb_trace_mono_override_probe( "before", label, ctx, image_start, block_pc,
+                                                     blocks, steps, HB_OK, HB_OK, 0 );
+-        macrunner_hb_trace_mono_class_flags_probe( "before", label, ctx, image_start, block_pc,
+-                                                   blocks, steps, HB_OK, HB_OK, 0 );
+-        macrunner_hb_trace_mono_jitinfo_helper_probe( "before", label, ctx, image_start, block_pc,
+-                                                      blocks, steps, HB_OK, HB_OK, 0 );
+-        macrunner_hb_trace_mono_sync_wrapper_probe( "before", label, ctx, image_start, block_pc,
++            macrunner_hb_trace_mono_slot16_probe( "before", label, ctx, image_start, block_pc,
++                                                  blocks, steps, HB_OK, HB_OK, 0 );
++            macrunner_hb_trace_mono_validate_probe( "before", label, ctx, image_start, block_pc,
+                                                     blocks, steps, HB_OK, HB_OK, 0 );
+-        macrunner_hb_trace_mono_515_loop( "before", label, ctx, image_start, block_pc,
+-                                          blocks, steps );
++            macrunner_hb_trace_mono_vtable_write_probe( "before", label, ctx, image_start, block_pc,
++                                                        blocks, steps, HB_OK, HB_OK, 0 );
++            macrunner_hb_trace_mono_method_enum_probe( "before", label, ctx, image_start, block_pc,
++                                                       blocks, steps, HB_OK, HB_OK, 0 );
++            macrunner_hb_trace_mono_cleanup_loop_probe( "before", label, ctx, image_start, block_pc,
++                                                        blocks, steps, HB_OK, HB_OK, 0 );
++            macrunner_hb_trace_mono_class_flags_probe( "before", label, ctx, image_start, block_pc,
++                                                       blocks, steps, HB_OK, HB_OK, 0 );
++            macrunner_hb_trace_mono_jitinfo_helper_probe( "before", label, ctx, image_start, block_pc,
++                                                          blocks, steps, HB_OK, HB_OK, 0 );
++            macrunner_hb_trace_mono_sync_wrapper_probe( "before", label, ctx, image_start, block_pc,
++                                                        blocks, steps, HB_OK, HB_OK, 0 );
++            macrunner_hb_trace_mono_515_loop( "before", label, ctx, image_start, block_pc,
++                                              blocks, steps );
++        }
+         if (blocks <= 80)
+             TRACE( "MacRunner HyperBridge block %s pc=%p rsp=%p rax=%p\n",
+                    wine_dbgstr_longlong(blocks), (void *)(uintptr_t)ctx->pc,
+@@ -18916,14 +19268,103 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+             ERR( "MacRunner HyperBridge before lift %s block=%s pc=%p rsp=%p\n",
+                  label ? label : "x64", wine_dbgstr_longlong(blocks),
+                  (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)ctx->regs.x64.rsp );
+-        func = macrunner_hb_ir_cache_find( ir_cache, block_pc );
+-        if (func)
+-            ret = HB_OK;
+-        else
+         {
+-            ret = macrunner_hb_lift_one_block( ctx->pc, &func );
+-            if (ret == HB_OK && func && !macrunner_hb_ir_cache_put( ir_cache, block_pc, func ))
+-                transient_func = TRUE;
++            int lift_probe_log = macrunner_hb_trace_lift_probe_budget_allows();
++            uint64_t lift_probe_start_us = lift_probe_log ? macrunner_hb_now_us() : 0;
++            uint64_t lift_probe_lift_us = 0;
++            BOOL lift_probe_cache_hit;
++
++            if (lift_probe_log)
++            {
++                fprintf( stderr, "macrunner-hb-lift-probe: stage=before_lookup label=%s "
++                         "block=%s steps=%s block_pc=%p rva=%p ctx_pc=%p rsp=%p\n",
++                         label ? label : "x64", wine_dbgstr_longlong(blocks),
++                         wine_dbgstr_longlong(steps), (void *)(uintptr_t)block_pc,
++                         (void *)(uintptr_t)(block_pc - image_start), (void *)(uintptr_t)ctx->pc,
++                         (void *)(uintptr_t)ctx->regs.x64.rsp );
++                if (macrunner_hb_trace_lift_probe_module_enabled())
++                    macrunner_hb_trace_heartbeat_module( label, block_pc, image_start, image_size );
++                fflush( stderr );
++            }
++
++            func = macrunner_hb_ir_cache_find( ir_cache, block_pc );
++            lift_probe_cache_hit = !!func;
++            if (func)
++            {
++                ret = HB_OK;
++                if (lift_probe_log)
++                {
++                    uint64_t lift_probe_end_us = macrunner_hb_now_us();
++
++                    fprintf( stderr, "macrunner-hb-lift-probe: stage=cache_hit label=%s "
++                             "block=%s block_pc=%p elapsed_us=%s func=%p\n",
++                             label ? label : "x64", wine_dbgstr_longlong(blocks),
++                             (void *)(uintptr_t)block_pc,
++                             wine_dbgstr_longlong(lift_probe_end_us && lift_probe_start_us ?
++                                                  lift_probe_end_us - lift_probe_start_us : 0),
++                             func );
++                    fflush( stderr );
++                }
++            }
++            else
++            {
++                if (lift_probe_log)
++                {
++                    fprintf( stderr, "macrunner-hb-lift-probe: stage=before_lift label=%s "
++                             "block=%s block_pc=%p ctx_pc=%p\n",
++                             label ? label : "x64", wine_dbgstr_longlong(blocks),
++                             (void *)(uintptr_t)block_pc, (void *)(uintptr_t)ctx->pc );
++                    fflush( stderr );
++                }
++                ret = macrunner_hb_lift_one_block( ctx->pc, &func );
++                lift_probe_lift_us = macrunner_hb_now_us();
++                if (lift_probe_log)
++                {
++                    fprintf( stderr, "macrunner-hb-lift-probe: stage=after_lift label=%s "
++                             "block=%s block_pc=%p result=%s func=%p lift_us=%s cache_hit=%u\n",
++                             label ? label : "x64", wine_dbgstr_longlong(blocks),
++                             (void *)(uintptr_t)block_pc, hb_result_string(ret), func,
++                             wine_dbgstr_longlong(lift_probe_lift_us && lift_probe_start_us ?
++                                                  lift_probe_lift_us - lift_probe_start_us : 0),
++                             lift_probe_cache_hit );
++                    fflush( stderr );
++                }
++                if (ret == HB_OK && func)
++                {
++                    if (lift_probe_log)
++                    {
++                        fprintf( stderr, "macrunner-hb-lift-probe: stage=before_cache_put label=%s "
++                                 "block=%s block_pc=%p func=%p\n",
++                                 label ? label : "x64", wine_dbgstr_longlong(blocks),
++                                 (void *)(uintptr_t)block_pc, func );
++                        fflush( stderr );
++                    }
++                    if (!macrunner_hb_ir_cache_put( ir_cache, block_pc, func ))
++                        transient_func = TRUE;
++                    if (lift_probe_log)
++                    {
++                        uint64_t lift_probe_end_us = macrunner_hb_now_us();
++
++                        fprintf( stderr, "macrunner-hb-lift-probe: stage=after_cache_put label=%s "
++                                 "block=%s block_pc=%p result=%s transient=%u total_us=%s cache_us=%s\n",
++                                 label ? label : "x64", wine_dbgstr_longlong(blocks),
++                                 (void *)(uintptr_t)block_pc, hb_result_string(ret), transient_func,
++                                 wine_dbgstr_longlong(lift_probe_end_us && lift_probe_start_us ?
++                                                      lift_probe_end_us - lift_probe_start_us : 0),
++                                 wine_dbgstr_longlong(lift_probe_end_us && lift_probe_lift_us ?
++                                                      lift_probe_end_us - lift_probe_lift_us : 0) );
++                        fflush( stderr );
++                    }
++                }
++                else if (lift_probe_log)
++                {
++                    fprintf( stderr, "macrunner-hb-lift-probe: stage=skip_cache_put label=%s "
++                             "block=%s block_pc=%p result=%s func=%p\n",
++                             label ? label : "x64", wine_dbgstr_longlong(blocks),
++                             (void *)(uintptr_t)block_pc, hb_result_string(ret), func );
++                    fflush( stderr );
++                }
++            }
+         }
+         if (debug_enabled && blocks <= 200)
+             ERR( "MacRunner HyperBridge after lift %s block=%s pc=%p result=%s func=%p\n",
+@@ -18969,34 +19410,37 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+                  label ? label : "x64", wine_dbgstr_longlong(blocks),
+                  hb_result_string(ret), hb_result_string(out.result),
+                  wine_dbgstr_longlong(out.steps_executed), (void *)(uintptr_t)ctx->pc );
+-        macrunner_hb_trace_mono_vtable_probe( "after", label, ctx, image_start, block_pc,
+-                                              blocks, steps, ret, out.result, out.steps_executed );
+-        macrunner_hb_trace_mono_override_probe( "after", label, ctx, image_start, block_pc,
+-                                                blocks, steps + out.steps_executed, ret, out.result,
+-                                                out.steps_executed );
+-        macrunner_hb_trace_mono_slot16_probe( "after", label, ctx, image_start, block_pc,
+-                                              blocks, steps + out.steps_executed, ret, out.result,
+-                                              out.steps_executed );
+-        macrunner_hb_trace_mono_validate_probe( "after", label, ctx, image_start, block_pc,
+-                                                blocks, steps + out.steps_executed, ret, out.result,
+-                                                out.steps_executed );
+-        macrunner_hb_trace_mono_method_enum_probe( "after", label, ctx, image_start, block_pc,
+-                                                   blocks, steps + out.steps_executed, ret,
+-                                                   out.result, out.steps_executed );
+-        macrunner_hb_trace_mono_cleanup_loop_probe( "after", label, ctx, image_start, block_pc,
+-                                                    blocks, steps + out.steps_executed, ret,
+-                                                    out.result, out.steps_executed );
+-        macrunner_hb_trace_mono_class_flags_probe( "after", label, ctx, image_start, block_pc,
+-                                                   blocks, steps + out.steps_executed, ret,
+-                                                   out.result, out.steps_executed );
+-        macrunner_hb_trace_mono_jitinfo_helper_probe( "after", label, ctx, image_start, block_pc,
+-                                                      blocks, steps + out.steps_executed, ret,
+-                                                      out.result, out.steps_executed );
+-        macrunner_hb_trace_mono_sync_wrapper_probe( "after", label, ctx, image_start, block_pc,
+-                                                    blocks, steps + out.steps_executed, ret,
+-                                                    out.result, out.steps_executed );
+-        macrunner_hb_trace_mono_515_loop( "after", label, ctx, image_start, block_pc,
+-                                          blocks, steps + out.steps_executed );
++        if (macrunner_hb_trace_mono_probe_any_enabled())
++        {
++            macrunner_hb_trace_mono_vtable_probe( "after", label, ctx, image_start, block_pc,
++                                                  blocks, steps, ret, out.result, out.steps_executed );
++            macrunner_hb_trace_mono_override_probe( "after", label, ctx, image_start, block_pc,
++                                                    blocks, steps + out.steps_executed, ret, out.result,
++                                                    out.steps_executed );
++            macrunner_hb_trace_mono_slot16_probe( "after", label, ctx, image_start, block_pc,
++                                                  blocks, steps + out.steps_executed, ret, out.result,
++                                                  out.steps_executed );
++            macrunner_hb_trace_mono_validate_probe( "after", label, ctx, image_start, block_pc,
++                                                    blocks, steps + out.steps_executed, ret, out.result,
++                                                    out.steps_executed );
++            macrunner_hb_trace_mono_method_enum_probe( "after", label, ctx, image_start, block_pc,
++                                                       blocks, steps + out.steps_executed, ret,
++                                                       out.result, out.steps_executed );
++            macrunner_hb_trace_mono_cleanup_loop_probe( "after", label, ctx, image_start, block_pc,
++                                                        blocks, steps + out.steps_executed, ret,
++                                                        out.result, out.steps_executed );
++            macrunner_hb_trace_mono_class_flags_probe( "after", label, ctx, image_start, block_pc,
++                                                       blocks, steps + out.steps_executed, ret,
++                                                       out.result, out.steps_executed );
++            macrunner_hb_trace_mono_jitinfo_helper_probe( "after", label, ctx, image_start, block_pc,
++                                                          blocks, steps + out.steps_executed, ret,
++                                                          out.result, out.steps_executed );
++            macrunner_hb_trace_mono_sync_wrapper_probe( "after", label, ctx, image_start, block_pc,
++                                                        blocks, steps + out.steps_executed, ret,
++                                                        out.result, out.steps_executed );
++            macrunner_hb_trace_mono_515_loop( "after", label, ctx, image_start, block_pc,
++                                              blocks, steps + out.steps_executed );
++        }
+         if (transient_func)
+         {
+             if (jit_rt)
+@@ -19012,6 +19456,36 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+             else hb_ir_func_destroy( func );
+         }
+         steps += out.steps_executed;
++        {
++            static int transition_probe_enabled = -1;
++            static unsigned int transition_probe_count;
++            uint64_t next_rva_probe = image_start ? ctx->pc - image_start : 0;
++
++            if (transition_probe_enabled < 0)
++                transition_probe_enabled = macrunner_hb_env_flag( "MACRUNNER_HB_TRACE_EXEC_GUARD" );
++            if (transition_probe_enabled &&
++                (next_rva_probe >= 0x15000 && next_rva_probe < 0x2d000) &&
++                transition_probe_count < 200)
++            {
++                transition_probe_count++;
++                fprintf( stderr, "macrunner-hb-exec-transition-probe: label=%s from_pc=%p "
++                         "from_rva=%p next_pc=%p next_rva=%p ret=%s out=%s blocks=%s "
++                         "steps=%s out_steps=%s rax=%p rcx=%p rdx=%p rsi=%p rdi=%p rsp=%p\n",
++                         label ? label : "entry", (void *)(uintptr_t)block_pc,
++                         (void *)(uintptr_t)(block_pc - image_start),
++                         (void *)(uintptr_t)ctx->pc, (void *)(uintptr_t)next_rva_probe,
++                         hb_result_string(ret), hb_result_string(out.result),
++                         wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps),
++                         wine_dbgstr_longlong(out.steps_executed),
++                         (void *)(uintptr_t)ctx->regs.x64.rax,
++                         (void *)(uintptr_t)ctx->regs.x64.rcx,
++                         (void *)(uintptr_t)ctx->regs.x64.rdx,
++                         (void *)(uintptr_t)ctx->regs.x64.rsi,
++                         (void *)(uintptr_t)ctx->regs.x64.rdi,
++                         (void *)(uintptr_t)ctx->regs.x64.rsp );
++                fflush( stderr );
++            }
++        }
+         if (rsp_ledger_armed)
+             fprintf( stderr, "macrunner-hb-rsp-ledger: block=%p next=%p rsp_before=%p rsp_after=%p "
+                      "d=%lld ret=%s out=%s steps=%s\n",
+@@ -19021,9 +19495,10 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+                      (long long)(ctx->regs.x64.rsp - rsp_ledger_before),
+                      hb_result_string(ret), hb_result_string(out.result),
+                      wine_dbgstr_longlong(out.steps_executed) );
+-        macrunner_hb_trace_mono_vtable_write_probe( "after", label, ctx, image_start, block_pc,
+-                                                    blocks, steps, ret, out.result,
+-                                                    out.steps_executed );
++        if (macrunner_hb_trace_mono_probe_any_enabled())
++            macrunner_hb_trace_mono_vtable_write_probe( "after", label, ctx, image_start, block_pc,
++                                                        blocks, steps, ret, out.result,
++                                                        out.steps_executed );
+         if (progress_interval && blocks && !(blocks % progress_interval))
+             fprintf( stderr, "macrunner-hb-progress: label=%s block=%s block_pc=%p "
+                      "next_pc=%p rva=%p ret=%s out=%s out_steps=%s total_steps=%s "
+@@ -19224,18 +19699,101 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+ 
+ done:
+     if (status)
+-        fprintf( stderr, "macrunner-hb-run-exit: label=%s status=%08x reason=%s pc=%p "
+-                 "blocks=%s steps=%s rax=%p rcx=%p rdx=%p rsi=%p rdi=%p rsp=%p ret=%s\n",
++    {
++        uint64_t stack0 = 0, stack8 = 0, stack10 = 0, stack18 = 0;
++        uint64_t r15_0 = 0, r15_8 = 0, r15_10 = 0, r15_18 = 0, r15_20 = 0;
++        uint64_t rbp_18 = 0, rbp_20 = 0;
++        hb_result_t stack0_r = HB_ERR_INVALID_ARG, stack8_r = HB_ERR_INVALID_ARG;
++        hb_result_t stack10_r = HB_ERR_INVALID_ARG, stack18_r = HB_ERR_INVALID_ARG;
++        hb_result_t r15_0_r = HB_ERR_INVALID_ARG, r15_8_r = HB_ERR_INVALID_ARG;
++        hb_result_t r15_10_r = HB_ERR_INVALID_ARG, r15_18_r = HB_ERR_INVALID_ARG;
++        hb_result_t r15_20_r = HB_ERR_INVALID_ARG, rbp_18_r = HB_ERR_INVALID_ARG;
++        hb_result_t rbp_20_r = HB_ERR_INVALID_ARG;
++        BYTE last_block_bytes[24];
++        char last_bytes[96];
++        mach_vm_size_t last_bytes_copied = 0;
++        kern_return_t last_bytes_kr = KERN_FAILURE;
++        char *last_bytes_ptr;
++        unsigned int i;
++
++        last_bytes[0] = 0;
++        if (last_block_pc)
++        {
++            last_bytes_kr = mach_vm_read_overwrite( mach_task_self(), (mach_vm_address_t)last_block_pc,
++                                                    sizeof(last_block_bytes),
++                                                    (mach_vm_address_t)last_block_bytes,
++                                                    &last_bytes_copied );
++            if (last_bytes_kr == KERN_SUCCESS && last_bytes_copied)
++            {
++                last_bytes_ptr = last_bytes;
++                for (i = 0; i < last_bytes_copied && i < sizeof(last_block_bytes); i++)
++                    last_bytes_ptr += snprintf( last_bytes_ptr,
++                                                sizeof(last_bytes) - (last_bytes_ptr - last_bytes),
++                                                "%s%02x", i ? " " : "", last_block_bytes[i] );
++            }
++        }
++
++        if (ctx && ctx->memory)
++        {
++            stack0_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp, &stack0 );
++            stack8_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 8, &stack8 );
++            stack10_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 0x10, &stack10 );
++            stack18_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rsp + 0x18, &stack18 );
++            r15_0_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.r15, &r15_0 );
++            r15_8_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.r15 + 8, &r15_8 );
++            r15_10_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.r15 + 0x10, &r15_10 );
++            r15_18_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.r15 + 0x18, &r15_18 );
++            r15_20_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.r15 + 0x20, &r15_20 );
++            rbp_18_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rbp + 0x18, &rbp_18 );
++            rbp_20_r = hb_memory_read_u64( ctx->memory, (hb_gva_t)ctx->regs.x64.rbp + 0x20, &rbp_20 );
++        }
++        fprintf( stderr, "macrunner-hb-run-exit: label=%s status=%08x reason=%s pc=%p rip=%p "
++                 "last_block=%p last_bytes=%s/%#x/%llu blocks=%s steps=%s "
++                 "rax=%p rbx=%p rcx=%p rdx=%p rsi=%p rdi=%p rbp=%p rsp=%p "
++                 "r8=%p r9=%p r10=%p r11=%p r12=%p r13=%p r14=%p r15=%p "
++                 "stack0=%p/%s stack8=%p/%s stack10=%p/%s stack18=%p/%s ret=%s\n",
+                  label ? label : "entry", (unsigned int)status, status_reason,
+                  ctx ? (void *)(uintptr_t)ctx->pc : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.rip : NULL,
++                 (void *)(uintptr_t)last_block_pc,
++                 last_bytes[0] ? last_bytes : "(none)", last_bytes_kr,
++                 (unsigned long long)last_bytes_copied,
+                  wine_dbgstr_longlong(blocks), wine_dbgstr_longlong(steps),
+                  ctx ? (void *)(uintptr_t)ctx->regs.x64.rax : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.rbx : NULL,
+                  ctx ? (void *)(uintptr_t)ctx->regs.x64.rcx : NULL,
+                  ctx ? (void *)(uintptr_t)ctx->regs.x64.rdx : NULL,
+                  ctx ? (void *)(uintptr_t)ctx->regs.x64.rsi : NULL,
+                  ctx ? (void *)(uintptr_t)ctx->regs.x64.rdi : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.rbp : NULL,
+                  ctx ? (void *)(uintptr_t)ctx->regs.x64.rsp : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.r8 : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.r9 : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.r10 : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.r11 : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.r12 : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.r13 : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.r14 : NULL,
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.r15 : NULL,
++                 (void *)(uintptr_t)stack0, hb_result_string(stack0_r),
++                 (void *)(uintptr_t)stack8, hb_result_string(stack8_r),
++                 (void *)(uintptr_t)stack10, hb_result_string(stack10_r),
++                 (void *)(uintptr_t)stack18, hb_result_string(stack18_r),
+                  hb_result_string(ret) );
++        fprintf( stderr, "macrunner-hb-run-exit-indirect: label=%s r15=%p "
++                 "q0=%p/%s q8=%p/%s q10=%p/%s q18=%p/%s q20=%p/%s "
++                 "rbp=%p rbp18=%p/%s rbp20=%p/%s\n",
++                 label ? label : "entry",
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.r15 : NULL,
++                 (void *)(uintptr_t)r15_0, hb_result_string(r15_0_r),
++                 (void *)(uintptr_t)r15_8, hb_result_string(r15_8_r),
++                 (void *)(uintptr_t)r15_10, hb_result_string(r15_10_r),
++                 (void *)(uintptr_t)r15_18, hb_result_string(r15_18_r),
++                 (void *)(uintptr_t)r15_20, hb_result_string(r15_20_r),
++                 ctx ? (void *)(uintptr_t)ctx->regs.x64.rbp : NULL,
++                 (void *)(uintptr_t)rbp_18, hb_result_string(rbp_18_r),
++                 (void *)(uintptr_t)rbp_20, hb_result_string(rbp_20_r) );
++    }
+     if (blocks_out) *blocks_out = blocks;
+     if (steps_out) *steps_out = steps;
+     if (jit_rt) hb_jit_runtime_destroy( jit_rt );

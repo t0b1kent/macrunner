@@ -1,0 +1,172 @@
+gcc -std=gnu23 -c -o dlls/ntdll/unix/macrunner_hb.o /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/macrunner_hb.c \
+  -Idlls/ntdll -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll \
+  -Iinclude -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include -D__WINESRC__ \
+  -DLTC_NO_PROTOTYPES -DLTC_SOURCE -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI= -DWINE_UNIX_LIB \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/../hyperbridge/include -Wall \
+  -pipe -fcf-protection=none -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing \
+  -Wdeclaration-after-statement -Wempty-body -Wignored-qualifiers -Winit-self -Wpointer-arith \
+  -Wstrict-prototypes -Wtype-limits -Wunused-but-set-parameter -Wvla -Wwrite-strings -gdwarf-4 -fPIC \
+  -fasynchronous-unwind-tables -g -O2 -DIS_WOW64_BUILD -DIS_WOW64_BUILD -DIS_WOW64_BUILD -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -DIS_WOW64_BUILD -DIS_WOW64_BUILD -DIS_WOW64_BUILD
+In file included from /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/macrunner_hb.c:52:
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/unix_private.h:93:9: warning: 'WINE_NT_MAP_VIEW' macro redefined [-Wmacro-redefined]
+   93 | #define WINE_NT_MAP_VIEW(mapping, process, ptr, zero_bits, commit_size, offset, size, inherit_, alloc_type_, protect_) \
+      |         ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/winternl.h:4726:9: note: previous definition is here
+ 4726 | #define WINE_NT_MAP_VIEW(handle, process, addr, zero_bits, commit_size, offset, size, inherit, alloc_type, protect) \
+      |         ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/macrunner_hb.c:10111:25: warning: trigraph ignored [-Wtrigraphs]
+ 10111 |     if (!strncmp( p, "//??/", 5 )) p += 5;
+       |                         ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/macrunner_hb.c:11437:49: warning: address of array 'thunk->dll_name' will always evaluate to 'true' [-Wpointer-bool-conversion]
+ 11437 |                      thunk->import_name, thunk->dll_name ? thunk->dll_name : "?",
+       |                                          ~~~~~~~^~~~~~~~ ~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/macrunner_hb.c:14020:19: warning: incompatible pointer types passing 'WCHAR[64]' (aka 'unsigned short[64]') to parameter of type 'wchar_t *' (aka 'int *') [-Wincompatible-pointer-types]
+ 14020 |         swprintf( buffer, ARRAY_SIZE(buffer), L"\\Sessions\\%u\\BaseNamedObjects",
+       |                   ^~~~~~
+/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/usr/include/_wchar.h:120:56: note: passing argument to parameter here
+  120 | int     swprintf(wchar_t * __restrict _LIBC_COUNT(__maxlen), size_t __maxlen,
+      |                                                            ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/macrunner_hb.c:15336:19: warning: incompatible pointer types passing 'WCHAR[64]' (aka 'unsigned short[64]') to parameter of type 'wchar_t *' (aka 'int *') [-Wincompatible-pointer-types]
+ 15336 |         swprintf( name, ARRAY_SIZE(name), L"\\??\\pipe\\Win32.Pipes.%08lu.%08u",
+       |                   ^~~~
+/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/usr/include/_wchar.h:120:56: note: passing argument to parameter here
+  120 | int     swprintf(wchar_t * __restrict _LIBC_COUNT(__maxlen), size_t __maxlen,
+      |                                                            ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/macrunner_hb.c:16836:11: warning: unused variable 'module' [-Wunused-variable]
+ 16836 |     void *module, *target;
+       |           ^~~~~~
+6 warnings generated.
+gcc -std=gnu23 -c -o dlls/ntdll/unix/signal_arm64.o /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/signal_arm64.c \
+  -Idlls/ntdll -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll \
+  -Iinclude -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include -D__WINESRC__ \
+  -DLTC_NO_PROTOTYPES -DLTC_SOURCE -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI= -DWINE_UNIX_LIB \
+  -I/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/../hyperbridge/include -Wall \
+  -pipe -fcf-protection=none -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing \
+  -Wdeclaration-after-statement -Wempty-body -Wignored-qualifiers -Winit-self -Wpointer-arith \
+  -Wstrict-prototypes -Wtype-limits -Wunused-but-set-parameter -Wvla -Wwrite-strings -gdwarf-4 -fPIC \
+  -fasynchronous-unwind-tables -g -O2 -DIS_WOW64_BUILD -DIS_WOW64_BUILD -DIS_WOW64_BUILD -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -DIS_WOW64_BUILD -DIS_WOW64_BUILD -DIS_WOW64_BUILD
+In file included from /Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/signal_arm64.c:69:
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/unix_private.h:93:9: warning: 'WINE_NT_MAP_VIEW' macro redefined [-Wmacro-redefined]
+   93 | #define WINE_NT_MAP_VIEW(mapping, process, ptr, zero_bits, commit_size, offset, size, inherit_, alloc_type_, protect_) \
+      |         ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/winternl.h:4726:9: note: previous definition is here
+ 4726 | #define WINE_NT_MAP_VIEW(handle, process, addr, zero_bits, commit_size, offset, size, inherit, alloc_type, protect) \
+      |         ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/signal_arm64.c:1405:24: warning: format specifies type 'unsigned long' but the argument has type 'DWORD' (aka 'unsigned int') [-Wformat]
+ 1403 |         ERR( "macrunner-hb-setup-raise: pid=%d code=%#lx flags=%#lx addr=%p "
+      |                                                     ~~~~
+      |                                                     %#x
+ 1404 |              "pc=%p sp=%p stack_ptr=%p dispatcher=%p\n",
+ 1405 |              getpid(), rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress,
+      |                        ^~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:547:36: note: expanded from macro 'ERR'
+  547 | #define ERR                        WINE_ERR
+      |                                    ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:501:36: note: expanded from macro 'WINE_ERR'
+  501 | #define WINE_ERR                   __WINE_DPRINTF(_ERR,__wine_dbch___default)
+      |                                    ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:88:8: note: expanded from macro '__WINE_DPRINTF'
+   88 |        __WINE_DBG_LOG
+      |        ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:91:44: note: expanded from macro '__WINE_DBG_LOG'
+   91 |    wine_dbg_log( __dbcl, __dbch, __func__, __VA_ARGS__); } } while(0)
+      |                                            ^~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/signal_arm64.c:1405:44: warning: format specifies type 'unsigned long' but the argument has type 'DWORD' (aka 'unsigned int') [-Wformat]
+ 1403 |         ERR( "macrunner-hb-setup-raise: pid=%d code=%#lx flags=%#lx addr=%p "
+      |                                                                ~~~~
+      |                                                                %#x
+ 1404 |              "pc=%p sp=%p stack_ptr=%p dispatcher=%p\n",
+ 1405 |              getpid(), rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress,
+      |                                            ^~~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:547:36: note: expanded from macro 'ERR'
+  547 | #define ERR                        WINE_ERR
+      |                                    ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:501:36: note: expanded from macro 'WINE_ERR'
+  501 | #define WINE_ERR                   __WINE_DPRINTF(_ERR,__wine_dbch___default)
+      |                                    ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:88:8: note: expanded from macro '__WINE_DPRINTF'
+   88 |        __WINE_DBG_LOG
+      |        ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:91:44: note: expanded from macro '__WINE_DBG_LOG'
+   91 |    wine_dbg_log( __dbcl, __dbch, __func__, __VA_ARGS__); } } while(0)
+      |                                            ^~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/signal_arm64.c:1503:24: warning: format specifies type 'unsigned long' but the argument has type 'DWORD' (aka 'unsigned int') [-Wformat]
+ 1501 |         ERR( "macrunner-hb-setup-exception: pid=%d code=%#lx addr=%p pc=%p sp=%p "
+      |                                                         ~~~~
+      |                                                         %#x
+ 1502 |              "x4=%p x16=%p x24=%p x26=%p\n",
+ 1503 |              getpid(), rec->ExceptionCode, rec->ExceptionAddress,
+      |                        ^~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:547:36: note: expanded from macro 'ERR'
+  547 | #define ERR                        WINE_ERR
+      |                                    ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:501:36: note: expanded from macro 'WINE_ERR'
+  501 | #define WINE_ERR                   __WINE_DPRINTF(_ERR,__wine_dbch___default)
+      |                                    ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:88:8: note: expanded from macro '__WINE_DPRINTF'
+   88 |        __WINE_DBG_LOG
+      |        ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:91:44: note: expanded from macro '__WINE_DBG_LOG'
+   91 |    wine_dbg_log( __dbcl, __dbch, __func__, __VA_ARGS__); } } while(0)
+      |                                            ^~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/signal_arm64.c:2098:41: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead. [-Wdeprecated-declarations]
+ 2098 |     for (i = 0; i < sizeof(bytes); i++) sprintf( hex + i * 2, "%02x", bytes[i] );
+      |                                         ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/usr/include/_stdio.h:278:1: note: 'sprintf' has been explicitly marked deprecated here
+  278 | __deprecated_msg("This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead.")
+      | ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/usr/include/sys/cdefs.h:227:48: note: expanded from macro '__deprecated_msg'
+  227 |         #define __deprecated_msg(_msg) __attribute__((__deprecated__(_msg)))
+      |                                                       ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/signal_arm64.c:2292:20: warning: format specifies type 'unsigned long' but the argument has type 'DWORD' (aka 'unsigned int') [-Wformat]
+ 2285 |              "macrunner-native-fault: kind=%s code=0x%08lx access=%s fault=0x%llx "
+      |                                                      ~~~~~
+      |                                                      %08x
+ 2286 |              "pid=%d module=%s base=%p rva=0x%llx pc=0x%llx sp=0x%llx lr=0x%llx esr=0x%llx pstate=0x%llx "
+ 2287 |              "x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx "
+ 2288 |              "x4=0x%llx x5=0x%llx x6=0x%llx x7=0x%llx "
+ 2289 |              "x9=0x%llx x18=0x%llx x19=0x%llx x20=0x%llx x21=0x%llx x22=0x%llx x23=0x%llx x24=0x%llx x25=0x%llx "
+ 2290 |              "x26=0x%llx x27=0x%llx x28=0x%llx teb=%p teb_stack=%p-%p dealloc=%p kernel=%p "
+ 2291 |              "insn_valid=%u insn=0x%08llx\n",
+ 2292 |              kind, rec->ExceptionCode, access, (unsigned long long)fault_addr,
+      |                    ^~~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/signal_arm64.c:2832:50: warning: format specifies type 'unsigned long' but the argument has type 'ULONG' (aka 'unsigned int') [-Wformat]
+ 2829 |         ERR( "macrunner-hb-signal-entry: kind=ill pid=%d pc=%p sp=%p instr=%#lx "
+      |                                                                            ~~~~
+      |                                                                            %#x
+ 2830 |              "si_code=%d pstate=%#llx x0=%p x1=%p x16=%p x20=%p x23=%p x26=%p\n",
+ 2831 |              getpid(), (void *)(ULONG_PTR)PC_sig(context),
+ 2832 |              (void *)(ULONG_PTR)SP_sig(context), instr, siginfo->si_code,
+      |                                                  ^~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:547:36: note: expanded from macro 'ERR'
+  547 | #define ERR                        WINE_ERR
+      |                                    ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:501:36: note: expanded from macro 'WINE_ERR'
+  501 | #define WINE_ERR                   __WINE_DPRINTF(_ERR,__wine_dbch___default)
+      |                                    ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:88:8: note: expanded from macro '__WINE_DPRINTF'
+   88 |        __WINE_DBG_LOG
+      |        ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:91:44: note: expanded from macro '__WINE_DBG_LOG'
+   91 |    wine_dbg_log( __dbcl, __dbch, __func__, __VA_ARGS__); } } while(0)
+      |                                            ^~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/dlls/ntdll/unix/signal_arm64.c:2984:41: warning: format specifies type 'unsigned long' but the argument has type 'DWORD' (aka 'unsigned int') [-Wformat]
+ 2982 |         ERR( "macrunner-hb-bus-low-stack: after-virtual pid=%d unhandled=%u code=%#lx "
+      |                                                                                  ~~~~
+      |                                                                                  %#x
+ 2983 |              "fault=%p sp=%p vstack=%p teb_stack=%p-%p dealloc=%p\n",
+ 2984 |              getpid(), fault_unhandled, rec.ExceptionCode,
+      |                                         ^~~~~~~~~~~~~~~~~
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:547:36: note: expanded from macro 'ERR'
+  547 | #define ERR                        WINE_ERR
+      |                                    ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:501:36: note: expanded from macro 'WINE_ERR'
+  501 | #define WINE_ERR                   __WINE_DPRINTF(_ERR,__wine_dbch___default)
+      |                                    ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:88:8: note: expanded from macro '__WINE_DPRINTF'
+   88 |        __WINE_DBG_LOG
+      |        ^
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/engine/wine/include/wine/debug.h:91:44: note: expanded from macro '__WINE_DBG_LOG'
+   91 |    wine_dbg_log( __dbcl, __dbch, __func__, __VA_ARGS__); } } while(0)
+      |                                            ^~~~~~~~~~~
+8 warnings generated.

@@ -1,0 +1,19 @@
+=== reports/phase4-hollow-knight/laneA-cn-refuse-a1-try1-215502/run.log ===
+  last_activity_s            36.4
+  to_guest_s                 29.324
+  compiles                   35000
+  compiles_pct_in_first_50s  100.0
+  RETENTION_PCT              96.9
+  rl_stores                  33922
+  rl_patched                 151653
+  rl_hostptr                 1077
+  rl_highhalf                0
+  rl_collision               0
+  rl_desync                  0
+  rl_roundtrip               0
+  mh_argshape                0
+  mh_widearg                 0
+  mh_toomany                 0
+  sync_ops                   0
+  sync_blocked_s             0.0
+

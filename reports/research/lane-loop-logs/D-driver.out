@@ -1,0 +1,136 @@
+[lane-D] autonomous loop start; mission=reports/research/LANE-D-MISSION.md prefix=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/artifacts/lane-D-prefix max=1000
+[lane-D] === iter 1 @ 20260603-104600 ===
+[lane-D] iter 1 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104600.log)
+[lane-D] === iter 2 @ 20260603-104618 ===
+[lane-D] iter 2 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104618.log)
+[lane-D] === iter 3 @ 20260603-104638 ===
+[lane-D] iter 3 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104638.log)
+[lane-D] === iter 4 @ 20260603-104654 ===
+[lane-D] iter 4 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104654.log)
+[lane-D] === iter 5 @ 20260603-104708 ===
+[lane-D] iter 5 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104708.log)
+[lane-D] === iter 6 @ 20260603-104727 ===
+[lane-D] iter 6 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104727.log)
+[lane-D] === iter 7 @ 20260603-104744 ===
+[lane-D] iter 7 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104744.log)
+[lane-D] === iter 8 @ 20260603-104815 ===
+[lane-D] iter 8 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104815.log)
+[lane-D] === iter 9 @ 20260603-104841 ===
+[lane-D] iter 9 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104841.log)
+[lane-D] === iter 10 @ 20260603-104858 ===
+[lane-D] iter 10 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104858.log)
+[lane-D] === iter 11 @ 20260603-104913 ===
+[lane-D] iter 11 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104913.log)
+[lane-D] === iter 12 @ 20260603-104927 ===
+[lane-D] iter 12 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104927.log)
+[lane-D] === iter 13 @ 20260603-104944 ===
+[lane-D] iter 13 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-104944.log)
+[lane-D] === iter 14 @ 20260603-105000 ===
+[lane-D] iter 14 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-105000.log)
+[lane-D] === iter 15 @ 20260603-105019 ===
+[lane-D] iter 15 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-105019.log)
+[lane-D] === iter 16 @ 20260603-105039 ===
+[lane-D] iter 16 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-105039.log)
+[lane-D] === iter 17 @ 20260603-105056 ===
+[lane-D] iter 17 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-105056.log)
+[lane-D] === iter 18 @ 20260603-105122 ===
+[lane-D] iter 18 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-105122.log)
+[lane-D] === iter 19 @ 20260603-105146 ===
+[lane-D] iter 19 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-105146.log)
+[lane-D] === iter 20 @ 20260603-125150 ===
+[lane-D] iter 20 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125150.log)
+[lane-D] === iter 21 @ 20260603-125201 ===
+[lane-D] iter 21 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125201.log)
+[lane-D] === iter 22 @ 20260603-125213 ===
+[lane-D] iter 22 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125213.log)
+[lane-D] === iter 23 @ 20260603-125224 ===
+[lane-D] iter 23 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125224.log)
+[lane-D] === iter 24 @ 20260603-125235 ===
+[lane-D] iter 24 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125235.log)
+[lane-D] === iter 25 @ 20260603-125247 ===
+[lane-D] iter 25 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125247.log)
+[lane-D] === iter 26 @ 20260603-125308 ===
+[lane-D] iter 26 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125308.log)
+[lane-D] === iter 27 @ 20260603-125320 ===
+[lane-D] iter 27 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125320.log)
+[lane-D] === iter 28 @ 20260603-125332 ===
+[lane-D] iter 28 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125332.log)
+[lane-D] === iter 29 @ 20260603-125345 ===
+[lane-D] iter 29 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125345.log)
+[lane-D] === iter 30 @ 20260603-125357 ===
+[lane-D] iter 30 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125357.log)
+[lane-D] === iter 31 @ 20260603-125413 ===
+[lane-D] iter 31 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125413.log)
+[lane-D] === iter 32 @ 20260603-125428 ===
+[lane-D] iter 32 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125428.log)
+[lane-D] === iter 33 @ 20260603-125441 ===
+[lane-D] iter 33 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125441.log)
+[lane-D] === iter 34 @ 20260603-125453 ===
+[lane-D] iter 34 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125453.log)
+[lane-D] === iter 35 @ 20260603-125505 ===
+[lane-D] iter 35 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125505.log)
+[lane-D] === iter 36 @ 20260603-125518 ===
+[lane-D] iter 36 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125518.log)
+[lane-D] === iter 37 @ 20260603-125531 ===
+[lane-D] iter 37 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125531.log)
+[lane-D] === iter 38 @ 20260603-125545 ===
+[lane-D] iter 38 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125545.log)
+[lane-D] === iter 39 @ 20260603-125600 ===
+[lane-D] iter 39 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125600.log)
+[lane-D] === iter 40 @ 20260603-125617 ===
+[lane-D] iter 40 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125617.log)
+[lane-D] === iter 41 @ 20260603-125629 ===
+[lane-D] iter 41 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125629.log)
+[lane-D] === iter 42 @ 20260603-125644 ===
+[lane-D] iter 42 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125644.log)
+[lane-D] === iter 43 @ 20260603-125659 ===
+[lane-D] iter 43 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125659.log)
+[lane-D] === iter 44 @ 20260603-125712 ===
+[lane-D] iter 44 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125712.log)
+[lane-D] === iter 45 @ 20260603-125724 ===
+[lane-D] iter 45 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125724.log)
+[lane-D] === iter 46 @ 20260603-125736 ===
+[lane-D] iter 46 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125736.log)
+[lane-D] === iter 47 @ 20260603-125750 ===
+[lane-D] iter 47 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125750.log)
+[lane-D] === iter 48 @ 20260603-125802 ===
+[lane-D] iter 48 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125802.log)
+[lane-D] === iter 49 @ 20260603-125818 ===
+[lane-D] iter 49 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125818.log)
+[lane-D] === iter 50 @ 20260603-125830 ===
+[lane-D] iter 50 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125830.log)
+[lane-D] === iter 51 @ 20260603-125845 ===
+[lane-D] iter 51 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125845.log)
+[lane-D] === iter 52 @ 20260603-125857 ===
+[lane-D] iter 52 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125857.log)
+[lane-D] === iter 53 @ 20260603-125911 ===
+[lane-D] iter 53 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125911.log)
+[lane-D] === iter 54 @ 20260603-125927 ===
+[lane-D] iter 54 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125927.log)
+[lane-D] === iter 55 @ 20260603-125943 ===
+[lane-D] iter 55 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-125943.log)
+[lane-D] === iter 56 @ 20260603-130001 ===
+[lane-D] iter 56 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130001.log)
+[lane-D] === iter 57 @ 20260603-130014 ===
+[lane-D] iter 57 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130014.log)
+[lane-D] === iter 58 @ 20260603-130028 ===
+[lane-D] iter 58 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130028.log)
+[lane-D] === iter 59 @ 20260603-130044 ===
+[lane-D] iter 59 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130044.log)
+[lane-D] === iter 60 @ 20260603-130100 ===
+[lane-D] iter 60 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130100.log)
+[lane-D] === iter 61 @ 20260603-130112 ===
+[lane-D] iter 61 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130112.log)
+[lane-D] === iter 62 @ 20260603-130126 ===
+[lane-D] iter 62 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130126.log)
+[lane-D] === iter 63 @ 20260603-130142 ===
+[lane-D] iter 63 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130142.log)
+[lane-D] === iter 64 @ 20260603-130202 ===
+[lane-D] iter 64 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130202.log)
+[lane-D] === iter 65 @ 20260603-130214 ===
+[lane-D] iter 65 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130214.log)
+[lane-D] === iter 66 @ 20260603-130227 ===
+[lane-D] iter 66 done (log: /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/research/lane-loop-logs/D-20260603-130227.log)
+[lane-D] === iter 67 @ 20260603-130244 ===
+2026-06-06 14:17:55 [lane-D] continuing-ops no-scope-blocker: 2026-06-06 external HyperBridge/SEH still blocks real-Unity marker path
+2026-06-06 14:18:22 [lane-D] pass-B continue: owned-scope; no local-gap; external-blocker remains

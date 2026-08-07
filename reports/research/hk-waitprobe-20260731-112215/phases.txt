@@ -1,0 +1,24 @@
+=== reports/phase4-hollow-knight/laneA-waitprobe-a1-try1-112215/run.log ===
+  last_activity_s            513.4
+  to_guest_s                 30.369
+  mono_begin                 42.08
+  reload_assembly_s          18.2
+  physx_to_xinput_s          29.7
+  xinput                     89.982
+  post_init_s                423.4
+  compiles                   215001
+  compiles_pct_in_first_50s  51.2
+  RETENTION_PCT              95.9
+  rl_stores                  206283
+  rl_patched                 939648
+  rl_hostptr                 8716
+  rl_highhalf                0
+  rl_collision               0
+  rl_desync                  0
+  rl_roundtrip               0
+  mh_argshape                0
+  mh_widearg                 0
+  mh_toomany                 0
+  sync_ops                   0
+  sync_blocked_s             0.0
+

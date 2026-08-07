@@ -1,0 +1,7 @@
+template=artifacts/warm-prefix/laneA-fullybooted-20260626-121614
+boot_rc=127
+system_reg=no
+user_reg=no
+temp_dir=yes
+valid=no
+wineboot_log_lines=       1

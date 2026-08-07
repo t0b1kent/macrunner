@@ -1,0 +1,19 @@
+[hk] slot busy (0s) — waiting for the sister lane to release it
+[hk] slot busy (20s) — waiting for the sister lane to release it
+[hk] slot busy (40s) — waiting for the sister lane to release it
+[hk] slot busy (60s) — waiting for the sister lane to release it
+[hk] slot busy (80s) — waiting for the sister lane to release it
+[hk] slot busy (100s) — waiting for the sister lane to release it
+[hk] slot busy (120s) — waiting for the sister lane to release it
+[hk] slot busy (140s) — waiting for the sister lane to release it
+[hk] slot busy (160s) — waiting for the sister lane to release it
+[hk] slot busy (180s) — waiting for the sister lane to release it
+[hk] slot busy (200s) — waiting for the sister lane to release it
+[hk] slot busy (220s) — waiting for the sister lane to release it
+[hk] slot busy (240s) — waiting for the sister lane to release it
+[hk] slot free after 260s
+[hk] === attempt 1/1 ===
+/Users/timurtoby/Documents/MacRunner/Main/MacRunner/scripts/laneA-run-hk.sh: line 131: 58917 Terminated: 15          pipe_watchdog "$RUNDIR"
+try1 rc=5 lines=    3225 /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-waitprobe4-a1-try1-135430
+VALID_RUN=/Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-waitprobe4-a1-try1-135430
+[hk] GOOD BOOT on attempt 1 (marker: Restored language): /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-waitprobe4-a1-try1-135430

@@ -1,0 +1,13 @@
+OWNER: Lane A
+CLASS: GENERIC_WOW64_FAULT
+CONFIDENCE: 0.50
+LADDER_RUNG: 1 (xtajit64-init)
+LADDER_BEST: 9 (dxgi-factory) run=laneA-syscall-stall-probe-20260614-044900
+LADDER_REGRESSION: YES — restore last verified-forward baseline
+WHY_PRIMARY_WON: Primary class 'GENERIC_WOW64_FAULT' (priority 30) outranked secondary classes: ARM64EC_CALLBACK_TRACE_INSUFFICIENT, WAIT_TRACE_INSUFFICIENT, WINDOW_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, D3D_TRACE_INSUFFICIENT, PE32_HANDOFF_TRACE_INSUFFICIENT.
+EVIDENCE:
+  synced artifacts/_mr-run.0brghu/drive_c/windows/system32/wow64.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64.dll
+  synced artifacts/_mr-run.0brghu/drive_c/windows/system32/xtajit64.dll <= engine/wine/dist-arm64ec-spike/lib/wine/aarch64-windows/xtajit64.dll
+  synced artifacts/_mr-run.0brghu/drive_c/windows/system32/wow64cpu.dll <= engine/wine/dist-arm64ec-spike/lib/wine/x86_64-windows/wow64cpu.dll
+NEXT_ACTION: WOW64 subsystem initialisation or thunking issue. Check that wow64cpu.dll/xtajit.dll are deployed to syswow64 in the prefix. Enable MACRUNNER_HB_TRACE_WOW64=1.
+SECONDARY_CLASSES: ARM64EC_CALLBACK_TRACE_INSUFFICIENT, WAIT_TRACE_INSUFFICIENT, WINDOW_TRACE_INSUFFICIENT, SMC_TRACE_INSUFFICIENT, D3D_TRACE_INSUFFICIENT, PE32_HANDOFF_TRACE_INSUFFICIENT

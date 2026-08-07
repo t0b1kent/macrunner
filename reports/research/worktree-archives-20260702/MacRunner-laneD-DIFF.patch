@@ -1,0 +1,373 @@
+diff --git a/engine/graphics/d3d9_to_d3d11.py b/engine/graphics/d3d9_to_d3d11.py
+index 92e91ba..909a42b 100644
+--- a/engine/graphics/d3d9_to_d3d11.py
++++ b/engine/graphics/d3d9_to_d3d11.py
+@@ -143,6 +143,17 @@ def _bool_state(value: Any, default: bool = False) -> bool:
+     return bool(value)
+ 
+ 
++def _float_state(value: Any, default: float = 0.0) -> float:
++    if value is None:
++        return default
++    if isinstance(value, (int, float)):
++        return float(value)
++    try:
++        return float(value)
++    except (TypeError, ValueError):
++        return default
++
++
+ def _update_depth_metadata(state: RenderState) -> None:
+     render_states = state.pipeline.metadata.get("d3d9_render_states", {})
+     depth = {
+@@ -155,6 +166,19 @@ def _update_depth_metadata(state: RenderState) -> None:
+     state.pipeline.depth_target_bound = bool(depth["z_enable"] or state.depth_format)
+ 
+ 
++def _update_fog_metadata(state: RenderState) -> None:
++    render_states = state.pipeline.metadata.get("d3d9_render_states", {})
++    state.pipeline.metadata["d3d9_fog_state"] = {
++        "enabled": _bool_state(render_states.get("D3DRS_FOGENABLE", False)),
++        "mode": str(render_states.get("D3DRS_FOGVERTEXMODE", "D3DFOG_LINEAR")),
++        "range_fog": _bool_state(render_states.get("D3DRS_RANGEFOGENABLE", False)),
++        "start": _float_state(render_states.get("D3DRS_FOGSTART", 0.0)),
++        "end": _float_state(render_states.get("D3DRS_FOGEND", 1.0), 1.0),
++        "density": _float_state(render_states.get("D3DRS_FOGDENSITY", 1.0), 1.0),
++        "color": _color(render_states.get("D3DRS_FOGCOLOR", [255, 255, 255, 255])),
++    }
++
++
+ def apply_d3d9_wvp(position: tuple[float, float, float, float], metadata: dict[str, Any]) -> tuple[float, float, float, float]:
+     matrix = metadata.get("d3d9_wvp_matrix")
+     if not matrix:
+@@ -291,6 +315,7 @@ def _update_ffp_shader_metadata(state: RenderState) -> None:
+         "dest_blend": str(render_states.get("D3DRS_DESTBLEND", "D3DBLEND_ZERO")),
+         "wvp_matrix": state.pipeline.metadata.get("d3d9_wvp_matrix"),
+         "depth": state.pipeline.metadata.get("d3d9_depth_state", {}),
++        "fog": state.pipeline.metadata.get("d3d9_fog_state", {}),
+     }
+ 
+ 
+@@ -343,12 +368,21 @@ def apply_d3d9_event(state: RenderState, command: str, payload: dict[str, Any])
+             "D3DRS_ZENABLE",
+             "D3DRS_ZWRITEENABLE",
+             "D3DRS_ZFUNC",
++            "D3DRS_FOGENABLE",
++            "D3DRS_FOGCOLOR",
++            "D3DRS_FOGSTART",
++            "D3DRS_FOGEND",
++            "D3DRS_FOGDENSITY",
++            "D3DRS_FOGVERTEXMODE",
++            "D3DRS_RANGEFOGENABLE",
+         }:
+             _bind_fixed_function_shader(state)
+             if str(payload.get("state")) in {"D3DRS_ZENABLE", "D3DRS_ZWRITEENABLE", "D3DRS_ZFUNC"}:
+                 _update_depth_metadata(state)
+-            _update_ffp_shader_metadata(state)
+-        return True
++            if str(payload.get("state")).startswith("D3DRS_FOG"):
++                _update_fog_metadata(state)
++        _update_ffp_shader_metadata(state)
++    return True
+ 
+     if command == "set_texture_stage_state":
+         state.pipeline.metadata.setdefault("d3d9_texture_stage_states", []).append(payload)
+diff --git a/engine/graphics/dist/manifest/dxmt.json b/engine/graphics/dist/manifest/dxmt.json
+index 8c9b110..419a445 100644
+--- a/engine/graphics/dist/manifest/dxmt.json
++++ b/engine/graphics/dist/manifest/dxmt.json
+@@ -1,6 +1,6 @@
+ {
+   "component": "dxmt",
+   "details": "built DXMT arm64 Windows DLLs + winemetal.so and x86_64 PE DLLs; x86_64 unix link waits for Phase G Wine unix libs",
+-  "generated_at": "2026-05-14T06:03:21.855731+00:00",
++  "generated_at": "2026-06-12T00:06:48.251985+00:00",
+   "status": "PASS"
+ }
+diff --git a/engine/graphics/runtime_backend/mock_executor.py b/engine/graphics/runtime_backend/mock_executor.py
+index 125389f..ffcb619 100644
+--- a/engine/graphics/runtime_backend/mock_executor.py
++++ b/engine/graphics/runtime_backend/mock_executor.py
+@@ -186,6 +186,7 @@ class MockExecutor:
+                         continue
+                     shaded = self._shade(state, transformed, (w0, w1, w2))
+                     if shaded is not None:
++                        shaded = self._apply_fog(state, shaded, pixel_depth)
+                         pixels[index] = self._write_color_d3d9(state, shaded, pixels[index])
+                         if self._depth_write_enabled(state):
+                             depth[index] = pixel_depth
+@@ -241,6 +242,57 @@ class MockExecutor:
+             return incoming >= current - 1e-6
+         return True
+ 
++    @staticmethod
++    def _parse_fog_mode(value: object) -> str:
++        text = str(value or "D3DFOG_LINEAR").upper()
++        if text in {"D3DFOG_NONE", "D3DFOG_LINEAR", "D3DFOG_EXP", "D3DFOG_EXP2"}:
++            return text
++        return "D3DFOG_LINEAR"
++
++    def _fog_state(self, state: RenderState) -> dict:
++        ffp = state.pipeline.metadata.get("d3d9_ffp_shader", {})
++        fog = ffp.get("fog", {})
++        if not isinstance(fog, dict):
++            return {}
++        return {
++            "enabled": bool(fog.get("enabled", False)),
++            "mode": self._parse_fog_mode(fog.get("mode", "D3DFOG_LINEAR")),
++            "start": float(fog.get("start", 0.0)),
++            "end": float(fog.get("end", 1.0)),
++            "density": float(fog.get("density", 1.0)),
++            "color": _color_to_u8(fog.get("color", (255, 255, 255, 255))),
++        }
++
++    def _fog_factor(self, state: RenderState, depth: float) -> float:
++        fog = self._fog_state(state)
++        if not fog.get("enabled", False):
++            return 1.0
++        mode = str(fog.get("mode", "D3DFOG_LINEAR"))
++        if mode == "D3DFOG_NONE":
++            return 1.0
++        if mode == "D3DFOG_EXP":
++            return max(0.0, min(1.0, math.exp(-float(fog.get("density", 1.0)) * depth)))
++        if mode == "D3DFOG_EXP2":
++            density = float(fog.get("density", 1.0))
++            value = density * depth
++            return max(0.0, min(1.0, math.exp(-(value * value))))
++        start = max(0.0, float(fog.get("start", 0.0)))
++        end = max(start + 1e-6, float(fog.get("end", 1.0)))
++        return max(0.0, min(1.0, (end - depth) / (end - start)))
++
++    def _apply_fog(self, state: RenderState, color: Color, depth: float) -> Color:
++        fog = self._fog_state(state)
++        if not fog.get("enabled", False):
++            return color
++        factor = self._fog_factor(state, depth)
++        if factor >= 0.999:
++            return color
++        fog_color = _color_to_u8(fog.get("color", (255, 255, 255, 255)))
++        return tuple(
++            _clamp_channel(color[channel] * factor + fog_color[channel] * (1.0 - factor))
++            for channel in range(3)
++        ) + (color[3],)  # type: ignore[return-value]
++
+     def _shade(self, state: RenderState, tri: list[Vertex], weights: tuple[float, float, float]) -> Color | None:
+         shader = state.shader or "vertex-color"
+         if shader == "solid-color":
+diff --git a/engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh b/engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh
+index 2bd9054..410b8ba 100755
+--- a/engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh
++++ b/engine/graphics/scripts/run_d3d9_dxmt_headless_smoke.sh
+@@ -14,6 +14,7 @@ else
+ 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
+ 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_modulate_runtime.jsonl"
+ 	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_texture_blend_runtime.jsonl"
++	    "$ROOT/traces/runtime_samples/d3d9_fixed_function_fog_runtime.jsonl"
+ 	    "$ROOT/traces/runtime_samples/d3d9_ffp_addsigned_runtime.jsonl"
+ 	    "$ROOT/traces/runtime_samples/d3d9_ffp_arg_modifier_runtime.jsonl"
+ 	    "$ROOT/traces/runtime_samples/d3d9_ffp_blendcurrentalpha_runtime.jsonl"
+diff --git a/engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh b/engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh
+index b6cc4e3..ecda6ae 100755
+--- a/engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh
++++ b/engine/graphics/scripts/run_d3d9_metal_headless_smoke.sh
+@@ -17,8 +17,9 @@ traces=(
+ 	  "$ROOT/traces/runtime_samples/d3d9_ffp_blendfactoralpha_runtime.jsonl"
+ 	  "$ROOT/traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"
+ 	  "$ROOT/traces/runtime_samples/d3d9_ffp_modulate4x_runtime.jsonl"
+-	  "$ROOT/traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
+-	  "$ROOT/traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
++  "$ROOT/traces/runtime_samples/d3d9_fixed_function_alpha_test_runtime.jsonl"
++  "$ROOT/traces/runtime_samples/d3d9_fixed_function_fog_runtime.jsonl"
++  "$ROOT/traces/runtime_samples/d3d9_base_vertex_runtime.jsonl"
+ 	  "$ROOT/traces/runtime_samples/d3d9_color_write_mask_runtime.jsonl"
+ 	  "$ROOT/traces/runtime_samples/d3d9_cullmode_runtime.jsonl"
+ 	  "$ROOT/traces/runtime_samples/d3d9_depth_test_runtime.jsonl"
+diff --git a/engine/graphics/tests/test_d3d9_metal_request.py b/engine/graphics/tests/test_d3d9_metal_request.py
+index 1d69f73..1412656 100644
+--- a/engine/graphics/tests/test_d3d9_metal_request.py
++++ b/engine/graphics/tests/test_d3d9_metal_request.py
+@@ -18,6 +18,7 @@ FFP_BLENDCURRENT_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_blendcurrentalp
+ FFP_BLENDDIFFUSE_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_blenddiffusealpha_runtime.jsonl"
+ FFP_DOTPRODUCT_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"
+ FFP_MODULATE4X_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_modulate4x_runtime.jsonl"
++FOG_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_fog_runtime.jsonl"
+ TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
+ INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
+ SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
+@@ -279,6 +280,28 @@ def test_d3d9_ffp_modulate4x_writes_metal_contract(tmp_path):
+     assert ffp["color_op"] == "D3DTOP_MODULATE4X"
+ 
+ 
++def test_d3d9_fog_writes_metal_fog_contract(tmp_path):
++    state = load_trace(FOG_TRACE)
++    written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
++        state,
++        tmp_path,
++        trace_path=str(FOG_TRACE),
++        name="fog-fixed-function",
++    )
++
++    payload = json.loads(Path(written["request_path"]).read_text())
++    ffp = payload["d3d9"]["ffp_shader"]
++    fog = ffp["fog"]
++    assert payload["source_api"] == "d3d9"
++    assert payload["mode"] == "indexed_triangle"
++    assert payload["d3d9"]["render_states"]["D3DRS_FOGENABLE"] is True
++    assert fog["enabled"] is True
++    assert fog["mode"] == "D3DFOG_LINEAR"
++    assert fog["start"] == 0.0
++    assert fog["end"] == 0.8
++    assert fog["color"] == [0, 0, 255, 255]
++
++
+ def test_d3d9_transform_writes_metal_wvp_contract(tmp_path):
+     state = load_trace(TRANSFORM_TRACE)
+     written = MetalExecutor(helper_path=tmp_path / "missing-metal-helper").write_request(
+diff --git a/engine/graphics/tests/test_d3d9_translation.py b/engine/graphics/tests/test_d3d9_translation.py
+index c81754a..1327184 100644
+--- a/engine/graphics/tests/test_d3d9_translation.py
++++ b/engine/graphics/tests/test_d3d9_translation.py
+@@ -18,6 +18,7 @@ FFP_BLENDDIFFUSE_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_blenddiffusealp
+ FFP_DOTPRODUCT_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_dotproduct3_runtime.jsonl"
+ FFP_MODULATE4X_TRACE = ROOT / "traces/runtime_samples/d3d9_ffp_modulate4x_runtime.jsonl"
+ TRANSFORM_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_transform_runtime.jsonl"
++FOG_TRACE = ROOT / "traces/runtime_samples/d3d9_fixed_function_fog_runtime.jsonl"
+ INDEX32_TRACE = ROOT / "traces/runtime_samples/d3d9_index32_triangle_runtime.jsonl"
+ SAMPLER_TRACE = ROOT / "traces/runtime_samples/d3d9_sampler_linear_wrap_runtime.jsonl"
+ STRIP_TRACE = ROOT / "traces/runtime_samples/d3d9_triangle_strip_runtime.jsonl"
+@@ -289,6 +290,25 @@ def test_d3d9_fixed_function_alpha_test_discards_pixels(tmp_path):
+     assert ffp["alpha_func"] == "D3DCMP_GREATER"
+ 
+ 
++def test_d3d9_fixed_function_fog_blends_toward_fog_color(tmp_path):
++    result = replay(FOG_TRACE, tmp_path, "mock", fail_on_unsupported=True)
++    assert result["status"] == "PASS"
++    assert result["present_count"] == 1
++    assert result["non_background_pixels"] > 500
++
++    center = _ppm_pixel(Path(result["ppm_path"]), 32, 32, result["width"])
++    assert center[2] > center[0]
++    assert center != (4, 8, 16)
++
++    state = load_trace(FOG_TRACE)
++    fog = state.pipeline.metadata["d3d9_ffp_shader"]["fog"]
++    assert fog["enabled"] is True
++    assert fog["mode"] == "D3DFOG_LINEAR"
++    assert fog["start"] == 0.0
++    assert fog["end"] == 0.8
++    assert fog["color"] == (0, 0, 255, 255)
++
++
+ def test_d3d9_depth_state_rejects_later_far_pixels(tmp_path):
+     result = replay(DEPTH_TRACE, tmp_path, "mock", fail_on_unsupported=True)
+     assert result["status"] == "PASS"
+diff --git a/engine/wine/dlls/ntdll/unix/signal_arm64.c b/engine/wine/dlls/ntdll/unix/signal_arm64.c
+index 9dc9f64..189df70 100644
+--- a/engine/wine/dlls/ntdll/unix/signal_arm64.c
++++ b/engine/wine/dlls/ntdll/unix/signal_arm64.c
+@@ -1033,6 +1033,25 @@ static BOOL macrunner_hb_route_x64_callback_fault( ucontext_t *context, ULONG_PT
+     return TRUE;
+ }
+ 
++
++/* MacRunner diagnostic probe: log syscall_frame fields when entering/leaving the
++   native dispatchers, to pin who writes a garbage return address into the frame. */
++__attribute__((used)) void macrunner_hb_trace_dispatch_frame( struct syscall_frame *frame, int is_entry,
++                                               ULONG64 x30, ULONG64 x17 )
++{
++    if (!getenv( "MACRUNNER_HB_TRACE_DISPATCH_FRAME" )) return;
++    fprintf( stderr,
++             "macrunner-hb-dispatch-frame: %s frame=%p prev=%p x30=%p x17=%p "
++             "frame_pc=%p frame_lr=%p frame_sp=%p frame_x18=%p\n",
++             is_entry ? "entry" : "return",
++             frame, frame ? frame->prev_frame : NULL,
++             (void *)(uintptr_t)x30, (void *)(uintptr_t)x17,
++             frame ? (void *)(uintptr_t)frame->pc : NULL,
++             frame ? (void *)(uintptr_t)frame->lr : NULL,
++             frame ? (void *)(uintptr_t)frame->sp : NULL,
++             frame ? (void *)(uintptr_t)frame->x[18] : NULL );
++}
++
+ static BOOL macrunner_hb_wow64_i386_execute_fault( ucontext_t *context,
+                                                    const EXCEPTION_RECORD *rec )
+ {
+@@ -3372,6 +3391,19 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "stp x9, x19, [x10, #0xf0]\n\t"
+                    "mrs x9, NZCV\n\t"
+                    "stp x30, x9, [x10, #0x100]\n\t"
++                   "sub sp, sp, #0x40\n\t"
++                   "stp x0, x1, [sp, #0x00]\n\t"
++                   "stp x2, x3, [sp, #0x10]\n\t"
++                   "str x30, [sp, #0x20]\n\t"
++                   "mov x0, x10\n\t"
++                   "mov x1, #2\n\t"
++                   "mov x2, x30\n\t"
++                   "mov x3, x17\n\t"
++                   "bl " __ASM_NAME("macrunner_hb_trace_dispatch_frame") "\n\t"
++                   "ldr x30, [sp, #0x20]\n\t"
++                   "ldp x2, x3, [sp, #0x10]\n\t"
++                   "ldp x0, x1, [sp, #0x00]\n\t"
++                   "add sp, sp, #0x40\n\t"
+                    "str w8, [x10, #0x120]\n\t"
+                    "mrs x9, FPCR\n\t"
+                    "str w9, [x10, #0x128]\n\t"
+@@ -3436,6 +3468,19 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "mov sp, x22\n"
+                    __ASM_CFI_CFA_IS_AT2(sp, 0x98, 0x02) /* frame->syscall_cfa */
+                    __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") ":\n\t"
++                   "sub sp, sp, #0x40\n\t"
++                   "stp x0, x1, [sp, #0x00]\n\t"
++                   "stp x2, x3, [sp, #0x10]\n\t"
++                   "str x30, [sp, #0x20]\n\t"
++                   "mov x0, sp\n\t"
++                   "mov x1, #3\n\t"
++                   "ldr x2, [sp, #0x40 + 0xf0]\n\t"
++                   "ldr x3, [sp, #0x40 + 0x100]\n\t"
++                   "bl " __ASM_NAME("macrunner_hb_trace_dispatch_frame") "\n\t"
++                   "ldr x30, [sp, #0x20]\n\t"
++                   "ldp x2, x3, [sp, #0x10]\n\t"
++                   "ldp x0, x1, [sp, #0x00]\n\t"
++                   "add sp, sp, #0x40\n\t"
+                    "ldr w16, [sp, #0x10c]\n\t"  /* frame->restore_flags */
+                    "tbz x16, #1, 2f\n\t"        /* CONTEXT_INTEGER */
+                    "ldp x12, x13, [sp, #0x80]\n\t" /* frame->x[16..17] */
+@@ -3547,6 +3592,19 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
+                    "stp x30, x9, [x10, #0xf0]\n\t"
+                    "mrs x9, NZCV\n\t"
+                    "stp x30, x9, [x10, #0x100]\n\t"
++                   "sub sp, sp, #0x40\n\t"
++                   "stp x0, x1, [sp, #0x00]\n\t"
++                   "stp x2, x3, [sp, #0x10]\n\t"
++                   "str x30, [sp, #0x20]\n\t"
++                   "mov x0, x10\n\t"
++                   "mov x1, #1\n\t"
++                   "mov x2, x30\n\t"
++                   "mov x3, x17\n\t"
++                   "bl " __ASM_NAME("macrunner_hb_trace_dispatch_frame") "\n\t"
++                   "ldr x30, [sp, #0x20]\n\t"
++                   "ldp x2, x3, [sp, #0x10]\n\t"
++                   "ldp x0, x1, [sp, #0x00]\n\t"
++                   "add sp, sp, #0x40\n\t"
+                    "mov x19, x10\n\t"
+                    /* switch to kernel stack */
+                    "mov sp, x10\n\t"
+@@ -3569,6 +3627,19 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
+                    "blr x16\n\t"
+                    "ldr w16, [sp, #0x10c]\n\t"  /* frame->restore_flags */
+                    "cbnz w16, " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") "\n\t"
++                   "sub sp, sp, #0x40\n\t"
++                   "stp x0, x1, [sp, #0x00]\n\t"
++                   "stp x2, x3, [sp, #0x10]\n\t"
++                   "str x30, [sp, #0x20]\n\t"
++                   "mov x0, sp\n\t"
++                   "mov x1, #0\n\t"
++                   "ldr x2, [sp, #0x40 + 0xf0]\n\t"
++                   "ldr x3, [sp, #0x40 + 0x100]\n\t"
++                   "bl " __ASM_NAME("macrunner_hb_trace_dispatch_frame") "\n\t"
++                   "ldr x30, [sp, #0x20]\n\t"
++                   "ldp x2, x3, [sp, #0x10]\n\t"
++                   "ldp x0, x1, [sp, #0x00]\n\t"
++                   "add sp, sp, #0x40\n\t"
+                    __ASM_CFI_CFA_IS_AT2(sp, 0x98, 0x02) /* frame->syscall_cfa */
+                    "ldp x18, x19, [sp, #0x90]\n\t"
+                    "ldp x16, x17, [sp, #0xf8]\n\t"

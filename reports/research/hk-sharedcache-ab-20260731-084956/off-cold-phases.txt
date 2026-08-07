@@ -1,0 +1,24 @@
+=== /Users/timurtoby/Documents/MacRunner/Main/MacRunner/reports/phase4-hollow-knight/laneA-sharedcache-off-cold-a1-try1-085006/run.log ===
+  last_activity_s            746.9
+  to_guest_s                 49.96
+  mono_begin                 64.065
+  reload_assembly_s          30.0
+  physx_to_xinput_s          49.8
+  xinput                     143.857
+  post_init_s                603.0
+  compiles                   186750
+  compiles_pct_in_first_50s  53.1
+  RETENTION_PCT              95.8
+  rl_stores                  178981
+  rl_patched                 797523
+  rl_hostptr                 7768
+  rl_highhalf                0
+  rl_collision               0
+  rl_desync                  0
+  rl_roundtrip               0
+  mh_argshape                0
+  mh_widearg                 0
+  mh_toomany                 0
+  sync_ops                   0
+  sync_blocked_s             0.0
+

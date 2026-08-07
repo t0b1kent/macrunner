@@ -1,0 +1,4 @@
+[bisect 10:46:52] binary=70010edf1d9fb9d5 secs=200
+[bisect 10:46:52] control: chaining ON, no cap -- does it engage, and does the wedge reproduce?
+[bisect 10:50:35] control avg_chain=0 wedge=1 mono=0 swapchain=NONE dir=laneA-ctl-a1-try1-104657
+[bisect 10:50:35] STOP: avg_chain=0 — сцепление НЕ включилось. Лестницу не гоняю, она была бы бессмысленной.

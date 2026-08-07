@@ -1,0 +1,241 @@
+diff --git a/engine/wine/dlls/ntdll/unix/macrunner_hb.c b/engine/wine/dlls/ntdll/unix/macrunner_hb.c
+index d98bda4..bb0fe9c 100644
+--- a/engine/wine/dlls/ntdll/unix/macrunner_hb.c
++++ b/engine/wine/dlls/ntdll/unix/macrunner_hb.c
+@@ -5269,15 +5269,12 @@ static BOOL macrunner_hb_range_end_u64( void *base, SIZE_T size, uint64_t *start
+     return *end > *start;
+ }
+ 
+-static void macrunner_hb_note_x64_dynamic_exec_region( void *base, SIZE_T size, ULONG protect );
+-
+ static BOOL macrunner_hb_x64_dynamic_exec_contains_no_lock( void *pc )
+ {
+     uint64_t addr = (uint64_t)(uintptr_t)pc;
+     unsigned int count, i;
+ 
+     if (!pc) return FALSE;
+-    if (addr < 0x10000) return FALSE;
+     count = __atomic_load_n( &macrunner_hb_x64_dynamic_exec_region_count, __ATOMIC_ACQUIRE );
+     if (count > MACRUNNER_HB_X64_DYNAMIC_EXEC_REGION_MAX)
+         count = MACRUNNER_HB_X64_DYNAMIC_EXEC_REGION_MAX;
+@@ -5288,44 +5285,6 @@ static BOOL macrunner_hb_x64_dynamic_exec_contains_no_lock( void *pc )
+ 
+         if (addr >= base && addr < end) return TRUE;
+     }
+-
+-    /* Fallback check for anonymous executable memory (JIT heap).
+-     * MacRunner 2026-06-24 (HK c000007b): ARM64 PE modules are native-executable
+-     * but NOT in dladdr (they are Wine PE images, not Mach-O dylibs).  The old
+-     * code classified them as x64 JIT regions → 1.5M Phase F rejections per boot.
+-     * Guard: if the address is in a KNOWN PE MODULE that is NOT AMD64, it is
+-     * native ARM64 code — skip the VM-protection heuristic entirely. */
+-    {
+-        void *pe_module = macrunner_hb_module_from_pc( pc );
+-        if (pe_module)
+-        {
+-            USHORT machine = macrunner_hb_module_machine( pe_module );
+-            if (machine != IMAGE_FILE_MACHINE_AMD64)
+-                return FALSE;
+-        }
+-    }
+-    {
+-        mach_vm_address_t treg = (mach_vm_address_t)pc;
+-        mach_vm_size_t tsz = 0;
+-        vm_region_basic_info_data_64_t tinfo;
+-        mach_msg_type_number_t tcnt = VM_REGION_BASIC_INFO_COUNT_64;
+-        mach_port_t tobj = MACH_PORT_NULL;
+-        kern_return_t tkr = mach_vm_region( mach_task_self(), &treg, &tsz,
+-                                            VM_REGION_BASIC_INFO_64,
+-                                            (vm_region_info_t)&tinfo, &tcnt, &tobj );
+-        if (tobj != MACH_PORT_NULL) mach_port_deallocate( mach_task_self(), tobj );
+-        if (tkr == KERN_SUCCESS && (tinfo.protection & VM_PROT_EXECUTE))
+-        {
+-            Dl_info dli = {0};
+-            if (!dladdr( pc, &dli ) || !dli.dli_fname)
+-            {
+-                /* Dynamically register this region so we don't have to mach_vm_region next time! */
+-                macrunner_hb_note_x64_dynamic_exec_region( (void *)(uintptr_t)treg, (SIZE_T)tsz, PAGE_EXECUTE_READWRITE );
+-                return TRUE;
+-            }
+-        }
+-    }
+-
+     return FALSE;
+ }
+ 
+@@ -6474,8 +6433,6 @@ int macrunner_hb_pc_is_x64_guest_code( void *pc )
+     void *image_base, *module;
+     uint64_t image_size;
+ 
+-    if (macrunner_hb_pc_is_native_pe_builtin( (uint64_t)(uintptr_t)pc, NULL )) return FALSE;
+-
+     /* A guest image view is not automatically executable code: PE headers and
+      * .rdata live in the same view and can fault for ordinary data reasons.
+      * Host VM protections are deliberately non-executable for x64 guest images,
+@@ -6517,7 +6474,6 @@ int macrunner_hb_pc_is_x64_guest_code_module_no_lock( void *pc )
+     unsigned i;
+ 
+     if (!pc) return FALSE;
+-    if (macrunner_hb_pc_is_native_pe_builtin( (uint64_t)(uintptr_t)pc, NULL )) return FALSE;
+     if (macrunner_hb_pc_in_graphics_arm64x_x64_range( pc )) return TRUE;
+     for (i = 0; i < MR_MODCACHE_N; i++)
+         if (cache[i].end && p >= cache[i].base && p < cache[i].end)
+@@ -19747,7 +19703,6 @@ uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t arg
+     ULONG64 ret = 0, blocks = 0, steps = 0;
+     void *target_module;
+     NTSTATUS status;
+-    BOOL is_non_amd64_pe;
+ 
+     if (!target || !args) return 0;
+     original_target = target;
+@@ -19780,15 +19735,7 @@ uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t arg
+                  (void *)(uintptr_t)args[6], (void *)(uintptr_t)args[7] );
+     }
+ 
+-    is_non_amd64_pe = FALSE;
+-    if (target_module)
+-    {
+-        USHORT machine = macrunner_hb_module_machine( target_module );
+-        if (machine != IMAGE_FILE_MACHINE_AMD64)
+-            is_non_amd64_pe = TRUE;
+-    }
+-
+-    if (!macrunner_hb_pc_is_x64_guest_code( (void *)(uintptr_t)target ) && !is_non_amd64_pe)
++    if (!macrunner_hb_pc_is_x64_guest_code( (void *)(uintptr_t)target ))
+     {
+         static unsigned int reject_diag_count;
+         ERR( "MacRunner Phase F rejected non-x64 callback target=%p\n",
+@@ -19823,71 +19770,6 @@ uint64_t macrunner_hb_dispatch_x64_callback( uint64_t target, const uint64_t arg
+         return 0;
+     }
+ 
+-    /* MacRunner 2026-06-24: fix regression 3ac1698 — route non-AMD64 PE callbacks
+-     * (ARM64 / ARM64EC / ARM64X modules, e.g. ntdll at 0x87fff8d0000) natively
+-     * instead of wrapping them in the x64 JIT.
+-     *
+-     * Background: 3ac1698 correctly set x64_dynamic_exec_contains_no_lock→FALSE
+-     * for non-AMD64 modules so Phase-F rejections → 0.  BUT the reject gate above
+-     * only skips the ERR+return-0 path; execution still falls through to run_x64,
+-     * which tries to JIT-execute native ARM64EC instructions → hits an unrecognised
+-     * opcode → macrunner-hb-arm64-unwind-unsafe-boundary → recursive exception loop
+-     * → process death at entry.
+-     *
+-     * Fix: when the callback target lives in a non-AMD64 PE image we know it is a
+-     * real native ARM64(EC) function.  Call it directly via
+-     * macrunner_hb_call_arm64_pe_import12, which handles:
+-     *   - stack switching to the bridge stack (TEB stack-base/limit restore)
+-     *   - ARM64EC / ARM64X redirection (hexpthk section)
+-     *   - up to MACRUNNER_HB_IMPORT_ARG_MAX integer arguments
+-     * The return value flows back through the normal ret path below.
+-     *
+-     * Constraint: direct-mem path is NOT touched (confirmed inert for 64-bit HK). */
+-    if (is_non_amd64_pe)
+-    {
+-        struct macrunner_hb_import_thunk native_thunk;
+-        uint64_t native_args[MACRUNNER_HB_IMPORT_ARG_MAX] = { 0 };
+-        char native_module_name[96] = { 0 };
+-
+-        if (target_module)
+-            macrunner_hb_get_export_module_name( target_module, native_module_name,
+-                                                 sizeof(native_module_name) );
+-        if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CALLBACK_ROUTE" ))
+-            fprintf( stderr, "macrunner-hb-callback-native-route: target=%p module=%s"
+-                     " args=%p,%p,%p,%p,%p,%p,%p,%p\n",
+-                     (void *)(uintptr_t)target,
+-                     native_module_name[0] ? native_module_name : "(unknown)",
+-                     (void *)(uintptr_t)args[0], (void *)(uintptr_t)args[1],
+-                     (void *)(uintptr_t)args[2], (void *)(uintptr_t)args[3],
+-                     (void *)(uintptr_t)args[4], (void *)(uintptr_t)args[5],
+-                     (void *)(uintptr_t)args[6], (void *)(uintptr_t)args[7] );
+-
+-        memset( &native_thunk, 0, sizeof(native_thunk) );
+-        native_thunk.target         = (void *)(uintptr_t)target;
+-        native_thunk.target_machine = current_machine;
+-        native_thunk.guest_target   = target;
+-        native_thunk.module_id      = (uint64_t)(uintptr_t)target_module;
+-        lstrcpynA( native_thunk.dll_name, native_module_name[0] ? native_module_name : "native-callback",
+-                   ARRAY_SIZE(native_thunk.dll_name) );
+-        lstrcpynA( native_thunk.import_name, "arm64ec-callback",
+-                   ARRAY_SIZE(native_thunk.import_name) );
+-
+-        /* Pass 8 args (max used by known HK callbacks); rest stay zero. */
+-        native_args[0] = args[0]; native_args[1] = args[1];
+-        native_args[2] = args[2]; native_args[3] = args[3];
+-        native_args[4] = args[4]; native_args[5] = args[5];
+-        native_args[6] = args[6]; native_args[7] = args[7];
+-
+-        macrunner_hb_trace_x64_callback_abi( "before-native", target, args, 0 );
+-        ret = macrunner_hb_call_arm64_pe_import12( &native_thunk, native_args );
+-        macrunner_hb_trace_x64_callback_abi( "after-native", target, args, ret );
+-
+-        if (macrunner_hb_env_enabled( "MACRUNNER_HB_TRACE_CALLBACK_ROUTE" ))
+-            fprintf( stderr, "macrunner-hb-callback-native-return: target=%p ret=%p\n",
+-                     (void *)(uintptr_t)target, (void *)(uintptr_t)ret );
+-        return ret;
+-    }
+-
+     call.rcx = args[0];
+     call.rdx = args[1];
+     call.r8  = args[2];
+@@ -20359,8 +20241,6 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+         {
+             void *guest_module = macrunner_hb_module_from_pc( (void *)(uintptr_t)ctx->pc );
+             void *native_module = NULL;
+-            void *pe_module = NULL;
+-            BOOL is_non_amd64_pe_callback = FALSE;
+ 
+             if (macrunner_hb_x64_dynamic_exec_contains_no_lock( (void *)(uintptr_t)ctx->pc ))
+             {
+@@ -20421,20 +20301,10 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+             if (macrunner_hb_pc_in_image( ctx->pc, image_start, image_size ))
+                 goto in_guest_image;
+ 
+-            pe_module = macrunner_hb_module_from_pc( (void *)(uintptr_t)ctx->pc );
+-            is_non_amd64_pe_callback = FALSE;
+-            if (pe_module)
+-            {
+-                USHORT machine = macrunner_hb_module_machine( pe_module );
+-                if (machine != IMAGE_FILE_MACHINE_AMD64)
+-                    is_non_amd64_pe_callback = TRUE;
+-            }
+-
+-            if (macrunner_hb_pc_is_native_pe_builtin( ctx->pc, &native_module ) ||
+-                (macrunner_hb_label_allows_direct_native( label ) &&
+-                 (is_non_amd64_pe_callback ||
+-                  macrunner_hb_pc_is_unix_call_dispatcher( ctx->pc ) ||
+-                  macrunner_hb_pc_is_syscall_dispatcher( ctx->pc ))))
++            if (macrunner_hb_label_allows_direct_native( label ) &&
++                (macrunner_hb_pc_is_native_pe_builtin( ctx->pc, &native_module ) ||
++                 macrunner_hb_pc_is_unix_call_dispatcher( ctx->pc ) ||
++                 macrunner_hb_pc_is_syscall_dispatcher( ctx->pc )))
+             {
+                 TRACE( "MacRunner HyperBridge dispatching direct native target %s pc=%p module=%p\n",
+                        label ? label : "entry", (void *)(uintptr_t)ctx->pc, native_module );
+@@ -20581,8 +20451,6 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+             !macrunner_hb_x64_dynamic_exec_contains_no_lock( (void *)(uintptr_t)ctx->pc ))
+         {
+             void *native_module = NULL;
+-            void *pe_module = NULL;
+-            BOOL is_non_amd64_pe_callback = FALSE;
+ 
+             /* MacRunner Lane A (2026-06-17): the CHPE-refusal must key off the CURRENT pc, not the
+              * possibly-stale image_base.  When Mono-JIT'd x64 code (a registered dynamic-exec region,
+@@ -20593,16 +20461,8 @@ static NTSTATUS macrunner_hb_run_x64( void *entry, hb_abi_x64_call_t *call, ULON
+              * thread and hanging the Unity boot (HK rank-7).  A genuine native/CHPE image is never a
+              * dynamic-exec region, so guarding on x64_dynamic_exec_contains leaves real refusals intact
+              * and lets Mono-JIT code fall through to the normal x64 JIT path that already runs it. */
+-            pe_module = macrunner_hb_module_from_pc( (void *)(uintptr_t)ctx->pc );
+-            if (pe_module)
+-            {
+-                USHORT machine = macrunner_hb_module_machine( pe_module );
+-                if (machine != IMAGE_FILE_MACHINE_AMD64)
+-                    is_non_amd64_pe_callback = TRUE;
+-            }
+-
+-            if (macrunner_hb_pc_is_native_pe_builtin( ctx->pc, &native_module ) ||
+-                is_non_amd64_pe_callback)
++            if (macrunner_hb_label_allows_direct_native( label ) &&
++                macrunner_hb_pc_is_native_pe_builtin( ctx->pc, &native_module ))
+             {
+                 TRACE( "MacRunner HyperBridge dispatching native PE target inside native/CHPE image "
+                        "%s pc=%p module=%p\n",

@@ -1,0 +1,7 @@
+?? PROGRESS-dx12-lane.md
+?? PROGRESS.md
+?? reports/research/MEGA-BRIEF-D3D12-TRACK.md
+?? reports/research/dx12-lane-gap-2026-06-26.md
+?? reports/research/emulated-api-coverage-audit-2026-06-26.md
+?? reports/research/emulated-api-coverage-audit-2026-06-26.progress.md
+?? reports/research/fileapi-fakehandle-audit-2026-06-26.md

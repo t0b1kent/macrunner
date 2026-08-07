@@ -166,8 +166,6 @@ void hb_pe_unload(hb_pe_image_t* pe) {
     free(pe);
 }
 
-void (*hb_pe_image_mapped_cb)(void* base, size_t size) = NULL;
-
 hb_result_t hb_pe_map_image(hb_pe_image_t* pe, uint64_t base) {
     if (!pe || !pe->raw_data) return HB_ERR_INVALID_ARG;
     if (pe->mapped_image) { munmap(pe->mapped_image, pe->mapped_size); pe->mapped_image = NULL; }
@@ -187,22 +185,6 @@ hb_result_t hb_pe_map_image(hb_pe_image_t* pe, uint64_t base) {
     pe->mapped_size = map_size;
     pe->mapped_base = (uint64_t)(uintptr_t)p;
 
-    /* MacRunner 2026-08-07 — сообщить Windows-стороне, что здесь лежит образ.
-     *
-     * Без этого дерево видов о гостевых образах не знает, и NtQueryVirtualMemory отвечает
-     * MEM_FREE по адресу внутри живого UnityPlayer при работающей игре. Следствия измерены:
-     * диагностика macrunner-hb-nullcall-vtable не срабатывала ни разу, а опознание модуля
-     * вынуждено СКАНИРОВАТЬ память вниз в поисках заголовка PE (~47 % главного потока при
-     * загрузке до мемоизации). У Prism то же самое отвечает MEM_COMMIT + MEM_IMAGE.
-     *
-     * Слабый символ, а не обратный вызов: hyperbridge собирается и отдельно (тесты, bench),
-     * где ntdll рядом нет. Если хост его не определил — указатель нулевой, и мы просто ничего
-     * не делаем. Так связка не требует ни настройки, ни порядка инициализации.
-     *
-     * На Darwin для НЕОПРЕДЕЛЁННОГО внешнего символа нужен именно weak_import: обычный weak
-     * линковщик требует определения, и отдельная сборка libhyperbridge.dylib не собирается
-     * (проверено — падает на линковке). На прочих платформах достаточно weak. */
-    if (hb_pe_image_mapped_cb) hb_pe_image_mapped_cb(p, map_size);
 
     /* Copy headers */
     size_t hdr_size = pe->size_of_headers;

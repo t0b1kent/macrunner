@@ -1350,12 +1350,53 @@ static void macrunner_hb_module_from_pc_neg_cache_put( uintptr_t page )
         macrunner_hb_module_from_pc_neg_cache_next++ % MACRUNNER_HB_MODULE_FROM_PC_NEG_CACHE_SIZE] = page;
 }
 
+/* MacRunner 2026-08-07 — БЕЗУСЛОВНЫЙ зонд: что отвечает NtQueryVirtualMemory по гостевому адресу.
+ *
+ * Зачем именно безусловный. Три прогона подряд по 900 секунд не доказали ничего, потому что
+ * каждый раз критерием был маркер, зависящий от события, которое могло не наступить:
+ * nullcall-vtable требует отказа pc=0 (его не было), guest-image-view стоял за выключенным
+ * гейтом. Прибор, который может промолчать, — не критерий, а лотерея.
+ *
+ * Этот срабатывает всегда, потому что стоит там, где движок УЖЕ узнал базу гостевого образа.
+ * Спрашивает ровно то, на чём мы стоим: state, alloc_base, type по адресу ВНУТРИ образа
+ * (+0x1000, а не в начале — начало могло бы ответить и без правки).
+ *
+ * Что читать в выводе. Было (измерено на PATHB31 и позже): state=MEM_FREE alloc_base=0
+ * protect=PAGE_NOACCESS при живой игре, грузящей объекты. Должно стать: state=MEM_COMMIT с
+ * ненулевой базой — тогда ответ из таблицы регионов работает. Если MEM_FREE остался, правка
+ * не сработала, и это надо признать, а не объяснять.
+ *
+ * Печатается ограниченное число раз: вопрос «отвечает или нет» решается первыми же строками,
+ * а прибор, топящий лог в собственных измерениях, мы сегодня уже проходили. */
+static void macrunner_hb_probe_guest_vm( uintptr_t start, size_t size )
+{
+    static LONG probed;
+    MEMORY_BASIC_INFORMATION mbi;
+    SIZE_T ret_len = 0;
+    void *probe_at;
+    NTSTATUS status;
+
+    if (InterlockedIncrement( &probed ) > 8) return;
+    probe_at = (void *)(start + (size > 0x2000 ? 0x1000 : 0));
+    memset( &mbi, 0, sizeof(mbi) );
+    status = NtQueryVirtualMemory( GetCurrentProcess(), probe_at, MemoryBasicInformation,
+                                   &mbi, sizeof(mbi), &ret_len );
+    fprintf( stderr,
+             "macrunner-hb-vmprobe: n=%d addr=%p status=%x state=%x alloc_base=%p "
+             "protect=%x type=%x size=%zx\n",
+             (int)probed, probe_at, (unsigned int)status, (unsigned int)mbi.State,
+             mbi.AllocationBase, (unsigned int)mbi.Protect, (unsigned int)mbi.Type,
+             (size_t)mbi.RegionSize );
+    fflush( stderr );
+}
+
 static void macrunner_hb_module_from_pc_cache_put( uintptr_t start, size_t size, void *module )
 {
     struct macrunner_hb_module_from_pc_cache_entry *entry;
 
     if (!start || !size || !module) return;
     if (size > UINTPTR_MAX - start) return;
+    macrunner_hb_probe_guest_vm( start, size );
     entry = &macrunner_hb_module_from_pc_cache[
         macrunner_hb_module_from_pc_cache_next++ % MACRUNNER_HB_MODULE_FROM_PC_CACHE_SIZE];
     entry->start = start;

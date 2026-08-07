@@ -135,6 +135,21 @@ hb_result_t hb_memory_write_u64(hb_memory_t* mem, hb_gva_t addr, uint64_t val);
 hb_result_t hb_memory_fetch(hb_memory_t* mem, hb_gva_t addr, uint8_t* out);
 
 hb_region_t* hb_memory_find_region(hb_memory_t* mem, hb_gva_t addr);
+
+/* Запрос гостевого региона со стороны хоста (ntdll), для NtQueryVirtualMemory.
+ *
+ * Зачем. У нас ДВА адресных пространства: гостевое (0x87ef...) и хостовое, которое выдаёт mmap.
+ * hb_memory_map_private кладёт пару base/host_base в свою таблицу, а Windows-учёт знает только
+ * про хостовое. Поэтому NtQueryVirtualMemory отвечает MEM_FREE по адресу внутри живого
+ * UnityPlayer: гостевой адрес для него - координата чужой системы.
+ *
+ * Заводить вид на такой адрес нельзя (он не хостовый). Правильный ответ - спросить таблицу,
+ * которая уже знает всё нужное, ПЕРЕД тем как ответить MEM_FREE.
+ *
+ * Возвращает 1 и заполняет выходы, если регион найден; 0 если нет. Указатель, а не слабый
+ * символ: libhyperbridge.dylib собирается отдельно и обязана разрешить все символы. */
+extern int (*hb_guest_region_query_cb)(uint64_t addr, uint64_t* out_base,
+                                       uint64_t* out_size, uint32_t* out_perm);
 bool hb_memory_can_read(hb_memory_t* mem, hb_gva_t addr, size_t size);
 bool hb_memory_can_write(hb_memory_t* mem, hb_gva_t addr, size_t size);
 bool hb_memory_can_exec(hb_memory_t* mem, hb_gva_t addr, size_t size);

@@ -1382,6 +1382,8 @@ hb_result_t hb_memory_map(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_
     return HB_OK;
 }
 
+int (*hb_guest_region_query_cb)(uint64_t, uint64_t*, uint64_t*, uint32_t*) = NULL;
+
 hb_result_t hb_memory_map_private(hb_memory_t* mem, hb_gva_t base, size_t size, hb_perm_t perm) {
     if (!mem || !base) return HB_ERR_INVALID_ARG;
     size_t alloc_size = page_align(size);

@@ -3160,6 +3160,8 @@ void macrunner_hb_register_guest_image_view( void *base, size_t size )
  * Указатель, а не слабый символ: libhyperbridge.dylib собирается и отдельно, а dylib обязана
  * разрешить все символы при линковке — ни weak, ни weak_import этого не обходят (проверено). */
 extern void (*hb_pe_image_mapped_cb)( void *base, size_t size );
+extern int (*hb_guest_region_query_cb)( UINT64 addr, UINT64 *out_base,
+                                       UINT64 *out_size, unsigned int *out_perm );
 
 static void macrunner_hb_bind_guest_image_view(void) __attribute__((constructor));
 static void macrunner_hb_bind_guest_image_view(void)
@@ -7384,11 +7386,49 @@ static unsigned int fill_basic_memory_info( const void *addr, MEMORY_BASIC_INFOR
         }
         else
         {
-            info->State             = MEM_FREE;
-            info->Protect           = PAGE_NOACCESS;
-            info->AllocationBase    = 0;
-            info->AllocationProtect = 0;
-            info->Type              = 0;
+            /* MacRunner 2026-08-07 — спросить таблицу гостевых регионов ПЕРЕД тем как сказать
+             * MEM_FREE.
+             *
+             * У нас два адресных пространства: гостевое (0x87ef...) и хостовое, которое выдаёт
+             * mmap. hb_memory_map_private хранит пару base/host_base у себя, а дерево видов
+             * адресует хостовое — поэтому по адресу внутри ЖИВОГО UnityPlayer сюда приходил
+             * MEM_FREE с alloc_base=0 при работающей игре, грузящей объекты.
+             *
+             * Цена, которую мы за это платили, измерена: диагностика macrunner-hb-nullcall-vtable
+             * стоит под «модуль найден» и не срабатывала ни разу, а опознание модуля вынуждено
+             * СКАНИРОВАТЬ память вниз в поисках заголовка PE (~47 % главного потока при загрузке
+             * до мемоизации). У Prism тот же запрос отвечает MEM_COMMIT + MEM_IMAGE.
+             *
+             * Завести здесь вид нельзя: гостевой адрес не принадлежит хостовому пространству, и
+             * create_view его не адресует. Зато таблица регионов уже знает базу, размер и права —
+             * отвечаем по существующему знанию, ничего не дублируя.
+             *
+             * MEM_IMAGE не заявляется: таблица регионов не различает образ и приватную память, а
+             * врать про тип хуже, чем ответить честное MEM_PRIVATE. Главное здесь — что адрес
+             * перестал быть «свободным», и опознание модуля наконец получает опору. */
+            uint64_t g_base = 0, g_size = 0;
+            uint32_t g_perm = 0;
+
+            if (hb_guest_region_query_cb &&
+                hb_guest_region_query_cb( (uint64_t)(ULONG_PTR)base, &g_base, &g_size, &g_perm ))
+            {
+                info->State             = MEM_COMMIT;
+                info->Protect           = PAGE_EXECUTE_READWRITE;
+                info->AllocationBase    = (void *)(ULONG_PTR)g_base;
+                info->AllocationProtect = PAGE_EXECUTE_READWRITE;
+                info->Type              = MEM_PRIVATE;
+                if (g_size && (ULONG_PTR)base >= g_base &&
+                    (ULONG_PTR)base - g_base < g_size)
+                    info->RegionSize = (SIZE_T)(g_size - ((ULONG_PTR)base - g_base));
+            }
+            else
+            {
+                info->State             = MEM_FREE;
+                info->Protect           = PAGE_NOACCESS;
+                info->AllocationBase    = 0;
+                info->AllocationProtect = 0;
+                info->Type              = 0;
+            }
         }
     }
     else

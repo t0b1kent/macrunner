@@ -255,8 +255,27 @@ if PROF and os.path.isdir(os.path.join(PROF,"wine-dist")):
     env["MACRUNNER_LANEA_WINE_DIST"]=wd
     if os.path.exists(os.path.join(wd,"bin","wine")):
         env["MACRUNNER_WINE_BIN"]=os.path.join(wd,"bin","wine")
-# Привязана к хешу бинаря: при смене диста подсовывает чужие трансляции и даёт exit=53.
-DROP = {"MACRUNNER_HB_TRANSLATION_CACHE_ROOT"}
+# КЕШ ТРАНСЛЯЦИЙ — СВОЙ НА КАЖДЫЙ ДИСТ.
+# Раньше эта переменная просто выбрасывалась, с верной мыслью «при смене диста она подсовывает
+# чужие трансляции». Но выбросить её значит уехать на путь по умолчанию — build/hyperbridge-cache,
+# ОДИН на все дисты, — то есть гарантировать ровно ту беду, от которой отказывались.
+# 07.08 это и случилось: профиль впервые загрузил свои двоичные файлы и встретил кеш, набитый
+# сборкой рабочего дерева. Трансляций стало 32995 против 137 в эталонном прогоне при том же
+# наборе переключателей — двести сорок промахов на каждое попадание.
+# Имя корня привязано к содержимому JIT-носителя, поэтому у каждой сборки кеш свой и чужих
+# трансляций она не увидит. Каталог код создаёт сам (hb_aot_cache.c:312).
+import hashlib
+def _cache_tag(dist):
+    for rel in ("lib/wine/aarch64-unix/xtajit64.so","lib/wine/aarch64-unix/ntdll.so"):
+        f=os.path.join(dist,rel)
+        try: return hashlib.sha256(open(f,'rb').read()).hexdigest()[:12]
+        except OSError: continue
+    return hashlib.sha256(dist.encode()).hexdigest()[:12]
+_dist_for_cache = override or (os.path.join(PROF,"dist") if PROF else "")
+if _dist_for_cache and os.path.isdir(_dist_for_cache):
+    env["MACRUNNER_HB_TRANSLATION_CACHE_ROOT"]=os.path.join(
+        ROOT,"build","hyperbridge-cache-"+_cache_tag(_dist_for_cache))
+DROP = set()
 # Каталоги самого прогона — их создаёт новый прогон, переносить нельзя.
 DROP |= {"MACRUNNER_RUN_DIR","WINEPREFIX","MACRUNNER_FLIGHT_PATH",
          "MACRUNNER_FLIGHT_RECORDER_FILE","MACRUNNER_FLIGHT_RECORDER_PATH","DXMT_LOG_PATH"}

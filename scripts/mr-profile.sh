@@ -255,6 +255,19 @@ if PROF and os.path.isdir(os.path.join(PROF,"wine-dist")):
     env["MACRUNNER_LANEA_WINE_DIST"]=wd
     if os.path.exists(os.path.join(wd,"bin","wine")):
         env["MACRUNNER_WINE_BIN"]=os.path.join(wd,"bin","wine")
+
+# ...И ЕСЛИ wine-dist У ПРОФИЛЯ НЕТ — ВСЁ РАВНО НАДО ЗАДАТЬ ИМЯ.
+# 07.08 первая редакция этой правки ставила MACRUNNER_LANEA_WINE_DIST ТОЛЬКО внутри условия
+# выше. У профилей с одним каталогом dist (Пик, «Кадр+Устройство 1 сцена 2») условие не
+# срабатывало, имя не появлялось, и laneA-run-hk.sh:28 молча откатывался на рабочее дерево —
+# ровно та поломка, которую правка чинила, просто для другой формы профиля.
+# Поймано на живом прогоне оператора: профиль нёс ntdll f3371faab1061057, грузился e830c351be60.
+# Поэтому имя задаётся ВСЕГДА и от диста, который реально выбран.
+_eff = override or (os.path.join(PROF,"wine-dist") if PROF and os.path.isdir(os.path.join(PROF,"wine-dist"))
+                    else (os.path.join(PROF,"dist") if PROF and os.path.isdir(os.path.join(PROF,"dist")) else ""))
+if _eff:
+    env["MACRUNNER_LANEA_WINE_DIST"]=_eff
+    env.setdefault("MACRUNNER_WINE_DIST",_eff)
 # КЕШ ТРАНСЛЯЦИЙ — СВОЙ НА КАЖДЫЙ ДИСТ.
 # Раньше эта переменная просто выбрасывалась, с верной мыслью «при смене диста она подсовывает
 # чужие трансляции». Но выбросить её значит уехать на путь по умолчанию — build/hyperbridge-cache,

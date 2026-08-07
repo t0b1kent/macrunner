@@ -118,6 +118,17 @@ hb_pe_image_t* hb_pe_load(const uint8_t* data, size_t size);
 void hb_pe_unload(hb_pe_image_t* pe);
 
 hb_result_t hb_pe_map_image(hb_pe_image_t* pe, uint64_t base);
+
+/* Уведомление хоста о том, что образ отображён.
+ *
+ * Зачем указатель, а не слабый символ: hyperbridge собирается и как отдельная libhyperbridge.dylib,
+ * где ntdll рядом нет, а dylib обязана разрешить все символы при линковке — ни weak, ни weak_import
+ * это не обходят (проверено, линковка падает). Указатель не зависит от семантики линковщика вовсе.
+ *
+ * Хост (ntdll) ставит его в macrunner_hb_register_guest_image_view, чтобы гостевые образы попадали
+ * в учёт виртуальной памяти Windows-стороны. Без этого NtQueryVirtualMemory отвечает MEM_FREE по
+ * адресу внутри живого UnityPlayer при работающей игре. */
+extern void (*hb_pe_image_mapped_cb)(void* base, size_t size);
 hb_result_t hb_pe_apply_relocations(hb_pe_image_t* pe, uint64_t new_base);
 
 hb_pe_section_t* hb_pe_find_section(hb_pe_image_t* pe, const char* name);

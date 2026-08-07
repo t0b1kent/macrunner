@@ -3103,6 +3103,70 @@ static void macrunner_hb_register_x64_guest_range( void *base, SIZE_T size )
                  getpid(), base, (size_t)size, macrunner_hb_x64_guest_range_count );
 }
 
+/* MacRunner 2026-08-07 — завести гостевой образ в учёте виртуальной памяти Windows-стороны.
+ *
+ * Дефект, который это закрывает. Наш PE-загрузчик (`hb_pe_loader.c`, hb_pe_map_image) кладёт
+ * гостевые образы прямым mmap, минуя NtMapViewOfSection. Поэтому дерево видов о них не знает, и
+ * NtQueryVirtualMemory честно отвечает MEM_FREE по адресу внутри живого UnityPlayer:
+ * alloc_base=0, state=MEM_FREE, protect=PAGE_NOACCESS — при работающей игре. Слепы обе
+ * независимые проверки: и LdrFindEntryForAddress, и опрос отображений.
+ *
+ * Цена, которую мы за это платили. macrunner-hb-nullcall-vtable — печать, которая назвала бы
+ * пустой метод за отказами pc=0, — стоит под `if (upbase)` и не срабатывала ни разу. А раз
+ * спросить систему нельзя, macrunner_hb_module_from_pc СКАНИРУЕТ память вниз в поисках
+ * заголовка DOS+NT; до мемоизации это стоило ~47 % главного потока при загрузке.
+ *
+ * Почему именно create_view, а не macrunner_hb_register_x64_guest_range. Та ведёт ОТДЕЛЬНУЮ
+ * таблицу диапазонов для решений «это гостевой код»; дерево видов её не видит, и запрос от неё
+ * не прозреет. MEM_IMAGE даёт только SEC_IMAGE в view->protect (см. :7339).
+ *
+ * Эталон — Prism: VirtualQueryEx внутри образов эмулируемого x64-процесса отвечает
+ * MEM_COMMIT + MEM_IMAGE с настоящими базами, все 88 модулей в списке загрузчика. Значит наш
+ * MEM_FREE — пропуск, а не цена эмуляции.
+ *
+ * VPROT_EXEC НЕ ставится намеренно: хост исполнять эти страницы не должен, для того и заведён
+ * VPROT_MACRUNNER_X64_GUEST. SEC_FILE тоже не ставится — отображение анонимное, файла за ним нет.
+ *
+ * Конфликт адресов не считается ошибкой: диапазон мог быть заведён другим путём, и тогда учёт
+ * уже верен. Молча выходим, потому что вызов идёт с пути загрузки образа. */
+void macrunner_hb_register_guest_image_view( void *base, size_t size )
+{
+    struct file_view *view;
+    sigset_t sigset;
+    NTSTATUS status;
+
+    if (!base || !size) return;
+    if ((UINT_PTR)base & host_page_mask) return;
+    size = ROUND_SIZE( 0, size, host_page_mask );
+
+    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+    status = create_view( &view, base, size,
+                          SEC_IMAGE | VPROT_COMMITTED | VPROT_READ | VPROT_WRITE |
+                          VPROT_MACRUNNER_X64_GUEST );
+    if (!status) macrunner_hb_register_x64_guest_range( base, size );
+    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+
+    if (macrunner_hb_trace_host_exec())
+        fprintf( stderr, "macrunner-hb-guest-image-view: base=%p size=%zx status=%x\n",
+                 base, (size_t)size, (unsigned int)status );
+}
+
+/* Связать загрузчик образов с точкой выше при загрузке ntdll.
+ *
+ * Конструктор, а не явный вызов из инициализации: образы могут отображаться раньше, чем любая
+ * наша точка инициализации отработает, и пропущенный образ — это ровно тот молчаливый промах,
+ * который мы здесь и чиним. Конструктор отрабатывает до первого кода гостя.
+ *
+ * Указатель, а не слабый символ: libhyperbridge.dylib собирается и отдельно, а dylib обязана
+ * разрешить все символы при линковке — ни weak, ни weak_import этого не обходят (проверено). */
+extern void (*hb_pe_image_mapped_cb)( void *base, size_t size );
+
+static void macrunner_hb_bind_guest_image_view(void) __attribute__((constructor));
+static void macrunner_hb_bind_guest_image_view(void)
+{
+    hb_pe_image_mapped_cb = macrunner_hb_register_guest_image_view;
+}
+
 void macrunner_hb_note_x64_guest_fault_handlers_ready(void)
 {
     unsigned int i;

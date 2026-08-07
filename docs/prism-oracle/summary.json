@@ -1,0 +1,16 @@
+﻿{
+    "schema":  1,
+    "run_id":  "prism-oracle-20260721-103240",
+    "completed_utc":  "2026-07-21T00:35:18.7216252Z",
+    "elapsed_seconds":  150.709,
+    "game_pid":  1444,
+    "process_machine":  "UNKNOWN",
+    "native_machine":  "ARM64",
+    "window_ready_elapsed_ms":  1321,
+    "distinct_modules_seen":  105,
+    "screenshots_completed":  6,
+    "wpr_stop_rc":  0,
+    "wpr_stop_output":  "Press Ctrl+C to cancel the stop operation.\r\nThe trace was successfully saved.",
+    "capture_error":  null,
+    "classification":  "CAPTURE_COMPLETE"
+}

@@ -1,0 +1,93 @@
+
+==== 0. СИСТЕМА 
+=====================================================
+ProductName:		macOS
+ProductVersion:		26.5.2
+BuildVersion:		25F84
+процессор: Apple M1 Pro
+Rosetta установлена: да
+
+==== 1. ДВОИЧНЫЕ ФАЙЛЫ — обходом каталога, а не по списку известных имён 
+=====================================================
+
+-- каталог /Library/Apple/usr/libexec/oah --
+        464240  libRosettaRuntime                                    Mach-O 64-bit executable arm64
+       1726504  RosettaLinux/rosetta                                 ELF 64-bit LSB executable, ARM aarch64, 
+        383560  RosettaLinux/rosettad                                ELF 64-bit LSB executable, ARM aarch64, 
+
+-- каталог /usr/libexec/rosetta --
+         70288  translate_tool                                       Mach-O 64-bit executable arm64e
+        233056  runtime                                              Mach-O 64-bit executable arm64
+        114160  oahd                                                 Mach-O 64-bit executable arm64e
+        423280  debugserver                                          Mach-O 64-bit executable arm64e
+         73984  oahd-root-helper                                     Mach-O 64-bit executable arm64e
+        143104  oahd-helper                                          Mach-O 64-bit executable arm64
+
+-- каталог /Library/Apple/usr/lib --
+        423408  libRosettaAot.dylib                                  Mach-O 64-bit dynamically linked shared 
+
+==== 2. КЕШ ТРАНСЛЯЦИЙ /var/db/oah — раскладка, именование, формат 
+=================================
+  размер: 
+  файлов: 0
+
+-- по расширениям --
+
+-- крупнейшие 10 --
+
+-- сигнатура крупнейшего файла (первые 64 байта) --
+
+==== 3. СЛУЖБЫ И ПРОЦЕССЫ 
+===================================
+
+-- демон oahd и родня --
+  367 /usr/libexec/ros /usr/libexec/rosetta/oahd
+61438 /bin/zsh         /bin/zsh -c source /Users/timurtoby/.claude/shell-snapshots/snapshot-zsh-1786054284878-u361ox.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'cd "/Users/timurtoby/Documents/MacRunner/Main/MacRunner"\012chmod +x tools/rosetta-collect.sh\012mkdir -p reports/rosetta\012./tools/rosetta-collect.sh > reports/rosetta/M-PM^^M-PM-"M-PM-'M-PM^AM-PM-".txt 2>&1\012echo "M-QM^AM-QM^BM-QM^@M-PM->M-PM-:: $(wc -l < reports/rosetta/M-PM^^M-PM-"M-PM-'M-PM^AM-PM-".txt | tr -d '"'"' '"'"')"\012head -32 reports/rosetta/M-PM^^M-PM-"M-PM-'M-PM^AM-PM-".txt' && pwd -P >| /tmp/claude-d0c8-cwd
+61442 bash             bash ./tools/rosetta-collect.sh
+
+-- launchd-задания --
+com.apple.oahd-root-helper.plist
+com.apple.oahd.plist
+
+-- точки монтирования (кеш может быть отдельным томом) --
+
+==== 4. ★ АППАРАТНЫЕ ОПОРЫ — то, чего у нас нет и что объясняет разрыв 
+================================================
+
+-- расширения ARM64, видимые нам --
+  FEAT_FlagM                         1
+  FEAT_FlagM2                        1
+  FEAT_AFP                           0
+  FEAT_LSE                           1
+  FEAT_LRCPC                         1
+  FEAT_LRCPC2                        1
+
+  ЗАМЕТКА: аппаратный TSO (ACTLR_EL1 бит 0) Rosetta включает через приватный
+  entitlement com.apple.private.oahd. Сторонним недоступен; kext требует Reduced Security.
+  Это НЕ гипотеза — проверено ранее, см. reports/research по TSO.
+
+==== 5. ПРЕДТРАНСЛИРОВАННЫЙ КЕШ dyld ДЛЯ x86_64 
+===
+total 12860224
+drwxr-xr-x  33 root  wheel        1056 Jun 25 12:29 .
+drwxr-xr-x   7 root  wheel         224 Jun 25 12:29 ..
+-rwxr-xr-x   1 root  admin   878289947 Jun 25 12:29 aot_shared_cache.0
+-rwxr-xr-x   1 root  admin   953535131 Jun 25 12:29 aot_shared_cache.1
+-rwxr-xr-x   1 root  admin   933390491 Jun 25 12:29 aot_shared_cache.2
+
+==== 6. ENTITLEMENTS транслятора — что ему позволено сверх обычного 
+===================================
+
+-- /Library/Apple/usr/libexec/oah/runtime --
+
+==== 7. ЧЕГО ЗДЕСЬ НЕТ И ЧЕМ ЭТО ДОБИРАЕТСЯ 
+===
+  - Формат файлов кеша /var/db/oah: нужен разбор двоичного содержимого на стороне,
+    инструмент — tools/prism-parse.py умеет PE, для Mach-O нужен свой или otool.
+  - Порядок обращений при первом против повторного запуска: нужен fs_usage или dtrace
+    по процессу под Rosetta, покажет очерёдность, чего никакой список файлов не даст.
+  - Поведение с самомодифицирующимся кодом: у нас Mono JIT-ит на ходу. Проверяется
+    запуском x86-64 приложения с JIT под Rosetta и наблюдением за /var/db/oah.
+  - Внутреннее устройство трансляции: закрыто, разбирается только реверсом runtime.
+
+==== КОНЕЦ ====

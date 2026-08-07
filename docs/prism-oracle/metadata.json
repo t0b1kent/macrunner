@@ -1,0 +1,41 @@
+﻿{
+    "schema":  1,
+    "run_id":  "prism-oracle-20260721-103240",
+    "created_utc":  "2026-07-21T00:32:44.6187478Z",
+    "duration_seconds":  150,
+    "input_policy":  "physical-only; script emits no input",
+    "trace_policy":  "WPR memory mode; FileIO.light + Handle.light + DiskIO.light",
+    "operating_system":  {
+                             "caption":  "Microsoft Windows 11 Pro",
+                             "version":  "10.0.26200",
+                             "build_number":  "26200",
+                             "os_architecture":  "ARM 64-bit Processor"
+                         },
+    "virtual_machine":  {
+                            "manufacturer":  "Parallels International GmbH.",
+                            "model":  "Parallels ARM Virtual Machine",
+                            "total_physical_memory":  8583315456
+                        },
+    "processor":  {
+                      "name":  "Apple Silicon",
+                      "architecture":  12,
+                      "address_width":  64,
+                      "logical_processors":  1
+                  },
+    "game":  {
+                 "identity":  {
+                                  "path":  "C:\\GOG Games\\Hollow Knight\\Hollow Knight.exe",
+                                  "length":  672256,
+                                  "last_write_utc":  "2026-07-20T23:58:10.3082874Z",
+                                  "sha256":  "7961bba7243ce322163ad6b0ddfd6ef701413020b92ad0d98502526a396171b0"
+                              },
+                 "pe_machine":  "0x8664",
+                 "pe_machine_name":  "AMD64",
+                 "unity_player":  {
+                                      "path":  "C:\\GOG Games\\Hollow Knight\\UnityPlayer.dll",
+                                      "length":  33736616,
+                                      "last_write_utc":  "2026-07-20T23:58:09.9906749Z",
+                                      "sha256":  "8f2d601f8d3c7f4d29d80ba786c0be873102bb7e6041eb03964a90b99724d90b"
+                                  }
+             }
+}

@@ -344,6 +344,8 @@ PY
     done
   fi
   echo "  профиль '$name': ${#ENVS[@]} переменных, ${secs}с${dist:+, дист подменён на $dist}"
+  # Дист лежит ВНУТРИ профиля => это запечатанный эталон, и он старше исходников намеренно.
+  case "$dist" in "$p"/*) export PREFLIGHT_SEALED_OK=1 ;; esac
   exec scripts/preflight-run.sh "профиль-$name" "$secs" \
        'Initialize engine version,macrunner-hb-d3d-boundary' ${ENVS[@]+"${ENVS[@]}"}
 }

@@ -296,6 +296,20 @@ cleanup() {
     pkill -f "$PREFIX" 2>/dev/null || true
   fi
   sleep 1
+  # СПАСТИ КАДРЫ ДО УДАЛЕНИЯ ПРЕФИКСА.
+  # DXMT кладёт дампы в ТЕКУЩИЙ каталог процесса, а он — временный префикс, который строкой
+  # ниже стирается. Гейта с путём в коде нет (MACRUNNER_DXMT_FRAME_DUMP_DIR не существует,
+  # я его выдумал 07.08 из слишком широкого грепа). Поэтому единственное доказательство того,
+  # что кадры вообще идут, уничтожалось вместе с префиксом: 07.08 пять кадров спаслись только
+  # потому, что прогон ещё не закончился и их успели скопировать вручную.
+  if [ -d "$PREFIX/dxmt-frame-dumps" ] && [ -n "${MACRUNNER_RUN_DIR:-}" ] && [ -d "${MACRUNNER_RUN_DIR:-}" ]; then
+    n=$(ls "$PREFIX/dxmt-frame-dumps"/*.rgba 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${n:-0}" != 0 ]; then
+      mkdir -p "$MACRUNNER_RUN_DIR/dxmt-frame-dumps"
+      cp -p "$PREFIX/dxmt-frame-dumps"/*.rgba "$MACRUNNER_RUN_DIR/dxmt-frame-dumps/" 2>/dev/null || true
+      echo "[mr-run] кадров сохранено: $n -> $MACRUNNER_RUN_DIR/dxmt-frame-dumps" >&2
+    fi
+  fi
   if [ "${MACRUNNER_MR_RUN_KEEP_PREFIX:-0}" = "1" ]; then
     echo "[mr-run] keep-prefix=$PREFIX" >&2
   else

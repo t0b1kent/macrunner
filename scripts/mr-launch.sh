@@ -127,7 +127,13 @@ echo "Запускаю. Окно можно свернуть, закрывать
 echo
 
 # ── Прогон ────────────────────────────────────────────────────────────────────────────────────
-"$ROOT/scripts/mr-profile.sh" run "$name" "$secs" ${DIST:+"$DIST"} &
+# ПРИБОРЫ КАДРОВ — ВСЕГДА. Весь день 07.08 прошёл в уверенности, что кадров нет ни у одной
+# сборки, потому что смотрели на Present1, а он печатается ТОЛЬКО при
+# MACRUNNER_DXMT_SWAPCHAIN_TRACE, и тот был выключен. Кадры при этом шли. Цена выключенного
+# прибора здесь — целый день неверных выводов, цена включённого — несколько строк в журнале
+# и пять файлов на диске (дампятся кадры 1-5 и каждый двухсотый).
+"$ROOT/scripts/mr-profile.sh" run "$name" "$secs" ${DIST:+"$DIST"} \
+    MACRUNNER_DXMT_FRAME_DUMP=1 MACRUNNER_DXMT_SWAPCHAIN_TRACE=1 &
 RUNPID=$!
 
 # Бегущая строка. Рундир ищем ТОЛЬКО новее отметки времени старта: 07.08 сторож дважды хватал
@@ -142,14 +148,14 @@ STARTED=$(date +%s)
       done
     fi
     if [ -n "$D" ] && [ -f "$D/run.log" ]; then
-      printf "\r  строк:%-8s движок:%s устр:%s объекты:%s языки:%s swapchain:%s present:%s искл:%s ввод:%-4s " \
+      printf "\r  строк:%-8s движок:%s устр:%s объекты:%s языки:%s swapchain:%s КАДРОВ:%s искл:%s ввод:%-4s " \
         "$(wc -l < "$D/run.log" | tr -d ' ')" \
         "$(grep -ac 'Initialize engine version' "$D/run.log")" \
         "$(grep -ac 'GfxDevice: creating' "$D/run.log")" \
         "$(grep -ac 'Loaded Objects' "$D/run.log")" \
         "$(grep -ac 'Discovered supported languages' "$D/run.log")" \
         "$(grep -ac 'CreateSwapChain' "$D/run.log")" \
-        "$(grep -ac 'Present1' "$D/run.log")" \
+        "$(grep -o 'dxmt-frame-dump: frame=[0-9]*' "$D/run.log" | sed 's/.*=//' | tail -1 | grep -E '^[0-9]+$' || echo 0)" \
         "$(grep -ac 'stage-exception_throw' "$D/run.log")" \
         "$(grep -ac 'macrunner-ui-input' "$D/run.log")"
     else

@@ -1,17 +1,17 @@
-# Выгрузка ВСЕХ файлов Prism в общую папку для разбора на маке.
+﻿# Выгрузка ВСЕХ файлов Prism в общую папку для разбора на маке.
 #
-# Зачем отдельно от prism-collect.ps1. Тот снимает КАРТУ — что есть, где лежит, как настроено.
+# Зачем отдельно от prism-collect.ps1. Тот снимает КАРТУ - что есть, где лежит, как настроено.
 # Этот вытаскивает САМИ ФАЙЛЫ, потому что таблицы экспорта, импорта и секции читаются только из
 # двоичного содержимого, а в PowerShell без dumpbin их не разобрать. Разбираем на маке
-# скриптом tools/prism-parse.py — там есть чем.
+# скриптом tools/prism-parse.py - там есть чем.
 #
 # Что забирает: всё семейство трансляторов (их ПЯТЬ, а не один: xtajit, xtajit64, xtajit64se,
 # xtajitf, xtajitse), слой wow64, службу кеша и образцы самого кеша.
 #
-# Открытие: игра грузит xtajit64se.dll, а мы реализуем xtajit64.dll — разные модули, разница
+# Открытие: игра грузит xtajit64se.dll, а мы реализуем xtajit64.dll - разные модули, разница
 # 425 КБ. Пока не сверим таблицы экспорта обоих, мы не знаем, тот ли контракт воспроизводим.
 #
-# Запуск (лучше от администратора — часть файлов иначе не прочитается):
+# Запуск (лучше от администратора - часть файлов иначе не прочитается):
 #   powershell -ExecutionPolicy Bypass -File prism-extract.ps1 -Dest "\\Mac\Home\Documents\MacRunner\Main\MacRunner\reports\prism\файлы"
 
 param(
@@ -52,7 +52,7 @@ Get-ChildItem "$env:SystemRoot\System32\*" -Include "*arm64ec*","*chpe*","*xta*"
     ForEach-Object { Take $_.FullName "по маске" }
 
 "--- образцы кеша трансляций ---" | Tee-Object $log -Append
-# Кеш может быть пуст, пока эмулируемое приложение не поработало. Если пусто — запустить
+# Кеш может быть пуст, пока эмулируемое приложение не поработало. Если пусто - запустить
 # x64-приложение (например Hollow Knight) и повторить: интересен именно формат файлов.
 $cacheDir = Join-Path $Dest "кеш"
 New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
@@ -61,15 +61,15 @@ foreach ($c in @("$env:SystemRoot\XtaCache","$env:LOCALAPPDATA\Microsoft\XtaCach
     if (-not (Test-Path $c)) { continue }
     $items = Get-ChildItem $c -File -Recurse | Sort-Object Length -Descending
     "  $c : файлов $($items.Count)" | Tee-Object $log -Append
-    # Берём три крупнейших — для разбора формата этого достаточно, а весь кеш тащить незачем.
+    # Берём три крупнейших - для разбора формата этого достаточно, а весь кеш тащить незачем.
     $items | Select-Object -First 3 | ForEach-Object {
         Copy-Item $_.FullName (Join-Path $cacheDir $_.Name) -Force
-        "    взят: {0} ({1:N0} байт)" -f $_.Name, $_.Length | Tee-Object $log -Append
+        ("    взят: {0} ({1:N0} байт)" -f $_.Name, $_.Length) | Tee-Object $log -Append
     }
 }
 
 "" | Tee-Object $log -Append
-"ИТОГО в $Dest : $((Get-ChildItem $Dest -Recurse -File).Count) файлов, {0:N1} МБ" -f `
-    (((Get-ChildItem $Dest -Recurse -File) | Measure-Object Length -Sum).Sum / 1MB) |
-    Tee-Object $log -Append
+$all = Get-ChildItem $Dest -Recurse -File
+$mb  = [Math]::Round(($all | Measure-Object Length -Sum).Sum / 1MB, 1)
+"ИТОГО в $Dest : $($all.Count) файлов, $mb МБ" | Tee-Object $log -Append
 "Дальше: на маке запустить tools/prism-parse.py по этой папке." | Tee-Object $log -Append

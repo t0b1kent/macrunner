@@ -56,12 +56,32 @@ while :; do
       else
         echo "## Заявка"; echo; sed 's/^/> /' "$WT/ЗАЯВКА.md"; echo
         echo "## Сборка"; echo
-        if ( cd "$WT" && SDKROOT="$(xcrun --show-sdk-path)" \
-             make -C engine/hyperbridge >/dev/null 2>&1 ); then
-          echo "Сборка hyperbridge: **успех**"
-        else
-          echo "Сборка hyperbridge: **ПРОВАЛ** — дальше не пошёл, прогон не запускался."
+        # Собирается ТО, что правка затронула. Сборка одного hyperbridge при правке в
+        # engine/dxmt дала бы прогон со старым DXMT: маркер не появился бы, и причина была бы
+        # не в гипотезе, а в том, что её не собрали. Этот класс ошибки уже стоил дня.
+        touched=$(git -C "$WT" diff --name-only HEAD~1 2>/dev/null || echo "")
+        build_ok=1
+        export SDKROOT="$(xcrun --show-sdk-path)"
+
+        if [ -z "$touched" ] || echo "$touched" | grep -q "^engine/hyperbridge\|^engine/wine"; then
+          if ( cd "$WT" && make -C engine/hyperbridge >/dev/null 2>&1 ); then
+            echo "Сборка hyperbridge: **успех**"
+          else
+            echo "Сборка hyperbridge: **ПРОВАЛ**"; build_ok=0
+          fi
         fi
+
+        if echo "$touched" | grep -q "^engine/dxmt"; then
+          echo "Правка затрагивает DXMT — собираю графику."
+          if ( cd "$WT" && ./scripts/build-dxmt.sh >/dev/null 2>&1 ); then
+            echo "Сборка DXMT: **успех**"
+          else
+            echo "Сборка DXMT: **ПРОВАЛ** — маркеры графики в прогоне будут от СТАРОЙ сборки."
+            build_ok=0
+          fi
+        fi
+
+        [ "$build_ok" = 1 ] || echo "**Сборка не прошла — прогон запускается на том, что собралось.**"
         echo
         echo "## Прогон"; echo
         # Оператор снял ограничение на число прогонов: мост гонит каждую заявку.

@@ -69,31 +69,65 @@ P="$PROFILES/$name"
 [ -f "$P/final-child.json" ] || { echo "${R}Профиля '$name' нет в $PROFILES.${N}"; exit 1; }
 mkdir -p "$(dirname "$STATE")" && printf '%s' "$name" > "$STATE"
 
+# ── Выбор диста: свой или этаж ────────────────────────────────────────────────────────────────
+# Профиль даёт ПЕРЕМЕННЫЕ, дист даёт ДВОИЧНЫЕ ФАЙЛЫ, и это независимые вещи. Именно так 07.08
+# проверялся floor26: переменные профиля «эталон-меню», носители этажа. Без такой развязки
+# сравнить две сборки на одинаковом окружении нельзя.
+DIST=""
+if [ -z "${MR_DIST:-}" ]; then
+  floors=()
+  for st in "/Volumes/MacOS 1/MacRunner-ARM64EC-floors" "/Users/timurtoby/Documents/MacRunner"; do
+    [ -d "$st" ] || continue
+    for f in "$st"/*/; do
+      for l in "" "dist/" "dist-arm64ec-spike/" "payload/dist/"; do
+        [ -f "$f$l/lib/wine/aarch64-unix/ntdll.so" ] && { floors+=("${f%/}|$l"); break; }
+      done
+    done
+  done
+  echo
+  echo "${B}Откуда брать двоичные файлы${N}"
+  echo "     0) свой дист профиля  ${G}(обычный выбор)${N}"
+  i=1; for fl in "${floors[@]}"; do
+    printf '    %2d) %s\n' "$i" "$(basename "${fl%%|*}")"; i=$((i+1))
+  done
+  printf "Номер (Enter — 0): "
+  read -r da
+  if [ -n "$da" ] && [ "$da" -ge 1 ] 2>/dev/null && [ "$da" -le "${#floors[@]}" ]; then
+    fl="${floors[$((da-1))]}"; DIST="${fl%%|*}/${fl##*|}"; DIST="${DIST%/}"
+  fi
+else
+  DIST="$MR_DIST"
+fi
+
 echo
 echo "${B}═══ $name ═══${N}"
 [ -f "$P/О-ПРОФИЛЕ.txt" ] && head -6 "$P/О-ПРОФИЛЕ.txt"
 
 # ── Карантин ──────────────────────────────────────────────────────────────────────────────────
-q=$(xattr -r -p com.apple.quarantine "$P" 2>/dev/null | wc -l | tr -d ' ')
+# Карантин снимаем и с диста, если он отдельный: этаж тоже мог приехать из архива.
+for TGT in "$P" ${DIST:+"$DIST"}; do
+q=$(xattr -r -p com.apple.quarantine "$TGT" 2>/dev/null | wc -l | tr -d ' ')
 if [ "${q:-0}" != 0 ]; then
   echo "${Y}карантин macOS: $q меток — снимаю (содержимое файлов не меняется)${N}"
-  xattr -srd com.apple.quarantine "$P" 2>/dev/null
-  q2=$(xattr -r -p com.apple.quarantine "$P" 2>/dev/null | wc -l | tr -d ' ')
+  xattr -srd com.apple.quarantine "$TGT" 2>/dev/null
+  q2=$(xattr -r -p com.apple.quarantine "$TGT" 2>/dev/null | wc -l | tr -d ' ')
   if [ "${q2:-0}" != 0 ]; then
     echo "${R}осталось $q2 — Gatekeeper может заблокировать загрузку${N}"
   else
     echo "${G}карантин снят${N}"
   fi
 else
-  echo "карантин: чисто"
+  echo "карантин ($(basename "$TGT")): чисто"
 fi
+done
 
+[ -n "$DIST" ] && echo "${Y}дист: $(basename "$DIST")${N}" || echo "дист: свой, из профиля"
 echo "бюджет: ${secs}с"
 echo "Запускаю. Окно можно свернуть, закрывать нельзя."
 echo
 
 # ── Прогон ────────────────────────────────────────────────────────────────────────────────────
-"$ROOT/scripts/mr-profile.sh" run "$name" "$secs" &
+"$ROOT/scripts/mr-profile.sh" run "$name" "$secs" ${DIST:+"$DIST"} &
 RUNPID=$!
 
 # Бегущая строка. Рундир ищем ТОЛЬКО новее отметки времени старта: 07.08 сторож дважды хватал

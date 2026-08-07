@@ -284,12 +284,32 @@ done
 #
 # Сверять надо только дисты, участвующие В ОДНОМ запуске: у профиля это его собственные dist и
 # wine-dist, и расхождение между НИМИ — настоящая ошибка (06.08 стоила полдня).
+# ── Карантин macOS. Распакованный архив не запускается, и это видно только диалогом. ─────────
+# 07.08: профиль распакован Keka, и она проставила com.apple.quarantine на все ~9500 файлов.
+# Наши .dylib подписаны ad-hoc (Signature=adhoc, TeamIdentifier=not set), поэтому Gatekeeper
+# отказывается их грузить и показывает «"libfreetype.6.dylib" Not Opened». В логе прогона при
+# этом НИЧЕГО нет — отказ происходит в системе, до нашего кода. Ровно тот класс ошибки, ради
+# которого писан префлайт: прибор молчит, а явление есть.
+# Проверяем ДО прогона, потому что диалог ждёт мыши, а прогон тем временем идёт впустую.
+check_quarantine() {
+  local d="$1" n
+  [ -d "$d" ] || return 0
+  n=$(find "$d/lib" -name '*.dylib' -o -name '*.so' 2>/dev/null | while read -r f; do
+        xattr -p com.apple.quarantine "$f" >/dev/null 2>&1 && echo x; done | wc -l | tr -d ' ')
+  [ "${n:-0}" = 0 ] && return 0
+  note "FAIL: в $d под карантином macOS $n двоичных файлов — Gatekeeper заблокирует загрузку."
+  note "      Снять (меняются только метки, содержимое файлов не трогается):"
+  note "        xattr -dr com.apple.quarantine \"$d\""
+  fail=1
+}
+
 DISTS=""
 for v in MACRUNNER_WINE_DIST MACRUNNER_LANEA_WINE_DIST; do
   # из аргументов вызова и из унаследованного окружения — участвуют оба
   for kv in "${ENVS[@]}"; do [ "${kv%%=*}" = "$v" ] && DISTS="$DISTS ${kv#*=}"; done
   eval "inh=\${$v:-}"; [ -n "$inh" ] && DISTS="$DISTS $inh"
 done
+for d in $DISTS; do check_quarantine "$d"; done
 for m in $CARRIERS; do
   ref=""; refd=""
   for d in $DISTS; do

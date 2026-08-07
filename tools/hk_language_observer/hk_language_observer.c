@@ -2547,6 +2547,23 @@ static void method_enter(MonoProfiler *profiler, MonoMethod *method,
     case METHOD_MANAGED_TICK:
     {
         LONG n = InterlockedIncrement(&managed_tick_count);
+        /* MacRunner 08.08.2026 — ПОВТОР АКТУАТОРА НА КАДРОВОМ ТИКЕ.
+         *
+         * До этого попытка запускалась только по чужим событиям: HighlightDefault (2530),
+         * GameCameras.Awake (2679) и set_allowSceneActivation (2739). Все три наступают ДО
+         * появления UIManager, и 07.08 прогон это показал прямо: `phase=lookup
+         * status=no-uimanager-yet miss=1 count=0`, и больше НИ ОДНОЙ попытки за 20 минут.
+         * Бюджет 64 остался нетронутым, потому что промах его честно возвращает (1798).
+         *
+         * Круг замкнут: актуатор ждёт события, которое наступит только после действия,
+         * которое должен совершить он сам. Поэтому язык проходился лишь вручную, и каждый
+         * замер требовал человека у экрана, успевающего нажать до +550 с.
+         *
+         * Update у UIManager начинает вызываться РОВНО тогда, когда UIManager существует —
+         * то есть тик и есть недостающее условие. Латч (start_game_latched) гасит повтор
+         * после первого успеха, бюджет ограничивает сверху, так что цена — один вызов на
+         * кадр до попадания. */
+        if (!return_route_only) invoke_start_game_actuator();
         if (n <= 5 || (n % 512) == 0)
         {
             builder_init(&builder, detail, sizeof(detail));

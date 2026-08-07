@@ -144,12 +144,24 @@ echo
 # ДВЕ ЯВНЫЕ ВЕТКИ, А НЕ ПУСТОЙ МАССИВ. В macOS штатный bash — 3.2, и там "${arr[@]}" на пустом
 # массиве под set -u это «unbound variable»: 07.08 ярлык оператора умер на этой строке ещё до
 # префлайта, а сообщение в конце соврало, будто отказала преполётная проверка.
+# АВТОПРОХОД ЯЗЫКА — ВКЛЮЧЁН ПО УМОЛЧАНИЮ.
+# 07.08 актуатор запускался только по чужим событиям (HighlightDefault, GameCameras.Awake,
+# set_allowSceneActivation), а все три наступают ДО появления UIManager: прогон дал
+# `no-uimanager-yet miss=1` и больше НИ ОДНОЙ попытки за двадцать минут. Язык проходился
+# только вручную, и каждый замер требовал человека у экрана, успевающего нажать до +550 с.
+# 08.08 повтор поставлен на кадровый тик — Update у UIManager начинается ровно тогда, когда
+# UIManager есть. Но тик сам под гейтом, и в наборе профиля он 0, то есть повторять нечему.
+# Поэтому гейт задаётся здесь: без него правка мертва, а с ним прогон идёт без оператора.
+# Выключить: MR_TICK=0 (сборкам старше 08.08 гейт безвреден — они его просто не читают).
+TICK_ENV=""
+[ "${MR_TICK:-1}" = 1 ] && TICK_ENV="MACRUNNER_HB_MANAGED_TICK=1"
+
 if [ "${MR_FRAMES:-0}" = 1 ]; then
   echo "${Y}приборы кадров ВКЛЮЧЕНЫ — прогон будет медленнее и может встать после первых кадров${N}"
-  "$ROOT/scripts/mr-profile.sh" run "$name" "$secs" ${DIST:+"$DIST"} \
+  "$ROOT/scripts/mr-profile.sh" run "$name" "$secs" ${DIST:+"$DIST"} ${TICK_ENV:+"$TICK_ENV"} \
       MACRUNNER_DXMT_FRAME_DUMP=1 MACRUNNER_DXMT_SWAPCHAIN_TRACE=1 &
 else
-  "$ROOT/scripts/mr-profile.sh" run "$name" "$secs" ${DIST:+"$DIST"} &
+  "$ROOT/scripts/mr-profile.sh" run "$name" "$secs" ${DIST:+"$DIST"} ${TICK_ENV:+"$TICK_ENV"} &
 fi
 RUNPID=$!
 
@@ -165,7 +177,7 @@ STARTED=$(date +%s)
       done
     fi
     if [ -n "$D" ] && [ -f "$D/run.log" ]; then
-      printf "\r  строк:%-8s движок:%s устр:%s объекты:%s языки:%s swapchain:%s КАДРОВ:%s искл:%s ввод:%-4s " \
+      printf "\r  строк:%-8s движок:%s устр:%s объекты:%s языки:%s swapchain:%s КАДРОВ:%s искл:%s автопроход:%s петля:%-4s " \
         "$(wc -l < "$D/run.log" | tr -d ' ')" \
         "$(grep -ac 'Initialize engine version' "$D/run.log")" \
         "$(grep -ac 'GfxDevice: creating' "$D/run.log")" \
@@ -174,7 +186,8 @@ STARTED=$(date +%s)
         "$(grep -ac 'CreateSwapChain' "$D/run.log")" \
         "$(grep -o 'dxmt-frame-dump: frame=[0-9]*' "$D/run.log" | sed 's/.*=//' | tail -1 | grep -E '^[0-9]+$' || echo 0)" \
         "$(grep -ac 'stage-exception_throw' "$D/run.log")" \
-        "$(grep -ac 'macrunner-ui-input' "$D/run.log")"
+        "$(grep -ac 'start-game-actuator' "$D/run.log")" \
+        "$(grep -ac 'macrunner-hb-protect-loop' "$D/run.log")"
     else
       printf "\r  готовлю прогон (преполётные проверки)… "
     fi
